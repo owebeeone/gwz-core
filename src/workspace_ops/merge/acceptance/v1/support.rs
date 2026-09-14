@@ -148,6 +148,23 @@ pub(super) fn parse_lock(merge_id: &str, yaml: &str) -> ModelResult<LockArtifact
         .map_err(|_| input_error(merge_id, "accepted lock bytes are invalid"))
 }
 
+/// The lock row fields this gwz knows, in `ResolvedMemberArtifact` declaration
+/// order: the order `LockArtifact::to_yaml`, the `gwz commit` writer, emits.
+const LOCK_ROW_FIELDS: [&str; 9] = [
+    "path",
+    "source_id",
+    "source_kind",
+    "commit",
+    "branch",
+    "detached",
+    "upstream",
+    "dirty",
+    "materialized",
+];
+
+/// Only selected rows are rewritten. Unselected rows and the top level pass
+/// through as parsed, in the metadata lock's order, so a merge that selects no
+/// member re-emits a gwz-written lock byte for byte.
 pub(super) fn render_complete_lock(
     merge_id: &str,
     metadata_yaml: &str,
@@ -173,7 +190,7 @@ pub(super) fn render_complete_lock(
                 .unwrap_or(serde_yaml::to_value(typed).map_err(|_| {
                     input_error(merge_id, "selected lock row cannot be serialized")
                 })?);
-            members.insert(key.clone(), baseline_row);
+            insert_in_member_order(members, key.clone(), baseline_row);
         }
         let row = members
             .get_mut(&key)
@@ -181,26 +198,25 @@ pub(super) fn render_complete_lock(
             .ok_or_else(|| input_error(merge_id, "selected lock row is not a mapping"))?;
         let replacement = serde_yaml::to_value(typed)
             .map_err(|_| input_error(merge_id, "selected lock row cannot be serialized"))?;
-        let replacement = replacement
-            .as_mapping()
-            .ok_or_else(|| input_error(merge_id, "selected lock row is not a mapping"))?;
-        for field in [
-            "path",
-            "source_id",
-            "source_kind",
-            "commit",
-            "branch",
-            "detached",
-            "upstream",
-            "dirty",
-            "materialized",
-        ] {
-            let field = Value::String(field.into());
-            row.remove(&field);
-            if let Some(value) = replacement.get(&field) {
-                row.insert(field, value.clone());
+        let Value::Mapping(mut replacement) = replacement else {
+            return Err(input_error(merge_id, "selected lock row is not a mapping"));
+        };
+        // Rebuild the row instead of editing it in place: `Mapping::remove` is
+        // `swap_remove`, so removing and re-inserting each field rotated the
+        // row on every merge. The typed row supplies the known fields in the
+        // `gwz commit` order. Fields this gwz does not know follow them, in the
+        // order the row held them: that layout is a fixed point of this
+        // rebuild, and it is where a newer gwz that appends a field after
+        // `materialized` already writes it.
+        for (field, value) in std::mem::take(row) {
+            if !field
+                .as_str()
+                .is_some_and(|name| LOCK_ROW_FIELDS.contains(&name))
+            {
+                replacement.insert(field, value);
             }
         }
+        *row = replacement;
     }
     let rendered = serde_yaml::to_string(&raw)
         .map_err(|_| input_error(merge_id, "complete lock cannot be serialized"))?;
@@ -211,6 +227,20 @@ pub(super) fn render_complete_lock(
         ));
     }
     Ok(rendered)
+}
+
+/// Insert a row the metadata lock lacks where `gwz commit` would put it.
+/// `LockArtifact::members` is a `BTreeMap`, so rows are written in member-id
+/// order: the row goes before the first row whose id sorts after it, and the
+/// rows already present keep their order.
+fn insert_in_member_order(members: &mut serde_yaml::Mapping, key: Value, row: Value) {
+    let mut rows = std::mem::take(members).into_iter().collect::<Vec<_>>();
+    let at = rows
+        .iter()
+        .position(|(existing, _)| existing.as_str() > key.as_str())
+        .unwrap_or(rows.len());
+    rows.insert(at, (key, row));
+    *members = rows.into_iter().collect();
 }
 
 fn mapping_field_mut<'a>(
@@ -268,4 +298,179 @@ pub(super) fn input_error(merge_id: &str, detail: &str) -> ModelError {
         ErrorCode::AcceptanceInputDrift,
         format!("merge record '{merge_id}' acceptance input is incomplete: {detail}"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use serde_yaml::Value;
+
+    use super::{LOCK_ROW_FIELDS, parse_lock_rows, render_complete_lock};
+    use crate::artifact::{
+        ArtifactSourceKind, LOCK_SCHEMA, LockArtifact, ResolvedMemberArtifact, WORKSPACE_SCHEMA,
+    };
+
+    const MERGE_ID: &str = "merge_lock_order";
+
+    fn row(path: &str, commit: char) -> ResolvedMemberArtifact {
+        ResolvedMemberArtifact {
+            path: path.to_owned(),
+            source_id: Some(format!("src_{path}")),
+            source_kind: ArtifactSourceKind::Git,
+            commit: Some(commit.to_string().repeat(40)),
+            branch: Some("main".to_owned()),
+            detached: Some(false),
+            upstream: Some("origin/main".to_owned()),
+            dirty: Some(false),
+            materialized: Some(true),
+        }
+    }
+
+    fn lock(rows: Vec<(&str, ResolvedMemberArtifact)>) -> LockArtifact {
+        LockArtifact {
+            schema: LOCK_SCHEMA.to_owned(),
+            workspace_id: "ws_lock_order".to_owned(),
+            manifest_schema: WORKSPACE_SCHEMA.to_owned(),
+            members: rows
+                .into_iter()
+                .map(|(member_id, row)| (member_id.to_owned(), row))
+                .collect(),
+        }
+    }
+
+    fn selected(member_ids: &[&str]) -> BTreeSet<String> {
+        member_ids
+            .iter()
+            .map(|member_id| (*member_id).to_owned())
+            .collect()
+    }
+
+    /// `LOCK_ROW_FIELDS` decides which row fields are unknown, so it must name
+    /// every field the commit writer emits, in that writer's order.
+    #[test]
+    fn known_row_fields_are_the_commit_writer_fields() {
+        let serialized = serde_yaml::to_value(row("core", 'c')).unwrap();
+        let fields = serialized
+            .as_mapping()
+            .unwrap()
+            .keys()
+            .map(|field| field.as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(fields, LOCK_ROW_FIELDS);
+    }
+
+    /// Consecutive merges of an unchanged lock, each reading the bytes the
+    /// previous one wrote. A rewrite that reorders fields can come back to
+    /// its starting order (the `swap_remove` rewrite cycled every seven
+    /// renders), so every one of eight renders is compared.
+    #[test]
+    fn repeated_renders_of_one_lock_are_byte_identical() {
+        let mut evidence = row("evidence", 'e');
+        evidence.upstream = None;
+        let complete = lock(vec![
+            ("mem_cli", row("cli", 'b')),
+            ("mem_core", row("core", 'c')),
+            ("mem_evidence", evidence),
+        ]);
+        let targets = selected(&["mem_cli", "mem_core", "mem_evidence"]);
+        let baseline = complete.to_yaml().unwrap();
+        let mut current = baseline.clone();
+        let mut renders = Vec::new();
+        for _ in 0..8 {
+            current =
+                render_complete_lock(MERGE_ID, &current, &baseline, &complete, &targets).unwrap();
+            renders.push(current.clone());
+        }
+        for (index, render) in renders.iter().enumerate() {
+            assert_eq!(
+                render,
+                &renders[0],
+                "render {} differs from render 1",
+                index + 1
+            );
+        }
+    }
+
+    /// Without unknown fields a merge writes the bytes `gwz commit` writes for
+    /// the same typed lock: rows in member-id order, fields in declaration
+    /// order. `mem_a_added` is in neither lock and sorts before every metadata
+    /// row; `mem_c_restored` comes back from the baseline lock between two.
+    #[test]
+    fn rendered_lock_is_the_commit_writer_lock_when_rows_are_added() {
+        let metadata = lock(vec![
+            ("mem_b_kept", row("kept", '1')),
+            ("mem_d_changed", row("changed", '2')),
+        ]);
+        let baseline = lock(vec![
+            ("mem_b_kept", row("kept", '1')),
+            ("mem_c_restored", row("restored", '3')),
+            ("mem_d_changed", row("changed", '2')),
+        ]);
+        let complete = lock(vec![
+            ("mem_a_added", row("added", '4')),
+            ("mem_b_kept", row("kept", '1')),
+            ("mem_c_restored", row("restored", '5')),
+            ("mem_d_changed", row("changed", '6')),
+        ]);
+
+        let rendered = render_complete_lock(
+            MERGE_ID,
+            &metadata.to_yaml().unwrap(),
+            &baseline.to_yaml().unwrap(),
+            &complete,
+            &selected(&["mem_a_added", "mem_c_restored", "mem_d_changed"]),
+        )
+        .unwrap();
+
+        assert_eq!(rendered, complete.to_yaml().unwrap());
+    }
+
+    /// An unknown row field stays in its row, after the known fields. The
+    /// known fields come out in declaration order even from a row that holds
+    /// them in the rotated order earlier merges wrote.
+    #[test]
+    fn unknown_row_fields_follow_the_known_fields() {
+        let complete = lock(vec![("mem_core", row("core", 'd'))]);
+        let metadata = format!(
+            "\
+schema: gwz.lock/v0
+workspace_id: ws_lock_order
+manifest_schema: gwz.workspace/v0
+members:
+  mem_core:
+    dirty: false
+    path: core
+    future_field: kept
+    source_id: src_core
+    source_kind: git
+    commit: {commit}
+    branch: main
+    detached: false
+    upstream: origin/main
+    materialized: true
+",
+            commit = "c".repeat(40)
+        );
+        let targets = selected(&["mem_core"]);
+
+        let rendered =
+            render_complete_lock(MERGE_ID, &metadata, &metadata, &complete, &targets).unwrap();
+
+        let expected = complete.to_yaml().unwrap().replace(
+            "    materialized: true\n",
+            "    materialized: true\n    future_field: kept\n",
+        );
+        assert_eq!(rendered, expected);
+        assert_eq!(
+            parse_lock_rows(MERGE_ID, &rendered).unwrap()["mem_core"]
+                .extensions
+                .get("future_field"),
+            Some(&Value::String("kept".to_owned()))
+        );
+        assert_eq!(
+            render_complete_lock(MERGE_ID, &rendered, &metadata, &complete, &targets).unwrap(),
+            rendered
+        );
+    }
 }
