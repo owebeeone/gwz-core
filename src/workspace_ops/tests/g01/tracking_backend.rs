@@ -1,6 +1,7 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use crate::git::GitBackend;
@@ -23,12 +24,54 @@ pub(crate) enum AnonymousTransfer {
     },
 }
 
+/// One publication call observed by the double, in arrival order: an
+/// advertisement read (`ls_remote_url`) or a captured push (`push_prepared`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum RemoteCall {
+    Read {
+        path: PathBuf,
+        url: String,
+        remote: String,
+        identity_repo: Option<PathBuf>,
+    },
+    Push {
+        path: PathBuf,
+        remote: String,
+        url: String,
+        refspecs: Vec<String>,
+    },
+}
+
+/// A remote of one configured repository, with the fetch refspecs its
+/// configuration carries.
+#[derive(Clone, Debug)]
+pub(crate) struct ConfiguredRemote {
+    pub(crate) name: String,
+    pub(crate) url: Option<String>,
+    pub(crate) push_url: Option<String>,
+    pub(crate) fetch_refspecs: Vec<String>,
+}
+
+impl ConfiguredRemote {
+    /// A remote as `git clone` writes it: one URL and a forced branch mapping.
+    pub(crate) fn new(name: &str, url: &str) -> Self {
+        Self {
+            name: name.to_owned(),
+            url: Some(url.to_owned()),
+            push_url: None,
+            fetch_refspecs: vec![format!("+refs/heads/*:refs/remotes/{name}/*")],
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct TrackingBackend {
     fetch: Arc<OverlapTracker>,
     push: Arc<OverlapTracker>,
+    read: Arc<OverlapTracker>,
     anonymous: Arc<Mutex<Vec<AnonymousTransfer>>>,
     anonymous_failure: Arc<Mutex<Option<String>>>,
+    model: Arc<Mutex<Model>>,
 }
 
 impl TrackingBackend {
@@ -36,9 +79,18 @@ impl TrackingBackend {
         Self {
             fetch: Arc::new(OverlapTracker::new(expected_overlap)),
             push: Arc::new(OverlapTracker::new(expected_overlap)),
+            read: Arc::new(OverlapTracker::new(1)),
             anonymous: Arc::new(Mutex::new(Vec::new())),
             anonymous_failure: Arc::new(Mutex::new(None)),
+            model: Arc::new(Mutex::new(Model::default())),
         }
+    }
+
+    /// Hold advertisement reads for overlap as `new` holds fetches and pushes.
+    /// Reads expect no overlap by default, so sequential reads never wait.
+    pub(crate) fn with_read_overlap(mut self, expected_overlap: usize) -> Self {
+        self.read = Arc::new(OverlapTracker::new(expected_overlap));
+        self
     }
 
     pub(crate) fn fetch_peak(&self) -> usize {
@@ -47,6 +99,10 @@ impl TrackingBackend {
 
     pub(crate) fn push_peak(&self) -> usize {
         self.push.peak()
+    }
+
+    pub(crate) fn read_peak(&self) -> usize {
+        self.read.peak()
     }
 
     /// Every anonymous fetch/push the double received, in order.
@@ -66,6 +122,212 @@ impl TrackingBackend {
             None => Ok(()),
         }
     }
+
+    /// Configure `path` as a repository attached to `branch` at `commit`.
+    pub(crate) fn set_head(&self, path: &Path, branch: &str, commit: &str) {
+        self.model().repository(path).head = crate::git::GitHeadState {
+            branch: Some(branch.to_owned()),
+            commit: Some(commit.to_owned()),
+            is_detached: false,
+        };
+    }
+
+    pub(crate) fn set_materialized(&self, path: &Path, materialized: bool) {
+        self.model().repository(path).materialized = materialized;
+    }
+
+    pub(crate) fn add_remote_config(&self, path: &Path, remote: ConfiguredRemote) {
+        self.model().repository(path).remotes.push(remote);
+    }
+
+    pub(crate) fn fetch_refspecs(&self, path: &Path, remote: &str) -> Option<Vec<String>> {
+        self.model()
+            .repositories
+            .get(path)?
+            .remotes
+            .iter()
+            .find(|configured| configured.name == remote)
+            .map(|configured| configured.fetch_refspecs.clone())
+    }
+
+    /// Serve `files` from the tree of `commit` in `path`; any other file is
+    /// absent from that commit.
+    pub(crate) fn commit_files(&self, path: &Path, commit: &str, files: &[(&str, Vec<u8>)]) {
+        let files = files
+            .iter()
+            .map(|(name, bytes)| ((*name).to_owned(), bytes.clone()))
+            .collect();
+        self.model()
+            .committed
+            .insert((path.to_path_buf(), commit.to_owned()), files);
+    }
+
+    /// Answer `is_ancestor(ancestor, descendant)` from the table; an `Err` is a
+    /// Git failure such as missing objects. Undeclared pairs keep the double's
+    /// original answer, true, so declare `Ok(false)` wherever a proof must fail.
+    pub(crate) fn set_ancestry(
+        &self,
+        ancestor: &str,
+        descendant: &str,
+        answer: Result<bool, &str>,
+    ) {
+        self.model().ancestry.insert(
+            (ancestor.to_owned(), descendant.to_owned()),
+            answer.map_err(ToOwned::to_owned),
+        );
+    }
+
+    /// Serve one advertisement store at every URL in `urls`, so one repository
+    /// can be reached through several spellings: a push through any of them
+    /// moves what all of them advertise.
+    pub(crate) fn serve(&self, urls: &[&str], refs: &[(&str, &str)]) {
+        let mut model = self.model();
+        model.stores.push(
+            refs.iter()
+                .map(|(name, target)| ((*name).to_owned(), (*target).to_owned()))
+                .collect(),
+        );
+        let store = model.stores.len() - 1;
+        for url in urls {
+            model.served.insert((*url).to_owned(), store);
+        }
+    }
+
+    /// The object `name` points at in the store served at `url`.
+    pub(crate) fn advertised_ref(&self, url: &str, name: &str) -> Option<String> {
+        self.model().store(url)?.get(name).cloned()
+    }
+
+    /// Every advertisement read and captured push, in arrival order.
+    pub(crate) fn remote_calls(&self) -> Vec<RemoteCall> {
+        self.model().calls.clone()
+    }
+
+    pub(crate) fn remote_reads(&self) -> Vec<RemoteCall> {
+        self.remote_calls()
+            .into_iter()
+            .filter(|call| matches!(call, RemoteCall::Read { .. }))
+            .collect()
+    }
+
+    pub(crate) fn prepared_pushes(&self) -> Vec<RemoteCall> {
+        self.remote_calls()
+            .into_iter()
+            .filter(|call| matches!(call, RemoteCall::Push { .. }))
+            .collect()
+    }
+
+    fn model(&self) -> MutexGuard<'_, Model> {
+        self.model.lock().unwrap()
+    }
+
+    fn configured(&self, path: &Path) -> Option<ConfiguredRepository> {
+        self.model().repositories.get(path).cloned()
+    }
+}
+
+/// What a test configured on the double, and the publication calls it saw. A
+/// path, commit, URL or ancestry pair nobody configured keeps the double's
+/// original answer.
+#[derive(Default)]
+struct Model {
+    repositories: BTreeMap<PathBuf, ConfiguredRepository>,
+    committed: BTreeMap<(PathBuf, String), BTreeMap<String, Vec<u8>>>,
+    ancestry: BTreeMap<(String, String), Result<bool, String>>,
+    stores: Vec<BTreeMap<String, String>>,
+    served: BTreeMap<String, usize>,
+    calls: Vec<RemoteCall>,
+}
+
+impl Model {
+    fn repository(&mut self, path: &Path) -> &mut ConfiguredRepository {
+        self.repositories.entry(path.to_path_buf()).or_default()
+    }
+
+    fn store(&self, url: &str) -> Option<&BTreeMap<String, String>> {
+        self.served.get(url).map(|store| &self.stores[*store])
+    }
+
+    fn is_ancestor(&self, ancestor: &str, descendant: &str) -> ModelResult<bool> {
+        match self
+            .ancestry
+            .get(&(ancestor.to_owned(), descendant.to_owned()))
+        {
+            Some(Ok(answer)) => Ok(*answer),
+            Some(Err(detail)) => Err(ModelError::new(ErrorCode::GitCommandFailed, detail.clone())),
+            None => Ok(true),
+        }
+    }
+
+    /// Apply a captured push to the store served at `url`, all or nothing. As
+    /// libgit2 does before transfer, refuse an ordinary update of a ref whose
+    /// current object is not an ancestor of the pushed one.
+    fn accept_push(&mut self, url: &str, refspecs: &[String]) -> ModelResult<()> {
+        let Some(&store) = self.served.get(url) else {
+            return Ok(());
+        };
+        let mut refs = self.stores[store].clone();
+        for refspec in refspecs {
+            let plain = refspec.strip_prefix('+').unwrap_or(refspec);
+            let (source, destination) = plain.split_once(':').unwrap_or((plain, plain));
+            if source.is_empty() {
+                refs.remove(destination);
+                continue;
+            }
+            if let Some(current) = refs.get(destination)
+                && current != source
+                && !refspec.starts_with('+')
+                && !self.is_ancestor(current, source).unwrap_or(false)
+            {
+                return Err(ModelError::new(
+                    ErrorCode::RemoteRejected,
+                    format!(
+                        "{url} rejected {destination}: cannot push non-fastforwardable reference"
+                    ),
+                ));
+            }
+            refs.insert(destination.to_owned(), source.to_owned());
+        }
+        self.stores[store] = refs;
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct ConfiguredRepository {
+    materialized: bool,
+    head: crate::git::GitHeadState,
+    remotes: Vec<ConfiguredRemote>,
+}
+
+/// An unconfigured repository gets the double's original answers.
+impl Default for ConfiguredRepository {
+    fn default() -> Self {
+        Self {
+            materialized: true,
+            head: crate::git::GitHeadState {
+                branch: Some("main".to_owned()),
+                commit: Some(TEST_COMMIT.to_owned()),
+                is_detached: false,
+            },
+            remotes: Vec::new(),
+        }
+    }
+}
+
+/// Resolve the attached branch ref, or a full object id, of a configured
+/// repository.
+fn resolve(repository: &ConfiguredRepository, name: &str) -> Option<String> {
+    let name = name.strip_suffix("^{commit}").unwrap_or(name);
+    let branch = repository
+        .head
+        .branch
+        .as_ref()
+        .map(|branch| format!("refs/heads/{branch}"));
+    if branch.as_deref() == Some(name) {
+        return repository.head.commit.clone();
+    }
+    (name.len() == 40 && name.bytes().all(|byte| byte.is_ascii_hexdigit())).then(|| name.to_owned())
 }
 
 struct OverlapTracker {
@@ -195,8 +457,27 @@ impl GitBackend for TrackingBackend {
         ))
     }
 
-    fn is_repository(&self, _path: &Path) -> ModelResult<bool> {
-        Ok(true)
+    fn is_repository(&self, path: &Path) -> ModelResult<bool> {
+        Ok(self.configured(path).unwrap_or_default().materialized)
+    }
+
+    fn read_file_at_commit(
+        &self,
+        path: &Path,
+        commit: &str,
+        relative_path: &str,
+    ) -> ModelResult<Option<Vec<u8>>> {
+        let model = self.model();
+        let files = model
+            .committed
+            .get(&(path.to_path_buf(), commit.to_owned()))
+            .ok_or_else(|| {
+                ModelError::new(
+                    ErrorCode::UnsupportedOperation,
+                    "read_file_at_commit is not implemented by this GitBackend",
+                )
+            })?;
+        Ok(files.get(relative_path).cloned())
     }
 
     fn stage_paths(
@@ -410,16 +691,21 @@ impl GitBackend for TrackingBackend {
         Ok(crate::git::GitStatus::clean())
     }
 
-    fn head(&self, _path: &Path) -> ModelResult<crate::git::GitHeadState> {
-        Ok(crate::git::GitHeadState {
-            branch: Some("main".to_owned()),
-            commit: Some(TEST_COMMIT.to_owned()),
-            is_detached: false,
-        })
+    fn head(&self, path: &Path) -> ModelResult<crate::git::GitHeadState> {
+        Ok(self.configured(path).unwrap_or_default().head)
     }
 
-    fn remotes(&self, _path: &Path) -> ModelResult<Vec<crate::git::GitRemote>> {
-        Ok(Vec::new())
+    fn remotes(&self, path: &Path) -> ModelResult<Vec<crate::git::GitRemote>> {
+        let repository = self.configured(path).unwrap_or_default();
+        Ok(repository
+            .remotes
+            .into_iter()
+            .map(|remote| crate::git::GitRemote {
+                name: remote.name,
+                url: remote.url,
+                push_url: remote.push_url,
+            })
+            .collect())
     }
 
     fn add_remote(
@@ -456,24 +742,78 @@ impl GitBackend for TrackingBackend {
         remote: &str,
         refspec: &str,
     ) -> ModelResult<crate::git::GitPreparedPush> {
-        Ok(crate::git::GitPreparedPush {
-            remote: remote.to_owned(),
-            url: format!(
-                "ssh://{}.invalid/repo.git",
-                path.file_name().unwrap().to_string_lossy()
-            ),
-            refspecs: vec![refspec.to_owned()],
-        })
+        let Some(repository) = self.configured(path) else {
+            return Ok(crate::git::GitPreparedPush {
+                remote: remote.to_owned(),
+                url: format!(
+                    "ssh://{}.invalid/repo.git",
+                    path.file_name().unwrap().to_string_lossy()
+                ),
+                refspecs: vec![refspec.to_owned()],
+            });
+        };
+        let configured = repository
+            .remotes
+            .iter()
+            .find(|configured| configured.name == remote)
+            .ok_or_else(|| {
+                ModelError::new(
+                    ErrorCode::MissingRemote,
+                    format!("missing remote '{remote}'"),
+                )
+            })?;
+        let url = configured
+            .push_url
+            .clone()
+            .or_else(|| configured.url.clone())
+            .ok_or_else(|| {
+                ModelError::new(ErrorCode::MissingRemote, "remote has no destination URL")
+            })?;
+        // Capture the source as an object id, as `Git2Backend` does. The double
+        // models explicit `refs/` destinations only.
+        let prefix = if refspec.starts_with('+') { "+" } else { "" };
+        let plain = refspec.strip_prefix('+').unwrap_or(refspec);
+        let (source, destination) = plain.split_once(':').unwrap_or((plain, plain));
+        let object = if source.is_empty() {
+            Some(String::new())
+        } else {
+            resolve(&repository, source)
+        };
+        match object {
+            Some(object) if destination.starts_with("refs/") => Ok(crate::git::GitPreparedPush {
+                remote: remote.to_owned(),
+                url,
+                refspecs: vec![format!("{prefix}{object}:{destination}")],
+            }),
+            _ => Err(ModelError::new(
+                ErrorCode::InvalidRequest,
+                "push refspec cannot resolve to concrete source objects and destination refs",
+            )),
+        }
     }
 
     fn ls_remote_url(
         &self,
         path: &Path,
-        _url: &str,
+        url: &str,
         remote: &str,
-        _identity_repo: Option<&Path>,
+        identity_repo: Option<&Path>,
     ) -> ModelResult<Vec<crate::git::GitRemoteRef>> {
-        self.ls_remote(path, remote)
+        self.model().calls.push(RemoteCall::Read {
+            path: path.to_path_buf(),
+            url: url.to_owned(),
+            remote: remote.to_owned(),
+            identity_repo: identity_repo.map(Path::to_path_buf),
+        });
+        self.read.run();
+        let served = self.model().store(url).cloned();
+        match served {
+            Some(refs) => Ok(refs
+                .into_iter()
+                .map(|(name, target)| crate::git::GitRemoteRef { name, target })
+                .collect()),
+            None => self.ls_remote(path, remote),
+        }
     }
 
     fn push_prepared(
@@ -481,7 +821,18 @@ impl GitBackend for TrackingBackend {
         path: &Path,
         plan: &crate::git::GitPreparedPush,
     ) -> ModelResult<crate::git::GitPushResult> {
-        self.push(path, &plan.remote, &plan.refspecs[0])
+        self.model().calls.push(RemoteCall::Push {
+            path: path.to_path_buf(),
+            remote: plan.remote.clone(),
+            url: plan.url.clone(),
+            refspecs: plan.refspecs.clone(),
+        });
+        self.push.run();
+        self.model().accept_push(&plan.url, &plan.refspecs)?;
+        Ok(crate::git::GitPushResult {
+            remote: plan.remote.clone(),
+            refspec: plan.refspecs.first().cloned().unwrap_or_default(),
+        })
     }
 
     fn fetch_anonymous(
@@ -517,11 +868,14 @@ impl GitBackend for TrackingBackend {
         })
     }
 
-    fn read_ref(&self, _path: &Path, _ref_spec: &str) -> ModelResult<Option<String>> {
-        Ok(Some(TEST_COMMIT.to_owned()))
+    fn read_ref(&self, path: &Path, ref_spec: &str) -> ModelResult<Option<String>> {
+        Ok(match self.configured(path) {
+            Some(repository) => resolve(&repository, ref_spec),
+            None => Some(TEST_COMMIT.to_owned()),
+        })
     }
 
-    fn is_ancestor(&self, _path: &Path, _ancestor: &str, _descendant: &str) -> ModelResult<bool> {
-        Ok(true)
+    fn is_ancestor(&self, _path: &Path, ancestor: &str, descendant: &str) -> ModelResult<bool> {
+        self.model().is_ancestor(ancestor, descendant)
     }
 }
