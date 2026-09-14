@@ -220,7 +220,12 @@ The gwz-core repository at 1.0.11:
   dirty state and digest, before any wheel is built. Options: move gwz-py to
   the registry pin (both sides then embed the same published core); build its
   test CLI against the git core through a patch; or relax the test to compare
-  only the version. The operator decides before Phase 4.
+  only the version. **Decided 2026-09-14: relax the check.** gwz-py stays on
+  the git tag. Step S3.4 keeps strict equality when both sides report a git
+  revision, as development builds do, and otherwise compares the core version
+  and build kind. A release-time run therefore no longer proves that both
+  drivers embed the same core build; it proves they embed the same core
+  release.
 - D8. **Publishing does not stabilise the internals' API.** Each internal
   crate's README and description say it is internal to GWZ, versioned in
   lockstep, with no compatibility promise beyond gwz-core's own; depend on
@@ -379,6 +384,15 @@ not limits.
   installer script; the D8 sentence for the internals; the provenance
   difference between registry and git builds (D4).
 
+- **S3.4: gwz-py's provenance check across build kinds** *(gwz-py
+  `src/tests/test_native_bridge.py`; ~80 lines)*. The D7 decision. The test
+  keeps requiring the extension's whole core provenance inside the CLI's
+  `--build-info` core line when both report a git revision. When either
+  reports `revision=unavailable`, it requires the same gwz-core version and
+  the same build kind instead, and its failure message names the rule that
+  applied. Proven against a CLI built from crates.io and an extension built
+  from git.
+
 ### Phase 4: the first registry release (milestone: 1.0.12 on crates.io end to end)
 
 - **S4.1: cut 1.0.12** through the extended scripts in the documented order:
@@ -399,7 +413,7 @@ not limits.
 ## 5. Step dependency sketch
 
 ```
-S0.1 -> { S1.1, S1.3 } -> S1.2 -> S1.4 -> S1.5 -> S2.1 -> S2.2 -> S2.3 -> S3.1 -> S3.2 -> S3.3 -> S4.1 -> S4.2 -> S4.3
+S0.1 -> { S1.1, S1.3 } -> S1.2 -> S1.4 -> S1.5 -> S2.1 -> S2.2 -> S2.3 -> S3.1 -> S3.2 -> { S3.3, S3.4 } -> S4.1 -> S4.2 -> S4.3
 ```
 
 S1.1 and S1.3 are independent and can be picked up by different agents;
@@ -500,3 +514,17 @@ its publish job is token-free by design.
   Left for S3.3: gwz-cli `RELEASE.md` still names a `gwz-cli-vA.B.C` tag,
   gwz-core `RELEASE.md` still says gwz-cli pins by git tag, and gwz-cli
   `docs/Install.md` lists only `cargo install --git`.
+- 2026-09-14: S3.2 done (gwz-cli `f92f3d1`). dist's `publish-jobs` adds a
+  `custom-publish-crate` job after `host`, calling the reusable
+  `publish-crate.yml`: environment `crates-io`, Trusted Publishing only, a wait
+  for gwz-core on crates.io, a skip when the version exists, then
+  `cargo publish -p gwz --locked`. dist's default grant would have been
+  refused, because a called workflow can only lower its caller's permissions,
+  so `github-custom-job-permissions` narrows it to `contents: read` and
+  `id-token: write`. Prereleases skip the crate publish, as dist generates.
+  gwz-cli's unit tests for the release script now run in
+  `workspace-candidate.yml`. Operator next: the `gwz` trusted publisher
+  (`owebeeone`, `gwz-cli`, `release.yml`, `crates-io`).
+- 2026-09-14: the operator chose to relax gwz-py's provenance check rather
+  than move gwz-py to the crates.io core or build its test CLI against git
+  (D7, new S3.4). S3.3 leaves `AGENTS_GWZ.md` alone: gwz manages that file.
