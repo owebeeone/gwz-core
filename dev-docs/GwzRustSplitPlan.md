@@ -58,11 +58,12 @@ Longest procedures, which no file split addresses:
 
 Tooling, at `~/limbo/rust-split`:
 
-- The installed CLI on PATH reports **0.1.3**; the checkout is at **0.2.0**.
-- The commits in between fix path rebasing in moved bodies, import and include
-  anchors, and opaque macro input — exactly the cases gwz-core exercises.
-- The repository also ships a skill at `skills/rust-split/SKILL.md`, which is
-  not installed in this workspace's Claude configuration.
+- The installed CLI on PATH is **0.2.0**, matching the checkout.
+- 0.2.0 fixes path rebasing in moved bodies, import and include anchors, and
+  opaque macro input — exactly the cases gwz-core exercises.
+- The repository ships a skill at `skills/rust-split/SKILL.md`, installed at
+  `~/.claude/skills/rust-split/`. That is a copy: refresh it when the tool's
+  own copy changes.
 
 ## 2. The rule
 
@@ -101,7 +102,7 @@ a cohesion review under the ceiling; record what was deliberately left large.
 
 Follow the bundled skill. In short:
 
-1. `rust-split --help`, and confirm the installed version (§5, step 0.1).
+1. `rust-split --help`, and confirm the installed version (§5, Phase 0).
 2. `rust-split explode <file> --out <fresh-dir>`.
 3. Verify the chunks in manifest order reproduce the original **byte for byte**.
 4. Read `manifest.toml` for item boundaries. Adjacency is evidence, not
@@ -129,14 +130,13 @@ left over the ceiling is recorded with its reason, not silently accepted.
 
 ## 5. Phases
 
-### Phase 0: prerequisites (operator decisions)
+### Phase 0: prerequisites (met on 2026-09-16)
 
-**Step 0.1: install the current `rust-split`.** The 0.2.0 fixes cover path
-rebasing and macro preservation. Splitting gwz-core with 0.1.3 risks exactly
-the breakage those commits fixed.
+- The CLI on PATH is 0.2.0, matching the checkout.
+- The bundled skill is installed at `~/.claude/skills/rust-split/`.
 
-**Step 0.2: install the bundled skill** into the Claude configuration, so the
-workflow and guardrails are loaded when the work runs.
+Re-check both before a split round: `rust-split --version`, and the installed
+skill against `~/limbo/rust-split/skills/rust-split/SKILL.md`.
 
 ### Phase 1: the push procedure (hand; §4b)
 
@@ -190,7 +190,8 @@ being worked on and the ceiling is in the way, using §4a.
 
 ## 6. Sequencing
 
-- **Phase 0 first.** Do not run a split with the older CLI.
+- **Phase 0 is met.** Re-check the CLI version and the installed skill before a
+  round.
 - **Phase 1 waits** for the push plan's queue to drain. Those files were
   rewritten by steps 3.3 to 3.5 and by both bug fixes.
 - **Never split a file another lane is editing.** Check `gwz local list` first,
@@ -200,8 +201,8 @@ being worked on and the ceiling is in the way, using §4a.
 
 ## 7. Risks
 
-- **Stale tool.** Step 0.1 exists because 0.1.3 predates the path and macro
-  fixes.
+- **Tool drift.** The installed CLI and the installed skill can fall behind
+  `~/limbo/rust-split`. Check both before a round.
 - **A split that changes behaviour.** The suites are the evidence. A step that
   existing tests cannot prove names the test it adds.
 - **A formatter run inside a split.** It destroys the pure-move diff. Formatting
