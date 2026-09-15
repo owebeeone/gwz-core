@@ -12,9 +12,12 @@ use crate::workspace_ops::url_scheme_state::{
     EffectiveUrlScheme, URL_SCHEME_STATE_PATH, UrlSchemeSource, record_workspace_url_scheme,
 };
 
-use super::g01::tracking_backend::{ConfiguredRemote, RemoteCall, TEST_COMMIT, TrackingBackend};
+use super::g01::tracking_backend::{
+    ConfiguredRemote, RemoteCall, TEST_COMMIT, TrackingBackend, calls_by_host,
+};
 use super::*;
 
+mod concurrent_reads;
 mod tag_publication;
 
 const MEMBERS: usize = 2;
@@ -352,8 +355,8 @@ fn a_remote_that_fetches_over_https_and_pushes_over_ssh_is_read_at_its_push_url(
 
 /// Step 2.1: on a host with no derivable forms an https remote is not provably
 /// the committed repository, so `app` is read at its committed URL as before
-/// step 2.1, with no dedup and no shortcut. Pushes to two hosts may overlap,
-/// so only the reads keep a fixed order.
+/// step 2.1, with no dedup and no shortcut. Reads and pushes to two hosts may
+/// overlap (step 3.4), so the reads keep a fixed order within each host.
 #[test]
 fn an_https_remote_on_an_unknown_host_reads_the_committed_url() {
     let fixture = PublicationFixture::with_app(
@@ -376,14 +379,14 @@ fn an_https_remote_on_an_unknown_host_reads_the_committed_url() {
         crate::AggregateStatus::Ok
     );
     assert_eq!(
-        fixture.backend.remote_reads(),
-        vec![
+        calls_by_host(fixture.backend.remote_reads()),
+        calls_by_host(vec![
             read_at(&app, APP_UNKNOWN_HOST_HTTPS, &app),
             read_at(&lib, LIB_SSH, &lib),
             read_at(root, ROOT_SSH, root),
             read_at(root, APP_UNKNOWN_HOST_SSH, &app),
             read_at(root, APP_UNKNOWN_HOST_SSH, &app),
-        ]
+        ])
     );
     // `app` and the root; `lib` is already on origin (step 3.3).
     assert_eq!(fixture.backend.prepared_pushes().len(), 2);
@@ -711,7 +714,9 @@ fn a_forced_push_through_a_host_alias_voids_the_committed_urls_kept_advertisemen
 
 /// Step 3.3 (D9): the ordinary variant. `app` fast-forwards through the alias
 /// from its locked commit, which the committed URL's kept advertisement showed
-/// and still proves, so nothing is read after the transfer.
+/// and still proves, so nothing is read after the transfer. The alias is
+/// another host, whose calls may overlap github.com's (step 3.4), so the calls
+/// keep a fixed order within each host.
 #[test]
 fn an_ordinary_push_through_a_host_alias_reuses_the_kept_advertisement() {
     let fixture = alias_fixture();
@@ -727,15 +732,15 @@ fn an_ordinary_push_through_a_host_alias_reuses_the_kept_advertisement() {
         crate::AggregateStatus::Ok
     );
     assert_eq!(
-        fixture.backend.remote_calls(),
-        vec![
+        calls_by_host(fixture.backend.remote_calls()),
+        calls_by_host(vec![
             read_at(&app, APP_ALIAS, &app),
             read_at(&lib, LIB_SSH, &lib),
             read_at(root, ROOT_SSH, root),
             read_at(root, APP_SSH, &app),
             push_to(&app, APP_ALIAS, APP_NEXT),
             push_to(root, ROOT_SSH, ROOT_HEAD),
-        ]
+        ])
     );
 }
 

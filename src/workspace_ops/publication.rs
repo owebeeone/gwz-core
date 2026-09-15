@@ -9,13 +9,19 @@
 //! accepted push of the locked commit or of a descendant. A forced or deleting
 //! transfer anywhere in the operation voids both, and every dependency is then
 //! read again after the member transfers.
+//!
+//! Push plans each round of reads before any read runs, so a destination is
+//! read once whichever targets need it, and runs the round under the policy of
+//! its transfers (step 3.4). Tag publication reads in turn, because its backend
+//! need not be `Sync`.
 use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 use std::path::{Path, PathBuf};
 
 use crate::artifact::{self, ArtifactSourceKind, LockArtifact, ManifestArtifact};
-use crate::git::{GitBackend, GitPreparedPush, GitRemoteRef};
+use crate::git::{GitBackend, GitPreparedPush, GitRemoteRef, git_host};
 use crate::model::{ErrorCode, ModelError, ModelResult};
+use crate::operation::par_map_per_host;
 use crate::workspace::WORKSPACE_MANIFEST;
 
 use super::publication_url::{DependencyMember, ReadUrlRule, select_read_url};
@@ -104,6 +110,153 @@ impl ReadPreflight {
             self.voided = true;
         }
     }
+
+    /// Read, before any transfer, every destination `targets` need, and keep
+    /// each advertisement. A target needs its own destination and, when it
+    /// carries the frozen root request, every root-lock dependency's
+    /// destination, in that order. The round is planned before any read runs,
+    /// so a destination is read once whichever targets need it, and it runs
+    /// `jobs` reads at once, at most `per_host` to one host. Returns each
+    /// target's failure: the first in the order that target needs its reads,
+    /// the one reading in turn would report.
+    pub(super) fn read_before_transfers<B: GitBackend + Sync>(
+        backend: &B,
+        root: &Path,
+        targets: &[PreflightTarget<'_>],
+        jobs: usize,
+        per_host: usize,
+    ) -> (Self, Vec<Option<ModelError>>) {
+        let mut round = ReadRound::default();
+        let mut needs = Vec::with_capacity(targets.len());
+        for target in targets {
+            let path = target.path.as_path();
+            let own = round.plan(path, &target.plan.url, &target.plan.remote, Some(path));
+            let mut need = vec![Ok(own)];
+            if let Some(request) = target.root_request {
+                match root_dependencies(backend, root, request) {
+                    Ok(dependencies) => need.extend(
+                        dependencies
+                            .iter()
+                            .map(|dependency| Ok(round.plan_dependency(root, dependency))),
+                    ),
+                    Err(error) => need.push(Err(error)),
+                }
+            }
+            needs.push(need);
+        }
+        let results = round.run(backend, jobs, per_host);
+        // Every read is in; keep the advertisements in plan order.
+        let mut reads = Self::default();
+        let mut failures = Vec::with_capacity(results.len());
+        for (read, result) in round.reads.into_iter().zip(results) {
+            match result {
+                Ok(advertised) => {
+                    reads
+                        .kept
+                        .insert((read.identity_repo, read.remote, read.url), advertised);
+                    failures.push(None);
+                }
+                Err(error) => failures.push(Some(error)),
+            }
+        }
+        let target_failures = needs
+            .into_iter()
+            .map(|need| {
+                need.into_iter().find_map(|step| match step {
+                    Ok(read) => failures[read].clone(),
+                    Err(error) => Some(error),
+                })
+            })
+            .collect();
+        (reads, target_failures)
+    }
+}
+
+/// A target of the pre-transfer reads: the repository at `path`, pushed by
+/// `plan`, and for the root its frozen request, whose lock dependencies it
+/// also needs read.
+pub(super) struct PreflightTarget<'a> {
+    pub(super) path: PathBuf,
+    pub(super) plan: &'a GitPreparedPush,
+    pub(super) root_request: Option<&'a crate::PushRequest>,
+}
+
+/// One round of reads, planned before any read runs: each destination once,
+/// keyed as [`ReadPreflight`] keeps it, in the order it was first needed. That
+/// first need also chooses the repository the read runs in.
+#[derive(Default)]
+struct ReadRound {
+    reads: Vec<DestinationRead>,
+}
+
+struct DestinationRead {
+    path: PathBuf,
+    identity_repo: Option<PathBuf>,
+    remote: String,
+    url: String,
+}
+
+impl ReadRound {
+    /// The read that answers a destination, planned when no earlier need
+    /// planned it.
+    fn plan(
+        &mut self,
+        path: &Path,
+        url: &str,
+        remote: &str,
+        identity_repo: Option<&Path>,
+    ) -> usize {
+        let planned = self.reads.iter().position(|read| {
+            read.identity_repo.as_deref() == identity_repo
+                && read.remote == remote
+                && read.url == url
+        });
+        planned.unwrap_or_else(|| {
+            self.reads.push(DestinationRead {
+                path: path.to_path_buf(),
+                identity_repo: identity_repo.map(Path::to_path_buf),
+                remote: remote.to_owned(),
+                url: url.to_owned(),
+            });
+            self.reads.len() - 1
+        })
+    }
+
+    /// A dependency's read, which runs in the workspace root.
+    fn plan_dependency(&mut self, root: &Path, dependency: &PublicationDependency) -> usize {
+        self.plan(
+            root,
+            &dependency.read_url,
+            &dependency.remote,
+            dependency.identity_repo(),
+        )
+    }
+
+    /// Run every planned read, `jobs` at once and at most `per_host` to the
+    /// host its URL reaches, keyed as push transfers are. Returns only when
+    /// every read is done, with the results in plan order.
+    fn run<B: GitBackend + Sync>(
+        &self,
+        backend: &B,
+        jobs: usize,
+        per_host: usize,
+    ) -> Vec<ModelResult<Vec<GitRemoteRef>>> {
+        let reads: Vec<&DestinationRead> = self.reads.iter().collect();
+        par_map_per_host(
+            reads,
+            jobs,
+            per_host,
+            |read| git_host(&read.url),
+            |read| {
+                backend.ls_remote_url(
+                    &read.path,
+                    &read.url,
+                    &read.remote,
+                    read.identity_repo.as_deref(),
+                )
+            },
+        )
+    }
 }
 
 /// A captured refspec's source and destination, without its `+`.
@@ -156,7 +309,9 @@ pub(super) fn freeze_root_request<B: GitBackend>(
 /// destination this operation pushed to is proven by that push (D8), and any
 /// other by its advertisement kept from before the transfers when that shows
 /// the commit available (D9). Anything else is read, and so is everything once
-/// the operation makes a forced or deleting transfer.
+/// the operation makes a forced or deleting transfer. The reads run in turn,
+/// as tag publication proves its root; push runs them concurrently
+/// ([`checked_root_request_concurrently`]).
 pub(super) fn checked_root_request<B: GitBackend>(
     backend: &B,
     root: &Path,
@@ -164,41 +319,105 @@ pub(super) fn checked_root_request<B: GitBackend>(
     published: &BTreeMap<String, GitPreparedPush>,
     reads: &ReadPreflight,
 ) -> ModelResult<crate::PushRequest> {
-    let pinned = freeze_root_request(backend, root, request)?;
-    for dependency in root_dependencies(backend, root, &pinned)? {
-        let identity_repo = dependency.identity_repo();
-        let proven = if reads.voided {
-            false
-        } else if pushed_to(&dependency, published).is_some() {
-            dependency_was_published(backend, &dependency, published)
-        } else {
-            reads
-                .kept(identity_repo, &dependency.remote, &dependency.read_url)
-                .is_some_and(|advertised| available(backend, &dependency, advertised))
-        };
-        if proven {
-            continue;
-        }
-        let advertised = backend.ls_remote_url(
+    RootProof::plan(backend, root, request, published, reads)?.check(backend, |_, dependency| {
+        backend.ls_remote_url(
             root,
             &dependency.read_url,
             &dependency.remote,
-            identity_repo,
-        )?;
-        if !available(backend, &dependency, &advertised) {
-            // Name the URL that was read when it is not the committed one.
-            let read_through = if dependency.read_url == dependency.url {
-                String::new()
-            } else {
-                format!(" (read through {})", dependency.read_url)
-            };
-            return Err(refused(format!(
-                "root publication blocked: cannot prove member {} commit {} is available at its committed fetch remote {}{read_through}; publish the member, or fetch its advertised history and retry",
-                dependency.member_id, dependency.commit, dependency.remote
-            )));
-        }
+            dependency.identity_repo(),
+        )
+    })
+}
+
+/// [`checked_root_request`] for push. The unproven dependencies' reads are
+/// planned first, a destination once however many dependencies it answers, and
+/// run `jobs` at once, at most `per_host` to one host, all after the member
+/// transfers. The proof then decides in lock order, so it refuses with the
+/// failure reading in turn would meet first.
+pub(super) fn checked_root_request_concurrently<B: GitBackend + Sync>(
+    backend: &B,
+    root: &Path,
+    request: &crate::PushRequest,
+    published: &BTreeMap<String, GitPreparedPush>,
+    reads: &ReadPreflight,
+    jobs: usize,
+    per_host: usize,
+) -> ModelResult<crate::PushRequest> {
+    let proof = RootProof::plan(backend, root, request, published, reads)?;
+    let mut round = ReadRound::default();
+    let answers: Vec<usize> = proof
+        .unproven
+        .iter()
+        .map(|dependency| round.plan_dependency(root, dependency))
+        .collect();
+    let results = round.run(backend, jobs, per_host);
+    proof.check(backend, |index, _| results[answers[index]].clone())
+}
+
+/// The root proof after the member transfers: the frozen root request, and, in
+/// lock order, the dependencies that no accepted push and no kept advertisement
+/// proves.
+struct RootProof {
+    pinned: crate::PushRequest,
+    unproven: Vec<PublicationDependency>,
+}
+
+impl RootProof {
+    fn plan<B: GitBackend>(
+        backend: &B,
+        root: &Path,
+        request: &crate::PushRequest,
+        published: &BTreeMap<String, GitPreparedPush>,
+        reads: &ReadPreflight,
+    ) -> ModelResult<Self> {
+        let pinned = freeze_root_request(backend, root, request)?;
+        let unproven = root_dependencies(backend, root, &pinned)?
+            .into_iter()
+            .filter(|dependency| {
+                let proven = if reads.voided {
+                    false
+                } else if pushed_to(dependency, published).is_some() {
+                    dependency_was_published(backend, dependency, published)
+                } else {
+                    reads
+                        .kept(
+                            dependency.identity_repo(),
+                            &dependency.remote,
+                            &dependency.read_url,
+                        )
+                        .is_some_and(|advertised| available(backend, dependency, advertised))
+                };
+                !proven
+            })
+            .collect();
+        Ok(Self { pinned, unproven })
     }
-    Ok(pinned)
+
+    /// Prove each unproven dependency, in lock order, from the read that
+    /// `advertisement` answers for it. The first read that fails, or that does
+    /// not show the commit available, refuses the root.
+    fn check<B: GitBackend>(
+        self,
+        backend: &B,
+        mut advertisement: impl FnMut(usize, &PublicationDependency) -> ModelResult<Vec<GitRemoteRef>>,
+    ) -> ModelResult<crate::PushRequest> {
+        for (index, dependency) in self.unproven.iter().enumerate() {
+            let advertised = advertisement(index, dependency)?;
+            if !available(backend, dependency, &advertised) {
+                // Name the URL that was read when it is not the committed one.
+                let read_through = if dependency.read_url == dependency.url {
+                    String::new()
+                } else {
+                    format!(" (read through {})", dependency.read_url)
+                };
+                return Err(refused(format!(
+                    "root publication blocked: cannot prove member {} commit {} is available at its committed fetch remote {}{read_through}; publish the member, or fetch its advertised history and retry",
+                    dependency.member_id, dependency.commit, dependency.remote
+                )));
+            }
+        }
+        Ok(self.pinned)
+    }
 }
 
 /// Whether an advertisement proves the dependency's commit available: the
@@ -317,25 +536,16 @@ pub(super) fn preflight_remote<B: GitBackend>(
         .map(|_| ())
 }
 
+/// Read every root-lock dependency's destination before any transfer, in turn,
+/// which confirms read access; a destination already read is not read again.
+/// Tag publication preflights its root so. Push reads its dependencies in one
+/// round with its other destinations ([`ReadPreflight::read_before_transfers`]).
 pub(super) fn preflight_dependencies<B: GitBackend>(
     backend: &B,
     root: &Path,
     request: &crate::PushRequest,
 ) -> ModelResult<()> {
-    preflight_dependencies_with_reads(backend, root, request, &mut ReadPreflight::default())
-}
-
-/// Read every root-lock dependency's destination before any transfer, which
-/// confirms read access, and keep each advertisement. A destination this
-/// operation has already read is answered from its kept advertisement.
-/// [`checked_root_request`] decides availability after the member transfers,
-/// from these reads where §3.5 rule 1 allows (D9).
-pub(super) fn preflight_dependencies_with_reads<B: GitBackend>(
-    backend: &B,
-    root: &Path,
-    request: &crate::PushRequest,
-    reads: &mut ReadPreflight,
-) -> ModelResult<()> {
+    let mut reads = ReadPreflight::default();
     for dependency in root_dependencies(backend, root, request)? {
         reads.read(
             backend,

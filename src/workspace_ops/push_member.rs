@@ -220,32 +220,43 @@ where
         }
 
         // No member transfer starts until every selected destination and root-lock
-        // dependency has passed read authentication. Aggregate failures per target.
-        let mut read_preflight = super::publication::ReadPreflight::default();
-        for response in &mut preflight {
-            if response.status != crate::MemberStatus::Planned {
-                continue;
-            }
-            let plan = plans
-                .get(&response.member_id)
-                .expect("selected publication captured");
-            let path = root.join(&response.member_path);
-            let result = read_preflight
-                .read(backend, &path, &plan.url, &plan.remote, Some(&path))
-                .map(|_advertised| ())
-                .and_then(|()| {
-                    if response.member_id == "@root" {
-                        super::publication::preflight_dependencies_with_reads(
-                            backend,
-                            &root,
-                            root_request.as_ref().expect("selected root captured"),
-                            &mut read_preflight,
-                        )
-                    } else {
-                        Ok(())
-                    }
-                });
-            if let Err(error) = result {
+        // dependency has passed read authentication. The reads run under the
+        // policy of the transfers. Aggregate failures per target.
+        let jobs = resolve_jobs(
+            request
+                .meta
+                .policy
+                .as_ref()
+                .and_then(|policy| policy.concurrency),
+        );
+        let per_host = resolve_per_host(
+            request
+                .meta
+                .policy
+                .as_ref()
+                .and_then(|policy| policy.max_connections_per_host),
+        );
+        let targets: Vec<_> = preflight
+            .iter()
+            .filter(|response| response.status == crate::MemberStatus::Planned)
+            .map(|response| super::publication::PreflightTarget {
+                path: root.join(&response.member_path),
+                plan: plans
+                    .get(&response.member_id)
+                    .expect("selected publication captured"),
+                root_request: (response.member_id == "@root")
+                    .then(|| root_request.as_ref().expect("selected root captured")),
+            })
+            .collect();
+        let (mut read_preflight, failures) =
+            super::publication::ReadPreflight::read_before_transfers(
+                backend, &root, &targets, jobs, per_host,
+            );
+        let planned = preflight
+            .iter_mut()
+            .filter(|response| response.status == crate::MemberStatus::Planned);
+        for (response, failure) in planned.zip(failures) {
+            if let Some(error) = failure {
                 response.status = crate::MemberStatus::Rejected;
                 response.planned = None;
                 response.error = Some(crate::GwzError::from(
@@ -292,20 +303,8 @@ where
         emitter.operation_started();
         let mut responses = par_map_per_host(
             selected_members,
-            resolve_jobs(
-                request
-                    .meta
-                    .policy
-                    .as_ref()
-                    .and_then(|policy| policy.concurrency),
-            ),
-            resolve_per_host(
-                request
-                    .meta
-                    .policy
-                    .as_ref()
-                    .and_then(|policy| policy.max_connections_per_host),
-            ),
+            jobs,
+            per_host,
             |member_id| plans.get(member_id).and_then(|plan| git_host(&plan.url)),
             |member_id| {
                 let member = manifest
@@ -356,12 +355,14 @@ where
                             .map(|plan| (response.member_id.clone(), plan))
                     })
                     .collect();
-                match super::publication::checked_root_request(
+                match super::publication::checked_root_request_concurrently(
                     backend,
                     &root,
                     root_request.as_ref().expect("selected root was captured"),
                     &published,
                     &read_preflight,
+                    jobs,
+                    per_host,
                 ) {
                     Ok(_) => {
                         let mut response = preflight
