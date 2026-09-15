@@ -418,3 +418,67 @@ fn dry_run_stage_with_all_mutates_no_index_and_no_exclude() {
     assert!(!staged(&backend, temp.path(), "root.txt"));
     assert!(!staged(&backend, &member_root, "a.txt"));
 }
+
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        /// The request `gwz --root <root> add <pathspecs>` sends from `caller`.
+        fn cli_stage_request(root: &Path, caller: &Path, pathspecs: &[&str]) -> crate::StageRequest {
+            let mut request = stage_request(caller, pathspecs, false);
+            request.meta.workspace = Some(crate::WorkspaceRef {
+                root: Some(root.to_string_lossy().into_owned()),
+                workspace_id: None,
+            });
+            request.meta.invocation = Some(crate::InvocationContext {
+                caller_cwd: caller.to_string_lossy().into_owned(),
+            });
+            request
+        }
+
+        #[test]
+        fn stage_accepts_symlinked_root_and_operand_spellings_and_refuses_escapes() {
+            // The workspace's parent is also reachable through a symlink (macOS's
+            // `/tmp` -> `/private/tmp`), and a link inside the workspace leads out
+            // of it. The root's own final component stays a real directory: the
+            // workspace runtime bootstrap refuses a root that is itself a link.
+            let temp = TempDir::new("stage-symlinked-root");
+            let physical = temp.path().join("physical");
+            let root = physical.join("ws");
+            let outside = physical.join("outside");
+            fs::create_dir_all(&root).unwrap();
+            fs::create_dir_all(&outside).unwrap();
+            let backend = Git2Backend::new();
+            let _fixture = init_one_member_workspace(&root, &backend, "stage-symlinked-root-source");
+            std::os::unix::fs::symlink(&physical, temp.path().join("alias")).unwrap();
+            let alias = temp.path().join("alias/ws");
+            fs::write(outside.join("outside.txt"), "outside\n").unwrap();
+            std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+            for name in ["relative.txt", "canonical.txt", "aliased.txt"] {
+                fs::write(root.join(name), "x\n").unwrap();
+            }
+            let canonical = root.join("canonical.txt");
+            let aliased = alias.join("aliased.txt");
+            for (workspace_root, pathspec) in [
+                (alias.as_path(), "relative.txt"),
+                (alias.as_path(), canonical.to_str().unwrap()),
+                (root.as_path(), aliased.to_str().unwrap()),
+            ] {
+                let request = cli_stage_request(workspace_root, &root, &[pathspec]);
+                handle_stage(&backend, &root, request, "op_stage").unwrap();
+            }
+            for name in ["relative.txt", "canonical.txt", "aliased.txt"] {
+                assert!(staged(&backend, &root, name), "{name} staged");
+            }
+
+            let outside_file = outside.join("outside.txt");
+            for pathspec in [
+                "escape/outside.txt",
+                "../outside/outside.txt",
+                outside_file.to_str().unwrap(),
+            ] {
+                let request = cli_stage_request(&alias, &root, &[pathspec]);
+                let error = handle_stage(&backend, &root, request, "op_stage").unwrap_err();
+                assert_eq!(error.code, crate::model::ErrorCode::PathEscape, "{pathspec}");
+            }
+        }
+    }
+}

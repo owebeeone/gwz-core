@@ -14,8 +14,9 @@
 //!   [`ExcludedTarget`] records. Explicit `--target @root` with a snapshot operand
 //!   is a typed error (D0 §7.2).
 //! - **Pathspec intersection** — pathspecs narrow candidates via the shared
-//!   [`route_pathspec`](crate::workspace_ops::route_pathspec) primitive; they
-//!   never add back a target that selection excluded (plan §"Pathspec routing").
+//!   routing primitive ([`workspace_relative_operand`], then
+//!   [`route_workspace_path`]); they never add back a target that selection
+//!   excluded (plan §"Pathspec routing").
 //! - **Root delta post-filter** — the workspace-relative prefixes a root diff must
 //!   drop (member dirs, `.gwz/`, `gwz.conf/.tmp/`, AD11) travel on the root's
 //!   [`PlannedTarget`] for D3 to apply after libgit2 runs.
@@ -24,7 +25,8 @@
 //! `BTreeMap` order stage routing uses (plan §"Pathspec routing").
 //!
 //! This module is pure over its inputs (manifest + snapshots + a materialization
-//! predicate); the handler (D3) supplies the filesystem-backed predicate. That
+//! predicate) apart from the physical workspace containment of pathspec
+//! operands; the handler (D3) supplies the filesystem-backed predicate. That
 //! keeps every acceptance case testable from an in-memory manifest.
 
 use crate::artifact::{ArtifactSourceKind, ManifestArtifact, ManifestMember, SnapshotArtifact};
@@ -34,8 +36,8 @@ use crate::protocol::generated::{
     SourceKind,
 };
 use crate::workspace_ops::{
-    SelectedTarget, has_explicit_target_selection, join_cwd, lexical_normalize,
-    resolve_action_targets, route_pathspec,
+    SelectedTarget, has_explicit_target_selection, resolve_action_targets, route_workspace_path,
+    workspace_relative_operand,
 };
 
 use super::operands::{Endpoint, ParsedComparison};
@@ -552,7 +554,8 @@ fn intersect_pathspecs(
     let mut members_touched: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
     for spec in pathspecs {
-        let routed = route_pathspec(workspace_root, &member_paths, operand_cwd, spec)?;
+        let relative = workspace_relative_operand(workspace_root, operand_cwd, spec)?;
+        let routed = route_workspace_path(&member_paths, &relative);
         match routed.member_path {
             Some(member_path) => {
                 // A pathspec naming a member directly is explicit: an
@@ -573,11 +576,9 @@ fn intersect_pathspecs(
                 // member). Members strictly under the pathspec get whole-repo
                 // scope, accumulated here as the routing primitive's `.` and
                 // normalized to the empty whole-repo list by `dedup_sorted`.
-                let rel = lexical_normalize(&join_cwd(operand_cwd, spec));
-                let rel = rel.strip_prefix(workspace_root).unwrap_or(&rel);
                 for member_path in &member_paths {
-                    if (rel.as_os_str().is_empty()
-                        || std::path::Path::new(member_path).starts_with(rel))
+                    if (relative.as_os_str().is_empty()
+                        || std::path::Path::new(member_path).starts_with(&relative))
                         && members_touched.insert(member_path.clone())
                     {
                         member_specs

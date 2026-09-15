@@ -9,6 +9,18 @@ use crate::operation::NullSink;
 
 use super::*;
 
+/// Route one raw pathspec the way the command callers do: resolve it into the
+/// workspace, then map it to the repo that owns it.
+pub(crate) fn route_pathspec(
+    root: &Path,
+    member_paths: &[String],
+    cwd: &Path,
+    spec: &str,
+) -> crate::model::ModelResult<RoutedPathspec> {
+    let relative = workspace_relative_operand(root, cwd, spec)?;
+    Ok(route_workspace_path(member_paths, &relative))
+}
+
 #[test]
 pub(crate) fn path_diagnostics_report_operand_base_candidate_and_allowed_root() {
     let workspace = TempDir::new("diagnostic-workspace");

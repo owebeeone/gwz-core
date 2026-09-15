@@ -33,6 +33,19 @@ never changes operand cwd. A failed manifest read or workspace runtime open at a
 directory adds a selector-versus-path hint; a valid workspace at that name is
 accepted normally. Both drivers retain the core diagnostic in every rendering.
 
+## Physical operand containment (2026-09-16)
+
+Stage, diff and log pathspecs are contained by physical identity, not spelling.
+The workspace root, the captured caller directory and an absolute operand may
+each be spelled through symbolic links (macOS's `/tmp` is `/private/tmp`). As in
+Git's own absolute-path check, an operand anchors at its shortest leading
+directory that resolves to the workspace root; the remainder keeps its spelling
+for routing and for Git. PathEscape refuses an operand with no such anchor, and
+one whose remaining leading directories resolve outside the root or through a
+link that cannot be resolved. The final component is never followed, so a link
+is still staged as a link. The workspace runtime bootstrap still refuses a root
+whose own final component is a link.
+
 ## Merge recovery index comparison (2026-09-10)
 
 Recovery compares index content by path, stage, mode and object ID, independent

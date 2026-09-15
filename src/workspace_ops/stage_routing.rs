@@ -3,8 +3,7 @@ use std::path::Path;
 
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
-use super::lexical_normalize;
-use super::pathspec_routing::{join_cwd, route_pathspec};
+use super::pathspec_routing::{route_workspace_path, workspace_relative_operand};
 
 /// A repo to stage into plus its repo-relative pathspecs. `member_path == None` is the
 /// workspace root repo; `Some(path)` is the member at `root/<path>`.
@@ -20,12 +19,13 @@ pub(crate) struct StageTarget {
 
 /// Route raw `gwz add` pathspecs to the repos that own them (GWZAddPlan §2). The workspace
 /// is nested repos (root + members); each path is owned by the innermost repo containing
-/// it. Pathspecs are resolved cwd-relative (like `git add`), then mapped to that repo via
-/// the shared [`route_pathspec`] primitive. A directory pathspec at/above member boundaries
-/// fans out into each contained member, so `gwz add .` at the root spans every repo (D2).
-/// `all` ignores pathspecs and targets the root repo plus every member (all fan-out). Pure —
-/// no filesystem access. Targets are returned root-first then by member path; pathspecs are
-/// sorted and de-duplicated.
+/// it. Pathspecs are resolved cwd-relative (like `git add`) into the workspace by
+/// [`workspace_relative_operand`], then mapped to that repo by [`route_workspace_path`]. A
+/// directory pathspec at/above member boundaries fans out into each contained member, so
+/// `gwz add .` at the root spans every repo (D2). `all` ignores pathspecs and targets the
+/// root repo plus every member (all fan-out). Only operand resolution reads the filesystem.
+/// Targets are returned root-first then by member path; pathspecs are sorted and
+/// de-duplicated.
 pub(crate) fn resolve_stage_targets(
     root: &Path,
     member_paths: &[String],
@@ -33,8 +33,6 @@ pub(crate) fn resolve_stage_targets(
     pathspecs: &[String],
     all: bool,
 ) -> ModelResult<Vec<StageTarget>> {
-    let root = lexical_normalize(root);
-    let cwd = lexical_normalize(cwd);
     // member_path (None == root) -> (repo-relative pathspecs, explicit?)
     let mut groups: BTreeMap<Option<String>, (BTreeSet<String>, bool)> = BTreeMap::new();
 
@@ -54,7 +52,8 @@ pub(crate) fn resolve_stage_targets(
     }
 
     for spec in pathspecs {
-        let routed = route_pathspec(&root, member_paths, &cwd, spec)?;
+        let relative = workspace_relative_operand(root, cwd, spec)?;
+        let routed = route_workspace_path(member_paths, &relative);
         match routed.member_path {
             // The pathspec names this member directly → explicit.
             Some(member) => add(&mut groups, Some(member), routed.pathspec, true),
@@ -62,11 +61,9 @@ pub(crate) fn resolve_stage_targets(
                 // Root-territory path: stage it in the root repo (explicit), and fan out
                 // into every member contained within this pathspec (D2, fan-out — members
                 // are excluded from the root, so a root-side `.` would never reach them).
-                let rel = lexical_normalize(&join_cwd(&cwd, spec));
-                let rel = rel.strip_prefix(&root).unwrap_or(&rel);
                 add(&mut groups, None, routed.pathspec, true);
                 for member in member_paths {
-                    if rel.as_os_str().is_empty() || Path::new(member).starts_with(rel) {
+                    if relative.as_os_str().is_empty() || Path::new(member).starts_with(&relative) {
                         add(&mut groups, Some(member.clone()), ".".to_owned(), false);
                     }
                 }

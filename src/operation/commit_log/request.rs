@@ -9,8 +9,8 @@ use crate::diff::{
 };
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::workspace_ops::{
-    SelectedTarget, assert_workspace_id, join_cwd, lexical_normalize, owning_member,
-    resolve_action_targets, route_pathspec,
+    SelectedTarget, assert_workspace_id, owning_member, resolve_action_targets,
+    route_workspace_path, workspace_relative_operand,
 };
 
 use super::{
@@ -259,7 +259,8 @@ fn route_pathspecs(
         } else {
             cwd.to_path_buf()
         };
-        let routed = route_pathspec(root, &member_paths, &routing_cwd, parsed.payload)?;
+        let relative = workspace_relative_operand(root, &routing_cwd, parsed.payload)?;
+        let routed = route_workspace_path(&member_paths, &relative);
         let rewritten = parsed.with_payload(&routed.pathspec);
         if let Some(member_path) = routed.member_path {
             member_specs.entry(member_path).or_default().push(rewritten);
@@ -272,10 +273,8 @@ fn route_pathspecs(
             root_fanout_exclusions.push(parsed.with_payload(parsed.payload));
             continue;
         }
-        let absolute = lexical_normalize(&join_cwd(&routing_cwd, parsed.payload));
-        let relative = absolute.strip_prefix(root).unwrap_or(&absolute);
         for member_path in &member_paths {
-            if relative.as_os_str().is_empty() || Path::new(member_path).starts_with(relative) {
+            if relative.as_os_str().is_empty() || Path::new(member_path).starts_with(&relative) {
                 member_specs
                     .entry(member_path.clone())
                     .or_default()
