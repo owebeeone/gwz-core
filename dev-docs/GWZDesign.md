@@ -93,9 +93,14 @@ events. Wildcard refspecs expand against the captured local refs; later local
 branch or remote-configuration edits cannot redirect the planned publication.
 Native transport retains the configured remote name for identity selection and
 reporting while using the captured URL, without rewriting repository configuration.
-It waits for successful member transfers and proof that all member
-objects named by the committed root lock are available at their destinations,
-including partial and root-only pushes. Non-Git dependencies refuse with `UnsupportedSourceKind` until their availability
+It waits for successful member transfers and proof that all member objects
+named by the committed root lock are available in their members' remote
+repositories, including partial and root-only pushes. Dependencies are proven
+by this operation's own reads or accepted pushes, never by remote-tracking refs.
+By default, repositories unchanged since the last fetch or push are not checked
+for changes or pushed, though a push that contacts the root still reads each
+dependency; `--check-remotes` proves an unchanged root. Non-Git dependencies
+refuse with `UnsupportedSourceKind` until their availability
 contract has an implementation. A committed manifest/lock source-kind mismatch
 also refuses publication. Tag publication captures all selected tag objects
 before transfers, preserving annotated tags while checking their peeled commits.
