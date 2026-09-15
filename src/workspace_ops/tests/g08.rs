@@ -5,6 +5,7 @@ use crate::git::{Git2Backend, GitBackend};
 use super::*;
 
 mod last_known_refs;
+mod push_url;
 
 #[test]
 fn unknown_identity_override_refuses_before_root_publication() {

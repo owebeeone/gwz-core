@@ -220,12 +220,11 @@ fn a_branch_deleted_upstream_leaves_the_member_uncontacted_and_refuses_the_root(
     );
 }
 
-/// Step 3.6, a fork push URL, later removed (§3.7): a push through a push URL
-/// naming the fork writes `origin/main` at a commit only the fork holds. Once
-/// that URL is unset, the ref passes for upstream's, so a default push does
-/// not contact the member, and the dependency read of upstream refuses the
-/// root. The fork push runs on the command line, because libgit2's local
-/// transport writes a push into the remote's fetch URL, not its push URL.
+/// Step 3.6, a fork push URL, later removed (§3.7): a gwz push through a push
+/// URL naming the fork lands in the fork, not in upstream, and writes
+/// `origin/main` at a commit only the fork holds. Once that URL is unset, the
+/// ref passes for upstream's, so a default push does not contact the member,
+/// and the dependency read of upstream refuses the root.
 #[test]
 fn a_commit_pushed_through_a_since_removed_fork_push_url_refuses_the_root() {
     let fixture = ClonedMember::new("push-removed-fork-url");
@@ -236,8 +235,15 @@ fn a_commit_pushed_through_a_since_removed_fork_push_url_refuses_the_root() {
         .repo()
         .remote_set_pushurl("origin", Some(fork.to_str().unwrap()))
         .unwrap();
-    git(&fixture.app, &["push", "--no-verify", "origin", "main"]);
+    fixture.lock(&work);
+    let published = fixture.push_members();
+    let member = published.response.members.single();
+    assert_eq!(member.status, crate::MemberStatus::Ok, "{:?}", member.error);
     assert_eq!(read_repo_ref(&fork, "refs/heads/main"), Some(work.clone()));
+    assert_eq!(
+        read_repo_ref(&fixture.upstream.remote, "refs/heads/main"),
+        Some(fixture.initial.clone())
+    );
     fixture.repo().remote_set_pushurl("origin", None).unwrap();
     assert_eq!(fixture.last_known_main(), Some(work.clone()));
 
@@ -291,11 +297,12 @@ fn a_fork_remote_renamed_to_origin_leaves_the_member_uncontacted_and_refuses_the
 /// Each case starts from a clone whose `origin/main` equals the member's
 /// branch and is its last-known ref, and changes one setting: a second remote
 /// fetching into `refs/remotes/origin/*`, a `+refs/heads/*:refs/heads/*` fetch
-/// refspec, a push URL naming another repository, or a non-forced fetch
+/// refspec, a push URL naming another, empty repository, or a non-forced fetch
 /// refspec. The Git2 query then gives no last-known ref, and a default push
-/// contacts the member: one read, which finds the commit already there. Core
-/// refuses the push URL case before it asks the backend, so only the query
-/// shows that the backend refuses it too.
+/// contacts the member with one read. Upstream already holds the commit; the
+/// push URL's repository does not, so that case pushes the commit there and
+/// leaves upstream as it was. Core refuses the push URL case before it asks the
+/// backend, so only the query shows that the backend refuses it too.
 #[test]
 fn a_layout_whose_tracking_ref_may_not_stand_for_origin_is_contacted() {
     fn fetch_only(repo: &git2::Repository, refspec: &str) {
@@ -304,8 +311,9 @@ fn a_layout_whose_tracking_ref_may_not_stand_for_origin_is_contacted() {
         repo.remote_add_fetch("origin", refspec).unwrap();
     }
     /// A named change to the member's remote configuration, given another
-    /// repository's path.
-    type Layout = (&'static str, fn(&git2::Repository, &str));
+    /// repository's path, and whether that repository becomes the member's
+    /// push destination.
+    type Layout = (&'static str, fn(&git2::Repository, &str), bool);
     let layouts: [Layout; 4] = [
         (
             "a second remote fetching into refs/remotes/origin/*",
@@ -313,34 +321,42 @@ fn a_layout_whose_tracking_ref_may_not_stand_for_origin_is_contacted() {
                 repo.remote_with_fetch("mirror", other, "+refs/heads/*:refs/remotes/origin/*")
                     .unwrap();
             },
+            false,
         ),
-        ("a +refs/heads/*:refs/heads/* fetch refspec", |repo, _| {
-            fetch_only(repo, "+refs/heads/*:refs/heads/*");
-        }),
-        ("a push URL naming another repository", |repo, other| {
-            repo.remote_set_pushurl("origin", Some(other)).unwrap();
-        }),
-        ("a non-forced fetch refspec", |repo, _| {
-            fetch_only(repo, "refs/heads/*:refs/remotes/origin/*");
-        }),
+        (
+            "a +refs/heads/*:refs/heads/* fetch refspec",
+            |repo, _| {
+                fetch_only(repo, "+refs/heads/*:refs/heads/*");
+            },
+            false,
+        ),
+        (
+            "a push URL naming another repository",
+            |repo, other| {
+                repo.remote_set_pushurl("origin", Some(other)).unwrap();
+            },
+            true,
+        ),
+        (
+            "a non-forced fetch refspec",
+            |repo, _| {
+                fetch_only(repo, "refs/heads/*:refs/remotes/origin/*");
+            },
+            false,
+        ),
     ];
-    for (layout, change) in layouts {
+    for (layout, change, pushed_to_other) in layouts {
         let fixture = ClonedMember::new("push-no-last-known-ref");
-        // Another repository, which holds the member's commit as well.
+        // Another repository, which holds no commit.
         let other = fixture.temp.path().join("other.git");
         init_bare_main(&other);
-        let other = other.to_str().unwrap();
-        fixture
-            .backend
-            .push_anonymous(&fixture.app, other, "refs/heads/main:refs/heads/main")
-            .unwrap();
         fixture.lock(&fixture.initial);
         assert_eq!(
             fixture.last_known_main(),
             Some(fixture.initial.clone()),
             "{layout}"
         );
-        change(&fixture.repo(), other);
+        change(&fixture.repo(), other.to_str().unwrap());
         assert_eq!(fixture.last_known_main(), None, "{layout}");
 
         let response = fixture.push_members();
@@ -350,12 +366,6 @@ fn a_layout_whose_tracking_ref_may_not_stand_for_origin_is_contacted() {
             .planned
             .as_ref()
             .and_then(|planned| planned.message.as_deref());
-        assert_eq!(
-            (row.status, reason),
-            (crate::MemberStatus::Noop, Some("already on origin")),
-            "{layout}: {:?}",
-            row.error
-        );
         let operations: Vec<_> = response
             .response
             .meta
@@ -364,9 +374,35 @@ fn a_layout_whose_tracking_ref_may_not_stand_for_origin_is_contacted() {
             .flatten()
             .map(|row| row.operation)
             .collect();
+        let read = crate::TransportOperation::ReadAdvertisement;
+        // The push URL case reads its empty destination and pushes the commit
+        // there; every other case reads upstream, which already holds it.
+        let (expected_row, expected_operations) = if pushed_to_other {
+            (
+                (crate::MemberStatus::Ok, None),
+                vec![read, crate::TransportOperation::Push],
+            )
+        } else {
+            (
+                (crate::MemberStatus::Noop, Some("already on origin")),
+                vec![read],
+            )
+        };
         assert_eq!(
-            operations,
-            [crate::TransportOperation::ReadAdvertisement],
+            (row.status, reason),
+            expected_row,
+            "{layout}: {:?}",
+            row.error
+        );
+        assert_eq!(operations, expected_operations, "{layout}");
+        assert_eq!(
+            read_repo_ref(&other, "refs/heads/main"),
+            pushed_to_other.then(|| fixture.initial.clone()),
+            "{layout}"
+        );
+        assert_eq!(
+            read_repo_ref(&fixture.upstream.remote, "refs/heads/main"),
+            Some(fixture.initial.clone()),
             "{layout}"
         );
     }

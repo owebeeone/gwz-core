@@ -488,32 +488,38 @@ fn perform_push(
             refspec: String::new(),
         });
     }
+    // A local push URL other than the remote's URL goes through an anonymous
+    // remote; see `local_push_remote`.
+    let mut local_push_remote = local_push_remote(repo, remote_handle, plan)?;
     let attempt = backend.observations.begin(
         path,
         remote,
         crate::TransportOperation::Push,
         identity.as_ref(),
     );
-    let rejected = std::cell::RefCell::new(Vec::new());
-    remote_handle
-        .push(
-            &plan.refspecs,
-            Some(&mut remote_push_options(
-                backend.credential_helpers,
-                identity,
-                Some(attempt.clone()),
-                &rejected,
-            )),
-        )
-        .map_err(|error| {
-            if error.code() == git2::ErrorCode::NotFastForward {
-                ModelError::new(ErrorCode::RemoteRejected, error.message())
-            } else {
-                git_error(error)
-            }
-        })?;
+    let report = super::transport_support::PushReport::default();
+    let mut options = remote_push_options(
+        backend.credential_helpers,
+        identity,
+        Some(attempt.clone()),
+        &report,
+    );
+    let pushed = match local_push_remote.as_mut() {
+        Some(anonymous) => anonymous.push(&plan.refspecs, Some(&mut options)),
+        None => remote_handle.push(&plan.refspecs, Some(&mut options)),
+    };
+    pushed.map_err(|error| {
+        if error.code() == git2::ErrorCode::NotFastForward {
+            ModelError::new(ErrorCode::RemoteRejected, error.message())
+        } else {
+            git_error(error)
+        }
+    })?;
+    if local_push_remote.is_some() {
+        update_tracking_refs(repo, remote_handle, &report)?;
+    }
     attempt.succeeded();
-    if let Some((refname, message)) = rejected.borrow().first() {
+    if let Some((refname, message)) = report.rejected.borrow().first() {
         return Err(ModelError::new(
             ErrorCode::RemoteRejected,
             format!("{remote} rejected {refname}: {message}"),
@@ -523,6 +529,192 @@ fn perform_push(
         remote: remote.to_owned(),
         refspec: plan.refspecs.join(" "),
     })
+}
+
+/// The remote to push `plan` through instead of `named`, when libgit2 would
+/// write the push into another repository than the one it reads.
+///
+/// libgit2 1.9.7 connects a push to the remote's push URL, its `pushurl` or
+/// else its `url` (`remote.c`, `git_remote__urlfordirection`), and its smart
+/// transports send the push there. Its local transport reads the push URL's
+/// advertisement too, but `local_push` (`transports/local.c`) opens the
+/// remote's `url` and writes the pack and the refs into that repository,
+/// trusting the advertisement for the fast-forward check and for whether a ref
+/// update is forced. Through a named remote whose push URL is a local path
+/// other than its URL, that pushed into the fetch URL's repository, could
+/// overwrite a branch there, and left the push URL's repository unchanged
+/// (gwz-dev `dev-docs/GwzUrlSchemePushPlan.md`, step 3.6). Such a push goes
+/// through an anonymous remote for the push URL, whose `url` is the push URL,
+/// and [`update_tracking_refs`] then writes `named`'s remote-tracking refs as
+/// libgit2 writes them after a push through `named`. Step 3.5's last-known refs
+/// are those refs, so they stay as before. A smart transport, or a remote whose
+/// push URL is its URL, keeps the remote it was given.
+///
+/// An anonymous remote applies the repository's `url.<base>.insteadOf` rules to
+/// its URL again, as gwz's reads through anonymous remotes do, and its
+/// `pushInsteadOf` rules to its push URL. If the remote a local push goes
+/// through would still read one URL and write another, the push is refused
+/// before it connects.
+fn local_push_remote<'repo>(
+    repo: &'repo git2::Repository,
+    named: &git2::Remote<'_>,
+    plan: &GitPreparedPush,
+) -> ModelResult<Option<git2::Remote<'repo>>> {
+    if !served_by_local_transport(&plan.url) {
+        return Ok(None);
+    }
+    let redirected =
+        named.name().map_err(git_error)?.is_some() && named.url().map_err(git_error)? != plan.url;
+    let anonymous = if redirected {
+        Some(repo.remote_anonymous(&plan.url).map_err(git_error)?)
+    } else {
+        None
+    };
+    let pushed_through = anonymous.as_ref().unwrap_or(named);
+    let write = pushed_through.url().map_err(git_error)?;
+    if let Some(read) = pushed_through.pushurl().map_err(git_error)?
+        && read != write
+    {
+        return Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            format!(
+                "cannot push {} to {} through remote {}: a url.<base>.pushInsteadOf rule rewrites it to {read}, and the local transport would read that repository but write into {write}; nothing was pushed",
+                plan.refspecs.join(" "),
+                plan.url,
+                plan.remote
+            ),
+        ));
+    }
+    Ok(anonymous)
+}
+
+/// Whether libgit2 1.9.7 serves `url` with its local transport (`transport.c`,
+/// `transport_find_fn`): a `file://` URL, or one without a smart transport's
+/// prefix that names an existing directory. Except on Windows, a `:` in such a
+/// URL selects SSH before the directory is tested. gwz registers no transport.
+fn served_by_local_transport(url: &str) -> bool {
+    let starts_with = |prefix: &str| {
+        url.get(..prefix.len())
+            .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+    };
+    if starts_with("file://") {
+        return true;
+    }
+    let smart = [
+        "git://",
+        "http://",
+        "https://",
+        "ssh://",
+        "ssh+git://",
+        "git+ssh://",
+    ];
+    if smart.into_iter().any(starts_with) {
+        return false;
+    }
+    if cfg!(windows) {
+        Path::new(url).is_dir()
+    } else {
+        !url.contains(':') && Path::new(url).is_dir()
+    }
+}
+
+/// Writes `named`'s remote-tracking refs after a push through another remote,
+/// as libgit2 1.9.7 writes them after a push through `named` itself (`push.c`,
+/// `git_push_update_tips`). For each destination ref the push accepted,
+/// [`tracking_ref`] names the tracking ref, which is set to the object the
+/// push sent, with the reflog message "update by push", or deleted for a
+/// deletion. A missing ref is skipped; any other failure fails the push after
+/// the transfer, as it does in libgit2.
+fn update_tracking_refs(
+    repo: &git2::Repository,
+    named: &git2::Remote<'_>,
+    report: &super::transport_support::PushReport,
+) -> ModelResult<()> {
+    let updates = report.updates.borrow();
+    for destination in report.accepted.borrow().iter() {
+        let Some(tracking) = tracking_ref(named, destination)? else {
+            continue;
+        };
+        let Some((_, object)) = updates.iter().find(|(name, _)| name == destination) else {
+            continue;
+        };
+        let written = if object.is_zero() {
+            repo.find_reference(&tracking)
+                .and_then(|mut reference| reference.delete())
+        } else {
+            repo.reference(&tracking, *object, true, "update by push")
+                .map(drop)
+        };
+        match written {
+            Ok(()) => {}
+            Err(error) if error.code() == git2::ErrorCode::NotFound => {}
+            Err(error) => {
+                return Err(git_error(error));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The tracking ref libgit2 1.9.7 updates for the pushed destination ref
+/// `destination` of `named` (`remote.c`, `git_remote__matching_refspec`;
+/// `refspec.c`, `git_refspec__dwim_one` and `git_refspec__transform`): the one
+/// the first fetch refspec whose source matches maps it to, and none when a
+/// negative fetch refspec (`^` and no destination) matches it. A mapped name
+/// outside `refs/` gains `refs/` when the refspec's destination starts with
+/// `remotes/`, and `refs/heads/` otherwise. A source shorthand is never
+/// expanded, because a push handle has no advertised refs when libgit2 expands
+/// them. A refspec without a destination maps to the empty name, which fails to
+/// update in libgit2 too.
+fn tracking_ref(named: &git2::Remote<'_>, destination: &str) -> ModelResult<Option<String>> {
+    let mut matched = None;
+    for refspec in named.refspecs() {
+        if refspec.direction() != git2::Direction::Fetch {
+            continue;
+        }
+        let text = refspec.str().map_err(git_error)?;
+        let plain = text.strip_prefix('+').unwrap_or(text);
+        // `git2::Refspec::dst` panics for a refspec without a destination.
+        let target = plain
+            .rsplit_once(':')
+            .map(|(_, target)| target)
+            .filter(|target| !target.is_empty());
+        let source = refspec.src().map_err(git_error)?;
+        if let (Some(pattern), None) = (source.strip_prefix('^'), target) {
+            if glob_matches(pattern, destination) {
+                return Ok(None);
+            }
+        } else if matched.is_none() && refspec.src_matches(destination) {
+            let mapped = refspec.transform(destination).map_err(git_error)?;
+            let mapped = String::from_utf8_lossy(&mapped);
+            let prefix = match target {
+                Some(target) if !target.starts_with("refs/") => {
+                    if target.starts_with("remotes/") {
+                        "refs/"
+                    } else {
+                        "refs/heads/"
+                    }
+                }
+                _ => "",
+            };
+            matched = Some(format!("{prefix}{mapped}"));
+        }
+    }
+    Ok(matched)
+}
+
+/// libgit2's `wildmatch` without flags, for a refspec pattern: a ref name
+/// cannot hold its other special characters, and a pattern holds at most one
+/// `*`, which matches any run of characters, `/` included.
+fn glob_matches(pattern: &str, name: &str) -> bool {
+    match pattern.split_once('*') {
+        Some((before, after)) => {
+            name.len() >= before.len() + after.len()
+                && name.starts_with(before)
+                && name.ends_with(after)
+        }
+        None => pattern == name,
+    }
 }
 
 pub(super) fn read_remote_file(

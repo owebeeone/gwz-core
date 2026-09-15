@@ -89,18 +89,46 @@ pub(crate) fn fetch_options_with_progress<'a>(
     options
 }
 
+/// What libgit2 reported through its callbacks for one push.
+#[derive(Default)]
+pub(crate) struct PushReport {
+    /// Each destination ref the remote refused, with its message.
+    pub(crate) rejected: std::cell::RefCell<Vec<(String, String)>>,
+    /// Each destination ref the remote accepted, in report order.
+    pub(crate) accepted: std::cell::RefCell<Vec<String>>,
+    /// Each negotiated update: its destination ref and the object the push
+    /// sets it to, zero for a deletion.
+    pub(crate) updates: std::cell::RefCell<Vec<(String, git2::Oid)>>,
+}
+
 pub(crate) fn remote_push_options(
     credential_helpers: CredentialHelperPolicy,
     identity: Option<identity::SelectedIdentity>,
     attempt: Option<TransportAttempt>,
-    rejected: &std::cell::RefCell<Vec<(String, String)>>,
+    report: &PushReport,
 ) -> git2::PushOptions<'_> {
     let mut callbacks = remote_callbacks(credential_helpers, identity, attempt);
+    callbacks.push_negotiation(|updates| {
+        report
+            .updates
+            .borrow_mut()
+            .extend(updates.iter().map(|update| {
+                let destination = String::from_utf8_lossy(update.dst_refname_bytes()).into_owned();
+                (destination, update.dst())
+            }));
+        Ok(())
+    });
     callbacks.push_update_reference(|refname, status| {
-        if let Some(message) = status {
-            rejected
-                .borrow_mut()
-                .push((refname.to_owned(), message.to_owned()));
+        match status {
+            Some(message) => {
+                report
+                    .rejected
+                    .borrow_mut()
+                    .push((refname.to_owned(), message.to_owned()));
+            }
+            None => {
+                report.accepted.borrow_mut().push(refname.to_owned());
+            }
         }
         Ok(())
     });
