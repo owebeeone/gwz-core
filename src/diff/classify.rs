@@ -38,11 +38,12 @@
 //!
 //! ## Multi-repo adaptation
 //!
-//! - **existing path**: stat the operand cwd-relative using the same
-//!   `join_cwd` + `lexical_normalize` route [`route_pathspec`](crate::workspace_ops)
-//!   uses, against the *physical* workspace paths. A token that escapes the
-//!   workspace (`../..`) is treated as "not a path" (it can never be a workspace
-//!   pathspec), deferring to the revision/error arms.
+//! - **existing path**: stat the operand cwd-relative after the physical
+//!   workspace containment the routing primitive applies
+//!   ([`workspace_relative_operand`](crate::workspace_ops::workspace_relative_operand)).
+//!   A token that escapes the workspace (`../..`, or through a link inside it)
+//!   is treated as "not a path" (it can never be a workspace pathspec),
+//!   deferring to the revision/error arms.
 //! - **resolvable revision**: resolves in at least one candidate target repo —
 //!   the root repo plus every active, materialized Git member of the default
 //!   plan. This matches `plan_diff`'s default candidate set, so a bare branch that
@@ -146,18 +147,18 @@ pub(crate) fn classify_operands_for_command(
 }
 
 /// Does `operand` name an existing filesystem entry, cwd-relative, inside the
-/// workspace? Uses the same `join_cwd` + `lexical_normalize` route as
-/// `route_pathspec`, then stats the physical path. A workspace escape is *not* a
-/// path (it can never be a workspace pathspec), so the caller falls through to
-/// the revision / error arms.
+/// workspace? Applies the routing primitive's physical containment
+/// ([`workspace_relative_operand`](crate::workspace_ops::workspace_relative_operand)),
+/// then stats the path. A workspace escape is *not* a path (it can never be a
+/// workspace pathspec), so the caller falls through to the revision / error arms.
 fn operand_is_existing_path(operand: &str, ctx: &RevContext<'_>) -> bool {
-    use crate::workspace_ops::{join_cwd, lexical_normalize};
+    use crate::workspace_ops::{join_cwd, lexical_normalize, workspace_relative_operand};
 
-    let abs = lexical_normalize(&join_cwd(&ctx.cwd, operand));
-    // Must stay within the physical workspace root (route_pathspec's escape rule).
-    if abs.strip_prefix(&ctx.workspace_root).is_err() {
+    // Must stay within the physical workspace root (the routing escape rule).
+    if workspace_relative_operand(&ctx.workspace_root, &ctx.cwd, operand).is_err() {
         return false;
     }
+    let abs = lexical_normalize(&join_cwd(&ctx.cwd, operand));
     Path::new(&abs).exists()
 }
 

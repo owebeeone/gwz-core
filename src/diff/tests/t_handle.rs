@@ -1086,3 +1086,51 @@ fn dashdash_operands_before_are_revs_only() {
     .unwrap();
     assert_eq!(changed_paths(&outcome), vec!["a.txt".to_owned()]);
 }
+
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        #[test]
+        fn symlinked_operand_spellings_route_and_symlink_escapes_are_refused() {
+            let ws = Workspace::new("symlink-spelling");
+            Workspace::write(ws.root(), "a.txt", b"a1\n");
+            Workspace::commit(ws.root(), "init");
+            Workspace::write(ws.root(), "a.txt", b"a2\n");
+            // The workspace spelled through a symlink outside it, and a link
+            // inside the workspace that leads out of it.
+            let links = Workspace::new("symlink-spelling-links");
+            let alias = links.root().join("ws");
+            std::os::unix::fs::symlink(ws.root(), &alias).unwrap();
+            std::os::unix::fs::symlink(links.root(), ws.root().join("escape")).unwrap();
+            let aliased = alias.join("a.txt");
+            let aliased = aliased.to_str().unwrap();
+
+            let registry = DiffLogRegistry::new();
+            let bare = handle_diff(
+                ws.root(),
+                ws.request_operands(&[aliased], &[], ""),
+                "op_bare",
+                &registry,
+            )
+            .unwrap();
+            let dashdash = handle_diff(
+                ws.root(),
+                ws.request_operands(&[], &[aliased], ""),
+                "op_dd",
+                &registry,
+            )
+            .unwrap();
+            assert_eq!(changed_paths(&bare), vec!["a.txt".to_owned()]);
+            assert_eq!(changed_paths(&dashdash), vec!["a.txt".to_owned()]);
+
+            let error = handle_diff(
+                ws.root(),
+                ws.request_operands(&[], &["escape/a.txt"], ""),
+                "op_escape",
+                &registry,
+            )
+            .err()
+            .expect("a pathspec through a link leaving the workspace must be refused");
+            assert_eq!(error.code, crate::model::ErrorCode::PathEscape);
+        }
+    }
+}

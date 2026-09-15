@@ -3013,3 +3013,38 @@ impl Drop for Fixture {
         let _ = fs::remove_dir_all(&self.path);
     }
 }
+
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        #[test]
+        fn symlinked_pathspec_spellings_route_and_symlink_escapes_are_refused() {
+            let fixture = Fixture::new("symlink-spelling");
+            let tracked = commit_file(&fixture.root, "tracked.txt", b"one\n", "tracked", 100, &[]);
+            commit_file(&fixture.root, "other.txt", b"two\n", "other", 200, &[tracked]);
+            fixture.write_manifest(&[]);
+            // The workspace spelled through a symlink outside it, and a link
+            // inside the workspace that leads out of it.
+            let links = Fixture::new("symlink-spelling-links");
+            let alias = links.path().join("ws");
+            std::os::unix::fs::symlink(fixture.path(), &alias).unwrap();
+            std::os::unix::fs::symlink(links.path(), fixture.path().join("escape")).unwrap();
+            let aliased = alias.join("tracked.txt");
+            let aliased = aliased.to_str().unwrap();
+
+            for request in [
+                log_request(&[aliased], &[], false),
+                log_request(&[], &[aliased], false),
+            ] {
+                let opened = open_request_histories(fixture.path(), &request).unwrap();
+                assert_eq!(opened.histories()[0].pathspecs(), ["tracked.txt"]);
+                assert_eq!(entry_ids(&opened.histories()[0]), [tracked]);
+            }
+
+            let escape = log_request(&[], &["escape/tracked.txt"], false);
+            let error = open_request_histories(fixture.path(), &escape)
+                .err()
+                .expect("a pathspec through a link leaving the workspace must be refused");
+            assert_eq!(error.code, crate::model::ErrorCode::PathEscape);
+        }
+    }
+}

@@ -243,3 +243,112 @@ cfg_if::cfg_if! {
         }
     }
 }
+
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        /// A workspace reached both physically and through a symlinked temp
+        /// directory (the shape of macOS's `/tmp` -> `/private/tmp`), beside an
+        /// outside directory that a link inside the workspace leads to.
+        struct SymlinkedTemp {
+            _temp: TempDir,
+            root: std::path::PathBuf,
+            alias: std::path::PathBuf,
+            outside: std::path::PathBuf,
+        }
+
+        impl SymlinkedTemp {
+            fn new(prefix: &str) -> Self {
+                let temp = TempDir::new(prefix);
+                let physical = temp.path().join("physical");
+                let root = physical.join("ws");
+                let outside = physical.join("outside");
+                std::fs::create_dir_all(root.join("member")).unwrap();
+                std::fs::create_dir_all(&outside).unwrap();
+                std::os::unix::fs::symlink(&physical, temp.path().join("alias")).unwrap();
+                std::os::unix::fs::symlink(&outside, root.join("escape")).unwrap();
+                let alias = temp.path().join("alias/ws");
+                Self { _temp: temp, root, alias, outside }
+            }
+        }
+
+        fn routed(member: Option<&str>, pathspec: &str) -> RoutedPathspec {
+            RoutedPathspec {
+                member_path: member.map(str::to_owned),
+                pathspec: pathspec.to_owned(),
+            }
+        }
+
+        fn text(path: &Path) -> &str {
+            path.to_str().unwrap()
+        }
+
+        #[test]
+        fn symlinked_root_routes_a_relative_operand() {
+            let fx = SymlinkedTemp::new("symlink-root-relative");
+            let member_paths = members(&["member"]);
+            // `gwz --root <alias> add top.txt`: the caller directory is physical.
+            assert_eq!(
+                route_pathspec(&fx.alias, &member_paths, &fx.root, "top.txt").unwrap(),
+                routed(None, "top.txt")
+            );
+            assert_eq!(
+                route_pathspec(&fx.alias, &member_paths, &fx.root.join("member"), "src/a.rs")
+                    .unwrap(),
+                routed(Some("member"), "src/a.rs")
+            );
+        }
+
+        #[test]
+        fn symlinked_root_routes_an_absolute_canonical_operand() {
+            let fx = SymlinkedTemp::new("symlink-root-canonical");
+            let operand = fx.root.join("member/src/a.rs");
+            assert_eq!(
+                route_pathspec(&fx.alias, &members(&["member"]), &fx.outside, text(&operand))
+                    .unwrap(),
+                routed(Some("member"), "src/a.rs")
+            );
+        }
+
+        #[test]
+        fn canonical_root_routes_an_absolute_operand_spelled_through_the_symlink() {
+            let fx = SymlinkedTemp::new("symlink-operand");
+            let member_paths = members(&["member"]);
+            let operand = fx.alias.join("member/src/a.rs");
+            assert_eq!(
+                route_pathspec(&fx.root, &member_paths, &fx.root, text(&operand)).unwrap(),
+                routed(Some("member"), "src/a.rs")
+            );
+            // The root itself, spelled through the symlink, still fans out.
+            let alias = vec![text(&fx.alias).to_owned()];
+            let got =
+                resolve_stage_targets(&fx.root, &member_paths, &fx.outside, &alias, false).unwrap();
+            assert_eq!(got, vec![target(None, &["."]), fanout(Some("member"), &["."])]);
+        }
+
+        #[test]
+        fn symlink_spellings_keep_real_escapes_refused() {
+            let fx = SymlinkedTemp::new("symlink-escape");
+            let member_paths = members(&["member"]);
+            let outside_physical = fx.outside.join("file.txt");
+            let outside_alias = fx.alias.parent().unwrap().join("outside/file.txt");
+            for root in [&fx.root, &fx.alias] {
+                for spec in [
+                    "../outside/file.txt",
+                    text(&outside_physical),
+                    text(&outside_alias),
+                    // Lexically inside the workspace, physically outside it.
+                    "escape/file.txt",
+                    "member/../escape/nested/file.txt",
+                ] {
+                    let error = route_pathspec(root, &member_paths, &fx.root, spec).unwrap_err();
+                    assert_eq!(error.code, ErrorCode::PathEscape, "{} {spec}", root.display());
+                }
+                // The link itself is a workspace path: its final component is not followed.
+                assert_eq!(
+                    route_pathspec(root, &member_paths, &fx.root, "escape").unwrap(),
+                    routed(None, "escape")
+                );
+            }
+        }
+    }
+}
