@@ -64,11 +64,26 @@ impl ConfiguredRemote {
     }
 }
 
+/// `calls` grouped by the host each one's URL reaches, in their order within
+/// each host. Calls to different hosts may overlap, so a test that spans hosts
+/// compares these.
+pub(crate) fn calls_by_host(calls: Vec<RemoteCall>) -> BTreeMap<Option<String>, Vec<RemoteCall>> {
+    let mut hosts: BTreeMap<Option<String>, Vec<RemoteCall>> = BTreeMap::new();
+    for call in calls {
+        let (RemoteCall::Read { url, .. } | RemoteCall::Push { url, .. }) = &call;
+        let host = crate::git::git_host(url);
+        hosts.entry(host).or_default().push(call);
+    }
+    hosts
+}
+
 #[derive(Clone)]
 pub(crate) struct TrackingBackend {
     fetch: Arc<OverlapTracker>,
     push: Arc<OverlapTracker>,
     read: Arc<OverlapTracker>,
+    /// Reads that start once a push has been recorded: a push's root proof.
+    post_push_read: Arc<OverlapTracker>,
     anonymous: Arc<Mutex<Vec<AnonymousTransfer>>>,
     anonymous_failure: Arc<Mutex<Option<String>>>,
     model: Arc<Mutex<Model>>,
@@ -80,6 +95,7 @@ impl TrackingBackend {
             fetch: Arc::new(OverlapTracker::new(expected_overlap)),
             push: Arc::new(OverlapTracker::new(expected_overlap)),
             read: Arc::new(OverlapTracker::new(1)),
+            post_push_read: Arc::new(OverlapTracker::new(1)),
             anonymous: Arc::new(Mutex::new(Vec::new())),
             anonymous_failure: Arc::new(Mutex::new(None)),
             model: Arc::new(Mutex::new(Model::default())),
@@ -88,8 +104,16 @@ impl TrackingBackend {
 
     /// Hold advertisement reads for overlap as `new` holds fetches and pushes.
     /// Reads expect no overlap by default, so sequential reads never wait.
+    /// Reads after a recorded push have their own counter.
     pub(crate) fn with_read_overlap(mut self, expected_overlap: usize) -> Self {
         self.read = Arc::new(OverlapTracker::new(expected_overlap));
+        self
+    }
+
+    /// As `with_read_overlap`, for reads that start once a push has been
+    /// recorded, which in a push are its root proof's reads.
+    pub(crate) fn with_post_push_read_overlap(mut self, expected_overlap: usize) -> Self {
+        self.post_push_read = Arc::new(OverlapTracker::new(expected_overlap));
         self
     }
 
@@ -103,6 +127,18 @@ impl TrackingBackend {
 
     pub(crate) fn read_peak(&self) -> usize {
         self.read.peak()
+    }
+
+    pub(crate) fn post_push_read_peak(&self) -> usize {
+        self.post_push_read.peak()
+    }
+
+    /// Fail every advertisement read of `url` with `git_command_failed`. The
+    /// read is still recorded and counted.
+    pub(crate) fn fail_reads(&self, url: &str, detail: &str) {
+        self.model()
+            .failing_reads
+            .insert(url.to_owned(), detail.to_owned());
     }
 
     /// Every anonymous fetch/push the double received, in order.
@@ -258,6 +294,8 @@ struct Model {
     ancestry: BTreeMap<(String, String), Result<bool, String>>,
     stores: Vec<BTreeMap<String, String>>,
     served: BTreeMap<String, usize>,
+    /// URLs whose reads fail, each with its failure detail.
+    failing_reads: BTreeMap<String, String>,
     calls: Vec<RemoteCall>,
     identity_checks: Vec<(Option<PathBuf>, String, String)>,
 }
@@ -835,14 +873,35 @@ impl GitBackend for TrackingBackend {
         remote: &str,
         identity_repo: Option<&Path>,
     ) -> ModelResult<Vec<crate::git::GitRemoteRef>> {
-        self.model().calls.push(RemoteCall::Read {
-            path: path.to_path_buf(),
-            url: url.to_owned(),
-            remote: remote.to_owned(),
-            identity_repo: identity_repo.map(Path::to_path_buf),
-        });
-        self.read.run();
-        let served = self.model().store(url).cloned();
+        let after_push = {
+            let mut model = self.model();
+            let after_push = model
+                .calls
+                .iter()
+                .any(|call| matches!(call, RemoteCall::Push { .. }));
+            model.calls.push(RemoteCall::Read {
+                path: path.to_path_buf(),
+                url: url.to_owned(),
+                remote: remote.to_owned(),
+                identity_repo: identity_repo.map(Path::to_path_buf),
+            });
+            after_push
+        };
+        if after_push {
+            self.post_push_read.run();
+        } else {
+            self.read.run();
+        }
+        let (failure, served) = {
+            let model = self.model();
+            (
+                model.failing_reads.get(url).cloned(),
+                model.store(url).cloned(),
+            )
+        };
+        if let Some(detail) = failure {
+            return Err(ModelError::new(ErrorCode::GitCommandFailed, detail));
+        }
         match served {
             Some(refs) => Ok(refs
                 .into_iter()
