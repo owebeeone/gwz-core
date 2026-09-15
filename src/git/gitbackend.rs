@@ -343,6 +343,7 @@ impl GitBackend for Git2Backend {
     delegate!(push(path: &Path, remote: &str, refspec: &str) -> ModelResult<GitPushResult> => transport::push);
     delegate!(prepare_push(path: &Path, remote: &str, refspec: &str) -> ModelResult<GitPreparedPush> => push_plan::prepare);
     delegate!(push_prepared(path: &Path, plan: &GitPreparedPush) -> ModelResult<GitPushResult> => transport::push_prepared);
+    delegate!(last_known_ref(path: &Path, remote: &str, destination: &str) -> ModelResult<Option<String>> => push_plan::last_known_ref);
     delegate!(fetch_anonymous(path: &Path, url: &str, refspecs: &[&str]) -> ModelResult<GitFetchResult> => transport::fetch_anonymous);
     delegate!(push_anonymous(path: &Path, url: &str, refspec: &str) -> ModelResult<GitPushResult> => transport::push_anonymous);
     delegate!(stage_paths(path: &Path, pathspecs: &[&str]) -> ModelResult<GitStageResult> => repository::stage_paths);

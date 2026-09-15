@@ -192,6 +192,22 @@ impl TrackingBackend {
         self.model().repository(path).forced_pushes = true;
     }
 
+    /// Record `object` as the last-known `destination` of `remote` in `path`,
+    /// which `last_known_ref` then answers. Anything not recorded has none, as
+    /// the contract default answers.
+    pub(crate) fn set_last_known(
+        &self,
+        path: &Path,
+        remote: &str,
+        destination: &str,
+        object: &str,
+    ) {
+        self.model().repository(path).last_known.insert(
+            (remote.to_owned(), destination.to_owned()),
+            object.to_owned(),
+        );
+    }
+
     pub(crate) fn fetch_refspecs(&self, path: &Path, remote: &str) -> Option<Vec<String>> {
         self.model()
             .repositories
@@ -362,6 +378,8 @@ struct ConfiguredRepository {
     /// Lightweight tags: each name maps to its commit.
     tags: BTreeMap<String, String>,
     forced_pushes: bool,
+    /// Last-known refs: each `(remote, destination)` maps to its object.
+    last_known: BTreeMap<(String, String), String>,
 }
 
 /// An unconfigured repository gets the double's original answers.
@@ -377,6 +395,7 @@ impl Default for ConfiguredRepository {
             remotes: Vec::new(),
             tags: BTreeMap::new(),
             forced_pushes: false,
+            last_known: BTreeMap::new(),
         }
     }
 }
@@ -928,6 +947,18 @@ impl GitBackend for TrackingBackend {
             remote: plan.remote.clone(),
             refspec: plan.refspecs.first().cloned().unwrap_or_default(),
         })
+    }
+
+    fn last_known_ref(
+        &self,
+        path: &Path,
+        remote: &str,
+        destination: &str,
+    ) -> ModelResult<Option<String>> {
+        let key = (remote.to_owned(), destination.to_owned());
+        Ok(self
+            .configured(path)
+            .and_then(|repository| repository.last_known.get(&key).cloned()))
     }
 
     fn validate_url_identity(

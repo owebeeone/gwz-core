@@ -1107,6 +1107,77 @@ fn root_rejection_preserves_member_publication_and_root_retry_is_cloneable() {
     );
 }
 
+/// Push plan step 3.5 on the native backend: `git clone`, and a push through
+/// the named remote, write remote-tracking refs that §3.5 accepts as
+/// last-known refs. The first push reads the unchanged member only as the
+/// root's dependency and publishes the root; a second push with nothing
+/// changed contacts no remote.
+#[test]
+fn a_push_with_nothing_changed_since_the_last_push_makes_no_connections() {
+    let temp = TempDir::new("push-nothing-changed");
+    let backend = Git2Backend::without_credential_helpers();
+    handle_create_workspace(create_workspace_request(temp.path()), "create").unwrap();
+    let root_remote = temp.path().join("root.git");
+    init_bare_main(&root_remote);
+    backend
+        .add_remote(temp.path(), "origin", root_remote.to_str().unwrap())
+        .unwrap();
+    let fixture = RemoteFixture::new("push-nothing-changed-member");
+    let commit = fixture.commit_and_push("README.md", "one", "initial", &backend);
+    backend
+        .clone_repo(fixture.remote_url(), &temp.path().join("repos/app"))
+        .unwrap();
+    write_pull_fixture(
+        temp.path(),
+        vec![("mem_app", "repos/app", fixture.remote_url(), &commit)],
+    );
+    set_identity(temp.path());
+    backend.stage_paths(temp.path(), &["gwz.conf"]).unwrap();
+    let root_commit = backend.commit(temp.path(), "lock", false).unwrap().commit;
+    let request = crate::PushRequest {
+        meta: request_meta_with_workspace(),
+        ..Default::default()
+    };
+
+    let first = handle_push(&backend, temp.path(), request.clone(), "first").unwrap();
+    let second = handle_push(&backend, temp.path(), request, "second").unwrap();
+
+    let rows = |response: &crate::PushResponse| {
+        response
+            .response
+            .members
+            .iter()
+            .map(|row| {
+                let reason = row
+                    .planned
+                    .as_ref()
+                    .and_then(|planned| planned.message.clone());
+                (row.member_id.clone(), row.status, reason)
+            })
+            .collect::<Vec<_>>()
+    };
+    let unchanged = |target: &str| {
+        (
+            target.to_owned(),
+            crate::MemberStatus::Noop,
+            Some("up to date with origin/main as of the last fetch or push".to_owned()),
+        )
+    };
+    let published = ("@root".to_owned(), crate::MemberStatus::Ok, None);
+    assert_eq!(rows(&first), [unchanged("mem_app"), published]);
+    assert_eq!(
+        read_repo_ref(&root_remote, "refs/heads/main"),
+        Some(root_commit)
+    );
+    assert_eq!(rows(&second), [unchanged("mem_app"), unchanged("@root")]);
+    assert_eq!(
+        second.response.meta.aggregate_status,
+        crate::AggregateStatus::Noop
+    );
+    let connections = second.response.meta.transport.as_ref().map_or(0, Vec::len);
+    assert_eq!(connections, 0);
+}
+
 #[test]
 fn a_completed_member_push_counts_as_publication_with_or_without_force() {
     use crate::git::GitPreparedPush;

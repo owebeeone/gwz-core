@@ -1,8 +1,9 @@
 //! Push plan step 1.2 (`dev-docs/GwzUrlSchemePushPlan.md`): the tracking
 //! backend as an observable publication seam, and today's publication reads
 //! and pushes pinned on it. Steps 2.1, 3.3 and 3.5 move these pins on purpose.
-//! Step 2.1 adds the read-URL cases of the plan's §3.2 and §3.3, and step 3.3
-//! the check-once cases of §3.5 rule 1.
+//! Step 2.1 adds the read-URL cases of the plan's §3.2 and §3.3, step 3.3 the
+//! check-once cases of §3.5 rule 1, and step 3.5 the contact cases of rules 2
+//! and 3 (`contact_changed`).
 use std::path::{Path, PathBuf};
 
 use crate::git::{GitBackend, GitPreparedPush, UrlScheme};
@@ -18,6 +19,7 @@ use super::g01::tracking_backend::{
 use super::*;
 
 mod concurrent_reads;
+mod contact_changed;
 mod tag_publication;
 
 const MEMBERS: usize = 2;
@@ -479,7 +481,8 @@ fn an_unreadable_url_scheme_record_refuses_a_push_with_an_unmaterialized_depende
 }
 
 /// Step 2.1 (§3.3): a proof refusal names the URL it read when that is not the
-/// committed URL, and is worded as before when it is.
+/// committed URL, and is worded as before when it is. Step 3.5 (§3.6) gives a
+/// push under the default the remedies of a missing dependency.
 #[test]
 fn a_proof_refusal_names_the_read_url_when_it_is_not_the_committed_url() {
     let read_through = format!(" (read through {APP_HTTPS})");
@@ -493,7 +496,7 @@ fn a_proof_refusal_names_the_read_url_when_it_is_not_the_committed_url() {
         assert_eq!(
             row.error.as_ref().unwrap().message,
             format!(
-                "root publication blocked: cannot prove member mem_app commit {APP_HEAD} is available at its committed fetch remote origin{read_through}; publish the member, or fetch its advertised history and retry"
+                "root publication blocked: cannot prove member mem_app commit {APP_HEAD} is available at its committed fetch remote origin{read_through}; publish the member by pushing a branch that contains the commit, fetch its advertised history and retry, or run gwz push --check-remotes, which re-checks the members and pushes those whose remote lacks their branch's commit"
             )
         );
         assert!(fixture.backend.prepared_pushes().is_empty());
@@ -944,26 +947,39 @@ impl PublicationFixture {
         refspec: Option<&str>,
         remote_check: Option<crate::RemoteCheck>,
     ) -> crate::PushResponse {
+        self.run(Self::request(selection, refspec, remote_check))
+    }
+
+    /// The request `push_with` sends, for a test to adjust before `run`.
+    fn request(
+        selection: Option<crate::Selection>,
+        refspec: Option<&str>,
+        remote_check: Option<crate::RemoteCheck>,
+    ) -> crate::PushRequest {
+        crate::PushRequest {
+            meta: crate::RequestMeta {
+                selection,
+                // One connection per host keeps the recorded order stable.
+                policy: Some(crate::OperationPolicy {
+                    max_connections_per_host: Some(1),
+                    ..Default::default()
+                }),
+                ..request_meta_with_workspace()
+            },
+            remote: None,
+            refspec: refspec.map(str::to_owned),
+            remote_check,
+        }
+    }
+
+    fn run(&self, request: crate::PushRequest) -> crate::PushResponse {
         let world = crate::operation_context::TestWorld::physical();
         let services = world.context();
         handle_push_with_events_in(
             &services,
             &self.backend,
             &self.root,
-            crate::PushRequest {
-                meta: crate::RequestMeta {
-                    selection,
-                    // One connection per host keeps the recorded order stable.
-                    policy: Some(crate::OperationPolicy {
-                        max_connections_per_host: Some(1),
-                        ..Default::default()
-                    }),
-                    ..request_meta_with_workspace()
-                },
-                remote: None,
-                refspec: refspec.map(str::to_owned),
-                remote_check,
-            },
+            request,
             "op_push",
             &NullSink,
         )

@@ -975,6 +975,22 @@ pub trait GitRepository {
             "captured publication is not implemented by this GitBackend",
         ))
     }
+    /// The object `destination` (`refs/heads/<branch>`) had on `remote`'s
+    /// repository when this repository last recorded it, in the
+    /// remote-tracking ref that fetches, and pushes through the named remote,
+    /// write. Local only: it never contacts the remote. A push uses it only to
+    /// decide whether to contact a destination (gwz-dev
+    /// `dev-docs/GwzUrlSchemePushPlan.md` §3.5 rule 2), so an implementation
+    /// answers `None` whenever the ref may not stand for that repository. The
+    /// default answers `None`, and the push contacts the remote.
+    fn last_known_ref(
+        &self,
+        _path: &Path,
+        _remote: &str,
+        _destination: &str,
+    ) -> ModelResult<Option<String>> {
+        Ok(None)
+    }
     /// Anonymous local fetch (LCM1.0c, local clone family; gwz-dev
     /// `dev-docs/GwzLocalCloneDesign.md` §6.2). `url` must be an existing
     /// local repository path, never a URL (the backend hands libgit2 its

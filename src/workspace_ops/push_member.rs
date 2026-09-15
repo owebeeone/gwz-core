@@ -273,21 +273,25 @@ where
             });
         }
 
+        // §3.5 rule 2 left a root it does not contact out of the plans: that
+        // root publishes nothing and is not proven.
+        let root_contacted = plans.contains_key("@root");
         // §3.5 rule 1: a repository whose kept advertisement already shows every
         // destination ref at its source object has nothing to publish and is not
-        // pushed. A root found so is still proven below.
+        // pushed. A contacted root found so is still proven below.
         for response in &mut preflight {
             let path = root.join(&response.member_path);
-            let on_origin = response.status == crate::MemberStatus::Planned
-                && plans
-                    .get(&response.member_id)
-                    .is_some_and(|plan| read_preflight.already_on_origin(&path, plan));
-            if on_origin {
+            let is_planned = response.status == crate::MemberStatus::Planned;
+            let on_origin = plans
+                .get(&response.member_id)
+                .filter(|plan| is_planned && read_preflight.already_on_origin(&path, plan))
+                .map(|plan| plan.remote.clone());
+            if let Some(remote) = on_origin {
                 plans.remove(&response.member_id);
                 response.status = crate::MemberStatus::Noop;
                 if let Some(planned) = response.planned.as_mut() {
                     planned.action = crate::PlannedAction::Noop;
-                    planned.message = Some("already on origin".to_owned());
+                    planned.message = Some(format!("already on {remote}"));
                 }
             }
         }
@@ -344,7 +348,13 @@ where
                 })
                 .map(|response| response.member_id.as_str())
                 .collect();
-            let root_response = if failed.is_empty() {
+            let root_response = if !root_contacted {
+                preflight
+                    .iter()
+                    .find(|row| row.member_id == "@root")
+                    .expect("root preflight row")
+                    .clone()
+            } else if failed.is_empty() {
                 let published: std::collections::BTreeMap<_, _> = responses
                     .iter()
                     .filter(|response| response.status == crate::MemberStatus::Ok)
@@ -464,18 +474,21 @@ where
         return push_policy_member_error(member, source_kind, request, error);
     }
     if dry_run {
+        let (status, planned) = super::push_state::planned_push(
+            backend,
+            &member_root,
+            request,
+            &remote,
+            &head,
+            refspec,
+        );
         return crate::MemberResponse {
             member_id: member.id.clone(),
             member_path: member.path.clone(),
             source_kind,
-            status: crate::MemberStatus::Planned,
+            status,
             error: None,
-            planned: Some(crate::PlannedChange {
-                action: crate::PlannedAction::Push,
-                from_ref: head.commit.clone(),
-                to_ref: Some(refspec),
-                message: Some(format!("push to {remote}")),
-            }),
+            planned: Some(planned),
             state: None,
             git_status: None,
             target_kind: Some(crate::TargetKind::Member),
@@ -561,18 +574,15 @@ where
         if let Err(error) = validated {
             return push_root_error(error, crate::MemberStatus::Rejected);
         }
+        let (status, planned) =
+            super::push_state::planned_push(backend, root, request, &remote, &head, refspec);
         return crate::MemberResponse {
             member_id: "@root".to_owned(),
             member_path: ".".to_owned(),
             source_kind: crate::SourceKind::Git,
-            status: crate::MemberStatus::Planned,
+            status,
             error: None,
-            planned: Some(crate::PlannedChange {
-                action: crate::PlannedAction::Push,
-                from_ref: head.commit.clone(),
-                to_ref: Some(refspec),
-                message: Some(format!("push to {remote}")),
-            }),
+            planned: Some(planned),
             state: None,
             git_status: None,
             target_kind: Some(crate::TargetKind::Root),

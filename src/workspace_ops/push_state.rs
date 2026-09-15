@@ -1,9 +1,12 @@
 //! Last-known-state classification for a push (gwz-dev
 //! `dev-docs/GwzUrlSchemePushPlan.md` §3.5 rule 2). Before any read, a selected
 //! repository's source object is compared with its last-known ref to decide
-//! whether the push contacts that destination at all. Pure: the caller supplies
-//! the objects and the ancestry answers.
-#![allow(dead_code, reason = "not wired until push plan step 3.5")]
+//! whether the push contacts that destination at all. The classification is
+//! pure; [`planned_push`] gathers its inputs from the repository's own
+//! configuration and refs, never from the remote.
+use std::path::Path;
+
+use crate::git::{GitBackend, GitHeadState, same_repository};
 
 /// How a push source compares with its last-known ref.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -63,6 +66,129 @@ pub(super) fn classify_push_state<E>(
     };
     let contacted = forced || !matches!(state, LastKnownState::Equal | LastKnownState::Behind);
     PushContact { state, contacted }
+}
+
+/// A selected repository's row before any read: `Noop`, with its reason, when
+/// §3.5 rule 2 finds its branch unchanged since the last fetch or push, and
+/// otherwise a planned push of `refspec` through `remote`. A request that
+/// checks every remote skips the classification (rule 3).
+pub(super) fn planned_push<B: GitBackend>(
+    backend: &B,
+    path: &Path,
+    request: &crate::PushRequest,
+    remote: &str,
+    head: &GitHeadState,
+    refspec: String,
+) -> (crate::MemberStatus, crate::PlannedChange) {
+    let checks_every_remote = matches!(request.remote_check, Some(crate::RemoteCheck::Always));
+    let unchanged = if checks_every_remote {
+        None
+    } else {
+        unchanged_reason(backend, path, remote, &refspec)
+    };
+    let (status, action, message) = match unchanged {
+        Some(reason) => (
+            crate::MemberStatus::Noop,
+            crate::PlannedAction::Noop,
+            reason,
+        ),
+        None => (
+            crate::MemberStatus::Planned,
+            crate::PlannedAction::Push,
+            format!("push to {remote}"),
+        ),
+    };
+    let planned = crate::PlannedChange {
+        action,
+        from_ref: head.commit.clone(),
+        to_ref: Some(refspec),
+        message: Some(message),
+    };
+    (status, planned)
+}
+
+/// The `Noop` reason when a push of `refspec` from the repository at `path`
+/// through `remote` need not contact its destination, or `None` when it must.
+/// Only an ordinary transfer of one source this repository resolves, to
+/// `refs/heads/<branch>`, can go uncontacted: through a remote whose push URL
+/// is absent or reaches its fetch URL's repository, and only when the backend
+/// has a last-known ref for that branch that equals the source or descends
+/// from it (D6). A forced or deleting transfer, a pattern or shorthand, and
+/// every failed or unknown answer are contacted.
+fn unchanged_reason<B: GitBackend>(
+    backend: &B,
+    path: &Path,
+    remote: &str,
+    refspec: &str,
+) -> Option<String> {
+    let forced = refspec.starts_with('+');
+    let plain = refspec.strip_prefix('+').unwrap_or(refspec);
+    let (source, destination) = plain.split_once(':')?;
+    let branch = destination.strip_prefix("refs/heads/")?;
+    if [source, branch]
+        .iter()
+        .any(|part| part.is_empty() || part.contains('*'))
+    {
+        return None;
+    }
+    let object = backend.read_ref(path, source).ok().flatten()?;
+    // A forced transfer is contacted whatever its last-known ref says.
+    let known = if forced || !push_url_reaches_fetch_repository(backend, path, remote) {
+        None
+    } else {
+        backend
+            .last_known_ref(path, remote, destination)
+            .ok()
+            .flatten()
+    };
+    let last_known = known.as_deref().map(|known| {
+        // Equality compares object ids and never asks for ancestry.
+        let ask = |ancestor: &str, descendant: &str| {
+            if known == object.as_str() {
+                Ok(false)
+            } else {
+                backend.is_ancestor(path, ancestor, descendant)
+            }
+        };
+        LastKnownRef {
+            object: known,
+            ancestor_of_source: ask(known, &object),
+            descendant_of_source: ask(&object, known),
+        }
+    });
+    let contact = classify_push_state(&object, last_known, forced);
+    let relation = match (contact.contacted, contact.state) {
+        (false, LastKnownState::Equal) => "up to date with",
+        (false, LastKnownState::Behind) => "behind",
+        _ => return None,
+    };
+    Some(format!(
+        "{relation} {remote}/{branch} as of the last fetch or push"
+    ))
+}
+
+/// §3.5: a last-known ref may stand for a destination only when the remote's
+/// push URL is absent or reaches the same repository as its fetch URL: the two
+/// are equal, or differ only by scheme in either direction. The backend checks
+/// its own conditions as well; this one holds whatever the backend.
+fn push_url_reaches_fetch_repository<B: GitBackend>(
+    backend: &B,
+    path: &Path,
+    remote: &str,
+) -> bool {
+    let Ok(remotes) = backend.remotes(path) else {
+        return false;
+    };
+    remotes
+        .into_iter()
+        .find(|configured| configured.name == remote)
+        .is_some_and(|configured| match (configured.url, configured.push_url) {
+            (Some(_), None) => true,
+            (Some(url), Some(push_url)) => {
+                same_repository(&url, &push_url) || same_repository(&push_url, &url)
+            }
+            (None, _) => false,
+        })
 }
 
 #[cfg(test)]

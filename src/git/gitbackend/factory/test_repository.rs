@@ -150,6 +150,7 @@ impl GitRepository for GitTestRepository {
     forward!(push(path: &Path, remote: &str, refspec: &str) -> ModelResult<GitPushResult>);
     forward!(prepare_push(_path: &Path, _remote: &str, _refspec: &str,) -> ModelResult<GitPreparedPush>);
     forward!(push_prepared(_path: &Path, _plan: &GitPreparedPush) -> ModelResult<GitPushResult>);
+    forward!(last_known_ref(path: &Path, remote: &str, destination: &str) -> ModelResult<Option<String>>);
     forward!(fetch_anonymous(path: &Path, url: &str, refspecs: &[&str],) -> ModelResult<GitFetchResult>);
     forward!(push_anonymous(path: &Path, url: &str, refspec: &str) -> ModelResult<GitPushResult>);
     forward!(read_ref(path: &Path, ref_spec: &str) -> ModelResult<Option<String>>);

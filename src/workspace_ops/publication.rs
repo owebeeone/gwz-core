@@ -319,7 +319,8 @@ pub(super) fn checked_root_request<B: GitBackend>(
     published: &BTreeMap<String, GitPreparedPush>,
     reads: &ReadPreflight,
 ) -> ModelResult<crate::PushRequest> {
-    RootProof::plan(backend, root, request, published, reads)?.check(backend, |_, dependency| {
+    let proof = RootProof::plan(backend, root, request, published, reads)?;
+    proof.check(backend, PUBLISH_OR_FETCH, |_, dependency| {
         backend.ls_remote_url(
             root,
             &dependency.read_url,
@@ -333,7 +334,8 @@ pub(super) fn checked_root_request<B: GitBackend>(
 /// planned first, a destination once however many dependencies it answers, and
 /// run `jobs` at once, at most `per_host` to one host, all after the member
 /// transfers. The proof then decides in lock order, so it refuses with the
-/// failure reading in turn would meet first.
+/// failure reading in turn would meet first. A push under the default refuses
+/// with the remedies of §3.6.
 pub(super) fn checked_root_request_concurrently<B: GitBackend + Sync>(
     backend: &B,
     root: &Path,
@@ -351,8 +353,22 @@ pub(super) fn checked_root_request_concurrently<B: GitBackend + Sync>(
         .map(|dependency| round.plan_dependency(root, dependency))
         .collect();
     let results = round.run(backend, jobs, per_host);
-    proof.check(backend, |index, _| results[answers[index]].clone())
+    let remedy = if matches!(request.remote_check, Some(crate::RemoteCheck::Always)) {
+        PUBLISH_OR_FETCH
+    } else {
+        PUBLISH_FETCH_OR_CHECK_REMOTES
+    };
+    proof.check(backend, remedy, |index, _| results[answers[index]].clone())
 }
+
+/// What a refused root proof asks of the operator, as tag publication and a
+/// push that checks every remote ask it.
+const PUBLISH_OR_FETCH: &str = "publish the member, or fetch its advertised history and retry";
+
+/// What a refused root proof asks of the operator after a push under the
+/// default (§3.6). That push may not have checked the member's remote for its
+/// own push, so `--check-remotes` can publish the member.
+const PUBLISH_FETCH_OR_CHECK_REMOTES: &str = "publish the member by pushing a branch that contains the commit, fetch its advertised history and retry, or run gwz push --check-remotes, which re-checks the members and pushes those whose remote lacks their branch's commit";
 
 /// The root proof after the member transfers: the frozen root request, and, in
 /// lock order, the dependencies that no accepted push and no kept advertisement
@@ -395,10 +411,11 @@ impl RootProof {
 
     /// Prove each unproven dependency, in lock order, from the read that
     /// `advertisement` answers for it. The first read that fails, or that does
-    /// not show the commit available, refuses the root.
+    /// not show the commit available, refuses the root, asking for `remedy`.
     fn check<B: GitBackend>(
         self,
         backend: &B,
+        remedy: &str,
         mut advertisement: impl FnMut(usize, &PublicationDependency) -> ModelResult<Vec<GitRemoteRef>>,
     ) -> ModelResult<crate::PushRequest> {
         for (index, dependency) in self.unproven.iter().enumerate() {
@@ -411,7 +428,7 @@ impl RootProof {
                     format!(" (read through {})", dependency.read_url)
                 };
                 return Err(refused(format!(
-                    "root publication blocked: cannot prove member {} commit {} is available at its committed fetch remote {}{read_through}; publish the member, or fetch its advertised history and retry",
+                    "root publication blocked: cannot prove member {} commit {} is available at its committed fetch remote {}{read_through}; {remedy}",
                     dependency.member_id, dependency.commit, dependency.remote
                 )));
             }
