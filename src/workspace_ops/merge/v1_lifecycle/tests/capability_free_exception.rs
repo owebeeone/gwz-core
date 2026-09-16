@@ -100,12 +100,47 @@ fn boundary_door() -> String {
 }
 
 /// One carved production source, by crate-relative path, comment-stripped.
+///
+/// A carved row names a MODULE, not merely one file: where the module has been
+/// split into `<stem>/*.rs` submodules the arm is unchanged, so the row's own
+/// file and every file of its submodule directory are read together. Without
+/// this the split would leave a stub behind and the absence asserted of it
+/// would be vacuous — exactly what the byte floor below refuses.
 fn carved(relative: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("src")
         .join(relative);
-    let text = std::fs::read_to_string(&path)
+    let mut text = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("carved path `{relative}` is unreadable: {error}"));
+    let module_directory = path.with_extension("");
+    if module_directory.is_dir() {
+        let mut submodules: Vec<PathBuf> = std::fs::read_dir(&module_directory)
+            .unwrap_or_else(|error| {
+                panic!("carved module directory for `{relative}` is unreadable: {error}")
+            })
+            .map(|entry| {
+                entry
+                    .unwrap_or_else(|error| {
+                        panic!("carved module entry under `{relative}` is unreadable: {error}")
+                    })
+                    .path()
+            })
+            .filter(|entry| entry.extension().is_some_and(|extension| extension == "rs"))
+            .collect();
+        submodules.sort();
+        assert!(
+            !submodules.is_empty(),
+            "`{relative}` has a module directory with no Rust source in it; the carved \
+             module's writers cannot be read and any absence asserted below is vacuous"
+        );
+        for submodule in submodules {
+            let part = std::fs::read_to_string(&submodule).unwrap_or_else(|error| {
+                panic!("carved submodule of `{relative}` is unreadable: {error}")
+            });
+            text.push('\n');
+            text.push_str(&part);
+        }
+    }
     let stripped = masked_code(relative, &text);
     assert!(
         stripped.len() >= SOURCE_FLOOR,

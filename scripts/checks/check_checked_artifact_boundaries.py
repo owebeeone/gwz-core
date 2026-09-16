@@ -1754,7 +1754,20 @@ def check(source: Path) -> list[str]:
                 f"{CAPABILITY_FREE_EXCEPTION} names it and must be revised first"
             )
             continue
-        text = without_test_modules(mask_non_code(path.read_text(encoding="utf-8")))
+        # A carved row names a MODULE, not merely one file: when the module has
+        # been split into `<stem>/*.rs` submodules the arm is unchanged, so the
+        # row's own file and every file of its submodule directory are counted
+        # together. The key SET (hash-pinned above) therefore does not move when
+        # a carved module is split, and a writer cannot escape the pin by being
+        # relocated one directory down.
+        module_sources = [path]
+        module_dir = path.with_suffix("")
+        if module_dir.is_dir():
+            module_sources.extend(sorted(module_dir.rglob("*.rs")))
+        text = "\n".join(
+            without_test_modules(mask_non_code(each.read_text(encoding="utf-8")))
+            for each in module_sources
+        )
         o13 = relative in V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES
         actual = {
             token: found
