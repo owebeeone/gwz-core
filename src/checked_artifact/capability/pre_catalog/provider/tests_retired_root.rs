@@ -426,7 +426,7 @@ fn a_retired_root_past_the_frozen_retired_bound_refuses() {
 /// not adopt a staging directory that already holds retired action rows.
 #[test]
 fn the_bootstrap_staging_plan_still_refuses_a_populated_retired_root() {
-    let source = include_str!("interior.rs");
+    let source = include_str!("interior/staging.rs");
     assert!(
         source.contains("Some(RawCatalogInteriorFactV1::RetiredActionRoot { .. }) => {"),
         "interior::staging_plan must refuse a populated retired root by name, so a future \

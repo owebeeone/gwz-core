@@ -46,7 +46,7 @@ use std::path::{Path, PathBuf};
 ///   fixture, inside the same module tree; it holds no production path.
 const DECLARED_CLASSIFIER_NAMERS: &[&str] = &[
     "admission/driver.rs",
-    "capability/pre_catalog/provider/interior.rs",
+    "capability/pre_catalog/provider/interior/action_interior.rs",
     "protocol/admission.rs",
     "protocol/admission/owner.rs",
     "protocol/admission/test_support.rs",

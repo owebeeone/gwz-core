@@ -574,6 +574,19 @@ const FAULT_INJECTION_SOURCES: &[(&str, &str)] = &[
         "capability/pre_catalog/provider/namespace_mutation.rs",
         include_str!("../capability/pre_catalog/provider/namespace_mutation.rs"),
     ),
+    // Mechanical file split, no behaviour change: `namespace_mutation.rs` is now
+    // a module root whose parts live in `namespace_mutation/`. Two of those
+    // parts carry sites with the code they annotate — the edge vocabulary's
+    // `namespace.*` fault table in `edge.rs` and the `cleanup.*` worklist and
+    // alias lifecycle in `cleanup.rs`. No site was added, removed or re-owned.
+    (
+        "capability/pre_catalog/provider/namespace_mutation/edge.rs",
+        include_str!("../capability/pre_catalog/provider/namespace_mutation/edge.rs"),
+    ),
+    (
+        "capability/pre_catalog/provider/namespace_mutation/cleanup.rs",
+        include_str!("../capability/pre_catalog/provider/namespace_mutation/cleanup.rs"),
+    ),
     // R2-D Phase 2 Step 2.3, Phase 3 Step 3.1b and Phase 3 Step 3.2: all
     // twenty-eight activated `managed_bootstrap.*` sites. Same rule as the row above, and it holds for
     // the restart boundary too: `component_reobserve` marks "a fresh process
@@ -585,6 +598,20 @@ const FAULT_INJECTION_SOURCES: &[(&str, &str)] = &[
     (
         "capability/pre_catalog/provider/managed_mutation.rs",
         include_str!("../capability/pre_catalog/provider/managed_mutation.rs"),
+    ),
+    // Mechanical file split, no behaviour change: `managed_mutation.rs` is now a
+    // module root whose parts live in `managed_mutation/`. Two of those parts
+    // carry `managed_bootstrap.*` sites with the code they annotate — the
+    // ownership-marker writer in `marker.rs` and the intent scratch/record
+    // lifecycle in `intent.rs`. No site was added, removed or re-owned by the
+    // split; the declared count below moves by exactly the two files it minted.
+    (
+        "capability/pre_catalog/provider/managed_mutation/marker.rs",
+        include_str!("../capability/pre_catalog/provider/managed_mutation/marker.rs"),
+    ),
+    (
+        "capability/pre_catalog/provider/managed_mutation/intent.rs",
+        include_str!("../capability/pre_catalog/provider/managed_mutation/intent.rs"),
     ),
     // R2-D Phase 2 Step 2.4: the four `record.*` *parse* sites. They sit with
     // the R1 bounded parse owner rather than with a mutation file because they
@@ -871,9 +898,16 @@ fn the_declared_injection_sources_are_every_production_source_holding_sites() {
     // adds a source must move both. It stood at nine through R2-D and moves to
     // ten exactly once across R2-E's E1-E3, at E2, with `barrier_mutation.rs`
     // (`GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT.md` §6.1).
+    //
+    // A mechanical file split moves this count too, and only by the files it
+    // mints: ten → twelve for `managed_mutation.rs` becoming a module root whose
+    // `marker.rs` and `intent.rs` parts carry the sites they already held, and
+    // twelve → fourteen for `namespace_mutation.rs` becoming one whose `edge.rs`
+    // and `cleanup.rs` parts do the same. No family gained, lost or re-owned a
+    // site.
     assert_eq!(
         declared.len(),
-        10,
+        14,
         "the declared-and-anchored production source list changed size; the step that adds or \
          removes a source owns that edit together with the freeze's §3.5 inventory addendum"
     );

@@ -182,7 +182,13 @@ fn the_widened_interior_bound_is_the_frozen_root_entry_budget() {
     );
     assert_eq!(MAX_INFRASTRUCTURE_ENTRIES, InfrastructureSlotV1::ALL.len());
 
-    let interior = include_str!("../capability/pre_catalog/provider/interior.rs");
+    // `interior.rs` is a module root since the mechanical file split: the bound
+    // lives in its `bounds.rs` part and the root grammar in `catalog_interior.rs`,
+    // so the pin reads both halves together.
+    let interior = concat!(
+        include_str!("../capability/pre_catalog/provider/interior/bounds.rs"),
+        include_str!("../capability/pre_catalog/provider/interior/catalog_interior.rs"),
+    );
     assert!(
         interior.contains("const MAX_INTERIOR_ENTRIES: usize = MAX_ROOT_ENTRIES;"),
         "the interior observer no longer bounds the catalog root by the frozen root budget"

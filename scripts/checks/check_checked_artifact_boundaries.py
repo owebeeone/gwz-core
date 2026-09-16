@@ -1231,8 +1231,12 @@ CATALOG_LEASE_REFERENCE_SETS = {
         "checked_artifact/capability/pre_catalog/provider.rs",
         "checked_artifact/capability/pre_catalog/provider/completed.rs",
     },
+    # `interior.rs` is a module root since the mechanical file split; its
+    # `owner_issue_for_catalog` readers moved to the two parts that own the
+    # records and staging classification, with no new reader.
     "owner_issue_for_catalog": {
-        "checked_artifact/capability/pre_catalog/provider/interior.rs",
+        "checked_artifact/capability/pre_catalog/provider/interior/records.rs",
+        "checked_artifact/capability/pre_catalog/provider/interior/staging.rs",
         "checked_artifact/protocol/infrastructure_record.rs",
     },
     "CatalogLeaseSetV1": {
