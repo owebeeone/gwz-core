@@ -574,6 +574,19 @@ const FAULT_INJECTION_SOURCES: &[(&str, &str)] = &[
         "capability/pre_catalog/provider/namespace_mutation.rs",
         include_str!("../capability/pre_catalog/provider/namespace_mutation.rs"),
     ),
+    // Mechanical file split, no behaviour change: `namespace_mutation.rs` is now
+    // a module root whose parts live in `namespace_mutation/`. Two of those
+    // parts carry sites with the code they annotate — the edge vocabulary's
+    // `namespace.*` fault table in `edge.rs` and the `cleanup.*` worklist and
+    // alias lifecycle in `cleanup.rs`. No site was added, removed or re-owned.
+    (
+        "capability/pre_catalog/provider/namespace_mutation/edge.rs",
+        include_str!("../capability/pre_catalog/provider/namespace_mutation/edge.rs"),
+    ),
+    (
+        "capability/pre_catalog/provider/namespace_mutation/cleanup.rs",
+        include_str!("../capability/pre_catalog/provider/namespace_mutation/cleanup.rs"),
+    ),
     // R2-D Phase 2 Step 2.3, Phase 3 Step 3.1b and Phase 3 Step 3.2: all
     // twenty-eight activated `managed_bootstrap.*` sites. Same rule as the row above, and it holds for
     // the restart boundary too: `component_reobserve` marks "a fresh process
@@ -888,11 +901,13 @@ fn the_declared_injection_sources_are_every_production_source_holding_sites() {
     //
     // A mechanical file split moves this count too, and only by the files it
     // mints: ten → twelve for `managed_mutation.rs` becoming a module root whose
-    // `marker.rs` and `intent.rs` parts carry the sites they already held. No
-    // family gained, lost or re-owned a site.
+    // `marker.rs` and `intent.rs` parts carry the sites they already held, and
+    // twelve → fourteen for `namespace_mutation.rs` becoming one whose `edge.rs`
+    // and `cleanup.rs` parts do the same. No family gained, lost or re-owned a
+    // site.
     assert_eq!(
         declared.len(),
-        12,
+        14,
         "the declared-and-anchored production source list changed size; the step that adds or \
          removes a source owns that edit together with the freeze's §3.5 inventory addendum"
     );

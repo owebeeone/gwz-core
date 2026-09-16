@@ -3,8 +3,6 @@ use crate::checked_artifact::capability::{
     CanonicalPathIdentityV1, CheckedFsError, DurableIdentityProvider, DurableObjectIdentityV1,
     PathComponentMode, PlatformCapability,
 };
-#[cfg(test)]
-use crate::checked_artifact::protocol::{ProtocolRecordKindV1, managed_marker_name};
 use crate::filesystem::FsKind;
 use crate::filesystem::{FsDirectory as Dir, FsOpenMode};
 use std::ffi::OsStr;
