@@ -3,7 +3,7 @@
 # first-party dependencies: none (gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md §2).
 [package]
 name = "gwz-copy-contract"
-version = "0.0.3"
+version = "0.0.4"
 edition = "2024"
 rust-version = "1.95"
 license = "GPL-2.0-only"
