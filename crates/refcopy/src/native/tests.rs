@@ -16,7 +16,7 @@ use std::path::Path;
 
 use gwz_copy_contract::{CopyErrorCategory, CopyMode, CopyRequest, contract_tests::TempTree};
 
-use super::attempt::{Attempt, device_of, device_of_nearest_existing};
+use super::attempt::Attempt;
 use super::*;
 use crate::{NativeCapability, NativeMechanism};
 
@@ -170,6 +170,8 @@ fn the_probe_answers_unknown_whenever_it_cannot_rule_the_pair_out() {
 fn the_device_of_a_new_path_is_its_nearest_existing_ancestors() {
     use std::os::unix::fs::MetadataExt;
 
+    use super::attempt::device_of_nearest_existing;
+
     let tree = TempTree::new("r-probe-device");
     let deep = tree.path().join("a/b/c/not-created-yet");
     assert_eq!(
@@ -191,6 +193,8 @@ fn the_device_of_a_new_path_is_its_nearest_existing_ancestors() {
 #[cfg(unix)]
 #[test]
 fn a_pair_on_two_devices_is_the_one_thing_the_probe_rules_out() {
+    use super::attempt::device_of;
+
     let tree = TempTree::new("r-probe-cross-device");
     let elsewhere = Path::new("/dev");
     if MECHANISM == NativeMechanism::None {
