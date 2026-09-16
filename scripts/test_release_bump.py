@@ -162,11 +162,15 @@ class InternalBumpTests(unittest.TestCase):
         self.assertIn(f"at {following}", result.stdout)
 
     def test_crates_that_disagree_on_the_version_fail_and_are_named(self) -> None:
+        # Break the copy relative to whatever line the real tree is on; a
+        # hard-coded version silently stops breaking anything once the line
+        # moves past it, and the refusal below is then never exercised.
+        current = release.read_internal_version(self.tree)
         odd = self.tree / "crates" / "family-model" / "Cargo.toml"
-        odd.write_text(
-            odd.read_text(encoding="utf-8").replace('version = "0.0.1"', 'version = "0.0.9"', 1),
-            encoding="utf-8",
-        )
+        before = odd.read_text(encoding="utf-8")
+        after = before.replace(f'version = "{current}"', 'version = "0.0.9"', 1)
+        self.assertNotEqual(before, after, "the fixture did not change the package version")
+        odd.write_text(after, encoding="utf-8")
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
             release.read_internal_version(self.tree)
@@ -179,19 +183,21 @@ class InternalBumpTests(unittest.TestCase):
         # A renamed edge (`package = "gwz-..."`) is a real internal edge that
         # the line-targeted rewrite does not match. It must stop the release,
         # not be left behind on the previous version.
+        current = release.read_internal_version(self.tree)
+        following = release.next_internal_version(current)
         manifest = self.tree / "crates" / "history-check" / "Cargo.toml"
-        manifest.write_text(
-            manifest.read_text(encoding="utf-8").replace(
-                'gwz-repo-contract = { path = "../repo-contract", version = "0.0.1" }',
-                'contract = { package = "gwz-repo-contract", path = "../repo-contract", '
-                'version = "0.0.1" }',
-                1,
-            ),
-            encoding="utf-8",
+        before = manifest.read_text(encoding="utf-8")
+        after = before.replace(
+            f'gwz-repo-contract = {{ path = "../repo-contract", version = "{current}" }}',
+            'contract = { package = "gwz-repo-contract", path = "../repo-contract", '
+            f'version = "{current}" }}',
+            1,
         )
+        self.assertNotEqual(before, after, "the fixture did not rename the edge")
+        manifest.write_text(after, encoding="utf-8")
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr), self.assertRaises(SystemExit):
-            release.bump_internal_version("0.0.1", "0.0.2", self.tree)
+            release.bump_internal_version(current, following, self.tree)
         self.assertIn("an edge is spelled in a way the bump cannot reach", stderr.getvalue())
 
 
