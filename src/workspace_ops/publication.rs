@@ -387,25 +387,26 @@ impl RootProof {
         reads: &ReadPreflight,
     ) -> ModelResult<Self> {
         let pinned = freeze_root_request(backend, root, request)?;
-        let unproven = root_dependencies(backend, root, &pinned)?
-            .into_iter()
-            .filter(|dependency| {
-                let proven = if reads.voided {
-                    false
-                } else if pushed_to(dependency, published).is_some() {
-                    dependency_was_published(backend, dependency, published)
-                } else {
-                    reads
-                        .kept(
-                            dependency.identity_repo(),
-                            &dependency.remote,
-                            &dependency.read_url,
-                        )
-                        .is_some_and(|advertised| available(backend, dependency, advertised))
-                };
-                !proven
-            })
-            .collect();
+        let mut unproven = Vec::new();
+        for dependency in root_dependencies(backend, root, &pinned)? {
+            let proven = if reads.voided {
+                false
+            } else if pushed_to(&dependency, published).is_some() {
+                dependency_was_published(backend, &dependency, published)?
+            } else {
+                match reads.kept(
+                    dependency.identity_repo(),
+                    &dependency.remote,
+                    &dependency.read_url,
+                ) {
+                    Some(advertised) => available(backend, &dependency, advertised)?,
+                    None => false,
+                }
+            };
+            if !proven {
+                unproven.push(dependency);
+            }
+        }
         Ok(Self { pinned, unproven })
     }
 
@@ -420,7 +421,7 @@ impl RootProof {
     ) -> ModelResult<crate::PushRequest> {
         for (index, dependency) in self.unproven.iter().enumerate() {
             let advertised = advertisement(index, dependency)?;
-            if !available(backend, dependency, &advertised) {
+            if !available(backend, dependency, &advertised)? {
                 // Name the URL that was read when it is not the committed one.
                 let read_through = if dependency.read_url == dependency.url {
                     String::new()
@@ -439,21 +440,42 @@ impl RootProof {
 
 /// Whether an advertisement proves the dependency's commit available: the
 /// commit is advertised, or, for a materialized member, is an ancestor of an
-/// advertised object.
+/// advertised object. An advertised commit proves it without asking ancestry.
+/// An ancestry query that fails is a local Git error, not a disproof, so it is
+/// reported when nothing else proves the commit: none of the remedies a
+/// publication refusal names would repair a missing or shallow object.
 fn available<B: GitBackend>(
     backend: &B,
     dependency: &PublicationDependency,
     advertised: &[GitRemoteRef],
-) -> bool {
-    advertised
+) -> ModelResult<bool> {
+    if advertised
         .iter()
         .any(|reference| reference.target == dependency.commit)
-        || (dependency.identity_repo().is_some()
-            && advertised.iter().any(|reference| {
-                backend
-                    .is_ancestor(&dependency.path, &dependency.commit, &reference.target)
-                    .unwrap_or(false)
-            }))
+    {
+        return Ok(true);
+    }
+    if dependency.identity_repo().is_none() {
+        return Ok(false);
+    }
+    let mut failure = None;
+    for reference in advertised {
+        match backend.is_ancestor(&dependency.path, &dependency.commit, &reference.target) {
+            Ok(true) => {
+                return Ok(true);
+            }
+            Ok(false) => {}
+            Err(error) => {
+                if failure.is_none() {
+                    failure = Some(error);
+                }
+            }
+        }
+    }
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(false),
+    }
 }
 
 /// This operation's accepted push to the dependency's destination: its
@@ -472,29 +494,53 @@ fn pushed_to<'a>(
 /// during this operation is stronger evidence than a read (D8). A remote
 /// accepts a ref update only with the full history of the new object, so the
 /// push proves the locked commit when that is a pushed source or an ancestor
-/// of one; an ancestry error proves nothing. Ordinary and forced pushes both
-/// count: the `+` prefix decides only whether the remote may rewind the
-/// destination, not which object it now holds. A forced or deleting transfer
-/// voids this evidence for the whole operation instead
+/// of one. A pushed source equal to the commit proves it without asking
+/// ancestry; an ancestry query that fails is a local Git error, reported when
+/// nothing else proves the commit rather than read as a disproof, because no
+/// remedy a publication refusal names would repair it. Ordinary and forced
+/// pushes both count: the `+` prefix decides only whether the remote may
+/// rewind the destination, not which object it now holds. A forced or deleting
+/// transfer voids this evidence for the whole operation instead
 /// ([`ReadPreflight::expect_transfers`]).
 pub(super) fn dependency_was_published<B: GitBackend>(
     backend: &B,
     dependency: &PublicationDependency,
     published: &BTreeMap<String, GitPreparedPush>,
-) -> bool {
+) -> ModelResult<bool> {
     let Some(plan) = pushed_to(dependency, published) else {
-        return false;
+        return Ok(false);
     };
-    plan.refspecs
+    let mut ancestry = Vec::new();
+    for (source, _) in plan
+        .refspecs
         .iter()
         .filter_map(|refspec| refspec_parts(refspec))
-        .any(|(source, _)| {
-            source == dependency.commit
-                || (!source.is_empty()
-                    && backend
-                        .is_ancestor(&dependency.path, &dependency.commit, source)
-                        .unwrap_or(false))
-        })
+    {
+        if source == dependency.commit {
+            return Ok(true);
+        }
+        if !source.is_empty() {
+            ancestry.push(source);
+        }
+    }
+    let mut failure = None;
+    for source in ancestry {
+        match backend.is_ancestor(&dependency.path, &dependency.commit, source) {
+            Ok(true) => {
+                return Ok(true);
+            }
+            Ok(false) => {}
+            Err(error) => {
+                if failure.is_none() {
+                    failure = Some(error);
+                }
+            }
+        }
+    }
+    match failure {
+        Some(error) => Err(error),
+        None => Ok(false),
+    }
 }
 
 pub(super) struct PublicationDependency {

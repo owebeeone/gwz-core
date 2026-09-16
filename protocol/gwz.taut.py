@@ -1087,7 +1087,8 @@ SCHEMA = schema(
     TransportOptions=Msg(
         default_identity=F(1, STR, optional=True),
         remote_identities=F(2, List(Ref.RemoteSshIdentity)),
-        # Requested URL scheme; absent means the workspace preference, then manifest.
+        # Requested URL scheme; the key is always present and carries Null when
+        # unset, which means the workspace preference, then manifest.
         url_scheme=F(3, Ref.UrlScheme, optional=True)),
 
     # The caller filesystem context captured before this request is serialized.
@@ -1906,7 +1907,8 @@ SCHEMA = schema(
         remote=F(2, STR, optional=True),
         # Refspec override for this request.
         refspec=F(3, STR, optional=True),
-        # Requested remote check; absent means `changed`.
+        # Requested remote check; the key is always present and carries Null
+        # when unset, which means `changed`.
         remote_check=F(4, Ref.RemoteCheck, optional=True)),
 
     # Coordinate native Git stash operations across selected members.
