@@ -1211,7 +1211,8 @@ fn a_completed_member_push_counts_as_publication_with_or_without_force() {
         )])
     };
     // D8 (step 3.3): the push proves the commit when the commit is a pushed
-    // source or an ancestor of one; an ancestry error proves nothing.
+    // source or an ancestor of one; an ancestry error is reported, not read as
+    // a disproof.
     use super::g01::tracking_backend::TrackingBackend;
     let backend = TrackingBackend::new(1);
     let (descendant, other, shallow) = (
@@ -1228,36 +1229,19 @@ fn a_completed_member_push_counts_as_publication_with_or_without_force() {
     let ordinary = format!("{commit}:refs/heads/main");
     // The ordinary form is the case the shortcut used to miss, which cost
     // every published member a second remote read after its push.
-    assert!(was_published(&ordinary, "origin", url));
-    assert!(was_published(
-        &format!("+{commit}:refs/heads/main"),
-        "origin",
-        url
-    ));
-    assert!(was_published(
-        &format!("{descendant}:refs/heads/main"),
-        "origin",
-        url
-    ));
-    for unrelated in [other, shallow] {
-        assert!(!was_published(
-            &format!("{unrelated}:refs/heads/main"),
-            "origin",
-            url
-        ));
-    }
-    assert!(!was_published(&ordinary, "upstream", url));
-    assert!(!was_published(
-        &ordinary,
-        "origin",
-        "ssh://elsewhere.invalid/app.git"
-    ));
+    assert!(was_published(&ordinary, "origin", url).unwrap());
+    assert!(was_published(&format!("+{commit}:refs/heads/main"), "origin", url).unwrap());
+    assert!(was_published(&format!("{descendant}:refs/heads/main"), "origin", url).unwrap());
+    assert!(!was_published(&format!("{other}:refs/heads/main"), "origin", url).unwrap());
+    // An ancestry error is a local Git failure, so it is reported instead of
+    // silently answering "not published".
+    let error = was_published(&format!("{shallow}:refs/heads/main"), "origin", url)
+        .expect_err("an ancestry error must be reported");
+    assert_eq!(error.message, "shallow history");
+    assert!(!was_published(&ordinary, "upstream", url).unwrap());
+    assert!(!was_published(&ordinary, "origin", "ssh://elsewhere.invalid/app.git").unwrap());
     // Only the read URL counts, even though the committed URL names the same
     // repository.
-    assert!(!was_published(&ordinary, "origin", &dependency.url));
-    assert!(!dependency_was_published(
-        &backend,
-        &dependency,
-        &BTreeMap::new()
-    ));
+    assert!(!was_published(&ordinary, "origin", &dependency.url).unwrap());
+    assert!(!dependency_was_published(&backend, &dependency, &BTreeMap::new()).unwrap());
 }

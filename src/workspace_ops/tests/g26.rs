@@ -503,6 +503,77 @@ fn a_proof_refusal_names_the_read_url_when_it_is_not_the_committed_url() {
     }
 }
 
+/// Step 3.3 (§3.5 rule 1): an ancestry query that fails is a local Git error,
+/// not a disproof. None of the publish-or-fetch remedies would repair a missing
+/// or shallow object, so the refusal carries the Git error itself.
+#[test]
+fn an_ancestry_error_refuses_the_root_with_the_git_error_not_the_publish_remedy() {
+    let fixture = PublicationFixture::new(ROOT_SSH, APP_SSH, LIB_SSH);
+    // `app`'s remote advertises only its base, so the proof asks whether the
+    // locked commit is an ancestor of that object -- and the query fails.
+    fixture
+        .backend
+        .set_ancestry(APP_HEAD, APP_BASE, Err("shallow history"));
+
+    let response = fixture.push(root_only());
+
+    let row = response.response.members.single();
+    assert_eq!(row.status, crate::MemberStatus::Rejected);
+    let message = &row.error.as_ref().unwrap().message;
+    assert_eq!(message, "shallow history");
+    assert!(!message.contains("publish the member"), "{message}");
+    assert!(!message.contains("--check-remotes"), "{message}");
+    assert!(fixture.backend.prepared_pushes().is_empty());
+}
+
+/// Step 3.3 (§3.5 rule 1, D9): an advertised ref equal to the locked commit
+/// proves it outright, so ancestry is never asked and a failing ancestry answer
+/// cannot refuse what the advertisement already proves.
+#[test]
+fn an_exact_advertised_match_proves_a_dependency_without_asking_ancestry() {
+    let fixture = PublicationFixture::new(ROOT_SSH, APP_SSH, LIB_SSH);
+    fixture
+        .backend
+        .serve(&[APP_SSH, APP_HTTPS], &[(MAIN, APP_HEAD)]);
+    fixture
+        .backend
+        .set_ancestry(APP_HEAD, APP_HEAD, Err("ancestry must not be asked"));
+
+    let response = fixture.push(root_only());
+
+    assert_eq!(
+        response.response.members.single().status,
+        crate::MemberStatus::Ok
+    );
+}
+
+/// Step 3.3 (D8): a pushed refspec source equal to the locked commit proves the
+/// member's own push outright, so ancestry is never asked there either.
+#[test]
+fn an_exact_refspec_source_proves_a_pushed_dependency_without_asking_ancestry() {
+    let fixture = PublicationFixture::new(ROOT_SSH, APP_SSH, LIB_SSH);
+    // `app` is behind its remote's base, so it pushes exactly its locked commit.
+    fixture
+        .backend
+        .set_ancestry(APP_HEAD, APP_HEAD, Err("ancestry must not be asked"));
+
+    let response = fixture.push(None);
+
+    assert_eq!(
+        response.response.meta.aggregate_status,
+        crate::AggregateStatus::Ok
+    );
+    let app = fixture.root.join("repos/app");
+    assert!(
+        fixture
+            .backend
+            .remote_calls()
+            .contains(&push_to(&app, APP_SSH, APP_HEAD)),
+        "{:?}",
+        fixture.backend.remote_calls()
+    );
+}
+
 /// Step 3.3 (§2.3): nothing to publish. Each repository is read once and is
 /// already on origin, so nothing is pushed and the root is proven from those
 /// reads: N+1 calls, with every row and the aggregate `noop`.
