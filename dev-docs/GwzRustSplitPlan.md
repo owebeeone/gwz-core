@@ -246,6 +246,9 @@ and the root `cargo test -p gwz`.
 - **No new crates.** Nothing under `crates/` was added; 13 of the 14 are
   published to crates.io, so a new crate would be a permanent release
   artifact. Splitting within a crate produces none.
+- **Released** in gwz 1.0.13 on 2026-09-16 (gwz-core tag `v1.0.13`, one commit
+  after the split round plus the refcopy test fix `3aa81ce8`), after the
+  dispatched Windows matrix passed on the split tree.
 - **Follow-ups, not done:** `crates/workspace-install/src/tests.rs` (1258) and
   `src/test_support.rs` (545); `PROTECTED_SOURCE_DIGESTS` in the boundary check
   is defined but never compared against anything; the line-number citation at
@@ -261,6 +264,8 @@ and the root `cargo test -p gwz`.
 - **A formatter run inside a split.** It destroys the pure-move diff. Formatting
   is always a separate pass.
 - **Merge conflicts with in-flight work.** Mitigated by §6.
-- **`gwz-alpha` drift.** A rebuild after any step changes the binary hash that
-  the workspace root's `dev-docs/GwzUrlSchemePushAcceptanceRunbook.md` pins in
-  P1. Refresh that table with the rebuild, or run the acceptance first.
+- **Binary drift.** The workspace root's
+  `dev-docs/GwzUrlSchemePushAcceptanceRunbook.md` pins the binary it accepts
+  in P1 (the installed gwz 1.0.13 since 2026-09-16). A step that lands before
+  the acceptance runs is not in that binary; either run the acceptance first or
+  re-pin after the next release.
