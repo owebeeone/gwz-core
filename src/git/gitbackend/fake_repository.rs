@@ -4,70 +4,14 @@ use super::*;
 use crate::filesystem::{FileSystem, FsKind, make_filesystem};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
-
 mod fixture;
 mod root;
+mod state;
+mod worktree_io;
 
-type FileTree = BTreeMap<String, Vec<u8>>;
+pub(crate) use state::*;
+use worktree_io::*;
 
-#[derive(Clone)]
-pub(crate) struct FakeGitRepository {
-    pub(super) filesystem: Arc<dyn FileSystem>,
-    repositories: Arc<Mutex<BTreeMap<PathBuf, RepositoryState>>>,
-}
-impl Default for FakeGitRepository {
-    fn default() -> Self {
-        Self::with_filesystem(Arc::new(make_filesystem()))
-    }
-}
-impl FakeGitRepository {
-    pub(crate) fn with_filesystem(filesystem: Arc<dyn FileSystem>) -> Self {
-        Self {
-            filesystem,
-            repositories: Default::default(),
-        }
-    }
-
-    /// Factory-created handles share repository state, just as native handles
-    /// opening the same path see the same repository. Direct Default fixtures
-    /// retain isolated state for adapter contract tests.
-    pub(super) fn shared() -> Self {
-        static REPOSITORIES: OnceLock<Arc<Mutex<BTreeMap<PathBuf, RepositoryState>>>> =
-            OnceLock::new();
-        Self {
-            filesystem: Arc::new(make_filesystem()),
-            repositories: Arc::clone(REPOSITORIES.get_or_init(Default::default)),
-        }
-    }
-}
-#[derive(Default)]
-struct RepositoryState {
-    index: BTreeMap<String, Vec<u8>>,
-    index_override: Option<Vec<TestIndexEntry>>,
-    blobs: BTreeMap<String, Vec<u8>>,
-    metadata: BTreeMap<String, TestCommit>,
-    config: BTreeMap<String, Vec<String>>,
-    attached_ref: Option<String>,
-    sha256: bool,
-    detached: bool,
-    commits: BTreeMap<String, BTreeMap<String, Vec<u8>>>,
-    head: Option<String>,
-    refs: BTreeMap<String, String>,
-    symbolic_refs: BTreeMap<String, String>,
-    parents: BTreeMap<String, Option<String>>,
-    stashes: BTreeMap<String, GitPreservationStashEvidence>,
-    stash_snapshots: BTreeMap<String, (FileTree, FileTree)>,
-    repository_state: Option<GitRepositoryState>,
-    merge_head: Option<String>,
-    merge_conflict_snapshot: Option<GitMergeConflictSnapshot>,
-    merge_index: Option<Vec<TestIndexEntry>>,
-}
-fn unsupported<T>(operation: &str) -> ModelResult<T> {
-    Err(ModelError::new(
-        ErrorCode::UnsupportedOperation,
-        format!("fake Git operation not implemented: {operation}"),
-    ))
-}
 #[allow(unused_variables)]
 impl GitRepository for FakeGitRepository {
     fn test_init_repo(&self, repo: &Path, spec: &TestRepoSpec) -> ModelResult<()> {
@@ -1132,99 +1076,4 @@ impl GitRepository for FakeGitRepository {
             .ok_or_else(|| failed("commit missing"))?;
         Ok(tree.get(relative_path).cloned())
     }
-}
-
-fn failed(message: impl Into<String>) -> ModelError {
-    ModelError::new(ErrorCode::GitCommandFailed, message)
-}
-fn read_worktree(
-    filesystem: &dyn FileSystem,
-    root: &Path,
-    ignored: &[String],
-    tracked: &FileTree,
-) -> ModelResult<FileTree> {
-    fn visit(
-        filesystem: &dyn FileSystem,
-        root: &Path,
-        directory: &Path,
-        files: &mut FileTree,
-        ignored: &[String],
-        tracked: &FileTree,
-    ) -> ModelResult<()> {
-        for entry in filesystem
-            .read_directory(directory)
-            .map_err(|e| failed(e.to_string()))?
-        {
-            if entry.name == ".git" {
-                continue;
-            }
-            let path = directory.join(&entry.name);
-            let name = path
-                .strip_prefix(root)
-                .unwrap()
-                .to_string_lossy()
-                .replace('\\', "/");
-            let prefix = format!("{name}/");
-            let excluded = ignored
-                .iter()
-                .any(|rule| name == rule.trim_end_matches('/') || name.starts_with(rule));
-            if excluded
-                && !tracked.contains_key(&name)
-                && !tracked.keys().any(|key| key.starts_with(&prefix))
-            {
-                continue;
-            }
-            if entry.kind == FsKind::Directory {
-                visit(filesystem, root, &path, files, ignored, tracked)?;
-            } else if entry.kind == FsKind::File {
-                files.insert(
-                    name,
-                    filesystem.read(&path).map_err(|e| failed(e.to_string()))?,
-                );
-            } else {
-                return unsupported("non-regular worktree entry");
-            }
-        }
-        Ok(())
-    }
-    let mut files = BTreeMap::new();
-    visit(filesystem, root, root, &mut files, ignored, tracked)?;
-    Ok(files)
-}
-
-fn repository_key(filesystem: &dyn FileSystem, path: &Path) -> PathBuf {
-    let canonical = filesystem
-        .canonical_path(path)
-        .unwrap_or_else(|_| path.to_path_buf());
-    if canonical.file_name().is_some_and(|name| name == ".git") {
-        canonical.parent().unwrap().to_path_buf()
-    } else {
-        canonical
-    }
-}
-
-fn write_worktree_file(filesystem: &dyn FileSystem, path: &Path, bytes: &[u8]) -> ModelResult<()> {
-    filesystem
-        .create_directories(
-            path.parent()
-                .ok_or_else(|| failed("worktree file has no parent"))?,
-        )
-        .map_err(|e| failed(e.to_string()))?;
-    match filesystem.remove_file(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(failed(error.to_string())),
-    }
-    let file = filesystem
-        .create_file(path)
-        .map_err(|e| failed(e.to_string()))?;
-    filesystem
-        .write_all(&file, bytes)
-        .map_err(|e| failed(e.to_string()))
-}
-
-fn remove_worktree_file(filesystem: &dyn FileSystem, path: &Path) -> ModelResult<()> {
-    filesystem
-        .remove_file(path)
-        .map_err(|e| failed(e.to_string()))
 }

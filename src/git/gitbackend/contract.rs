@@ -1,144 +1,18 @@
 use super::*;
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct GitPreservationDirtySummary {
-    pub staged: bool,
-    pub unstaged: bool,
-    pub untracked: bool,
-}
+mod managed_form;
+mod observation;
+mod root_preservation;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GitPreservationImage {
-    pub preimage_sha256: String,
-    pub dirty: GitPreservationDirtySummary,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GitPreservationStashEvidence {
-    pub object_id: String,
-    pub message: String,
-    pub head_commit: String,
-    pub image: GitPreservationImage,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum GitDirectRefObservation {
-    Absent,
-    Direct { target: String },
-    NonDirect,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum GitRootManagedObject {
-    MarkerWorktree,
-    LockWorktree,
-    Index,
-    MarkerParentDirectory,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GitRootManagedIndexEntry {
-    pub path: Vec<u8>,
-    pub object_id: String,
-    pub mode: u32,
-    pub stage: u8,
-    pub assume_valid: bool,
-    pub skip_worktree: bool,
-    pub intent_to_add: bool,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum GitRootManagedIndexFact {
-    Absent { path: Vec<u8> },
-    Present(GitRootManagedIndexEntry),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GitRootManagedIndexForm {
-    pub marker: GitRootManagedIndexFact,
-    pub lock: GitRootManagedIndexFact,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GitRootManagedForm {
-    pub marker: Option<GitCandidateFile>,
-    pub lock: GitCandidateFile,
-    pub index: GitRootManagedIndexForm,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GitRootPreservationSpec {
-    pub attached_branch: String,
-    pub attached_commit: String,
-    pub restore_commit: String,
-    pub managed_marker_path: String,
-    pub attached_clean_form: GitRootManagedForm,
-    pub restore_clean_form: GitRootManagedForm,
-    pub handoff_form: GitRootManagedForm,
-    pub handoff_boundary: Vec<u8>,
-    /// Nested member roots are never part of the root repository checkout,
-    /// even while the publication boundary itself is being normalized.
-    pub excluded_worktree_paths: Vec<String>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum GitRootManagedFormName {
-    AttachedClean,
-    RestoreClean,
-    Handoff,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GitRootManagedTransition {
-    pub object: GitRootManagedObject,
-    pub source: GitRootManagedFormName,
-    pub goal: GitRootManagedFormName,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum GitRootPreservationPhysicalStep {
-    Managed(GitRootManagedTransition),
-    CreateStash { merge_id: String },
-    ResetAttachedRef,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum GitRootPreservationGuard {
-    NormalizedPreimage { sha256: String },
-    OtherwiseClean,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum GitRootPreservationStepObservation {
-    Before,
-    After,
-    AfterNeedsDurability,
-    Ambiguous,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum GitCheckedPreservationMutation {
-    Applied,
-    AlreadyComplete,
-    StashCreated(GitStashPushResult),
-    RefReset(GitUpdateResult),
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GitPreparedRootStash {
-    pub normalized_image: GitPreservationImage,
-}
-
-/// Exact paths whose live facts are proved by another aggregate observer.
-/// Worktree and index ownership are intentionally separate domains.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct GitCheckoutOverlay {
-    pub worktree_paths: Vec<String>,
-    pub index_paths: Vec<String>,
-}
+pub use managed_form::*;
+pub use observation::*;
+pub use root_preservation::*;
 
 /// Whether a prepared merge may publish a fast-forward or must create a
 /// two-parent merge commit when the source is strictly ahead.
+///
+/// Declared here, beside the trait's own rejection arm: the no-ff wire suite
+/// pins the exact set of files that spell this variant.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GitPreparedMergeMode {
     AllowFastForward,
