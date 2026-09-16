@@ -7,7 +7,7 @@ use std::cell::Cell;
 use gwz_copy_contract::{CancelFlag, CopyMode, NeverCancelled, contract_tests::TempTree};
 
 use super::*;
-use crate::native::Attempt;
+use crate::native::attempt::Attempt;
 
 /// A writer that accepts at most `chunk` bytes per call and interrupts every
 /// other call, so the copier's write loop must retry and advance.

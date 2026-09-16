@@ -21,7 +21,8 @@ use gwz_copy_contract::{
     contract_tests::{TempTree, run_all},
 };
 
-use crate::native::{Attempt, Plan};
+use crate::native::Plan;
+use crate::native::attempt::Attempt;
 use crate::{NativeCapability, NativeMechanism, SystemTreeCopier};
 
 // ---------------------------------------------------------------- helpers

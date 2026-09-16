@@ -12,11 +12,13 @@
 //! answers these Win32 codes is Windows CI's.
 
 use std::fs;
+use std::path::Path;
 
 use gwz_copy_contract::{CopyErrorCategory, CopyMode, CopyRequest, contract_tests::TempTree};
 
+use super::attempt::{Attempt, device_of, device_of_nearest_existing};
 use super::*;
-use crate::NativeMechanism;
+use crate::{NativeCapability, NativeMechanism};
 
 // ------------------------------------------------------------ errno tables
 
