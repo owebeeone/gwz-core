@@ -57,9 +57,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use gwz_family_model::{FamilyView, MemberName, MemberState, ROOT_NAME, TargetObservation};
+use gwz_family_model::{
+    CloneMode, FamilyView, MemberName, MemberState, ROOT_NAME, TargetObservation,
+};
 use gwz_family_store::YamlFamilyStore;
-use gwz_history_check::{HistoryOutcome, Limits, NeverCancelled, Witness, check_history};
+use gwz_history_check::{
+    HistoryOutcome, Limits, NeverCancelled, Witness, WitnessPolicy, check_history_under,
+};
 use gwz_local_disposal::{
     DisposalPorts, HistoryAnswer, HistoryQuery, PortError, RemovalFailure, RepositoryEvidence,
     TargetEvidence,
@@ -150,6 +154,31 @@ impl CoreDisposalPorts {
             merge,
             stash,
             other: Vec::new(),
+        }
+    }
+
+    /// Which of a surviving witness's own retained roots may certify that
+    /// history survives this disposal (R4).
+    ///
+    /// A verbatim lane is a **copy**: it carries the family's own reflog
+    /// entries and native stash entries, and deleting it leaves every one
+    /// of them where it was. Under the durable rule those cannot cover, so
+    /// every lane of a workspace that has a stash or a reflog-only commit
+    /// refuses -- 52 of the 112 entries measured in gwz-dev
+    /// `dev-docs/GwzLaneIssues.md`, none of them the lane's doing. So a
+    /// verbatim lane is checked under
+    /// [`WitnessPolicy::IdenticalCopy`]: the witness's own reflog and stash
+    /// roots may cover, at the identical object id and with the same
+    /// whole-subgraph proof. A root no surviving repository holds at all is
+    /// unpreserved under either policy, so a lane holding the only copy
+    /// still refuses (R0.1).
+    ///
+    /// A constructed lane (clean, bare) copied no such entry, so it keeps
+    /// the durable rule: nothing of its history is a copy of the witness's.
+    fn witness_policy(&self) -> WitnessPolicy {
+        match self.view.members.get(&self.name).map(|row| row.mode) {
+            Some(CloneMode::Verbatim) => WitnessPolicy::IdenticalCopy,
+            _ => WitnessPolicy::Durable,
         }
     }
 
@@ -333,6 +362,7 @@ impl DisposalPorts for CoreDisposalPorts {
                 reasons: query.protected.unknown.clone(),
             };
         }
+        let policy = self.witness_policy();
         let witnesses = self.witnesses(&query.target);
         if witnesses.is_empty() {
             return HistoryAnswer::Unpreserved {
@@ -365,12 +395,13 @@ impl DisposalPorts for CoreDisposalPorts {
             };
             // One call, one witness store: this reader serves exactly one
             // surviving repository's objects.
-            match check_history(
+            match check_history_under(
                 &query.protected,
                 &[witness],
                 &reader,
                 Limits::default(),
                 &NeverCancelled,
+                policy,
             ) {
                 HistoryOutcome::Verified(_) => uncovered.clear(),
                 HistoryOutcome::Unpreserved(items) => {

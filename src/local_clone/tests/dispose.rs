@@ -1349,3 +1349,77 @@ fn an_unregistered_bare_repository_refuses_before_family_allocation() {
     assert!(family_files_absent(&fixture.root));
     assert!(!dest.exists());
 }
+
+/// R4 (plan S1.3/S1.4): a lane that only copied the family's own reflog
+/// entries and stash entries needs no `unpreserved-history` waiver.
+///
+/// This is 52 of the 112 hazard entries every lane of the gwz-dev workspace
+/// reported (gwz-dev `dev-docs/GwzLaneIssues.md`, L1). The family makes an
+/// abandoned commit and a native stash **before** any lane exists; the
+/// verbatim copy inherits both; deleting the copy leaves the family's own
+/// entries exactly where they were, so it is not a loss. The control is
+/// `a_lane_with_a_unique_commit_reflog_entry_or_stash_refuses` beside this:
+/// history the lane alone holds still refuses.
+#[test]
+fn a_lane_that_copied_the_familys_reflog_and_stash_needs_no_history_waiver() {
+    let fixture = clean_family_workspace("dispose-copied-history");
+    let app = fixture.root.join("app");
+    // The family's own reflog-only commit.
+    let base = head_of(&app);
+    let abandoned = commit_in(
+        &app,
+        "feature.txt",
+        "abandoned\n",
+        "abandoned in the family",
+    );
+    reset_hard(&app, &base);
+    assert_eq!(head_of(&app), base);
+    // The family's own native stash entry.
+    let stashed = stash_in(&app);
+
+    clone(&fixture.root, "A");
+    let a = fixture.sibling("A");
+    // The lane really did copy both: its record says so.
+    let record = crate::local_clone::copy_record::read(&a)
+        .expect("the record decodes")
+        .expect("a create of this build writes one");
+    let copied: Vec<String> = record
+        .repositories
+        .iter()
+        .flat_map(|repository| repository.roots.iter())
+        .map(|root| root.oid.to_hex())
+        .collect();
+    for oid in [&abandoned, &stashed] {
+        assert!(copied.contains(oid), "{oid} was copied: {copied:?}");
+    }
+
+    // The copied stash entry is still `dirty` -- that is the work side, and
+    // it is S1.5's -- but the history is not a loss any more.
+    let error = refuse(&fixture.root, delete_request("A", &[]));
+    assert_eq!(error.code, ErrorCode::UnwaivedHazard);
+    assert!(
+        !error.message.contains("<unpreserved-history>"),
+        "the family still holds every copied root: {}",
+        error.message
+    );
+    assert!(error.message.contains("<dirty>"), "{}", error.message);
+    assert!(a.is_dir(), "nothing was removed: {}", error.message);
+
+    // Naming the dirt alone now deletes: no history waiver is needed.
+    let response = local(&fixture.root, delete_request("A", &["dirty"]));
+    let message = response.response.meta.message.expect("a message");
+    assert!(message.contains("deleted local clone `A`"), "{message}");
+    assert!(!a.exists(), "the lane is gone");
+    assert_eq!(listed_names(&fixture.root), ["root"]);
+    // The family kept its own history.
+    assert_eq!(head_of(&app), base);
+    let repository = git2::Repository::open(&app).unwrap();
+    for oid in [&abandoned, &stashed] {
+        assert!(
+            repository
+                .find_commit(git2::Oid::from_str(oid).unwrap())
+                .is_ok(),
+            "{oid} survives in the family"
+        );
+    }
+}
