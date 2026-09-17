@@ -155,6 +155,36 @@ cfg_if::cfg_if! {
     }
 }
 
+/// The host path of the recorded entry `path` (repository-relative, Git's
+/// raw bytes, possibly with the trailing `/` of a directory reported whole)
+/// inside the repository at `base`.
+///
+/// `None` where the host cannot spell those bytes as a path, which on
+/// Windows is any non-UTF-8 entry: the entry is then simply not recorded,
+/// and disposal refuses over it rather than guessing.
+pub fn entry_path(base: &Path, path: &[u8]) -> Option<std::path::PathBuf> {
+    let trimmed = path.strip_suffix(b"/").unwrap_or(path);
+    if trimmed.is_empty() {
+        return None;
+    }
+    relative_of(trimmed).map(|relative| base.join(relative))
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        use std::ffi::OsStr;
+        use std::os::unix::ffi::OsStrExt as _;
+
+        fn relative_of(bytes: &[u8]) -> Option<std::path::PathBuf> {
+            Some(std::path::PathBuf::from(OsStr::from_bytes(bytes)))
+        }
+    } else {
+        fn relative_of(bytes: &[u8]) -> Option<std::path::PathBuf> {
+            std::str::from_utf8(bytes).ok().map(std::path::PathBuf::from)
+        }
+    }
+}
+
 /// A record that could not be read or decoded. The caller adds the path.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CopyRecordError(String);

@@ -36,16 +36,19 @@ use gwz_history_check::{ConnectivityOutcome, NeverCancelled, check_connectivity}
 use gwz_repo_contract::{HeadState, Observation, RepoInspector, RepoKey};
 use gwz_repo_inspect::{LocalObjectReader, LocalRepoInspector};
 use gwz_workspace_install::{
-    ConfigurationPlan, ConfigurationReport, ConstructionRequest, DestinationObservation,
-    GitInstallReport, InstallPortError, InstallPorts, ManifestReceipt, SourceSnapshot,
+    ConfigurationPlan, ConfigurationReport, ConstructionRequest, CopyRecordReceipt,
+    DestinationObservation, GitInstallReport, InstallPortError, InstallPorts, InstallRequest,
+    ManifestReceipt, SourceSnapshot,
 };
 
+use super::disposal::{strip_structural_work, structural_paths};
 use super::exclusions::{FIXED_EXCLUSIONS, verbatim_exclusions, worktrees_of};
 use super::git_config::{DestinationRepository, ensure_managed_exclude, install_destination_git};
 use super::inventory::{IncludedRepository, included_repositories, recheck, snapshot};
 use super::object_census::{ObjectCensus, census_of, connectivity_limits};
 use crate::artifact::{self, ConfIntegrityVerdict, ManifestArtifact};
 use crate::git::GitBackend;
+use crate::local_clone::copy_record::{self, CopiedEntry, CopiedRoot, CopyRecord, RepositoryCopy};
 use crate::model::ModelResult;
 use crate::workspace::{RUNTIME_DIR, WORKSPACE_MANIFEST};
 
@@ -168,33 +171,44 @@ pub struct CoreInstallPorts<'a, B: GitBackend> {
     source: PathBuf,
     open_merge: OpenMergeProbe,
     capture: SourceCapture,
+    /// The row's recorded source path (`.` for the root), for the copy
+    /// record (R1).
+    source_path: String,
+    /// The mode that is making this lane, for the copy record (R1).
+    mode: CloneMode,
     /// The completion check's walks, one per destination repository that
     /// passed it; reset on every observation.
     verifications: Vec<RepositoryVerification>,
 }
 
 impl<'a, B: GitBackend> CoreInstallPorts<'a, B> {
-    /// Ports for one create of the family `family_id` at `root`, copying
-    /// `source` as captured by [`capture_source`].
+    /// Ports for one create of the family `family_id`, serving the
+    /// installation `request` from the source [`capture_source`] took.
+    /// The root, the source, the allocation, the recorded source path and
+    /// the mode are all the request's own, so the ports and the installer
+    /// can never disagree about which create this is.
     pub fn new(
         backend: &'a B,
-        root: PathBuf,
         family_id: FamilyId,
-        allocation: AllocationId,
-        source: PathBuf,
         open_merge: OpenMergeProbe,
         capture: SourceCapture,
+        request: &InstallRequest,
     ) -> Self {
         Self {
             backend,
             inspector: LocalRepoInspector::new(),
             store: YamlFamilyStore::new(),
-            root,
+            root: request.root.clone(),
             family_id,
-            allocation,
-            source,
+            allocation: request.allocation.clone(),
+            source: request.source.clone(),
             open_merge,
             capture,
+            source_path: request
+                .source_path
+                .as_ref()
+                .map_or_else(|| ".".to_owned(), ToString::to_string),
+            mode: request.mode,
             verifications: Vec::new(),
         }
     }
@@ -518,6 +532,92 @@ impl<B: GitBackend> InstallPorts for CoreInstallPorts<'_, B> {
         let report = install_destination_git(destination, &self.destination_repositories())?;
         ensure_managed_exclude(self.backend, destination, &self.capture.manifest)?;
         Ok(report)
+    }
+
+    /// R1: what this destination copied, per repository, written into the
+    /// lane's own `.gwz/` before the pointer.
+    ///
+    /// The inventory is taken from the **destination**, not the source: the
+    /// copy is verbatim, so at this point the destination *is* what was
+    /// copied, disposal later compares like with like, and nothing races a
+    /// source that is still being worked in. GWZ's own structural entries
+    /// are stripped exactly as disposal strips them, so the two sides speak
+    /// of the same paths.
+    ///
+    /// Nothing here refuses a create over evidence. A repository whose
+    /// layout will not open, an incomplete history inventory, an unknown
+    /// work observation and an entry whose bytes this host cannot spell are
+    /// each simply *not recorded*: the record says less, and disposal
+    /// refuses over what it cannot account for. The completion check that
+    /// runs next has its own, stricter, word on a destination that does not
+    /// open. Only writing the record can fail this port.
+    fn record_copy(&mut self, destination: &Path) -> Result<CopyRecordReceipt, InstallPortError> {
+        let inventory = self.capture.repositories.clone();
+        let mut repositories = Vec::with_capacity(inventory.len());
+        for repository in &inventory {
+            let path = destination.join(&repository.relative);
+            let Ok(info) = self.inspector.inspect_layout(&path) else {
+                continue;
+            };
+            let roots = match self.inspector.inventory_history(&info) {
+                Observation::Known(protected) => protected
+                    .roots
+                    .into_iter()
+                    .map(|root| CopiedRoot {
+                        source: root.source,
+                        oid: root.oid,
+                    })
+                    .collect(),
+                Observation::Unknown(_) => Vec::new(),
+            };
+            let mut work = self.inspector.observe_work(&info);
+            strip_structural_work(&mut work, &structural_paths(repository, &inventory));
+            let entries = match work {
+                Observation::Known(known) => known
+                    .entries
+                    .into_iter()
+                    .filter_map(|entry| {
+                        let host = copy_record::entry_path(&path, &entry.path)?;
+                        Some(CopiedEntry {
+                            path: entry.path,
+                            kind: entry.kind,
+                            fingerprint: copy_record::Fingerprint::of(&host)?,
+                        })
+                    })
+                    .collect(),
+                Observation::Unknown(_) => Vec::new(),
+            };
+            repositories.push(RepositoryCopy {
+                key: repository.key.clone(),
+                roots,
+                entries,
+            });
+        }
+        let receipt = CopyRecordReceipt {
+            repositories: repositories.len() as u64,
+            roots: repositories
+                .iter()
+                .map(|repository| repository.roots.len() as u64)
+                .sum(),
+            entries: repositories
+                .iter()
+                .map(|repository| repository.entries.len() as u64)
+                .sum(),
+        };
+        let record = CopyRecord {
+            family_id: self.family_id.as_str().to_owned(),
+            allocation_id: self.allocation.as_str().to_owned(),
+            source_path: self.source_path.clone(),
+            mode: self.mode.as_str().to_owned(),
+            repositories,
+        };
+        copy_record::write(destination, &record).map_err(|error| {
+            InstallPortError::Destination {
+                path: destination.join(copy_record::COPY_RECORD_RELATIVE_PATH),
+                detail: error.detail().to_owned(),
+            }
+        })?;
+        Ok(receipt)
     }
 
     fn recheck_source(&mut self, snapshot: &SourceSnapshot) -> Result<(), InstallPortError> {

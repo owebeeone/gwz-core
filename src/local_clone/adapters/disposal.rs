@@ -200,7 +200,10 @@ fn layout_unknown_kind(error: &LayoutError) -> UnknownKind {
 /// structure rather than its work: the runtime directory and the
 /// manifest's scratch directory (root only), and every other inventoried
 /// repository beneath it, which is inspected on its own.
-fn structural_paths(repository: &IncludedRepository, all: &[IncludedRepository]) -> Vec<PathBuf> {
+pub(super) fn structural_paths(
+    repository: &IncludedRepository,
+    all: &[IncludedRepository],
+) -> Vec<PathBuf> {
     let mut structural = Vec::new();
     if repository.key == RepoKey::Root {
         structural.push(PathBuf::from(RUNTIME_DIR));
@@ -222,7 +225,10 @@ fn structural_paths(repository: &IncludedRepository, all: &[IncludedRepository])
 /// Drop the work entries that name a structural path or anything beneath
 /// one. Suppressed entries, sparse absences and the per-path unknowns are
 /// tracked paths and are never structural, so they are left as observed.
-fn strip_structural_work(work: &mut Observation<WorkObservation>, structural: &[PathBuf]) {
+pub(super) fn strip_structural_work(
+    work: &mut Observation<WorkObservation>,
+    structural: &[PathBuf],
+) {
     let Observation::Known(known) = work else {
         return;
     };

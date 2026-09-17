@@ -19,6 +19,7 @@ pub enum InstallStep {
     CopyTree,
     ConstructRepositories,
     InstallDestinationGit,
+    RecordCopy,
     InstallPointer,
     CheckDestination,
     RecheckSource,
@@ -37,6 +38,7 @@ impl InstallStep {
             Self::CopyTree => "copy tree",
             Self::ConstructRepositories => "construct repositories",
             Self::InstallDestinationGit => "install destination git configuration",
+            Self::RecordCopy => "record what was copied",
             Self::InstallPointer => "install pointer",
             Self::CheckDestination => "check destination",
             Self::RecheckSource => "recheck source",
@@ -63,6 +65,8 @@ pub enum InstallEffect {
     TreeCopied,
     RepositoriesConstructed,
     DestinationGitInstalled,
+    /// The copy record was written into the destination (R1).
+    CopyRecorded,
     /// The allocation marker and then the pointer, as the store writes them.
     PointerInstalled,
     ConfigurationInstalled,
@@ -77,6 +81,8 @@ pub struct InstallReport {
     pub copy: Option<CopyReport>,
     /// Remote URLs removed from the destination's Git configuration.
     pub git: Option<GitInstallReport>,
+    /// What the copy record holds (R1).
+    pub record: Option<CopyRecordReceipt>,
     /// Generated `gwz.conf/` changes and lock recapture, reported rather
     /// than hidden in a commit (design §4.2).
     pub configuration: Option<ConfigurationReport>,
@@ -89,6 +95,7 @@ pub(crate) struct Progress {
     pub(crate) effects: Vec<InstallEffect>,
     pub(crate) copy: Option<CopyReport>,
     pub(crate) git: Option<GitInstallReport>,
+    pub(crate) record: Option<CopyRecordReceipt>,
     pub(crate) configuration: Option<ConfigurationReport>,
 }
 

@@ -243,7 +243,6 @@ pub(crate) fn clone_local<B: GitBackend>(
             (family_id, true)
         }
     };
-    let allocation = mint_allocation_id()?;
     let install_request = InstallRequest {
         name: request.name.clone(),
         root: placement.root.clone(),
@@ -251,7 +250,7 @@ pub(crate) fn clone_local<B: GitBackend>(
         destination: destination.clone(),
         path: path.clone(),
         source_path: placement.source_path.clone(),
-        allocation: allocation.clone(),
+        allocation: mint_allocation_id()?,
         mode: CloneMode::Verbatim,
         branch: None,
         exclusions: capture.exclusions.clone(),
@@ -259,12 +258,10 @@ pub(crate) fn clone_local<B: GitBackend>(
     };
     let mut ports = CoreInstallPorts::new(
         backend,
-        placement.root.clone(),
         family_id.clone(),
-        allocation,
-        placement.source.clone(),
         open_merge,
         capture,
+        &install_request,
     );
     let copier = SystemTreeCopier::new();
 
