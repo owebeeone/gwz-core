@@ -58,6 +58,9 @@ pub fn entry(row: &ListRow) -> crate::LocalFamilyMemberEntry {
         observed_state: observed_state(row.observed),
         path: row.path.clone(),
         last_error: row.last_error.clone(),
+        // R20: the row's owner token, reported and never interpreted.
+        // Absent for the root and for any row created without `--owner`.
+        owner: row.owner.as_ref().map(|owner| owner.as_str().to_owned()),
     }
 }
 
@@ -126,6 +129,7 @@ mod tests {
                 CloneMode::Verbatim
             },
             last_error: None,
+            owner: None,
         }
     }
 

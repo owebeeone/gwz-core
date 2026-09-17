@@ -139,7 +139,17 @@ from taut.ir.load import load_schema
 # -- 18 added lines, 0 removed lines; the previous pin below reproduced exactly
 # on the pre-change tree (gwz-core c9c7a98).
 #   was: 111103e545198a90e1348460713653f8bcfa59122aba54ef3f7437a1174a6ba5
-PRE_LOG_WIRE_SHA256 = "6262b4b4d06c07b9ea7fa2d432c3921899f901bebaeeab006b6c4cd9e023c1f5"
+# Moved deliberately again on 2026-09-17 by GwzLaneCleanFixes R20/R21
+# (gwz-core dev-docs/GwzLaneCleanFixes.md §3.6), which adds exactly four
+# optional fields: CloneLocalWorkspaceRequest.owner (tag 8) and
+# .wait_seconds (tag 9), LocalFamilyRequest.wait_seconds (tag 6), and
+# LocalFamilyMemberEntry.owner (tag 7). No existing message, field, slot,
+# enum or method changed, and the reserved CloneLocalWorkspaceRequest tag 7
+# stays reserved. MEASURED additive, not assumed: removing exactly those
+# four field objects from the new IR reproduced the previous pin below
+# exactly.
+#   was: 6262b4b4d06c07b9ea7fa2d432c3921899f901bebaeeab006b6c4cd9e023c1f5
+PRE_LOG_WIRE_SHA256 = "02eccee9bf22debd925446bc21732c8d36178eb3c222377ad83883e62ab2acf7"
 LOG_METHODS = {"log", "log.output"}
 
 

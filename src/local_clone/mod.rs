@@ -52,6 +52,7 @@ pub mod family_merge;
 pub mod list;
 pub mod request;
 pub mod transport;
+pub mod wait;
 
 #[cfg(test)]
 mod tests;

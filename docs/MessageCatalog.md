@@ -1964,6 +1964,8 @@ has no service method and no handler that executes commands.
 | mode | 4 | LocalCloneMode | no | no | - |
 | branch | 5 | str | yes | no | - |
 | copy_source | 6 | str | yes | no | - |
+| owner | 8 | str | yes | no | - |
+| wait_seconds | 9 | int | yes | no | - |
 
 ### LocalFamilyRequest
 
@@ -1974,6 +1976,7 @@ has no service method and no handler that executes commands.
 | name | 3 | str | yes | no | - |
 | keep | 4 | bool | yes | no | - |
 | force_hazards | 5 | List<str> | no | no | - |
+| wait_seconds | 6 | int | yes | no | - |
 
 ### CreateWorkspaceResponse
 
@@ -2160,6 +2163,7 @@ has no service method and no handler that executes commands.
 | observed_state | 4 | LocalObservedState | no | no | - |
 | path | 5 | str | no | no | - |
 | last_error | 6 | str | yes | no | - |
+| owner | 7 | str | yes | no | - |
 
 ### LocalFamilyResponse
 

@@ -39,6 +39,8 @@ fn clone_request(name: &str) -> crate::CloneLocalWorkspaceRequest {
         mode: crate::LocalCloneMode::Verbatim,
         branch: None,
         copy_source: None,
+        owner: None,
+        wait_seconds: None,
     }
 }
 
@@ -53,6 +55,7 @@ fn family_request(
         name: name.map(ToOwned::to_owned),
         keep,
         force_hazards: Vec::new(),
+        wait_seconds: None,
     }
 }
 
@@ -60,6 +63,7 @@ fn family_request(
 fn delete_request(name: &str, force: &[&str]) -> crate::LocalFamilyRequest {
     crate::LocalFamilyRequest {
         force_hazards: force.iter().map(|hazard| (*hazard).to_owned()).collect(),
+        wait_seconds: None,
         ..family_request(crate::LocalFamilyOp::Dispose, Some(name), None)
     }
 }

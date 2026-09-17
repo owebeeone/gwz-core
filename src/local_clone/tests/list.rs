@@ -23,6 +23,8 @@ fn clone_request(name: &str) -> crate::CloneLocalWorkspaceRequest {
         mode: crate::LocalCloneMode::Verbatim,
         branch: None,
         copy_source: None,
+        owner: None,
+        wait_seconds: None,
     }
 }
 
@@ -33,6 +35,7 @@ fn list_request() -> crate::LocalFamilyRequest {
         name: None,
         keep: None,
         force_hazards: Vec::new(),
+        wait_seconds: None,
     }
 }
 

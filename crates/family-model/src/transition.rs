@@ -5,7 +5,9 @@
 //! and name the row and the state that refused.
 
 use crate::path::{MemberPath, PathError, PathRelation, relate};
-use crate::{AllocationId, FamilyView, MemberName, MemberRow, MemberState, ROOT_NAME, ROOT_PATH};
+use crate::{
+    AllocationId, FamilyView, MemberName, MemberRow, MemberState, OwnerToken, ROOT_NAME, ROOT_PATH,
+};
 
 /// One index change. Pointer and marker files are separate store session
 /// operations; this enum only ever changes the root index.
@@ -59,6 +61,10 @@ pub enum Refusal {
     NameCollision {
         name: MemberName,
         holder_path: String,
+        /// The standing row's owner token (R20), so a create that lost the
+        /// race for a name is told *whose* lane holds it without a second
+        /// command. `None` when that row records no owner.
+        holder_owner: Option<OwnerToken>,
     },
     /// A member path with a valid meaning, spelled unnormalised; the index
     /// records only `normalised` (F1; was an `InvalidRow` message fold).
@@ -114,9 +120,17 @@ pub enum Refusal {
 impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NameCollision { name, holder_path } => {
-                write!(f, "name `{name}` already holds {holder_path}")
-            }
+            Self::NameCollision {
+                name,
+                holder_path,
+                holder_owner,
+            } => match holder_owner {
+                Some(owner) => write!(
+                    f,
+                    "name `{name}` already holds {holder_path} (owner `{owner}`)"
+                ),
+                None => write!(f, "name `{name}` already holds {holder_path}"),
+            },
             Self::PathNotNormalised {
                 name,
                 path,
@@ -287,6 +301,7 @@ pub fn check_name_available(view: &FamilyView, name: &MemberName) -> Result<(), 
         Some(holder) => Err(Refusal::NameCollision {
             name: name.clone(),
             holder_path: holder.path.clone(),
+            holder_owner: holder.owner.clone(),
         }),
         None => Ok(()),
     }
@@ -466,7 +481,8 @@ mod tests {
             collision,
             Refusal::NameCollision {
                 name: name("A"),
-                holder_path: "../ws-A".to_owned()
+                holder_path: "../ws-A".to_owned(),
+                holder_owner: None,
             }
         );
         let path = validate_transition(
@@ -689,6 +705,7 @@ mod tests {
             source_path: "gwz-core".to_owned(),
             mode: CloneMode::Bare,
             last_error: None,
+            owner: None,
         };
         assert_eq!(row.mode, CloneMode::Bare);
     }
@@ -817,6 +834,7 @@ mod path_policy_tests {
             Refusal::NameCollision {
                 name: name("A"),
                 holder_path: "../ws-A".to_owned(),
+                holder_owner: None,
             }
         );
         assert!(check_name_available(&view, &name("N")).is_ok());

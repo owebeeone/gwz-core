@@ -564,6 +564,7 @@ fn creating_row(path: &str) -> gwz_family_model::MemberRow {
         source_path: ".".to_owned(),
         mode: gwz_family_model::CloneMode::Verbatim,
         last_error: None,
+        owner: None,
     }
 }
 

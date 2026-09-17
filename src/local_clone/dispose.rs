@@ -38,6 +38,7 @@
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use gwz_family_model::{FamilyChange, FamilyId, FamilyView, MemberName};
 use gwz_family_store::YamlFamilyStore;
@@ -54,6 +55,7 @@ use super::adapters::disposal::CoreDisposalPorts;
 use super::adapters::install::OpenMergeProbe;
 use super::errors;
 use super::family_merge::family_store;
+use super::wait::lock_family;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 /// Findings and reasons past this many items are counted, not listed, so a
@@ -133,7 +135,12 @@ struct Opened {
     target: PathBuf,
 }
 
-fn open(what: &str, workspace: &Path, name: &MemberName) -> ModelResult<Opened> {
+fn open(
+    what: &str,
+    workspace: &Path,
+    name: &MemberName,
+    wait: Option<Duration>,
+) -> ModelResult<Opened> {
     let store = family_store();
     let workspace = canonical(workspace)?;
     if store
@@ -149,8 +156,10 @@ fn open(what: &str, workspace: &Path, name: &MemberName) -> ModelResult<Opened> 
             },
         ));
     }
-    let mut session = store
-        .try_lock(&FamilyLocation::new(&workspace))
+    // R21: a busy lock is retried until `wait` is spent (and refused at
+    // once without one), and the `reread` below is what makes a wait safe:
+    // the locked truth is read after the wait, never before it.
+    let mut session = lock_family(&store, &FamilyLocation::new(&workspace), wait)
         .map_err(|error| errors::store_in(what, &error))?;
     let root = canonical(session.root())?;
     let view = session
@@ -210,6 +219,7 @@ pub(crate) fn keep(
     start: &Path,
     workspace: &Path,
     name: &MemberName,
+    wait: Option<Duration>,
     open_merge: OpenMergeProbe,
 ) -> ModelResult<KeepReport> {
     const WHAT: &str = "local dispose --keep";
@@ -218,7 +228,7 @@ pub(crate) fn keep(
         root,
         view,
         target,
-    } = open(WHAT, workspace, name)?;
+    } = open(WHAT, workspace, name, wait)?;
     let request = DisposeRequest {
         name: name.clone(),
         policy: DisposePolicy::Keep,
@@ -244,6 +254,7 @@ pub(crate) fn delete(
     workspace: &Path,
     name: &MemberName,
     waivers: &[HazardWaiver],
+    wait: Option<Duration>,
     open_merge: OpenMergeProbe,
 ) -> ModelResult<DeleteReport> {
     const WHAT: &str = "local dispose";
@@ -252,7 +263,7 @@ pub(crate) fn delete(
         root,
         view,
         target,
-    } = open(WHAT, workspace, name)?;
+    } = open(WHAT, workspace, name, wait)?;
     let request = DisposeRequest {
         name: name.clone(),
         policy: DisposePolicy::Delete {
@@ -309,7 +320,10 @@ impl DisbandReport {
 
 /// Remove every member's pointer and marker, then the index. `None` when
 /// the workspace is in no family (a repeat after a completed disband).
-pub(crate) fn disband(workspace: &Path) -> ModelResult<Option<DisbandReport>> {
+pub(crate) fn disband(
+    workspace: &Path,
+    wait: Option<Duration>,
+) -> ModelResult<Option<DisbandReport>> {
     const WHAT: &str = "local disband";
     let store = family_store();
     let workspace = canonical(workspace)?;
@@ -320,8 +334,7 @@ pub(crate) fn disband(workspace: &Path) -> ModelResult<Option<DisbandReport>> {
         FamilyObservation::NoFamily => return Ok(None),
         FamilyObservation::Family { .. } => {}
     }
-    let mut session = store
-        .try_lock(&FamilyLocation::new(&workspace))
+    let mut session = lock_family(&store, &FamilyLocation::new(&workspace), wait)
         .map_err(|error| errors::store_in(WHAT, &error))?;
     let Some(view) = session
         .reread()

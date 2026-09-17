@@ -5,7 +5,8 @@ use std::path::PathBuf;
 
 use gwz_copy_contract::{CopyMode, Exclusion};
 use gwz_family_model::{
-    AllocationId, CloneMode, MemberKind, MemberName, MemberPath, MemberRow, MemberState, ROOT_PATH,
+    AllocationId, CloneMode, MemberKind, MemberName, MemberPath, MemberRow, MemberState,
+    OwnerToken, ROOT_PATH,
 };
 use gwz_repo_contract::{ObjectId, RepoKey, RepositoryInfo};
 
@@ -37,6 +38,10 @@ pub struct InstallRequest {
     /// Native copy-on-write with an ordinary fallback, or forced ordinary
     /// copying. Unused by clean/bare, which construct rather than copy.
     pub copy_mode: CopyMode,
+    /// `--owner <token>`: the caller's opaque identity for this lane (R20).
+    /// It is written onto the row by the same index change that reserves
+    /// it, and by nothing afterwards; installation never reads it.
+    pub owner: Option<OwnerToken>,
 }
 
 impl InstallRequest {
@@ -56,6 +61,7 @@ impl InstallRequest {
                 .map_or_else(|| ROOT_PATH.to_owned(), |path| path.as_str().to_owned()),
             mode: self.mode,
             last_error: None,
+            owner: self.owner.clone(),
         }
     }
 

@@ -53,6 +53,7 @@ use super::adapters::member_paths::{
 use super::errors::{self, invalid, unsupported};
 use super::family_merge::family_store;
 use super::request::ValidatedCloneLocal;
+use super::wait::lock_family;
 use crate::artifact;
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
@@ -213,10 +214,18 @@ pub(crate) fn clone_local<B: GitBackend>(
         &read_root_manifest
     };
 
-    // Step 5: the family lock, founding when there is no index yet.
-    let mut session = store
-        .try_lock(&FamilyLocation::new(&placement.source))
-        .map_err(|error| errors::store_in(&what, &error))?;
+    // Step 5: the family lock, founding when there is no index yet. R21:
+    // with `--wait <secs>` a busy lock is retried until the deadline; the
+    // `reread` immediately below is what makes the wait safe, because the
+    // index a wait finds is the one the previous holder left, so a create
+    // that waited behind another create of the same name is refused by
+    // *that* create's row rather than by the view observed before the wait.
+    let mut session = lock_family(
+        &store,
+        &FamilyLocation::new(&placement.source),
+        request.wait,
+    )
+    .map_err(|error| errors::store_in(&what, &error))?;
     let existing = session
         .reread()
         .map_err(|error| errors::store_in(&what, &error))?;
@@ -256,6 +265,9 @@ pub(crate) fn clone_local<B: GitBackend>(
         branch: None,
         exclusions: capture.exclusions.clone(),
         copy_mode: CopyMode::Auto,
+        // R20: the caller's token reaches the row through the one index
+        // write that reserves it, and through no later write.
+        owner: request.owner.clone(),
     };
     let mut ports = CoreInstallPorts::new(
         backend,

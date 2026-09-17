@@ -2,9 +2,10 @@
 //!
 //! A *family* is one original workspace (`root`) plus its named local
 //! clones. This crate owns the deterministic values and decisions of that
-//! model: names, root-relative member paths, ids, rows, the frozen
-//! metadata format (format 1) and its size limit, the observed-state
-//! vocabulary, the one remote-token resolver shared by
+//! model: names, root-relative member paths, ids, rows, the caller's opaque
+//! owner token, the frozen metadata format (format 2 for the index, format
+//! 1 for the pointer) and its size limit, the observed-state vocabulary,
+//! the one remote-token resolver shared by
 //! `merge`, `pull` and `push`, and the index transitions. It performs no
 //! I/O, holds no lock and repairs nothing; `gwz-family-store` reads and
 //! writes the files, and core supplies observations.
@@ -24,9 +25,12 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 mod name;
+mod owner;
 mod path;
 mod resolve;
 mod transition;
+
+pub use owner::{MAX_OWNER_TOKEN_BYTES, OwnerError, OwnerToken};
 
 pub use name::{
     DisposeTarget, MemberName, NameError, RESERVED_DIRECTORY_NAMES, RESERVED_NAMES,
@@ -43,8 +47,45 @@ pub use transition::{
     check_name_available, check_path_available, validate_transition, validate_view,
 };
 
-/// `schema:` value of the root index (`.gwz/local-family.yml`), format 1.
-pub const INDEX_SCHEMA: &str = "gwz.local-family/v1";
+/// `schema:` value of the root index (`.gwz/local-family.yml`), format 2:
+/// format 1 plus the optional per-row `owner` token (GwzLaneCleanFixes
+/// R20). This is what a gwz at or above [`INDEX_MIN_GWZ_VERSION`] writes on
+/// its first write of the index — a create, a dispose, a `--keep` or a
+/// family merge alike — whatever version it read.
+pub const INDEX_SCHEMA: &str = "gwz.local-family/v2";
+/// `schema:` value of the format-1 index. Still read, never written: a
+/// v1 index carries no `owner` on any row, and every row it holds reports
+/// no owner for ever.
+pub const INDEX_SCHEMA_V1: &str = "gwz.local-family/v1";
+/// Index schemas this gwz reads, oldest first. A `schema:` outside this
+/// list refuses as a whole rather than being upgraded or downgraded.
+pub const INDEX_SCHEMAS_READ: &[&str] = &[INDEX_SCHEMA_V1, INDEX_SCHEMA];
+/// The lowest gwz version that reads [`INDEX_SCHEMA`]. Once any gwz at or
+/// above it has written a workspace's family index, every gwz used on that
+/// workspace must be at or above it too (R20).
+///
+/// It is a literal and not `CARGO_PKG_VERSION`, because the version that
+/// *reads* format 2 is the one this work ships in, which is by construction
+/// not the version standing in `Cargo.toml` while it is being built: the
+/// release bump comes later. gwz-core's own suite guards the pair
+/// (`local_clone::tests::owner_wait`), so a release bumped past this
+/// version without moving it fails rather than promising an operator a gwz
+/// that never read a v2 index.
+pub const INDEX_MIN_GWZ_VERSION: &str = "1.0.14";
+/// The lowest gwz version that reads [`INDEX_SCHEMA_V1`]. Every released
+/// gwz with a local clone family reads it.
+pub const INDEX_V1_MIN_GWZ_VERSION: &str = "1.0.0";
+
+/// The lowest gwz version that reads `schema`, for a refusal that has to
+/// tell an operator what to install (R20). `None` is a `schema:` this
+/// model knows nothing about, which no version of gwz claims to read.
+pub fn index_schema_min_gwz_version(schema: &str) -> Option<&'static str> {
+    match schema {
+        INDEX_SCHEMA_V1 => Some(INDEX_V1_MIN_GWZ_VERSION),
+        INDEX_SCHEMA => Some(INDEX_MIN_GWZ_VERSION),
+        _ => None,
+    }
+}
 /// `schema:` value of a clone pointer (`.gwz/family-root`), format 1.
 pub const POINTER_SCHEMA: &str = "gwz.family-root/v1";
 /// Root-relative path of the family index; exists only at the root.
@@ -57,10 +98,14 @@ pub const POINTER_RELATIVE_PATH: &str = ".gwz/family-root";
 pub const ALLOCATION_MARKER_RELATIVE_PATH: &str = ".gwz/local-clone-allocation";
 /// Largest encoded index the store accepts; larger refuses before mutation.
 pub const MAX_ENCODED_INDEX_BYTES: u64 = 1024 * 1024;
-/// Format version of the index and pointer files. It is the `/v1` in
-/// [`INDEX_SCHEMA`] and [`POINTER_SCHEMA`]; a file carrying any other
-/// version is not this format and refuses rather than being upgraded.
-pub const INDEX_FORMAT_VERSION: u32 = 1;
+/// Format version of the index file: the `/v2` in [`INDEX_SCHEMA`]. A
+/// file carrying a version outside [`INDEX_SCHEMAS_READ`] is not a format
+/// this store reads and refuses rather than being upgraded.
+pub const INDEX_FORMAT_VERSION: u32 = 2;
+/// Format version of the pointer file: the `/v1` in [`POINTER_SCHEMA`].
+/// The pointer names the family and its root and gained nothing at R20, so
+/// it stays at format 1.
+pub const POINTER_FORMAT_VERSION: u32 = 1;
 
 /// The original workspace's own name; never a clone name.
 pub const ROOT_NAME: &str = "root";
@@ -82,6 +127,9 @@ pub mod fields {
     pub const SOURCE_PATH: &str = "source_path";
     pub const MODE: &str = "mode";
     pub const LAST_ERROR: &str = "last_error";
+    /// The optional format-2 owner token (R20). Absent on every format-1
+    /// row and on any row created without `--owner`.
+    pub const OWNER: &str = "owner";
 }
 
 /// The encoded index is larger than the model admits (design §3, "maximum
@@ -269,6 +317,11 @@ pub struct MemberRow {
     pub mode: CloneMode,
     /// Diagnostic recorded when the row was left incomplete.
     pub last_error: Option<String>,
+    /// The caller's opaque owner token, recorded by the same index write
+    /// that reserved this row and never changed afterwards (R20). `None`
+    /// is a row made without one — a hand-made lane, or any row in a
+    /// format-1 index. gwz reports it and never interprets it.
+    pub owner: Option<OwnerToken>,
 }
 
 /// The root's own entry.
@@ -408,6 +461,9 @@ pub struct ListRow {
     pub observed: ListState,
     pub path: String,
     pub last_error: Option<String>,
+    /// The row's recorded owner token (R20); `None` for the root, which is
+    /// nobody's lane, and for any row created without one.
+    pub owner: Option<OwnerToken>,
 }
 
 /// Project the listing: the root first, then every row in name order.
@@ -422,6 +478,7 @@ pub fn project_list(
         observed: ListState::Ready,
         path: ROOT_PATH.to_owned(),
         last_error: None,
+        owner: None,
     }];
     for (name, row) in &view.members {
         rows.push(ListRow {
@@ -431,6 +488,7 @@ pub fn project_list(
             observed: classify_target(row, observations.get(name)),
             path: row.path.clone(),
             last_error: row.last_error.clone(),
+            owner: row.owner.clone(),
         });
     }
     rows
@@ -449,6 +507,7 @@ pub(crate) mod fixtures {
             source_path: ROOT_PATH.to_owned(),
             mode: CloneMode::Verbatim,
             last_error: None,
+            owner: None,
         }
     }
 
@@ -511,7 +570,7 @@ mod tests {
             assert_eq!(CloneMode::parse(mode.as_str()), Some(mode));
         }
         assert_eq!(MemberState::parse("done"), None);
-        assert_eq!(INDEX_SCHEMA, "gwz.local-family/v1");
+        assert_eq!(INDEX_SCHEMA, "gwz.local-family/v2");
         assert_eq!(MAX_ENCODED_INDEX_BYTES, 1_048_576);
     }
 
@@ -577,12 +636,18 @@ mod tests {
         );
     }
 
-    /// The format-1 file names and field keys are frozen (design §3): the
-    /// store encodes and decodes with exactly these, so a rename here is a
-    /// format change, not a refactor.
+    /// The file names and field keys are frozen (design §3): the store
+    /// encodes and decodes with exactly these, so a rename here is a format
+    /// change, not a refactor. Format 2 (R20) added exactly one key,
+    /// `owner`, and renamed nothing.
     #[test]
-    fn the_frozen_format_1_files_and_fields_are_pinned() {
-        assert_eq!(INDEX_SCHEMA, "gwz.local-family/v1");
+    fn the_frozen_format_files_and_fields_are_pinned() {
+        assert_eq!(INDEX_SCHEMA, "gwz.local-family/v2");
+        assert_eq!(INDEX_SCHEMA_V1, "gwz.local-family/v1");
+        assert_eq!(
+            INDEX_SCHEMAS_READ,
+            ["gwz.local-family/v1", "gwz.local-family/v2"]
+        );
         assert_eq!(POINTER_SCHEMA, "gwz.family-root/v1");
         assert_eq!(INDEX_RELATIVE_PATH, ".gwz/local-family.yml");
         assert_eq!(LOCK_RELATIVE_PATH, ".gwz/local-family.lock");
@@ -612,6 +677,7 @@ mod tests {
                 fields::SOURCE_PATH,
                 fields::MODE,
                 fields::LAST_ERROR,
+                fields::OWNER,
             ],
             [
                 "path",
@@ -620,17 +686,28 @@ mod tests {
                 "allocation_id",
                 "source_path",
                 "mode",
-                "last_error"
+                "last_error",
+                "owner"
             ],
-            "the conceptual row of design §3"
+            "the conceptual row of design §3, plus format 2's `owner` (R20)"
         );
     }
 
     #[test]
     fn the_index_size_decision_names_the_limit_it_enforces() {
-        assert_eq!(INDEX_FORMAT_VERSION, 1);
-        assert!(INDEX_SCHEMA.ends_with("/v1"));
+        assert_eq!(INDEX_FORMAT_VERSION, 2);
+        assert_eq!(POINTER_FORMAT_VERSION, 1);
+        assert!(INDEX_SCHEMA.ends_with("/v2"));
         assert!(POINTER_SCHEMA.ends_with("/v1"));
+        assert_eq!(
+            index_schema_min_gwz_version(INDEX_SCHEMA),
+            Some(INDEX_MIN_GWZ_VERSION)
+        );
+        assert_eq!(
+            index_schema_min_gwz_version(INDEX_SCHEMA_V1),
+            Some(INDEX_V1_MIN_GWZ_VERSION)
+        );
+        assert_eq!(index_schema_min_gwz_version("gwz.local-family/v9"), None);
         assert_eq!(check_encoded_size(0), Ok(()));
         assert_eq!(check_encoded_size(MAX_ENCODED_INDEX_BYTES), Ok(()));
         let refusal = check_encoded_size(MAX_ENCODED_INDEX_BYTES + 1).unwrap_err();

@@ -131,6 +131,8 @@ fn family(label: &str, members: &[&str]) -> Family {
             mode: crate::LocalCloneMode::Verbatim,
             branch: None,
             copy_source: None,
+            owner: None,
+            wait_seconds: None,
         },
         "op_clone",
         &NullSink,

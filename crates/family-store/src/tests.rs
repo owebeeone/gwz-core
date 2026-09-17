@@ -84,6 +84,7 @@ fn row(relative: &str) -> MemberRow {
         source_path: ".".to_owned(),
         mode: CloneMode::Verbatim,
         last_error: None,
+        owner: None,
     }
 }
 
@@ -279,7 +280,7 @@ fn an_index_in_a_format_this_store_does_not_read_refuses_as_malformed() {
     let path = family.root.join(INDEX_RELATIVE_PATH);
     fs::write(
         &path,
-        b"schema: gwz.local-family/v2\nfamily_id: fam_store\nroot:\n  allocation_id: alloc_root\n",
+        b"schema: gwz.local-family/v9\nfamily_id: fam_store\nroot:\n  allocation_id: alloc_root\n",
     )
     .unwrap();
     match family.store.read_view(&FamilyLocation::new(&family.root)) {
@@ -288,7 +289,7 @@ fn an_index_in_a_format_this_store_does_not_read_refuses_as_malformed() {
             detail,
         }) => {
             assert_eq!(reported, path);
-            assert!(detail.contains("gwz.local-family/v2"), "{detail}");
+            assert!(detail.contains("gwz.local-family/v9"), "{detail}");
         }
         other => panic!("another format version refuses, got {other:?}"),
     }

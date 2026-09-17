@@ -489,6 +489,7 @@ mod tests {
             source_path: ".".to_owned(),
             mode: CloneMode::Verbatim,
             last_error: None,
+            owner: None,
         }
     }
 

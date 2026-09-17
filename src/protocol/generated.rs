@@ -5194,6 +5194,8 @@ pub struct CloneLocalWorkspaceRequest {
     pub mode: LocalCloneMode,
     pub branch: Option<String>,
     pub copy_source: Option<String>,
+    pub owner: Option<String>,
+    pub wait_seconds: Option<i64>,
 }
 impl CloneLocalWorkspaceRequest {
     pub fn to_cbor(&self) -> Cbor {
@@ -5204,6 +5206,8 @@ impl CloneLocalWorkspaceRequest {
             (4, Cbor::Int(self.mode.wire())),
             (5, match &self.branch { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
             (6, match &self.copy_source { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (8, match &self.owner { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (9, match &self.wait_seconds { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -5214,6 +5218,8 @@ impl CloneLocalWorkspaceRequest {
             mode: LocalCloneMode::from_wire(c.try_get(4)?.try_int()?)?,
             branch: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
             copy_source: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            owner: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            wait_seconds: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(v.try_int()?) } },
         })
     }
 }
@@ -5225,6 +5231,7 @@ pub struct LocalFamilyRequest {
     pub name: Option<String>,
     pub keep: Option<bool>,
     pub force_hazards: Vec<String>,
+    pub wait_seconds: Option<i64>,
 }
 impl LocalFamilyRequest {
     pub fn to_cbor(&self) -> Cbor {
@@ -5234,6 +5241,7 @@ impl LocalFamilyRequest {
             (3, match &self.name { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
             (4, match &self.keep { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
             (5, Cbor::Array(self.force_hazards.iter().map(|x| Cbor::Text(x.clone())).collect())),
+            (6, match &self.wait_seconds { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -5243,6 +5251,7 @@ impl LocalFamilyRequest {
             name: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(v.try_text()?) } },
             keep: { let v = c.try_get(4)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
             force_hazards: c.try_get(5)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+            wait_seconds: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_int()?) } },
         })
     }
 }
@@ -5754,6 +5763,7 @@ pub struct LocalFamilyMemberEntry {
     pub observed_state: LocalObservedState,
     pub path: String,
     pub last_error: Option<String>,
+    pub owner: Option<String>,
 }
 impl LocalFamilyMemberEntry {
     pub fn to_cbor(&self) -> Cbor {
@@ -5764,6 +5774,7 @@ impl LocalFamilyMemberEntry {
             (4, Cbor::Int(self.observed_state.wire())),
             (5, Cbor::Text(self.path.clone())),
             (6, match &self.last_error { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (7, match &self.owner { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -5774,6 +5785,7 @@ impl LocalFamilyMemberEntry {
             observed_state: LocalObservedState::from_wire(c.try_get(4)?.try_int()?)?,
             path: c.try_get(5)?.try_text()?,
             last_error: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            owner: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_text()?) } },
         })
     }
 }

@@ -104,6 +104,11 @@ where
     emitter.operation_started();
     let result = (|| {
         let validated = validate_local_family(&request)?;
+        // R21: the wait travels with the op to whichever step takes the
+        // family lock. `list` takes none, so it carries the value and does
+        // nothing with it.
+        let wait = validated.wait;
+        let validated = validated.op;
         let what = match &validated {
             ValidatedLocalFamily::List => "local family list",
             ValidatedLocalFamily::Dispose { keep: true, .. } => "local dispose --keep",
@@ -141,7 +146,7 @@ where
             ValidatedLocalFamily::Dispose {
                 name, keep: true, ..
             } => {
-                let report = dispose::keep(&start, &root, &name, open_merge_probe)?;
+                let report = dispose::keep(&start, &root, &name, wait, open_merge_probe)?;
                 Ok(crate::LocalFamilyResponse {
                     response: envelope(crate::AggregateStatus::Ok, Some(report.message(&name))),
                     members: Vec::new(),
@@ -156,7 +161,8 @@ where
                 keep: false,
                 waivers,
             } => {
-                let report = dispose::delete(&start, &root, &name, &waivers, open_merge_probe)?;
+                let report =
+                    dispose::delete(&start, &root, &name, &waivers, wait, open_merge_probe)?;
                 Ok(crate::LocalFamilyResponse {
                     response: envelope(crate::AggregateStatus::Ok, Some(report.message(&name))),
                     members: Vec::new(),
@@ -164,7 +170,7 @@ where
                 })
             }
             ValidatedLocalFamily::Disband => {
-                let (status, message) = match dispose::disband(&root)? {
+                let (status, message) = match dispose::disband(&root, wait)? {
                     Some(report) => (crate::AggregateStatus::Ok, report.message()),
                     None => (
                         crate::AggregateStatus::Noop,

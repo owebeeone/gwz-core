@@ -31,6 +31,8 @@ fn clone_request(name: &str) -> crate::CloneLocalWorkspaceRequest {
         mode: crate::LocalCloneMode::Verbatim,
         branch: None,
         copy_source: None,
+        owner: None,
+        wait_seconds: None,
     }
 }
 
@@ -543,6 +545,7 @@ fn a_clone_of_a_clone_registers_on_the_root_and_collisions_refuse() {
             name: None,
             keep: None,
             force_hazards: Vec::new(),
+            wait_seconds: None,
         },
         "op-list",
         &NullSink,

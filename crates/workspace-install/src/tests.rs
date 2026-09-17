@@ -54,6 +54,7 @@ fn request(mode: CloneMode) -> InstallRequest {
             Exclusion::RelativePath(PathBuf::from(".gwz/merge")),
         ],
         copy_mode: CopyMode::Auto,
+        owner: None,
     }
 }
 
@@ -437,6 +438,7 @@ fn name_path_allocation_destination_and_layout_refusals_are_reported_together() 
                     source_path: ".".to_owned(),
                     mode: CloneMode::Verbatim,
                     last_error: None,
+                    owner: None,
                 },
             })
             .expect("the earlier reservations are legal");
@@ -486,6 +488,7 @@ fn name_path_allocation_destination_and_layout_refusals_are_reported_together() 
             InstallRefusal::Family(Refusal::NameCollision {
                 name: MemberName::parse("A").unwrap(),
                 holder_path: "../ws-A".to_owned(),
+                holder_owner: None,
             }),
             InstallRefusal::Family(Refusal::PathCollision {
                 path: "../ws-A".to_owned(),

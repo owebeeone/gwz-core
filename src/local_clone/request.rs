@@ -4,8 +4,10 @@
 //! import (design §6.2). The functions are pure over the request and return
 //! validated plain values that the adapters consume.
 
+use std::time::Duration;
+
 use gwz_family_model::{
-    CloneMode, DisposeTarget, MemberName, RemoteToken, classify_dispose_target,
+    CloneMode, DisposeTarget, MemberName, OwnerToken, RemoteToken, classify_dispose_target,
 };
 use gwz_local_disposal::HazardWaiver;
 use gwz_local_import::IMPORT_REF_NAMESPACE;
@@ -20,6 +22,11 @@ pub struct ValidatedCloneLocal {
     pub mode: CloneMode,
     pub dest: Option<String>,
     pub branch: Option<String>,
+    /// `--owner <token>` (R20): opaque, recorded once on the reserving row
+    /// and never interpreted.
+    pub owner: Option<OwnerToken>,
+    /// `--wait <secs>` (R21): how long a busy family lock is retried.
+    pub wait: Option<Duration>,
 }
 
 pub fn validate_clone_local(
@@ -71,11 +78,15 @@ pub fn validate_clone_local(
             "local create from an explicit copy source (--from <name|path>)",
         ));
     }
+    let owner = validate_owner(request.owner.as_deref())?;
+    let wait = validate_wait(request.wait_seconds)?;
     Ok(ValidatedCloneLocal {
         name,
         mode,
         dest: request.dest.clone(),
         branch: request.branch.clone(),
+        owner,
+        wait,
     })
 }
 
@@ -91,9 +102,40 @@ pub enum ValidatedLocalFamily {
     Disband,
 }
 
+/// A `LocalFamilyRequest` whose shape core accepted, with the `--wait`
+/// every family op carries (R21).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValidatedLocalFamilyRequest {
+    pub op: ValidatedLocalFamily,
+    /// `--wait <secs>`. `list` takes no family lock, so it accepts the
+    /// value and does nothing with it; dispose and disband honour it.
+    pub wait: Option<Duration>,
+}
+
+/// `--owner <token>` (R20): the shape is the model's, and the value means
+/// nothing to gwz. Absent stays absent; a present token that is not the
+/// model's shape refuses here, before any observation.
+fn validate_owner(owner: Option<&str>) -> ModelResult<Option<OwnerToken>> {
+    owner
+        .map(|owner| {
+            OwnerToken::parse(owner).map_err(|error| invalid(format!("invalid --owner: {error}")))
+        })
+        .transpose()
+}
+
+/// `--wait <secs>` (R21): a count of seconds, so a negative one is not a
+/// wait at all and refuses rather than being read as none.
+fn validate_wait(seconds: Option<i64>) -> ModelResult<Option<Duration>> {
+    match seconds {
+        None => Ok(None),
+        Some(seconds) if seconds < 0 => Err(invalid("--wait <secs> must not be negative")),
+        Some(seconds) => Ok(Some(Duration::from_secs(seconds.unsigned_abs()))),
+    }
+}
+
 pub fn validate_local_family(
     request: &crate::LocalFamilyRequest,
-) -> ModelResult<ValidatedLocalFamily> {
+) -> ModelResult<ValidatedLocalFamilyRequest> {
     reject_selection(&request.meta)?;
     let validated = match request.op {
         crate::LocalFamilyOp::List => {
@@ -145,7 +187,10 @@ pub fn validate_local_family(
     if request.meta.dry_run == Some(true) {
         return Err(unsupported("local family operations with dry_run"));
     }
-    Ok(validated)
+    Ok(ValidatedLocalFamilyRequest {
+        op: validated,
+        wait: validate_wait(request.wait_seconds)?,
+    })
 }
 
 fn reject_selection(meta: &crate::RequestMeta) -> ModelResult<()> {
@@ -246,6 +291,8 @@ mod tests {
             mode,
             branch: None,
             copy_source: None,
+            owner: None,
+            wait_seconds: None,
         }
     }
 
@@ -256,6 +303,7 @@ mod tests {
             name: None,
             keep: None,
             force_hazards: Vec::new(),
+            wait_seconds: None,
         }
     }
 
@@ -363,11 +411,15 @@ mod tests {
     #[test]
     fn family_shape_per_op_hazards_keep_and_dry_run() {
         assert_eq!(
-            validate_local_family(&family_request(crate::LocalFamilyOp::List)).unwrap(),
+            validate_local_family(&family_request(crate::LocalFamilyOp::List))
+                .unwrap()
+                .op,
             ValidatedLocalFamily::List
         );
         assert_eq!(
-            validate_local_family(&family_request(crate::LocalFamilyOp::Disband)).unwrap(),
+            validate_local_family(&family_request(crate::LocalFamilyOp::Disband))
+                .unwrap()
+                .op,
             ValidatedLocalFamily::Disband
         );
         let mut list_with_name = family_request(crate::LocalFamilyOp::List);
@@ -395,7 +447,7 @@ mod tests {
             name,
             keep,
             waivers,
-        } = validate_local_family(&dispose).unwrap()
+        } = validate_local_family(&dispose).unwrap().op
         else {
             panic!("dispose validates");
         };
@@ -419,7 +471,7 @@ mod tests {
         );
         dispose.force_hazards.clear();
         assert!(matches!(
-            validate_local_family(&dispose).unwrap(),
+            validate_local_family(&dispose).unwrap().op,
             ValidatedLocalFamily::Dispose { keep: true, .. }
         ));
         dispose.meta.dry_run = Some(true);

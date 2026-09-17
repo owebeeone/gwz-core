@@ -300,7 +300,8 @@ mod tests {
         assert_eq!(
             refusal(&Refusal::NameCollision {
                 name: name.clone(),
-                holder_path: "../a".to_owned()
+                holder_path: "../a".to_owned(),
+                holder_owner: None,
             })
             .code,
             ErrorCode::PathCollision

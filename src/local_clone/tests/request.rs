@@ -72,6 +72,8 @@ fn clone_request(name: &str, dry_run: Option<bool>) -> crate::CloneLocalWorkspac
         mode: crate::LocalCloneMode::Clean,
         branch: None,
         copy_source: None,
+        owner: None,
+        wait_seconds: None,
     };
     request.meta.dry_run = dry_run;
     request
@@ -84,6 +86,7 @@ fn family_request(op: crate::LocalFamilyOp, name: Option<&str>) -> crate::LocalF
         name: name.map(ToOwned::to_owned),
         keep: None,
         force_hazards: Vec::new(),
+        wait_seconds: None,
     }
 }
 

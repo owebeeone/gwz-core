@@ -1264,6 +1264,8 @@ fn local_clone_follow_up_2_allocations_are_pinned() {
         mode: gwz_core::LocalCloneMode::Verbatim,
         branch: None,
         copy_source: Some("B".to_owned()),
+        owner: None,
+        wait_seconds: None,
     };
     let decoded =
         gwz_core::CloneLocalWorkspaceRequest::from_cbor(&decode(&encode(&request.to_cbor())))
@@ -1277,15 +1279,23 @@ fn local_clone_follow_up_2_allocations_are_pinned() {
         observed_state: LocalObservedState::PointerRemoved,
         path: "../ws-A".to_owned(),
         last_error: None,
+        owner: None,
     };
     let bytes = encode(&entry.to_cbor());
     let hex = bytes
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
-    // Byte-identical to gwz-py's parity pin in src/tests/test_codec.py: six
-    // slots, the three enums by their wire values above, `last_error` null.
-    assert_eq!(hex, "a601614102000301040405672e2e2f77732d4106f6");
+    // Byte-identical to gwz-py's parity pin in src/tests/test_codec.py:
+    // seven slots, the three enums by their wire values above, `last_error`
+    // and `owner` null.
+    //
+    // Moved on 2026-09-17 by GwzLaneCleanFixes R20, which adds the optional
+    // `owner` at tag 7. MEASURED additive: the map header grows a6 -> a7 and
+    // the encoding gains exactly the trailing `07 f6`; every earlier slot is
+    // byte-identical.
+    //   was: "a601614102000301040405672e2e2f77732d4106f6"
+    assert_eq!(hex, "a701614102000301040405672e2e2f77732d4106f607f6");
     assert_eq!(
         gwz_core::LocalFamilyMemberEntry::from_cbor(&decode(&bytes)).expect("round trip"),
         entry

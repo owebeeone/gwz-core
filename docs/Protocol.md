@@ -67,6 +67,24 @@ other modes and operations still refuse `unsupported_operation` before any
 effect. The product contract is the gwz-dev
 `dev-docs/GwzLocalCloneDesign.md`.
 
+GwzLaneCleanFixes R20/R21 (`dev-docs/GwzLaneCleanFixes.md` §3.6, 2026-09-17)
+adds four optional fields for lanes made by tools, and nothing else:
+`CloneLocalWorkspaceRequest.owner` (tag 8) is the caller's opaque token, at
+most 128 bytes of `[A-Za-z0-9._:-]`, recorded on the member row by the same
+index write that reserves it, reported back as
+`LocalFamilyMemberEntry.owner` (tag 7), never changed afterwards and never
+interpreted by gwz; `CloneLocalWorkspaceRequest.wait_seconds` (tag 9) and
+`LocalFamilyRequest.wait_seconds` (tag 6) keep retrying a busy family lock
+until the deadline instead of refusing at once (a poll of the try-lock at a
+short fixed interval; there is no blocking acquisition), and a wait that
+wins rereads the index before acting, so the `list` op -- which takes no
+lock -- accepts the field without effect. Recording an owner needs the
+family index's format 2 (`gwz.local-family/v2`, format 1 plus the optional
+per-row `owner`): a gwz that reads v2 reads v1 unchanged and writes v2 on
+its first write of any kind, and an older gwz refuses a v2 index as a whole
+with a refusal that names the minimum gwz version reading it. The reserved
+`CloneLocalWorkspaceRequest` tag 7 stays reserved.
+
 Git paths are byte strings and are not guaranteed to be UTF-8. Conflict-path
 fields retain ordinary printable UTF-8 unchanged. A path requiring escaping is
 double-quoted; quotes, backslashes, and familiar control bytes use backslash

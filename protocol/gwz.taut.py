@@ -1993,10 +1993,26 @@ SCHEMA = schema(
         # addressed workspace itself. Decoded and shape-checked by core; the
         # selector is implemented at LCM3.2, so until then a present value is
         # refused as `unsupported_operation`.
-        copy_source=F(6, STR, optional=True)),
+        copy_source=F(6, STR, optional=True),
         # Tag 7 is not a public family_id input (design §7): core derives
         # family identity from the admitted index or pointer, and the tag
         # may not be reused for another purpose.
+        # `--owner <token>`: the caller's opaque identity for the lane this
+        # create makes (GwzLaneCleanFixes R20). Up to 128 bytes of
+        # `[A-Za-z0-9._:-]`, validated by the driver at parse and again by
+        # core. Recorded on the member row by the same index write that
+        # reserves the row, reported by `local_family` list, never changed
+        # afterwards and never interpreted by gwz. Absent means the row
+        # records no owner, for ever.
+        owner=F(8, STR, optional=True),
+        # `--wait <secs>`: how long to keep retrying a busy family lock
+        # before reporting it busy (R21). Absent, and a busy lock refuses
+        # immediately, which is the behaviour every earlier gwz had. Core
+        # polls the try-lock at a short fixed interval -- there is no
+        # blocking acquisition -- and rereads the index once it wins, so a
+        # create that waited behind another create of the same name is
+        # answered by the index that create left, not a stale view.
+        wait_seconds=F(9, INT, optional=True)),
 
     # Observe or retire local-family members (GwzLocalCloneDesign.md §3.1,
     # §5, §7; allocated 2026-09-05 for LCM1.0c).
@@ -2013,7 +2029,14 @@ SCHEMA = schema(
         # Absent or empty means no force. The CLI rejects a bare `--force`
         # before encoding; core rejects unknown hazard names and keep+force.
         # There is no boolean force field.
-        force_hazards=F(5, List(STR))),
+        force_hazards=F(5, List(STR)),
+        # `--wait <secs>`: how long to keep retrying a busy family lock
+        # before reporting it busy (R21), exactly as on
+        # CloneLocalWorkspaceRequest. Dispose and disband take the family
+        # lock and honour it; `list` is observation-only, takes no lock and
+        # accepts the field without effect, so one driver may pass `--wait`
+        # to every family verb uniformly.
+        wait_seconds=F(6, INT, optional=True)),
 
     # ---- action responses -------------------------------------------------
     # Response wrapper for create_workspace.
@@ -2135,7 +2158,12 @@ SCHEMA = schema(
         # Root-relative path (`.` for the root).
         path=F(5, STR),
         # The diagnostic recorded when the row was left incomplete.
-        last_error=F(6, STR, optional=True)),
+        last_error=F(6, STR, optional=True),
+        # The row's recorded owner token (R20), exactly as the create that
+        # reserved the row supplied it. Absent for the root, for a row
+        # created without `--owner`, and for every row of a format-1 index.
+        # Opaque: report it, never interpret it.
+        owner=F(7, STR, optional=True)),
 
     # Response wrapper for local_family (LCM1.0c, 2026-09-05; `members`
     # allocated by LCM1.0c follow-up 2 after the operator's ruling of
