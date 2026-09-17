@@ -101,6 +101,7 @@ fn merge_request(op: crate::MergeOp, selector: Option<&str>) -> crate::MergeRequ
         preserve: None,
         filesystem_strict: None,
         local_source_name: selector.map(ToOwned::to_owned),
+        wait_seconds: None,
     }
 }
 

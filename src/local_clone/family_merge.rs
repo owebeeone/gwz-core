@@ -63,6 +63,7 @@ use super::adapters::member_paths::mint_transfer_id;
 use super::errors;
 use super::request::validate_family_merge;
 use super::transport::BackendLocalTransport;
+use super::wait::lock_family;
 use crate::artifact::{self, LockArtifact, ManifestArtifact};
 use crate::git::MergeAuthorityBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
@@ -289,8 +290,10 @@ fn prepare<B: MergeAuthorityBackend>(
     }
 
     // Step 5: the family lock, held from here through the delegation.
-    let mut session = store
-        .try_lock(&FamilyLocation::new(&root))
+    // `--wait <secs>` (GwzOpenDecisions D1) retries a busy lock at the shared
+    // fixed interval until the deadline; the reread below is what makes that
+    // safe, and it is the same reread an unwaited lock already did.
+    let mut session = lock_family(&store, &FamilyLocation::new(&root), selector.wait)
         .map_err(|error| store_error(&error))?;
     let locked_view = session.reread().map_err(|error| store_error(&error))?;
     let bound = resolve_family_merge(locked_view.as_ref(), &selector.token)?;
@@ -348,6 +351,9 @@ fn prepare<B: MergeAuthorityBackend>(
     // `source_ref`; everything else exactly as the driver sent it.
     let projected = crate::MergeRequest {
         local_source_name: None,
+        // The wait was for the family lock, which this wrapper holds and the
+        // engine never takes; the engine refuses the field outright.
+        wait_seconds: None,
         source_ref: Some(imported.import_ref.clone()),
         ..request.clone()
     };

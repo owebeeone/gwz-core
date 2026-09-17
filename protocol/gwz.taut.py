@@ -1965,7 +1965,21 @@ SCHEMA = schema(
         # is `UnknownLocal`). Added 2026-09-05 for LCM1.0c
         # (gwz-dev dev-docs/GwzLocalCloneDesign.md §6/§7). F(8) is
         # filesystem_strict (ship 1); do not reuse either tag.
-        local_source_name=F(9, STR, optional=True)),
+        local_source_name=F(9, STR, optional=True),
+        # `--wait <secs>`: how long to keep retrying a busy family lock
+        # before reporting it busy (GwzLaneCleanFixes R21, extended to the
+        # family merge 2026-09-18), exactly as on
+        # CloneLocalWorkspaceRequest and LocalFamilyRequest. Meaningful only
+        # together with `local_source_name`: the family merge is the only
+        # merge that takes the family lock, so core refuses the field on an
+        # ordinary merge rather than accepting a wait that could never
+        # happen. Core polls the try-lock at a short fixed interval -- there
+        # is no blocking acquisition -- and rereads the family index once it
+        # wins, so a merge that waited behind a create or a dispose is
+        # answered by the index that operation left. The wrapper clears the
+        # field before delegating to the merge engine, which takes its own
+        # locks and never sees it.
+        wait_seconds=F(10, INT, optional=True)),
 
     # Create a named local clone of the current workspace inside its local
     # family (GwzLocalCloneDesign.md §2/§4/§7; allocated 2026-09-05 for

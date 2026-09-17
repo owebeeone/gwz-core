@@ -208,6 +208,10 @@ pub struct FamilyMergeSelector {
     pub token: RemoteToken,
     /// The ref resolved inside the source; `None` means the source's HEAD.
     pub source_ref: Option<String>,
+    /// `--wait <secs>` on the family lock (GwzOpenDecisions D1, carrying
+    /// GwzLaneCleanFixes R21 to the family merge). `None` is the unchanged
+    /// behaviour: a busy family lock refuses at once.
+    pub wait: Option<Duration>,
 }
 
 /// Validate the family half of a merge start, then the engine's own start
@@ -245,8 +249,12 @@ pub fn validate_family_merge(request: &crate::MergeRequest) -> ModelResult<Famil
     // The engine's start gate, on the request as the wrapper will delegate
     // it: the selector is cleared and the import ref (minted at import time)
     // stands in as `source_ref`. Shape stays ahead of the dry-run refusal.
+    // `wait_seconds` is cleared with the selector: it waits for the family
+    // lock, which the engine never takes, and the engine refuses the field
+    // on every op. The wrapper's own delegation clears it the same way.
     let projected = crate::MergeRequest {
         local_source_name: None,
+        wait_seconds: None,
         source_ref: Some(format!("{IMPORT_REF_NAMESPACE}pending")),
         ..request.clone()
     };
@@ -257,6 +265,7 @@ pub fn validate_family_merge(request: &crate::MergeRequest) -> ModelResult<Famil
     Ok(FamilyMergeSelector {
         token: RemoteToken::new(raw),
         source_ref: request.source_ref.clone(),
+        wait: validate_wait(request.wait_seconds)?,
     })
 }
 
@@ -318,6 +327,7 @@ mod tests {
             preserve: None,
             filesystem_strict: None,
             local_source_name: Some("A".to_owned()),
+            wait_seconds: None,
         }
     }
 

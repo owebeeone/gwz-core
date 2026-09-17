@@ -149,7 +149,16 @@ from taut.ir.load import load_schema
 # four field objects from the new IR reproduced the previous pin below
 # exactly.
 #   was: 6262b4b4d06c07b9ea7fa2d432c3921899f901bebaeeab006b6c4cd9e023c1f5
-PRE_LOG_WIRE_SHA256 = "02eccee9bf22debd925446bc21732c8d36178eb3c222377ad83883e62ab2acf7"
+#
+# Moved deliberately again on 2026-09-18 by GwzOpenDecisions D1, which
+# carries GwzLaneCleanFixes R21's `--wait <secs>` to the last family verb
+# that lacked it: it adds exactly one optional field,
+# MergeRequest.wait_seconds (tag 10). No existing message, field, slot, enum
+# or method changed. MEASURED additive, not assumed: removing exactly that
+# one field object from the new IR reproduced the previous pin below
+# exactly.
+#   was: 02eccee9bf22debd925446bc21732c8d36178eb3c222377ad83883e62ab2acf7
+PRE_LOG_WIRE_SHA256 = "d630cf220ef9ef16237c984dfd944bf08b5ad49b119d2bec3b6cbeb07e36e8ea"
 LOG_METHODS = {"log", "log.output"}
 
 

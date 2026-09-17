@@ -148,6 +148,7 @@ fn request(selection: Option<crate::Selection>, dry_run: bool) -> crate::MergeRe
         preserve: None,
         filesystem_strict: None,
         local_source_name: None,
+        wait_seconds: None,
     }
 }
 

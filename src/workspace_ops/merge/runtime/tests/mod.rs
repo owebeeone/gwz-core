@@ -21,6 +21,7 @@ fn request(root: &Path) -> crate::MergeRequest {
         preserve: None,
         filesystem_strict: None,
         local_source_name: None,
+        wait_seconds: None,
     }
 }
 

@@ -22,6 +22,7 @@ use crate::workspace_ops::{
 };
 
 mod recovery;
+mod wait;
 
 /// A real family: a workspace root with the given members, each with one
 /// commit, registered through the public handlers, and its verbatim clone

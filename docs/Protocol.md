@@ -85,6 +85,21 @@ its first write of any kind, and an older gwz refuses a v2 index as a whole
 with a refusal that names the minimum gwz version reading it. The reserved
 `CloneLocalWorkspaceRequest` tag 7 stays reserved.
 
+GwzOpenDecisions D1 (2026-09-18) carries that `--wait <secs>` to the last
+family verb that lacked it, and adds one optional field:
+`MergeRequest.wait_seconds` (tag 10). It is meaningful only together with
+`MergeRequest.local_source_name` -- the family merge is the only merge that
+takes the family lock -- so core refuses the field on an ordinary merge
+(`invalid_request`) rather than accepting a wait that could never happen.
+The semantics are the other verbs' exactly: a busy family lock is retried at
+the same short fixed interval until the deadline, there is no blocking
+acquisition, only `Busy` is retried, and a wait that wins rereads the family
+index before resolving the source, so a merge that waited behind a create or
+a dispose is answered by the index that operation left. `wait_seconds` of 0,
+or absent, is the unchanged behaviour: one attempt, then `Busy`. The family
+wrapper clears the field before delegating to the merge engine, which takes
+its own workspace locks and never sees it.
+
 Git paths are byte strings and are not guaranteed to be UTF-8. Conflict-path
 fields retain ordinary printable UTF-8 unchanged. A path requiring escaping is
 double-quoted; quotes, backslashes, and familiar control bytes use backslash

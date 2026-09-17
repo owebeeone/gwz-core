@@ -5156,6 +5156,7 @@ pub struct MergeRequest {
     pub preserve: Option<bool>,
     pub filesystem_strict: Option<bool>,
     pub local_source_name: Option<String>,
+    pub wait_seconds: Option<i64>,
 }
 impl MergeRequest {
     pub fn to_cbor(&self) -> Cbor {
@@ -5169,6 +5170,7 @@ impl MergeRequest {
             (7, match &self.preserve { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
             (8, match &self.filesystem_strict { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
             (9, match &self.local_source_name { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (10, match &self.wait_seconds { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -5182,6 +5184,7 @@ impl MergeRequest {
             preserve: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
             filesystem_strict: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
             local_source_name: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            wait_seconds: { let v = c.try_get(10)?; if v.is_null() { None } else { Some(v.try_int()?) } },
         })
     }
 }

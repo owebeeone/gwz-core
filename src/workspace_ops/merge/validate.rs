@@ -5,6 +5,7 @@ pub(crate) fn validate_merge_request(request: &crate::MergeRequest) -> ModelResu
     validate_optional_id(request.merge_id.as_deref())?;
     validate_filesystem_strict(request)?;
     validate_no_local_source_name(request)?;
+    validate_no_wait_seconds(request)?;
 
     match request.op {
         crate::MergeOp::Start => {
@@ -87,6 +88,28 @@ fn validate_no_local_source_name(request: &crate::MergeRequest) -> ModelResult<(
         return invalid(
             "local_source_name must be resolved by the local-family merge wrapper \
              before the merge engine runs",
+        );
+    }
+    Ok(())
+}
+
+/// `--wait <secs>` waits for the FAMILY lock, and the merge engine never
+/// takes it.
+///
+/// GwzOpenDecisions D1 (2026-09-18) carries GwzLaneCleanFixes R21's
+/// `--wait <secs>` to `gwz merge --remote <name>`. The only lock a wait can
+/// wait for is the family lock, which only the family wrapper
+/// (`workspace_ops::handle_merge_with_local_family`) takes; the wrapper
+/// clears the field along with the selector before delegating. So the engine
+/// refuses `wait_seconds` on every op, exactly as it refuses
+/// `local_source_name`: an ordinary `gwz merge --wait 30` is a request for a
+/// wait that could never happen, and is told so rather than accepted and
+/// ignored.
+fn validate_no_wait_seconds(request: &crate::MergeRequest) -> ModelResult<()> {
+    if request.wait_seconds.is_some() {
+        return invalid(
+            "--wait <secs> waits for the local-family lock and is accepted only with \
+             --remote <name>",
         );
     }
     Ok(())
@@ -223,6 +246,7 @@ mod tests {
             preserve: None,
             filesystem_strict: None,
             local_source_name: None,
+            wait_seconds: None,
         }
     }
 
@@ -430,6 +454,10 @@ mod tests {
         });
         let mut selector = start.clone();
         selector.local_source_name = Some("A".to_owned());
+        // D1: the family wrapper clears `wait_seconds` with the selector, so
+        // the engine refuses it the same way on the projected request.
+        let mut waiting = start.clone();
+        waiting.wait_seconds = Some(30);
         let mut with_id = start.clone();
         with_id.merge_id = Some("merge_1".to_owned());
         let mut unsourced = start;
@@ -438,6 +466,7 @@ mod tests {
             ("whitespace message", whitespace),
             ("partial policy", partial),
             ("selector", selector),
+            ("wait_seconds", waiting),
             ("merge_id", with_id),
             ("no source_ref", unsourced),
         ] {

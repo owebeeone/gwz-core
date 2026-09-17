@@ -410,6 +410,7 @@ fn merge_request_and_response_round_trip_reserved_lifecycle_shape() {
         preserve: None,
         filesystem_strict: None,
         local_source_name: None,
+        wait_seconds: None,
     };
     assert_eq!(
         round_trip(
@@ -442,9 +443,14 @@ fn merge_request_and_response_round_trip_reserved_lifecycle_shape() {
     // is appended. Every pre-existing slot is byte-identical.
     //   was: a801a701697265715f6d65726765026667777a2e763003f604f605f606f607f602000369666561747572652f7804f6050006f607f608f6
     // InvocationContext adds RequestMeta tag 9 (null); older tags unchanged.
+    // Moved 2026-09-18 by GwzOpenDecisions D1: MergeRequest gained the
+    // optional `wait_seconds` in slot 10, so the map header grows from a9 to
+    // aa and a trailing `0a f6` (slot 10 = null) is appended. MEASURED
+    // additive: every pre-existing slot is byte-identical.
+    //   was: a901a901697265715f6d65726765026667777a2e763003f604f605f606f607f608f609f602000369666561747572652f7804f6050006f607f608f609f6
     assert_eq!(
         hex,
-        "a901a901697265715f6d65726765026667777a2e763003f604f605f606f607f608f609f602000369666561747572652f7804f6050006f607f608f609f6"
+        "aa01a901697265715f6d65726765026667777a2e763003f604f605f606f607f608f609f602000369666561747572652f7804f6050006f607f608f609f60af6"
     );
     let response = gwz_core::MergeResponse {
         response: response_envelope("req-merge", ActionKind::Merge),
@@ -517,6 +523,7 @@ fn merge_request_round_trips_filesystem_strict() {
         preserve: None,
         filesystem_strict: Some(true),
         local_source_name: None,
+        wait_seconds: None,
     };
     assert_eq!(
         round_trip(
@@ -538,6 +545,48 @@ fn merge_request_round_trips_filesystem_strict() {
             gwz_core::MergeRequest::from_cbor,
         )
         .filesystem_strict,
+        None
+    );
+}
+
+/// GwzOpenDecisions D1: `MergeRequest.wait_seconds` (tag 10) survives the
+/// wire, and an unaware peer's request (slot 10 absent) still decodes to
+/// `None`. The field is meaningful only with `local_source_name`; the codec
+/// carries both without interpreting either.
+#[test]
+fn merge_request_round_trips_the_family_wait() {
+    let request = gwz_core::MergeRequest {
+        meta: request_meta("req-merge-wait"),
+        op: gwz_core::MergeOp::Start,
+        source_ref: None,
+        merge_id: None,
+        mode: None,
+        message: None,
+        preserve: None,
+        filesystem_strict: None,
+        local_source_name: Some("A".to_owned()),
+        wait_seconds: Some(120),
+    };
+    assert_eq!(
+        round_trip(
+            &request,
+            gwz_core::MergeRequest::to_cbor,
+            gwz_core::MergeRequest::from_cbor,
+        ),
+        request
+    );
+
+    let absent = gwz_core::MergeRequest {
+        wait_seconds: None,
+        ..request.clone()
+    };
+    assert_eq!(
+        round_trip(
+            &absent,
+            gwz_core::MergeRequest::to_cbor,
+            gwz_core::MergeRequest::from_cbor,
+        )
+        .wait_seconds,
         None
     );
 }

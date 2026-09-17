@@ -1953,6 +1953,7 @@ has no service method and no handler that executes commands.
 | preserve | 7 | bool | yes | no | - |
 | filesystem_strict | 8 | bool | yes | no | - |
 | local_source_name | 9 | str | yes | no | - |
+| wait_seconds | 10 | int | yes | no | - |
 
 ### CloneLocalWorkspaceRequest
 
