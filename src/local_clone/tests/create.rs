@@ -15,6 +15,7 @@ use super::fixture::{
 };
 use crate::artifact::{ConfIntegrityVerdict, inspect_conf_integrity};
 use crate::git::Git2Backend;
+use crate::local_clone::copy_record;
 use crate::local_clone::create;
 use crate::local_clone::request::validate_clone_local;
 use crate::model::ErrorCode;
@@ -892,4 +893,132 @@ fn a_source_with_reflog_only_history_creates_and_reports_the_verified_objects() 
         "{message}"
     );
     assert!(message.contains("objects verified of"), "{message}");
+}
+
+/// R1 (plan S1.1/S1.2): a verbatim create writes down what it copied, per
+/// repository, into the lane's own `.gwz/local-clone-copy.yml`.
+///
+/// This is the baseline disposal has never had. The fixture carries exactly
+/// the three things that make every lane of a real workspace refuse today:
+/// a commit only a reflog reaches, a native stash entry, and ignored and
+/// untracked data. All three are in the record, keyed to the family and the
+/// allocation that made the lane, and GWZ's own `.gwz/` is not -- it is
+/// structure, not work, and disposal strips it from the same side.
+#[test]
+fn a_verbatim_create_records_the_roots_and_the_entries_it_copied() {
+    let fixture = family_workspace("create-copy-record");
+    // A commit only `app`'s reflog reaches.
+    let mut app = fixture.workspace.member("app").open();
+    let original = app.head().unwrap().peel_to_commit().unwrap();
+    let tree = original.tree().unwrap();
+    let original_id = original.id();
+    original
+        .amend(Some("HEAD"), None, None, None, Some("amended"), Some(&tree))
+        .unwrap();
+    drop(tree);
+    drop(original);
+    // A native stash entry in `app`.
+    fs::write(fixture.root.join("app/README"), b"stash me\n").unwrap();
+    app.stash_save(&gwz_local_testrepo::fixture_signature(), "wip", None)
+        .unwrap();
+    // Ignored user data in `app`, of the shape every lane inherits.
+    fs::write(fixture.root.join("app/.gitignore"), b"build/\n").unwrap();
+    fs::create_dir_all(fixture.root.join("app/build")).unwrap();
+    fs::write(fixture.root.join("app/build/out.o"), b"object\n").unwrap();
+
+    let validated = validate_clone_local(&clone_request("A")).unwrap();
+    create::clone_local(
+        &Git2Backend::without_credential_helpers(),
+        &fixture.root,
+        &fixture.root,
+        &validated,
+        open_merge_probe,
+        &gwz_copy_contract::NeverCancelled,
+    )
+    .expect("the create writes its record and completes");
+
+    let dest = fixture.sibling("A");
+    let record = copy_record::read(&dest)
+        .expect("the record decodes")
+        .expect("a create of this build always writes one");
+    let (_, view) = family_view(&fixture.root);
+    let row = view.member("A").unwrap().1;
+    assert_eq!(record.family_id, view.family_id.as_str());
+    assert_eq!(record.allocation_id, row.allocation_id.as_str());
+    assert_eq!(record.source_path, ".");
+    assert_eq!(record.mode, "verbatim");
+
+    let keys: Vec<String> = record
+        .repositories
+        .iter()
+        .map(|repository| repository.key.to_string())
+        .collect();
+    assert_eq!(keys, ["@root", "mem_app"], "every repository of the lane");
+
+    let member = &record.repositories[1];
+    let sources: Vec<String> = member
+        .roots
+        .iter()
+        .map(|root| format!("{:?}", root.source))
+        .collect();
+    assert!(
+        member
+            .roots
+            .iter()
+            .any(|root| root.oid.to_hex() == original_id.to_string()),
+        "the commit only the reflog reaches is recorded: {sources:?}"
+    );
+    assert!(
+        member.roots.iter().any(|root| matches!(
+            root.source,
+            gwz_repo_contract::RootSource::Stash { index: 0 }
+        )),
+        "the native stash entry is recorded: {sources:?}"
+    );
+
+    let entries: Vec<(String, String)> = member
+        .entries
+        .iter()
+        .map(|entry| {
+            (
+                copy_record::escape_path(&entry.path),
+                format!("{:?}", entry.kind),
+            )
+        })
+        .collect();
+    assert!(
+        entries
+            .iter()
+            .any(|(path, kind)| path == "notes.txt" && kind == "Untracked"),
+        "{entries:?}"
+    );
+    assert!(
+        entries
+            .iter()
+            .any(|(path, kind)| path == "build/" && kind == "Ignored"),
+        "the ignored build tree is recorded as the directory: {entries:?}"
+    );
+    assert!(
+        member
+            .entries
+            .iter()
+            .filter(|entry| entry.path == b"notes.txt")
+            .all(|entry| entry.fingerprint.size > 0),
+        "a recorded entry carries its fingerprint: {:?}",
+        member.entries
+    );
+
+    let root_entries: Vec<String> = record.repositories[0]
+        .entries
+        .iter()
+        .map(|entry| copy_record::escape_path(&entry.path))
+        .collect();
+    assert!(
+        !root_entries.iter().any(|path| path.starts_with(".gwz")),
+        "GWZ's own runtime directory is structure, not copied work: {root_entries:?}"
+    );
+    assert!(
+        !root_entries.iter().any(|path| path.starts_with("app")),
+        "the member is recorded on its own, not as the root's dirt: {root_entries:?}"
+    );
 }

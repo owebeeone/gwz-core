@@ -31,6 +31,21 @@ pub struct ConfigurationReport {
     pub generated_changes: Vec<PathBuf>,
 }
 
+/// What recording the copy wrote (`gwz-core dev-docs/GwzLaneCleanFixes.md`
+/// R1). A verbatim destination inherits its source's ignored data, native
+/// stash entries and reflog-only commits; disposal has no way to tell those
+/// from the lane's own work unless installation writes down what it copied.
+/// The counts are for the create's report; where the record stands and what
+/// it holds are the adapter's, not this library's.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CopyRecordReceipt {
+    pub repositories: u64,
+    /// Protected roots recorded across every repository.
+    pub roots: u64,
+    /// Untracked and ignored entries recorded across every repository.
+    pub entries: u64,
+}
+
 /// What publishing the final manifest did. The conf-integrity marker is
 /// regenerated for the final manifest and lock bytes; a copied marker
 /// vouching for superseded bytes is never accepted (design §4.1).
@@ -95,7 +110,7 @@ impl std::error::Error for InstallPortError {}
 /// order is the contract a real adapter may rely on: `snapshot_source`,
 /// `observe_destination`, `allocate_destination`, then either the tree
 /// copier or `construct_repositories`, then `install_destination_git`,
-/// `observe_destination` again, `recheck_source`,
+/// `record_copy`, `observe_destination` again, `recheck_source`,
 /// `recapture_configuration` and `publish_manifest`. Nothing follows
 /// `publish_manifest` but the row's move to `ready`.
 pub trait InstallPorts {
@@ -135,6 +150,19 @@ pub trait InstallPorts {
         &mut self,
         destination: &Path,
     ) -> Result<GitInstallReport, InstallPortError>;
+
+    /// Record what the destination copied, per repository, so disposal can
+    /// later tell the copy from the lane's own work (R1).
+    ///
+    /// It runs after the destination's Git configuration is installed --
+    /// the remote-URL strip and the managed exclude block both change what
+    /// the destination reports as work -- and before the pointer, so a
+    /// destination that is published at all is published with its record.
+    /// Its failure stops the install like any other port failure: a lane
+    /// with no record is R3's case, and R3 is for lanes made by an older
+    /// gwz or copied outside gwz, not for a record this build silently
+    /// failed to write.
+    fn record_copy(&mut self, destination: &Path) -> Result<CopyRecordReceipt, InstallPortError>;
 
     /// Verify the source still matches `snapshot`.
     fn recheck_source(&mut self, snapshot: &SourceSnapshot) -> Result<(), InstallPortError>;

@@ -17,8 +17,9 @@ use gwz_family_model::{AllocationId, FamilyChange, FamilyId, FamilyView, MemberN
 use gwz_family_store_contract::{AppliedChange, FamilySession, StoreError};
 
 use crate::{
-    ConfigurationPlan, ConfigurationReport, ConstructionRequest, DestinationObservation,
-    GitInstallReport, InstallPortError, InstallPorts, ManifestReceipt, SourceSnapshot,
+    ConfigurationPlan, ConfigurationReport, ConstructionRequest, CopyRecordReceipt,
+    DestinationObservation, GitInstallReport, InstallPortError, InstallPorts, ManifestReceipt,
+    SourceSnapshot,
 };
 
 /// One thing the installer did, whichever collaborator it did it through.
@@ -30,6 +31,7 @@ pub enum InstallEvent {
     CopyTree,
     ConstructRepositories,
     InstallDestinationGit,
+    RecordCopy,
     InstallPointer,
     RecheckSource,
     RecaptureConfiguration,
@@ -55,6 +57,7 @@ impl InstallEvent {
             Self::CopyTree => "copy_tree",
             Self::ConstructRepositories => "construct_repositories",
             Self::InstallDestinationGit => "install_destination_git",
+            Self::RecordCopy => "record_copy",
             Self::InstallPointer => "install_pointer",
             Self::RecheckSource => "recheck_source",
             Self::RecaptureConfiguration => "recapture_configuration",
@@ -116,7 +119,7 @@ fn violation(events: &[InstallEvent], event: InstallEvent) -> Option<String> {
     use InstallEvent::{
         Allocate, AllocateDestination, ConstructRepositories, CopyTree, InstallDestinationGit,
         InstallPointer, MarkReady, ObserveDestination, PublishManifest, RecaptureConfiguration,
-        RecheckSource, RecordError, SnapshotSource,
+        RecheckSource, RecordCopy, RecordError, SnapshotSource,
     };
     let seen = |wanted: InstallEvent| events.contains(&wanted);
     let broke = |detail: String| Some(format!("{}: {detail}", event.label()));
@@ -137,6 +140,7 @@ fn violation(events: &[InstallEvent], event: InstallEvent) -> Option<String> {
         | CopyTree
         | ConstructRepositories
         | InstallDestinationGit
+        | RecordCopy
         | InstallPointer
         | RecheckSource
         | RecaptureConfiguration
@@ -152,9 +156,10 @@ fn violation(events: &[InstallEvent], event: InstallEvent) -> Option<String> {
         InstallDestinationGit if !seen(CopyTree) && !seen(ConstructRepositories) => {
             broke("ran before the destination was built".to_owned())
         }
-        InstallPointer if !seen(InstallDestinationGit) => {
+        RecordCopy if !seen(InstallDestinationGit) => {
             broke("ran before the destination's git configuration was installed".to_owned())
         }
+        InstallPointer if !seen(RecordCopy) => broke("ran before the copy was recorded".to_owned()),
         PublishManifest if !seen(RecheckSource) || !seen(RecaptureConfiguration) => {
             broke("the manifest precedes the source recheck and the lock recapture".to_owned())
         }
@@ -181,6 +186,7 @@ pub struct RecordingInstallPorts {
     observations: Vec<DestinationObservation>,
     configuration: Option<ConfigurationReport>,
     git: Option<GitInstallReport>,
+    record: Option<CopyRecordReceipt>,
     receipt: Option<ManifestReceipt>,
     failures: Vec<(InstallEvent, InstallPortError)>,
     construction: Vec<ConstructionRequest>,
@@ -227,6 +233,10 @@ impl RecordingInstallPorts {
         self.git = Some(report);
     }
 
+    pub fn record(&mut self, record: CopyRecordReceipt) {
+        self.record = Some(record);
+    }
+
     pub fn receipt(&mut self, receipt: ManifestReceipt) {
         self.receipt = Some(receipt);
     }
@@ -245,7 +255,7 @@ impl RecordingInstallPorts {
         &self.plans
     }
 
-    fn record(&mut self, call: InstallEvent) -> Result<(), InstallPortError> {
+    fn journalled(&mut self, call: InstallEvent) -> Result<(), InstallPortError> {
         self.journal.record(call);
         if let Some(index) = self.failures.iter().position(|(name, _)| *name == call) {
             return Err(self.failures.remove(index).1);
@@ -256,7 +266,7 @@ impl RecordingInstallPorts {
 
 impl InstallPorts for RecordingInstallPorts {
     fn snapshot_source(&mut self, _source: &Path) -> Result<SourceSnapshot, InstallPortError> {
-        self.record(InstallEvent::SnapshotSource)?;
+        self.journalled(InstallEvent::SnapshotSource)?;
         self.snapshot
             .clone()
             .ok_or(InstallPortError::Unimplemented {
@@ -269,7 +279,7 @@ impl InstallPorts for RecordingInstallPorts {
         _destination: &Path,
     ) -> Result<DestinationObservation, InstallPortError> {
         let first = !self.journal.seen(InstallEvent::ObserveDestination);
-        self.record(InstallEvent::ObserveDestination)?;
+        self.journalled(InstallEvent::ObserveDestination)?;
         if self.observations.is_empty() {
             return Ok(if first {
                 DestinationObservation::absent()
@@ -281,7 +291,7 @@ impl InstallPorts for RecordingInstallPorts {
     }
 
     fn allocate_destination(&mut self, _destination: &Path) -> Result<(), InstallPortError> {
-        self.record(InstallEvent::AllocateDestination)
+        self.journalled(InstallEvent::AllocateDestination)
     }
 
     fn construct_repositories(
@@ -289,19 +299,24 @@ impl InstallPorts for RecordingInstallPorts {
         request: &ConstructionRequest,
     ) -> Result<(), InstallPortError> {
         self.construction.push(request.clone());
-        self.record(InstallEvent::ConstructRepositories)
+        self.journalled(InstallEvent::ConstructRepositories)
     }
 
     fn install_destination_git(
         &mut self,
         _destination: &Path,
     ) -> Result<GitInstallReport, InstallPortError> {
-        self.record(InstallEvent::InstallDestinationGit)?;
+        self.journalled(InstallEvent::InstallDestinationGit)?;
         Ok(self.git.clone().unwrap_or_default())
     }
 
+    fn record_copy(&mut self, _destination: &Path) -> Result<CopyRecordReceipt, InstallPortError> {
+        self.journalled(InstallEvent::RecordCopy)?;
+        Ok(self.record.clone().unwrap_or_default())
+    }
+
     fn recheck_source(&mut self, _snapshot: &SourceSnapshot) -> Result<(), InstallPortError> {
-        self.record(InstallEvent::RecheckSource)
+        self.journalled(InstallEvent::RecheckSource)
     }
 
     fn recapture_configuration(
@@ -309,7 +324,7 @@ impl InstallPorts for RecordingInstallPorts {
         plan: &ConfigurationPlan,
     ) -> Result<ConfigurationReport, InstallPortError> {
         self.plans.push(plan.clone());
-        self.record(InstallEvent::RecaptureConfiguration)?;
+        self.journalled(InstallEvent::RecaptureConfiguration)?;
         Ok(self.configuration.clone().unwrap_or(ConfigurationReport {
             lock_recaptured: true,
             generated_changes: Vec::new(),
@@ -321,13 +336,12 @@ impl InstallPorts for RecordingInstallPorts {
         plan: &ConfigurationPlan,
     ) -> Result<ManifestReceipt, InstallPortError> {
         self.plans.push(plan.clone());
-        self.record(InstallEvent::PublishManifest)?;
+        self.journalled(InstallEvent::PublishManifest)?;
         Ok(self.receipt.clone().unwrap_or(ManifestReceipt {
             marker_regenerated: true,
         }))
     }
 }
-
 /// A [`FamilySession`] that journals every call before delegating, and can
 /// fail one named change without disturbing the store beneath it.
 pub struct JournalSession<'a> {
@@ -490,6 +504,7 @@ mod tests {
             InstallEvent::AllocateDestination,
             InstallEvent::CopyTree,
             InstallEvent::InstallDestinationGit,
+            InstallEvent::RecordCopy,
             InstallEvent::InstallPointer,
             InstallEvent::RecaptureConfiguration,
         ] {
@@ -536,10 +551,16 @@ mod tests {
         journal.record(InstallEvent::InstallPointer);
         assert_eq!(
             journal.violations().len(),
-            1,
+            2,
+            "the pointer before the record"
+        );
+        journal.record(InstallEvent::RecordCopy);
+        assert_eq!(
+            journal.violations().len(),
+            2,
             "the git install was recorded"
         );
         journal.record(InstallEvent::MarkReady);
-        assert_eq!(journal.violations().len(), 2, "ready before the manifest");
+        assert_eq!(journal.violations().len(), 3, "ready before the manifest");
     }
 }

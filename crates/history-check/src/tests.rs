@@ -16,8 +16,9 @@ use gwz_repo_contract::{
 
 use super::{
     Cancellation, ConnectivityCoverage, ConnectivityOutcome, Coverage, HistoryOutcome, Limits,
-    MissingObject, NeverCancelled, RootCoverage, UnpreservedItem, Witness, check_connectivity,
-    check_history, is_eligible_witness_root,
+    MissingObject, NeverCancelled, RootCoverage, UnpreservedItem, Witness, WitnessPolicy,
+    check_connectivity, check_history, check_history_under, is_eligible_witness_root,
+    is_eligible_witness_root_under,
 };
 
 const SHA1: ObjectFormat = ObjectFormat::Sha1;
@@ -1306,4 +1307,143 @@ fn an_unreadable_store_is_unknown_to_connectivity_never_incomplete() {
         1,
         "the first failed read stops the walk"
     );
+}
+
+/// R4: deleting a *copy* is not a loss where the surviving witness holds
+/// the identical object itself.
+///
+/// This is the whole of the 52 `unpreserved-history` entries every lane of
+/// the gwz-dev workspace reports (gwz-dev `dev-docs/GwzLaneIssues.md`, L1):
+/// a verbatim lane copies the family's reflog entries and stash entries, and
+/// the family still holds every one of them. Under
+/// [`WitnessPolicy::Durable`] the witness's own reflog cannot cover, which
+/// is right for an ordinary deletion and wrong for deleting a copy; under
+/// [`WitnessPolicy::IdenticalCopy`] it covers, at the same object id and
+/// with the same whole-subgraph proof.
+#[test]
+fn a_copy_of_a_witnesss_own_reflog_entry_is_preserved_only_under_the_copy_policy() {
+    let mut reader = InMemoryObjectReader::new();
+    let base = commit(&mut reader, SHA1, 0x50, Vec::new());
+    let amended = commit(&mut reader, SHA1, 0x60, vec![base.clone()]);
+    let stashed = commit(&mut reader, SHA1, 0x70, vec![base.clone()]);
+    // The witness holds `amended` only in its own reflog and `stashed` only
+    // in its own stash -- exactly what a lane copies.
+    reader.root(ref_source("refs/heads/main"), base.clone());
+    reader.root(
+        RootSource::Reflog {
+            reference: "refs/heads/main".to_owned(),
+            index: 1,
+        },
+        amended.clone(),
+    );
+    reader.root(RootSource::Stash { index: 0 }, stashed.clone());
+
+    let protected = roots(vec![
+        root(ref_source("refs/heads/main"), base.clone()),
+        root(
+            RootSource::Reflog {
+                reference: "refs/heads/main".to_owned(),
+                index: 1,
+            },
+            amended.clone(),
+        ),
+        root(RootSource::Stash { index: 0 }, stashed.clone()),
+    ]);
+
+    let items = expect_unpreserved(check(&protected, &[member("hub")], &reader));
+    assert_eq!(items.len(), 2, "the durable rule is unchanged: {items:?}");
+
+    let coverage = expect_verified(check_history_under(
+        &protected,
+        &[member("hub")],
+        &reader,
+        Limits::default(),
+        &NeverCancelled,
+        WitnessPolicy::IdenticalCopy,
+    ));
+    for oid in [&amended, &stashed] {
+        let covered = coverage
+            .covered
+            .iter()
+            .find(|entry| &entry.root.oid == oid)
+            .unwrap_or_else(|| panic!("{oid} is covered by the witness's own entry"));
+        assert_eq!(
+            covered.witness_root.oid, *oid,
+            "the identical object, not a look-alike"
+        );
+    }
+}
+
+/// R0.1 under the copy policy: widening which witness roots may cover never
+/// widens what counts as covered. A commit the lane alone holds is
+/// unpreserved under both policies, and so is one the witness holds only as
+/// a loose object no retained root reaches.
+#[test]
+fn a_root_no_witness_retains_is_unpreserved_under_both_policies() {
+    let mut reader = InMemoryObjectReader::new();
+    let base = commit(&mut reader, SHA1, 0x50, Vec::new());
+    let lane_only = commit(&mut reader, SHA1, 0x60, vec![base.clone()]);
+    reader.root(ref_source("refs/heads/main"), base.clone());
+
+    let protected = roots(vec![root(ref_source("refs/heads/work"), lane_only.clone())]);
+    for policy in [WitnessPolicy::Durable, WitnessPolicy::IdenticalCopy] {
+        let items = expect_unpreserved(check_history_under(
+            &protected,
+            &[member("hub")],
+            &reader,
+            Limits::default(),
+            &NeverCancelled,
+            policy,
+        ));
+        assert_eq!(items.len(), 1, "{policy:?}");
+        assert_eq!(items[0].root.oid, lane_only, "{policy:?}");
+    }
+}
+
+/// The eligibility rule itself, stated per source, so the two policies
+/// cannot drift apart silently. Only the reflog and the stash move; a
+/// coordination record's objects live as long as the record does and stay
+/// ineligible under both.
+#[test]
+fn the_copy_policy_moves_the_reflog_and_the_stash_and_nothing_else() {
+    let sources = [
+        RootSource::Head,
+        ref_source("refs/heads/main"),
+        ref_source("refs/gwz/merge/m1"),
+        RootSource::AnnotatedTag {
+            name: "refs/tags/v1".to_owned(),
+        },
+        RootSource::Reflog {
+            reference: "refs/heads/main".to_owned(),
+            index: 0,
+        },
+        RootSource::Stash { index: 0 },
+        RootSource::CoordinationRecord {
+            record: "stash gwz_stash_0007".to_owned(),
+            object: "base".to_owned(),
+        },
+        RootSource::Other {
+            detail: "unread".to_owned(),
+        },
+    ];
+    let durable: Vec<bool> = sources
+        .iter()
+        .map(|source| is_eligible_witness_root_under(source, WitnessPolicy::Durable))
+        .collect();
+    let copy: Vec<bool> = sources
+        .iter()
+        .map(|source| is_eligible_witness_root_under(source, WitnessPolicy::IdenticalCopy))
+        .collect();
+    assert_eq!(
+        durable,
+        [true, true, false, true, false, false, false, false]
+    );
+    assert_eq!(copy, [true, true, false, true, true, true, false, false]);
+    for source in &sources {
+        assert_eq!(
+            is_eligible_witness_root(source),
+            is_eligible_witness_root_under(source, WitnessPolicy::Durable),
+            "the free function is the durable policy: {source:?}"
+        );
+    }
 }

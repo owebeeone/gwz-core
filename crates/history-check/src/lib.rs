@@ -51,6 +51,18 @@
 //! LCM1.0c follow-up 2) — must present it with that named source so it can
 //! be verified.
 //!
+//! # Deleting a copy (R4)
+//!
+//! Which of a *witness's own* retained roots may cover is a
+//! [`WitnessPolicy`]. [`check_history`] uses the durable one above.
+//! [`check_history_under`] takes the policy explicitly, and
+//! [`WitnessPolicy::IdenticalCopy`] additionally admits the witness's own
+//! reflog and stash roots -- for the one question of deleting a *copy* of
+//! that witness, where the witness's own entries are untouched by the
+//! deletion. Nothing else changes: the object id is still the evidence, the
+//! subgraph must still be whole, and a root no witness holds at all is
+//! still unpreserved.
+//!
 //! # Connectivity (design §4.0 dest-complete)
 //!
 //! [`check_connectivity`] answers a different question with the same walk:
@@ -204,6 +216,45 @@ impl HistoryOutcome {
 /// stash entries — all of these are operation state that ordinary Git
 /// expiry or the next command may drop, so they cannot certify that
 /// history survives a deletion.
+/// Which of a *witness's own* retained roots may certify that history
+/// survives (`gwz-core dev-docs/GwzLaneCleanFixes.md` R4).
+///
+/// The default, [`Durable`](Self::Durable), is the rule this library was
+/// built on and the only one that is right for an ordinary deletion: a
+/// witness's own reflog and stash entries are operation state that Git
+/// expiry or the next command may drop, so they cannot certify that
+/// history survives.
+///
+/// [`IdenticalCopy`](Self::IdenticalCopy) is for one narrower question:
+/// deleting a **copy** of the witness. Deleting a copy does not touch the
+/// witness's own entries, so where the witness holds the identical object
+/// -- the same id, whole -- in its own reflog or stash, the copy's deletion
+/// loses nothing, and refusing over it refuses over the witness's own
+/// history rather than over the lane's. Refusal still stands, under either
+/// policy, when no witness holds the object at all (R0.1): this widens
+/// which *witness roots* may cover, never what counts as covered.
+///
+/// A coordination record's objects stay ineligible under both: they live
+/// exactly as long as the record does, and R4 names the reflog and the
+/// stash.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WitnessPolicy {
+    #[default]
+    Durable,
+    IdenticalCopy,
+}
+
+/// Whether `source` is an eligible witness root under `policy`.
+/// [`is_eligible_witness_root`] is this under [`WitnessPolicy::Durable`].
+pub fn is_eligible_witness_root_under(source: &RootSource, policy: WitnessPolicy) -> bool {
+    match (policy, source) {
+        (WitnessPolicy::IdenticalCopy, RootSource::Reflog { .. } | RootSource::Stash { .. }) => {
+            true
+        }
+        (_, source) => is_eligible_witness_root(source),
+    }
+}
+
 pub fn is_eligible_witness_root(source: &RootSource) -> bool {
     match source {
         RootSource::Head | RootSource::AnnotatedTag { .. } => true,
@@ -257,6 +308,27 @@ pub fn check_history(
     reader: &dyn ObjectReader,
     limits: Limits,
     cancellation: &dyn Cancellation,
+) -> HistoryOutcome {
+    check_history_under(
+        protected,
+        witnesses,
+        reader,
+        limits,
+        cancellation,
+        WitnessPolicy::Durable,
+    )
+}
+
+/// [`check_history`] under an explicit [`WitnessPolicy`]. Everything else is
+/// identical: the policy decides only which of the witness's own retained
+/// roots may cover, never what covering means.
+pub fn check_history_under(
+    protected: &ProtectedRoots,
+    witnesses: &[Witness],
+    reader: &dyn ObjectReader,
+    limits: Limits,
+    cancellation: &dyn Cancellation,
+    policy: WitnessPolicy,
 ) -> HistoryOutcome {
     if cancellation.is_cancelled() {
         return HistoryOutcome::Unknown(vec![cancelled()]);
@@ -315,7 +387,7 @@ pub fn check_history(
     let eligible: Vec<ProtectedRoot> = retained
         .roots
         .into_iter()
-        .filter(|root| is_eligible_witness_root(&root.source))
+        .filter(|root| is_eligible_witness_root_under(&root.source, policy))
         .collect();
     if (protected.roots.len() + eligible.len()) as u64 > limits.max_roots {
         return HistoryOutcome::Unknown(vec![UnknownReason::new(

@@ -57,9 +57,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use gwz_family_model::{FamilyView, MemberName, MemberState, ROOT_NAME, TargetObservation};
+use gwz_family_model::{
+    CloneMode, FamilyView, MemberName, MemberState, ROOT_NAME, TargetObservation,
+};
 use gwz_family_store::YamlFamilyStore;
-use gwz_history_check::{HistoryOutcome, Limits, NeverCancelled, Witness, check_history};
+use gwz_history_check::{
+    HistoryOutcome, Limits, NeverCancelled, Witness, WitnessPolicy, check_history_under,
+};
 use gwz_local_disposal::{
     DisposalPorts, HistoryAnswer, HistoryQuery, PortError, RemovalFailure, RepositoryEvidence,
     TargetEvidence,
@@ -153,6 +157,31 @@ impl CoreDisposalPorts {
         }
     }
 
+    /// Which of a surviving witness's own retained roots may certify that
+    /// history survives this disposal (R4).
+    ///
+    /// A verbatim lane is a **copy**: it carries the family's own reflog
+    /// entries and native stash entries, and deleting it leaves every one
+    /// of them where it was. Under the durable rule those cannot cover, so
+    /// every lane of a workspace that has a stash or a reflog-only commit
+    /// refuses -- 52 of the 112 entries measured in gwz-dev
+    /// `dev-docs/GwzLaneIssues.md`, none of them the lane's doing. So a
+    /// verbatim lane is checked under
+    /// [`WitnessPolicy::IdenticalCopy`]: the witness's own reflog and stash
+    /// roots may cover, at the identical object id and with the same
+    /// whole-subgraph proof. A root no surviving repository holds at all is
+    /// unpreserved under either policy, so a lane holding the only copy
+    /// still refuses (R0.1).
+    ///
+    /// A constructed lane (clean, bare) copied no such entry, so it keeps
+    /// the durable rule: nothing of its history is a copy of the witness's.
+    fn witness_policy(&self) -> WitnessPolicy {
+        match self.view.members.get(&self.name).map(|row| row.mode) {
+            Some(CloneMode::Verbatim) => WitnessPolicy::IdenticalCopy,
+            _ => WitnessPolicy::Durable,
+        }
+    }
+
     /// The surviving repositories paired with `target` by identity: the
     /// root's, then every other ready member's, each as its own witness.
     fn witnesses(&self, target: &RepoKey) -> Vec<(String, PathBuf)> {
@@ -200,7 +229,10 @@ fn layout_unknown_kind(error: &LayoutError) -> UnknownKind {
 /// structure rather than its work: the runtime directory and the
 /// manifest's scratch directory (root only), and every other inventoried
 /// repository beneath it, which is inspected on its own.
-fn structural_paths(repository: &IncludedRepository, all: &[IncludedRepository]) -> Vec<PathBuf> {
+pub(super) fn structural_paths(
+    repository: &IncludedRepository,
+    all: &[IncludedRepository],
+) -> Vec<PathBuf> {
     let mut structural = Vec::new();
     if repository.key == RepoKey::Root {
         structural.push(PathBuf::from(RUNTIME_DIR));
@@ -222,7 +254,10 @@ fn structural_paths(repository: &IncludedRepository, all: &[IncludedRepository])
 /// Drop the work entries that name a structural path or anything beneath
 /// one. Suppressed entries, sparse absences and the per-path unknowns are
 /// tracked paths and are never structural, so they are left as observed.
-fn strip_structural_work(work: &mut Observation<WorkObservation>, structural: &[PathBuf]) {
+pub(super) fn strip_structural_work(
+    work: &mut Observation<WorkObservation>,
+    structural: &[PathBuf],
+) {
     let Observation::Known(known) = work else {
         return;
     };
@@ -327,6 +362,7 @@ impl DisposalPorts for CoreDisposalPorts {
                 reasons: query.protected.unknown.clone(),
             };
         }
+        let policy = self.witness_policy();
         let witnesses = self.witnesses(&query.target);
         if witnesses.is_empty() {
             return HistoryAnswer::Unpreserved {
@@ -359,12 +395,13 @@ impl DisposalPorts for CoreDisposalPorts {
             };
             // One call, one witness store: this reader serves exactly one
             // surviving repository's objects.
-            match check_history(
+            match check_history_under(
                 &query.protected,
                 &[witness],
                 &reader,
                 Limits::default(),
                 &NeverCancelled,
+                policy,
             ) {
                 HistoryOutcome::Verified(_) => uncovered.clear(),
                 HistoryOutcome::Unpreserved(items) => {

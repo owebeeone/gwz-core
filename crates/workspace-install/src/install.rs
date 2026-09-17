@@ -96,6 +96,17 @@ pub fn install(
     progress.git = Some(git);
     progress.did(InstallEffect::DestinationGitInstalled);
 
+    // R1: what the destination copied is written down before the pointer,
+    // so a published lane always carries its own baseline.
+    let record = attempt!(
+        InstallStep::RecordCopy,
+        ports
+            .record_copy(&request.destination)
+            .map_err(|error| InstallError::Port(Box::new(error)))
+    );
+    progress.record = Some(record);
+    progress.did(InstallEffect::CopyRecorded);
+
     attempt!(
         InstallStep::InstallPointer,
         session
@@ -184,6 +195,7 @@ pub fn install(
     Ok(InstallReport {
         copy: progress.copy,
         git: progress.git,
+        record: progress.record,
         configuration: progress.configuration,
         effects: progress.effects,
     })

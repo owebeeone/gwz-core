@@ -195,6 +195,7 @@ fn verbatim_runs_the_four_steps_in_order_and_publishes_the_manifest_last() {
             // 3: build, install metadata, check, recheck, recapture.
             InstallEvent::CopyTree,
             InstallEvent::InstallDestinationGit,
+            InstallEvent::RecordCopy,
             InstallEvent::InstallPointer,
             InstallEvent::ObserveDestination,
             InstallEvent::RecheckSource,
@@ -216,6 +217,7 @@ fn verbatim_runs_the_four_steps_in_order_and_publishes_the_manifest_last() {
             InstallEffect::DestinationAllocated,
             InstallEffect::TreeCopied,
             InstallEffect::DestinationGitInstalled,
+            InstallEffect::CopyRecorded,
             InstallEffect::PointerInstalled,
             InstallEffect::ConfigurationInstalled,
             InstallEffect::ManifestPublished,
@@ -263,6 +265,7 @@ fn clean_constructs_from_one_freeze_vector_covering_every_member_and_never_copie
             InstallEvent::AllocateDestination,
             InstallEvent::ConstructRepositories,
             InstallEvent::InstallDestinationGit,
+            InstallEvent::RecordCopy,
             InstallEvent::InstallPointer,
             InstallEvent::ObserveDestination,
             InstallEvent::RecheckSource,
@@ -279,6 +282,7 @@ fn clean_constructs_from_one_freeze_vector_covering_every_member_and_never_copie
             InstallEffect::DestinationAllocated,
             InstallEffect::RepositoriesConstructed,
             InstallEffect::DestinationGitInstalled,
+            InstallEffect::CopyRecorded,
             InstallEffect::PointerInstalled,
             InstallEffect::ConfigurationInstalled,
             InstallEffect::ManifestPublished,
@@ -795,6 +799,7 @@ fn source_drift_at_the_recheck_stops_publication() {
             InstallEffect::DestinationAllocated,
             InstallEffect::TreeCopied,
             InstallEffect::DestinationGitInstalled,
+            InstallEffect::CopyRecorded,
             InstallEffect::PointerInstalled,
             InstallEffect::ErrorRecorded,
         ]
@@ -843,6 +848,7 @@ fn a_metadata_failure_between_the_manifest_and_ready_leaves_the_row_creating() {
             InstallEffect::DestinationAllocated,
             InstallEffect::TreeCopied,
             InstallEffect::DestinationGitInstalled,
+            InstallEffect::CopyRecorded,
             InstallEffect::PointerInstalled,
             InstallEffect::ConfigurationInstalled,
             InstallEffect::ManifestPublished,
@@ -1227,6 +1233,54 @@ fn a_failed_destination_git_install_stops_before_the_pointer() {
         harness.row_state().map(|(state, _)| state),
         Some(MemberState::Creating)
     );
+}
+
+/// R1: the copy record is written after the destination's git
+/// configuration and before the pointer, and its failure stops the install
+/// there. A lane that is published at all is published with its record, so
+/// a missing record means an older gwz or a copy made outside gwz (R3),
+/// never a record this build failed to write.
+#[test]
+fn a_failed_copy_record_stops_before_the_pointer() {
+    let mut harness = founded();
+    let mut ports = harness.ports();
+    ports.fail_next(
+        InstallEvent::RecordCopy,
+        InstallPortError::Destination {
+            path: PathBuf::from("/ws-A/.gwz/local-clone-copy.yml"),
+            detail: "read-only file system".to_owned(),
+        },
+    );
+    let mut session = JournalSession::new(&mut harness.session, &harness.journal);
+    let copier = JournalCopier::new(&harness.copier, &harness.journal);
+
+    let failure = install(
+        &request(CloneMode::Verbatim),
+        &mut session,
+        &copier,
+        &mut ports,
+        &NeverCancelled,
+    )
+    .expect_err("the copy record could not be written");
+
+    assert_eq!(failure.step, InstallStep::RecordCopy);
+    assert_eq!(
+        failure.effects,
+        vec![
+            InstallEffect::RowAllocated,
+            InstallEffect::DestinationAllocated,
+            InstallEffect::TreeCopied,
+            InstallEffect::DestinationGitInstalled,
+            InstallEffect::ErrorRecorded,
+        ],
+        "the copied tree is retained and no pointer was installed"
+    );
+    assert!(harness.store.pointers().is_empty());
+    assert_eq!(
+        harness.row_state().map(|(state, _)| state),
+        Some(MemberState::Creating)
+    );
+    assert!(harness.journal.violations().is_empty());
 }
 
 #[test]
