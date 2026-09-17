@@ -347,7 +347,32 @@ implemented in parallel. To keep the two merges independent:
   the index directly, so no change is expected — but the first lane to
   carry both should be disposed once by hand as a check.
 
-## 8. Open questions carried from the requirements
+## 8. Implementation status
+
+Landed in gwz-core, one commit per step, each on a green
+`python3.13 scripts/run_tests.py` and
+`cargo clippy --all-targets -- -D warnings`:
+
+| Step | State | What landed |
+| --- | --- | --- |
+| S1.1 | **done** | `src/local_clone/copy_record.rs`: the frozen `gwz.local-clone-copy/v1` format, its codec, the percent-escaped byte paths, the one-`stat` fingerprint, and read/write at `.gwz/local-clone-copy.yml`. |
+| S1.2 | **done** | `InstallPorts::record_copy`, `InstallStep::RecordCopy`, `InstallEffect::CopyRecorded`, called between `install_destination_git` and `install_pointer`; core's adapter inventories the **destination**, strips GWZ's own structural paths with disposal's own function, and writes the record. |
+| S1.3 | **done** | `gwz-history-check`: `WitnessPolicy`, `is_eligible_witness_root_under` and `check_history_under`. `check_history` and `is_eligible_witness_root` are unchanged and are the `Durable` policy. |
+| S1.4 | **history half done** | Disposal checks a **verbatim** lane's history under `WitnessPolicy::IdenticalCopy`, so a lane that only copied the family's reflog and stash entries needs no `unpreserved-history` waiver. See the adjustment below. |
+| S1.5 to S1.8 | not started | |
+| Phases 2 to 4 | not started | |
+
+**S1.4 adjustment.** As planned, S1.4 was to let the copy record narrow the
+history question through a `CopyWitness` on `TargetEvidence`. Building it
+showed the record is not needed for **R4**: R4's test is "the surviving
+witness holds the identical object", which the witness policy answers on its
+own, at the same object id and with the same whole-subgraph proof, and a
+root no witness holds at all is still unpreserved under either policy
+(R0.1). The record's narrowing is therefore **R2's** business, not R4's, and
+`CopyWitness` moves into S1.5 with the rest of R2. Nothing in the
+requirement map changes: R4 is S1.3 plus this wiring, R2 is S1.5.
+
+## 9. Open questions carried from the requirements
 
 - `GwzLaneCleanFixes.md` §6: whether agent and editor state a lane changed
   (`.claude/`, `.cursor/`) is user work or tool state. This plan classifies
