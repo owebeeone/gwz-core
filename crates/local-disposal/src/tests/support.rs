@@ -23,6 +23,7 @@ pub(crate) fn row(path: &str) -> MemberRow {
         source_path: ".".to_owned(),
         mode: CloneMode::Verbatim,
         last_error: None,
+        owner: None,
     }
 }
 
