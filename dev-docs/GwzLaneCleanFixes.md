@@ -104,6 +104,55 @@ Conventions follow `GWZRequirements.md`: `MUST`, `SHOULD`, `MAY`.
 - **R19.** One test MUST prove that a lane holding a unique commit, or unique
   ignored data, still refuses.
 
+### 3.6 Lanes made by tools (added 2026-09-17)
+
+Source: gwz-cli `dev-docs/GwzClaudeIntegrationPlan.md`, whose hooks create
+and dispose lanes unattended, sometimes twice in parallel for one request.
+Two facts drive these: the family lock is `try_lock` only, refusing `Busy`
+without waiting (`FamilyStore::try_lock`, `flock(LOCK_EX | LOCK_NB)`), and
+the family row records nothing about who asked for the lane.
+
+- **R20.** `gwz local clone` MUST accept an owner token (`--owner <token>`,
+  an opaque string up to 128 bytes of `[A-Za-z0-9._:-]`) and record it on
+  the member row in the same index write that reserves the row. The token
+  MUST be reported by `gwz local list` (human and `--json`), MUST never
+  change after creation, and MUST NOT be interpreted by gwz: it is the
+  caller's identity for the caller's own reuse decisions. A row with no
+  token (a hand-made lane, or one made before the workspace's first owned
+  lane) reports none. Compatibility: the row format is
+  `deny_unknown_fields` and the index schema is matched exactly, so the
+  field cannot be added silently. The index schema becomes
+  `gwz.local-family/v2` with `owner` optional; a v2-aware gwz reads v1
+  unchanged and writes v2 on its first write; an older gwz refuses a v2
+  index as a whole, and its existing `wrong_schema` refusal MUST name the
+  minimum gwz version that reads it. Every gwz binary used on one
+  workspace must therefore be at or above the R20 release once any gwz at
+  or above it has written the family index, and a dispose, a `--keep`, or
+  a family merge is such a write, not only a create.
+- **R21.** Every family command MUST accept `--wait <secs>`. With it, a
+  `Busy` lock is retried until the deadline (polling `try_lock` at a short
+  fixed interval; no blocking acquisition, so the wait is portable and
+  cancellable) and only then reported as `Busy`. Without it, behaviour is
+  unchanged: `Busy` is immediate. A wait that succeeds MUST reread the index
+  before acting, so a create that waited behind another create of the same
+  name reports the name as held, not a stale view.
+- **R22.** One test MUST run two creates of the same name concurrently, one
+  with `--wait`, and prove that exactly one lane exists afterwards, that the
+  waiting create reports the name as held with the first create's owner
+  token visible, and that the index was written once per create. A second
+  test MUST read a v2 index with a v1-only decoder and prove the refusal
+  names the minimum version.
+
+Scope note: R20 and R21 are not gwz-core-only. The clap arguments for
+`local clone` and the other family commands live in gwz-cli
+(`src/clirequest/local.rs`), `docs/CLI.md` is generated and byte-compared
+by a gwz-cli test and re-checked by its release gate, the long help is in
+`src/local_long.rs` and `docs/commands/local.md`, the `local list` sample
+is in `docs/LocalClones.md`, and the `local_family_members` fields are a
+documented contract in `docs/MachineOutput.md`. Those edits land in
+gwz-cli, in the same lane as the gwz-core change, under gwz-cli's review
+loop.
+
 ## 4. What each cause needs
 
 Counts are per lane, and were identical in every lane from round 2 on.
