@@ -45,6 +45,7 @@
 //! the rule lives here and in the LCM1.0c checkpoint §11 until it does.
 
 pub mod adapters;
+pub mod copy_record;
 pub mod create;
 pub mod dispose;
 pub mod errors;
