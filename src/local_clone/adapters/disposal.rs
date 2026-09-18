@@ -84,7 +84,7 @@ use gwz_repo_contract::{
 use gwz_repo_inspect::{LocalObjectReader, LocalRepoInspector};
 use gwz_work_detector::{EvidenceState, GwzEvidence};
 
-use super::copy_witness::{FamilyPairs, read_record, recorded_witness};
+use super::copy_witness::{FamilyPairs, live_witness, read_record, recorded_witness};
 use super::install::OpenMergeProbe;
 use super::inventory::{IncludedRepository, included_repositories};
 use super::removal::remove_tree;
@@ -361,15 +361,19 @@ impl DisposalPorts for CoreDisposalPorts {
             });
         }
         // R2: what the lane copied and has not touched, and the family
-        // still holds, is not the lane's work. An unreadable record is
-        // unknown evidence and refuses whatever `--force` names; no record
-        // at all leaves every hazard the lane's own.
+        // still holds, is not the lane's work. R3: a lane no record covers
+        // -- an older gwz's, or one copied outside gwz -- gets the same
+        // question answered by comparing it with the family directly. An
+        // unreadable record is neither, and is unknown evidence that
+        // refuses whatever `--force` names.
         let copy = match read_record(target, row.allocation_id.as_str()) {
-            Ok(Some(record)) => {
+            Ok(record) => {
                 let mut pairs = FamilyPairs::new(&self.inspector, &self.root);
-                recorded_witness(&record, &repositories, &observed, &mut pairs)
+                match &record {
+                    Some(record) => recorded_witness(record, &repositories, &observed, &mut pairs),
+                    None => live_witness(&repositories, &observed, &mut pairs),
+                }
             }
-            Ok(None) => None,
             Err(reason) => {
                 unknown.push(reason);
                 None

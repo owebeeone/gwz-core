@@ -360,7 +360,8 @@ Landed in gwz-core, one commit per step, each on a green
 | S1.3 | **done** | `gwz-history-check`: `WitnessPolicy`, `is_eligible_witness_root_under` and `check_history_under`. `check_history` and `is_eligible_witness_root` are unchanged and are the `Durable` policy. |
 | S1.4 | **history half done** | Disposal checks a **verbatim** lane's history under `WitnessPolicy::IdenticalCopy`, so a lane that only copied the family's reflog and stash entries needs no `unpreserved-history` waiver. See the adjustment below. |
 | S1.5 | **done** | The record narrows the **work** question: disposal reads the lane's record back, corroborates each ignored or untracked entry against the surviving family's paired repository, and hands `gwz-work-detector` a `CopyBaseline` per repository through `TargetEvidence::copy`. A copied entry that is unchanged and still in the family, and a native stash the copy brought and the family still holds, are reported and no longer refuse. |
-| S1.6 to S1.8 | not started | |
+| S1.6 | **done** | No record -- an older gwz's lane, or one copied outside gwz -- and dispose derives the same witness live: each ignored and untracked entry is compared with the family's own entry at that path, by link target, by bytes or (past 1 MiB) by size and mtime, recursively for a directory and within a bounded walk. Finding nothing unique needs no waiver. |
+| S1.7 to S1.8 | not started | |
 | Phases 2 to 4 | not started | |
 
 **S1.4 adjustment.** As planned, S1.4 was to let the copy record narrow the
@@ -401,6 +402,25 @@ shape is not the step text's:
    to name the unchanged-copy category, so the classifier keeps the hazard
    and marks it, and `gwz-local-disposal` refuses only when some finding
    refuses. Nothing is hidden and no hazard is dropped.
+
+**S1.6 adjustments (2026-09-18).** Two:
+
+1. **R3's history half needed no new code and got none.** The step text has
+   dispose derive "the protected roots no surviving family repository
+   holds" live. `check_history` already does exactly that, for every lane,
+   recorded or not: it walks the lane's whole protected inventory --
+   `rev-list --all`'s commits through the refs that reach them, the reflog
+   and the stash -- against each surviving family repository's own object
+   store under `WitnessPolicy::IdenticalCopy`, and a root no witness holds
+   is unpreserved (R0.1). The live witness therefore carries only the work
+   half plus the native stash's work hazard.
+2. **The comparison is bounded, and the bound refuses.** R13 forbids an
+   unbounded walk, so one entry's comparison visits at most 4096
+   filesystem entries and reads at most 1 MiB per file, falling back to
+   size and modification time above that. Exceeding the bound makes the
+   entry the lane's -- a refusal the operator can still waive -- never a
+   silent pass and never unwaivable unknown evidence. S3.3 is where the
+   numbers are measured and tuned.
 
 ## 9. Open questions carried from the requirements
 

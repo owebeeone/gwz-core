@@ -55,6 +55,9 @@ use crate::local_clone::copy_record::{self, CopyRecord, Fingerprint};
 /// One surviving family repository as a baseline: which entries it still
 /// reports, and which object ids it still protects.
 struct FamilyRepository {
+    /// The repository's worktree, so an entry the lane holds can be
+    /// compared with the family's own copy of it (R3).
+    path: PathBuf,
     entries: BTreeMap<Vec<u8>, WorkKind>,
     roots: BTreeSet<String>,
 }
@@ -115,7 +118,11 @@ impl<'a> FamilyPairs<'a> {
                 .collect(),
             Observation::Unknown(_) => BTreeSet::new(),
         };
-        Some(FamilyRepository { entries, roots })
+        Some(FamilyRepository {
+            path: repository.path.clone(),
+            entries,
+            roots,
+        })
     }
 }
 
@@ -197,12 +204,14 @@ pub(super) fn recorded_witness(
         }
         baseline.set_stash(stash_provenance(
             evidence,
-            &recorded
-                .roots
-                .iter()
-                .filter(|root| matches!(root.source, RootSource::Stash { .. }))
-                .map(|root| root.oid.to_hex())
-                .collect(),
+            Some(
+                &recorded
+                    .roots
+                    .iter()
+                    .filter(|root| matches!(root.source, RootSource::Stash { .. }))
+                    .map(|root| root.oid.to_hex())
+                    .collect(),
+            ),
             family,
         ));
         repositories.push(CopiedRepository {
@@ -211,6 +220,150 @@ pub(super) fn recorded_witness(
         });
     }
     (!repositories.is_empty()).then_some(CopyWitness { repositories })
+}
+
+/// The witness dispose derives itself, for a lane no record covers (R3):
+/// a lane made by a gwz older than the record, or copied outside gwz
+/// altogether. Nothing is assumed about it -- each ignored and untracked
+/// entry is compared with the family's own entry at the same path, and an
+/// entry the family does not report, or reports differently, is the lane's.
+///
+/// The **history** half of R3 -- "the commits from `rev-list --all`, the
+/// reflog and the stash that no surviving family repository holds" -- needs
+/// no witness of its own and gets none here: `check_history` already walks
+/// the lane's whole protected inventory against each surviving family
+/// repository's own object store under `WitnessPolicy::IdenticalCopy`, at
+/// the identical object id and with a whole-subgraph proof, and a root no
+/// witness holds is unpreserved (plan §8, the S1.4 adjustment). What is
+/// left for the witness is the native stash's *work* hazard.
+pub(super) fn live_witness(
+    lane_repositories: &[IncludedRepository],
+    observed: &[RepositoryEvidence],
+    pairs: &mut FamilyPairs<'_>,
+) -> Option<CopyWitness> {
+    let mut repositories = Vec::new();
+    for evidence in observed {
+        let Some(path) = lane_repositories
+            .iter()
+            .find(|repository| repository.key == evidence.key)
+            .map(|repository| repository.path.clone())
+        else {
+            continue;
+        };
+        let Some(family) = pairs.pair(&evidence.key) else {
+            continue;
+        };
+        let mut baseline = CopyBaseline::default();
+        if let Observation::Known(work) = &evidence.work {
+            for entry in &work.entries {
+                if !matches!(entry.kind, WorkKind::Ignored | WorkKind::Untracked) {
+                    continue;
+                }
+                if family.entries.get(entry.path.as_slice()) != Some(&entry.kind) {
+                    // The family does not report it at all, or reports it
+                    // as something else: it is the lane's (R0.1).
+                    continue;
+                }
+                let identical = copy_record::entry_path(&path, &entry.path)
+                    .zip(copy_record::entry_path(&family.path, &entry.path))
+                    .is_some_and(|(lane, family)| same_entry(&lane, &family, &mut Budget::new()));
+                if identical {
+                    baseline.set(entry.path.clone(), Provenance::UnchangedCopy);
+                } else {
+                    baseline.set(entry.path.clone(), Provenance::ChangedCopy);
+                }
+            }
+        }
+        baseline.set_stash(stash_provenance(evidence, None, family));
+        repositories.push(CopiedRepository {
+            key: evidence.key.clone(),
+            baseline,
+        });
+    }
+    (!repositories.is_empty()).then_some(CopyWitness { repositories })
+}
+
+/// How much of one entry the live comparison will look at before it gives
+/// up and calls the entry the lane's. A lane of this workspace holds tens
+/// of thousands of ignored files under a handful of reported directories,
+/// and an unbounded walk is exactly what R13 forbids; exceeding the budget
+/// degrades to a refusal the operator can still waive, never to a silent
+/// pass and never to unwaivable unknown evidence.
+struct Budget(u32);
+
+impl Budget {
+    const MAX_ENTRIES: u32 = 4096;
+    /// Files at or below this size are compared byte for byte; a larger
+    /// one is compared by its size and its modification time, which is the
+    /// same fingerprint R1 records.
+    const MAX_COMPARED_BYTES: u64 = 1 << 20;
+
+    fn new() -> Self {
+        Self(Self::MAX_ENTRIES)
+    }
+
+    fn spend(&mut self) -> bool {
+        self.0 = self.0.saturating_sub(1);
+        self.0 > 0
+    }
+}
+
+/// Whether the entry at `lane` is the family's entry at `family`,
+/// unchanged: the same kind, and the same link target, the same bytes or
+/// the same size and modification time. A directory is compared by its
+/// names, recursively, within [`Budget`]. Anything unreadable is not a
+/// match: the comparison proves sameness or it refuses.
+fn same_entry(lane: &Path, family: &Path, budget: &mut Budget) -> bool {
+    if !budget.spend() {
+        return false;
+    }
+    let (Ok(here), Ok(there)) = (
+        std::fs::symlink_metadata(lane),
+        std::fs::symlink_metadata(family),
+    ) else {
+        return false;
+    };
+    if here.is_symlink() && there.is_symlink() {
+        return match (std::fs::read_link(lane), std::fs::read_link(family)) {
+            (Ok(here), Ok(there)) => here == there,
+            _ => false,
+        };
+    }
+    if here.is_dir() && there.is_dir() {
+        let (Some(here), Some(there)) = (child_names(lane), child_names(family)) else {
+            return false;
+        };
+        if here != there {
+            return false;
+        }
+        return here
+            .iter()
+            .all(|name| same_entry(&lane.join(name), &family.join(name), budget));
+    }
+    if !here.is_file() || !there.is_file() || here.len() != there.len() {
+        return false;
+    }
+    if here.len() > Budget::MAX_COMPARED_BYTES {
+        return Fingerprint::of(lane)
+            .zip(Fingerprint::of(family))
+            .is_some_and(|(here, there)| {
+                here.mtime_secs == there.mtime_secs && here.mtime_nanos == there.mtime_nanos
+            });
+    }
+    match (std::fs::read(lane), std::fs::read(family)) {
+        (Ok(here), Ok(there)) => here == there,
+        _ => false,
+    }
+}
+
+/// The directory's entry names, sorted; `None` when it cannot be listed.
+fn child_names(directory: &Path) -> Option<Vec<std::ffi::OsString>> {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(directory).ok()? {
+        names.push(entry.ok()?.file_name());
+    }
+    names.sort();
+    Some(names)
 }
 
 /// R2's two halves, as one answer. `unchanged` is "the lane has not
@@ -231,7 +384,7 @@ fn entry_provenance(unchanged: bool, in_family: bool) -> Provenance {
 /// live comparison (R3), which asks only the family.
 fn stash_provenance(
     evidence: &RepositoryEvidence,
-    recorded: &BTreeSet<String>,
+    recorded: Option<&BTreeSet<String>>,
     family: &FamilyRepository,
 ) -> Provenance {
     let Observation::Known(protected) = &evidence.history else {
@@ -246,7 +399,9 @@ fn stash_provenance(
     if stashed.peek().is_none() {
         return Provenance::Unique;
     }
-    if stashed.all(|oid| recorded.contains(&oid) && family.roots.contains(&oid)) {
+    if stashed.all(|oid| {
+        recorded.is_none_or(|recorded| recorded.contains(&oid)) && family.roots.contains(&oid)
+    }) {
         Provenance::UnchangedCopy
     } else {
         Provenance::Unique
@@ -274,5 +429,88 @@ mod tests {
             assert!(provenance.refuses(), "{provenance:?}");
         }
         assert!(!entry_provenance(true, true).refuses());
+    }
+
+    /// R3's comparison: the same bytes, the same names and the same link
+    /// target are the same entry; anything else, anything unreadable and
+    /// anything past the budget is the lane's.
+    #[test]
+    fn the_live_comparison_proves_sameness_or_refuses() {
+        let base = std::env::temp_dir().join(format!("gwz-live-compare-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (lane, family) = (base.join("lane"), base.join("family"));
+        for side in [&lane, &family] {
+            std::fs::create_dir_all(side.join("cache/nested")).unwrap();
+            std::fs::write(side.join("cache/a.bin"), b"same bytes").unwrap();
+            std::fs::write(side.join("cache/nested/b.bin"), b"also same").unwrap();
+        }
+
+        assert!(same_entry(
+            &lane.join("cache"),
+            &family.join("cache"),
+            &mut Budget::new()
+        ));
+        assert!(
+            !same_entry(&lane.join("cache"), &family.join("cache"), &mut Budget(2)),
+            "a walk past its budget refuses rather than passing"
+        );
+
+        std::fs::write(lane.join("cache/nested/b.bin"), b"rebuilt!!").unwrap();
+        assert!(
+            !same_entry(
+                &lane.join("cache"),
+                &family.join("cache"),
+                &mut Budget::new()
+            ),
+            "bytes that differ are not the same entry, however deep"
+        );
+        std::fs::write(lane.join("cache/nested/b.bin"), b"also same").unwrap();
+
+        std::fs::write(lane.join("cache/only-here"), b"x").unwrap();
+        assert!(!same_entry(
+            &lane.join("cache"),
+            &family.join("cache"),
+            &mut Budget::new()
+        ));
+        std::fs::remove_file(lane.join("cache/only-here")).unwrap();
+
+        // An entry the family does not have at all.
+        assert!(!same_entry(
+            &lane.join("cache"),
+            &family.join("absent"),
+            &mut Budget::new()
+        ));
+
+        cfg_if::cfg_if! {
+            if #[cfg(unix)] {
+                std::os::unix::fs::symlink("cache/a.bin", lane.join("link")).unwrap();
+                std::os::unix::fs::symlink("cache/a.bin", family.join("link")).unwrap();
+                assert!(same_entry(
+                    &lane.join("link"),
+                    &family.join("link"),
+                    &mut Budget::new()
+                ));
+                std::os::unix::fs::symlink("elsewhere", lane.join("other")).unwrap();
+                std::os::unix::fs::symlink("cache/a.bin", family.join("other")).unwrap();
+                assert!(
+                    !same_entry(
+                        &lane.join("other"),
+                        &family.join("other"),
+                        &mut Budget::new()
+                    ),
+                    "a link is its target, and never what it points at"
+                );
+                assert!(
+                    !same_entry(
+                        &lane.join("link"),
+                        &family.join("cache/a.bin"),
+                        &mut Budget::new()
+                    ),
+                    "a link is never the file it points at"
+                );
+            }
+        }
+
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }

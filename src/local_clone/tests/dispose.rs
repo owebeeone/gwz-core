@@ -1509,3 +1509,106 @@ fn a_lane_that_changed_or_added_ignored_data_still_refuses() {
         assert!(!a.exists(), "{label}");
     }
 }
+
+/// R3 (plan S1.6): a lane made by a gwz older than the copy record, or
+/// copied outside gwz altogether, has no record. Dispose then makes the
+/// comparison itself, against the family's own repositories, and finding
+/// nothing unique needs no waiver.
+#[test]
+fn a_lane_with_no_copy_record_is_compared_with_the_family_itself() {
+    let fixture = clean_family_workspace("dispose-no-record");
+    fixture
+        .workspace
+        .root()
+        .work_ignored("build-cache/output.bin", b"cached\n");
+    fixture
+        .workspace
+        .root()
+        .work_untracked("scratch.txt", b"a\n");
+    fixture
+        .workspace
+        .member("app")
+        .work_ignored("coverage.out", b"lines\n");
+    let stashed = stash_in(&fixture.root.join("app"));
+
+    clone(&fixture.root, "A");
+    let a = fixture.sibling("A");
+    // What an older gwz left behind: everything but the record.
+    let record = a.join(crate::local_clone::copy_record::COPY_RECORD_RELATIVE_PATH);
+    assert!(record.is_file(), "this build wrote one");
+    fs::remove_file(&record).unwrap();
+    assert_eq!(
+        crate::local_clone::copy_record::read(&a).expect("an absent record decodes"),
+        None
+    );
+
+    let response = local(&fixture.root, delete_request("A", &[]));
+    let message = response.response.meta.message.expect("a message");
+    assert!(message.contains("deleted local clone `A`"), "{message}");
+    assert!(
+        !message.contains("forced past"),
+        "the comparison found nothing unique: {message}"
+    );
+    assert!(!a.exists());
+    // The family kept its own data and its own stash.
+    assert!(fixture.root.join("scratch.txt").is_file());
+    assert!(fixture.root.join("build-cache/output.bin").is_file());
+    let app = git2::Repository::open(fixture.root.join("app")).unwrap();
+    assert!(
+        app.find_commit(git2::Oid::from_str(&stashed).unwrap())
+            .is_ok()
+    );
+}
+
+/// R0.1 with no record: the comparison is what refuses. An entry whose
+/// bytes the lane changed, and one the family never had, are both the
+/// lane's, and the copied entry beside them is still cleared.
+#[test]
+fn a_recordless_lane_holding_different_data_still_refuses() {
+    for (label, change) in [
+        (
+            "different bytes at the same path",
+            &(|lane: &Path| {
+                fs::write(lane.join("build-cache/output.bin"), b"rebuilt\n").unwrap();
+            }) as &dyn Fn(&Path),
+        ),
+        (
+            "a path the family never had",
+            &(|lane: &Path| {
+                fs::write(lane.join("build-cache/extra.bin"), b"only here\n").unwrap();
+            }) as &dyn Fn(&Path),
+        ),
+    ] {
+        let fixture = clean_family_workspace("dispose-no-record-differs");
+        fixture
+            .workspace
+            .root()
+            .work_ignored("build-cache/output.bin", b"cached\n");
+        fixture
+            .workspace
+            .root()
+            .work_untracked("scratch.txt", b"a\n");
+        clone(&fixture.root, "A");
+        let a = fixture.sibling("A");
+        fs::remove_file(a.join(crate::local_clone::copy_record::COPY_RECORD_RELATIVE_PATH))
+            .unwrap();
+        change(&a);
+        let before = tree_bytes(&a);
+
+        let error = refuse(&fixture.root, delete_request("A", &[]));
+        assert_refused_without_effect(
+            &fixture,
+            &a,
+            &before,
+            &error,
+            ErrorCode::UnwaivedHazard,
+            &["build-cache/"],
+        );
+        // The identical copy beside it is reported too -- a refusal lists
+        // every category it found -- but it is not what refused. Which
+        // category each entry fell into is what S1.7's report separates.
+
+        local(&fixture.root, delete_request("A", &["dirty"]));
+        assert!(!a.exists(), "{label}");
+    }
+}
