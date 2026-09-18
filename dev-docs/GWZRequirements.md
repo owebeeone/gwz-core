@@ -2,6 +2,41 @@
 
 Status: complete
 
+## Remote transport amendment (2026-09-19; implementation pending)
+
+The accepted direction in
+[GwzRemoteTransportRequirements.md](GwzRemoteTransportRequirements.md) extends
+this baseline for the planned transport programme. It is not a claim that the
+existing implementation already meets these requirements.
+
+Core MUST access SSH/HTTPS through a taut-defined bidirectional message service
+whose mux selects either an in-process endpoint or a gwz-cli endpoint over a
+message channel. Local placement is the default. Explicit unsupported placement
+MUST refuse without fallback; capabilities MUST be negotiated. Core MUST remain
+independent of gwz-cli and MUST NOT require a daemon.
+
+The endpoint MUST own traffic, local trust/authentication and its connection
+pool. SSH connections MUST be reusable across repositories and operations,
+grouped by username/host/effective port within that endpoint, with explicit
+identity compatibility checks and no repository component in the pool key.
+Initially one active exchange leases a connection. Capacity MUST be bounded;
+healthy idle connections MUST expire after `connection_idle_timeout` (default
+60 seconds), and all connections MUST end with endpoint shutdown.
+
+Streams MUST carry variable-length byte payloads in taut data messages, preserve
+order under bounded backpressure, and distinguish flush, end-of-write, close,
+cancellation and carrier loss. Interrupted Git exchanges MUST NOT be silently
+replayed. Identity precedence remains; paths are resolved at the executing
+endpoint. Endpoint-local client protections apply; distributed endpoint
+permission management and forwarded signing are deferred under REQ-013.
+
+Authenticated HTTPS MUST use endpoint-local `gh`, with no alternate credential
+provider fallback; anonymous HTTPS remains supported. Tokens and private keys
+MUST NOT be forwarded to core when executing at the driver. This intentionally
+narrows REQ-124's adapter freedom for HTTPS. Persistent core-owned credential
+storage remains prohibited. Operation observations remain isolated even when
+authenticated physical connections survive between operations.
+
 ## Configuration recovery requirements (2026-09-11)
 
 An explicit `init --update --commit` MUST commit only accepted configuration and

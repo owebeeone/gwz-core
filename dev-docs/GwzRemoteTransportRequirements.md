@@ -1,40 +1,48 @@
 # GWZ Remote Transport Requirements
 
-Status: draft, 2026-09-15. Requirements only. §7 lists the design decisions still
-to make; none is taken.
+Status: direction accepted 2026-09-19; implementation pending. Revised from the
+2026-09-15 requirements draft following the operator's transport discussion.
+The decisions in §7 replace the previously open alternatives. The companion
+[design](GwzRemoteTransportDesign.md) specifies the proposed implementation;
+its tuning values and library qualification items are identified separately
+from accepted behaviour. No implementation or new performance result is claimed.
 
 ## 1. Purpose
 
-Two related pieces of work on how GWZ Core reaches Git hosts:
+Provide one transport service for every GWZ network operation. Core opens a
+virtual stream using taut messages; a mux routes those messages to the endpoint
+that executes SSH or HTTPS. Initially the endpoint is either inside the core
+process or at gwz-cli over the driver–core message channel. The endpoint owns
+network traffic, ordinary local authentication and trust checks, and pooled
+connections. The same API can later be carried over another connection, such
+as iroh, without designing peer networking now.
 
-1. **Connection reuse.** A push or pull opens a new SSH connection for every
-   libgit2 call, and each one costs 2–3.5 s to github.com. Reusing connections
-   removes most of that.
-2. **Placement.** Today the driver and core run on one machine, so core's network
-   and credentials are the user's. Once a real link separates them, gwz has to
-   decide where the connection to the Git host runs and where the credentials
-   that authenticate it live. The gryth (formerly grip-lab) peer-to-peer network
-   makes this pressing: credentials should sit on as few machines as possible,
-   and a core that is not trusted to sign should still be able to work.
-
-Both cover SSH and HTTPS, including HTTPS authenticated through `gh auth`.
+Connection reuse removes repeated SSH setup across repositories, phases and
+operations. Placement chooses where that work runs. Fetch Phase 3 is an early
+measurement consumer, not the boundary of this programme.
 
 ## 2. Terms
 
-- **Driver**: the CLI, gwz-py or another caller of GWZ Core (as in
-  `GWZRequirements.md`).
-- **Core**: GWZ Core, running where the workspace repositories are.
-- **Link**: the connection between driver and core. Today it is in-process or on
-  one machine.
-- **Git host**: the server a remote URL names, such as github.com.
-- **Traffic**: the network connection to the Git host and the Git data on it.
-- **Authority**: what proves who gwz is and whom it trusts: SSH keys and agents,
-  SSH host-key trust (`known_hosts`), HTTPS tokens and credential helpers.
-- **Connection**: one SSH or TLS connection to a Git host. A **channel** is one
-  Git command (`git-upload-pack`, `git-receive-pack`) on an SSH connection.
-- **Placement**: which machine runs the traffic and which uses the authority.
+- **Driver**: gwz-cli, gwz-py or another caller of core.
+- **Endpoint**: the transport service instance executing Git-host traffic and
+  authentication in its owning process and local account context.
+- **Mux**: the router selecting an endpoint when a virtual stream opens.
+- **Carrier**: an in-process message delivery adapter or a driver–core message
+  channel carrying the same taut-defined messages.
+- **Virtual stream**: one bidirectional message conversation, carrying ordered
+  data messages with variable-length byte payloads plus lifecycle messages.
+- **Connection**: a reusable physical SSH or HTTPS connection at an endpoint.
+- **Channel**: one SSH Git command on a connection.
+- **Lease**: exclusive allocation of a connection to an active exchange. Closing
+  a virtual stream releases its healthy connection after protocol cleanup.
+- **Authority**: endpoint-local keys, agents, host-key trust and `gh` credentials.
+- **Placement**: the selected endpoint; traffic and authority are colocated.
 
-## 3. Where things stand
+## 3. Baseline evidence and constraints
+
+The following measurements and source references describe the 2026-09-15
+investigation, not an up-to-date implementation inventory. The design identifies
+current integration points. Line numbers in this historical snapshot may move.
 
 ### 3.1 Measurements
 
@@ -105,233 +113,181 @@ Not measured: pushing a pack through the prototype, and the cost of running
 - The push plan (gwz-dev `dev-docs/GwzUrlSchemePushPlan.md`, phase 3) reduces how
   many remotes an operation contacts. This work reduces what each contact costs.
 
-## 4. Deployments
+## 4. Initial scope
 
-| Deployment | What it needs |
+| Deployment | Transport endpoint |
 |---|---|
-| Same machine (today) | Speed; nothing else changes |
-| Remote core with a person at the driver | The person's credentials, used without copying them to core |
-| Unattended core (CI, servers) | Core's own credentials, as today |
-| gryth peers | Credentials on as few peers as possible; peers not trusted to sign can still work |
-| Git host reachable only from the driver (VPN) | Traffic that leaves from the driver's machine |
+| Ordinary local caller | In the core process; default |
+| Unattended core | In the core process, using its local account configuration |
+| Core using the driver's credentials or network access | At gwz-cli, via the driver–core message channel |
+| Future gryth/iroh peer | Same API extension point; networking and endpoint management deferred |
+
+Core remains usable without gwz-cli or a daemon. Existing driver integrations
+continue to use local placement unless they negotiate and explicitly select a
+remote endpoint. Selecting placement does not forward signing operations or
+credentials between endpoints.
 
 ## 5. Requirements
 
-Conventions follow `GWZRequirements.md`: `MUST`, `SHOULD`, `MAY`.
+Conventions follow [GWZRequirements.md](GWZRequirements.md).
 
 ### 5.1 General
 
-- **G1.** On one machine, behaviour MUST stay as it is today: the same identity
-  selection, host-key refusals, credential helpers, errors and observations. Only
-  the number of connections changes.
-- **G2.** In every placement, core MUST NOT store credentials, and explicit
-  identity MUST keep failing closed with no fallback.
-- **G3.** Every connection MUST be observable: which identity authenticated it (key
-  fingerprint or account), where its traffic ran, and where its authority was used.
-- **G4.** These requirements apply to SSH and to HTTPS, including HTTPS
-  authenticated through `gh auth`.
-- **G5.** Behaviour MUST be the same on Windows, macOS and Linux.
-- **G6.** Existing drivers MUST keep working against a newer core, and the reverse.
-  Anything new on the link MUST be negotiated, not assumed.
+- **G1.** Preserve current Git outcomes, SSH identity precedence and fail-closed
+  behaviour, and error reporting. Intentional changes are endpoint-local path
+  interpretation for remote placement, connection reuse across operations,
+  and the `gh`-only HTTPS authentication restriction in G4. These supersede the
+  original draft's blanket preservation of credential-helper behaviour.
+- **G2.** Core MUST NOT own persistent credential storage. Explicit SSH identity
+  MUST fail closed without an unrelated-key or Git CLI fallback. A local
+  endpoint may use credentials transiently as the current native backend does.
+- **G3.** Observations MUST identify the executing endpoint, new versus reused
+  connections, and proven authentication information without exposing secrets.
+  Offering a credential and authenticating with it remain distinct events.
+- **G4.** Both SSH and HTTPS MUST support the endpoint model. HTTPS
+  authentication MUST use `gh` at that endpoint; other authentication providers
+  MUST NOT be used as fallback. Anonymous HTTPS remains supported. Additional
+  HTTPS pooling optimisation ranks below SSH reuse.
+- **G5.** The contract MUST work on Windows, macOS and Linux. Capabilities that
+  have not been qualified on a platform MUST NOT be advertised as supported.
+- **G6.** New endpoint and stream features MUST be negotiated. Existing local
+  requests remain wire-compatible; an explicitly requested unsupported feature
+  MUST fail before network effects rather than being silently ignored. The
+  G4 policy change is intentional, not a promise to retain all old helpers.
 
 ### 5.2 Connection reuse
 
-- **C1.** Within one operation, gwz MUST reuse an open SSH connection to the same
-  Git host and authority. Reuse applies across repositories and across phases:
-  reads, fetches, pushes and post-push reads.
-- **C2.** A connection MUST be reused only for the same authority: user, host, port
-  and credential. A request that selects one identity MUST NOT run on a connection
-  authenticated as another.
-- **C3.** Reuse MUST NOT change outcomes. A host key or identity refused on a new
-  connection is still refused, and a failure after request bytes were sent surfaces
-  as it does today. A cached connection found dead MAY be replaced, but only before
-  any request bytes were sent.
-- **C4.** Open connections to a Git host MUST NOT exceed `max_connections_per_host`.
-- **C5.** Configured transport timeouts MUST apply to cached connections and their
-  channels.
-- **C6.** Connections MUST NOT outlive the gwz process, and idle connections MUST
-  close within a bounded time.
-- **C7.** Tests MUST be able to count the connections and channels an operation
-  opens.
-- **C8.** HTTPS SHOULD follow C1–C7 where that measurably helps. Connection setup is
-  a small part of each HTTPS request (§3.1), so it ranks below SSH.
+- **C1.** An endpoint MUST reuse eligible idle SSH connections across repositories,
+  phases and successive operations while it remains alive. Reuse spans reads,
+  clone/fetch, push and post-push reads.
+- **C2.** Within one endpoint context, SSH pools MUST group by username, host and
+  effective port; the generic transport distinguishes schemes. Repository names
+  MUST NOT partition the pool. Explicit identity selection MUST be checked for
+  compatibility before reuse: a connection authenticated using A MUST NOT satisfy
+  a request explicitly requiring B. Ambient selection uses endpoint-local policy.
+- **C3.** A stale connection MAY be replaced before an exchange has been sent.
+  After transmission begins, a failure MUST surface without automatic replay of
+  the Git exchange. Successful connection reuse MUST NOT be reported as a new
+  credential offer. Existing connections are authenticated sessions, not a fresh
+  host-trust or credential check on every lease.
+- **C4.** Connections MUST be bounded per user/host, with the existing aggregate
+  per-host limit retained. Opening reservations, idle, allocated and closing
+  connections count against endpoint capacity. At capacity, allocation MUST
+  wait in a bounded cancellable queue or return a typed refusal. One connection
+  MUST serve at most one active virtual exchange in the first implementation.
+- **C5.** Connection, I/O, allocation-wait and close deadlines MUST have explicit
+  meanings. Idle-pool expiry MUST NOT terminate an allocated exchange. Configured
+  network timeouts MUST also apply when connections are reused.
+- **C6.** The pool MUST belong to the endpoint, not an operation. The default
+  `connection_idle_timeout` MUST be 60 seconds, measured since return to idle.
+  Idle connections MUST be actively reaped even when no new allocation occurs.
+  Endpoint shutdown MUST release all connections; no daemon is required.
+- **C7.** Tests MUST be able to count physical connections, channel opens, leases,
+  reuse, idle expiry and discards independently of Git results.
+- **C8.** HTTPS connection reuse SHOULD follow the same bounded lifecycle where
+  the chosen HTTP implementation supports it. HTTP authentication remains
+  request-scoped; a reusable TLS connection does not imply a reusable account.
 
-### 5.3 Placement
+### 5.3 Placement and credentials
 
-- **P1.** Core MUST be able to use authority held by the driver without that
-  authority being copied to, or stored on, core's machine.
-- **P2.** Authority a driver lends MUST be limited to the operation that needs it:
-  only while that operation runs, and only for its Git hosts.
-- **P3.** Core MUST be able to use its own authority with no credentials on the
-  driver side, as today.
-- **P4.** gwz SHOULD offer a placement in which core never holds a credential or a
-  signing capability, not even during an operation.
-- **P5.** gwz SHOULD be able to run traffic from the driver's machine for Git hosts
-  core cannot reach.
-- **P6.** Identity selection MUST mean the same thing in every placement. This
-  covers `--identity`, configured remote identities, and offering only the
-  selected key.
-- **P7.** SSH host keys MUST be verified in every placement, and unknown or
-  mismatched keys MUST be refused as today. The observation MUST say whose
-  `known_hosts` decided.
-- **P8.** A placement that keeps authority with the driver MUST NOT pass core the
-  driver's full HTTPS token (such as the `gh auth` token) unless that placement
-  says so. A way to keep tokens off core, or to narrow them to the operation,
-  SHOULD exist.
-- **P9.** A prompt that needs the person MUST reach them at the driver: Touch ID, a
-  hardware-key touch, a `gh` login. Waiting for one MUST NOT trip network timeouts.
+- **P1.** The mux MUST route each open to the selected endpoint. Initial routes
+  MUST support local core execution and execution at gwz-cli over a message
+  channel. The stream MUST remain pinned to that endpoint until terminal.
+- **P2.** Endpoint protection MUST follow the SSH/HTTPS client behaviour on the
+  executing machine. Distributed lending limits, per-repository authority grants
+  and endpoint permission management are deferred. Connections MAY survive an
+  operation under C6. This replaces the original operation-only lending rule.
+- **P3.** Local placement MUST remain the default. Placement MUST be a typed
+  driver policy input, with no implicit routing based on discovered credentials.
+- **P4.** Driver placement MUST execute both traffic and authentication there;
+  core MUST NOT receive the driver's private keys, HTTPS tokens or a signing API.
+- **P5.** Driver placement MUST support Git hosts reachable only from the driver.
+- **P6.** Existing identity selection precedence MUST remain. The selected
+  endpoint MUST resolve and validate winning identity paths against an explicit
+  endpoint-local base. Core MUST NOT test driver paths against its filesystem.
+  No portable identity naming system is required for this version.
+- **P7.** The executing endpoint MUST verify SSH host keys against its local
+  trust configuration and refuse unknown/mismatched keys as today. Observations
+  MUST identify that endpoint as the trust decision owner.
+- **P8.** `gh` MUST run at the selected endpoint. Its tokens MUST remain there and
+  MUST NOT appear in data/control messages or observations.
+- **P9.** Interactive requirements MUST be surfaced to the driver. Missing login
+  state MUST fail actionably rather than silently starting a login workflow.
+  Any supported user-interaction wait MUST be separate from network timeouts
+  and MUST remain cancellable.
+
+### 5.4 Bidirectional message streams
+
+- **S1.** Public payloads MUST be taut-defined. The in-process and carried forms
+  MUST have the same semantics. The protocol MUST use data messages containing
+  variable-length bytes, not require a separate raw-byte side channel.
+- **S2.** Each direction MUST preserve bytes and order. Slow consumers MUST cause
+  bounded backpressure, not dropped data. There is no transparent reconnect or
+  replay of an interrupted Git exchange.
+- **S3.** The write adapter MUST batch partial writes, send full buffers promptly,
+  and send a partial buffer when its batching timer expires. The timer starts
+  with the first buffered byte and MUST NOT restart on each subsequent write.
+  The initial evaluation value is 100 ms; the delay and buffer size are tunable.
+- **S4.** Explicit flush MUST bypass batching delay. Graceful end-of-write MUST
+  flush pending data before its terminal marker. Payload boundaries MUST NOT be
+  interpreted as Git packet boundaries or as the caller's write boundaries.
+- **S5.** The lifecycle MUST distinguish open, data exchange, end-of-write, graceful
+  close, cancellation and failure. Graceful close returns only a healthy,
+  cleaned-up connection; cancellation/drop MUST NOT masquerade as successful
+  completion. Cleanup MUST be bounded.
+- **S6.** Carrier loss MUST fail its owned streams, cancel queued opens, wake
+  blocked reads/writes and release leases. An explicit close message MUST NOT be
+  the only way to detect teardown.
+- **S7.** Flow-control and lifecycle processing MUST continue while data writes
+  are blocked, so full buffers cannot prevent cancellation or credit updates.
+- **S8.** A reusable crate SHOULD own message-stream lifecycle and pool mechanics,
+  independent of GWZ workspace policy and of gwz-cli. Repository extraction is
+  optional; it MUST NOT be a prerequisite for designing or testing the contract.
 
 ## 6. Out of scope
 
-- Building the driver–core link itself. This document says what it must carry.
-- Changing how identities are selected (gwz-dev
-  `dev-docs/GwzRemoteAuthProposal.md` §2.2).
+- iroh integration, peer discovery, multi-hop routing and distributed endpoint
+  permissions; the carrier/endpoint interfaces leave room for them.
+- Forwarded signing, bearer-token transfer to core, and token minting services.
+- A new identity namespace or reinterpretation of attribution `credential_ref`.
+- A required daemon, durable stream replay, and resuming a failed push in flight.
+- Concurrent channels sharing one SSH connection in the first implementation.
+- New OpenSSH configuration compatibility such as host aliases or `ProxyJump`.
+- Building a general driver–core RPC system. Binding this transport service to
+  a bidirectional channel, including capability checks and teardown, IS in scope.
 
-## 7. Design decisions to make
+## 7. Decision record
 
-None is taken. Each lists the options seen so far and what follows from them.
+The identifiers from the original draft are retained for traceability. Accepted
+policy below comes from the 2026-09-19 discussion. Implementation choices and
+qualification work are explicitly labelled; they are not measured results.
 
-### Connection reuse
+| Decision | Resolution |
+|---|---|
+| **D1 — lifetime** | Accepted: endpoint-owned pool, reusable across operations; 60-second idle expiry; process shutdown closes it. Replaces operation-only P2. |
+| **D2 — concurrency** | Accepted: one active exchange per physical connection initially; pool parallelism, with cancellable waiting at capacity. |
+| **D3 — SSH implementation** | Design proposal: `ssh2` over libssh2, preserving native Git transport. Qualify Windows agents, trust, cancellation and full-duplex pumping before finalising the dependency. No Git CLI fallback. |
+| **D4 — pool identity** | Accepted: endpoint-local username/host/effective-port grouping, scheme-separated; no repository component. Explicit identity compatibility is checked before reuse. |
+| **D5 — HTTPS** | Accepted: the same endpoint/message model; auth only through `gh`. Design: an endpoint HTTP adapter; concrete HTTP library and parity qualification remain implementation work. Additional reuse optimisation is secondary. |
+| **D6 — observations** | Accepted: additive negotiated reporting for endpoint, connection/stream identifiers and reuse, preserving offered versus authenticated semantics. |
+| **D7 — placements** | Accepted: local core and driver endpoint (relay) for both transports. Forwarded authority is deferred. |
+| **D8 — selection** | Accepted: explicit typed driver endpoint selection; local default; pin at open; unavailable selected endpoint refuses without fallback. |
+| **D9 — trust** | Accepted: the executing endpoint's normal trust checks; no duplicated trust decision in core for driver execution. |
+| **D10 — HTTPS authority** | Accepted: endpoint-local `gh`; no token forwarding or alternate authentication fallback. |
+| **D11 — lending limits** | Deferred to endpoint management; no lending mechanism in this design. Endpoint-local client protections apply. |
+| **D12 — identity references** | Accepted: preserve precedence and resolve paths at the executing endpoint. No portable key reference or attribution-to-authentication binding is introduced. |
+| **D13 — link** | Accepted: taut bidirectional messages, bounded buffered data payloads, lifecycle and carrier-loss notification; negotiated support, no silent fallback. |
+| **D14 — peers** | Deferred: iroh/gryth may provide another carrier/endpoint later. No peer policy is implemented now. |
+| **D15 — SSH configuration** | Retain existing native semantics for this version; OpenSSH aliases, `ProxyJump` and full config parsing are deferred. |
 
-**D1. How long cached connections live.** Options: for one operation, for the
-process with an idle timeout, or for a driver session.
-- Per operation is simplest and leaves nothing open between operations, but a
-  driver that runs several operations pays for connections each time.
-- Per process or per session reuses more for long-lived drivers (gwz-py, daemons),
-  but keeps authenticated connections open between operations, which loosens P2.
+## 8. Acceptance and remaining work
 
-**D2. Exclusive or shared connections.** Options: one connection per concurrent
-worker, or all work to a host multiplexed on one connection.
-- Exclusive: the first parallel wave opens up to the per-host limit, and later
-  phases reuse those connections. It drives libssh2 the way libgit2 does today:
-  blocking, one thread per session.
-- Shared: one connection even for parallel work (GitHub accepted 4 concurrent
-  channels). A libssh2 session can't be used from several threads at once, so
-  this needs a non-blocking I/O loop per connection. It gains little over
-  exclusive when the work is already parallel.
+The [design](GwzRemoteTransportDesign.md) owns the message inventory, state
+transitions, integration points and acceptance matrix. Before implementation,
+turn that matrix into a TDD-first implementation plan. Qualify SSH and HTTP
+adapter choices; measure batching delay, payload/window sizes and capacity
+settings. These are bounded implementation decisions, not a reopening of D7–D12.
 
-**D3. SSH implementation.** Options: the `ssh2` crate over the libssh2 that core
-already links (the prototype), `russh`, or the OpenSSH executable with
-ControlMaster.
-- `ssh2` keeps today's crypto, key formats and agent support (Windows agents
-  included). Its blocking API fits exclusive connections.
-- `russh` adds a second crypto stack and an async runtime to core (gwz-core has no
-  tokio today). It fits shared connections, but agent and key-format parity would
-  have to be proved again.
-- OpenSSH needs the least code, but has no ControlMaster on Windows (G5). It also
-  reads `~/.ssh/config`, which is ambient authority at odds with explicit
-  identity, and it sits close to the rejected Git CLI transport.
-
-**D4. What counts as the same authority (C2).** Candidates: user, host and port,
-plus some of the identity file path, its content fingerprint, the agent socket,
-the key fingerprint that authenticated, and, for lent authority, the driver
-session.
-- Keyed on the agent socket alone, a connection authenticated by one agent key can
-  serve a request meant for another. That is the wrong-account hazard in
-  `GwzRemoteAuthProposal.md` §2.1.
-- Lent authority keyed without the driver session lets two drivers, or two people
-  on a shared core, share a connection.
-
-**D5. HTTPS reuse.** Options: leave libgit2's HTTP transport alone, register an
-HTTPS transport backed by a pooled Rust HTTP client, or only reuse credential
-helper results within an operation.
-- Leaving it alone costs little speed (§3.1).
-- A registered HTTPS transport replaces libgit2's TLS, proxy, redirect and
-  authentication-challenge handling, which is a large surface to match. It is also
-  what carrying HTTPS through the driver would need (D7).
-- Reusing helper results avoids running `gh auth git-credential` for every
-  repository, but holds a token in core's memory for the whole operation.
-
-**D6. Reporting reused connections.** A reused connection offers no credential, so
-today's `TransportObservation` would read as "nothing offered".
-- A new optional field, such as a connection id or a reused flag, is an additive
-  protocol change for gwz-cli and gwz-py.
-- Copying the authenticating observation keeps the protocol as it is, but hides how
-  many connections were opened (C7).
-
-### Placement
-
-**D7. Which placements to offer, per transport.**
-- **Core:** as today.
-- **Forwarded:** traffic at core, authority at the driver.
-- **Relay:** traffic and authority both at the driver.
-
-Implications:
-- Forwarded SSH needs a few small driver calls per new connection to sign the
-  login. Reusing connections means fewer of them.
-- Forwarded HTTPS hands core a bearer token (D10).
-- Relay needs two-way byte streams with flow control over the link. Every clone and
-  push then travels through the driver's network, such as a laptop on hotel wifi
-  carrying a datacenter core's data. It is the only placement that satisfies P4.
-
-**D8. How placement is chosen.** Options: automatically from what the driver says it
-can lend, by a command-line option or request policy, by workspace or per-remote
-configuration, or a default with overrides.
-- Automatic spares a person at a remote core from thinking about it. But a driver
-  that gains or loses an agent silently changes who authenticates, unless G3
-  reports it prominently.
-- An option is explicit but repetitive.
-- Per-remote configuration fits hosts that only one side can reach, and gryth peers
-  with fixed roles.
-- Whichever is chosen, placement is a typed policy input to core (REQ-012).
-
-**D9. Host-key trust when authority is at the driver.** Options: core's
-`known_hosts`, the driver's (core reports the key it saw), or both must agree.
-- Core's file is simplest, but the driver then signs a login it cannot vouch for.
-- The driver's file keeps trust with the person. A compromised core can still
-  report a false key, so it protects against the network, not against core.
-- Requiring both is strictest, but means keeping two files current.
-- In relay the driver owns the connection, so its file decides.
-
-**D10. HTTPS and `gh auth` when authority is at the driver.** Options: the driver
-runs the credential helper and passes the token; the driver mints a narrower,
-short-lived token (a fine-grained token, or a GitHub App installation token for the
-operation's repositories); or HTTPS is relayed, so tokens never leave the driver.
-- Passing the token gives core the `gh auth` token, with every scope granted at
-  login and valid until revoked. That conflicts with P8 unless the placement says
-  so.
-- Narrow tokens need GitHub App or token setup that `gh` doesn't do today, and they
-  only work for GitHub.
-- Relay keeps tokens off core, but needs a registered HTTPS transport (D5) and
-  routes traffic through the driver.
-
-**D11. Limits on lent authority (P2).** Options: sign or supply only during an
-operation the driver started, only for that operation's hosts, with or without
-confirming each connection.
-- An SSH login signature doesn't name a repository. A driver can therefore limit
-  hosts but not repositories, unless it owns the connection (relay).
-- Limits need the operation's remotes, which come from core's manifest. The driver
-  either trusts core's list or reads the manifest itself.
-
-**D12. Identity references across machines.** Options: paths resolved on the
-machine that holds authority, a key reference (public-key fingerprint or driver
-handle, possibly `credential_ref`), or both.
-- A path in `gwz.yml` would name a file on a different machine whenever placement
-  changes, so one workspace could mean different keys.
-- Fingerprints are stable across machines and can select keys held in an agent.
-  That relies on exact-agent support, which is unavailable today
-  (`TransportCapabilitiesResponse.exact_agent_identity`).
-- Reusing `credential_ref` joins attribution to authority, a question
-  `GwzRemoteAuthProposal.md` §2.2 left open.
-
-### Link and deployments
-
-**D13. What the link carries, and what happens without it.** A forwarded placement
-needs requests from core to the driver during an operation, some of which wait for
-a person (P9). Relay needs byte streams with flow control and cancellation.
-- Older drivers support neither, so core has to detect the capability (G6) and then
-  fall back to core placement or refuse. A silent fallback changes who
-  authenticates.
-
-**D14. gryth peers.** Can a peer lend authority to a peer that isn't its direct
-driver? Can a peer carry another peer's traffic? Is placement a fixed role per peer,
-or chosen per operation?
-- Every hop that passes on a signing request or a token extends exposure to that
-  hop. Lending across several hops needs limits (D11) that the peers in between
-  cannot widen.
-- Fixed peer roles fit configuration (D8).
-
-**D15. `~/.ssh/config`.** libgit2 has never read it. When the driver owns the
-connection (relay), users may expect host aliases and `ProxyJump` to work.
-- Honouring it brings in ambient settings such as `IdentityFile`, which can
-  conflict with explicit identity (G2, P6).
+No repository relocation, implementation, generated schema change or experiment
+is part of this documentation revision. Future measurements must follow the
+workspace `EVIDENCE.md`; the original prototype figures in §3 are historical.

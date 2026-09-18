@@ -2,6 +2,43 @@
 
 Status: accepted
 
+## Remote transport direction (2026-09-19; implementation pending)
+
+The operator accepted the placement and connection-lifecycle direction in
+[GwzRemoteTransportRequirements.md](GwzRemoteTransportRequirements.md).
+[GwzRemoteTransportDesign.md](GwzRemoteTransportDesign.md) is the companion
+implementation design draft; it distinguishes agreed behaviour from library
+qualification and tunable parameters. This amendment authorizes the planned
+scope without claiming that it is implemented.
+
+A taut-defined bidirectional message API connects core's Git transport adapter
+through a mux to an endpoint. Initially that endpoint runs in core or at gwz-cli
+over a message channel. The explicit driver policy defaults to local execution;
+unsupported selected placement refuses. The endpoint owns SSH/HTTPS traffic,
+local authentication/trust, and a reusable connection pool. No core dependency
+on gwz-cli, signing-forwarding API, token transfer or required daemon is added.
+
+Pool grouping is endpoint-local scheme/username/host/effective port, with no
+repository component. Explicit identity selection must be compatible before a
+connection is reused. One active exchange leases a connection initially; bounded
+capacity and cancellable waiting retain per-host controls. Connections may
+survive operations, with a default 60-second idle timeout and bounded shutdown.
+Taut data messages contain variable-length byte payloads; buffering has a
+first-byte timer, immediate emission when full or flushed, bounded backpressure,
+and explicit half-close/close/cancel/failure handling. Carrier loss tears down
+owned streams rather than replaying Git requests.
+
+For this programme, this amendment supersedes earlier text that forbids all
+authenticated connection reuse between independent requests, fixes credential
+path resolution to core's filesystem, or preserves arbitrary HTTPS helpers.
+Operation observations and selected identity policy remain isolated. Winning
+identity paths are resolved at the selected endpoint, preserving precedence and
+fail-closed behaviour. HTTPS authentication uses only endpoint-local `gh`;
+anonymous HTTPS is retained. Existing local identity configuration writes remain
+local operations. The original implementations below describe the baseline
+until replaced by the planned transport. New capability/reporting fields must
+be additive and must not advertise functionality before qualification.
+
 ## Configuration integrity recovery (2026-09-11)
 
 `gwz init --update --commit` commits the accepted configuration and managed
