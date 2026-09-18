@@ -93,7 +93,7 @@ pub fn dispose(
 ) -> Result<DisposeReport, DisposeFailure> {
     let mut effects = Vec::new();
     match run(request, session, ports, &mut effects) {
-        Ok(()) => Ok(DisposeReport { effects }),
+        Ok(waived) => Ok(DisposeReport { effects, waived }),
         Err(error) => Err(DisposeFailure { error, effects }),
     }
 }

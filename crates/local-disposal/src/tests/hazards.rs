@@ -162,6 +162,45 @@ fn every_named_hazard_is_waived_over_an_intact_ready_tree() {
     assert!(session.reread().unwrap().unwrap().members.is_empty());
 }
 
+/// D9: a forced deletion reports the hazards the inspection raised and the
+/// named waivers covered, not the names the operator gave. A named waiver
+/// over a hazard that never arose carries nothing, so the caller can say it
+/// went unused; an unforced clean deletion carries nothing at all.
+#[test]
+fn a_forced_deletion_carries_the_hazards_it_actually_waived() {
+    let (_store, mut session) = ready();
+    let mut ports = scripted(
+        TargetEvidence {
+            repositories: vec![RepositoryEvidence {
+                work: dirty_work(),
+                ..repository(RepoKey::Root, WS_A)
+            }],
+            ..clean_evidence()
+        },
+        HistoryAnswer::Preserved,
+    );
+    let report = dispose(&delete(&HazardWaiver::ALL), &mut session, &mut ports)
+        .expect("every name was given");
+    assert!(report.effects.contains(&DisposeEffect::DirectoryRemoved));
+    assert!(!report.waived.is_empty());
+    assert!(
+        report
+            .waived
+            .iter()
+            .all(|finding| finding.waiver == HazardWaiver::Dirty
+                && finding.repository == RepoKey::Root),
+        "{:?}",
+        report.waived
+    );
+    assert_eq!(required_waivers(&report.waived), vec![HazardWaiver::Dirty]);
+
+    let (_store, mut session) = ready();
+    let mut ports = scripted(clean_evidence(), HistoryAnswer::Preserved);
+    let report = dispose(&delete(&[HazardWaiver::Dirty]), &mut session, &mut ports)
+        .expect("a clean lane deletes whatever was named");
+    assert!(report.waived.is_empty(), "{:?}", report.waived);
+}
+
 /// A repeated waiver is a malformed request, refused before any effect.
 #[test]
 fn a_repeated_waiver_refuses_before_any_effect() {

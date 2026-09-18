@@ -93,28 +93,46 @@ pub struct DeleteReport {
     pub effects: Vec<DisposeEffect>,
     /// The hazards the operator named, in the order given.
     pub waivers: Vec<HazardWaiver>,
+    /// The findings the fresh inspection raised under a named waiver: what
+    /// the deletion was actually forced past (decision D9).
+    pub waived: Vec<HazardFinding>,
 }
 
 impl DeleteReport {
     pub fn message(&self, name: &MemberName) -> String {
-        if !self.effects.contains(&DisposeEffect::DirectoryRemoved) {
-            return format!(
+        let mut message = if self.effects.contains(&DisposeEffect::DirectoryRemoved) {
+            format!(
+                "deleted local clone `{name}`: {} removed, its row removed",
+                self.target.display()
+            )
+        } else {
+            format!(
                 "removed the stale row of local clone `{name}`: nothing stood at {}; no file \
                  was removed",
                 self.target.display()
-            );
+            )
+        };
+        // D9: what was forced past is what the inspection raised and a
+        // named waiver covered -- a hazard that would have refused -- in the
+        // waiver vocabulary's own order, not the names the operator gave.
+        let used = required_waivers(&self.waived);
+        if !used.is_empty() {
+            let _ = write!(message, "; forced past: {}", waiver_names(&used));
         }
-        let mut message = format!(
-            "deleted local clone `{name}`: {} removed, its row removed",
-            self.target.display()
-        );
-        if !self.waivers.is_empty() {
-            let _ = write!(message, "; forced past: {}", waiver_names(&self.waivers));
+        let unused: Vec<HazardWaiver> = self
+            .waivers
+            .iter()
+            .copied()
+            .filter(|waiver| !used.contains(waiver))
+            .collect();
+        if !unused.is_empty() {
+            let _ = write!(message, "; unused waiver: {}", waiver_names(&unused));
         }
         message
     }
 }
 
+/// The wire spelling of each waiver, comma-separated.
 fn waiver_names(waivers: &[HazardWaiver]) -> String {
     waivers
         .iter()
@@ -237,7 +255,7 @@ pub(crate) fn keep(
     };
     let mut ports = CoreDisposalPorts::new(root, view, name.clone(), open_merge);
     match dispose(&request, &mut session, &mut ports) {
-        Ok(DisposeReport { effects }) => Ok(KeepReport {
+        Ok(DisposeReport { effects, .. }) => Ok(KeepReport {
             retained_at: target,
             effects,
         }),
@@ -275,10 +293,11 @@ pub(crate) fn delete(
     };
     let mut ports = CoreDisposalPorts::new(root, view, name.clone(), open_merge);
     match dispose(&request, &mut session, &mut ports) {
-        Ok(DisposeReport { effects }) => Ok(DeleteReport {
+        Ok(DisposeReport { effects, waived }) => Ok(DeleteReport {
             target,
             effects,
             waivers: waivers.to_vec(),
+            waived,
         }),
         Err(failure) => Err(failure_error(
             &format!("local dispose `{name}` at {}", target.display()),
@@ -532,8 +551,33 @@ mod tests {
         MemberName::parse("A").unwrap()
     }
 
+    fn work_finding(waiver: HazardWaiver, provenance: Provenance) -> HazardFinding {
+        HazardFinding {
+            waiver,
+            repository: RepoKey::Root,
+            hazards: vec![Hazard {
+                kind: HazardKind::Work(gwz_repo_contract::WorkKind::Untracked),
+                path: Some(b"notes.txt".to_vec()),
+                detail: "untracked (text)".to_owned(),
+                provenance,
+            }],
+            detail: None,
+        }
+    }
+
+    fn unpreserved() -> HazardFinding {
+        HazardFinding {
+            waiver: HazardWaiver::UnpreservedHistory,
+            repository: RepoKey::Root,
+            hazards: Vec::new(),
+            detail: Some("1 protected root(s) are preserved nowhere".to_owned()),
+        }
+    }
+
     /// The success messages: a deletion names the target, the row and the
-    /// waivers in the order given; a stale-row removal says no file went.
+    /// hazards it was actually forced past (D9) -- never a waiver that was
+    /// named and waived nothing, which is called unused instead; a
+    /// stale-row removal says no file went.
     #[test]
     fn a_delete_report_names_what_went_and_what_was_forced() {
         let deleted = DeleteReport {
@@ -545,14 +589,42 @@ mod tests {
                 DisposeEffect::RowRemoved,
             ],
             waivers: vec![HazardWaiver::UnpreservedHistory, HazardWaiver::Dirty],
+            waived: vec![
+                unpreserved(),
+                work_finding(HazardWaiver::Dirty, Provenance::Unique),
+            ],
         };
         assert_eq!(
             deleted.message(&name()),
             "deleted local clone `A`: /fam/ws-A removed, its row removed; forced past: \
-             unpreserved-history, dirty"
+             dirty, unpreserved-history"
+        );
+        // The probe's case (F6): both names given, only the dirty work
+        // raised. The history was preserved, so it was not forced past.
+        let one_raised = DeleteReport {
+            waived: vec![work_finding(HazardWaiver::Dirty, Provenance::Unique)],
+            ..deleted.clone()
+        };
+        assert_eq!(
+            one_raised.message(&name()),
+            "deleted local clone `A`: /fam/ws-A removed, its row removed; forced past: \
+             dirty; unused waiver: unpreserved-history"
+        );
+        // A finding that refuses nothing needed no waiver, so naming its
+        // waiver forced past nothing.
+        let none_raised = DeleteReport {
+            waivers: vec![HazardWaiver::Dirty, HazardWaiver::OpenMerge],
+            waived: vec![work_finding(HazardWaiver::Dirty, Provenance::UnchangedCopy)],
+            ..deleted.clone()
+        };
+        assert_eq!(
+            none_raised.message(&name()),
+            "deleted local clone `A`: /fam/ws-A removed, its row removed; unused waiver: \
+             dirty, open-merge"
         );
         let plain = DeleteReport {
             waivers: Vec::new(),
+            waived: Vec::new(),
             ..deleted.clone()
         };
         assert_eq!(

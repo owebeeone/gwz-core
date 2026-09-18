@@ -11,7 +11,7 @@ pub(crate) fn run(
     session: &mut dyn FamilySession,
     ports: &mut dyn DisposalPorts,
     effects: &mut Vec<DisposeEffect>,
-) -> Result<(), DisposeError> {
+) -> Result<Vec<HazardFinding>, DisposeError> {
     let waivers = match &request.policy {
         DisposePolicy::Keep => None,
         DisposePolicy::Delete { waivers } => {
@@ -31,7 +31,8 @@ pub(crate) fn run(
 
     // Step 2: keep detaches metadata only, whatever state the target is in.
     let Some(waivers) = waivers else {
-        return detach(request, session, effects, RemovalReason::Keep);
+        detach(request, session, effects, RemovalReason::Keep)?;
+        return Ok(Vec::new());
     };
 
     // Step 3: fresh evidence, then the work and history checks.
@@ -60,7 +61,8 @@ pub(crate) fn run(
                     ),
                 });
             }
-            return detach(request, session, effects, RemovalReason::Stale);
+            detach(request, session, effects, RemovalReason::Stale)?;
+            return Ok(Vec::new());
         }
         state @ (ListState::Incomplete | ListState::InterruptedDisposal) => {
             debug_assert_ne!(plan.row.state, MemberState::Ready, "{state:?}");
@@ -77,7 +79,7 @@ pub(crate) fn run(
             });
         }
     }
-    inspect(&plan, &evidence, waivers, ports)?;
+    let waived = inspect(&plan, &evidence, waivers, ports)?;
 
     // Step 4. The write result is checked before anything is removed: the
     // session revalidates the row's state and allocation under the lock.
@@ -98,7 +100,8 @@ pub(crate) fn run(
     effects.push(DisposeEffect::DirectoryRemoved);
 
     // Step 5.
-    detach(request, session, effects, RemovalReason::Disposed)
+    detach(request, session, effects, RemovalReason::Disposed)?;
+    Ok(waived)
 }
 
 /// Remove the matching pointer, then the row. The order is the store

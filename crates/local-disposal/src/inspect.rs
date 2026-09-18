@@ -10,13 +10,14 @@ use crate::*;
 
 /// Design §5.1 and §5.2 step 3: every repository in the deletion tree is
 /// inspected, `Unknown` dominates and is never waivable, and a known hazard
-/// refuses unless its own name was given.
+/// refuses unless its own name was given. On success it returns the findings
+/// the named waivers covered: what the deletion is forced past.
 pub(crate) fn inspect(
     plan: &Plan,
     evidence: &TargetEvidence,
     waivers: &[HazardWaiver],
     ports: &mut dyn DisposalPorts,
-) -> Result<(), DisposeError> {
+) -> Result<Vec<HazardFinding>, DisposeError> {
     if evidence.repositories.is_empty() {
         return Err(DisposeError::Unknown(vec![UnknownReason::new(
             UnknownKind::UnsupportedLayout,
@@ -115,10 +116,9 @@ pub(crate) fn inspect(
     if !unknown.is_empty() {
         return Err(DisposeError::Unknown(unknown));
     }
-    let unwaived: Vec<HazardFinding> = findings
+    let (waived, unwaived): (Vec<HazardFinding>, Vec<HazardFinding>) = findings
         .into_iter()
-        .filter(|finding| !waivers.contains(&finding.waiver))
-        .collect();
+        .partition(|finding| waivers.contains(&finding.waiver));
     // A finding whose every hazard is data the family still holds is
     // reported but refuses nothing (R2): it reaches the caller only
     // alongside a finding that *does* refuse, so the refusal can name
@@ -127,5 +127,5 @@ pub(crate) fn inspect(
     if unwaived.iter().any(HazardFinding::refuses) {
         return Err(DisposeError::Hazards(unwaived));
     }
-    Ok(())
+    Ok(waived)
 }

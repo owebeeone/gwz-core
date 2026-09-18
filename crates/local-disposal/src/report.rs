@@ -22,6 +22,14 @@ pub enum DisposeEffect {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DisposeReport {
     pub effects: Vec<DisposeEffect>,
+    /// Every finding the fresh inspection raised under a waiver the
+    /// operator named, in inspection order: what the deletion was actually
+    /// forced past. It includes a finding that refuses nothing
+    /// ([`HazardFinding::refuses`]), so [`required_waivers`] over it names
+    /// the waivers that did waive something and any other named waiver
+    /// waived nothing. Empty for `--keep` and for the stale-row exit, which
+    /// inspect nothing.
+    pub waived: Vec<HazardFinding>,
 }
 
 /// A failed disposal: the typed cause plus the effects that completed.
