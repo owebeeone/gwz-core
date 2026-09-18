@@ -33,11 +33,12 @@ pub enum Provenance {
     /// The copy brought it and the lane changed it, or the family no
     /// longer holds it. Still the lane's to lose (R8).
     ChangedCopy,
-    /// Regenerable: a build cache, a `__pycache__`, a tool's convenience
-    /// symlink (R5, R6). **Nothing produces this yet**: the recogniser is
-    /// plan `GwzLaneCleanFixesPlan.md` S2.1 and its wiring is S2.3. The
-    /// variant exists so a Phase 1 report can name the category and show
-    /// it empty (S1.7).
+    /// Regenerable: a build cache, a `__pycache__`, an egg-info, a tool's
+    /// convenience symlink, a compiled extension module (R5, R6). The
+    /// caller recognises it by its markers -- `gwz-repo-inspect`'s
+    /// `regenerable` module is this build's recogniser -- and, unlike
+    /// every other answer here, it does not depend on a comparison with
+    /// the copy: a rebuilt cache is still a cache (R7).
     Regenerable,
 }
 
@@ -85,9 +86,21 @@ impl CopyBaseline {
     /// Record one entry's provenance. A repeated path keeps the more
     /// refusing answer, so two disagreeing comparisons never make a
     /// baseline less conservative than either of them.
+    ///
+    /// [`Provenance::Regenerable`] is the one exception, in both
+    /// directions: once an entry is known regenerable nothing unmakes it,
+    /// and recognising it regenerable overrides a comparison that already
+    /// called it changed or unique. That is R7 -- recognition does not
+    /// depend on the data being unchanged since the clone, so a cache the
+    /// lane rebuilt, and a cache the lane made that the family never had,
+    /// are both still caches. The comparison and the recogniser answer
+    /// *different questions*, and the recogniser's answer is the stronger
+    /// one: it says what the data **is**.
     pub fn set(&mut self, path: BytePath, provenance: Provenance) {
         let slot = self.entries.entry(path).or_insert(provenance);
-        if provenance.refuses() {
+        if *slot == Provenance::Regenerable || provenance == Provenance::Regenerable {
+            *slot = Provenance::Regenerable;
+        } else if provenance.refuses() {
             *slot = provenance;
         }
     }
@@ -161,5 +174,28 @@ mod tests {
 
         baseline.set_stash(Provenance::UnchangedCopy);
         assert_eq!(baseline.stash(), Provenance::UnchangedCopy);
+    }
+
+    /// R7: what the data *is* outranks what a comparison made of it. A
+    /// rebuilt cache the comparison called changed, and a lane-made cache
+    /// it called unique, are both regenerable, and nothing said later
+    /// takes that back.
+    #[test]
+    fn recognising_an_entry_as_regenerable_outranks_any_comparison() {
+        let mut baseline = CopyBaseline::default();
+        baseline.set(b"target/".to_vec(), Provenance::ChangedCopy);
+        baseline.set(b"target/".to_vec(), Provenance::Regenerable);
+        assert_eq!(baseline.entry(b"target/"), Provenance::Regenerable);
+        baseline.set(b"target/".to_vec(), Provenance::Unique);
+        assert_eq!(
+            baseline.entry(b"target/"),
+            Provenance::Regenerable,
+            "and it is not taken back"
+        );
+
+        baseline.set(b"new-cache/".to_vec(), Provenance::Regenerable);
+        baseline.set(b"new-cache/".to_vec(), Provenance::ChangedCopy);
+        assert_eq!(baseline.entry(b"new-cache/"), Provenance::Regenerable);
+        assert!(!baseline.entry(b"new-cache/").refuses());
     }
 }

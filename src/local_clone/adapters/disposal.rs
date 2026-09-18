@@ -53,6 +53,13 @@
 //! `TargetEvidence::copy`; the disposal library classifies with it, so a
 //! verbatim lane no longer refuses over its source's own ignored data.
 //!
+//! The same witness carries what is **regenerable** (R5 to R7, plan S2.3):
+//! a build cache, a `__pycache__`, an egg-info, a build tool's convenience
+//! symlink, a compiled extension module. That answer comes from
+//! `gwz-repo-inspect`'s recogniser rather than from any comparison, so a
+//! cache the lane rebuilt -- or made from nothing -- is recognised all the
+//! same, and it overrides what the comparison made of the same entry.
+//!
 //! # GWZ evidence
 //!
 //! Core decodes GWZ evidence for the work detector. This build reads the
@@ -84,7 +91,9 @@ use gwz_repo_contract::{
 use gwz_repo_inspect::{LocalObjectReader, LocalRepoInspector};
 use gwz_work_detector::{EvidenceState, GwzEvidence};
 
-use super::copy_witness::{FamilyPairs, live_witness, read_record, recorded_witness};
+use super::copy_witness::{
+    FamilyPairs, live_witness, mark_regenerable, read_record, recorded_witness,
+};
 use super::install::OpenMergeProbe;
 use super::inventory::{IncludedRepository, included_repositories};
 use super::removal::remove_tree;
@@ -366,7 +375,7 @@ impl DisposalPorts for CoreDisposalPorts {
         // question answered by comparing it with the family directly. An
         // unreadable record is neither, and is unknown evidence that
         // refuses whatever `--force` names.
-        let copy = match read_record(target, row.allocation_id.as_str()) {
+        let compared = match read_record(target, row.allocation_id.as_str()) {
             Ok(record) => {
                 let mut pairs = FamilyPairs::new(&self.inspector, &self.root);
                 match &record {
@@ -379,6 +388,13 @@ impl DisposalPorts for CoreDisposalPorts {
                 None
             }
         };
+        // R5 to R7: and whatever the comparison made of it, what a tool
+        // made and the same tool remakes is not the lane's work. The
+        // recogniser runs for every lane, record or no record, and its
+        // answer is the last word; everything it does not claim keeps the
+        // comparison's classification, so ignored data that is neither
+        // regenerable nor an unchanged copy still refuses (R8).
+        let copy = mark_regenerable(target, &repositories, &observed, compared);
         Ok(TargetEvidence {
             target: observation,
             repositories: observed,

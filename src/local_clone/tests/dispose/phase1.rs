@@ -243,75 +243,40 @@ fn a_lane_holding_a_unique_commit_or_unique_ignored_data_still_refuses() {
     }
 }
 
-/// S1.8's second question: **what is left after Phase 1**, stated exactly.
+/// S1.8's second question was **what is left after Phase 1**, and this
+/// test stated it: a lane that had been built in still refused over the
+/// caches it rebuilt, because Phase 1 had no recogniser for regenerable
+/// data. Phase 2's S2.1 to S2.3 answer it, so the test now states the
+/// answer instead of the gap -- the same fixture, the same build, and no
+/// refusal at all.
 ///
-/// A real lane is built in, so its caches are not the bytes the copy
-/// brought. Phase 1 has no recogniser for regenerable data (that is R5, R6
-/// and plan S2.1/S2.2), so a rebuilt cache falls into `changed copy` when
-/// the family has the same path and into `unique to the lane` when it does
-/// not, and it refuses under the `dirty` waiver. Nothing else remains: the
-/// history, the stash, the untouched ignored user data and the untouched
-/// caches are all cleared. Plan S2.3 moves exactly these entries into the
-/// `regenerable` category, which Phase 1 already reports and leaves empty.
+/// The entries that refused are exactly the ones the `regenerable`
+/// category was introduced empty for (S1.7): a rebuilt `target/` with its
+/// `CACHEDIR.TAG`, and a `__pycache__/` with a `.pyc` in it the family
+/// never had. Neither depends on being unchanged since the copy (R7).
 ///
 /// Note what the fixture also shows about R1's **cheap** fingerprint: the
 /// lane rewrote `target/debug/build.bin`, two levels below the recorded
-/// directory entry `target/`, and one `stat` of `target/` does not see it,
-/// so that entry reads as an unchanged copy. The register's own caches are
-/// recorded as whole directories, so this is the common case, and it is
-/// what R1 asks for (size, mtime and inode). Plan §8 records it as a known
-/// limitation for S3.3 to price.
+/// directory entry `target/`, and one `stat` of `target/` does not see it.
+/// Phase 2 makes that entry regenerable on its own evidence, so the gap no
+/// longer decides this case -- but it is still there, and plan §8 records
+/// it for S3.3 to price.
 #[test]
-fn what_remains_after_phase_one_is_the_caches_the_lane_rebuilt() {
+fn the_caches_a_lane_rebuilt_are_regenerable_and_no_longer_refuse() {
     let (fixture, _) = workspace_like_the_register_measured("dispose-phase1-remainder");
     clone(&fixture.root, "A");
     let a = fixture.sibling("A");
     // The lane builds, as a lane exists to do.
     fs::write(a.join("target/debug/build.bin"), b"built again\n").unwrap();
     fs::write(a.join("app/__pycache__/lane.cpython-313.pyc"), b"\x00new\n").unwrap();
-    let before = tree_bytes(&a);
 
-    let error = refuse(&fixture.root, delete_request("A", &[]));
-    assert_refused_without_effect(
-        &fixture,
-        &a,
-        &before,
-        &error,
-        ErrorCode::UnwaivedHazard,
-        &["nothing was removed"],
-    );
-    // Exactly one waiver, and it is the one Phase 2 removes the need for.
-    assert_eq!(printed_waivers(&error.message), ["dirty"]);
-    assert!(
-        error.message.contains("regenerable 0"),
-        "the category Phase 2 fills is reported and empty: {}",
-        error.message
-    );
-    // Every remaining entry is a rebuilt cache, and nothing else.
-    for category in ["; changed copy ", "; unique to the lane "] {
-        let Some((_, rest)) = error.message.split_once(category) else {
-            panic!("no `{category}` category: {}", error.message);
-        };
-        let listed = rest.split(';').next().unwrap_or_default();
-        for entry in listed.split(", `") {
-            assert!(
-                !entry.contains('(')
-                    || entry.contains("(target/")
-                    || entry.contains("(app/__pycache__/")
-                    || entry.contains("(__pycache__/"),
-                "only a rebuilt cache may remain, found `{entry}` in {category}: {}",
-                error.message
-            );
-        }
-    }
-    // And the operator's own data, untouched by the lane, is not among them.
-    assert!(
-        error
-            .message
-            .split("; changed copy")
-            .next()
-            .is_some_and(|unchanged| unchanged.contains("(notes.txt)")),
-        "{}",
-        error.message
-    );
+    let response = local(&fixture.root, delete_request("A", &[]));
+    let message = response.response.meta.message.expect("a message");
+    assert!(message.contains("deleted local clone `A`"), "{message}");
+    assert!(!message.contains("forced past"), "{message}");
+    assert!(!a.exists(), "the lane is gone");
+
+    // What it was built from is still the family's.
+    assert!(fixture.root.join("target/debug/build.bin").is_file());
+    assert!(fixture.root.join("notes.txt").is_file());
 }

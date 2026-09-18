@@ -31,6 +31,12 @@
 //! hazard the lane's own -- the conservative answer. A record that exists
 //! and cannot be decoded is unknown evidence, never silently "no record".
 //!
+//! # Regenerable data is a different question
+//!
+//! What a tool made and the same tool remakes is not the lane's work
+//! whatever the record says, so [`mark_regenerable`] runs for every lane
+//! and its answer outranks the comparison's (R5 to R7, plan S2.3).
+//!
 //! # What is deliberately not cleared
 //!
 //! Only **ignored and untracked** entries are: they are what a verbatim
@@ -45,7 +51,7 @@ use gwz_local_disposal::{CopiedRepository, CopyWitness, RepositoryEvidence};
 use gwz_repo_contract::{
     Observation, RepoInspector, RepoKey, RootSource, UnknownKind, UnknownReason, WorkKind,
 };
-use gwz_repo_inspect::LocalRepoInspector;
+use gwz_repo_inspect::{LocalRepoInspector, regenerable};
 use gwz_work_detector::{CopyBaseline, Provenance};
 
 use super::disposal::{strip_structural_work, structural_paths};
@@ -279,6 +285,79 @@ pub(super) fn live_witness(
             key: evidence.key.clone(),
             baseline,
         });
+    }
+    (!repositories.is_empty()).then_some(CopyWitness { repositories })
+}
+
+/// Regenerable data, stamped onto whatever witness the comparison built
+/// (R5, R6, R8; plan S2.3).
+///
+/// This runs for **every** lane, with a record or without one, and it is
+/// the last word: `CopyBaseline::set` keeps
+/// [`Provenance::Regenerable`] whatever a comparison said before or says
+/// after. That is R7 -- the recogniser asks what the data *is*, and a
+/// cache the lane rebuilt, or one the lane created that the family never
+/// had, is still a cache. Everything the recogniser does **not** claim is
+/// left exactly as the comparison classified it, so ignored data that is
+/// neither regenerable nor an unchanged copy still refuses (R8).
+///
+/// The lane's own root is the workspace boundary the convenience-link rule
+/// asks about: a `bazel-out` in the lane points at the build tool's output
+/// base outside the copy, which is what makes it a convenience link and not
+/// data.
+pub(super) fn mark_regenerable(
+    lane: &Path,
+    lane_repositories: &[IncludedRepository],
+    observed: &[RepositoryEvidence],
+    witness: Option<CopyWitness>,
+) -> Option<CopyWitness> {
+    let mut repositories = witness
+        .map(|witness| witness.repositories)
+        .unwrap_or_default();
+    for evidence in observed {
+        let Some(path) = lane_repositories
+            .iter()
+            .find(|repository| repository.key == evidence.key)
+            .map(|repository| repository.path.clone())
+        else {
+            continue;
+        };
+        let Observation::Known(work) = &evidence.work else {
+            continue;
+        };
+        let mut recognised = Vec::new();
+        for entry in &work.entries {
+            if !matches!(entry.kind, WorkKind::Ignored | WorkKind::Untracked) {
+                continue;
+            }
+            let Some(host) = copy_record::entry_path(&path, &entry.path) else {
+                continue;
+            };
+            if regenerable::recognise_under(lane, &path, &host).is_some() {
+                recognised.push(entry.path.clone());
+            }
+        }
+        if recognised.is_empty() {
+            continue;
+        }
+        let slot = match repositories
+            .iter()
+            .position(|repository| repository.key == evidence.key)
+        {
+            Some(found) => found,
+            None => {
+                repositories.push(CopiedRepository {
+                    key: evidence.key.clone(),
+                    baseline: CopyBaseline::default(),
+                });
+                repositories.len() - 1
+            }
+        };
+        for path in recognised {
+            repositories[slot]
+                .baseline
+                .set(path, Provenance::Regenerable);
+        }
     }
     (!repositories.is_empty()).then_some(CopyWitness { repositories })
 }
