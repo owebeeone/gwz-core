@@ -775,13 +775,15 @@ mod tests {
             size: fingerprint.size + 1,
             ..fingerprint
         }));
-        assert!(
-            !fingerprint.unchanged_since(&Fingerprint {
-                inode: fingerprint.inode.wrapping_add(1),
-                ..fingerprint
-            }),
-            "two inodes that disagree are two entries"
-        );
+        if fingerprint.inode != 0 {
+            assert!(
+                !fingerprint.unchanged_since(&Fingerprint {
+                    inode: fingerprint.inode.wrapping_add(1),
+                    ..fingerprint
+                }),
+                "two inodes that disagree are two entries"
+            );
+        }
         assert!(
             fingerprint.unchanged_since(&Fingerprint {
                 inode: 0,

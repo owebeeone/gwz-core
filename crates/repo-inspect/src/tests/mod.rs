@@ -12,6 +12,7 @@ mod hooks;
 mod layout;
 mod objects;
 mod read_only;
+mod regenerable;
 mod work;
 
 use std::path::Path;
