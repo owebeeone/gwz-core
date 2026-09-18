@@ -40,6 +40,7 @@ REQUEST_MATRIX = {
     "PullHeadRequest": ("PullHeadResponse", "workspace_ops::handle_pull_head", "pull"),
     "PullSnapshotRequest": ("PullSnapshotResponse", "workspace_ops::handle_pull_snapshot", "pull"),
     "PushRequest": ("PushResponse", "workspace_ops::handle_push", "push"),
+    "FetchRequest": ("FetchResponse", "workspace_ops::handle_fetch", "fetch"),
     "StashRequest": ("StashResponse", "workspace_ops::handle_stash", "stash"),
     "BranchRequest": ("BranchResponse", "workspace_ops::handle_branch", "branch"),
     "MergeRequest": ("MergeResponse", "workspace_ops::handle_merge_with_local_family", "merge"),

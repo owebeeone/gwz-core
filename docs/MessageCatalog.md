@@ -39,6 +39,7 @@ API and from workspace artifact YAML schemas.
 | GwzCore | pull_head | in | unary | request: PullHeadRequest | value: PullHeadResponse |
 | GwzCore | pull_snapshot | in | unary | request: PullSnapshotRequest | value: PullSnapshotResponse |
 | GwzCore | push | in | unary | request: PushRequest | value: PushResponse |
+| GwzCore | fetch | in | unary | request: FetchRequest | value: FetchResponse |
 | GwzCore | stash | in | unary | request: StashRequest | value: StashResponse |
 | GwzCore | branch | in | unary | request: BranchRequest | value: BranchResponse |
 | GwzCore | merge | in | unary | request: MergeRequest | value: MergeResponse |
@@ -80,6 +81,7 @@ has no service method and no handler that executes commands.
 | PullHeadRequest | PullHeadResponse | workspace_ops::handle_pull_head | pull | core service |
 | PullSnapshotRequest | PullSnapshotResponse | workspace_ops::handle_pull_snapshot | pull | core service |
 | PushRequest | PushResponse | workspace_ops::handle_push | push | core service |
+| FetchRequest | FetchResponse | workspace_ops::handle_fetch | fetch | core service |
 | StashRequest | StashResponse | workspace_ops::handle_stash | stash | core service |
 | BranchRequest | BranchResponse | workspace_ops::handle_branch | branch | core service |
 | MergeRequest | MergeResponse | workspace_ops::handle_merge_with_local_family | merge | core service |
@@ -123,6 +125,7 @@ has no service method and no handler that executes commands.
 | clone_local_workspace | 27 |
 | local_family | 28 |
 | remote_identity | 29 |
+| fetch | 30 |
 
 ### TagOp
 
@@ -920,6 +923,15 @@ has no service method and no handler that executes commands.
 | request | 1 |
 | workspace | 2 |
 
+### FetchResult
+
+| Member | Wire |
+| --- | --- |
+| updated | 0 |
+| unchanged | 1 |
+| no_upstream | 2 |
+| failed | 3 |
+
 ### RemoteCheck
 
 | Member | Wire |
@@ -1394,6 +1406,22 @@ has no service method and no handler that executes commands.
 | target_branch | 14 | str | yes | no | - |
 | resulting_commit | 15 | str | yes | no | - |
 | conflict_paths | 16 | List<str> | no | no | - |
+
+### FetchRepoSummary
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| member_id | 1 | str | no | no | - |
+| member_path | 2 | str | no | no | - |
+| source_kind | 3 | SourceKind | no | no | - |
+| result | 4 | FetchResult | no | no | - |
+| remote | 5 | str | yes | no | - |
+| branch | 6 | str | yes | no | - |
+| before | 7 | str | yes | no | - |
+| after | 8 | str | yes | no | - |
+| upstream | 9 | str | yes | no | - |
+| ahead | 10 | int | yes | no | - |
+| behind | 11 | int | yes | no | - |
 
 ### MergeParticipantCounts
 
@@ -1918,6 +1946,12 @@ has no service method and no handler that executes commands.
 | refspec | 3 | str | yes | no | - |
 | remote_check | 4 | RemoteCheck | yes | no | - |
 
+### FetchRequest
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| meta | 1 | RequestMeta | no | no | - |
+
 ### StashRequest
 
 | Field | Tag | Type | Optional | Transient | Merge |
@@ -2118,6 +2152,13 @@ has no service method and no handler that executes commands.
 | Field | Tag | Type | Optional | Transient | Merge |
 | --- | --- | --- | --- | --- | --- |
 | response | 1 | ResponseEnvelope | no | no | - |
+
+### FetchResponse
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| response | 1 | ResponseEnvelope | no | no | - |
+| repos | 2 | List<FetchRepoSummary> | yes | no | - |
 
 ### StashResponse
 

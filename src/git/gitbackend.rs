@@ -359,6 +359,7 @@ impl GitBackend for Git2Backend {
     delegate!(tag_delete(path: &Path, name: &str) -> ModelResult<()> => refs::tag_delete);
     delegate!(read_ref(path: &Path, ref_spec: &str) -> ModelResult<Option<String>> => refs::read_ref);
     delegate!(is_ancestor(path: &Path, ancestor: &str, descendant: &str) -> ModelResult<bool> => refs::is_ancestor);
+    delegate!(ahead_behind(path: &Path, local: &str, upstream: &str) -> ModelResult<GitAheadBehind> => refs::ahead_behind);
     delegate!(merge_base(path: &Path, left: &str, right: &str) -> ModelResult<Option<String>> => comparison::merge_base);
     delegate!(changed_paths_between(path: &Path, old_commit: &str, new_commit: &str,) -> ModelResult<Vec<String>> => comparison::changed_paths_between);
     delegate!(diff_manifest(path: &Path, comparison: &crate::diff::RepoDiffComparison, options: &crate::diff::RepoDiffOptions,) -> ModelResult<crate::diff::RepoDiffManifest> => comparison::diff_manifest);

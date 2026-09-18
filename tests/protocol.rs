@@ -591,6 +591,69 @@ fn merge_request_round_trips_the_family_wait() {
     );
 }
 
+/// `gwz fetch` (GwzFetchPlan.md step 1.1): the request is `meta` and nothing
+/// else -- there is deliberately no `remote_check`, because a fetch that does
+/// not connect has answered nothing (plan D4).
+#[test]
+fn fetch_request_round_trips() {
+    let request = gwz_core::FetchRequest {
+        meta: request_meta("req-fetch"),
+    };
+    assert_eq!(
+        round_trip(
+            &request,
+            gwz_core::FetchRequest::to_cbor,
+            gwz_core::FetchRequest::from_cbor,
+        ),
+        request
+    );
+}
+
+/// The report survives the wire with every optional slot populated, and a
+/// `no_upstream` row carrying nothing beyond its result decodes unchanged.
+#[test]
+fn fetch_response_round_trips_repo_rows() {
+    let response = gwz_core::FetchResponse {
+        response: response_envelope("req-fetch", ActionKind::Fetch),
+        repos: Some(vec![
+            gwz_core::FetchRepoSummary {
+                member_id: "core".to_owned(),
+                member_path: "libs/core".to_owned(),
+                source_kind: SourceKind::Git,
+                result: gwz_core::FetchResult::Updated,
+                remote: Some("origin".to_owned()),
+                branch: Some("main".to_owned()),
+                before: Some("1111111111111111111111111111111111111111".to_owned()),
+                after: Some("2222222222222222222222222222222222222222".to_owned()),
+                upstream: Some("refs/remotes/origin/main".to_owned()),
+                ahead: Some(2),
+                behind: Some(3),
+            },
+            gwz_core::FetchRepoSummary {
+                member_id: "local".to_owned(),
+                member_path: "libs/local".to_owned(),
+                source_kind: SourceKind::Local,
+                result: gwz_core::FetchResult::NoUpstream,
+                remote: None,
+                branch: None,
+                before: None,
+                after: None,
+                upstream: None,
+                ahead: None,
+                behind: None,
+            },
+        ]),
+    };
+    assert_eq!(
+        round_trip(
+            &response,
+            gwz_core::FetchResponse::to_cbor,
+            gwz_core::FetchResponse::from_cbor,
+        ),
+        response
+    );
+}
+
 /// DR-1 ship (1) §3.4: the decision travels on the response as machine truth,
 /// and a response without it (every op that did not decide) decodes to `None`.
 #[test]

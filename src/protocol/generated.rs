@@ -34,6 +34,7 @@ pub enum ActionKind {
     CloneLocalWorkspace,
     LocalFamily,
     RemoteIdentity,
+    Fetch,
 }
 impl ActionKind {
     pub fn wire(self) -> i64 { match self {
@@ -67,6 +68,7 @@ impl ActionKind {
         Self::CloneLocalWorkspace => 27,
         Self::LocalFamily => 28,
         Self::RemoteIdentity => 29,
+        Self::Fetch => 30,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::CreateWorkspace,
@@ -99,6 +101,7 @@ impl ActionKind {
         27 => Self::CloneLocalWorkspace,
         28 => Self::LocalFamily,
         29 => Self::RemoteIdentity,
+        30 => Self::Fetch,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "ActionKind", value: v }),
     }) }
 }
@@ -2196,6 +2199,29 @@ impl UrlSchemeSource {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum FetchResult {
+    #[default] Updated,
+    Unchanged,
+    NoUpstream,
+    Failed,
+}
+impl FetchResult {
+    pub fn wire(self) -> i64 { match self {
+        Self::Updated => 0,
+        Self::Unchanged => 1,
+        Self::NoUpstream => 2,
+        Self::Failed => 3,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Updated,
+        1 => Self::Unchanged,
+        2 => Self::NoUpstream,
+        3 => Self::Failed,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "FetchResult", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum RemoteCheck {
     #[default] Changed,
     Always,
@@ -3561,6 +3587,53 @@ impl BranchRepoSummary {
             target_branch: { let v = c.try_get(14)?; if v.is_null() { None } else { Some(v.try_text()?) } },
             resulting_commit: { let v = c.try_get(15)?; if v.is_null() { None } else { Some(v.try_text()?) } },
             conflict_paths: c.try_get(16)?.try_array()?.iter().map(|x| Ok(x.try_text()?)).collect::<Result<Vec<_>, DecodeError>>()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct FetchRepoSummary {
+    pub member_id: String,
+    pub member_path: String,
+    pub source_kind: SourceKind,
+    pub result: FetchResult,
+    pub remote: Option<String>,
+    pub branch: Option<String>,
+    pub before: Option<String>,
+    pub after: Option<String>,
+    pub upstream: Option<String>,
+    pub ahead: Option<i64>,
+    pub behind: Option<i64>,
+}
+impl FetchRepoSummary {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.member_id.clone())),
+            (2, Cbor::Text(self.member_path.clone())),
+            (3, Cbor::Int(self.source_kind.wire())),
+            (4, Cbor::Int(self.result.wire())),
+            (5, match &self.remote { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (6, match &self.branch { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (7, match &self.before { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (8, match &self.after { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (9, match &self.upstream { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (10, match &self.ahead { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+            (11, match &self.behind { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            member_id: c.try_get(1)?.try_text()?,
+            member_path: c.try_get(2)?.try_text()?,
+            source_kind: SourceKind::from_wire(c.try_get(3)?.try_int()?)?,
+            result: FetchResult::from_wire(c.try_get(4)?.try_int()?)?,
+            remote: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            branch: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            before: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            after: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            upstream: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            ahead: { let v = c.try_get(10)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            behind: { let v = c.try_get(11)?; if v.is_null() { None } else { Some(v.try_int()?) } },
         })
     }
 }
@@ -5082,6 +5155,23 @@ impl PushRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
+pub struct FetchRequest {
+    pub meta: RequestMeta,
+}
+impl FetchRequest {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.meta.to_cbor()),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            meta: RequestMeta::from_cbor(c.try_get(1)?)?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
 pub struct StashRequest {
     pub meta: RequestMeta,
     pub op: StashOp,
@@ -5653,6 +5743,26 @@ impl PushResponse {
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
         Ok(Self {
             response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct FetchResponse {
+    pub response: ResponseEnvelope,
+    pub repos: Option<Vec<FetchRepoSummary>>,
+}
+impl FetchResponse {
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, self.response.to_cbor()),
+            (2, match &self.repos { Some(v) => Cbor::Array(v.iter().map(|x| x.to_cbor()).collect()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
+            repos: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_array()?.iter().map(|x| FetchRepoSummary::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?) } },
         })
     }
 }

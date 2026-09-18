@@ -39,6 +39,9 @@ pub enum ActionKind {
     Log,
     CloneLocalWorkspace,
     LocalFamily,
+    /// `gwz fetch`: observe every selected repository's remote without
+    /// integrating (gwz-cli dev-docs/GwzFetchPlan.md).
+    Fetch,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -111,6 +114,7 @@ pub enum OperationRequest {
     PullHead(crate::PullHeadRequest),
     PullSnapshot(crate::PullSnapshotRequest),
     Push(crate::PushRequest),
+    Fetch(crate::FetchRequest),
     Capture(crate::CaptureRequest),
     Commit(crate::CommitRequest),
     Stage(crate::StageRequest),
@@ -144,6 +148,7 @@ impl OperationRequest {
             Self::PullHead(request) => (ActionKind::PullHead, &request.meta),
             Self::PullSnapshot(request) => (ActionKind::PullSnapshot, &request.meta),
             Self::Push(request) => (ActionKind::Push, &request.meta),
+            Self::Fetch(request) => (ActionKind::Fetch, &request.meta),
             Self::Capture(request) => (ActionKind::Capture, &request.meta),
             Self::Commit(request) => (ActionKind::Commit, &request.meta),
             Self::Stage(request) => (ActionKind::Stage, &request.meta),
@@ -166,6 +171,7 @@ impl OperationRequest {
         let transport_supported = matches!(
             self,
             Self::Push(_)
+                | Self::Fetch(_)
                 | Self::PullHead(_)
                 | Self::PullSnapshot(_)
                 | Self::CloneWorkspace(_)
@@ -193,6 +199,7 @@ impl OperationContext {
             && !matches!(
                 action,
                 ActionKind::Push
+                    | ActionKind::Fetch
                     | ActionKind::PullHead
                     | ActionKind::PullSnapshot
                     | ActionKind::CloneWorkspace
@@ -713,6 +720,7 @@ impl From<ActionKind> for crate::ActionKind {
             ActionKind::PullHead => Self::PullHead,
             ActionKind::PullSnapshot => Self::PullSnapshot,
             ActionKind::Push => Self::Push,
+            ActionKind::Fetch => Self::Fetch,
             ActionKind::Capture => Self::Capture,
             ActionKind::Commit => Self::Commit,
             ActionKind::Stage => Self::Stage,

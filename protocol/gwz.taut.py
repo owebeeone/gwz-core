@@ -102,6 +102,11 @@ SCHEMA = schema(
         method("push", role="in",
                params=Params(request=Ref.PushRequest),
                out=Ref.PushResponse),
+        # Fetch every selected repository's configured remote and report what
+        # moved, integrating nothing (gwz-cli dev-docs/GwzFetchPlan.md §1).
+        method("fetch", role="in",
+               params=Params(request=Ref.FetchRequest),
+               out=Ref.FetchResponse),
         # Coordinate native Git stashes across selected members.
         method("stash", role="in",
                params=Params(request=Ref.StashRequest),
@@ -194,7 +199,10 @@ SCHEMA = schema(
          # Local clone family (GwzLocalCloneDesign.md §7; allocated 2026-09-05).
          clone_local_workspace=27,
          local_family=28,
-         remote_identity=29),
+         remote_identity=29,
+         # Observe every selected repository's remote without integrating
+         # (gwz-cli dev-docs/GwzFetchPlan.md, 2026-09-18).
+         fetch=30),
 
     # Operation kind for the `gwz tag` verb.
     TagOp=Enum(
@@ -1423,6 +1431,38 @@ SCHEMA = schema(
         # Conflict paths relative to the member repository root.
         conflict_paths=F(16, List(STR))),
 
+    # What one repository's remote-tracking ref did during `gwz fetch`
+    # (gwz-cli dev-docs/GwzFetchPlan.md §3.2, 2026-09-18). `no_upstream`
+    # covers a repository with no fetch remote, and one whose HEAD is
+    # detached or unborn, so there is no tracking ref to move: a reported
+    # row, never an error (plan D2).
+    FetchResult=Enum(updated=0, unchanged=1, no_upstream=2, failed=3),
+
+    # One repository's row in a `gwz fetch` report (plan D5). Parallel to
+    # ResponseEnvelope.members, in the same order.
+    FetchRepoSummary=Msg(
+        member_id=F(1, STR),
+        member_path=F(2, STR),
+        source_kind=F(3, Ref.SourceKind),
+        result=F(4, Ref.FetchResult),
+        # The remote this repository was fetched from. Absent for a
+        # `no_upstream` row with no fetch remote at all.
+        remote=F(5, STR, optional=True),
+        # The branch whose tracking ref was read, before and after.
+        branch=F(6, STR, optional=True),
+        # The tracking ref's object id BEFORE the fetch; absent when the
+        # remote-tracking ref did not exist yet.
+        before=F(7, STR, optional=True),
+        # The tracking ref's object id AFTER the fetch.
+        after=F(8, STR, optional=True),
+        # The full tracking ref name, e.g. `refs/remotes/origin/main`.
+        upstream=F(9, STR, optional=True),
+        # Commits the local branch has that the tracking ref does not,
+        # counted after the fetch (plan D6/D7).
+        ahead=F(10, INT, optional=True),
+        # Commits the tracking ref has that the local branch does not.
+        behind=F(11, INT, optional=True)),
+
     # Counts by durable participant lifecycle state.
     MergeParticipantCounts=Msg(
         total=F(1, INT),
@@ -1925,6 +1965,16 @@ SCHEMA = schema(
         # when unset, which means `changed`.
         remote_check=F(4, Ref.RemoteCheck, optional=True)),
 
+    # Fetch every selected repository's configured remote and report what
+    # moved (gwz-cli dev-docs/GwzFetchPlan.md). Deliberately carries NO
+    # remote_check: `push`'s `changed` default exists so a push that
+    # publishes nothing need not connect, and a fetch that does not connect
+    # has answered nothing, so `always` is the only meaning this verb has
+    # (plan D4). `--remote` still rides in `meta.policy.remote`; a request
+    # field for it is Phase 2, step 2.3.
+    FetchRequest=Msg(
+        meta=F(1, Ref.RequestMeta)),
+
     # Coordinate native Git stash operations across selected members.
     StashRequest=Msg(
         meta=F(1, Ref.RequestMeta),
@@ -2141,6 +2191,11 @@ SCHEMA = schema(
     # Response wrapper for push.
     PushResponse=Msg(
         response=F(1, Ref.ResponseEnvelope)),
+    # Response wrapper for fetch -- `repos` carries one row per selected
+    # repository, in envelope order (gwz-cli dev-docs/GwzFetchPlan.md §3.4).
+    FetchResponse=Msg(
+        response=F(1, Ref.ResponseEnvelope),
+        repos=F(2, List(Ref.FetchRepoSummary), optional=True)),
     # Response wrapper for stash operations.
     StashResponse=Msg(
         response=F(1, Ref.ResponseEnvelope),

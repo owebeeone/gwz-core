@@ -155,6 +155,7 @@ impl GitRepository for GitTestRepository {
     forward!(push_anonymous(path: &Path, url: &str, refspec: &str) -> ModelResult<GitPushResult>);
     forward!(read_ref(path: &Path, ref_spec: &str) -> ModelResult<Option<String>>);
     forward!(is_ancestor(path: &Path, ancestor: &str, descendant: &str) -> ModelResult<bool>);
+    forward!(ahead_behind(path: &Path, local: &str, upstream: &str) -> ModelResult<GitAheadBehind>);
     forward!(merge_base(_path: &Path, _left: &str, _right: &str) -> ModelResult<Option<String>>);
     forward!(changed_paths_between(_path: &Path, _old_commit: &str, _new_commit: &str,) -> ModelResult<Vec<String>>);
     forward!(diff_manifest(_path: &Path, _comparison: &crate::diff::RepoDiffComparison, _options: &crate::diff::RepoDiffOptions,) -> ModelResult<crate::diff::RepoDiffManifest>);

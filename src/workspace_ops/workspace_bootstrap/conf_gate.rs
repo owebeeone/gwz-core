@@ -176,7 +176,8 @@ mod tests {
                 C::Capture => Some(C::CloneWorkspace),
                 C::CloneWorkspace => Some(C::Commit),
                 C::Commit => Some(C::Diff),
-                C::Diff => Some(C::Forall),
+                C::Diff => Some(C::Fetch),
+                C::Fetch => Some(C::Forall),
                 C::Forall => Some(C::InitNewWorkspace),
                 C::InitNewWorkspace => Some(C::InitExistingPlan),
                 C::InitExistingPlan => Some(C::InitUpdate),
@@ -479,7 +480,7 @@ mod tests {
         let commands = every_command();
         assert_eq!(
             commands.len(),
-            28,
+            29,
             "the enum grew; classify the new variant"
         );
 
