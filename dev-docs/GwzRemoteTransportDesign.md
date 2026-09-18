@@ -259,6 +259,33 @@ only if the adapter establishes readers before data, prevents overflow with
 flow control and treats any loss as terminal; conformance must prove this.
 No log persistence, replay or stream resumption is required.
 
+### 4.1.1 Phase 1 carrier mapping amendment — pending review
+
+Implementation inspection found no existing serialized binary CLI–core carrier:
+the current drivers embed core and their operation events are one-way. Taut's
+reference WebSocket client uses JSON/base64; it cannot carry this programme's
+binary payloads unchanged. Phase 1 therefore qualifies an explicit binary
+adapter on a dedicated reliable, ordered, full-duplex transport conversation
+channel. This does not claim an existing application envelope already provides
+the needed delivery contract.
+
+On a byte-oriented channel, each record is a four-byte unsigned big-endian
+length followed by one taut CBOR transport Envelope. The length excludes its
+own header. Envelope owns version, session id, stream id and message kind;
+there is no second identity/version header. Bind/Bound/BindRejected use stream
+zero; active exchanges use positive stream ids. Before binding, frame admission
+uses the fixed bootstrap cap. After binding, it uses the negotiated receive cap
+bounded by §4.2. Oversized declarations terminate the channel before reading or
+allocating the body. EOF/truncation is carrier loss, never a graceful stream EOF.
+
+The logical channel carries only transport conversations. If Phase 4 shares a
+physical connection with other GWZ services, that host carrier must demultiplex
+a dedicated transport lane before this adapter; any additional application
+envelope is taut-defined, bounded and separately reviewed. Phase 1 does not
+freeze an invented general-purpose GWZ service multiplexer. Local delivery uses
+the same admitted generated Envelope values. The two-process proof uses pipes
+and a fake endpoint, not a production daemon or a new user-facing command.
+
 ### 4.2 Bounds before decoding
 
 Every serialized carrier must reject an oversized frame before allocating or

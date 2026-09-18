@@ -65,12 +65,14 @@ the exported schema. Core generates its own integration against the shared
 types. Pin schema/package and generator versions, with regeneration drift checks.
 The exact cross-package generator mechanism must be established in Phase 1.
 
-For serialized delivery, use the existing taut carrier framing/routing with a
-transport conversation payload: session and stream identity plus the typed
-message body. This is the intended integration, not a claim that the existing
-carrier already supports it. Identify which metadata belongs to the outer
-carrier and which belongs to the transport contract; avoid competing sources
-of identity/version truth. Do not place data in the one-way operation-event
+For serialized delivery, qualify the dedicated binary conversation adapter in
+design §4.1.1 (implementation amendment pending review). Inspection found no
+existing binary GWZ carrier; taut's JSON/base64 reference client cannot satisfy
+this design unchanged. The adapter uses bounded length framing around the
+taut-generated transport Envelope, which alone owns session/stream/version
+metadata. General GWZ service multiplexing is outside that Phase 1 freeze;
+any later shared-connection lane mapping requires a bounded taut-defined host
+envelope and its own review. Do not place data in the one-way operation-event
 subscription or assume the existing lossy taut `stream` shape is suitable.
 In-process delivery passes the same generated values with equivalent bounds,
 ordering and lifecycle rules, without requiring serialization.
