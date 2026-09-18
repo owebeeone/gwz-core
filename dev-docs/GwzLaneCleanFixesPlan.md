@@ -363,7 +363,27 @@ Landed in gwz-core, one commit per step, each on a green
 | S1.6 | **done** | No record -- an older gwz's lane, or one copied outside gwz -- and dispose derives the same witness live: each ignored and untracked entry is compared with the family's own entry at that path, by link target, by bytes or (past 1 MiB) by size and mtime, recursively for a directory and within a bounded walk. Finding nothing unique needs no waiver. |
 | S1.7 | **done** | `gwz-local-disposal` owns `HazardCategory`, `categorise` and `required_waivers`; a refusal reports `regenerable`, `unchanged copy`, `changed copy` and `unique to the lane`, each with its count and its paths or object ids and each named even when empty, then prints the one `gwz local dispose <name> --force <hazards>` that waives exactly what refused. |
 | S1.8 | **done** | `src/local_clone/tests/dispose/phase1.rs`: a workspace shaped like the one the register measured -- root and member, each with a native stash, a reflog-only commit, ignored user data, a tagged cache, a `__pycache__`, a compiled extension and a `bazel-out` link -- cloned verbatim. Its lane's work is merged back and the lane then disposes in **one command** (R0); a lane holding a unique commit, or unique ignored data, still refuses under `unique to the lane` (R0.1, R19); and a third test states exactly what Phase 1 leaves. |
-| Phases 2 to 4 | not started | |
+| S2.1 | **done** | `gwz-repo-inspect`'s `regenerable` module: a pure recogniser for a valid `CACHEDIR.TAG` directory, a `__pycache__/` holding nothing but bytecode, an `*.egg-info/` with its setuptools metadata, a `bazel-*`/`razel-*` symlink pointing outside the workspace, and a `.so`/`.pyd`/`.dylib` in a source tree; plus `recognise_under` for anything inside such a directory. It reads no record and takes no baseline (R7). |
+| S2.2 | **done** | The untagged build-directory marker table in the same module, one row per recognisable shape, with a test per row. See the table below. |
+| Phases 3 and 4 | not started | |
+
+**The untagged build directories Phase 2 covers (S2.2).** A tool that
+writes a valid `CACHEDIR.TAG` needs no row: modern cargo, `uv`, `pytest`
+and `ruff` all tag their caches and are recognised as tagged caches. The
+table is for the tools that do not, and each row is a *proof*, not a
+guess -- **no row names the directory**, so a `target/` with none of these
+markers is not regenerable (R6):
+
+| Tool | Markers that must all be present | Why |
+| --- | --- | --- |
+| cargo | `.rustc_info.json` | Cargo writes it at the top of the target directory, and has since long before it began tagging. This is the register's own case, `gwz-cli/target`. |
+| cargo | `debug/.fingerprint`, `debug/deps` | A target directory whose metadata file was cleaned away still has the profile layout, which nothing but cargo writes. |
+| cargo | `release/.fingerprint`, `release/deps` | The same, for a release profile. |
+| virtualenv | `pyvenv.cfg` | Written by `venv` and by `virtualenv` at the top of the environment and nowhere else. The register's `.venv/` and `.regen-venv/` are tagged by the tool that made them; an environment made by an older `virtualenv` is not. |
+
+Adding a tool is one row and one test. A directory that matches no row and
+carries no tag stays the lane's own data and still refuses, which is the
+conservative direction R6 asks for.
 
 **What Phase 1 leaves, measured (2026-09-18).** On the S1.8 fixture, a
 merged verbatim lane that has been **built in** refuses over exactly one

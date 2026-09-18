@@ -1,5 +1,5 @@
 //! The regenerable recogniser, one test per rule (`GwzLaneCleanFixes.md`
-//! R5, R7; plan `GwzLaneCleanFixesPlan.md` S2.1, and R17's share
+//! R5, R6, R7; plan `GwzLaneCleanFixesPlan.md` S2.1, S2.2, and R17's share
 //! of S2.4).
 //!
 //! Every test builds the real shape on disk and asks the recogniser, so
@@ -195,6 +195,62 @@ fn a_compiled_extension_is_recognised_by_its_suffix() {
         tree.ask(&directory),
         None,
         "a directory of that name is not a module"
+    );
+}
+
+/// R6, one assertion per row of the marker table: an untagged build
+/// directory is recognised by what its tool writes, and a directory of the
+/// same name with none of those markers is not regenerable.
+#[test]
+fn an_untagged_build_directory_is_recognised_by_its_tools_markers() {
+    for (label, markers, tool) in [
+        ("cargo's metadata file", vec![".rustc_info.json"], "cargo"),
+        (
+            "a cleaned cargo debug profile",
+            vec!["debug/.fingerprint/stamp", "debug/deps/lib.rlib"],
+            "cargo",
+        ),
+        (
+            "a cleaned cargo release profile",
+            vec!["release/.fingerprint/stamp", "release/deps/lib.rlib"],
+            "cargo",
+        ),
+        ("a virtual environment", vec!["pyvenv.cfg"], "virtualenv"),
+    ] {
+        let tree = Tree::new();
+        let directory = tree.directory("target");
+        assert_eq!(
+            tree.ask(&directory),
+            None,
+            "{label}: the name `target` alone is never enough (R6)"
+        );
+        for marker in &markers {
+            tree.file(&format!("target/{marker}"), b"marker\n");
+        }
+        assert_eq!(
+            tree.ask(&directory),
+            Some(Regenerable::BuildDirectory { tool }),
+            "{label}"
+        );
+    }
+}
+
+/// R6's other half: a partial marker set proves nothing, and neither does
+/// a directory that merely looks like a build tree.
+#[test]
+fn a_partial_marker_set_is_not_a_build_directory() {
+    let tree = Tree::new();
+    let directory = tree.directory("target");
+    tree.file("target/debug/deps/lib.rlib", b"only half\n");
+    assert_eq!(
+        tree.ask(&directory),
+        None,
+        "`deps/` without `.fingerprint/` is not cargo's shape"
+    );
+    tree.file("target/debug/.fingerprint/stamp", b"\n");
+    assert_eq!(
+        tree.ask(&directory),
+        Some(Regenerable::BuildDirectory { tool: "cargo" })
     );
 }
 

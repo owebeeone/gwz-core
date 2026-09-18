@@ -1,6 +1,6 @@
 //! Recognising regenerable data: what a tool made and the same tool
-//! remakes (`GwzLaneCleanFixes.md` R5, R7; plan
-//! `GwzLaneCleanFixesPlan.md` S2.1).
+//! remakes (`GwzLaneCleanFixes.md` R5, R6, R7; plan
+//! `GwzLaneCleanFixesPlan.md` S2.1, S2.2).
 //!
 //! # Why this exists
 //!
@@ -14,13 +14,12 @@
 //!
 //! # The three rules this module keeps
 //!
-//! 1. **Markers and shape, never a name alone.** The only names that
+//! 1. **Markers and shape, never a name alone** (R6). The only names that
 //!    take part at all are the ones R5 lists — `__pycache__`, `*.egg-info`,
 //!    `bazel-*`, `razel-*`, the compiled-extension suffixes — and each of
-//!    those still has to look the part: a `cache` directory with no valid
-//!    `CACHEDIR.TAG` is not a cache. A build directory whose tool wrote no
-//!    tag at all is recognised by that tool's own markers, which is plan
-//!    S2.2 and is added next.
+//!    those still has to look the part. A directory called `target` with no
+//!    cargo marker in it is not regenerable, and neither is a `cache`
+//!    directory with no valid `CACHEDIR.TAG`.
 //! 2. **Nothing here consults the clone copy record** (R7). Recognition is
 //!    a question about what the data *is*, asked of the bytes on disk now.
 //!    A cache the lane rebuilt is still a cache, and a cache the lane
@@ -51,6 +50,52 @@ const EXTENSION_SUFFIXES: [&str; 3] = ["so", "pyd", "dylib"];
 /// `bazel-out`, `razel-testlogs`.
 const CONVENIENCE_LINK_PREFIXES: [(&str, &str); 2] = [("bazel-", "bazel"), ("razel-", "razel")];
 
+/// One untagged build directory's marker set (R6, plan S2.2).
+///
+/// A directory is this tool's output when **every** path in `markers`
+/// exists inside it. A tool with more than one recognisable shape gets one
+/// row per shape, so the table reads as a list of proofs rather than as a
+/// list of guesses. No row names the directory itself: `target`, `build`
+/// and `out` are ordinary words, and the register's own untagged case
+/// (`gwz-cli/target`, written by a cargo older than the one that started
+/// tagging) is recognised by what cargo writes inside it.
+struct BuildMarkers {
+    tool: &'static str,
+    markers: &'static [&'static str],
+}
+
+/// Every untagged build directory this release recognises. A tool that
+/// writes a valid `CACHEDIR.TAG` needs no row here: modern cargo, `uv`,
+/// `pytest` and `ruff` all tag their caches and are recognised by
+/// [`Regenerable::TaggedCache`].
+const UNTAGGED_BUILD_DIRECTORIES: &[BuildMarkers] = &[
+    // Cargo's own metadata file, written at the top of the target
+    // directory since 1.36 and by every cargo that predates tagging.
+    BuildMarkers {
+        tool: "cargo",
+        markers: &[".rustc_info.json"],
+    },
+    // A target directory whose `.rustc_info.json` was cleaned away still
+    // has a profile directory with a fingerprint store and a dependency
+    // store, which nothing but cargo lays out that way.
+    BuildMarkers {
+        tool: "cargo",
+        markers: &["debug/.fingerprint", "debug/deps"],
+    },
+    BuildMarkers {
+        tool: "cargo",
+        markers: &["release/.fingerprint", "release/deps"],
+    },
+    // A Python virtual environment: `pyvenv.cfg` is written by `venv` and
+    // by `virtualenv`, at the top of the environment and nowhere else. The
+    // register's `.venv/` and `.regen-venv/` are tagged by the tool that
+    // made them; an environment made by an older `virtualenv` is not.
+    BuildMarkers {
+        tool: "virtualenv",
+        markers: &["pyvenv.cfg"],
+    },
+];
+
 /// Why one entry is regenerable. The variant is the proof, and it is what
 /// a report prints: an operator who disagrees with a classification can see
 /// which rule made it.
@@ -67,6 +112,9 @@ pub enum Regenerable {
     ConvenienceLink { tool: &'static str },
     /// A compiled extension module inside a source tree (R5).
     CompiledExtension,
+    /// A build directory whose tool wrote no `CACHEDIR.TAG`, recognised by
+    /// the markers that tool does write (R6).
+    BuildDirectory { tool: &'static str },
 }
 
 impl Regenerable {
@@ -80,6 +128,7 @@ impl Regenerable {
                 format!("a {tool} convenience symlink to output outside the workspace")
             }
             Self::CompiledExtension => "a compiled extension module".to_owned(),
+            Self::BuildDirectory { tool } => format!("an untagged {tool} build directory"),
         }
     }
 }
@@ -110,7 +159,7 @@ pub fn recognise(workspace: &Path, path: &Path) -> Option<Regenerable> {
     if is_egg_info(path) {
         return Some(Regenerable::EggInfo);
     }
-    None
+    build_directory(path)
 }
 
 /// [`recognise`] for the entry **or any directory it lies inside**, up to
@@ -231,6 +280,19 @@ fn is_egg_info(directory: &Path) -> bool {
         .and_then(|name| name.to_str())
         .is_some_and(|name| name.len() > ".egg-info".len() && name.ends_with(".egg-info"));
     named && directory.join("PKG-INFO").is_file()
+}
+
+/// R6: the first row of [`UNTAGGED_BUILD_DIRECTORIES`] whose every marker
+/// is present inside `directory`.
+fn build_directory(directory: &Path) -> Option<Regenerable> {
+    UNTAGGED_BUILD_DIRECTORIES
+        .iter()
+        .find(|row| {
+            row.markers
+                .iter()
+                .all(|marker| directory.join(marker).exists())
+        })
+        .map(|row| Regenerable::BuildDirectory { tool: row.tool })
 }
 
 /// Whether every direct child of `directory` satisfies `accept`. A
