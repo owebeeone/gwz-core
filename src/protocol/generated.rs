@@ -2204,6 +2204,7 @@ pub enum FetchResult {
     Unchanged,
     NoUpstream,
     Failed,
+    Planned,
 }
 impl FetchResult {
     pub fn wire(self) -> i64 { match self {
@@ -2211,12 +2212,14 @@ impl FetchResult {
         Self::Unchanged => 1,
         Self::NoUpstream => 2,
         Self::Failed => 3,
+        Self::Planned => 4,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Updated,
         1 => Self::Unchanged,
         2 => Self::NoUpstream,
         3 => Self::Failed,
+        4 => Self::Planned,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "FetchResult", value: v }),
     }) }
 }

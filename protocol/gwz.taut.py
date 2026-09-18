@@ -1435,8 +1435,10 @@ SCHEMA = schema(
     # (gwz-cli dev-docs/GwzFetchPlan.md §3.2, 2026-09-18). `no_upstream`
     # covers a repository with no fetch remote, and one whose HEAD is
     # detached or unborn, so there is no tracking ref to move: a reported
-    # row, never an error (plan D2).
-    FetchResult=Enum(updated=0, unchanged=1, no_upstream=2, failed=3),
+    # row, never an error (plan D2). `planned` is the `--dry-run` row: the
+    # repository would be contacted and was not, so the row carries no result
+    # from any remote. It never appears outside `--dry-run`.
+    FetchResult=Enum(updated=0, unchanged=1, no_upstream=2, failed=3, planned=4),
 
     # One repository's row in a `gwz fetch` report (plan D5). Parallel to
     # ResponseEnvelope.members, in the same order.

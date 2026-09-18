@@ -297,10 +297,17 @@ impl FetchTarget {
 
     /// The `--dry-run` projection: what this repository would be contacted
     /// for, with nothing contacted.
+    ///
+    /// A repository that has both a remote and a branch yields
+    /// [`crate::FetchResult::Planned`]: `Planned` means the repository was not
+    /// contacted and the row carries no result from any remote, so it is
+    /// distinct from `Unchanged`, which means the repository was contacted and
+    /// its tracking ref did not move. `Planned` appears only under
+    /// `--dry-run`; a live fetch never produces it.
     fn planned_row(&self) -> FetchRow {
         let (result, error) = match (&self.refusal, &self.remote, &self.branch) {
             (Some(error), _, _) => (crate::FetchResult::Failed, Some(error.clone())),
-            (None, Some(_), Some(_)) => (crate::FetchResult::Unchanged, None),
+            (None, Some(_), Some(_)) => (crate::FetchResult::Planned, None),
             (None, _, _) => (crate::FetchResult::NoUpstream, None),
         };
         let status = match result {

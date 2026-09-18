@@ -395,6 +395,11 @@ fn a_dry_run_reports_the_rows_it_would_contact_and_contacts_nothing() {
         .unwrap();
     assert_eq!(row.status, crate::MemberStatus::Planned);
     assert_eq!(
+        summary(&response, "mem_app").result,
+        crate::FetchResult::Planned,
+        "a dry-run row carries no result from any remote, so it cannot be Unchanged"
+    );
+    assert_eq!(
         summary(&response, "mem_app").remote.as_deref(),
         Some("origin")
     );
