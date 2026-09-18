@@ -181,7 +181,7 @@ from taut.ir.load import load_schema
 #   was: cb059717cc1f306602f74a571ec7c1964de9df56ce319a7afee734e6a784675a
 #
 # Moved deliberately again on 2026-09-18 by the 1.0.17 documentation review
-# remediation (gwz-cli dev-docs/GwzRelease1017Docs-RemPlan.md, findings
+# remediation (gwz-cli dev-docs/history/GwzRelease1017Docs-RemPlan.md, findings
 # S-P2-1 and C-P2-3), which gives a `--dry-run` fetch row a token of its own:
 # it adds exactly one enum member, FetchResult.planned, at the next additive
 # slot 4. No existing message, field, slot, enum member or method changed,
