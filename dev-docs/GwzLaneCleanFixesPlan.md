@@ -366,6 +366,7 @@ Landed in gwz-core, one commit per step, each on a green
 | S2.1 | **done** | `gwz-repo-inspect`'s `regenerable` module: a pure recogniser for a valid `CACHEDIR.TAG` directory, a `__pycache__/` holding nothing but bytecode, an `*.egg-info/` with its setuptools metadata, a `bazel-*`/`razel-*` symlink pointing outside the workspace, and a `.so`/`.pyd`/`.dylib` in a source tree; plus `recognise_under` for anything inside such a directory. It reads no record and takes no baseline (R7). |
 | S2.2 | **done** | The untagged build-directory marker table in the same module, one row per recognisable shape, with a test per row. See the table below. |
 | S2.3 | **done** | `mark_regenerable` in core's `copy_witness` runs the recogniser over every observed ignored and untracked entry of every lane, record or no record, and stamps `Provenance::Regenerable` on the same `CopyBaseline` the comparison fills. `CopyBaseline::set` keeps `Regenerable` whatever is said before or after it (R7); everything the recogniser does not claim keeps the comparison's answer, so ignored data that is neither regenerable nor an unchanged copy still refuses (R8). The `regenerable` category S1.7 introduced empty now fills. |
+| S2.4 | **done** | `src/local_clone/tests/dispose/phase2.rs`: Phase 1's fixture extended with the two shapes it lacked -- an untagged cargo target directory and an egg-info -- and a lane that is **built in** (a rebuilt tagged cache, a rebuilt untagged build directory, a `__pycache__` with a new module, a rewritten egg-info, a relinked `.so`, a convenience link and a cache the lane invented). Merged back, it disposes in **one command** (R0, R18). A lane holding ignored data that is not regenerable still refuses under `unique to the lane`, naming its path, while the caches made in the same run sit in `regenerable` (R19, R0.1); a cache the lane invented does not refuse (R7); and a directory carrying none of a tool's markers is not regenerable however it is named (R6). |
 | Phases 3 and 4 | not started | |
 
 **The untagged build directories Phase 2 covers (S2.2).** A tool that
@@ -415,6 +416,47 @@ directory can be cleared. The live comparison S1.6 makes for a lane with
 within a bounded walk. **S3.3** prices making the recorded path do the same
 for directory entries; until it does, this is the one place where the
 record is weaker than the comparison it replaces.
+
+**R0 is reached for the lane shapes this workspace makes (2026-09-18).**
+On the S2.4 fixture -- a workspace with native stashes, reflog-only
+commits, ignored user data, a tagged cache, an untagged cargo target
+directory, a `__pycache__`, an egg-info, a compiled extension and a bazel
+convenience link -- a merged verbatim lane that has been **built in**
+disposes with **no waiver**. That is the Phase 2 milestone and the R0
+objective, and it is what the Claude Code integration plan's S3.5 waits
+on, once it ships in an installed gwz. Phase 1's remaining case (the one
+its third S1.8 test stated) is closed: that test now asserts the disposal
+rather than the refusal.
+
+**What still refuses after Phase 2, by design.** Nothing here is a Phase 3
+defect; each is a requirement holding:
+
+- Ignored or untracked data the lane changed or created that is **not**
+  regenerable: `changed copy` and `unique to the lane` (R8, R0.1). Agent
+  and editor state a lane changed (`.claude/`, `.cursor/`) is in this
+  group, which is §9's first open question and a one-row change to S2.1's
+  table if it is ever decided the other way.
+- A commit, a reflog root or a stash entry no surviving family repository
+  holds (R0.1).
+- Unknown evidence: an unreadable repository, an unreadable copy record, a
+  gwz stash record this build does not decode. Unknown dominates and is
+  never waivable.
+
+**What Phase 2 leaves for Phase 3.** Three, all of them already planned:
+
+1. **The waiver is still wider than the category (R11, S3.1).** Every work
+   hazard still spells `dirty` on the wire, so an operator who waives the
+   lane's caches also waives its unique work. Phase 2 made the *report*
+   exact; S3.1 makes the *waiver* exact.
+2. **The refusal is still the only report (R12, S3.2).** Seeing the
+   categories costs a whole refused run; `--check` is S3.2.
+3. **R1's one-`stat` fingerprint (S3.3).** A change deep inside a recorded
+   directory entry can still read as an unchanged copy. Phase 2 removes
+   the sting for the common case -- the register's caches are exactly the
+   entries the recogniser now claims on their own evidence, so the
+   fingerprint no longer decides them -- but the gap is unchanged for a
+   recorded directory that is **not** regenerable, and S3.3 is where it is
+   priced.
 
 **S1.4 adjustment.** As planned, S1.4 was to let the copy record narrow the
 history question through a `CopyWitness` on `TargetEvidence`. Building it

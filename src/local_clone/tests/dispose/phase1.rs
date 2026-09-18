@@ -17,7 +17,7 @@ use super::*;
 /// Add one `.git/info/exclude` rule to the repository at `path`, so a whole
 /// directory is ignored and Git reports it as one entry -- the shape a real
 /// cache has, and the shape the register counted once per directory.
-fn ignore(path: &Path, rule: &str) {
+pub(super) fn ignore(path: &Path, rule: &str) {
     let exclude = path.join(".git/info/exclude");
     fs::create_dir_all(exclude.parent().unwrap()).unwrap();
     let mut rules = fs::read(&exclude).unwrap_or_default();
@@ -25,7 +25,7 @@ fn ignore(path: &Path, rule: &str) {
     fs::write(&exclude, rules).unwrap();
 }
 
-fn write(path: &Path, relative: &str, contents: &[u8]) {
+pub(super) fn write(path: &Path, relative: &str, contents: &[u8]) {
     let file = path.join(relative);
     fs::create_dir_all(file.parent().unwrap()).unwrap();
     fs::write(file, contents).unwrap();
@@ -38,7 +38,7 @@ fn write(path: &Path, relative: &str, contents: &[u8]) {
 ///
 /// Every one of them is the **family's**, made before any lane exists, so a
 /// verbatim lane inherits the lot and owns none of it.
-fn workspace_like_the_register_measured(label: &str) -> (FamilyFixture, Vec<String>) {
+pub(super) fn workspace_like_the_register_measured(label: &str) -> (FamilyFixture, Vec<String>) {
     let fixture = clean_family_workspace(label);
     let root = fixture.root.clone();
     let app = root.join("app");
@@ -98,7 +98,7 @@ fn workspace_like_the_register_measured(label: &str) -> (FamilyFixture, Vec<Stri
 /// The `CACHEDIR.TAG` signature, first line exactly as the specification
 /// writes it. Phase 2's recogniser (S2.1) checks it; Phase 1 only needs the
 /// fixture to look like a real cache.
-const CACHEDIR_TAG: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55\n";
+pub(super) const CACHEDIR_TAG: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55\n";
 
 /// R0, R17, R19 (history half): the milestone. A whole verbatim lane of a
 /// workspace carrying stashes, reflog-only commits, ignored user data and

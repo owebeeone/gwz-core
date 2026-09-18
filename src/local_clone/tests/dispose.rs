@@ -31,6 +31,7 @@ use crate::workspace_ops::{handle_clone_local_workspace, handle_local_family, op
 
 mod integrity;
 mod phase1;
+mod phase2;
 
 fn clone_request(name: &str) -> crate::CloneLocalWorkspaceRequest {
     crate::CloneLocalWorkspaceRequest {
