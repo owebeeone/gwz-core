@@ -282,6 +282,24 @@ pub(super) fn read_ref(
     }
 }
 
+pub(super) fn ahead_behind(
+    _backend: &Git2Backend,
+    path: &Path,
+    local: &str,
+    upstream: &str,
+) -> ModelResult<crate::git::GitAheadBehind> {
+    let repo = open_repo(path)?;
+    let local = git2::Oid::from_str(local).map_err(git_error)?;
+    let upstream = git2::Oid::from_str(upstream).map_err(git_error)?;
+    let (ahead, behind) = repo
+        .graph_ahead_behind(local, upstream)
+        .map_err(git_error)?;
+    Ok(crate::git::GitAheadBehind {
+        ahead: ahead as u64,
+        behind: behind as u64,
+    })
+}
+
 pub(super) fn is_ancestor(
     _backend: &Git2Backend,
     path: &Path,

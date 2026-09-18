@@ -24,6 +24,15 @@ pub struct GitRemoteRef {
     pub target: String,
 }
 
+/// How far a local commit is ahead of and behind an upstream commit: the
+/// commits reachable from one and not the other. Both counts are zero when
+/// the two are the same commit.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct GitAheadBehind {
+    pub ahead: u64,
+    pub behind: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GitUpdateResult {
     pub updated: bool,

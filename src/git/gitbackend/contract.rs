@@ -892,6 +892,19 @@ pub trait GitRepository {
     fn push_anonymous(&self, path: &Path, url: &str, refspec: &str) -> ModelResult<GitPushResult>;
     fn read_ref(&self, path: &Path, ref_spec: &str) -> ModelResult<Option<String>>;
     fn is_ancestor(&self, path: &Path, ancestor: &str, descendant: &str) -> ModelResult<bool>;
+    /// Count how far `local` is ahead of and behind `upstream`: the commits
+    /// reachable from one and not the other, in that order. `is_ancestor`
+    /// answers the boolean; this answers `git status -sb`'s `+A -B`
+    /// (gwz-cli dev-docs/GwzFetchPlan.md D6). Both operands are hex object
+    /// ids. A default so no existing backend implementation changes.
+    fn ahead_behind(
+        &self,
+        _path: &Path,
+        _local: &str,
+        _upstream: &str,
+    ) -> ModelResult<GitAheadBehind> {
+        unsupported_backend("ahead_behind")
+    }
     /// Return the best merge base for two commits, when one exists.
     fn merge_base(&self, _path: &Path, _left: &str, _right: &str) -> ModelResult<Option<String>> {
         Err(ModelError::new(
