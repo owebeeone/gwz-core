@@ -10,7 +10,7 @@
 # GwzLocalClone-LCM1.0c-ReviewState.md P3-3).
 [package]
 name = "gwz-family-store"
-version = "0.0.5"
+version = "0.0.6"
 edition = "2024"
 rust-version = "1.95"
 license = "GPL-2.0-only"
@@ -28,8 +28,8 @@ include = ["/Cargo.toml", "/src/**", "/README.md"]
 path = "src/lib.rs"
 
 [dependencies]
-gwz-family-model = { path = "../family-model", version = "0.0.5" }
-gwz-family-store-contract = { path = "../family-store-contract", version = "0.0.5" }
+gwz-family-model = { path = "../family-model", version = "0.0.6" }
+gwz-family-store-contract = { path = "../family-store-contract", version = "0.0.6" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 
