@@ -362,8 +362,38 @@ Landed in gwz-core, one commit per step, each on a green
 | S1.5 | **done** | The record narrows the **work** question: disposal reads the lane's record back, corroborates each ignored or untracked entry against the surviving family's paired repository, and hands `gwz-work-detector` a `CopyBaseline` per repository through `TargetEvidence::copy`. A copied entry that is unchanged and still in the family, and a native stash the copy brought and the family still holds, are reported and no longer refuse. |
 | S1.6 | **done** | No record -- an older gwz's lane, or one copied outside gwz -- and dispose derives the same witness live: each ignored and untracked entry is compared with the family's own entry at that path, by link target, by bytes or (past 1 MiB) by size and mtime, recursively for a directory and within a bounded walk. Finding nothing unique needs no waiver. |
 | S1.7 | **done** | `gwz-local-disposal` owns `HazardCategory`, `categorise` and `required_waivers`; a refusal reports `regenerable`, `unchanged copy`, `changed copy` and `unique to the lane`, each with its count and its paths or object ids and each named even when empty, then prints the one `gwz local dispose <name> --force <hazards>` that waives exactly what refused. |
-| S1.8 | not started | |
+| S1.8 | **done** | `src/local_clone/tests/dispose/phase1.rs`: a workspace shaped like the one the register measured -- root and member, each with a native stash, a reflog-only commit, ignored user data, a tagged cache, a `__pycache__`, a compiled extension and a `bazel-out` link -- cloned verbatim. Its lane's work is merged back and the lane then disposes in **one command** (R0); a lane holding a unique commit, or unique ignored data, still refuses under `unique to the lane` (R0.1, R19); and a third test states exactly what Phase 1 leaves. |
 | Phases 2 to 4 | not started | |
+
+**What Phase 1 leaves, measured (2026-09-18).** On the S1.8 fixture, a
+merged verbatim lane that has been **built in** refuses over exactly one
+thing: the cache directory it rebuilt, reported as
+
+```text
+regenerable 0; unchanged copy 11: ...; changed copy 1: `mem_app` ignored
+user data (__pycache__/); unique to the lane 0; to delete anyway ...
+`gwz local dispose A --force dirty`
+```
+
+The history, the native stashes, the untouched ignored user data and the
+untouched caches are all cleared. The one remaining entry is cleared by
+**S2.3**, which wires S2.1's `__pycache__/` recogniser (and S2.2's untagged
+build directories) into the `regenerable` category this refusal already
+prints and leaves empty. A lane that was never built in needs no waiver at
+all today.
+
+**Known limitation: R1's fingerprint is one `stat` (2026-09-18).** In the
+same fixture the lane also rewrote `target/debug/build.bin`, two levels
+below the recorded directory entry `target/`, and one `stat` of `target/`
+does not see it, so that entry reads as an unchanged copy. R1 asks for
+exactly that cheap fingerprint (size, mtime, inode) and the register's
+caches are recorded as whole directories, so this is the common case and
+not an accident -- but it does mean a change deep inside a recorded
+directory can be cleared. The live comparison S1.6 makes for a lane with
+**no** record does not have this gap: it compares bytes, recursively,
+within a bounded walk. **S3.3** prices making the recorded path do the same
+for directory entries; until it does, this is the one place where the
+record is weaker than the comparison it replaces.
 
 **S1.4 adjustment.** As planned, S1.4 was to let the copy record narrow the
 history question through a `CopyWitness` on `TargetEvidence`. Building it

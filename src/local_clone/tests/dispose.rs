@@ -30,6 +30,7 @@ use crate::operation::NullSink;
 use crate::workspace_ops::{handle_clone_local_workspace, handle_local_family, open_merge_probe};
 
 mod integrity;
+mod phase1;
 
 fn clone_request(name: &str) -> crate::CloneLocalWorkspaceRequest {
     crate::CloneLocalWorkspaceRequest {
