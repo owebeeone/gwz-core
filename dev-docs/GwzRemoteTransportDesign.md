@@ -2,7 +2,12 @@
 
 Status: design draft, 2026-09-19; implements the accepted direction in
 [GwzRemoteTransportRequirements.md](GwzRemoteTransportRequirements.md).
-Revision: merged review remediation round 1 (2026-09-19); re-review pending.
+Review status: **accepted at gwz-core
+`05842b38e55f109ed3663555680751811a72eb9b` after the original Consistency and
+Safety reviewers both reported GO; this accepts the design draft for
+implementation planning only**. Reports are filed in the workspace root as
+`dev-docs/GwzRemoteTransportDesign-ReviewConsistency-2.md` and
+`dev-docs/GwzRemoteTransportDesign-ReviewSafety-2.md` (2026-09-19).
 No code, schema tags, library qualification or performance result is claimed by
 this document. Policy decisions are recorded there as D1–D15. This document
 makes the implementation concrete; library selection and tuning proposals are
