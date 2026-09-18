@@ -1,7 +1,7 @@
 # GWZ Remote Transport Implementation Plan
 
 Status: **plan draft accepted after G46 re-review GO, 2026-09-19.
-Planning only; execution has not started.**
+Implementation authorized; Phase 1 in progress.**
 The operator requested this plan before any repository creation or implementation.
 The accepted [design](GwzRemoteTransportDesign.md) and
 [requirements](GwzRemoteTransportRequirements.md) control behavior. Their
@@ -12,8 +12,10 @@ The [G46 re-review](GwzRemoteTransportPlanReview-G46-1.md) accepted plan SHA-256
 all four P2 and three P3 findings with no new findings. This accepts the plan's
 sequence and assignments only; it is a combined review, not a dual peer-blind
 gate. The [remediation record](GwzRemoteTransportPlan-RemPlan.md) maps the
-corrections. Subsequent edits here record acceptance and next action only;
-the reviewed implementation phases are unchanged.
+corrections. The operator subsequently authorized implementation and clarified that the
+CLI–core communication layer is supplied elsewhere. The scope clarification in
+design §4.1.1 supersedes the later custom-carrier proposal; no existing
+communication interface is changed by this programme.
 
 ## 1. Outcome and scope
 
@@ -26,7 +28,7 @@ semantics. Fetch Phase 3 is the first performance consumer, not the whole scope.
 The first implementation task is to establish **the `gwz-transport` repository,
 schema ownership and a working taut integration contract**. Creating an empty
 repository alone does not complete that task. A minimal consumer must demonstrate
-the shared generated types and bidirectional carrier path before production
+the shared generated types and bidirectional message handoff before production
 transport work depends on them.
 
 This plan adds no iroh transport, daemon, distributed endpoint management,
@@ -40,7 +42,7 @@ It preserves the design's ordinary endpoint trust, gh-only authenticated HTTPS,
 |---|---|
 | New `gwz-transport` repository | Canonical taut transport schema, generated Rust types, reliable conversation runtime, generic pool mechanics and SSH/HTTPS adapters |
 | `gwz-core` | Thin Git adapter, mux integration, operation context, placement validation, GWZ options/capabilities/observations and GWZ-specific generated protocol |
-| `gwz-cli` | Install and host its endpoint, connect the carrier, supply endpoint policy and expose configuration/diagnostics |
+| `gwz-cli` | Install and host its endpoint, use the supplied communication interface, supply endpoint policy and expose configuration/diagnostics |
 | `taut` / `taut-shape` implementations | Any necessary schema-composition or reliable delivery integration support; changes only where the initial proof establishes a missing capability |
 
 Start with one transport repository. Within it, separate generic conversation
@@ -65,25 +67,34 @@ the exported schema. Core generates its own integration against the shared
 types. Pin schema/package and generator versions, with regeneration drift checks.
 The exact cross-package generator mechanism must be established in Phase 1.
 
-For serialized delivery, qualify the dedicated binary conversation adapter in
-design §4.1.1 (implementation amendment pending review). Inspection found no
-existing binary GWZ carrier; taut's JSON/base64 reference client cannot satisfy
-this design unchanged. The adapter uses bounded length framing around the
-taut-generated transport Envelope, which alone owns session/stream/version
-metadata. General GWZ service multiplexing is outside that Phase 1 freeze;
-any later shared-connection lane mapping requires a bounded taut-defined host
-envelope and its own review. Do not place data in the one-way operation-event
-subscription or assume the existing lossy taut `stream` shape is suitable.
-In-process delivery passes the same generated values with equivalent bounds,
-ordering and lifecycle rules, without requiring serialization.
+The CLI–core communication layer is supplied elsewhere and its current message
+interface remains unchanged. Transport messages use that interface; this project
+owns their taut schema and behavior, not physical framing or carrier setup.
+Prefer optional fields on existing taut requests/responses for generated
+transport messages, with existing request ids for correlation and transport
+stream ids only for the individual exchanges. Select exact fields/tags during
+integration; preserve existing tags and service methods. No new CLI command or
+core service surface is required. The package consumes asynchronous send/receive
+with backpressure and closure notifications; the supplied message delivery must
+progress during an active Git operation rather than wait for its final result.
+Consume the supplied layer's bidirectional delivery, backpressure and closure
+notifications. In-process delivery passes the same generated values. Codec
+round-trip tests cover serialized payloads without inventing a transport header.
+Do not reuse the one-way operation-event subscription as a substitute for the
+supplied bidirectional message channel.
 
 ## 3. Delivery sequence
 
-Every phase below is **not started**. Write meaningful failing tests before
+Phase 1 is **in progress**. The operator prioritized the Phase 2 message-stream
+runtime with in-memory and seeded Monte Carlo tests before integration; that
+subset is implemented pending review in
+[the memory checkpoint](GwzRemoteTransportMemoryImplementation.md). Pooling and
+Phases 3–6 are **not started**. This does not declare either interface frozen.
+Write meaningful failing tests before
 implementation; use deterministic fakes before network fixtures. A phase ends
 with the named evidence and review, not simply with code present.
 
-### Phase 1 — Repository, exported schema and carrier integration contract
+### Phase 1 — Repository, exported schema and message integration contract
 
 1. Establish the repository location, package name, license compatibility,
    supported Rust/tool versions and dependency/release strategy. Add the new
@@ -98,10 +109,11 @@ with the named evidence and review, not simply with code present.
    consumer. If taut needs an extension, implement and qualify that dependency
    before layering the transport integration on top; do not hand-copy message
    definitions into core to work around it.
-4. Specify and exercise the carrier mapping for Bind/Bound/BindRejected and
-   stream Open/Data/control/terminal messages. Prove both directions can run
-   while a core operation is active, including across two real processes.
-   Use a fake endpoint: no SSH, credentials or Git-host side effects are needed.
+4. Exercise Bind/Bound/BindRejected and stream Open/Data/control/terminal
+   messages through the supplied message interface. Use a fake endpoint and
+   message-channel test doubles; no SSH, credentials or Git-host effects are
+   needed. A real-process integration case may use an externally supplied
+   communication layer, but does not require or authorize creating that layer.
 5. Assign stable schema tags and define version negotiation, structured
    destinations, errors, identity fields, byte payloads and bounded ingress.
    Include both SSH and HTTPS scheme/auth/service descriptors in the Phase 1
@@ -122,10 +134,10 @@ The freeze objects and remaining discretion are explicit:
 
 | Freeze object | Gate | What may still change without changing the frozen contract |
 |---|---|---|
-| Taut schema/tags and complete Bind/Bound/Open/data/control/terminal inventory; generated consumer types; outer framing/routing map; hard ingress caps and negotiation rules | Phase 1 interface gate | Negotiated/session/stream limits may only narrow; no changed type, tag, meaning or raised hard cap. Any revision of a frozen hard cap requires a requirements/design amendment and re-review. |
+| Taut schema/tags and complete Bind/Bound/Open/data/control/terminal inventory; generated consumer types; message handoff to the supplied communication interface; hard ingress caps and negotiation rules | Phase 1 interface gate | Negotiated/session/stream limits may only narrow; no changed type, tag, meaning or raised hard cap. Any revision of a frozen hard cap requires a requirements/design amendment and re-review. |
 | Pool/runtime traits and ownership API | Phase 2 interface gate, before dependent adapter integration | Construction policy within the frozen contract and applicable caps; no changed ownership or lifecycle semantics |
 | SSH/HTTPS adapter APIs | Phase 3 / Phase 5 respective integration gates | Qualified implementation choices that preserve accepted behavior |
-| GWZ placement options/capabilities and their driver-facing configuration/help | Phase 4 interface and Surface gate | Configuration values within the accepted surface; local remains the omission default |
+| Optional transport-message fields, request correlation, and additive placement/capability metadata on existing GWZ messages | Phase 4 compatibility/interface gate; Surface review of any changed public fields/options | Existing methods remain unchanged; omitted fields preserve local behavior |
 
 Pool/runtime traits, adapter APIs and GWZ placement fields are excluded from
 the Phase 1 freeze. Its fake endpoint proves the message contract without
@@ -133,15 +145,17 @@ claiming those later APIs are settled.
 
 **Exit evidence:** exported package builds independently; the core consumer uses
 the shared types; regeneration is reproducible; golden/round-trip fixtures cover
-binary data and unknown fields; local and serialized binding/data/terminal
-exchanges pass; oversized bootstrap/frame declarations refuse before body
-allocation; unsupported versions produce no endpoint effects. Record the exact
-outer framing and routing mapping, including any necessary carrier extension.
+binary data and unknown fields; local binding/data/terminal exchanges and
+serialized payload round trips pass; payload admission and decoding stay bounded;
+unsupported versions produce no endpoint effects. Record assumptions on the
+supplied layer's pre-allocation bounds, delivery and closure notifications.
+Testing or altering that layer's physical framing is outside this package.
 
 **Gate:** freeze exactly the Phase 1 objects in the table after these proofs
 and interface review. This phase supplies the first runnable protocol skeleton,
-not an advertised network transport. If the proposed carrier cannot supply the
-required behavior, revise and review that design boundary before continuing.
+not an advertised network transport. If the supplied layer cannot meet the
+message contract, report the missing integration capability; do not implement
+or change the communication layer as a workaround.
 
 ### Phase 2 — Reliable conversation runtime and deterministic pool
 
@@ -239,13 +253,16 @@ unadvertised until their own gates pass.
 
 ### Phase 4 — CLI endpoint placement over the message channel
 
-Install the CLI-hosted endpoint and connect core's mux to the Phase 1 carrier.
+Install the CLI-hosted endpoint and connect core's mux through the externally
+supplied communication layer without changing its existing interface.
 Keep both directions pumping during Git operations. Apply session binding,
 endpoint-local path resolution and authority ownership; core must not look up
 the remote endpoint's keys or open its Git-host connection.
 
-Add the typed placement option and capability negotiation to GWZ's protocol and
-driver integration. Preserve tags and existing ordinary local requests. Explicit
+Integrate transport messages through optional fields on existing taut messages,
+using existing request ids. Carry typed placement and capability metadata
+additively through existing request/options and capability responses; do not add
+a transport RPC service or CLI command. Preserve tags and ordinary local requests. Explicit
 placement on an old core, missing driver endpoint or unsupported scheme refuses
 before socket/helper effects. Carry per-operation observations through success,
 events and early errors without copying an earlier operation's observation row.
@@ -253,13 +270,14 @@ On reuse, `credential_offered` is false for this attempt; proven authentication
 facts come from the connection record with explicit reuse context. Preserve
 nullable `authenticated` when proof is unavailable and private-member suppression.
 
-Freeze the placement option and capability fields at the Phase 4 interface
-gate, with Surface review of name, default = local, explicit unsupported/unavailable
-errors, configuration and help. Omission selects local deliberately; an explicit
+Freeze the optional message attachments, correlation mapping, placement and
+capability fields at the Phase 4 interface gate. Surface review applies to changed
+public fields/options: names, default = local, explicit unsupported/unavailable
+errors and relevant existing documentation. No new CLI surface is a deliverable.
+Omission selects local deliberately; an explicit
 driver request never becomes omission on failure. Driver runtime construction
-installs the binding and process exit/runtime teardown drops it. No separate
-host command is planned; if one is introduced, its matching teardown must be
-designed and reviewed before exposure. Phase 6 validates this accepted surface
+installs the binding and process exit/runtime teardown drops it. A separate host
+command or core service is outside this plan. Phase 6 validates this accepted surface
 and completes release documentation; it does not defer this surface gate.
 
 **Exit evidence:** the SSH lifecycle/Git fixtures pass with separate CLI and core
@@ -357,8 +375,8 @@ fetch does not complete the programme.
 
 ## 6. Immediate next action
 
-G46 has accepted the corrected plan. Await the operator's execution request;
-then
-start Phase 1 with repository/package setup and the minimal schema/carrier proof.
-No transport repository, dependency, schema generation, code or experiment has
-been created as part of writing this plan.
+The operator authorized implementation. Continue Phase 1's shared schema/types,
+payload validation and message-level proof against the supplied interface.
+The local gwz-transport member and initial protocol work exist. The separately
+proposed framing adapter has been withdrawn under the operator's clarification;
+no production CLI–core communication API has changed.

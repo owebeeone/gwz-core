@@ -259,36 +259,45 @@ only if the adapter establishes readers before data, prevents overflow with
 flow control and treats any loss as terminal; conformance must prove this.
 No log persistence, replay or stream resumption is required.
 
-### 4.1.1 Phase 1 carrier mapping amendment — pending review
+### 4.1.1 Communication layer ownership — operator clarification
 
-Implementation inspection found no existing serialized binary CLI–core carrier:
-the current drivers embed core and their operation events are one-way. Taut's
-reference WebSocket client uses JSON/base64; it cannot carry this programme's
-binary payloads unchanged. Phase 1 therefore qualifies an explicit binary
-adapter on a dedicated reliable, ordered, full-duplex transport conversation
-channel. This does not claim an existing application envelope already provides
-the needed delivery contract.
+The CLI–core communication layer is supplied elsewhere. This programme consumes
+its existing message interface and must not introduce new service methods or
+transport-specific physical framing, a length prefix, a dedicated connection,
+or a replacement carrier. Taut-defined transport messages are application
+payloads; the host owns their delivery and reports channel closure/failure.
 
-On a byte-oriented channel, each record is a four-byte unsigned big-endian
-length followed by one taut CBOR transport Envelope. The length excludes its
-own header. Envelope owns version, session id, stream id and message kind;
-there is no second identity/version header. Bind/Bound/BindRejected use stream
-zero; active exchanges use positive stream ids. Before binding, frame admission
-uses the fixed bootstrap cap. After binding, it uses the negotiated receive cap
-bounded by §4.2. Oversized declarations terminate the channel before reading or
-allocating the body. EOF/truncation is carrier loss, never a graceful stream EOF.
+`gwz-transport` emulates a network stream using discrete messages. The GWZ
+integration can carry those generated messages in new optional fields of
+existing taut requests/responses, preserving current methods and field tags.
+Use the existing request ids to correlate delivery with the originating request;
+transport stream ids distinguish exchanges within that request/session, rather
+than defining another RPC surface. Exact attachment fields and tags are selected
+when the integration schema is authored. There is no requirement for a new CLI
+command, core service, or standalone transport envelope on the host connection.
 
-The logical channel carries only transport conversations. If Phase 4 shares a
-physical connection with other GWZ services, that host carrier must demultiplex
-a dedicated transport lane before this adapter; any additional application
-envelope is taut-defined, bounded and separately reviewed. Phase 1 does not
-freeze an invented general-purpose GWZ service multiplexer. Local delivery uses
-the same admitted generated Envelope values. The two-process proof uses pipes
-and a fake endpoint, not a production daemon or a new user-facing command.
+The message-facing contract is asynchronous send/receive, including backpressure
+and closure/failure. Optional-field delivery must make progress while a Git
+operation is running; it cannot wait for the final operation response. That
+delivery mechanism is supplied by the host communication layer. The transport
+package interprets data/control messages and presents stream semantics without
+knowing whether the host uses an in-process call, queue or serialized connection.
+
+The transport runtime requires ordered reliable bidirectional message delivery,
+bounded admission/backpressure and notification of closure. Test those
+assumptions using supplied message-channel adapters or in-process fakes.
+Serialized codec tests qualify the transport payload only. A real-process
+integration test uses the communication layer when it is supplied; absence of
+that layer does not authorize building one in this programme.
+
+This operator ruling supersedes the four-byte carrier proposal committed at
+`914a4406998856abce0d980372b41635f7c52940`. That proposal's architectural
+review does not authorize implementation contrary to the clarified scope.
 
 ### 4.2 Bounds before decoding
 
-Every serialized carrier must reject an oversized frame before allocating or
+At the supplied communication-layer boundary, the host must reject an oversized
+frame before allocating or
 reading its declared body. Length-delimited carriers check the bounded length
 header first; message-oriented carriers configure an equivalent receive cap in
 the underlying transport. Never receive an unbounded websocket/message and only

@@ -19,6 +19,13 @@ network traffic, ordinary local authentication and trust checks, and pooled
 connections. The same API can later be carried over another connection, such
 as iroh, without designing peer networking now.
 
+Operator clarification: the transport package emulates a network stream with
+discrete taut messages and asynchronous send/receive. The host communication
+layer is supplied elsewhere. GWZ may carry generated transport messages in new
+optional fields on existing requests/responses using existing request ids;
+this programme does not require new CLI commands, core service methods or
+physical message framing. Existing field tags and method behavior stay stable.
+
 Connection reuse removes repeated SSH setup across repositories, phases and
 operations. Placement chooses where that work runs. Fetch Phase 3 is an early
 measurement consumer, not the boundary of this programme.
