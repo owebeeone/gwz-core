@@ -63,3 +63,4 @@ Docs:
 - `gwz --help`
 - Quick Start: https://owebeeone.github.io/gwz-cli/QuickStart/
 - Full documentation: https://owebeeone.github.io/gwz-cli/
+- Claude Code worktree hooks (whole-workspace lanes, gwz 1.0.14 or later): https://owebeeone.github.io/gwz-cli/ClaudeCode/
