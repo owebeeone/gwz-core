@@ -41,7 +41,7 @@ _LOCAL_CLONE_LIBRARIES = [
 # to the @crates hub, as it is only visible to cargo when building from the outer workspace).
 rust_library(
     name = "gwz_core",
-    version = "1.0.16",
+    version = "1.0.17",
     rustc_env_files = ["build.env"],
     stamp = 1,
     srcs = glob(["src/**/*.rs"]),

@@ -16,7 +16,7 @@
 # under `[dev-dependencies]`.
 [package]
 name = "gwz-local-testrepo"
-version = "0.0.7"
+version = "0.0.8"
 edition = "2024"
 rust-version = "1.95"
 license = "GPL-2.0-only"
@@ -35,7 +35,7 @@ path = "src/lib.rs"
 contract-tests = ["gwz-repo-contract/contract-tests"]
 
 [dependencies]
-gwz-repo-contract = { path = "../repo-contract", version = "0.0.7" }
+gwz-repo-contract = { path = "../repo-contract", version = "0.0.8" }
 # `unstable-sha256` is what makes a SHA-256 fixture repository constructible
 # (`ObjectFormat::Sha256`); `default-features = false` keeps the https/ssh
 # transports out of a fixture build, exactly as `gwz-repo-inspect` declares it.
