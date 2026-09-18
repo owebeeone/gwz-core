@@ -126,12 +126,12 @@ fn an_owner_token_is_recorded_once_and_reported_by_the_listing() {
 }
 
 /// R20: the refusal an older gwz gives for a format-2 index must name the
-/// minimum gwz version that reads it, and that version must be one that
-/// exists: the first release that read format 2 (1.0.14), never a version
-/// later than the build that carries the reader. The constant is a literal
-/// because the release bump comes after the work, so this is the guard: a
-/// build *older* than `INDEX_MIN_GWZ_VERSION` would be promising operators
-/// a reader it does not have. Later builds keep the same minimum.
+/// minimum gwz version that reads it, and that version must be one that has
+/// actually shipped. `INDEX_MIN_GWZ_VERSION` is the release the v2 index
+/// first appeared in (1.0.14) and stays there for ever, because every later
+/// gwz reads a v2 index too. The guard is therefore the other way round: it
+/// must never be *ahead* of the build, which would promise operators a gwz
+/// that does not exist yet.
 #[test]
 fn the_minimum_gwz_version_for_the_index_is_not_ahead_of_this_build() {
     fn triple(version: &str) -> (u64, u64, u64) {
@@ -148,7 +148,7 @@ fn the_minimum_gwz_version_for_the_index_is_not_ahead_of_this_build() {
     let building = triple(env!("CARGO_PKG_VERSION"));
     assert!(
         minimum <= building,
-        "INDEX_MIN_GWZ_VERSION {:?} is ahead of gwz-core {:?}: it must name a released reader",
+        "INDEX_MIN_GWZ_VERSION {:?} is ahead of gwz-core {:?}: it must name a gwz that ships",
         gwz_family_model::INDEX_MIN_GWZ_VERSION,
         env!("CARGO_PKG_VERSION"),
     );

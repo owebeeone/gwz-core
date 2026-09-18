@@ -56,6 +56,7 @@ mod layout;
 mod objects;
 mod oid;
 mod paths;
+pub mod regenerable;
 mod work;
 
 #[cfg(test)]

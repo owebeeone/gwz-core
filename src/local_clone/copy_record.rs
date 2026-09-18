@@ -775,8 +775,6 @@ mod tests {
             size: fingerprint.size + 1,
             ..fingerprint
         }));
-        // Only where the platform reports one: a zero inode (Windows) is
-        // not consulted, so disagreeing with it is no evidence either.
         if fingerprint.inode != 0 {
             assert!(
                 !fingerprint.unchanged_since(&Fingerprint {
