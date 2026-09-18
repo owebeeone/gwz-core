@@ -87,7 +87,7 @@ supplied bidirectional message channel.
 
 Phase 1 is **in progress**. The operator prioritized the Phase 2 message-stream
 runtime with in-memory and seeded Monte Carlo tests before integration; that
-subset is implemented pending review in
+subset is accepted after Code/State GO in
 [the memory checkpoint](GwzRemoteTransportMemoryImplementation.md). Pooling and
 Phases 3–6 are **not started**. This does not declare either interface frozen.
 Write meaningful failing tests before

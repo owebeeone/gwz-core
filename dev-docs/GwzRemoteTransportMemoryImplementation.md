@@ -1,6 +1,11 @@
 # Remote transport: in-memory stream checkpoint
 
-Status: **implementation checkpoint awaiting review, 2026-09-19; no interface freeze**.
+Status: **accepted at gwz-transport `aa9ecae65d6c0d568c5f4d738f9930d49f684f56`
+after [Code](../../dev-docs/GwzRemoteTransportMemory-ReviewCode-1.md) and
+[State](../../dev-docs/GwzRemoteTransportMemory-ReviewState-1.md) reported GO,
+2026-09-19; this accepts the in-memory stream implementation only, with no
+interface freeze**. The [acceptance record](../../dev-docs/GwzRemoteTransportMemory-Checkpoint.md)
+pins the complete reviewed tuple, validation and remaining scope.
 
 ## Scope and authority
 
