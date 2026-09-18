@@ -460,3 +460,56 @@ fn a_dry_run_with_a_refused_member_aggregates_like_the_live_run() {
         "a dry run must not fail harder than the live run it rehearses"
     );
 }
+
+/// `--remote <name>` naming a remote no selected repository has is refused
+/// before the network, on the live path and the dry run alike, so the two
+/// aggregate and exit identically. With every row refused that is `Rejected`,
+/// the plan's "refused before any remote was contacted".
+#[test]
+fn a_named_remote_no_repository_has_is_refused_before_the_network_on_both_paths() {
+    let temp = TempDir::new("fetch-named-remote");
+    let backend = Git2Backend::without_credential_helpers();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+
+    let fixture = RemoteFixture::new("fetch-named-remote-source");
+    fixture.commit_and_push("README.md", "one", "initial", &backend);
+    add_member_from_remote(&backend, temp.path(), &fixture, "app");
+
+    let request = |dry_run: Option<bool>| crate::FetchRequest {
+        meta: crate::RequestMeta {
+            dry_run,
+            policy: Some(crate::OperationPolicy {
+                remote: Some("nope".to_owned()),
+                ..Default::default()
+            }),
+            ..request_meta_with_workspace()
+        },
+    };
+    let live = handle_fetch(&backend, temp.path(), request(None), "op_fetch_live").unwrap();
+    let dry = handle_fetch(&backend, temp.path(), request(Some(true)), "op_fetch_dry").unwrap();
+
+    for (label, response) in [("live", &live), ("dry", &dry)] {
+        assert_eq!(
+            summary(response, "mem_app").result,
+            crate::FetchResult::Failed,
+            "{label}: a remote the repository lacks is not a row it would contact"
+        );
+        let row = response
+            .response
+            .members
+            .iter()
+            .find(|row| row.member_id == "mem_app")
+            .unwrap();
+        assert_eq!(row.status, crate::MemberStatus::Rejected, "{label}");
+        assert_eq!(
+            row.error.as_ref().map(|error| error.code),
+            Some(crate::GwzErrorCode::MissingRemote),
+            "{label}"
+        );
+        assert_eq!(
+            response.response.meta.aggregate_status,
+            crate::AggregateStatus::Rejected,
+            "{label}: every selected row was refused before the network"
+        );
+    }
+}

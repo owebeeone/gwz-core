@@ -191,6 +191,7 @@ impl FetchTarget {
             return Ok(target);
         }
         target.remote = root_fetch_remote_name(backend, root, policy)?;
+        target.refusal = named_remote_refusal(backend, root, policy)?;
         if let Some(remote) = &target.remote {
             target.host = backend.remotes(root)?.iter().find_map(|candidate| {
                 if &candidate.name == remote {
@@ -260,6 +261,13 @@ impl FetchTarget {
         }
         target.remote = pull_fetch_remote_name(member, policy);
         target.host = pull_remote_host(member, policy);
+        match named_remote_refusal(backend, &target.path, policy) {
+            Ok(refusal) => target.refusal = refusal,
+            Err(error) => {
+                target.refusal = Some(error);
+                return target;
+            }
+        }
         // The branch whose tracking ref moves is the one that is checked out,
         // read locally here so a worker's only failure mode is the network.
         match backend.head(&target.path) {
@@ -492,6 +500,34 @@ pub(crate) fn fetch_aggregate_status(rows: &[FetchRow]) -> crate::AggregateStatu
 
 /// The root's fetch remote: the policy `--remote` token, else `origin`, else
 /// whatever remote the root has first. Identical to pull's rule.
+/// A `--remote <name>` the repository does not have is refused while
+/// resolving, before any network, on the live path and the dry run alike:
+/// the answer is local, so a dry run that promised to contact the name would
+/// be rehearsing a fetch the live run cannot make.
+fn named_remote_refusal<B>(
+    backend: &B,
+    path: &Path,
+    policy: Option<&crate::OperationPolicy>,
+) -> ModelResult<Option<ModelError>>
+where
+    B: GitBackend,
+{
+    let Some(name) = policy.and_then(|policy| policy.remote.as_deref()) else {
+        return Ok(None);
+    };
+    if backend
+        .remotes(path)?
+        .iter()
+        .any(|remote| remote.name == name)
+    {
+        return Ok(None);
+    }
+    Ok(Some(ModelError::new(
+        ErrorCode::MissingRemote,
+        format!("missing remote '{name}'"),
+    )))
+}
+
 fn root_fetch_remote_name<B>(
     backend: &B,
     root: &Path,
