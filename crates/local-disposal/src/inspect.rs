@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use gwz_repo_contract::{Observation, UnknownKind, UnknownReason};
-use gwz_work_detector::{WorkVerdict, classify_observed_work};
+use gwz_work_detector::{CopyBaseline, WorkVerdict, classify_observed_work_against};
 
 use crate::*;
 
@@ -49,7 +49,17 @@ pub(crate) fn inspect(
             }
         }
 
-        let report = classify_observed_work(&repository.work, &repository.gwz);
+        // R2, R8: what the copy brought, unchanged and still in the
+        // family, is classified with the provenance the observer
+        // established, so it is reported and does not refuse. No baseline
+        // means every hazard is the lane's own.
+        let empty = CopyBaseline::default();
+        let baseline = evidence
+            .copy
+            .as_ref()
+            .and_then(|copy| copy.baseline(&repository.key))
+            .unwrap_or(&empty);
+        let report = classify_observed_work_against(&repository.work, &repository.gwz, baseline);
         if report.verdict == WorkVerdict::Unknown && report.unknown.is_empty() {
             unknown.push(UnknownReason::new(
                 UnknownKind::Unimplemented,
@@ -109,7 +119,12 @@ pub(crate) fn inspect(
         .into_iter()
         .filter(|finding| !waivers.contains(&finding.waiver))
         .collect();
-    if !unwaived.is_empty() {
+    // A finding whose every hazard is data the family still holds is
+    // reported but refuses nothing (R2): it reaches the caller only
+    // alongside a finding that *does* refuse, so the refusal can name
+    // every category it found (R9). Nothing is hidden and nothing is
+    // dropped: a disposal that refuses lists the lot.
+    if unwaived.iter().any(HazardFinding::refuses) {
         return Err(DisposeError::Hazards(unwaived));
     }
     Ok(())

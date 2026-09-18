@@ -19,10 +19,11 @@
 //! | `InstallPorts::recapture_configuration`, `publish_manifest` | [`install::CoreInstallPorts`] | `crate::artifact` (`read_lock`, `write_manifest`, the conf-integrity marker) |
 //! | `TreeCopier` | `gwz-refcopy::SystemTreeCopier` with [`exclusions`] | -- |
 //! | `FamilySession` | `gwz-family-store::YamlFamilyStore` | -- |
-//! | `DisposalPorts::observe_target` | [`disposal::CoreDisposalPorts`] | the store's metadata reading, [`inventory`], `gwz-repo-inspect` |
+//! | `DisposalPorts::observe_target` | [`disposal::CoreDisposalPorts`] | the store's metadata reading, [`inventory`], `gwz-repo-inspect`, and [`copy_witness`] for what the lane merely copied |
 //! | `DisposalPorts::check_history` | [`disposal::CoreDisposalPorts`] | `gwz-history-check`, one call per witness store |
 //! | `DisposalPorts::remove_directory` | [`removal`] | an ordinary recursive remover that never follows a symlink |
 
+pub mod copy_witness;
 pub mod disposal;
 pub mod exclusions;
 mod generated_marker;

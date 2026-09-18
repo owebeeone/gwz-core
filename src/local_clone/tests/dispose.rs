@@ -1357,8 +1357,8 @@ fn an_unregistered_bare_repository_refuses_before_family_allocation() {
 /// R4 (plan S1.3/S1.4): a lane that only copied the family's own reflog
 /// entries and stash entries needs no `unpreserved-history` waiver.
 ///
-/// This is 52 of the 112 hazard entries every lane of the gwz-dev workspace
-/// reported (gwz-dev `dev-docs/GwzLaneIssues.md`, L1). The family makes an
+/// This is 52 of the 112 hazard entries, plus the stash's own `dirty`
+/// entry, that every lane of the gwz-dev workspace reported (gwz-dev `dev-docs/GwzLaneIssues.md`, L1). The family makes an
 /// abandoned commit and a native stash **before** any lane exists; the
 /// verbatim copy inherits both; deleting the copy leaves the family's own
 /// entries exactly where they were, so it is not a loss. The control is
@@ -1397,21 +1397,15 @@ fn a_lane_that_copied_the_familys_reflog_and_stash_needs_no_history_waiver() {
         assert!(copied.contains(oid), "{oid} was copied: {copied:?}");
     }
 
-    // The copied stash entry is still `dirty` -- that is the work side, and
-    // it is S1.5's -- but the history is not a loss any more.
-    let error = refuse(&fixture.root, delete_request("A", &[]));
-    assert_eq!(error.code, ErrorCode::UnwaivedHazard);
-    assert!(
-        !error.message.contains("<unpreserved-history>"),
-        "the family still holds every copied root: {}",
-        error.message
-    );
-    assert!(error.message.contains("<dirty>"), "{}", error.message);
-    assert!(a.is_dir(), "nothing was removed: {}", error.message);
-
-    // Naming the dirt alone now deletes: no history waiver is needed.
-    let response = local(&fixture.root, delete_request("A", &["dirty"]));
+    // Neither half is a loss any more: the history is the family's under
+    // the identical-copy policy (S1.3, S1.4) and the copied stash entry is
+    // the family's under the copy record (S1.5), so no waiver is needed.
+    let response = local(&fixture.root, delete_request("A", &[]));
     let message = response.response.meta.message.expect("a message");
+    assert!(
+        !message.contains("forced past"),
+        "no waiver was needed: {message}"
+    );
     assert!(message.contains("deleted local clone `A`"), "{message}");
     assert!(!a.exists(), "the lane is gone");
     assert_eq!(listed_names(&fixture.root), ["root"]);
@@ -1425,5 +1419,93 @@ fn a_lane_that_copied_the_familys_reflog_and_stash_needs_no_history_waiver() {
                 .is_ok(),
             "{oid} survives in the family"
         );
+    }
+}
+
+/// R2, R8 (plan S1.5): the lane's ignored and untracked data is the
+/// family's own, copied. Unchanged since the copy and still in the family,
+/// it is not the lane's to lose, so an integrated verbatim lane disposes in
+/// one command (R0).
+#[test]
+fn a_lane_that_copied_ignored_and_untracked_data_needs_no_dirty_waiver() {
+    let fixture = clean_family_workspace("dispose-copied-data");
+    fixture
+        .workspace
+        .root()
+        .work_ignored("build-cache/output.bin", b"cached\n");
+    fixture
+        .workspace
+        .root()
+        .work_untracked("scratch.txt", b"a\n");
+    fixture
+        .workspace
+        .member("app")
+        .work_ignored("coverage.out", b"lines\n");
+
+    clone(&fixture.root, "A");
+    let a = fixture.sibling("A");
+    assert!(
+        a.join("scratch.txt").is_file(),
+        "the copy really brought it"
+    );
+    assert!(a.join("app/coverage.out").is_file());
+
+    let response = local(&fixture.root, delete_request("A", &[]));
+    let message = response.response.meta.message.expect("a message");
+    assert!(message.contains("deleted local clone `A`"), "{message}");
+    assert!(
+        !message.contains("forced past"),
+        "no waiver was needed: {message}"
+    );
+    assert!(!a.exists(), "the lane is gone");
+    // The family kept every file the lane was cleared over.
+    assert!(fixture.root.join("scratch.txt").is_file());
+    assert!(fixture.root.join("build-cache/output.bin").is_file());
+    assert!(fixture.root.join("app/coverage.out").is_file());
+}
+
+/// R8, R0.1: the two halves of R2 are a conjunction. Data the lane changed
+/// since the copy, and data the lane made that the copy never brought, both
+/// still refuse; nothing is removed.
+#[test]
+fn a_lane_that_changed_or_added_ignored_data_still_refuses() {
+    for (label, change) in [
+        (
+            "changed since the copy",
+            &(|lane: &Path| {
+                fs::write(lane.join("scratch.txt"), b"the lane rewrote this\n").unwrap();
+            }) as &dyn Fn(&Path),
+        ),
+        (
+            "made by the lane",
+            &(|lane: &Path| {
+                fs::write(lane.join("lane-only.txt"), b"only here\n").unwrap();
+            }) as &dyn Fn(&Path),
+        ),
+    ] {
+        let fixture = clean_family_workspace("dispose-changed-data");
+        fixture
+            .workspace
+            .root()
+            .work_untracked("scratch.txt", b"a\n");
+        clone(&fixture.root, "A");
+        let a = fixture.sibling("A");
+        change(&a);
+        let before = tree_bytes(&a);
+
+        let error = refuse(&fixture.root, delete_request("A", &[]));
+        assert_refused_without_effect(
+            &fixture,
+            &a,
+            &before,
+            &error,
+            ErrorCode::UnwaivedHazard,
+            &["dirty"],
+        );
+        assert!(a.is_dir(), "{label}: nothing was removed");
+
+        // The operator's waiver still deletes it, spelled as it always was.
+        local(&fixture.root, delete_request("A", &["dirty"]));
+        assert!(!a.exists(), "{label}");
     }
 }

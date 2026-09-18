@@ -359,7 +359,8 @@ Landed in gwz-core, one commit per step, each on a green
 | S1.2 | **done** | `InstallPorts::record_copy`, `InstallStep::RecordCopy`, `InstallEffect::CopyRecorded`, called between `install_destination_git` and `install_pointer`; core's adapter inventories the **destination**, strips GWZ's own structural paths with disposal's own function, and writes the record. |
 | S1.3 | **done** | `gwz-history-check`: `WitnessPolicy`, `is_eligible_witness_root_under` and `check_history_under`. `check_history` and `is_eligible_witness_root` are unchanged and are the `Durable` policy. |
 | S1.4 | **history half done** | Disposal checks a **verbatim** lane's history under `WitnessPolicy::IdenticalCopy`, so a lane that only copied the family's reflog and stash entries needs no `unpreserved-history` waiver. See the adjustment below. |
-| S1.5 to S1.8 | not started | |
+| S1.5 | **done** | The record narrows the **work** question: disposal reads the lane's record back, corroborates each ignored or untracked entry against the surviving family's paired repository, and hands `gwz-work-detector` a `CopyBaseline` per repository through `TargetEvidence::copy`. A copied entry that is unchanged and still in the family, and a native stash the copy brought and the family still holds, are reported and no longer refuse. |
+| S1.6 to S1.8 | not started | |
 | Phases 2 to 4 | not started | |
 
 **S1.4 adjustment.** As planned, S1.4 was to let the copy record narrow the
@@ -371,6 +372,35 @@ root no witness holds at all is still unpreserved under either policy
 (R0.1). The record's narrowing is therefore **R2's** business, not R4's, and
 `CopyWitness` moves into S1.5 with the rest of R2. Nothing in the
 requirement map changes: R4 is S1.3 plus this wiring, R2 is S1.5.
+
+**S1.5 adjustments (2026-09-18).** Five, each recorded where the built
+shape is not the step text's:
+
+1. **The provenance is on `Hazard`, not on `HazardKind`.** The step text
+   says the kind gains it. `HazardKind::force_name` must stay a function of
+   the kind *alone* -- that is exactly what "changes what refuses, never how
+   it is spelled on the wire" means -- and a kind carrying provenance would
+   have made every existing `HazardKind::Work(kind)` comparison
+   provenance-sensitive for no gain. The field sits beside `kind` on
+   `Hazard`, and `force_name` is untouched.
+2. **`CopyWitness` carries the classified baseline, not the record's raw
+   protected roots.** The S1.4 adjustment above already found that the
+   roots' own question is answered better by `WitnessPolicy::IdenticalCopy`
+   than by any record. What survives of the roots in S1.5 is the one work
+   hazard they cause: the native stash, cleared only when the copy brought
+   every stash entry **and** the family still holds every one of them.
+3. **Corroboration is against the family root's paired repository**, the
+   one S1.6's own text names, not against every surviving lane. A lane is
+   not evidence that another lane's data is safe, and polling every lane
+   would make the comparison cost grow with the number of lanes (R13).
+4. **Only ignored and untracked entries are cleared.** The step text says
+   "a fresh ignored or untracked entry"; tracked dirt -- staged, unstaged,
+   conflict, rename, deletion -- stays reported whatever the record says,
+   which is the conservative reading of R2.
+5. **A hazard that does not refuse is still reported.** R9 asks the refusal
+   to name the unchanged-copy category, so the classifier keeps the hazard
+   and marks it, and `gwz-local-disposal` refuses only when some finding
+   refuses. Nothing is hidden and no hazard is dropped.
 
 ## 9. Open questions carried from the requirements
 

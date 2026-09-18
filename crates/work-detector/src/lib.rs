@@ -10,12 +10,15 @@
 //!
 //! # What the verdict means
 //!
-//! - [`WorkVerdict::Clean`]: every supplied input was known and named no
-//!   hazard. An empty *known* observation is clean; establishing that an
-//!   observation is known at all is the observer's job — never the
+//! - [`WorkVerdict::Clean`]: every supplied input was known and no hazard
+//!   over it refuses. An empty *known* observation is clean; establishing
+//!   that an observation is known at all is the observer's job — never the
 //!   classifier's — and [`classify_observed_work`] refuses an unknown one.
-//!   "Git status was empty" is not an input this crate can see.
-//! - [`WorkVerdict::Dirty`]: at least one hazard, each named with its cause.
+//!   "Git status was empty" is not an input this crate can see. A hazard
+//!   whose [`Provenance`] does not refuse — data the copy brought and the
+//!   family still holds — is listed and leaves the verdict clean.
+//! - [`WorkVerdict::Dirty`]: at least one hazard that refuses, each named
+//!   with its cause.
 //! - [`WorkVerdict::Unknown`]: at least one input was unknown, unsupported
 //!   or suppressed without a physical observation. Unknown dominates dirty,
 //!   and the hazards found alongside it are still listed.
@@ -44,6 +47,19 @@
 //! arrives with an unknown reason, so the verdict is `Unknown` and refusal
 //! is not waivable.
 //!
+//! # Provenance (`GwzLaneCleanFixes.md` R2, R8; plan S1.5)
+//!
+//! A verbatim lane inherits its source's ignored entries and native stash
+//! entries. [`classify_work_against`] and [`classify_observed_work_against`]
+//! take the caller's [`CopyBaseline`] and stamp each worktree hazard and
+//! the native-stash hazard with the [`Provenance`] it names, so data the
+//! copy brought, still unchanged and still held by the family, no longer
+//! refuses. The baseline is the caller's to establish -- this crate reads
+//! nothing -- and no baseline means [`Provenance::Unique`] throughout,
+//! which is the classification every gwz before this one made. Provenance
+//! decides what refuses; the `--force` spelling is untouched (that is R11,
+//! Phase 3).
+//!
 //! Hazard and reason order is deterministic: work entries in input order,
 //! then suppressed paths, the unfinished native operation, native stashes,
 //! the observer's own per-path unknowns (`WorkObservation::unknown`, lane W
@@ -58,6 +74,7 @@ use gwz_repo_contract::{Observation, WorkObservation};
 mod builder;
 mod evidence;
 mod hazard;
+mod provenance;
 mod report;
 
 #[cfg(test)]
@@ -65,6 +82,7 @@ mod tests;
 
 pub use evidence::*;
 pub use hazard::*;
+pub use provenance::*;
 pub use report::*;
 
 pub(crate) use builder::*;
@@ -73,7 +91,19 @@ pub(crate) use builder::*;
 /// evidence. Pure and deterministic: the same inputs always produce the same
 /// report, in the same order.
 pub fn classify_work(observation: &WorkObservation, evidence: &GwzEvidence) -> WorkReport {
-    let mut report = Builder::default();
+    classify_work_against(observation, evidence, &CopyBaseline::default())
+}
+
+/// [`classify_work`] against a caller-established [`CopyBaseline`].
+pub fn classify_work_against(
+    observation: &WorkObservation,
+    evidence: &GwzEvidence,
+    baseline: &CopyBaseline,
+) -> WorkReport {
+    let mut report = Builder {
+        baseline: baseline.clone(),
+        ..Builder::default()
+    };
     report.observation(observation);
     report.evidence(evidence);
     report.finish()
@@ -88,8 +118,18 @@ pub fn classify_observed_work(
     observation: &Observation<WorkObservation>,
     evidence: &GwzEvidence,
 ) -> WorkReport {
+    classify_observed_work_against(observation, evidence, &CopyBaseline::default())
+}
+
+/// [`classify_observed_work`] against a caller-established
+/// [`CopyBaseline`].
+pub fn classify_observed_work_against(
+    observation: &Observation<WorkObservation>,
+    evidence: &GwzEvidence,
+    baseline: &CopyBaseline,
+) -> WorkReport {
     match observation {
-        Observation::Known(known) => classify_work(known, evidence),
+        Observation::Known(known) => classify_work_against(known, evidence, baseline),
         Observation::Unknown(reasons) => {
             let mut report = Builder {
                 unknown: reasons.clone(),

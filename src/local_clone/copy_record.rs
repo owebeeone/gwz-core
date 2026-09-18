@@ -126,6 +126,24 @@ impl Fingerprint {
             inode: inode_of(&metadata),
         })
     }
+
+    /// Whether `now` is the same entry this fingerprint recorded: the same
+    /// size and the same modification time, and the same inode where both
+    /// sides have one. A zero inode is "no evidence from this field" -- a
+    /// platform that has none -- and never a match of its own, so it is
+    /// simply not consulted (R1, R2).
+    pub fn unchanged_since(&self, now: &Self) -> bool {
+        if self.size != now.size
+            || self.mtime_secs != now.mtime_secs
+            || self.mtime_nanos != now.mtime_nanos
+        {
+            return false;
+        }
+        if self.inode != 0 && now.inode != 0 {
+            return self.inode == now.inode;
+        }
+        true
+    }
 }
 
 fn modified_parts(metadata: &fs::Metadata) -> (i64, u32) {
@@ -744,6 +762,33 @@ mod tests {
                 assert_ne!(linked.inode, fingerprint.inode);
             }
         }
+
+        // The comparison R2 makes: same stat, same entry. A zero inode on
+        // either side is no evidence and is not consulted.
+        assert!(fingerprint.unchanged_since(&fingerprint));
+        let touched = Fingerprint {
+            mtime_nanos: fingerprint.mtime_nanos.wrapping_add(1),
+            ..fingerprint
+        };
+        assert!(!fingerprint.unchanged_since(&touched));
+        assert!(!fingerprint.unchanged_since(&Fingerprint {
+            size: fingerprint.size + 1,
+            ..fingerprint
+        }));
+        assert!(
+            !fingerprint.unchanged_since(&Fingerprint {
+                inode: fingerprint.inode.wrapping_add(1),
+                ..fingerprint
+            }),
+            "two inodes that disagree are two entries"
+        );
+        assert!(
+            fingerprint.unchanged_since(&Fingerprint {
+                inode: 0,
+                ..fingerprint
+            }),
+            "an absent inode is not consulted"
+        );
 
         assert_eq!(Fingerprint::of(&dir.join("absent")), None);
         fs::remove_dir_all(&dir).unwrap();

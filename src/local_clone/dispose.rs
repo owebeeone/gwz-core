@@ -509,7 +509,7 @@ mod tests {
     use super::*;
     use gwz_local_disposal::PortError;
     use gwz_repo_contract::{RepoKey, UnknownKind};
-    use gwz_work_detector::{Hazard, HazardKind};
+    use gwz_work_detector::{Hazard, HazardKind, Provenance};
 
     fn name() -> MemberName {
         MemberName::parse("A").unwrap()
@@ -569,11 +569,13 @@ mod tests {
                         kind: HazardKind::Work(gwz_repo_contract::WorkKind::Untracked),
                         path: Some(b"notes.txt".to_vec()),
                         detail: "untracked (text)".to_owned(),
+                        provenance: Provenance::Unique,
                     },
                     Hazard {
                         kind: HazardKind::NativeStash,
                         path: None,
                         detail: "1 native stash entry".to_owned(),
+                        provenance: Provenance::Unique,
                     },
                 ],
                 detail: None,

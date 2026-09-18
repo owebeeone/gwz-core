@@ -85,3 +85,18 @@ pub struct HazardFinding {
     /// [`HazardWaiver::UnpreservedHistory`] only.
     pub detail: Option<String>,
 }
+
+impl HazardFinding {
+    /// Whether this finding refuses a disposal of its own accord: an
+    /// unpreserved history always does, and work does when at least one of
+    /// its hazards is over data the surviving family does not hold (R2,
+    /// R8). A finding that refuses nothing is carried into the refusal only
+    /// so the report can name its category (R9).
+    pub fn refuses(&self) -> bool {
+        self.detail.is_some()
+            || self
+                .hazards
+                .iter()
+                .any(|hazard| hazard.provenance.refuses())
+    }
+}

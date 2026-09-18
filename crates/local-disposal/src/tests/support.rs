@@ -133,6 +133,7 @@ pub(crate) fn clean_evidence() -> TargetEvidence {
     TargetEvidence {
         target: present(),
         repositories: vec![repository(RepoKey::Root, WS_A)],
+        copy: None,
         unknown: Vec::new(),
     }
 }

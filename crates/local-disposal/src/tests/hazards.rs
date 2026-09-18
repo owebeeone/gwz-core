@@ -175,3 +175,103 @@ fn a_repeated_waiver_refuses_before_any_effect() {
     ));
     assert!(ports.calls().is_empty());
 }
+
+/// R2, R0: a copy witness that covers every hazard, with the family still
+/// holding it, makes the disposal need no waiver at all -- and the witness
+/// is per repository, so it never speaks for a repository it does not name.
+#[test]
+fn a_copy_witness_over_every_hazard_disposes_with_no_waiver() {
+    let mut baseline = gwz_work_detector::CopyBaseline::default();
+    baseline.set(
+        b"notes.txt".to_vec(),
+        gwz_work_detector::Provenance::UnchangedCopy,
+    );
+    let evidence = TargetEvidence {
+        repositories: vec![RepositoryEvidence {
+            work: dirty_work(),
+            ..repository(RepoKey::Root, WS_A)
+        }],
+        copy: Some(CopyWitness {
+            repositories: vec![CopiedRepository {
+                key: RepoKey::Root,
+                baseline,
+            }],
+        }),
+        ..clean_evidence()
+    };
+
+    let (_store, mut session) = ready();
+    let mut ports = scripted(evidence.clone(), HistoryAnswer::Preserved);
+    let report = dispose(&delete(&[]), &mut session, &mut ports)
+        .expect("the family still holds every hazard, so nothing is a loss");
+    assert!(report.effects.contains(&DisposeEffect::DirectoryRemoved));
+
+    // The same witness under another key says nothing about this one.
+    let elsewhere = TargetEvidence {
+        copy: Some(CopyWitness {
+            repositories: vec![CopiedRepository {
+                key: RepoKey::Member {
+                    id: "mem_app".to_owned(),
+                },
+                baseline: gwz_work_detector::CopyBaseline::default(),
+            }],
+        }),
+        ..evidence
+    };
+    let (_store, mut session) = ready();
+    let mut ports = scripted(elsewhere, HistoryAnswer::Preserved);
+    let failure = dispose(&delete(&[]), &mut session, &mut ports).unwrap_err();
+    assert!(
+        matches!(&failure.error, DisposeError::Hazards(findings) if findings.len() == 1),
+        "{:?}",
+        failure.error
+    );
+    assert_no_removal(&ports);
+}
+
+/// R9: a refusal carries the categories it did *not* refuse over, so the
+/// report can name every one of them. The unchanged copy is listed beside
+/// the unpreserved history that refused.
+#[test]
+fn a_refusal_carries_the_unchanged_copies_it_found_beside_the_loss() {
+    let mut baseline = gwz_work_detector::CopyBaseline::default();
+    baseline.set(
+        b"notes.txt".to_vec(),
+        gwz_work_detector::Provenance::UnchangedCopy,
+    );
+    let (_store, mut session) = ready();
+    let mut ports = scripted(
+        TargetEvidence {
+            repositories: vec![RepositoryEvidence {
+                work: dirty_work(),
+                ..repository(RepoKey::Root, WS_A)
+            }],
+            copy: Some(CopyWitness {
+                repositories: vec![CopiedRepository {
+                    key: RepoKey::Root,
+                    baseline,
+                }],
+            }),
+            ..clean_evidence()
+        },
+        HistoryAnswer::Unpreserved {
+            detail: "lane/agent-17 is unique".to_owned(),
+        },
+    );
+    let failure = dispose(&delete(&[]), &mut session, &mut ports).unwrap_err();
+    let DisposeError::Hazards(findings) = &failure.error else {
+        panic!("{:?}", failure.error);
+    };
+    assert_eq!(findings.len(), 2, "{findings:?}");
+    let dirt = findings
+        .iter()
+        .find(|finding| finding.waiver == HazardWaiver::Dirty)
+        .expect("the unchanged copy is reported");
+    assert!(!dirt.refuses(), "but it is not what refused: {dirt:?}");
+    assert!(
+        findings
+            .iter()
+            .any(|finding| finding.waiver == HazardWaiver::UnpreservedHistory && finding.refuses())
+    );
+    assert_no_removal(&ports);
+}

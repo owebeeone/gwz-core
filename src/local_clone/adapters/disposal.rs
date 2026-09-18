@@ -44,6 +44,15 @@
 //! same manifest id for `RepoKey::Member`; a nested repository has no pair
 //! and is therefore unpreserved until the operator names the loss.
 //!
+//! # What the lane inherited (R2, plan S1.5)
+//!
+//! `observe_target` also establishes, per repository, which of the observed
+//! ignored and untracked entries and which native stash entries the lane
+//! merely **copied** and the surviving family still holds. That is
+//! [`super::copy_witness`]'s work, and it rides on the evidence as
+//! `TargetEvidence::copy`; the disposal library classifies with it, so a
+//! verbatim lane no longer refuses over its source's own ignored data.
+//!
 //! # GWZ evidence
 //!
 //! Core decodes GWZ evidence for the work detector. This build reads the
@@ -75,6 +84,7 @@ use gwz_repo_contract::{
 use gwz_repo_inspect::{LocalObjectReader, LocalRepoInspector};
 use gwz_work_detector::{EvidenceState, GwzEvidence};
 
+use super::copy_witness::{FamilyPairs, read_record, recorded_witness};
 use super::install::OpenMergeProbe;
 use super::inventory::{IncludedRepository, included_repositories};
 use super::removal::remove_tree;
@@ -301,6 +311,7 @@ impl DisposalPorts for CoreDisposalPorts {
             return Ok(TargetEvidence {
                 target: observation,
                 repositories: Vec::new(),
+                copy: None,
                 unknown: Vec::new(),
             });
         }
@@ -312,6 +323,7 @@ impl DisposalPorts for CoreDisposalPorts {
                 return Ok(TargetEvidence {
                     target: observation,
                     repositories: Vec::new(),
+                    copy: None,
                     unknown,
                 });
             }
@@ -348,9 +360,25 @@ impl DisposalPorts for CoreDisposalPorts {
                 gwz,
             });
         }
+        // R2: what the lane copied and has not touched, and the family
+        // still holds, is not the lane's work. An unreadable record is
+        // unknown evidence and refuses whatever `--force` names; no record
+        // at all leaves every hazard the lane's own.
+        let copy = match read_record(target, row.allocation_id.as_str()) {
+            Ok(Some(record)) => {
+                let mut pairs = FamilyPairs::new(&self.inspector, &self.root);
+                recorded_witness(&record, &repositories, &observed, &mut pairs)
+            }
+            Ok(None) => None,
+            Err(reason) => {
+                unknown.push(reason);
+                None
+            }
+        };
         Ok(TargetEvidence {
             target: observation,
             repositories: observed,
+            copy,
             unknown,
         })
     }

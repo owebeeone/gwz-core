@@ -8,6 +8,7 @@ pub(crate) use gwz_repo_contract::{
 pub(crate) use super::*;
 pub(crate) use gwz_repo_contract::{SuppressedEntry, WorkEntry};
 
+mod provenance;
 mod records;
 mod reporting;
 mod support;

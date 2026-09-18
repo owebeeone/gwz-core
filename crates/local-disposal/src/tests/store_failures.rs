@@ -146,6 +146,7 @@ fn a_removal_error_stops_and_leaves_the_remainder_for_manual_cleanup() {
         TargetEvidence {
             target: TargetObservation::Missing,
             repositories: Vec::new(),
+            copy: None,
             unknown: Vec::new(),
         },
         HistoryAnswer::Preserved,

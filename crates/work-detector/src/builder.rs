@@ -15,14 +15,33 @@ use crate::*;
 pub(crate) struct Builder {
     pub(crate) hazards: Vec<Hazard>,
     pub(crate) unknown: Vec<UnknownReason>,
+    /// What the caller established about the data this observation
+    /// describes. Empty is "nothing is established", which makes every
+    /// hazard [`Provenance::Unique`].
+    pub(crate) baseline: CopyBaseline,
 }
 
 impl Builder {
     fn hazard(&mut self, kind: HazardKind, path: Option<BytePath>, detail: impl Into<String>) {
+        self.provenanced(kind, path, detail, Provenance::Unique);
+    }
+
+    /// A hazard over data whose provenance the caller established. Only
+    /// the worktree entries and the native stash carry one: everything
+    /// else -- a suppressed tracked path, an unfinished operation, an open
+    /// record -- is state the lane is in, not data it inherited.
+    fn provenanced(
+        &mut self,
+        kind: HazardKind,
+        path: Option<BytePath>,
+        detail: impl Into<String>,
+        provenance: Provenance,
+    ) {
         self.hazards.push(Hazard {
             kind,
             path,
             detail: detail.into(),
+            provenance,
         });
     }
 
@@ -36,10 +55,12 @@ impl Builder {
 
     pub(crate) fn observation(&mut self, observation: &WorkObservation) {
         for entry in &observation.entries {
-            self.hazard(
+            let provenance = self.baseline.entry(&entry.path);
+            self.provenanced(
                 HazardKind::Work(entry.kind),
                 Some(entry.path.clone()),
                 work_detail(entry.kind, entry.binary),
+                provenance,
             );
         }
 
@@ -63,10 +84,12 @@ impl Builder {
         if observation.stash_entries > 0 {
             let count = observation.stash_entries;
             let plural = if count == 1 { "y" } else { "ies" };
-            self.hazard(
+            let provenance = self.baseline.stash();
+            self.provenanced(
                 HazardKind::NativeStash,
                 None,
                 format!("{count} native stash entr{plural}"),
+                provenance,
             );
         }
 
@@ -176,10 +199,17 @@ impl Builder {
         let hazards_cut = drop_details(&mut self.hazards, |hazard| &mut hazard.detail);
         let unknown_cut = drop_details(&mut self.unknown, |reason| &mut reason.detail);
         let verdict = if self.unknown.is_empty() {
-            if self.hazards.is_empty() {
-                WorkVerdict::Clean
-            } else {
+            // A hazard whose provenance does not refuse is reported and
+            // does not make the repository dirty: the family still holds
+            // it, so deleting the lane loses nothing (R2, R8).
+            if self
+                .hazards
+                .iter()
+                .any(|hazard| hazard.provenance.refuses())
+            {
                 WorkVerdict::Dirty
+            } else {
+                WorkVerdict::Clean
             }
         } else {
             WorkVerdict::Unknown

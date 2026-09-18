@@ -95,6 +95,7 @@ fn a_stale_row_for_an_absent_target_needs_no_checks_and_no_force() {
     ports.evidence(TargetEvidence {
         target: TargetObservation::Missing,
         repositories: Vec::new(),
+        copy: None,
         unknown: Vec::new(),
     });
     // No history answer is scripted: an unscripted call would be

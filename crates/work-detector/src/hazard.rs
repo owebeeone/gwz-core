@@ -2,6 +2,8 @@
 
 use gwz_repo_contract::{BytePath, WorkKind};
 
+use crate::Provenance;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkVerdict {
     Clean,
@@ -53,4 +55,12 @@ pub struct Hazard {
     pub kind: HazardKind,
     pub path: Option<BytePath>,
     pub detail: String,
+    /// Where this hazard's data came from, as the caller's
+    /// [`CopyBaseline`](crate::CopyBaseline) established it. The classifier
+    /// establishes nothing itself, so a hazard over data no baseline covers
+    /// is [`Provenance::Unique`]. It decides **what refuses**, never how a
+    /// refusal is spelled on the wire: [`HazardKind::force_name`] is
+    /// untouched by it, because narrowing the waiver vocabulary is plan
+    /// `GwzLaneCleanFixesPlan.md` S3.1 (R11), not S1.5.
+    pub provenance: Provenance,
 }
