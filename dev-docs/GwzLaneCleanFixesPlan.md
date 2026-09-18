@@ -361,7 +361,8 @@ Landed in gwz-core, one commit per step, each on a green
 | S1.4 | **history half done** | Disposal checks a **verbatim** lane's history under `WitnessPolicy::IdenticalCopy`, so a lane that only copied the family's reflog and stash entries needs no `unpreserved-history` waiver. See the adjustment below. |
 | S1.5 | **done** | The record narrows the **work** question: disposal reads the lane's record back, corroborates each ignored or untracked entry against the surviving family's paired repository, and hands `gwz-work-detector` a `CopyBaseline` per repository through `TargetEvidence::copy`. A copied entry that is unchanged and still in the family, and a native stash the copy brought and the family still holds, are reported and no longer refuse. |
 | S1.6 | **done** | No record -- an older gwz's lane, or one copied outside gwz -- and dispose derives the same witness live: each ignored and untracked entry is compared with the family's own entry at that path, by link target, by bytes or (past 1 MiB) by size and mtime, recursively for a directory and within a bounded walk. Finding nothing unique needs no waiver. |
-| S1.7 to S1.8 | not started | |
+| S1.7 | **done** | `gwz-local-disposal` owns `HazardCategory`, `categorise` and `required_waivers`; a refusal reports `regenerable`, `unchanged copy`, `changed copy` and `unique to the lane`, each with its count and its paths or object ids and each named even when empty, then prints the one `gwz local dispose <name> --force <hazards>` that waives exactly what refused. |
+| S1.8 | not started | |
 | Phases 2 to 4 | not started | |
 
 **S1.4 adjustment.** As planned, S1.4 was to let the copy record narrow the
@@ -421,6 +422,20 @@ shape is not the step text's:
    entry the lane's -- a refusal the operator can still waive -- never a
    silent pass and never unwaivable unknown evidence. S3.3 is where the
    numbers are measured and tuned.
+
+**S1.7 adjustments (2026-09-18).** Two:
+
+1. **The category vocabulary is not the waiver vocabulary**, and Phase 1
+   keeps them apart deliberately. `HazardCategory` is the report's;
+   `HazardWaiver` is still `open-merge | dirty | unpreserved-history` on
+   the wire, so several categories share the `dirty` name until R11 (S3.1)
+   narrows it. That is exactly why R10's printed command is computed rather
+   than left to the operator.
+2. **The per-finding `<waiver>` marker is gone from the refusal text.** A
+   refusal used to read `` `mem_app` <dirty>: ... ``; it now leads with the
+   categories and ends with the command. The waiver names are still in the
+   message -- in the command that carries them -- and the tests assert them
+   by parsing that command, which pins R10 rather than the prose.
 
 ## 9. Open questions carried from the requirements
 

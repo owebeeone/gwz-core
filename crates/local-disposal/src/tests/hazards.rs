@@ -275,3 +275,84 @@ fn a_refusal_carries_the_unchanged_copies_it_found_beside_the_loss() {
     );
     assert_no_removal(&ports);
 }
+
+/// R9, R10: the categories are a partition of the findings, empty ones are
+/// still reported, and the waiver list is exactly what refused -- once
+/// each, in this vocabulary's order.
+#[test]
+fn findings_sort_into_every_category_and_name_only_the_waivers_that_refused() {
+    let hazard = |provenance, path: &str| gwz_work_detector::Hazard {
+        kind: gwz_work_detector::HazardKind::Work(WorkKind::Ignored),
+        path: Some(path.as_bytes().to_vec()),
+        detail: "ignored user data".to_owned(),
+        provenance,
+    };
+    let findings = vec![
+        HazardFinding {
+            waiver: HazardWaiver::Dirty,
+            repository: RepoKey::Root,
+            hazards: vec![
+                hazard(gwz_work_detector::Provenance::UnchangedCopy, "target/"),
+                hazard(gwz_work_detector::Provenance::ChangedCopy, ".venv/"),
+                hazard(gwz_work_detector::Provenance::Unique, "notes.txt"),
+            ],
+            detail: None,
+        },
+        HazardFinding {
+            waiver: HazardWaiver::UnpreservedHistory,
+            repository: RepoKey::Root,
+            hazards: Vec::new(),
+            detail: Some("1 protected root: Head 0123abcd".to_owned()),
+        },
+    ];
+
+    let categories = categorise(&findings);
+    assert_eq!(
+        categories
+            .iter()
+            .map(|report| (report.category, report.count()))
+            .collect::<Vec<_>>(),
+        vec![
+            (HazardCategory::Regenerable, 0),
+            (HazardCategory::UnchangedCopy, 1),
+            (HazardCategory::ChangedCopy, 1),
+            (HazardCategory::Unique, 2),
+        ],
+        "every category is reported, Phase 2's included and empty"
+    );
+    assert_eq!(
+        categories.iter().map(CategoryReport::count).sum::<usize>(),
+        4,
+        "a partition loses nothing and counts nothing twice"
+    );
+    // An object id has no path; a worktree entry has one.
+    let unique = &categories[3];
+    assert_eq!(
+        unique.items[0].path.as_deref(),
+        Some(b"notes.txt".as_slice())
+    );
+    assert_eq!(unique.items[1].path, None);
+    assert!(unique.items[1].detail.contains("0123abcd"));
+
+    assert_eq!(
+        required_waivers(&findings),
+        vec![HazardWaiver::Dirty, HazardWaiver::UnpreservedHistory]
+    );
+    // A finding that refuses nothing needs no waiver and names none.
+    let copied_only = vec![HazardFinding {
+        hazards: vec![hazard(
+            gwz_work_detector::Provenance::UnchangedCopy,
+            "target/",
+        )],
+        ..findings[0].clone()
+    }];
+    assert!(required_waivers(&copied_only).is_empty());
+    assert_eq!(
+        categorise(&copied_only)
+            .iter()
+            .map(CategoryReport::count)
+            .sum::<usize>(),
+        1,
+        "and is still reported"
+    );
+}

@@ -46,8 +46,8 @@ use gwz_family_store_contract::{
     FamilyLocation, FamilyObservation, FamilySession, FamilyStore, MetadataEffect, StoreError,
 };
 use gwz_local_disposal::{
-    DisposeEffect, DisposeError, DisposeFailure, DisposePolicy, DisposeReport, DisposeRequest,
-    HazardFinding, HazardWaiver, dispose,
+    CategoryReport, DisposeEffect, DisposeError, DisposeFailure, DisposePolicy, DisposeReport,
+    DisposeRequest, HazardFinding, HazardWaiver, categorise, dispose, required_waivers,
 };
 use gwz_repo_contract::UnknownReason;
 
@@ -243,6 +243,7 @@ pub(crate) fn keep(
         }),
         Err(failure) => Err(failure_error(
             &format!("local dispose `{name}` --keep at {}", target.display()),
+            name,
             &failure,
         )),
     }
@@ -281,6 +282,7 @@ pub(crate) fn delete(
         }),
         Err(failure) => Err(failure_error(
             &format!("local dispose `{name}` at {}", target.display()),
+            name,
             &failure,
         )),
     }
@@ -396,25 +398,21 @@ fn canonical(path: &Path) -> ModelResult<PathBuf> {
 /// A `DisposeFailure` as a `ModelError`: the code follows the typed cause
 /// (`errors::dispose_error_code`), the message names the cause, every
 /// finding, the recovery and every completed effect.
-fn failure_error(context: &str, failure: &DisposeFailure) -> ModelError {
+fn failure_error(context: &str, name: &MemberName, failure: &DisposeFailure) -> ModelError {
     ModelError::new(
         errors::dispose_error_code(&failure.error),
         format!(
             "{context}: {}; effects: {:?}",
-            describe(&failure.error, &failure.effects),
+            describe(&failure.error, name, &failure.effects),
             failure.effects
         ),
     )
 }
 
 /// The cause and its recovery, for the operator.
-fn describe(error: &DisposeError, effects: &[DisposeEffect]) -> String {
+fn describe(error: &DisposeError, name: &MemberName, effects: &[DisposeEffect]) -> String {
     match error {
-        DisposeError::Hazards(findings) => format!(
-            "unwaived hazard(s): {}; name each accepted loss with --force <hazard,...> to \
-             delete, or --keep to detach and retain every file; nothing was removed",
-            render_findings(findings)
-        ),
+        DisposeError::Hazards(findings) => render_hazards(name, findings),
         DisposeError::Unknown(reasons) => format!(
             "unknown evidence: {}; no force name waives unknown evidence: make it \
              interpretable, or --keep to detach and retain every file; nothing was removed",
@@ -448,33 +446,52 @@ fn describe(error: &DisposeError, effects: &[DisposeEffect]) -> String {
     }
 }
 
-/// `` `<repository>` <waiver>: <hazards or history detail> `` per finding.
-fn render_findings(findings: &[HazardFinding]) -> String {
-    findings
+/// R9 and R10: what refused, by category, with each category's count and
+/// its paths or object ids -- empty categories included, so the refusal
+/// says what it did *not* find too -- and then the **exact** command that
+/// waives exactly what was found, not a generic hint.
+fn render_hazards(name: &MemberName, findings: &[HazardFinding]) -> String {
+    let categories = categorise(findings);
+    let waivers = required_waivers(findings);
+    format!(
+        "unwaived hazard(s) by category: {}; to delete anyway, naming every loss it waives: \
+         `gwz local dispose {name} --force {}`; or --keep to detach and retain every file; \
+         nothing was removed",
+        categories
+            .iter()
+            .map(render_category)
+            .collect::<Vec<_>>()
+            .join("; "),
+        waivers
+            .iter()
+            .map(|waiver| waiver.as_str())
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
+/// `` <category> <count>: `<repository>` <detail> (<path>), ... ``, or
+/// `` <category> 0 `` when the category is empty.
+fn render_category(report: &CategoryReport) -> String {
+    let name = report.category.as_str();
+    let count = report.count();
+    if count == 0 {
+        return format!("{name} 0");
+    }
+    let items: Vec<String> = report
+        .items
         .iter()
-        .map(|finding| {
-            let items: Vec<String> = match &finding.detail {
-                Some(detail) => vec![detail.clone()],
-                None => finding
-                    .hazards
-                    .iter()
-                    .map(|hazard| match &hazard.path {
-                        Some(path) => {
-                            format!("{} ({})", hazard.detail, String::from_utf8_lossy(path))
-                        }
-                        None => hazard.detail.clone(),
-                    })
-                    .collect(),
-            };
-            format!(
-                "`{}` <{}>: {}",
-                finding.repository,
-                finding.waiver.as_str(),
-                listed(&items)
-            )
+        .map(|item| match &item.path {
+            Some(path) => format!(
+                "`{}` {} ({})",
+                item.repository,
+                item.detail,
+                String::from_utf8_lossy(path)
+            ),
+            None => format!("`{}` {}", item.repository, item.detail),
         })
-        .collect::<Vec<_>>()
-        .join("; ")
+        .collect();
+    format!("{name} {count}: {}", listed(&items))
 }
 
 fn render_reasons(reasons: &[UnknownReason]) -> String {
@@ -553,11 +570,13 @@ mod tests {
         );
     }
 
-    /// Every refusal names its findings per repository under the waiver
-    /// that covers them, the recovery, and that nothing was removed; long
-    /// lists are counted past the cap, never dropped silently.
+    /// R9 and R10: a refusal separates the categories it found -- naming
+    /// the empty ones too -- with each one's count and its paths or object
+    /// ids, then prints the **exact** command that waives exactly what
+    /// refused, and says nothing was removed. Long lists are counted past
+    /// the cap, never dropped silently.
     #[test]
-    fn a_refusal_names_every_finding_the_recovery_and_the_effects() {
+    fn a_refusal_reports_by_category_and_prints_the_exact_waiver_command() {
         let findings = vec![
             HazardFinding {
                 waiver: HazardWaiver::Dirty,
@@ -570,6 +589,18 @@ mod tests {
                         path: Some(b"notes.txt".to_vec()),
                         detail: "untracked (text)".to_owned(),
                         provenance: Provenance::Unique,
+                    },
+                    Hazard {
+                        kind: HazardKind::Work(gwz_repo_contract::WorkKind::Ignored),
+                        path: Some(b"target/".to_vec()),
+                        detail: "ignored user data".to_owned(),
+                        provenance: Provenance::UnchangedCopy,
+                    },
+                    Hazard {
+                        kind: HazardKind::Work(gwz_repo_contract::WorkKind::Ignored),
+                        path: Some(b".venv/".to_vec()),
+                        detail: "ignored user data".to_owned(),
+                        provenance: Provenance::ChangedCopy,
                     },
                     Hazard {
                         kind: HazardKind::NativeStash,
@@ -593,6 +624,7 @@ mod tests {
         ];
         let error = failure_error(
             "local dispose `A` at /fam/ws-A",
+            &name(),
             &DisposeFailure {
                 error: DisposeError::Hazards(findings),
                 effects: Vec::new(),
@@ -601,11 +633,14 @@ mod tests {
         assert_eq!(error.code, ErrorCode::UnwaivedHazard);
         assert_eq!(
             error.message,
-            "local dispose `A` at /fam/ws-A: unwaived hazard(s): `mem_app` <dirty>: untracked \
-             (text) (notes.txt), 1 native stash entry; `@root` <unpreserved-history>: 1 \
-             protected root(s) of @root are preserved whole in no surviving family \
-             repository: Head 0123abcd; name each accepted loss with --force <hazard,...> to \
-             delete, or --keep to detach and retain every file; nothing was removed; effects: []"
+            "local dispose `A` at /fam/ws-A: unwaived hazard(s) by category: regenerable 0; \
+             unchanged copy 1: `mem_app` ignored user data (target/); changed copy 1: \
+             `mem_app` ignored user data (.venv/); unique to the lane 3: `mem_app` untracked \
+             (text) (notes.txt), `mem_app` 1 native stash entry, `@root` 1 protected root(s) \
+             of @root are preserved whole in no surviving family repository: Head 0123abcd; \
+             to delete anyway, naming every loss it waives: `gwz local dispose A \
+             --force dirty,unpreserved-history`; or --keep to detach and retain every file; \
+             nothing was removed; effects: []"
         );
 
         let reasons: Vec<UnknownReason> = (0..MAX_LISTED + 2)
@@ -617,6 +652,7 @@ mod tests {
             .collect();
         let error = failure_error(
             "local dispose `A` at /fam/ws-A",
+            &name(),
             &DisposeFailure {
                 error: DisposeError::Unknown(reasons),
                 effects: Vec::new(),
@@ -644,6 +680,7 @@ mod tests {
 
         let error = failure_error(
             "local dispose `A` at /fam/ws-A",
+            &name(),
             &DisposeFailure {
                 error: DisposeError::RemovalStopped {
                     remaining: vec![PathBuf::from("/fam/ws-A"), PathBuf::from("/fam/ws-A/held")],
@@ -669,6 +706,7 @@ mod tests {
 
         let error = failure_error(
             "local dispose `A` at /fam/ws-A",
+            &name(),
             &DisposeFailure {
                 error: DisposeError::Port(PortError::Unimplemented { operation: "x" }),
                 effects: Vec::new(),

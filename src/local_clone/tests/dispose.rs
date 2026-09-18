@@ -100,6 +100,17 @@ fn refuse(start: &Path, request: crate::LocalFamilyRequest) -> ModelError {
     try_local(start, request).expect_err("the operation refuses")
 }
 
+/// The waiver names the refusal's own printed command carries (R10): the
+/// `<hazards>` of the `gwz local dispose <name> --force <hazards>` it
+/// prints. Exactly what refused, and nothing else.
+fn printed_waivers(message: &str) -> Vec<&str> {
+    message
+        .split_once("--force ")
+        .and_then(|(_, rest)| rest.split_once('`'))
+        .map(|(names, _)| names.split(',').collect())
+        .unwrap_or_default()
+}
+
 fn family(root: &Path) -> Option<gwz_family_model::FamilyView> {
     match gwz_family_store::YamlFamilyStore::new()
         .read_view(&FamilyLocation::new(root))
@@ -477,16 +488,11 @@ fn a_dirty_lane_refuses_ordinary_deletion_naming_the_dirt_and_nothing_is_removed
         &before,
         &error,
         ErrorCode::UnwaivedHazard,
-        &[
-            "<dirty>",
-            "notes.txt",
-            "README",
-            "nothing was removed",
-            "--keep",
-        ],
+        &["notes.txt", "README", "nothing was removed", "--keep"],
     );
-    assert!(
-        !error.message.contains("<unpreserved-history>"),
+    assert_eq!(
+        printed_waivers(&error.message),
+        ["dirty"],
         "a fresh verbatim clone's history is preserved in its source: {}",
         error.message
     );
@@ -501,8 +507,9 @@ fn a_dirty_lane_refuses_ordinary_deletion_naming_the_dirt_and_nothing_is_removed
         &before,
         &error,
         ErrorCode::UnwaivedHazard,
-        &["<dirty>"],
+        &["notes.txt"],
     );
+    assert_eq!(printed_waivers(&error.message), ["dirty"]);
     assert!(
         dest.join(".gwz/family-root").is_file(),
         "the pointer still stands"
@@ -538,14 +545,11 @@ fn a_lane_with_a_unique_commit_reflog_entry_or_stash_refuses() {
         &before,
         &error,
         ErrorCode::UnwaivedHazard,
-        &[
-            "<unpreserved-history>",
-            only_in_a.as_str(),
-            "nothing was removed",
-        ],
+        &[only_in_a.as_str(), "nothing was removed"],
     );
-    assert!(
-        !error.message.contains("<dirty>"),
+    assert_eq!(
+        printed_waivers(&error.message),
+        ["unpreserved-history"],
         "a clean lane is not dirty: {}",
         error.message
     );
@@ -565,7 +569,7 @@ fn a_lane_with_a_unique_commit_reflog_entry_or_stash_refuses() {
         &before,
         &error,
         ErrorCode::UnwaivedHazard,
-        &["<unpreserved-history>", abandoned.as_str(), "Reflog"],
+        &[abandoned.as_str(), "Reflog"],
     );
 
     // C: a native stash: the worktree is clean, `refs/stash` holds the
@@ -581,12 +585,11 @@ fn a_lane_with_a_unique_commit_reflog_entry_or_stash_refuses() {
         &before,
         &error,
         ErrorCode::UnwaivedHazard,
-        &[
-            "<dirty>",
-            "native stash",
-            "<unpreserved-history>",
-            stashed.as_str(),
-        ],
+        &["native stash", stashed.as_str()],
+    );
+    assert_eq!(
+        printed_waivers(&error.message),
+        ["dirty", "unpreserved-history"]
     );
     // Naming the dirt alone leaves the history unwaived.
     let error = refuse(&fixture.root, delete_request("C", &["dirty"]));
@@ -596,9 +599,9 @@ fn a_lane_with_a_unique_commit_reflog_entry_or_stash_refuses() {
         &before,
         &error,
         ErrorCode::UnwaivedHazard,
-        &["<unpreserved-history>"],
+        &[stashed.as_str()],
     );
-    assert!(!error.message.contains("<dirty>"), "{}", error.message);
+    assert_eq!(printed_waivers(&error.message), ["unpreserved-history"]);
     assert_eq!(listed_names(&fixture.root), ["root", "A", "B", "C"]);
 }
 
@@ -710,27 +713,13 @@ fn each_known_hazard_refuses_without_its_name_and_proceeds_with_it() {
     let before_b = tree_bytes(&fixture.sibling("B"));
     let before_root = root_files_except_the_index(&fixture.root);
 
-    for (force, still, waived) in [
-        (
-            &[][..],
-            &["<open-merge>", "<dirty>", "<unpreserved-history>"][..],
-            &[][..],
-        ),
-        (
-            &["dirty"][..],
-            &["<open-merge>", "<unpreserved-history>"][..],
-            &["<dirty>"][..],
-        ),
-        (
-            &["dirty", "open-merge"][..],
-            &["<unpreserved-history>"][..],
-            &["<dirty>", "<open-merge>"][..],
-        ),
-        (
-            &["unpreserved-history", "open-merge"][..],
-            &["<dirty>"][..],
-            &["<open-merge>", "<unpreserved-history>"][..],
-        ),
+    // R10: whatever is already named, the printed command carries exactly
+    // what is still unwaived -- never more, never a generic hint.
+    for (force, still) in [
+        (&[][..], &["open-merge", "dirty", "unpreserved-history"][..]),
+        (&["dirty"][..], &["open-merge", "unpreserved-history"][..]),
+        (&["dirty", "open-merge"][..], &["unpreserved-history"][..]),
+        (&["unpreserved-history", "open-merge"][..], &["dirty"][..]),
     ] {
         let error = refuse(&fixture.root, delete_request("A", force));
         assert_refused_without_effect(
@@ -739,15 +728,14 @@ fn each_known_hazard_refuses_without_its_name_and_proceeds_with_it() {
             &before,
             &error,
             ErrorCode::UnwaivedHazard,
-            still,
+            &["nothing was removed"],
         );
-        for name in waived {
-            assert!(
-                !error.message.contains(name),
-                "{force:?} waived {name}, yet it is still named: {}",
-                error.message
-            );
-        }
+        assert_eq!(
+            printed_waivers(&error.message),
+            still,
+            "after {force:?}: {}",
+            error.message
+        );
     }
 
     let response = local(
@@ -1172,8 +1160,9 @@ fn a_clean_lane_whose_history_is_preserved_deletes_and_the_index_forgets_it() {
         &before_d,
         &error,
         ErrorCode::UnwaivedHazard,
-        &["<unpreserved-history>", in_c.as_str()],
+        &[in_c.as_str()],
     );
+    assert_eq!(printed_waivers(&error.message), ["unpreserved-history"]);
 }
 
 /// The disposal ports against real repositories: `observe_target` reads the
@@ -1565,18 +1554,20 @@ fn a_lane_with_no_copy_record_is_compared_with_the_family_itself() {
 /// lane's, and the copied entry beside them is still cleared.
 #[test]
 fn a_recordless_lane_holding_different_data_still_refuses() {
-    for (label, change) in [
+    for (label, change, expected) in [
         (
             "different bytes at the same path",
             &(|lane: &Path| {
                 fs::write(lane.join("build-cache/output.bin"), b"rebuilt\n").unwrap();
             }) as &dyn Fn(&Path),
+            "changed copy 1:",
         ),
         (
             "a path the family never had",
             &(|lane: &Path| {
                 fs::write(lane.join("build-cache/extra.bin"), b"only here\n").unwrap();
             }) as &dyn Fn(&Path),
+            "unique to the lane 1:",
         ),
     ] {
         let fixture = clean_family_workspace("dispose-no-record-differs");
@@ -1604,9 +1595,31 @@ fn a_recordless_lane_holding_different_data_still_refuses() {
             ErrorCode::UnwaivedHazard,
             &["build-cache/"],
         );
-        // The identical copy beside it is reported too -- a refusal lists
-        // every category it found -- but it is not what refused. Which
-        // category each entry fell into is what S1.7's report separates.
+        // R9, R10: the categories separate what refused from what did not,
+        // every category is named -- Phase 2's `regenerable` included and
+        // empty -- and the printed command waives exactly what refused.
+        assert!(
+            error.message.contains(expected),
+            "{label}: {}",
+            error.message
+        );
+        assert!(
+            error
+                .message
+                .split("; changed copy")
+                .next()
+                .is_some_and(|unchanged| unchanged.contains("(scratch.txt)")),
+            "{label}: the identical copy beside it is an unchanged copy, not a loss: {}",
+            error.message
+        );
+        assert!(error.message.contains("regenerable 0"), "{}", error.message);
+        assert!(
+            error
+                .message
+                .contains("`gwz local dispose A --force dirty`"),
+            "{label}: {}",
+            error.message
+        );
 
         local(&fixture.root, delete_request("A", &["dirty"]));
         assert!(!a.exists(), "{label}");
