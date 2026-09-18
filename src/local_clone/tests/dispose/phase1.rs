@@ -44,6 +44,18 @@ fn workspace_like_the_register_measured(label: &str) -> (FamilyFixture, Vec<Stri
     let app = root.join("app");
     let mut carried = Vec::new();
 
+    // The family merge later in the test commits through the production
+    // backend; hosted runners have no global Git identity, so give every
+    // repository a local one and never borrow the developer's.
+    for repository in [&root, &app] {
+        let repo = git2::Repository::open(repository).unwrap();
+        let mut config = repo.config().unwrap();
+        config.set_str("user.name", "GWZ Fixture").unwrap();
+        config
+            .set_str("user.email", "fixture@example.invalid")
+            .unwrap();
+    }
+
     for repository in [&root, &app] {
         for rule in [
             "/target/",
