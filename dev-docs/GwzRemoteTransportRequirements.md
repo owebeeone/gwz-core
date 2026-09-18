@@ -9,7 +9,9 @@ from accepted behaviour. No implementation or new performance result is claimed.
 
 ## 1. Purpose
 
-Provide one transport service for every GWZ network operation. Core opens a
+Provide one transport service for GWZ SSH/HTTPS network operations. Existing
+HTTP and git protocol operations remain native and local-only, as explicitly
+listed in the design route table. Core opens a
 virtual stream using taut messages; a mux routes those messages to the endpoint
 that executes SSH or HTTPS. Initially the endpoint is either inside the core
 process or at gwz-cli over the driver–core message channel. The endpoint owns
@@ -136,7 +138,10 @@ Conventions follow [GWZRequirements.md](GWZRequirements.md).
 - **G1.** Preserve current Git outcomes, SSH identity precedence and fail-closed
   behaviour, and error reporting. Intentional changes are endpoint-local path
   interpretation for remote placement, connection reuse across operations,
-  and the `gh`-only HTTPS authentication restriction in G4. These supersede the
+  and the `gh`-only HTTPS authentication restriction in G4, including refusal
+  of HTTPS userinfo/query/fragment credential forms. HTTP/git retain local
+  native behaviour; explicit nonlocal placement for them refuses before effects.
+  These supersede the
   original draft's blanket preservation of credential-helper behaviour.
 - **G2.** Core MUST NOT own persistent credential storage. Explicit SSH identity
   MUST fail closed without an unrelated-key or Git CLI fallback. A local
@@ -146,7 +151,10 @@ Conventions follow [GWZRequirements.md](GWZRequirements.md).
   Offering a credential and authenticating with it remain distinct events.
 - **G4.** Both SSH and HTTPS MUST support the endpoint model. HTTPS
   authentication MUST use `gh` at that endpoint; other authentication providers
-  MUST NOT be used as fallback. Anonymous HTTPS remains supported. Additional
+  MUST NOT be used as fallback. HTTPS destinations MUST be validated into
+  credential-free fields before Open/helper/network activity; userinfo, query
+  and fragment forms MUST refuse with redacted errors, including on redirects.
+  Anonymous HTTPS remains supported. Additional
   HTTPS pooling optimisation ranks below SSH reuse.
 - **G5.** The contract MUST work on Windows, macOS and Linux. Capabilities that
   have not been qualified on a platform MUST NOT be advertised as supported.
@@ -154,6 +162,13 @@ Conventions follow [GWZRequirements.md](GWZRequirements.md).
   requests remain wire-compatible; an explicitly requested unsupported feature
   MUST fail before network effects rather than being silently ignored. The
   G4 policy change is intentional, not a promise to retain all old helpers.
+  A taut Bind/Bound acknowledgement MUST establish session-bound endpoint
+  capabilities/limits before Open; disconnect invalidates that binding.
+  Core service capabilities alone MUST NOT stand in for endpoint negotiation.
+
+- **G7.** The GWZ transport MUST bind to its own remotes without changing the
+  process-global transport registry or intercepting unrelated libgit2 callers.
+  Required safe-binding support MUST be qualified before advertising endpoints.
 
 ### 5.2 Connection reuse
 
@@ -193,6 +208,8 @@ Conventions follow [GWZRequirements.md](GWZRequirements.md).
 - **P1.** The mux MUST route each open to the selected endpoint. Initial routes
   MUST support local core execution and execution at gwz-cli over a message
   channel. The stream MUST remain pinned to that endpoint until terminal.
+  All admitted SSH URL spellings MUST select the same SSH adapter and canonical
+  pool scheme. No unsupported selected scheme may fall through to a core socket.
 - **P2.** Endpoint protection MUST follow the SSH/HTTPS client behaviour on the
   executing machine. Distributed lending limits, per-repository authority grants
   and endpoint permission management are deferred. Connections MAY survive an
@@ -234,7 +251,10 @@ Conventions follow [GWZRequirements.md](GWZRequirements.md).
 - **S5.** The lifecycle MUST distinguish open, data exchange, end-of-write, graceful
   close, cancellation and failure. Graceful close returns only a healthy,
   cleaned-up connection; cancellation/drop MUST NOT masquerade as successful
-  completion. Cleanup MUST be bounded.
+  completion. Graceful API close MUST emit pending Data and EndWrite in order
+  before wire Close, under a deadline starting at the API call. Unread reverse
+  data is drained only for cleanup and its discard MUST be reported; Closed
+  MUST NOT imply Git success. Cleanup MUST be bounded.
 - **S6.** Carrier loss MUST fail its owned streams, cancel queued opens, wake
   blocked reads/writes and release leases. An explicit close message MUST NOT be
   the only way to detect teardown.
@@ -243,6 +263,12 @@ Conventions follow [GWZRequirements.md](GWZRequirements.md).
 - **S8.** A reusable crate SHOULD own message-stream lifecycle and pool mechanics,
   independent of GWZ workspace policy and of gwz-cli. Repository extraction is
   optional; it MUST NOT be a prerequisite for designing or testing the contract.
+
+- **S9.** Framing MUST enforce finite encoded-size limits before reading or
+  allocating a declared body. Decoding MUST enforce finite depth, metadata,
+  collection and allocation budgets before descent/allocation, including unknown
+  fields. Encoded plus decoded storage MUST count against carrier bounds;
+  in-process delivery MUST apply equivalent admission limits.
 
 ## 6. Out of scope
 
@@ -266,7 +292,7 @@ qualification work are explicitly labelled; they are not measured results.
 |---|---|
 | **D1 — lifetime** | Accepted: endpoint-owned pool, reusable across operations; 60-second idle expiry; process shutdown closes it. Replaces operation-only P2. |
 | **D2 — concurrency** | Accepted: one active exchange per physical connection initially; pool parallelism, with cancellable waiting at capacity. |
-| **D3 — SSH implementation** | Design proposal: `ssh2` over libssh2, preserving native Git transport. Qualify Windows agents, trust, cancellation and full-duplex pumping before finalising the dependency. No Git CLI fallback. |
+| **D3 — SSH implementation** | Design proposal: `ssh2` over libssh2, preserving native Git transport. Qualify Windows agents, trust, cancellation and full-duplex pumping before finalising the dependency. No Git CLI fallback; per-remote binding prerequisite, no process-global registration. |
 | **D4 — pool identity** | Accepted: endpoint-local username/host/effective-port grouping, scheme-separated; no repository component. Explicit identity compatibility is checked before reuse. |
 | **D5 — HTTPS** | Accepted: the same endpoint/message model; auth only through `gh`. Design: an endpoint HTTP adapter; concrete HTTP library and parity qualification remain implementation work. Additional reuse optimisation is secondary. |
 | **D6 — observations** | Accepted: additive negotiated reporting for endpoint, connection/stream identifiers and reuse, preserving offered versus authenticated semantics. |
@@ -276,7 +302,7 @@ qualification work are explicitly labelled; they are not measured results.
 | **D10 — HTTPS authority** | Accepted: endpoint-local `gh`; no token forwarding or alternate authentication fallback. |
 | **D11 — lending limits** | Deferred to endpoint management; no lending mechanism in this design. Endpoint-local client protections apply. |
 | **D12 — identity references** | Accepted: preserve precedence and resolve paths at the executing endpoint. No portable key reference or attribution-to-authentication binding is introduced. |
-| **D13 — link** | Accepted: taut bidirectional messages, bounded buffered data payloads, lifecycle and carrier-loss notification; negotiated support, no silent fallback. |
+| **D13 — link** | Accepted: taut bidirectional messages, bounded buffered data payloads, lifecycle and carrier-loss notification; Bind/Bound before Open, bounded pre-decode ingress, negotiated support, no silent fallback. |
 | **D14 — peers** | Deferred: iroh/gryth may provide another carrier/endpoint later. No peer policy is implemented now. |
 | **D15 — SSH configuration** | Retain existing native semantics for this version; OpenSSH aliases, `ProxyJump` and full config parsing are deferred. |
 

@@ -37,6 +37,18 @@ narrows REQ-124's adapter freedom for HTTPS. Persistent core-owned credential
 storage remains prohibited. Operation observations remain isolated even when
 authenticated physical connections survive between operations.
 
+Review remediation (2026-09-19, draft re-review pending): endpoint binding
+uses a taut Bind/Bound acknowledgement before any Open or Git-host effect;
+capabilities and limits are invalidated with the carrier session. SSH URL
+aliases share one canonical adapter. Existing HTTP/git protocols remain native
+and local-only; explicit nonlocal requests refuse before effects. HTTPS URL
+userinfo/query/fragment forms refuse before serialization/authentication, as a
+consequence of gh-only authentication. The native integration uses per-remote
+transport callbacks, never a process-global registration. Graceful close orders
+Data/EndWrite/Close and reports discarded unread responses without claiming Git
+success. Encoded-frame and decoding resource bounds apply before allocation.
+The companion design gives the normative detailed transitions and closure cases.
+
 ## Configuration recovery requirements (2026-09-11)
 
 An explicit `init --update --commit` MUST commit only accepted configuration and
