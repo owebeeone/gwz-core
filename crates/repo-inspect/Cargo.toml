@@ -6,7 +6,7 @@
 # races on the workspace lock.
 [package]
 name = "gwz-repo-inspect"
-version = "0.0.6"
+version = "0.0.7"
 edition = "2024"
 rust-version = "1.95"
 license = "GPL-2.0-only"
@@ -24,7 +24,7 @@ include = ["/Cargo.toml", "/src/**", "/README.md"]
 path = "src/lib.rs"
 
 [dependencies]
-gwz-repo-contract = { path = "../repo-contract", version = "0.0.6" }
+gwz-repo-contract = { path = "../repo-contract", version = "0.0.7" }
 git2 = { version = "0.21", default-features = false, features = ["unstable-sha256"] }
 
 [dev-dependencies]
