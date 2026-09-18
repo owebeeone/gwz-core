@@ -13,6 +13,7 @@ pub enum OpenMergeCommand {
     CloneWorkspace,
     Commit,
     Diff,
+    Fetch,
     Forall,
     InitNewWorkspace,
     InitExistingPlan,
@@ -53,6 +54,10 @@ impl OpenMergeCommand {
             Command::RemoteIdentity
             | Command::BranchList
             | Command::Diff
+            // `gwz fetch` writes only remote-tracking refs: no workspace
+            // artifact, no worktree, no branch (GwzFetchPlan.md D8). The
+            // operator recovering a merge is exactly the one who needs it.
+            | Command::Fetch
             | Command::InitExistingPlan
             | Command::Ls
             | Command::SnapshotList
@@ -119,6 +124,7 @@ mod tests {
             (Command::CloneWorkspace, Decision::NotGated),
             (Command::Commit, Decision::Block),
             (Command::Diff, Decision::Allow),
+            (Command::Fetch, Decision::Allow),
             (Command::Forall, Decision::Block),
             (Command::InitNewWorkspace, Decision::NotGated),
             (Command::InitExistingPlan, Decision::Allow),

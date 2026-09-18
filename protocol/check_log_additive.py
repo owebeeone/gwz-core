@@ -168,7 +168,18 @@ from taut.ir.load import load_schema
 # removing exactly that one field object from the new IR reproduced the
 # previous pin below exactly.
 #   was: d630cf220ef9ef16237c984dfd944bf08b5ad49b119d2bec3b6cbeb07e36e8ea
-PRE_LOG_WIRE_SHA256 = "cb059717cc1f306602f74a571ec7c1964de9df56ce319a7afee734e6a784675a"
+#
+# Moved deliberately again on 2026-09-18 by the `gwz fetch` verb (gwz-cli
+# dev-docs/GwzFetchPlan.md step 1.1), which allocates that verb's whole
+# surface and nothing else: ActionKind.fetch (the next additive slot 30), the
+# FetchResult enum, the FetchRepoSummary, FetchRequest and FetchResponse
+# messages, and the matching GwzCore.fetch service method. No existing
+# message, field, slot, enum or method changed. MEASURED additive, not
+# assumed: removing exactly those three messages, that one enum, that one
+# ActionKind member and that one service method from the new IR reproduced the
+# previous pin below exactly.
+#   was: cb059717cc1f306602f74a571ec7c1964de9df56ce319a7afee734e6a784675a
+PRE_LOG_WIRE_SHA256 = "4b6cf3fd9fb9d0a9338a7a25aa305435eb01ef9219f4ad80b0dad705d4301ee6"
 LOG_METHODS = {"log", "log.output"}
 
 

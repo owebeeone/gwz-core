@@ -118,6 +118,33 @@ saying why -- `private, skipped` for the quiet-clone case, otherwise
 row, and is human text: report it, do not parse it. The quiet skip in `clone`
 itself is unchanged -- no row, no event, no transport observation.
 
+The `gwz fetch` verb (2026-09-18, gwz-cli dev-docs/GwzFetchPlan.md) allocates
+one service method, `GwzCore.fetch`, one `ActionKind` member, `fetch` (the next
+additive slot, 30), one enum, `FetchResult`, and three messages,
+`FetchRequest`, `FetchResponse` and `FetchRepoSummary`. Nothing existing
+changed.
+
+`FetchRequest` carries `meta` and nothing else. It deliberately has no
+counterpart to `PushRequest.remote_check`: `push`'s `changed` default exists so
+that a push with nothing to publish need not connect, and a fetch that does not
+connect has answered nothing, so `always` is the only meaning this verb has.
+A caller that wants a particular remote sends it in `meta.policy.remote`, as
+`pull` does; a request-level `remote` field is a later phase.
+
+`FetchResponse.repos` is one `FetchRepoSummary` per selected repository, in the
+same order as `response.members`. `result` is `updated` when the
+remote-tracking ref moved, `unchanged` when it did not, `no_upstream` when the
+repository has no fetch remote or no attached branch to track, and `failed`
+when the remote refused or the fetch errored. `before` and `after` are that
+tracking ref's object ids around the fetch (`before` absent when the ref did
+not exist yet); `upstream` is its full ref name; `ahead` and `behind` count the
+current branch against `after`. Every field but `member_id`, `member_path`,
+`source_kind` and `result` is optional, and a `no_upstream` row may carry
+nothing beyond the remote it would have used.
+
+`fetch` integrates nothing and writes no workspace artifact -- no lock, no
+manifest, no boundary sync -- so it is not gated by an open merge.
+
 Git paths are byte strings and are not guaranteed to be UTF-8. Conflict-path
 fields retain ordinary printable UTF-8 unchanged. A path requiring escaping is
 double-quoted; quotes, backslashes, and familiar control bytes use backslash

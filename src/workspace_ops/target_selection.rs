@@ -42,6 +42,8 @@ fn action_policy(
         A::Commit => (All, Allow, "commit"),
         A::Stage => (All, Allow, "stage"),
         A::Push => (All, Allow, "push"),
+        // `gwz fetch` mirrors push's selection exactly (GwzFetchPlan.md D1).
+        A::Fetch => (All, Allow, "fetch"),
         A::PullHead => (All, Allow, "pull"),
         A::Merge => (All, Allow, "merge"),
         A::Ls => (Members, Allow, "ls"),
