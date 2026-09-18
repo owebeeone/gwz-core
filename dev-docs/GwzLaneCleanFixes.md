@@ -1,6 +1,6 @@
 # GWZ lane disposal clean-up requirements
 
-Status: draft requirements, 2026-09-16; R20 to R22 and Phase 1 steps S1.1 to S1.4 of `GwzLaneCleanFixesPlan.md` released in gwz 1.0.14 (2026-09-18). Requirements only: no design, and no
+Status: draft requirements, 2026-09-16. R20 to R22 and Phase 1 S1.1 to S1.4 released in gwz 1.0.14; Phase 1 complete (S1.5 to S1.8) in gwz 1.0.16; Phase 2 (R5 to R8, R0 reached: a merged verbatim lane disposes with no waiver) merged to main on 2026-09-18, unreleased. Requirements only: no design, and no
 decision is taken here. Sources: the lane issues register (gwz-dev
 `dev-docs/GwzLaneIssues.md`, L1) and a recount of every hazard entry made on
 2026-09-16. Observed with gwz 1.0.12.
