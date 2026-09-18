@@ -456,12 +456,16 @@ fn fetch_response(
 ///
 /// `Rejected` (exit 2) is reserved for a batch in which nothing was contacted
 /// at all and every row was refused before the network -- the plan's "refused
-/// before any remote was contacted".
+/// before any remote was contacted". A `Planned` row counts as contacted here:
+/// under `--dry-run` it stands for the repository the live run would have
+/// read, so a dry run and the live run of the same selection aggregate alike.
 pub(crate) fn fetch_aggregate_status(rows: &[FetchRow]) -> crate::AggregateStatus {
     let contacted = rows.iter().any(|row| {
         matches!(
             row.summary.result,
-            crate::FetchResult::Updated | crate::FetchResult::Unchanged
+            crate::FetchResult::Updated
+                | crate::FetchResult::Unchanged
+                | crate::FetchResult::Planned
         )
     });
     let updated = rows

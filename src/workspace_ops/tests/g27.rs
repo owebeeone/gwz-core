@@ -411,3 +411,52 @@ fn a_dry_run_reports_the_rows_it_would_contact_and_contacts_nothing() {
         "a dry run contacts nothing, so the tracking ref cannot move"
     );
 }
+
+/// A dry run over a selection that holds a planned row and a refused row
+/// aggregates exactly as the live run of that selection does: `Partial`,
+/// never `Rejected`. `Rejected` is for a batch in which every row was refused
+/// before the network (plan §3.5); a planned row is not a refusal.
+#[test]
+fn a_dry_run_with_a_refused_member_aggregates_like_the_live_run() {
+    let temp = TempDir::new("fetch-dry-run-mixed");
+    let backend = Git2Backend::without_credential_helpers();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+
+    let good = RemoteFixture::new("fetch-dry-run-mixed-good");
+    good.commit_and_push("README.md", "one", "initial", &backend);
+    add_member_from_remote(&backend, temp.path(), &good, "good");
+
+    let gone = RemoteFixture::new("fetch-dry-run-mixed-gone");
+    gone.commit_and_push("README.md", "one", "initial", &backend);
+    let gone_path = add_member_from_remote(&backend, temp.path(), &gone, "gone");
+    // An unmaterialized member is refused before any remote is contacted.
+    std::fs::remove_dir_all(&gone_path).unwrap();
+
+    let live = handle_fetch(&backend, temp.path(), fetch_request(), "op_fetch_live").unwrap();
+    let dry = handle_fetch(
+        &backend,
+        temp.path(),
+        crate::FetchRequest {
+            meta: crate::RequestMeta {
+                dry_run: Some(true),
+                ..request_meta_with_workspace()
+            },
+        },
+        "op_fetch_dry",
+    )
+    .unwrap();
+
+    assert_eq!(
+        summary(&dry, "mem_good").result,
+        crate::FetchResult::Planned
+    );
+    assert_eq!(summary(&dry, "mem_gone").result, crate::FetchResult::Failed);
+    assert_eq!(
+        live.response.meta.aggregate_status,
+        crate::AggregateStatus::Partial
+    );
+    assert_eq!(
+        dry.response.meta.aggregate_status, live.response.meta.aggregate_status,
+        "a dry run must not fail harder than the live run it rehearses"
+    );
+}
