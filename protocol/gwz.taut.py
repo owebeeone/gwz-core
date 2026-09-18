@@ -1797,10 +1797,24 @@ SCHEMA = schema(
         path=F(2, STR),
         # Absolute path on this host.
         abspath=F(3, STR),
-        # Whether the member is cloned/materialized on disk.
+        # Whether the member is cloned/materialized on disk. OBSERVED, not
+        # claimed: the lock's own `materialized` flag is what the workspace
+        # was told to have, and `gwz clone` of a workspace may quietly skip a
+        # private member whose access is refused -- it removes the directory
+        # and rewrites no lock, so the lock keeps saying `true` about a member
+        # that is not there (GwzOpenDecisions D3). This field answers for the
+        # filesystem instead.
         materialized=F(4, BOOL),
         # Concrete target kind for this list entry.
-        target_kind=F(5, Ref.TargetKind, optional=True)),
+        target_kind=F(5, Ref.TargetKind, optional=True),
+        # Why a member the lock records as materialized is not on disk
+        # (GwzOpenDecisions D3). Present exactly when the lock and the
+        # filesystem disagree that way, and absent on every ordinary row --
+        # a materialized member, and a member the lock never materialized.
+        # `private, skipped` is the quiet-clone case: a private member whose
+        # access `gwz clone` was refused. Human text for a person to read;
+        # do not parse it or switch on it.
+        note=F(6, STR, optional=True)),
 
     LsResponse=Msg(
         response=F(1, Ref.ResponseEnvelope),

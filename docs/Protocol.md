@@ -100,6 +100,24 @@ or absent, is the unchanged behaviour: one attempt, then `Busy`. The family
 wrapper clears the field before delegating to the merge engine, which takes
 its own workspace locks and never sees it.
 
+GwzOpenDecisions D3 (2026-09-18) makes an `ls` listing answer for the
+filesystem, and adds one optional field: `MemberEntry.note` (tag 6).
+`MemberEntry.materialized` (tag 4) keeps its tag, its type and its
+required-ness; what changed is what core computes for it. It used to echo the
+workspace lock's own `materialized` flag, which is a claim about what the
+workspace was told to have. `clone` of a workspace may quietly skip a private
+member whose access is refused -- it removes the directory and rewrites no
+lock, because a clone materializes a lock target -- so the lock goes on
+recording a member that is not on disk. `materialized` is now observed: the
+lock records the member AND its directory exists. Which rows are listed is
+still the lock's decision, so no row appears or disappears and
+`include_unmaterialized` is unchanged; a row the lock records but the
+filesystem does not have is listed with `materialized: false` and `note`
+saying why -- `private, skipped` for the quiet-clone case, otherwise
+`recorded in the lock but absent on disk`. `note` is absent on every other
+row, and is human text: report it, do not parse it. The quiet skip in `clone`
+itself is unchanged -- no row, no event, no transport observation.
+
 Git paths are byte strings and are not guaranteed to be UTF-8. Conflict-path
 fields retain ordinary printable UTF-8 unchanged. A path requiring escaping is
 double-quoted; quotes, backslashes, and familiar control bytes use backslash

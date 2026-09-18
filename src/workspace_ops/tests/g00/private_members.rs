@@ -143,6 +143,33 @@ fn clone_case(status: u16, private: bool, succeeds: bool) {
         let rendered = format!("{response:?} {:?}", events.take());
         assert!(!rendered.contains("mem_secret"), "{rendered}");
         assert!(!rendered.contains("repos/secret"), "{rendered}");
+
+        // GwzOpenDecisions D3: the clone's omission is unchanged above, but
+        // the lock it copied still records mem_secret as materialized. `ls`
+        // answers for the filesystem, so the row is listed and says why it
+        // is not there, instead of claiming a member that is not on disk.
+        let listed = crate::workspace_ops::handle_ls(
+            &target,
+            crate::LsRequest {
+                meta: crate::RequestMeta {
+                    workspace: Some(crate::WorkspaceRef {
+                        root: Some(target.to_string_lossy().into_owned()),
+                        workspace_id: None,
+                    }),
+                    ..request_meta()
+                },
+                include_unmaterialized: None,
+            },
+            "ls",
+        )
+        .unwrap();
+        let members = listed.members.unwrap();
+        let app = members.iter().find(|m| m.id == "mem_app").unwrap();
+        assert!(app.materialized);
+        assert_eq!(app.note, None);
+        let secret = members.iter().find(|m| m.id == "mem_secret").unwrap();
+        assert!(!secret.materialized, "nothing is on disk for mem_secret");
+        assert_eq!(secret.note.as_deref(), Some("private, skipped"));
     } else {
         assert!(
             result.is_err(),

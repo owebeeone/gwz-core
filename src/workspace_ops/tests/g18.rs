@@ -23,8 +23,26 @@ fn member(id: &str, path: &str) -> ManifestMember {
     }
 }
 
-/// Write a manifest with `members`, and a lock that records `materialized` ids as materialized.
+/// Write a manifest with `members`, and a lock that records `materialized` ids
+/// as materialized. Every such member's worktree directory is created too:
+/// `materialized` in an `ls` listing is the FILESYSTEM's answer, not the
+/// lock's claim (GwzOpenDecisions D3), so a fixture that records a member
+/// without putting it on disk is describing the quiet-clone bug rather than
+/// an ordinary workspace. `write_workspace_leaving_absent` is for that case.
 fn write_workspace(temp: &std::path::Path, members: Vec<ManifestMember>, materialized: &[&str]) {
+    write_workspace_leaving_absent(temp, members, materialized, &[]);
+}
+
+/// As `write_workspace`, but the ids in `absent` get their lock row and no
+/// directory: what `gwz clone` leaves behind when it quietly skips a private
+/// member whose access was refused (it removes the directory and rewrites no
+/// lock).
+fn write_workspace_leaving_absent(
+    temp: &std::path::Path,
+    members: Vec<ManifestMember>,
+    materialized: &[&str],
+    absent: &[&str],
+) {
     let manifest = ManifestArtifact {
         schema: artifact::WORKSPACE_SCHEMA.to_owned(),
         workspace: WorkspaceHeader {
@@ -58,6 +76,9 @@ fn write_workspace(temp: &std::path::Path, members: Vec<ManifestMember>, materia
                 materialized: Some(true),
             },
         );
+        if !absent.contains(&id) {
+            std::fs::create_dir_all(temp.join(&lock_members[id].path)).unwrap();
+        }
     }
     artifact::write_lock(
         temp,
@@ -177,6 +198,88 @@ fn include_unmaterialized_lists_all() {
         !lib.materialized,
         "mem_lib has no lock entry → not materialized"
     );
+}
+
+/// GwzOpenDecisions D3. `gwz clone` of a workspace quietly skips a private
+/// member whose access is refused: the directory is removed, no row is
+/// returned, and the lock is not rewritten (a clone materializes a LOCK
+/// target), so the lock goes on recording the member as materialized. The
+/// listing must not repeat that claim. The row is still listed -- hiding it
+/// is what made the discrepancy invisible -- with `materialized: false` and
+/// the reason.
+#[test]
+fn a_privately_skipped_member_is_listed_unmaterialized_with_its_reason() {
+    let temp = TempDir::new("ls-private-skipped");
+    let mut secret = member("mem_secret", "repos/secret");
+    secret.private = true;
+    write_workspace_leaving_absent(
+        temp.path(),
+        vec![member("mem_app", "repos/app"), secret],
+        &["mem_app", "mem_secret"],
+        &["mem_secret"],
+    );
+
+    // Listed by default: the lock claims it, so it is not silently dropped.
+    let response = handle_ls(temp.path(), ls_request(&[], false), "op").unwrap();
+    assert_eq!(ids(&response), vec!["mem_app", "mem_secret"]);
+    let members = response.members.unwrap();
+    let app = members.iter().find(|m| m.id == "mem_app").unwrap();
+    assert!(app.materialized, "the public member really is on disk");
+    assert_eq!(app.note, None, "an ordinary row carries no note");
+
+    let secret = members.iter().find(|m| m.id == "mem_secret").unwrap();
+    assert!(
+        !secret.materialized,
+        "nothing is on disk, whatever the lock says"
+    );
+    assert_eq!(secret.note.as_deref(), Some("private, skipped"));
+    assert!(!std::path::Path::new(&secret.abspath).exists());
+}
+
+/// The same disagreement on a member that is not private -- a directory
+/// removed by hand, say -- is reported too, with a reason that does not
+/// blame a privacy policy it has nothing to do with.
+#[test]
+fn a_recorded_member_missing_from_disk_is_unmaterialized_with_a_plain_reason() {
+    let temp = TempDir::new("ls-absent-public");
+    write_workspace_leaving_absent(
+        temp.path(),
+        vec![member("mem_app", "repos/app")],
+        &["mem_app"],
+        &["mem_app"],
+    );
+    let response = handle_ls(temp.path(), ls_request(&[], false), "op").unwrap();
+    let app = &response.members.unwrap()[0];
+    assert!(!app.materialized);
+    assert_eq!(
+        app.note.as_deref(),
+        Some("recorded in the lock but absent on disk")
+    );
+}
+
+/// A member the lock never materialized is unchanged: omitted by default,
+/// listed by `--unmaterialized`, and carrying no note -- there is no
+/// disagreement to report, only an unbuilt member.
+#[test]
+fn a_never_materialized_member_carries_no_note() {
+    let temp = TempDir::new("ls-never-materialized");
+    write_workspace(
+        temp.path(),
+        vec![
+            member("mem_app", "repos/app"),
+            member("mem_lib", "repos/lib"),
+        ],
+        &["mem_app"],
+    );
+    let response = handle_ls(temp.path(), ls_request(&[], true), "op").unwrap();
+    let lib = response
+        .members
+        .unwrap()
+        .into_iter()
+        .find(|member| member.id == "mem_lib")
+        .unwrap();
+    assert!(!lib.materialized);
+    assert_eq!(lib.note, None);
 }
 
 #[test]

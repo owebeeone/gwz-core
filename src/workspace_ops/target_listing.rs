@@ -34,19 +34,40 @@ pub(super) fn target_entries(
                     abspath: root.to_string_lossy().into_owned(),
                     materialized: true,
                     target_kind: Some(crate::TargetKind::Root),
+                    note: None,
                 });
             };
-            let materialized = lock
+            // What the lock says the workspace was told to have. It decides
+            // which rows are listed, exactly as before: a member the lock
+            // never materialized is omitted unless asked for.
+            let recorded = lock
                 .as_ref()
                 .and_then(|lock| lock.members.get(&member.id))
                 .and_then(|entry| entry.materialized)
                 == Some(true);
-            (materialized || include_unmaterialized).then(|| crate::MemberEntry {
+            let abspath = root.join(&member.path);
+            // GwzOpenDecisions D3: what is actually there. `gwz clone` of a
+            // workspace may quietly skip a private member whose access is
+            // refused -- it removes the directory and rewrites no lock (the
+            // clone materializes a lock target), so the lock goes on saying
+            // `materialized: true` about a directory that does not exist.
+            // The listing answers for the filesystem instead: the absence is
+            // the ground truth and needs no record, it stays right if the
+            // member is materialized later or removed by hand, and `gwz ls`
+            // never has to be believed over `ls`.
+            let present = std::fs::symlink_metadata(&abspath).is_ok();
+            let note = match (recorded, present, member.private) {
+                (true, false, true) => Some("private, skipped".to_owned()),
+                (true, false, false) => Some("recorded in the lock but absent on disk".to_owned()),
+                _ => None,
+            };
+            (recorded || include_unmaterialized).then(|| crate::MemberEntry {
                 id: member.id.clone(),
                 path: member.path.clone(),
-                abspath: root.join(&member.path).to_string_lossy().into_owned(),
-                materialized,
+                abspath: abspath.to_string_lossy().into_owned(),
+                materialized: recorded && present,
                 target_kind: Some(crate::TargetKind::Member),
+                note,
             })
         })
         .collect();

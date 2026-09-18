@@ -158,7 +158,17 @@ from taut.ir.load import load_schema
 # one field object from the new IR reproduced the previous pin below
 # exactly.
 #   was: 02eccee9bf22debd925446bc21732c8d36178eb3c222377ad83883e62ab2acf7
-PRE_LOG_WIRE_SHA256 = "d630cf220ef9ef16237c984dfd944bf08b5ad49b119d2bec3b6cbeb07e36e8ea"
+#
+# Moved deliberately again on 2026-09-18 by GwzOpenDecisions D3, which makes
+# `gwz ls` answer for the filesystem rather than repeat the lock's claim
+# about a quietly skipped private member: it adds exactly one optional field,
+# MemberEntry.note (tag 6). No existing message, field, slot, enum or method
+# changed -- `materialized` (tag 4) keeps its tag, type and required-ness,
+# and only what core computes for it changed. MEASURED additive, not assumed:
+# removing exactly that one field object from the new IR reproduced the
+# previous pin below exactly.
+#   was: d630cf220ef9ef16237c984dfd944bf08b5ad49b119d2bec3b6cbeb07e36e8ea
+PRE_LOG_WIRE_SHA256 = "cb059717cc1f306602f74a571ec7c1964de9df56ce319a7afee734e6a784675a"
 LOG_METHODS = {"log", "log.output"}
 
 

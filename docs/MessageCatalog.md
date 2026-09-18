@@ -1810,6 +1810,7 @@ has no service method and no handler that executes commands.
 | abspath | 3 | str | no | no | - |
 | materialized | 4 | bool | no | no | - |
 | target_kind | 5 | TargetKind | yes | no | - |
+| note | 6 | str | yes | no | - |
 
 ### LsResponse
 

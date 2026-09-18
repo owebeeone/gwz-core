@@ -4751,6 +4751,7 @@ pub struct MemberEntry {
     pub abspath: String,
     pub materialized: bool,
     pub target_kind: Option<TargetKind>,
+    pub note: Option<String>,
 }
 impl MemberEntry {
     pub fn to_cbor(&self) -> Cbor {
@@ -4760,6 +4761,7 @@ impl MemberEntry {
             (3, Cbor::Text(self.abspath.clone())),
             (4, Cbor::Bool(self.materialized)),
             (5, match &self.target_kind { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (6, match &self.note { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -4769,6 +4771,7 @@ impl MemberEntry {
             abspath: c.try_get(3)?.try_text()?,
             materialized: c.try_get(4)?.try_bool()?,
             target_kind: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(TargetKind::from_wire(v.try_int()?)?) } },
+            note: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
         })
     }
 }
