@@ -498,8 +498,6 @@ pub(crate) fn fetch_aggregate_status(rows: &[FetchRow]) -> crate::AggregateStatu
     }
 }
 
-/// The root's fetch remote: the policy `--remote` token, else `origin`, else
-/// whatever remote the root has first. Identical to pull's rule.
 /// A `--remote <name>` the repository does not have is refused while
 /// resolving, before any network, on the live path and the dry run alike:
 /// the answer is local, so a dry run that promised to contact the name would
@@ -528,6 +526,8 @@ where
     )))
 }
 
+/// The root's fetch remote: the policy `--remote` token, else `origin`, else
+/// whatever remote the root has first. Identical to pull's rule.
 fn root_fetch_remote_name<B>(
     backend: &B,
     root: &Path,
