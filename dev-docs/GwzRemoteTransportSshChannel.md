@@ -1,6 +1,10 @@
 # Nonblocking SSH channel primitive
 
-Date: 2026-09-20. Status: remediation round 1 candidate, preactivation; not accepted.
+Date: 2026-09-20. Status: **accepted preactivation primitive at core
+`f03f5f79bae73d378e575273af0b9ed2a87c052d`, root
+`6076c6153f2b4fb74da5179b0ec6ffd2765d81ad` after original Code/State/Surface
+reported GO in root `dev-docs/GwzRemoteTransportSshChannel-Review{Code,State,Surface}-1.md`.
+This accepts channel/connection ownership and native cleanup only.**
 Scope: Remote Transport Design §8, after accepted AdapterFoundation. This
 primitive owns an already trusted/authenticated SSH session for one Git command
 channel. The native fixture authenticates only with temporary loopback keys and
@@ -72,8 +76,8 @@ EAGAIN and can leak on cancellation. The lane owner separately found native
 flush discarding unread stdout. Root RemPlan maps both to concrete regressions.
 The channel grows within the existing 20% budget allowance; the new 53-line
 connection owner is a separate socket/native lifetime boundary, not a carrier.
-Production connection policy, pumping and pooling remain deferred. No acceptance
-is claimed before original reviewers close their counterexamples.
+Production connection policy, pumping and pooling remain deferred. Original reviewers closed their counterexamples in round 1; all three axes
+reported GO with no remaining P0–P3.
 
 Correction qualification on the same macOS host: five native tests pass (two
 lifecycle tests and three regressions), with no failures, ignores or warnings.
@@ -88,4 +92,5 @@ split by lifecycle/shared fixture/regressions and remains within the combined
 350 + 180 line allowance plus its 20% margin. Disposal behavioral tests were
 written during correction, not before the new disposal API; do not claim a
 behavioral red-before-implementation sequence for that API. Formatting and diff
-checks pass. Review closure is still pending.
+checks pass. Both original blocking findings and the independent flush defect are closed
+by the original reviewers; all three axes returned GO on the exact tuple above.
