@@ -10,6 +10,10 @@ registry resolution is intentionally deferred to the explicit archive proof.
 Regeneration is explicit and checks the owner package/version, exported-schema
 digest, taut source revision, and external-type generator file hashes:
 
+Supply the verified checkout's canonical `src` directory. Run the command in a
+fresh interpreter; cached taut modules are refused, and imported module paths
+must resolve inside that exact source directory.
+
 ```sh
 gwz-core/protocol/.regen-venv/bin/python \
   gwz-core/tests/transport_consumer/protocol/regen.py \
@@ -43,7 +47,8 @@ gwz-core/protocol/.regen-venv/bin/python \
 ```
 
 The runner prints the source revision, package identity, archive digest, and
-exact offline Cargo command before running all six consumer tests.
+exact offline Cargo command before running all nine consumer tests, including
+three fake-host clock and pool-lifetime cases.
 
 The serialized stream case treats its generated outer wrapper as a trusted
 fixture and applies the owner transport codec's bounded encode/decode to the

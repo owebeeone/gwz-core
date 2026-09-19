@@ -80,7 +80,21 @@ def _load_owner(path: Path, pin: dict, schema_from_json):
 
 
 def _verify_taut_source(path: Path, pin: dict) -> None:
-    repo = path.parent
+    supplied = path.resolve()
+    repo = Path(
+        subprocess.run(
+            ["git", "-C", str(supplied), "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    ).resolve()
+    expected_source = (repo / "src").resolve()
+    if supplied != expected_source:
+        raise SystemExit(
+            "taut source must be the canonical Git checkout src directory: "
+            f"expected {expected_source}, got {supplied}"
+        )
     revision = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "HEAD"],
         check=True,
@@ -110,15 +124,43 @@ def _verify_taut_source(path: Path, pin: dict) -> None:
             )
 
 
+def _check_taut_module_origin(name: str, module: object, source: Path) -> None:
+    raw_origin = getattr(module, "__file__", None)
+    if not isinstance(raw_origin, str):
+        raise SystemExit(f"imported {name} has no file origin")
+    origin = Path(raw_origin).resolve()
+    if source != origin and source not in origin.parents:
+        raise SystemExit(
+            f"imported {name} is outside canonical taut source: {origin}"
+        )
+
+
 def _generate(owner_path: Path, taut_source: Path) -> str:
     pin = json.loads(PIN.read_text())
     _verify_taut_source(taut_source, pin)
     import sys
 
-    sys.path.insert(0, str(taut_source))
+    source = taut_source.resolve()
+    module_names = sorted(name for name in sys.modules if name == "taut" or name.startswith("taut."))
+    for name in module_names:
+        module = sys.modules.get(name)
+        if module is not None:
+            _check_taut_module_origin(name, module, source)
+            raise SystemExit(
+                "taut modules are already loaded; run regeneration in a fresh interpreter"
+            )
+    sys.path.insert(0, str(source))
     import taut
     from taut.gen.scaffold import emit
+    from taut.gen import rust_external
     from taut.ir.load import load_schema, schema_from_json
+
+    for name, module in (
+        ("taut", taut),
+        ("taut.gen.scaffold", sys.modules["taut.gen.scaffold"]),
+        ("taut.gen.rust_external", rust_external),
+    ):
+        _check_taut_module_origin(name, module, source)
 
     if taut.__version__ != pin["taut-proto"]:
         raise SystemExit(

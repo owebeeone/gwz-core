@@ -23,7 +23,8 @@ the owner's CBOR runtime so generated codec calls use the same Rust types.
 Cargo uses checked-in generated output and an exact package version, with no
 generation hook, schema fetch, or sibling-path dependency. The explicit developer
 regeneration command pins the taut source revision, extension file hashes, owner
-package/schema and rustfmt version. This remains an unpublished-package proof:
+package/schema and rustfmt version. It requires the checkout's canonical `src`,
+rejects preloaded taut modules and checks imported module origins. This remains an unpublished-package proof:
 the isolated archive runner supplies a temporary Cargo patch. Neither the
 test-only delivery field nor its tag assigns a production GWZ protocol field.
 
@@ -38,6 +39,13 @@ only shorten the configured values. `Pool::checkout` returns a cancellable
 must be consumed with `Lease::release(Disposition::Reusable)` only after the
 exchange and backend cleanup prove reuse. Dropping a checkout cancels the
 request, and dropping a lease discards its connection.
+
+Retain at least one `Pool` clone for the intended endpoint lifetime. Dropping
+the final `Pool` clone initiates shutdown, stops admission and invalidates active
+leases, even if a driver, checkout or lease still holds shared state. Those
+objects do not count as Pool owners. This transition differs from losing the
+`PoolDriver`: final Pool drop leaves the retained driver responsible for draining
+cleanup actions; driver loss requires prior host disposal as described below.
 
 The full reuse key is `Key { scheme, username, host, port }`. The physical
 capacity groups are separate: `PoolMachine::counts_for_key` reports reuse-key
@@ -65,10 +73,23 @@ The driver exposes these host-facing operations:
 | `connected(id, Result<Option<Identity>, Failure>)` | Acknowledge actual connect/auth completion; dispose partial resources before reporting failure, and close late success after cancellation. |
 | `idle_closed(id)` | Report spontaneous disposal of an idle or eviction-closing resource; a `WrongState` result means checkout won and the host must route that exchange failure and discard its lease. |
 | `closed(id)` | Acknowledge physical close; capacity is retained until this acknowledgement. |
-| `advance(now_ms)` / `next_deadline()` | Drive the monotonic clock independently of command arrival and re-arm after every pool mutation. |
+| `advance(now_ms)` / `next_deadline()` | Initialize the chosen monotonic origin before the first checkout and drive it independently of command arrival. `next_deadline` is a snapshot, not a timer subscription; use the host timer duties below. |
 | `begin_interaction(id)` / `end_interaction(id)` | Pause network time only for a separately bounded helper interaction; repeated interactions share the configured allowance. |
 | `Pool::shutdown()` | Stop admission and begin endpoint cleanup. |
 | `PoolDriver::shutdown_complete()` | Report complete only after every physical disposal is acknowledged. The host still executes all close/abort actions by their deadlines. |
+
+The machine starts at zero. Before accepting the first checkout, call `advance`
+with the host's chosen monotonic value; all later values use that same origin.
+Do not create requests at zero and subsequently switch to a process/system
+epoch: that would immediately expire budgets which have not elapsed.
+
+The host must run a periodic timer independently of incoming actions, or re-query
+deadlines after every mutation it controls with a bounded periodic fallback for
+mutations through independently held Pool/Checkout/Lease handles. Choose a tick
+interval consistent with the required timeout responsiveness. A pending
+`next_action` future supplies no timer service, and an earlier deadline can arise
+while it remains pending. A timer-aware host may cancel that pending receiver,
+advance the clock and query the new snapshot, then resume receiving actions.
 
 Deterministic hosts use the equivalent `PoolMachine` methods directly:
 `new`, `request`, `take`, `next_action`, `connected`, `idle_closed`, `closed`,
@@ -112,6 +133,8 @@ network, credentials, sockets, or carrier framing:
 | Structured session/operation cancellation | `tests/pool_regressions.rs::late_session_and_operation_cancellation_cannot_touch_a_fresh_session`; `session_cancellation_covers_all_its_work_but_preserves_idle_and_other_sessions` |
 | Clock, helper, allocation, and cleanup duties | `tests/pool.rs::queue_network_interaction_and_cleanup_use_independent_budgets`; `idle_expiry_runs_from_release_and_never_reclaims_a_quiet_lease` |
 | Async ownership and driver wake slot | `tests/pool_async.rs::clones_share_capacity_and_lease_drop_discards_while_checkout_drop_cancels`; `full_request_capacity_does_not_consume_the_driver_wake_slot`; `spontaneous_idle_disposal_wakes_queued_checkout_and_schedules_replacement` |
+| Final Pool owner initiates shutdown despite a retained driver/lease | `tests/pool_async.rs::dropping_last_pool_owner_shuts_down_even_with_a_live_lease` |
+| Consumer host clock initialization, independent ticking and retained Pool lifetime | Consumer `tests/pool_host.rs`: `host_clock_keeps_large_nonzero_origin_for_connect_budget`; `periodic_tick_services_new_earlier_allocation_deadline_while_driver_waits`; `final_pool_clone_drop_shuts_down_live_lease_for_host_cleanup` |
 | Bounded shutdown and late connector completion | `tests/pool.rs::shutdown_holds_capacity_until_abort_is_acknowledged`; `cancelling_an_open_keeps_its_reservation_until_late_success_is_closed` |
 
 The accepted checkpoint records 66 passing tests and the 50,000-case replay.
@@ -127,7 +150,7 @@ paths, installs a temporary Cargo patch, and runs `cargo test --offline
 --locked`. The workspace archive at transport revision
 `e8b9a1c5408cc9ea9528939b3a602acbeb697814` (SHA-256
 `24c9d7a839b1a23ae1f188541ac87092550dcae99bd9cf6e14df4c900b1a7dd9`) passed
-all six consumer tests. These include the same bidirectional stream exchange
+all nine consumer tests. These include three pool host-contract regressions and the same bidirectional stream exchange
 through typed values and encoded payloads. The runner also verifies the archive's
 Cargo VCS revision and rejects dirty-source metadata before extraction.
 This proves the checked consumer needs no sibling

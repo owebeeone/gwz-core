@@ -2,7 +2,9 @@
 
 import importlib.util
 import json
+import subprocess
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -24,7 +26,11 @@ def pin():
 
 
 def test_positive_regeneration_matches_checked_artifact():
-    assert REGEN._generate(OWNER, TAUT_SOURCE) == REGEN.OUTPUT.read_text()
+    subprocess.run(
+        [sys.executable, str(REGEN_PATH), "--owner-schema", str(OWNER),
+         "--taut-source", str(TAUT_SOURCE), "--check"],
+        check=True,
+    )
 
 
 def test_wrong_owner_pin_refuses_before_schema_load():
@@ -63,3 +69,31 @@ def test_dirty_taut_source_refuses_generation(monkeypatch):
     monkeypatch.setattr(REGEN.subprocess, "run", fake_run)
     with pytest.raises(SystemExit, match="checkout is dirty"):
         REGEN._verify_taut_source(TAUT_SOURCE, pin())
+
+
+def test_noncanonical_taut_subdirectory_refuses_generation():
+    with pytest.raises(SystemExit, match="canonical.*src"):
+        REGEN._verify_taut_source(TAUT_SOURCE.parent / "docs", pin())
+
+
+def test_foreign_cached_same_version_modules_refuse_generation(monkeypatch, tmp_path):
+    foreign = tmp_path / "cached-taut"
+    foreign.mkdir()
+    for module_name in ("taut", "taut.gen", "taut.gen.scaffold", "taut.gen.rust_external"):
+        module = types.ModuleType(module_name)
+        module.__file__ = str(foreign / (module_name.replace(".", "_") + ".py"))
+        if module_name == "taut":
+            module.__version__ = "0.9.1"
+        monkeypatch.setitem(sys.modules, module_name, module)
+    monkeypatch.setattr(REGEN, "_verify_taut_source", lambda *_args: None)
+    with pytest.raises(SystemExit, match="outside canonical taut source"):
+        REGEN._generate(OWNER, TAUT_SOURCE)
+
+
+def test_cached_canonical_module_also_requires_fresh_interpreter(monkeypatch):
+    module = types.ModuleType("taut")
+    module.__file__ = str(TAUT_SOURCE / "taut" / "__init__.py")
+    monkeypatch.setitem(sys.modules, "taut", module)
+    monkeypatch.setattr(REGEN, "_verify_taut_source", lambda *_args: None)
+    with pytest.raises(SystemExit, match="fresh interpreter"):
+        REGEN._generate(OWNER, TAUT_SOURCE)
