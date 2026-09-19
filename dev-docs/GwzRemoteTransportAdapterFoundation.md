@@ -1,6 +1,13 @@
 # Remote transport adapter foundation
 
-Date: 2026-09-20. Status: implementation candidate, no production activation.
+Date: 2026-09-20. Status: **accepted foundation; no production activation**.
+Original Code, State and Surface reviewers reported GO with zero findings on
+core `46bbc932ac25d9b1762c77351293ea1c0ac7dcbb`, root
+`687e2d3c21a5fca0cfff81216eff4bdac9f855ca`; transport
+`28f5afb3938a2aa8af0e1e8d5b07779add6ab776` and taut
+`733e8a78897a90f017f4726e4331aed95e8cb977` unchanged.
+Reports are filed verbatim in root dev-docs as
+`GwzRemoteTransportAdapterFoundation-Review{Code,State,Surface}.md`.
 Authority: Remote Transport Design §8 and Plan Phase 3, following accepted
 NativeBinding qualification. This slice prepares a distributable binding and
 the blocking read/write boundary before attaching an SSH session worker.
