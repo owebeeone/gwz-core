@@ -31,7 +31,7 @@ fn host_clock_keeps_large_nonzero_origin_for_connect_budget() {
     else {
         panic!("expected connect action");
     };
-    assert_eq!(network_deadline, 4_010_000);
+    assert_eq!(network_deadline, Some(4_010_000));
     driver.advance(4_009_999);
     assert!(pin!(&mut checkout).poll(&mut context).is_pending());
     assert!(pin!(driver.next_action()).poll(&mut context).is_pending());

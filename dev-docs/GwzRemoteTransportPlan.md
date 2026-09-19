@@ -92,7 +92,14 @@ subset is accepted after Code/State GO in
 next authorized the [deterministic pool checkpoint](GwzRemoteTransportPoolImplementation.md),
 now accepted after original Code/State GO at transport
 `e8b9a1c5408cc9ea9528939b3a602acbeb697814`. Phases 3–6 are **not started**.
-This does not declare either interface frozen.
+The shared-schema consumer is also accepted at core
+`435e936b593476f24fad4cc4e70f5d06b784ed7d`. The current
+[interface gate candidate](GwzRemoteTransportPool-InterfaceGate.md) completes
+message/admission and paired typed/encoded proof work plus design §10.1's
+active-I/O clock. Its owner CI workflow is prepared locally; remote execution
+and cross-repository consumer CI activation remain unestablished. The workspace
+`dev-docs/GwzRemoteTransportInterfaces-Checkpoint.md` records current evidence
+and verdicts. This does not declare either interface frozen.
 Write meaningful failing tests before
 implementation; use deterministic fakes before network fixtures. A phase ends
 with the named evidence and review, not simply with code present.
@@ -200,8 +207,10 @@ operation contexts and dropping one backend clone. Overlapping operations with
 different per-host policy limits respect both physical ceilings; lowering one
 operation's fan-out does not evict the other's connections. The batching timer
 must emit partial data even when the Git adapter never calls flush. Run the same
-contract suite for in-process and serialized carriers, then review the runtime
-and pool API before dependent integrations.
+message-contract suite through typed and serialized payload handoff (without
+implementing physical delivery), then review the runtime and pool API before
+dependent integrations. Pool-only transitions are host-local and keep their
+deterministic resource-ledger tests; they are not serialized messages.
 
 ### Phase 3 — Safe native integration and local SSH
 
@@ -378,8 +387,9 @@ fetch does not complete the programme.
 
 ## 6. Immediate next action
 
-The operator authorized implementation. Continue Phase 1's shared schema/types,
-payload validation and message-level proof against the supplied interface.
-The local gwz-transport member and initial protocol work exist. The separately
-proposed framing adapter has been withdrawn under the operator's clarification;
-no production CLI–core communication API has changed.
+Complete the Phase 1/2 interface candidate's local gates and Code / State /
+Surface review before dependent adapter work. The active-I/O addition is
+host-local and keeps the existing schema/tags unchanged. Prepared CI is distinct
+from executed remote CI; no provisioning or publication is authorized here.
+The separately proposed framing adapter was withdrawn under the operator's
+clarification. No production CLI–core communication API has changed.

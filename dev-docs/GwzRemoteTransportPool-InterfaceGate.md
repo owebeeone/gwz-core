@@ -1,15 +1,17 @@
 # Remote transport runtime and pool interface gate
 
-Status: **draft gate package**, based on `gwz-transport` revision
-`e8b9a1c5408cc9ea9528939b3a602acbeb697814`. The accepted stream and pool
-checkpoints permit this interface review; they do not freeze the API or
-authorize a socket, carrier, CLI, or core service implementation.
+Status: **Phase 1/2 interface gate candidate; not yet accepted**.
+This package extends the accepted stream, pool and shared-schema checkpoints
+with the active-I/O host contract from design §10.1 and complete consumer
+message/admission proofs. The workspace
+`dev-docs/GwzRemoteTransportInterfaces-Checkpoint.md` records the settled review
+tuple, executed gates and the Code / State / Surface verdicts when available.
 
-The current review object is the shared-schema consumer implementation and
-this draft host contract. Acceptance of that checkpoint does not close either
-the Phase 1 schema freeze or Phase 2 runtime/pool freeze in
-[the plan](GwzRemoteTransportPlan.md). In particular, the unimplemented active
-I/O clock semantics below must be settled before the Phase 2 interface freezes.
+The intended freezes are the Phase 1 schema/types, admission and message-handoff
+contract, and Phase 2 stream/pool runtime API. They do not authorize physical
+message delivery, SSH/HTTPS adapters, production CLI/core surface changes,
+publication or native-platform qualification. Review acceptance and Phase 1/2
+completion must be recorded explicitly; this candidate status claims neither.
 
 ## Shared-schema consumer boundary
 
@@ -61,7 +63,8 @@ opening, idle, leased and closing resources. Idle expiry is 60 seconds from
 healthy release; a quiet leased stream never becomes pool-idle. Allocation,
 connect, helper-interaction and cleanup budgets default to 30, 10, 120 and
 5 seconds respectively. Capacity settings accept 1–4,096; outstanding requests
-accept 1–16,384; each timeout accepts 1–86,400,000 milliseconds. Invalid
+accept 1–16,384; allocation/helper/cleanup/idle timeouts accept 1–86,400,000 milliseconds;
+network connect accepts 0–2,147,483,647, where zero disables network timing. Invalid
 construction returns an error. These are endpoint limits; the operation's
 existing fan-out limit remains independent.
 
@@ -119,6 +122,41 @@ lease. A peer `Closed` or flush acknowledgement does not prove Git success or
 connection health. A possible remote effect is surfaced and is never replayed
 by this package.
 
+## Active-I/O host contract
+
+The stream starts `IoState::Idle`. Only an endpoint may call `set_io_state` or
+`record_io_progress`; initiators receive `WrongSide`. Hosts initialize the
+clock before work, advance before reporting events and provide an independent
+timer service even while the message receiver is pending.
+
+`Network` charges the remaining I/O allowance. `Idle` and `Backpressure` preserve
+it; `Interaction` spends the cumulative helper allowance instead. Repeated
+state reports do not refill either budget. If either direction remains eligible
+for peer progress, aggregate state is `Network`. Only positive actual backend
+peer bytes in Network restore I/O allowance; local/message buffering, keepalives,
+zero-byte reports and EOF do not. `io_status` exposes state, remaining budgets
+and active deadline. Clock controls cannot restart active-I/O after close begins.
+
+`Config::io_timeout_ms` defaults to 3,000 ms (0–2,147,483,647, zero disables);
+`interaction_budget_ms` defaults to 120,000 ms (0–86,400,000). Construction
+captures endpoint policy and Open can only shorten it. Design §10.2 preserves
+native disabled and maximum network values: zero is allowed only under disabled
+endpoint policy, while a positive request can bound a disabled setting. Connect
+and I/O Open fields retain their tags/types. `Connect.network_deadline` is
+optional; None means a started, network-untimed connection. Helper and disposal
+deadlines remain bounded. Disabled stream timing retains Network state with
+zero remaining network milliseconds and no active network deadline. Hosts subtract connect
+helper time before constructing the active stream, carrying the same Open's
+remaining allowance across the pool/stream seam. Zero allowance forbids waiting.
+A new Open on a reused connection starts its own policy-capped allowance.
+
+Expiry at the exact deadline wins over late progress/state reports. Endpoint
+expiry emits `Failed { Timeout, Possible }`, preserves readable prefixes before
+`Error::Timeout`, wakes waiters and requires lease discard. Capacity is held
+until disposal is acknowledged. Close replaces active-I/O with its independent
+cleanup deadline. All terminal paths preserve the first cause. These controls
+add no wire field, physical transport, executor or retry policy.
+
 ## Focused fake gate suite
 
 The existing deterministic fake-host tests are the gate suite; they require no
@@ -137,67 +175,47 @@ network, credentials, sockets, or carrier framing:
 | Consumer host clock initialization, independent ticking and retained Pool lifetime | Consumer `tests/pool_host.rs`: `host_clock_keeps_large_nonzero_origin_for_connect_budget`; `periodic_tick_services_new_earlier_allocation_deadline_while_driver_waits`; `final_pool_clone_drop_shuts_down_live_lease_for_host_cleanup` |
 | Bounded shutdown and late connector completion | `tests/pool.rs::shutdown_holds_capacity_until_abort_is_acknowledged`; `cancelling_an_open_keeps_its_reservation_until_late_success_is_closed` |
 
-The accepted checkpoint records 66 passing tests and the 50,000-case replay.
-This checkpoint reran all 27 pool/stream-seam tests above, followed by the normal
-66-test locked suite on Rust 1.95; both passed. Transport source is unchanged,
-so the extended campaign was not repeated.
+The prior acceptance record pins the original 66-test suite and 50,000-case
+pool replay. Current evidence is recorded in the workspace interface checkpoint;
+prior results do not by themselves qualify the new clock behavior.
 
-The checked consumer manifest names the exact registry requirement
-`gwz-transport = "=0.1.0"`; publication is deliberately absent from this
-checkpoint. The explicit `package_proof.py` runner accepts a caller-verified
-`.crate` archive, copies the consumer and archive into isolated temporary
-paths, installs a temporary Cargo patch, and runs `cargo test --offline
---locked`. The workspace archive at transport revision
-`e8b9a1c5408cc9ea9528939b3a602acbeb697814` (SHA-256
-`24c9d7a839b1a23ae1f188541ac87092550dcae99bd9cf6e14df4c900b1a7dd9`) passed
-all nine consumer tests. These include three pool host-contract regressions and the same bidirectional stream exchange
-through typed values and encoded payloads. The runner also verifies the archive's
-Cargo VCS revision and rejects dirty-source metadata before extraction.
-This proves the checked consumer needs no sibling
-checkout or schema download; registry resolution awaits a real release. The
-repeatable runner invocation is:
+## Package and generation gates
 
-```sh
-gwz-core/protocol/.regen-venv/bin/python \
-  gwz-core/tests/transport_consumer/package_proof.py \
-  --archive gwz-transport/target/package/gwz-transport-0.1.0.crate \
-  --archive-sha256 24c9d7a839b1a23ae1f188541ac87092550dcae99bd9cf6e14df4c900b1a7dd9 \
-  --source-revision e8b9a1c5408cc9ea9528939b3a602acbeb697814
-```
+The checked consumer manifest names `gwz-transport = "=0.1.0"` without a path or
+build hook. `package_proof.py` validates an explicitly supplied archive's digest,
+package identity and clean source revision, rejects unsafe archive entries,
+copies only the consumer and archive into isolated temporary paths, supplies a
+temporary Cargo patch and runs the locked offline consumer suite. Registry
+resolution requires a future published package and deliberate lockfile refresh.
+Use the exact archive invocation in the consumer README/current checkpoint.
 
-## Remaining evidence and gate decisions
+The owner's `scripts/regen.py --check` uses `taut-proto==0.9.1` and an exact
+rustfmt build. `.github/workflows/contracts.yml` declares a standalone drift,
+formatting, MSRV-test and packaging job. The consumer generator separately pins
+the local taut extension checkout and owner IR digest. Local generation and
+archive checks are the current executed evidence: transport has no remote,
+and the extended taut revision is not established as remotely available. The
+owner workflow has not run remotely and a multi-repository consumer workflow is
+not activated. Neither missing inputs nor file-exists skips count as CI success.
+Remote provisioning and publication remain separate operator actions.
 
-This package still leaves the following explicit evidence gaps:
+## Scope remaining after this gate
 
-1. No physical connection, SSH/HTTPS adapter, supplied carrier, or CLI/core
-   integration has been exercised.
-2. No native Windows or cross-platform host qualification has been performed.
-3. The pool traits and ownership semantics remain a draft interface until a
-   dedicated interface review records the exact host callback and timeout
-   contract.
-4. The host has no production dispatcher yet; the fake tests establish duties,
-   but not executor integration or shutdown wiring.
-5. Active stream I/O clock/cancellation semantics remain unimplemented. Phase 2
-   must define and test which waits count as network stalls, excluding deliberate
-   backpressure and bounded helper interaction; later adapters bind their waits
-   to that clock. This is an open runtime obligation, not only missing adapter
-   evidence. Pool tests currently cover allocation, connect, interaction,
-   cleanup and idle clocks; stream tests cover batching and close deadlines.
-6. Payload codec tests do not qualify the supplied communication layer. That
-   layer must bound allocation before constructing an outer GWZ message, include
-   its wrapper overhead in its own budgets, preserve ordered delivery, provide
-   bounded backpressure and notify closure while an operation is active. The
-   transport envelope's admission limits do not bound an arbitrary enclosing
-   message. No physical carrier implementation belongs in this package.
-7. The local consumer tests are a focused proof, not the complete Phase 1/2
-   message and runtime matrix. End-to-end Open admission/effect ordering, the
-   full contract suite through encoded payloads, and CI generation-drift wiring
-   remain phase-exit work. The local commands below do not establish CI results.
+1. Physical connections, SSH/HTTPS adapters and the supplied communication
+   layer are not exercised. They are subsequent integration work.
+2. Native Windows and cross-platform host qualification remain subsequent
+   evidence; these fake hosts do not establish it.
+3. The host must implement dispatch, timers, ownership routing, helper-budget
+   transfer, disposal and shutdown. There is no production executor here.
+4. The supplied layer bounds allocation before constructing outer GWZ messages,
+   includes wrapper overhead in its budgets, preserves ordered delivery, reserves
+   aggregate control capacity, provides bounded backpressure and notifies
+   closure. Owner envelope limits do not bound an arbitrary outer wrapper.
+5. The owner workflow is checked in, with remote execution and consumer CI
+   activation outstanding as stated above. No remote/publish action is implied.
 
-The current checkpoint may accept the shared-type integration proof and this
-draft contract after focused tests and review. A GO at this checkpoint does not
-freeze the runtime API or authorize dependent adapter implementation. Complete
-the remaining Phase 1 message/admission evidence and Phase 2 runtime obligations,
-then seek the separately named interface freezes in the plan before adapters.
-Optional GWZ fields remain a Phase 4 decision; no new service method or physical
-framing is proposed here.
+Code and State review must verify the gate's named schema/runtime obligations
+and exact executed evidence. Surface review reads the public transport README
+and consumer README cold. Only all required GO verdicts on the recorded tuple
+can freeze the named interfaces. Optional GWZ fields remain Phase 4 work;
+existing service methods remain unchanged.

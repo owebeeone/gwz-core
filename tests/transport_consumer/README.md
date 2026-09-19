@@ -42,13 +42,17 @@ cargo package --manifest-path gwz-transport/Cargo.toml
 gwz-core/protocol/.regen-venv/bin/python \
   gwz-core/tests/transport_consumer/package_proof.py \
   --archive gwz-transport/target/package/gwz-transport-0.1.0.crate \
-  --archive-sha256 24c9d7a839b1a23ae1f188541ac87092550dcae99bd9cf6e14df4c900b1a7dd9 \
-  --source-revision e8b9a1c5408cc9ea9528939b3a602acbeb697814
+  --archive-sha256 8c7d91d54f0e176109f286beec65c24544f35f23506380939fdb081e6cef87a6 \
+  --source-revision 163feebe439edd5d1fbaf11e163882e80d4f2257
 ```
 
 The runner prints the source revision, package identity, archive digest, and
-exact offline Cargo command before running all nine consumer tests, including
-three fake-host clock and pool-lifetime cases.
+exact offline Cargo command before running the consumer suite. It covers all
+transport envelope variants, Bind/Open admission before fake effects, paired
+typed/encoded stream lifecycle cases, deadline failures, and fake-host clock and
+pool-lifetime duties. Open network deadlines cover native disabled and maximum
+positive values. A clock timeout preserves the byte prefix and structured
+`Timeout` / `Possible` failure across the generated wrapper.
 
 The serialized stream case treats its generated outer wrapper as a trusted
 fixture and applies the owner transport codec's bounded encode/decode to the

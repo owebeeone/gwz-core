@@ -16,7 +16,6 @@ PROOF = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(PROOF)
 
 REVISION = "e8b9a1c5408cc9ea9528939b3a602acbeb697814"
-ARCHIVE = ROOT.parents[2] / "gwz-transport" / "target" / "package" / "gwz-transport-0.1.0.crate"
 
 
 def _archive(
@@ -51,10 +50,12 @@ def _archive(
             bundle.addfile(member, io.BytesIO(content))
 
 
-def test_actual_archive_has_pinned_identity_and_revision():
-    if not ARCHIVE.is_file():
-        pytest.skip("run package_proof.py for the explicit archive success proof")
-    assert PROOF.package_identity(ARCHIVE, REVISION) == ("gwz-transport", "0.1.0")
+def test_valid_archive_has_expected_identity_and_revision(tmp_path):
+    # The explicit package_proof runner qualifies each real source archive.
+    # Unit tests must not depend on a stale locally generated .crate file.
+    archive = tmp_path / "valid.crate"
+    _archive(archive)
+    assert PROOF.package_identity(archive, REVISION) == ("gwz-transport", "0.1.0")
 
 
 def test_dirty_archive_is_rejected(tmp_path):

@@ -660,6 +660,125 @@ construction captures its own equivalent settings; per-operation requests cannot
 race to change global timeout or pool policy. Values beyond the agreed idle
 and evaluation coalescing delays are tuned and qualified before rollout.
 
+### 10.1 Active-I/O clock contract
+
+Added 2026-09-19 for the Phase 1/2 interface gate; this addition is not covered
+by the earlier design-draft GO and awaits the interface review.
+
+This completes the existing active-I/O domain for the Phase 2 interface gate.
+It adds host-local clock controls, not transport messages, physical framing or
+an executor. The message stream cannot infer a network stall from a quiet read,
+an exhausted message credit window, or a pending message-delivery future.
+Only the endpoint host knows whether a backend operation can make peer progress.
+
+Each open endpoint stream has one aggregate active-I/O clock, initially `Idle`.
+The host reports `IoState::Idle`, `Network`, `Backpressure` or `Interaction` via
+`set_io_state`. `Network` means at least one outstanding backend operation can
+make peer progress. `Backpressure` means all otherwise pending work is held by
+deliberate local/remote consumer pressure, bounded message queues or exhausted
+credit. `Interaction` is only a supported, visible and cancellable helper wait;
+the host cannot use it as a generic pause. `Idle` means no backend operation is
+pending. If one direction remains eligible for peer I/O, use `Network` even if
+the other direction is backpressured. Application think time and an idle pooled
+connection do not start this clock.
+
+The host initializes monotonic time with `advance` before beginning timed work
+and advances that same origin before recording subsequent state/progress events.
+An event delivered at an expired deadline loses to the timeout; a late progress
+report, state change or clock tick cannot revive a terminal stream. Backward
+ticks have no effect, consistent with the existing stream/pool clocks. The host
+provides independent timer service; `next_deadline` remains a snapshot, not a
+subscription, and a pending action/message receiver never replaces that service.
+
+`Config::io_timeout_ms` defaults to 3,000 ms for a standalone stream; endpoint
+construction captures its configured native timeout and an Open request can
+only shorten it. Zero disables the network timeout; positive values are
+1–2,147,483,647 ms, matching native startup configuration. With zero, Network
+still reports eligible backend activity but has no active network deadline and
+reports zero remaining network milliseconds. The clock charges elapsed time only
+in `Network`. `Idle`, `Backpressure` and `Interaction` preserve the remaining
+network budget rather than refill it. Repeatedly reporting the same state has
+no timing effect. `record_io_progress(bytes)` resets the network budget only
+for a positive number of bytes actually transferred to/from the backend peer
+while in `Network`; a zero-byte report has no effect. Accepting bytes into a
+local buffer, transferring a taut message, duplicate credit, polling a future
+or sending a keepalive is not qualifying peer progress. EOF is completion of a
+backend wait, not positive-byte progress. A host that finishes a wait updates
+its aggregate state accordingly. These controls are endpoint-only; an initiator
+cannot report backend progress or pause the endpoint's clock. Initiator controls
+return `WrongSide`; positive progress outside Network and either control after
+close begins return `WrongState` without mutation. Terminal endpoint controls
+return the retained terminal error; zero-byte reports only have no effect on a
+live, not-closing endpoint.
+
+`Config::interaction_budget_ms` is a remaining allowance, not an allowance per
+prompt. It defaults to 120,000 ms for a fresh standalone exchange and permits
+0–86,400,000 ms; zero forbids further helper waiting. Every `Interaction`
+interval spends that allowance, and neither peer progress nor leaving/re-entering
+the state refills it. The endpoint host carries the Open operation's remaining
+helper allowance from connect/auth into the active exchange, so the pool's
+connect helper budget and the stream's active helper budget cannot each grant
+the full allowance independently. On a reused connection the new Open starts
+with its own policy-capped allowance. This is host accounting over the existing
+`Deadlines.interaction_ms`, not a new wire field or credential-forwarding scheme.
+
+`io_status` reports the current state, remaining network/helper budgets and
+the active deadline so callers can distinguish backpressure from peer waiting.
+The stream's `next_deadline` selects the earliest applicable active-I/O,
+interaction, batching or close deadline. Close cleanup takes over when local
+close starts or an endpoint receives Close: the active-I/O clock stops and its
+pauses cannot extend the close deadline. Batching and pool-idle rules retain
+their existing independent meanings.
+
+Expiry produces the existing local `Error::Timeout`, wakes pending operations,
+and queues one existing `Failed { code: Timeout, effect: Possible }` from the
+endpoint. Already received bytes may be read before that error, never converted
+to clean EOF. Host cleanup must discard the lease, acknowledge actual disposal
+and retain capacity until then; timeout cannot return a connection as reusable.
+Repeated ticks, final-handle drop, peer cancellation and late progress preserve
+the first terminal cause. No retry/replay or successful Git outcome is inferred.
+
+Qualification uses controlled clocks and fake backend progress: exact deadline
+and late-event ordering; positive/zero progress; pause/resume without budget
+reset; cumulative/zero helper allowance including transfer from connect; quiet
+streams; mixed-direction pressure; independent batching/close deadlines; async
+wakeups; prefix/error ordering and discard-before-capacity-release. The same
+message scenarios run through typed handoff and bounded payload encoding.
+
+### 10.2 Native timeout representation
+
+The pre-freeze implementation contact found that native GWZ accepts
+`--ssh-timeout 0` and core `configure_server_timeout_ms(0)` to disable network
+timeouts. Core also accepts positive milliseconds through `i32::MAX`. The
+transport must represent these settings, not silently clamp them or misreport
+network activity as Idle. This section completes §10's preservation requirement
+and supersedes the prototype's positive-only, 24-hour network timeout range.
+It does not disable bounded allocation, helper, cleanup or idle policies.
+
+Existing `Deadlines.connect_ms` and `io_ms`, pool `connect_timeout_ms`, and stream
+`io_timeout_ms` use zero for disabled and 1–2,147,483,647 for a finite allowance.
+No schema type, tag or message is added. Other Open deadlines remain positive;
+helper **remaining** allowance in the active stream may be zero as §10.1 states.
+A request can only tighten endpoint policy: zero is admissible only when the
+endpoint's corresponding network timeout is already disabled; a positive
+request may bound a disabled endpoint or shorten its positive configured value.
+Omission of the pool request override inherits endpoint policy.
+
+`Action::Connect.network_deadline` is `Option<u64>`: None means network timing
+is disabled, not connection completion. Pool `next_deadline` still returns any
+allocation, helper, cleanup or idle deadline that applies. A helper pause keeps
+an optional remaining network allowance; finishing the helper resumes the same
+finite remainder or the disabled state. Cancellation/shutdown still disposes
+connections, and cleanup stays bounded when network timeouts are disabled.
+Stream progress does not create a deadline when I/O timing is disabled.
+
+Qualification must exercise disabled and maximum positive values, positive
+request tightening of disabled policy, refusal to disable a positive policy,
+cumulative helper expiry while network timing is disabled, and cancellation /
+shutdown disposal. Typed and encoded Open admission must agree on zero, negative
+and excessive network values. These are runtime/schema semantic obligations of
+this interface gate, not deferred adapter behavior.
+
 ## 11. Acceptance matrix
 
 Implement TDD-first. Use deterministic clocks and fake carriers/transports for
