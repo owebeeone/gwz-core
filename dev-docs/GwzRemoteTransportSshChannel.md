@@ -1,6 +1,6 @@
 # Nonblocking SSH channel primitive
 
-Date: 2026-09-20. Status: implementation candidate, preactivation.
+Date: 2026-09-20. Status: remediation round 1 candidate, preactivation; not accepted.
 Scope: Remote Transport Design §8, after accepted AdapterFoundation. This
 primitive owns an already trusted/authenticated SSH session for one Git command
 channel. The native fixture authenticates only with temporary loopback keys and
@@ -8,8 +8,8 @@ checks its temporary known_hosts before authentication. Production connection,
 trust/identity resolution, agent handling and pool integration remain subsequent
 work; this primitive cannot advertise an endpoint capability by itself.
 
-`SshChannel::new` takes sole ownership of an authenticated, nonblocking ssh2
-Session. The caller must not retain Session/channel clones. `poll_open` retries
+`SshChannel::new` takes sole ownership of a SshConnection containing an
+authenticated, nonblocking ssh2 Session and the socket shutdown capability. The caller must not retain Session/channel clones or other native channels/listeners. `poll_open` retries
 only the in-progress native open/exec transition, preserving the same command;
 it never starts a second command after execution. The command is one of the two
 Git services and its repository operand is shell-quoted with a separate `--`.
@@ -25,6 +25,13 @@ Send EOF once all request bytes have been handed to the channel. Finish is
 permitted only after local EOF and both response streams have drained; close and
 wait-close must complete before the session can be extracted for a new lease.
 A native error poisons the primitive; early drop/abort must not return a session.
+`poll_dispose` retains ownership on native close WouldBlock. `force_dispose`
+terminates the socket before dropping native objects; it is the host-deadline
+fallback. Completion is observable through successful disposal/is_disposed and
+only then permits one pool capacity release. Drop attempts forced disposal as a
+fallback. The socket owner also protects idle and partially opened disposal.
+`Write::flush` checks active state but never calls native channel_flush, which
+discards incoming bytes; accepted writes have already reached the native channel.
 Channel exit status is an observation and cannot replace Git's result parsing.
 
 A public standalone fixture compiles the exact preactivation core module with
@@ -49,10 +56,36 @@ stdout/stderr into capped buffers. Server availability is required; a missing
 sshd fails rather than silently passing a skipped test.
 
 Command from workspace root:
-`cargo +1.95.0 test --manifest-path gwz-core/tests/transport_ssh/Cargo.toml --offline --locked --test channel -- --nocapture`.
+`cargo +1.95.0 test --manifest-path gwz-core/tests/transport_ssh/Cargo.toml --offline --locked -- --nocapture`.
 Formatting passes. The missing-module compile failure preceded implementation;
 real native behavior tests were completed against the candidate, so no claim is
-made that each native behavior test preceded its implementation. Source is 221
-lines, fixture 311 lines. No production dependencies, module wiring or active
+made that each native behavior test preceded its implementation. The initial source was 221
+lines and fixture 311 lines; remediation sizing is recorded below. No production dependencies, module wiring or active
 network entry changed. This is not a throughput benchmark, pack transfer test,
 SSH-agent/known-host policy parity result, or cross-platform qualification.
+
+
+## Round 1 correction scope
+
+Code and State independently found that ssh2's nonblocking destructors discard
+EAGAIN and can leak on cancellation. The lane owner separately found native
+flush discarding unread stdout. Root RemPlan maps both to concrete regressions.
+The channel grows within the existing 20% budget allowance; the new 53-line
+connection owner is a separate socket/native lifetime boundary, not a carrier.
+Production connection policy, pumping and pooling remain deferred. No acceptance
+is claimed before original reviewers close their counterexamples.
+
+Correction qualification on the same macOS host: five native tests pass (two
+lifecycle tests and three regressions), with no failures, ignores or warnings.
+The flush test failed against the old implementation before correction and now
+compares the complete advertisement byte-for-byte. The stalled-peer regression
+pauses the fixture-owned process tree, drains queued output, observes two close
+WouldBlock results with ownership retained, then completes forced disposal.
+Normal disposal, idempotence and refusal to extract a disposed connection pass.
+The process-resume guard is armed before stopping any child and does not panic
+while unwinding. Source: channel 270 lines, connection owner 53. Test code is
+split by lifecycle/shared fixture/regressions and remains within the combined
+350 + 180 line allowance plus its 20% margin. Disposal behavioral tests were
+written during correction, not before the new disposal API; do not claim a
+behavioral red-before-implementation sequence for that API. Formatting and diff
+checks pass. Review closure is still pending.

@@ -1,6 +1,7 @@
 //! Single-owner, nonblocking SSH Git channel. Connection, trust/authentication,
 //! readiness, deadlines and pool disposition are responsibilities of the host.
-use ssh2::{BlockDirections, Channel, Session};
+use super::ssh_connection::SshConnection;
+use ssh2::{BlockDirections, Channel};
 use std::io::{self, Read, Write};
 
 #[derive(Clone, Copy, Debug)]
@@ -18,6 +19,7 @@ enum Phase {
     WaitClose,
     Finished,
     Failed,
+    Disposed,
 }
 
 /// Takes sole ownership: no other Session or Channel clone may drive this
@@ -26,7 +28,7 @@ enum Phase {
 pub struct SshChannel {
     // Drop channel before the last session owner.
     channel: Option<Channel>,
-    session: Option<Session>,
+    session: Option<SshConnection>,
     command: String,
     phase: Phase,
     sent_eof: bool,
@@ -35,8 +37,8 @@ pub struct SshChannel {
     exit_status: Option<i32>,
 }
 impl SshChannel {
-    pub fn new(session: Session, service: GitService, path: &str) -> io::Result<Self> {
-        if !session.authenticated() || session.is_blocking() {
+    pub fn new(session: SshConnection, service: GitService, path: &str) -> io::Result<Self> {
+        if !session.native().authenticated() || session.native().is_blocking() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "requires authenticated nonblocking session",
@@ -69,8 +71,9 @@ impl SshChannel {
     pub fn block_directions(&self) -> BlockDirections {
         self.session
             .as_ref()
-            .expect("owned until extraction")
-            .block_directions()
+            .map_or(BlockDirections::None, |owner| {
+                owner.native().block_directions()
+            })
     }
 
     pub fn poll_open(&mut self) -> io::Result<()> {
@@ -79,6 +82,7 @@ impl SshChannel {
                 .session
                 .as_ref()
                 .expect("owned session")
+                .native()
                 .channel_session();
             self.channel = Some(self.native(result)?);
             self.phase = Phase::Exec;
@@ -153,7 +157,7 @@ impl SshChannel {
     }
 
     /// Recover the connection only after complete cleanup; Err retains ownership.
-    pub fn into_session(mut self) -> Result<Session, Self> {
+    pub fn into_session(mut self) -> Result<SshConnection, Self> {
         if self.phase != Phase::Finished {
             return Err(self);
         }
@@ -161,9 +165,47 @@ impl SshChannel {
         Ok(self.session.take().expect("owned session"))
     }
 
-    /// Refuse any further work and leave disposal to drop, never to pool reuse.
+    /// Refuse further work. Drive poll_dispose or force_dispose before releasing
+    /// pool capacity. Drop uses forced termination as a last-resort fallback.
     pub fn abort(&mut self) {
-        self.phase = Phase::Failed;
+        if !self.is_disposed() {
+            self.phase = Phase::Failed;
+        }
+    }
+
+    /// Retain ownership across WouldBlock. Host supplies readiness/deadline;
+    /// on expiry use force_dispose. Success means native owners have been dropped.
+    pub fn poll_dispose(&mut self) -> io::Result<()> {
+        if self.is_disposed() {
+            return Ok(());
+        }
+        self.abort();
+        if let Some(channel) = self.channel.as_mut() {
+            let result = channel.close();
+            if let Err(error) = self.native(result) {
+                if error.kind() == io::ErrorKind::WouldBlock {
+                    return Err(error);
+                }
+                // A failed close also requires socket termination before free.
+            }
+        }
+        self.force_dispose()
+    }
+
+    /// Bounded local termination; no peer acknowledgement or message replay.
+    pub fn force_dispose(&mut self) -> io::Result<()> {
+        self.abort();
+        if let Some(connection) = &self.session {
+            connection.terminate()?;
+        }
+        self.channel.take();
+        self.session.take();
+        self.phase = Phase::Disposed;
+        Ok(())
+    }
+
+    pub fn is_disposed(&self) -> bool {
+        self.phase == Phase::Disposed
     }
 
     fn active(&self) -> io::Result<()> {
@@ -215,7 +257,14 @@ impl Write for SshChannel {
     }
     fn flush(&mut self) -> io::Result<()> {
         self.active()?;
-        let result = self.channel.as_mut().expect("active channel").flush();
-        self.io(result)
+        // There is no outgoing application buffer. ssh2's similarly named
+        // flush discards inbound data; it is NOT std::io::Write::flush.
+        Ok(())
+    }
+}
+
+impl Drop for SshChannel {
+    fn drop(&mut self) {
+        let _ = self.force_dispose();
     }
 }
