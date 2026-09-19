@@ -1,0 +1,12 @@
+[package]
+name = "gwz-transport-ssh-proof"
+version = "0.0.0"
+edition = "2024"
+publish = false
+rust-version = "1.95"
+
+[workspace]
+
+[dependencies]
+ssh2 = "=0.9.6"
+tempfile = "3"
