@@ -67,7 +67,8 @@ def extract(archive: Path, destination: Path) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--git2-archive', type=Path, required=True)
-    parser.add_argument('--toolchain', default='1.95.0')
+    parser.add_argument('--toolchain', default='1.95.0',
+                        help='rustup toolchain selector (default: 1.95.0)')
     args = parser.parse_args()
     pin = json.loads((ROOT / 'binding-pin.json').read_text())
     archive = args.git2_archive.resolve(strict=True)

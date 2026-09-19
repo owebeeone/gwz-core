@@ -53,6 +53,10 @@ python3 gwz-core/tests/transport_native/prove.py \
   --git2-archive "$HOME/.cargo/registry/cache"/index.crates.io-*/git2-0.21.0.crate
 ```
 
+The runner selects Rust 1.95.0 by default. `--toolchain TOOLCHAIN` selects a
+different rustup toolchain for additional qualification; it does not replace
+the recorded Rust 1.95.0 baseline.
+
 If several registries match that glob, supply one exact path instead. The runner
 verifies the archive and patch digests in `binding-pin.json`, extracts into a
 temporary directory, applies the binding patch there, and copies this fixture.
