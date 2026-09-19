@@ -1,6 +1,6 @@
 # Endpoint connection pool checkpoint
 
-Status: **implemented, awaiting settled Code/State review, 2026-09-19; no API freeze**.
+Status: **remediation round 1 implemented, awaiting focused Code/State re-review, 2026-09-19; no API freeze**.
 
 The operator authorized connection pooling after the accepted in-memory stream
 checkpoint. This implements design §7 using fake connections and a controlled
@@ -14,9 +14,20 @@ owns actual connection objects and executes Connect/CancelConnect/Close/Abort
 commands outside the pool lock. Completion acknowledgements update pool state.
 A cancellation never frees an in-flight reservation until its connector settles;
 a late successful connection must close before its capacity is released.
-Closing physical resources count until closure is acknowledged. Abort is a host
+Closing physical resources count until closure is acknowledged.
+`idle_closed` reports actual spontaneous disposal of Idle or already-Closing
+resources and reschedules waiters. If checkout wins the race, it returns
+WrongState without stealing the lease; the host routes I/O failure to that
+exchange and completes its discard/cleanup. Foreign or duplicate tokens are stale. Abort is a host
 instruction to terminate local resources, not a claim that they already closed.
 The host must drive deadlines and promptly execute aborts for bounded shutdown.
+
+Requests carry `Owner { session, operation }`. The session is the fresh binding
+ID, never reused by the host. Operations are scoped inside it and may own many
+exchanges. `cancel_operation` matches the complete owner; `cancel_session`
+matches that session's work across operations. Both retain idle resources.
+The host stops routing work from a lost session before cancellation; no permanent
+session tombstone registry is created inside the pool.
 
 A deterministic PoolMachine supports custom adapters and tests. An async Pool
 facade shares that machine across clones, returns exclusive RAII leases and
@@ -30,7 +41,9 @@ requires its host to tear down the physical resources it owns.
 
 A key contains scheme, SSH username, exact configured host and effective port;
 repository paths and remote names are absent. Each pool instance is one endpoint
-and local-account context. IDs carry instance scope so stale or foreign tokens
+and local-account context. Reuse keys include ports, while the `per_user_host`
+capacity grouping does not; HTTPS uses its no-username host bucket. IDs carry
+instance scope so stale or foreign tokens
 cannot affect another pool. No DNS alias merging is performed.
 
 SSH ambient and explicit identities have separate reuse eligibility within the
@@ -41,7 +54,7 @@ A connector reports proven reuse identity, or no proof for a one-use connection.
 HTTP connections carry no authenticated-account claim; the adapter must apply
 anonymous/gh policy independently on every request.
 
-Defaults: eight connections per key, eight across a host, 256 across the endpoint,
+Defaults: eight connections per user/host across ports, eight across a host, 256 across the endpoint,
 1,024 outstanding checkout requests, 60-second idle expiry, 30-second allocation
 wait, 10-second connect-network budget, 120-second interaction budget and 5-second
 cleanup budget. Construction validates finite bounds. Requests may shorten
@@ -75,10 +88,14 @@ settled implementation checkpoint; record their exact tuple and verdicts before
 acceptance. The prior taut generator prototype, test-only core consumer and
 physical adapters remain outside this pool checkpoint.
 
-Executed locally on macOS: minimum Rust 1.95 full suite, Clippy with warnings
-forbidden on Rust 1.96, and 50,000 pool lifecycle cases on a Rust 1.96 release
-build using seed `0x202609195eed`. That run exercised 1,229,866 connects,
-5,871 reuses, 259,119 late successes after cancellation and 807,455 abort actions.
+The initial tuple passed the minimum Rust 1.95 suite, Rust 1.96 Clippy/package,
+and 50,000 pool lifecycle cases with seed `0x202609195eed`. Independent review
+nevertheless found three P2 roots: missing spontaneous idle disposal, ambiguous
+cancellation scope and a per-key ceiling where the authority required user/host.
+The [merged remediation](../../dev-docs/GwzRemoteTransportPool-RemPlan.md)
+corrects all three with regression tests. Generator `gwz-transport-pool-v2`
+adds idle-loss and scoped cancellation events and checks user/host counts across
+ports; its cases and replay evidence must be recorded on the corrected tuple.
 No physical network or native Windows execution is claimed. Replays and exact
 commands are in the transport README; the final acceptance record will pin the
 reviewed source and verdicts. Generated schema and existing stream sources are
@@ -89,3 +106,13 @@ independently of action arrival (or rearm timers when requests/releases change
 deadlines); a pending action future alone is not a timer service. Repeated helper
 interactions share the original total interaction allowance. Cleanup deadlines
 are preserved when a cancelled connector completes late.
+
+Corrected-tree local verification: 66 tests pass on Rust 1.95, including the
+fixed 3,000 stream cases, fixed 2,000 pool cases and seven new regression/async
+tests. Rust 1.96 fmt/clippy and the four-artifact regeneration check pass. The
+v2 pool campaign passes 50,000 cases with seed `0x202609195eed`: 1,220,602
+connects, 13,332 reuses, 204,345 late successes, 623,407 abort actions,
+412,385 spontaneous idle disposals and 682,598 session cancellations.
+Direct case `0x1234` reproduces on Rust 1.95. The standalone package builds;
+its twelve focused regression/async tests pass on Rust 1.95. Review closure is
+still reserved for the original reviewers on the committed corrected tuple.
