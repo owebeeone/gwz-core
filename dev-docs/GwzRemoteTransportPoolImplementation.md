@@ -1,6 +1,11 @@
 # Endpoint connection pool checkpoint
 
-Status: **remediation round 1 implemented, awaiting focused Code/State re-review, 2026-09-19; no API freeze**.
+Status: **accepted at transport `e8b9a1c5408cc9ea9528939b3a602acbeb697814`
+after original [Code](../../dev-docs/GwzRemoteTransportPool-ReviewCode-1.md) and
+[State](../../dev-docs/GwzRemoteTransportPool-ReviewState-1.md) GO; this accepts
+the in-memory pool checkpoint only, 2026-09-19; no API freeze**.
+The [acceptance record](../../dev-docs/GwzRemoteTransportPool-Checkpoint.md)
+pins the full reviewed tuple and verification evidence.
 
 The operator authorized connection pooling after the accepted in-memory stream
 checkpoint. This implements design §7 using fake connections and a controlled
@@ -83,9 +88,8 @@ owner loss, async wakeups and bounded shutdown. Seeded randomized schedules exer
 an independent fake-resource ledger, exact replay and teardown assertions.
 The reference seeded-test pattern is the existing transport/sdax-rs framework.
 
-The pool API is still draft. Use the original Code and State reviewers for a
-settled implementation checkpoint; record their exact tuple and verdicts before
-acceptance. The prior taut generator prototype, test-only core consumer and
+The pool API is still draft. The original Code and State reviewers accepted
+the corrected implementation, verifying all three findings and no new issues. The prior taut generator prototype, test-only core consumer and
 physical adapters remain outside this pool checkpoint.
 
 The initial tuple passed the minimum Rust 1.95 suite, Rust 1.96 Clippy/package,
@@ -95,9 +99,9 @@ cancellation scope and a per-key ceiling where the authority required user/host.
 The [merged remediation](../../dev-docs/GwzRemoteTransportPool-RemPlan.md)
 corrects all three with regression tests. Generator `gwz-transport-pool-v2`
 adds idle-loss and scoped cancellation events and checks user/host counts across
-ports; its cases and replay evidence must be recorded on the corrected tuple.
+ports; its corrected-tuple evidence is recorded below and in the acceptance record.
 No physical network or native Windows execution is claimed. Replays and exact
-commands are in the transport README; the final acceptance record will pin the
+commands are in the transport README; the acceptance record pins the
 reviewed source and verdicts. Generated schema and existing stream sources are
 unchanged from the accepted memory baseline.
 
@@ -114,5 +118,6 @@ v2 pool campaign passes 50,000 cases with seed `0x202609195eed`: 1,220,602
 connects, 13,332 reuses, 204,345 late successes, 623,407 abort actions,
 412,385 spontaneous idle disposals and 682,598 session cancellations.
 Direct case `0x1234` reproduces on Rust 1.95. The standalone package builds;
-its twelve focused regression/async tests pass on Rust 1.95. Review closure is
-still reserved for the original reviewers on the committed corrected tuple.
+its twelve focused regression/async tests pass on Rust 1.95. Both original
+reviewers independently verified closure on the committed corrected tuple,
+including full tests and separate 10,000-case randomized campaigns.

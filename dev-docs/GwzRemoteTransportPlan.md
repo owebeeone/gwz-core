@@ -90,7 +90,9 @@ runtime with in-memory and seeded Monte Carlo tests before integration; that
 subset is accepted after Code/State GO in
 [the memory checkpoint](GwzRemoteTransportMemoryImplementation.md). The operator
 next authorized the [deterministic pool checkpoint](GwzRemoteTransportPoolImplementation.md),
-now implemented and awaiting its Code/State review. Phases 3–6 are **not started**. This does not declare either interface frozen.
+now accepted after original Code/State GO at transport
+`e8b9a1c5408cc9ea9528939b3a602acbeb697814`. Phases 3–6 are **not started**.
+This does not declare either interface frozen.
 Write meaningful failing tests before
 implementation; use deterministic fakes before network fixtures. A phase ends
 with the named evidence and review, not simply with code present.
