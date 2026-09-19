@@ -1,6 +1,13 @@
 # Remote transport native binding qualification
 
-Date: 2026-09-20. Status: implementation candidate, not production activation.
+Date: 2026-09-20. Status: **accepted local prerequisite; no production activation**.
+Code, State and Surface reported GO on core
+`fe815856291a93fa4ecdf0ab5879984d7b5ba1ee` at root
+`d7b1b04d35acd73dd85ec553a68d4e498c120f21`. Surface verified the help-only
+correction at core `7b03091941f047c61f8261fd12c451bca6db49d7`, root
+`d798d201b4d9d0e8f02d55b415efd3c725bfee3a`, closing the sole P3 finding.
+Reports are retained in root `dev-docs/GwzRemoteTransportNativeBinding-Review*.md`.
+This accepts only the binding patch and reproducible local qualification.
 Controlling scope: Remote Transport Design §8 and Plan Phase 3. This is Phase
 3a, the prerequisite safe per-remote binding, before the SSH adapter is enabled.
 Phase 1/2 interfaces remain frozen. Root baseline is
