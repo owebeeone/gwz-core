@@ -61,8 +61,8 @@ it is not evidence of registry resolution and must be intentionally refreshed
 for the first published release.
 
 For the current unpublished source, first create an archive and then run the
-isolated, offline proof. It copies only this consumer and the supplied archive
-into temporary paths, and uses a temporary Cargo patch; no sibling checkout is
+isolated, offline proof. It copies this consumer, the core blocking-adapter source identified below,
+and the supplied archive into temporary paths, and uses a temporary Cargo patch; no sibling checkout is
 needed:
 
 ```sh
@@ -86,3 +86,32 @@ The serialized stream case treats its generated outer wrapper as a trusted
 fixture and applies the owner transport codec's bounded encode/decode to the
 inner envelope. Pre-allocation limits for any real carried wrapper remain a
 duty of the supplied communication layer.
+
+## Blocking Git adapter qualification
+
+The consumer also compiles core's preactivation
+`src/git/endpoint/stream_io.rs`. It is not yet linked into production core. The
+archive runner copies that exact module from this core checkout into its isolated
+tree and prints its SHA-256 alongside the transport archive provenance.
+
+`BlockingStream::new(Stream)` provides std::io `Read` and `Write`, including the
+standard `write_all` helper. Writes may be partial. Clones share one exchange
+and its byte positions; they do not allocate a second connection. The adapter
+adds no buffer, physical carrier, thread, socket or implicit deadline. The host
+must deliver messages and drive the accepted stream's timers independently;
+never run a blocking call on that sole host worker. Small writes rely on that
+host timer even when libgit2 never calls `flush`.
+
+`end_write` half-closes outgoing bytes; reads remain available. `close` waits
+for cleanup and returns the endpoint's CloseResult, including disposition/facts;
+it does not prove Git success or release a physical connection itself. `cancel`
+wakes blocked calls and requests cancellation. Dropping the final Stream owner
+requests cancellation; dropping one clone leaves other owners live. There is
+no blocking cleanup inside Drop and no inferred connection reuse.
+
+EOF returns zero. Timeout is `TimedOut`; delivery loss is `BrokenPipe`; cancellation
+is `ConnectionAborted`, so std::io `write_all` cannot retry it as Interrupted.
+The underlying structured stream Error is retained in `io::Error::get_ref()`
+for downcasting, including peer failure code/effect. Protocol errors are
+`InvalidData`; caller misuse is `InvalidInput`. Other failures remain `Other`.
+All buffering and deadline defaults are those of the supplied Stream config.

@@ -148,7 +148,7 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="gwz-transport-consumer-package-") as raw:
         isolated = Path(raw)
         package_dir = isolated / f"{name}-{version}"
-        consumer_dir = isolated / "consumer"
+        consumer_dir = isolated / "core" / "tests" / "transport_consumer"
         with tarfile.open(archive, "r:gz") as bundle:
             members, _ = _archive_members(bundle)
             for member in members:
@@ -167,6 +167,13 @@ def main() -> int:
             consumer_dir,
             ignore=shutil.ignore_patterns("target", "__pycache__"),
         )
+        # Preserve the core-relative source path used by the preactivation bridge
+        # fixture; no source is taken from the transport owner's checkout.
+        bridge = ROOT.parents[1] / "src/git/endpoint/stream_io.rs"
+        bridge_copy = isolated / "core/src/git/endpoint/stream_io.rs"
+        bridge_copy.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(bridge, bridge_copy)
+        print(f"core_bridge_sha256={digest(bridge_copy)}")
         cargo_dir = consumer_dir / ".cargo"
         cargo_dir.mkdir()
         (cargo_dir / "config.toml").write_text(
