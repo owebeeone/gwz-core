@@ -1,17 +1,26 @@
 # Remote transport runtime and pool interface gate
 
-Status: **Phase 1/2 interface gate candidate; not yet accepted**.
+Status: **Phase 1/2 interfaces accepted and frozen, 2026-09-19**.
+Accepted implementation tuple: transport `28f5afb3938a2aa8af0e1e8d5b07779add6ab776`,
+core `ace269896ad80aee923e2e8fd31e565c43de57ed`, taut
+`733e8a78897a90f017f4726e4331aed95e8cb977`, root review inputs
+`9d0dc7ef5c616d64d52c296ea2fa34d83d21d73e`. Original Code and State reviewers
+and the Surface reviewer all returned GO with no remaining findings in
+`GwzRemoteTransportInterfaces-ReviewCode-1.md`, `-ReviewState-1.md` and
+`-ReviewSurface-1.md` in the workspace dev-docs directory. This status update
+records acceptance only and changes no reviewed implementation.
 This package extends the accepted stream, pool and shared-schema checkpoints
 with the active-I/O host contract from design §10.1 and complete consumer
 message/admission proofs. The workspace
 `dev-docs/GwzRemoteTransportInterfaces-Checkpoint.md` records the settled review
 tuple, executed gates and the Code / State / Surface verdicts when available.
 
-The intended freezes are the Phase 1 schema/types, admission and message-handoff
+The accepted freezes are the Phase 1 schema/types, admission and message-handoff
 contract, and Phase 2 stream/pool runtime API. They do not authorize physical
 message delivery, SSH/HTTPS adapters, production CLI/core surface changes,
-publication or native-platform qualification. Review acceptance and Phase 1/2
-completion must be recorded explicitly; this candidate status claims neither.
+publication or native-platform qualification. This accepts the named interfaces
+and their local evidence only; remote CI execution and consumer CI activation
+remain outstanding as recorded below.
 
 ## Shared-schema consumer boundary
 

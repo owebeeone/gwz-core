@@ -1,7 +1,7 @@
 # GWZ Remote Transport Implementation Plan
 
 Status: **plan draft accepted after G46 re-review GO, 2026-09-19.
-Implementation authorized; Phase 1 in progress.**
+Implementation authorized; Phase 1/2 interfaces frozen, Phase 3 next.**
 The operator requested this plan before any repository creation or implementation.
 The accepted [design](GwzRemoteTransportDesign.md) and
 [requirements](GwzRemoteTransportRequirements.md) control behavior. Their
@@ -85,21 +85,21 @@ supplied bidirectional message channel.
 
 ## 3. Delivery sequence
 
-Phase 1 is **in progress**. The operator prioritized the Phase 2 message-stream
-runtime with in-memory and seeded Monte Carlo tests before integration; that
-subset is accepted after Code/State GO in
-[the memory checkpoint](GwzRemoteTransportMemoryImplementation.md). The operator
-next authorized the [deterministic pool checkpoint](GwzRemoteTransportPoolImplementation.md),
-now accepted after original Code/State GO at transport
-`e8b9a1c5408cc9ea9528939b3a602acbeb697814`. Phases 3–6 are **not started**.
-The shared-schema consumer is also accepted at core
-`435e936b593476f24fad4cc4e70f5d06b784ed7d`. The current
-[interface gate candidate](GwzRemoteTransportPool-InterfaceGate.md) completes
-message/admission and paired typed/encoded proof work plus design §10.1's
-active-I/O clock. Its owner CI workflow is prepared locally; remote execution
-and cross-repository consumer CI activation remain unestablished. The workspace
-`dev-docs/GwzRemoteTransportInterfaces-Checkpoint.md` records current evidence
-and verdicts. This does not declare either interface frozen.
+The Phase 1 schema/admission/message-handoff contract and Phase 2 stream/pool
+runtime API are **accepted and frozen** after original Code and State reviewers
+and the Surface reviewer all returned GO. The accepted implementation is
+transport `28f5afb3938a2aa8af0e1e8d5b07779add6ab776`, core
+`ace269896ad80aee923e2e8fd31e565c43de57ed`, taut
+`733e8a78897a90f017f4726e4331aed95e8cb977`; workspace review inputs are
+`9d0dc7ef5c616d64d52c296ea2fa34d83d21d73e`.
+The [interface gate](GwzRemoteTransportPool-InterfaceGate.md) and workspace
+`dev-docs/GwzRemoteTransportInterfaces-Checkpoint.md` record the exact scope,
+89 owner tests, 18 isolated archive consumer tests, regeneration checks and
+review closures. One merged correction closed one P2 and three P3 findings.
+Phases 3–6 are **not started**. The owner CI workflow is prepared locally;
+remote execution, consumer CI activation and registry resolution remain
+outstanding qualification/publication work. Local interface acceptance does
+not claim those outcomes or a production SSH/HTTPS endpoint.
 Write meaningful failing tests before
 implementation; use deterministic fakes before network fixtures. A phase ends
 with the named evidence and review, not simply with code present.
@@ -387,9 +387,10 @@ fetch does not complete the programme.
 
 ## 6. Immediate next action
 
-Complete the Phase 1/2 interface candidate's local gates and Code / State /
-Surface review before dependent adapter work. The active-I/O addition is
-host-local and keeps the existing schema/tags unchanged. Prepared CI is distinct
-from executed remote CI; no provisioning or publication is authorized here.
-The separately proposed framing adapter was withdrawn under the operator's
-clarification. No production CLI–core communication API has changed.
+Proceed to Phase 3 by qualifying the safe git2 per-remote callback and owned
+context boundary before writing the endpoint SSH adapter. Establish coexistence
+with ordinary transports and callback lifetime/error isolation under controlled
+fixtures. The accepted stream/pool API supplies discrete message semantics;
+physical SSH and host dispatch remain outside gwz-transport. Keep the existing
+CLI–core communication interface unchanged. Remote provisioning and publication
+are separate actions, not implied by this implementation gate.
