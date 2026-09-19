@@ -1,0 +1,16 @@
+{
+  "taut-proto": "0.9.1",
+  "owner-package": "gwz-transport",
+  "owner-name": "gwz-transport",
+  "owner-version": "0.1.0",
+  "owner-schema-sha256": "2bb4b9cc3a31a8a425350c0f7f792e8487569b6d8937813a5f57d86af6904904",
+  "codec": "fail-closed",
+  "rustfmt": "rustfmt 1.9.0-stable (ac68faa20c 2026-05-25)",
+  "rust-module": "gwz_transport::protocol",
+  "taut-source-revision": "3b8436508ecc6b74b5efa0f1e642d0698b708bf7",
+  "taut-extension-sha256": {
+    "src/taut/cli.py": "e883be17038e06ff6bf4f9ce40a5cf98d523c1239e4bb46cebe37f0c1a08d113",
+    "src/taut/gen/scaffold.py": "c1a7bce1b99c60fb82a63b7b56f0a1920c7b0a9b5dcf4065e47341ceae069a4f",
+    "src/taut/gen/rust_external.py": "5bf6f44c9e2b2e5f917dcc688455e4027d35aadeb1e5ff51a1256e4985631080"
+  }
+}
