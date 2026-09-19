@@ -7,6 +7,34 @@ only the checked-in `src/generated.rs` and the exact registry requirement
 The package is not published by this proof. Until that release exists,
 registry resolution is intentionally deferred to the explicit archive proof.
 
+## Prerequisites
+
+Run these commands from the workspace root. Install Python 3.10 or newer with
+venv/pip, Git, and Rust through rustup. Use Rust 1.96.0 with its rustfmt component
+for regeneration (the exact formatter version is pinned in the manifests);
+the Rust package supports 1.95.0 or newer. Keep the canonical `taut` checkout at
+the revision recorded in `protocol/generator.json` within this consumer.
+
+Create the interpreter used by the commands below once:
+
+```sh
+python3 -m venv gwz-core/protocol/.regen-venv
+gwz-core/protocol/.regen-venv/bin/python -m pip install taut-proto==0.9.1
+rustup toolchain install 1.96.0 --component rustfmt
+export RUSTUP_TOOLCHAIN=1.96.0
+```
+
+An existing environment is usable only with the same pinned package version.
+Alternatively create a fresh environment elsewhere and replace the interpreter
+path in both command blocks with its Python executable. The installed package
+supplies version metadata; consumer generation loads and verifies the exact
+canonical checkout passed through `--taut-source`, rather than trusting installed
+generator code. Cargo's dependency cache must contain this consumer's locked
+dependencies before the offline archive proof; packaging performs the owner
+build first. No private environment or credentials are required.
+
+## Regeneration and archive proof
+
 Regeneration is explicit and checks the owner package/version, exported-schema
 digest, taut source revision, and external-type generator file hashes:
 
@@ -42,8 +70,8 @@ cargo package --manifest-path gwz-transport/Cargo.toml
 gwz-core/protocol/.regen-venv/bin/python \
   gwz-core/tests/transport_consumer/package_proof.py \
   --archive gwz-transport/target/package/gwz-transport-0.1.0.crate \
-  --archive-sha256 8c7d91d54f0e176109f286beec65c24544f35f23506380939fdb081e6cef87a6 \
-  --source-revision 163feebe439edd5d1fbaf11e163882e80d4f2257
+  --archive-sha256 986033108eab2967028dc52c69f94e859ed6cbb78384648f03e88d9703383191 \
+  --source-revision 28f5afb3938a2aa8af0e1e8d5b07779add6ab776
 ```
 
 The runner prints the source revision, package identity, archive digest, and

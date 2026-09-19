@@ -2,26 +2,40 @@
 use gwz_transport::{
     binding::{self, EndpointConfig},
     codec,
+    pool::{Identity as PoolIdentity, Key, Owner, Request as PoolRequest},
     protocol::*,
+    stream::{Config as StreamConfig, Side as StreamSide},
 };
 use gwz_transport_consumer_proof::{cbor, generated::GwzTransportDelivery};
 
 fn handoff(message: Envelope, encoded: bool) -> Envelope {
     let limits = binding::default_limits();
-    codec::admit_limited(&message, &limits).unwrap_or_else(|error| {
-        panic!("fake endpoint receives admitted input ({error:?}): {message:?}")
-    });
-    generated_handoff(message, encoded, &limits)
+    handoff_with_limits(message, encoded, &limits)
+        .unwrap_or_else(|error| panic!("fake endpoint receives admitted input ({error:?})"))
 }
 
-fn generated_handoff(message: Envelope, encoded: bool, limits: &Limits) -> Envelope {
-    let decoded = raw_generated_handoff(message, encoded);
-    if !encoded {
-        return decoded;
+fn handoff_with_limits(
+    message: Envelope,
+    encoded: bool,
+    limits: &Limits,
+) -> Result<Envelope, codec::Error> {
+    if encoded {
+        return encoded_receiver_handoff(&message, limits);
     }
-    let inner = codec::encode_limited(&decoded, limits)
-        .expect("owner codec must retain bounded encoded input");
-    codec::decode_limited(&inner, limits).expect("owner codec must decode bounded encoded input")
+    codec::admit_limited(&message, limits)?;
+    Ok(raw_generated_handoff(message, false))
+}
+
+fn encoded_receiver_handoff(
+    message: &Envelope,
+    receiver_limits: &Limits,
+) -> Result<Envelope, codec::Error> {
+    // The test sender may use larger limits than its receiver. The outer
+    // generated wrapper is a trusted fixture; receiver admission is applied
+    // to the inner bytes before the owner's allocating decoder runs.
+    let inner = codec::encode(message)?;
+    let message = codec::decode_limited(&inner, receiver_limits)?;
+    Ok(raw_generated_handoff(message, true))
 }
 
 fn raw_generated_handoff(message: Envelope, encoded: bool) -> Envelope {
@@ -42,12 +56,22 @@ fn dispatch_open(
     encoded: bool,
     effects: &mut usize,
 ) -> Result<(), Failure> {
-    let message = handoff(message, encoded);
-    let result = binding.check_open(&message);
-    if result.is_ok() {
-        *effects += 1;
-    }
-    result
+    // These schema/ownership fixtures model an endpoint with network timing
+    // explicitly disabled. The finite-policy matrix below uses the same host
+    // boundary with captured finite values, before its sole effects increment.
+    dispatch_host_open(
+        binding,
+        message,
+        encoded,
+        HostPolicy {
+            connect_ms: 0,
+            io_ms: 0,
+            interaction_ms: 120_000,
+        },
+        0,
+        effects,
+    )
+    .map(|_| ())
 }
 
 fn open_message(session_id: &str, endpoint_id: &str) -> Envelope {
@@ -352,5 +376,313 @@ fn bind_and_open_admission_precede_fake_endpoint_effects() {
             encoded,
         );
         assert_eq!(failed.kind, MessageKind::OpenFailed);
+    }
+}
+
+#[test]
+fn negotiated_open_metadata_is_checked_before_effects_in_both_handoffs() {
+    for encoded in [false, true] {
+        let offer = binding::offer("metadata-session", EndpointRole::Driver);
+        let mut endpoint_limits = binding::default_limits();
+        endpoint_limits.metadata_bytes = 256;
+        let endpoint = EndpointConfig {
+            endpoint_id: "endpoint-1".into(),
+            role: EndpointRole::Driver,
+            schemes: vec![Scheme::Ssh],
+            policies: vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit],
+            limits: endpoint_limits,
+            trust_owner: "test-host".into(),
+        };
+        let (reply, binding) = endpoint.accept(&offer).unwrap();
+        assert_eq!(handoff(reply, encoded).kind, MessageKind::Bound);
+        let mut effects = 0;
+        let base = open_message("metadata-session", "endpoint-1");
+
+        for field in ["operation", "destination", "identity"] {
+            let mut accepted = base.clone();
+            accepted.open.as_mut().unwrap().receive_limits = binding.limits().clone();
+            apply_metadata(&mut accepted, field, 256);
+            dispatch_open(&binding, accepted, encoded, &mut effects)
+                .expect("256-byte negotiated metadata must be accepted");
+
+            let mut rejected = base.clone();
+            rejected.open.as_mut().unwrap().receive_limits = binding.limits().clone();
+            apply_metadata(&mut rejected, field, 257);
+            let before_rejection = effects;
+            let failure = dispatch_open(&binding, rejected, encoded, &mut effects).unwrap_err();
+            assert_eq!(failure.code, ErrorCode::InvalidRequest);
+            assert_eq!(failure.effect, Effect::None);
+            assert_eq!(effects, before_rejection);
+        }
+        assert_eq!(effects, 3);
+    }
+}
+
+fn apply_metadata(message: &mut Envelope, field: &str, length: usize) {
+    let open = message.open.as_mut().unwrap();
+    match field {
+        "operation" => {
+            open.operation_id = "o".repeat(length);
+        }
+        "destination" => {
+            open.destination.path = "/".to_owned() + &"p".repeat(length.saturating_sub(1));
+        }
+        "identity" => {
+            open.policy = AuthPolicy::SshExplicit;
+            open.identity.mode = IdentityMode::ExplicitKey;
+            open.identity.key_path = Some("k".repeat(length));
+        }
+        _ => panic!("unknown metadata field"),
+    }
+}
+
+#[derive(Debug)]
+struct CapturedHostInputs {
+    request: PoolRequest,
+    stream: StreamConfig,
+    helper_remaining_ms: u64,
+}
+
+#[derive(Clone, Copy)]
+struct HostPolicy {
+    connect_ms: u64,
+    io_ms: u64,
+    interaction_ms: u64,
+}
+
+fn dispatch_host_open(
+    binding: &binding::Binding,
+    message: Envelope,
+    encoded: bool,
+    policy: HostPolicy,
+    helper_spent_ms: u64,
+    effects: &mut usize,
+) -> Result<CapturedHostInputs, Failure> {
+    let message = handoff_with_limits(message, encoded, binding.limits()).map_err(|_| Failure {
+        code: ErrorCode::InvalidRequest,
+        effect: Effect::None,
+    })?;
+    binding.check_open(&message)?;
+    let inputs = resolve_host_inputs(
+        &message,
+        policy.connect_ms,
+        policy.io_ms,
+        policy.interaction_ms,
+        helper_spent_ms,
+    )?;
+    *effects += 1;
+    Ok(inputs)
+}
+
+fn resolve_host_inputs(
+    message: &Envelope,
+    endpoint_connect_ms: u64,
+    endpoint_io_ms: u64,
+    endpoint_interaction_ms: u64,
+    helper_spent_ms: u64,
+) -> Result<CapturedHostInputs, Failure> {
+    let open = message.open.as_ref().unwrap();
+    let connect_ms = resolve_network_timeout(open.deadlines.connect_ms, endpoint_connect_ms)?;
+    let io_ms = resolve_network_timeout(open.deadlines.io_ms, endpoint_io_ms)?;
+    let helper_total_ms = u64::try_from(open.deadlines.interaction_ms)
+        .unwrap()
+        .min(endpoint_interaction_ms);
+    let helper_remaining_ms = helper_total_ms
+        .checked_sub(helper_spent_ms)
+        .ok_or(Failure {
+            code: ErrorCode::InvalidRequest,
+            effect: Effect::None,
+        })?;
+    let identity = match (open.destination.scheme, open.identity.mode) {
+        (Scheme::Ssh, IdentityMode::Ambient) => PoolIdentity::Ambient,
+        (Scheme::Ssh, IdentityMode::ExplicitKey) => {
+            // A fixed proof supplied by this fake identity resolver. A real
+            // endpoint must resolve the key; a path is never a reuse proof.
+            PoolIdentity::Explicit("fake-resolved-key-proof".into())
+        }
+        (Scheme::Https, _) => PoolIdentity::Https,
+
+        _ => {
+            return Err(Failure {
+                code: ErrorCode::UnsupportedOperation,
+                effect: Effect::None,
+            });
+        }
+    };
+    let key = match open.destination.scheme {
+        Scheme::Ssh => Key::ssh(
+            open.destination.ssh_username.as_deref().unwrap(),
+            open.destination.host.clone(),
+            open.destination.port as u16,
+        ),
+        Scheme::Https => Key::https(open.destination.host.clone(), open.destination.port as u16),
+    };
+    let request = PoolRequest::new(
+        key,
+        identity,
+        Owner::new(message.session_id.clone(), open.operation_id.clone()),
+    );
+    let mut request = request;
+    request.allocation_timeout_ms = Some(open.deadlines.allocation_ms as u64);
+    request.connect_timeout_ms = Some(connect_ms);
+    request.interaction_timeout_ms = Some(helper_total_ms);
+    let mut stream = StreamConfig::new(
+        message.session_id.clone(),
+        message.stream_id,
+        StreamSide::Endpoint,
+    );
+    stream.io_timeout_ms = io_ms;
+    stream.interaction_budget_ms = helper_remaining_ms;
+    Ok(CapturedHostInputs {
+        request,
+        stream,
+        helper_remaining_ms,
+    })
+}
+
+fn resolve_network_timeout(requested_ms: i64, endpoint_ms: u64) -> Result<u64, Failure> {
+    let requested_ms = u64::try_from(requested_ms).map_err(|_| Failure {
+        code: ErrorCode::InvalidRequest,
+        effect: Effect::None,
+    })?;
+    if requested_ms > i32::MAX as u64 {
+        return Err(Failure {
+            code: ErrorCode::InvalidRequest,
+            effect: Effect::None,
+        });
+    }
+    if endpoint_ms != 0 && (requested_ms == 0 || requested_ms > endpoint_ms) {
+        return Err(Failure {
+            code: ErrorCode::UnsupportedOperation,
+            effect: Effect::None,
+        });
+    }
+    Ok(requested_ms)
+}
+
+#[test]
+fn fake_endpoint_composes_network_policies_before_effects() {
+    for encoded in [false, true] {
+        let offer = binding::offer("policy-session", EndpointRole::Driver);
+        let endpoint = EndpointConfig {
+            endpoint_id: "endpoint-1".into(),
+            role: EndpointRole::Driver,
+            schemes: vec![Scheme::Ssh],
+            policies: vec![AuthPolicy::SshAmbient],
+            limits: binding::default_limits(),
+            trust_owner: "test-host".into(),
+        };
+        let (reply, binding) = endpoint.accept(&offer).unwrap();
+        assert_eq!(handoff(reply, encoded).kind, MessageKind::Bound);
+        let mut effects = 0;
+        let mut candidate = open_message("policy-session", "endpoint-1");
+        candidate.open.as_mut().unwrap().receive_limits = binding.limits().clone();
+        candidate.open.as_mut().unwrap().deadlines.interaction_ms = 100;
+
+        let finite_policy = HostPolicy {
+            connect_ms: 5_000,
+            io_ms: 6_000,
+            interaction_ms: 120_000,
+        };
+        for (connect_ms, io_ms) in [(0, 3_000), (5_001, 3_000), (2_500, 0), (2_500, 6_001)] {
+            let mut rejected = candidate.clone();
+            rejected.open.as_mut().unwrap().deadlines.connect_ms = connect_ms;
+            rejected.open.as_mut().unwrap().deadlines.io_ms = io_ms;
+            let failure =
+                dispatch_host_open(&binding, rejected, encoded, finite_policy, 0, &mut effects)
+                    .unwrap_err();
+            assert_eq!(failure.effect, Effect::None);
+            assert_eq!(effects, 0);
+        }
+
+        for (connect_ms, io_ms) in [(2_500, 3_000), (5_000, 6_000)] {
+            let mut accepted = candidate.clone();
+            accepted.open.as_mut().unwrap().deadlines.connect_ms = connect_ms;
+            accepted.open.as_mut().unwrap().deadlines.io_ms = io_ms;
+            let inputs =
+                dispatch_host_open(&binding, accepted, encoded, finite_policy, 30, &mut effects)
+                    .unwrap();
+            assert_eq!(inputs.request.connect_timeout_ms, Some(connect_ms as u64));
+            assert_eq!(inputs.stream.io_timeout_ms, io_ms as u64);
+            assert_eq!(inputs.helper_remaining_ms, 70);
+            assert_eq!(inputs.stream.interaction_budget_ms, 70);
+        }
+        assert_eq!(effects, 2);
+
+        let mut capped_helper = candidate.clone();
+        capped_helper
+            .open
+            .as_mut()
+            .unwrap()
+            .deadlines
+            .interaction_ms = 120_001;
+        capped_helper.open.as_mut().unwrap().deadlines.connect_ms = 2_500;
+        capped_helper.open.as_mut().unwrap().deadlines.io_ms = 3_000;
+        let inputs = dispatch_host_open(
+            &binding,
+            capped_helper,
+            encoded,
+            finite_policy,
+            30,
+            &mut effects,
+        )
+        .unwrap();
+        assert_eq!(inputs.request.interaction_timeout_ms, Some(120_000));
+        assert_eq!(inputs.helper_remaining_ms, 119_970);
+        assert_eq!(effects, 3);
+
+        let mut exhausted = candidate.clone();
+        exhausted.open.as_mut().unwrap().deadlines.connect_ms = 2_500;
+        exhausted.open.as_mut().unwrap().deadlines.io_ms = 3_000;
+        let inputs = dispatch_host_open(
+            &binding,
+            exhausted,
+            encoded,
+            finite_policy,
+            100,
+            &mut effects,
+        )
+        .unwrap();
+        assert_eq!(inputs.helper_remaining_ms, 0);
+        assert_eq!(inputs.stream.interaction_budget_ms, 0);
+        assert_eq!(effects, 4);
+        let mut over_budget = candidate.clone();
+        over_budget.open.as_mut().unwrap().deadlines.connect_ms = 2_500;
+        over_budget.open.as_mut().unwrap().deadlines.io_ms = 3_000;
+        assert!(
+            dispatch_host_open(
+                &binding,
+                over_budget,
+                encoded,
+                finite_policy,
+                101,
+                &mut effects,
+            )
+            .is_err()
+        );
+        assert_eq!(effects, 4);
+
+        let disabled_policy = HostPolicy {
+            connect_ms: 0,
+            io_ms: 0,
+            interaction_ms: 120_000,
+        };
+        for (connect_ms, io_ms) in [(0, 0), (i32::MAX as i64, i32::MAX as i64)] {
+            let mut accepted = candidate.clone();
+            accepted.open.as_mut().unwrap().deadlines.connect_ms = connect_ms;
+            accepted.open.as_mut().unwrap().deadlines.io_ms = io_ms;
+            let inputs = dispatch_host_open(
+                &binding,
+                accepted,
+                encoded,
+                disabled_policy,
+                30,
+                &mut effects,
+            )
+            .unwrap();
+            assert_eq!(inputs.request.connect_timeout_ms, Some(connect_ms as u64));
+            assert_eq!(inputs.stream.io_timeout_ms, io_ms as u64);
+        }
+        assert_eq!(effects, 6);
     }
 }
