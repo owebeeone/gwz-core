@@ -1,0 +1,15 @@
+{
+  "upstream_package": "git2",
+  "upstream_version": "0.21.0",
+  "upstream_archive_sha256": "ddddbf932745a6be37109b6112d3ee09696106f848449069d3a57bba937ab82e",
+  "patch_sha256": "51586ea398130dbb36e3c9f59a3117b5c19b3a5c223d5bb62e266077a8d6c3e6",
+  "lock_sha256": "6d0908b76361e71fdccf3bdb75550fb1c21152433517d0e945bc2f017dedf51c",
+  "original_files": {
+    "src/remote_callbacks.rs": "cabd55a0e6d8aee101d1df7adae080e33872d816c7aed9e901304945139ae351",
+    "src/transport.rs": "cec1afc572148833a5b43dc23252141d7dcb2b50246e01e86c67513d7b4a84ed"
+  },
+  "patched_files": {
+    "src/remote_callbacks.rs": "c5c75b6eac90c9b64fb4d9b35a15a4857a4d7c5fb2002986795ae363e897dd45",
+    "src/transport.rs": "f60a7cf933efe7b8ebe0422b4fce6af4d80a6b80abcfa45e784bfa43fbe09dc7"
+  }
+}
