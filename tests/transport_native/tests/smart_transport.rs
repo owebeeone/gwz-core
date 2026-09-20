@@ -427,7 +427,7 @@ fn nested_and_concurrent_factories_keep_distinct_contexts() {
 fn file_transport_remains_native_before_and_after_custom_transport() {
     let temp = TempDir::new().unwrap();
     let (_source, bare) = seed_repository(&temp);
-    let file_url = format!("file://{}", bare.display());
+    let file_url = gwz_transport_native_proof::file_url(&Repository::open_bare(&bare).unwrap());
     let before = temp.path().join("file-before");
     RepoBuilder::new().clone(&file_url, &before).unwrap();
 

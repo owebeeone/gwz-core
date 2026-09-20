@@ -19,7 +19,13 @@ Pin Rust fork `ce78628308e11b4e8901d5061602619109bce21a`, C
 Transfer immutable source bundles/exports and hashes to an external Windows
 runtime. Preserve historical Git objects required by source admission and the
 exact nested C gitlink. Disable checkout line-ending conversion and require
-real source symlinks; refusal to create them stops admission. No remote branch
+real source symlinks; refusal to create them stops admission. Set both
+`core.autocrlf=false` and `core.eol=lf`, including for text attributes.
+Git for Windows can rewrite link-target separators;
+the campaign may recreate a real link with its exact immutable Git target only
+after verifying that separator conversion is the sole checkout difference.
+Record each recreation; plain-file substitution or any other target drift
+still refuses admission. No remote branch
 publication, product dependency/lock change, or user Cargo configuration edit.
 The transfer is local-source distribution rehearsal, not remote-only fetching.
 
@@ -40,8 +46,14 @@ script modes and real symlinks. No ACL/execution-policy equivalence is claimed.
 
 Public owned paths: `tests/transport_native/prove.py` (at most 30 added lines),
 `test_prove.py` (at most 100 added lines), its README (at most 35 added lines),
-this report (at most 180 lines), and Q1 status pointer. All other public tests,
-Rust/native code, manifests and locks remain unchanged. Unexpected defects
+this report (at most 180 lines), and Q1 status pointer. Native run windows-d
+also exposed invalid file URLs made from Windows canonical paths. Extend the
+owned test-only scope to `src/lib.rs`, the three native integration test files,
+and `consumer_probe.rs` (at most 80 added Rust lines total): encode file URLs
+from libgit2's normalized repository paths, preserving explicit native file
+transport and escaping path bytes. Re-run the failing native cases and macOS
+regressions; no production/library/fork Rust code, manifest or lock changes.
+The Q3 probe remains self-contained for its existing consumer instrumentation. Unexpected defects
 outside these bounds stop the affected row and receive a precise report.
 
 Private owned paths: git-library campaign `runner/windows.py` (at most 260

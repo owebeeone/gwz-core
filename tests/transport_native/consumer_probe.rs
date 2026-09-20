@@ -4,6 +4,21 @@ use std::path::Path;
 use git2::{AutotagOption, FetchOptions, ObjectFormat as NativeFormat, Oid, Signature, Time};
 use gwz_git::{ErrorKind, ObjectFormat, ObjectId, Repository};
 
+fn file_url(repo: &git2::Repository) -> String {
+    let path = repo.path().to_str().unwrap();
+    let encoded = path
+        .bytes()
+        .map(|byte| {
+            if byte.is_ascii_alphanumeric() || b"/:-_.~".contains(&byte) {
+                char::from(byte).to_string()
+            } else {
+                format!("%{byte:02X}")
+            }
+        })
+        .collect::<String>();
+    format!("file:///{}", encoded.trim_start_matches('/'))
+}
+
 fn init_bare(path: &Path, format: ObjectFormat) -> git2::Repository {
     let mut options = git2::RepositoryInitOptions::new();
     options.bare(true);
@@ -77,7 +92,7 @@ fn qualify_fetch(root: &Path, format: ObjectFormat, label: &str) -> (Oid, Oid, O
     let blob = source.blob(b"Q3 payload\0\xff\n").unwrap();
     let tree = payload_tree(&source, blob);
     let base = commit(&source, tree, &[], "Q3 base\n");
-    let url = format!("file://{}", source_path.canonicalize().unwrap().display());
+    let url = file_url(&source);
     let mut remote = receiver.remote_anonymous(&url).unwrap();
     let mut options = FetchOptions::new();
     options

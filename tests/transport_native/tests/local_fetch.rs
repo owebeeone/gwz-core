@@ -34,7 +34,7 @@ fn receiver_noncommit_hints_do_not_block_a_new_commit() {
                 &[],
             )
             .unwrap();
-        let url = format!("file://{}", source.path().canonicalize().unwrap().display());
+        let url = gwz_transport_native_proof::file_url(&source);
         let mut remote = receiver.remote_anonymous(&url).unwrap();
         let mut options = FetchOptions::new();
         options

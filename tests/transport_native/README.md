@@ -77,6 +77,10 @@ derived from filename suffixes, so those bits are not compared with Git's POSIX
 mode. Git tree modes remain the recorded source authority; no Windows ACL or
 execution-policy equivalence is claimed. Symlinks must remain real symlinks
 with exact targets on both platforms; a plain-file checkout is refused.
+Git for Windows can rewrite separators in symlink target text. Such a checkout
+fails exact-target admission; reconstruct those links from pinned Git objects
+before qualification. Q4 records this explicit source-preparation step and
+retains the verifier's exact target comparison.
 Unrelated edits, extra files (even ignored build inputs), missing files and
 file/symlink substitutions are refused. Only root `.git`, root `target/`, and
 nested C `.git` metadata are omitted. Both modes force vendored C; source mode

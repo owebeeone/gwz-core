@@ -65,7 +65,7 @@ fn seed_file_repository(temp: &TempDir) -> String {
     repo.commit(Some("HEAD"), &signature, &signature, "native", &tree, &[])
         .unwrap();
     drop(tree);
-    format!("file://{}", path.display())
+    gwz_transport_native_proof::file_url(&repo)
 }
 
 #[test]
