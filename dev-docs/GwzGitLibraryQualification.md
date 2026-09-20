@@ -10,6 +10,9 @@ adds instrumented macOS arm64 execution; it does not close other platforms,
 full operation coverage or distribution.
 [Q4 Windows](GwzGitLibraryWindows.md) records native source/binding/library
 execution and its limits; it does not close the full Windows consumer matrix.
+[Q5 Windows consumers](GwzGitLibraryWindowsConsumers.md) records the bounded
+four-consumer follow-up and its execution/review status. Read that report for
+current Windows artifact evidence; the baseline inventory below remains historical.
 This is an inventory and executable gate plan, not all-consumer qualification.
 No source distribution, production dependency, lock or runtime changed.
 
