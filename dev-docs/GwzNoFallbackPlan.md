@@ -80,17 +80,62 @@ The old inventory's staged Git probing and streaming `rev-list` are not required
 milestones for this plan. Existing paths remain until their replacements meet
 acceptance; each completed replacement removes its subprocess route entirely.
 
+### P2 — Review the lead interface, ownership and scope checkpoint
+
+Before any lane implementation, including new test runners or fixtures, the
+integrator must file and obtain review of a lead checkpoint. Read-only inspection
+and design drafting may proceed before it. Record preparation P0/P1 as separate
+packages too: membership is integrator-only through GWZ, P1 is inspection/docs,
+and both have zero production-code and protocol-change budgets.
+
+The checkpoint must freeze the exact shared API signatures, vocabulary,
+visibility and compatibility obligations; expand the ownership table below to
+individual paths; and state integration order and the review tier for each
+bounded package. Every package needs explicit numeric ceilings for production
+additions, production moves, tests/tools/docs, file count and protocol changes
+(zero protocol change for this plan). No TBD ceiling or unassigned shared path
+permits implementation. Set grounded ceilings from the inspected baseline and
+chosen lane designs; this program plan does not guess their implementation size.
+
+Initial ownership, to be made exact in that checkpoint:
+
+| Surface | Sole writer | Other lanes |
+|---|---|---|
+| Workspace membership/pins via GWZ; all production Cargo manifests and lockfiles; package metadata, native submodule pins and release recipes | Integrator | Propose changes; never edit shared inputs independently |
+| Shared GitBackend contracts/types/module wiring and all cross-lane signatures | Integrator | Call existing APIs; request a reviewed contract handoff for changes |
+| `gwz-core/src/git/gitbackend/transport.rs` and lane-local import tests/helpers | Lane 1 | Call-only |
+| Selected libgit2 C fix, if chosen, in enumerated C source/test files | Lane 1 | Lane 2 calls it; integrator owns source/submodule pin |
+| Fork `src/remote_callbacks.rs`, `src/transport.rs` and per-remote binding tests | Lane 2 | Call-only; no C or package-metadata ownership |
+| `gwz-core/src/git/gitbackend/repository.rs`, `refs.rs` and enumerated commit/tag helpers/tests | Lane 3 | Call-only |
+| `gwz-core/src/operation/commit_log/` and enumerated pathspec/history helpers/tests | Lane 4 | Call-only |
+| Shared qualification harnesses, controlling docs, test module wiring and unassigned paths | Integrator | Changes require explicit assignment before editing |
+
+Integration order: freeze shared boundaries first; lane implementations may then
+proceed independently; integrate any C source correction before qualifying a
+Rust package that depends on it; perform isolated all-consumer qualification
+before the separately reviewed production dependency switch. Core behavior
+replacements land only after their own acceptance gates. Lanes 3/4 have no
+dependency on lane 2 unless a reviewed API change explicitly establishes one.
+
+Use dual Code/State review for shared/durable boundaries and activation, adding
+Surface for any API or user-facing interface freeze. Record permitted interior
+single-axis gates at the checkpoint, with escalation on P0/P1/P2. Final package
+reports compare actual scope against numeric ceilings. Stop for scope review on
+more than 20% growth, a new production owner, a protocol delta, or crossing
+another package's files; a budget increase must first state what is descoped.
+
 ## 3. Lane ownership and dependencies
 
 | Lane | Primary ownership | Dependency | Independently deliverable result |
 |---|---|---|---|
-| 1. Local fetch | Reproduction tests, local import backend; C code only if selected | P1; P0 for fork investigation/patch integration | Correct local import without `git fetch` |
-| 2. Per-remote API | git2-rs callback API and native binding tests | P0 and binding baseline | Qualified distributable API, consumed by core |
-| 3. Commit and tag | Core commit/tag orchestration and tests | P1; no fork dependency expected | Commit/tag behavior without `git commit` or `git tag` |
-| 4. Filtered history | Core pathspec/history traversal and tests | P1; no fork dependency expected | Path-filtered log without `git rev-list` |
+| 1. Local fetch | Reproduction tests, local import backend; C code only if selected | P1/P2; P0 for fork investigation/patch integration | Correct local import without `git fetch` |
+| 2. Per-remote API | git2-rs callback API and native binding tests | P0/P1/P2 and binding baseline | Qualified distributable API with isolated core consumption; production switch has a separate gate |
+| 3. Commit and tag | Core commit/tag orchestration and tests | P1/P2; no fork dependency expected | Commit/tag behavior without `git commit` or `git tag` |
+| 4. Filtered history | Core pathspec/history traversal and tests | P1/P2; no fork dependency expected | Path-filtered log without `git rev-list` |
 
-Lanes 3 and 4 can start design and fixture work while P0 is in progress. Lane 1
-can reproduce the stock failure independently. Lanes 1 and 2 may share the fork
+Lanes 3 and 4 can start design while P0 is in progress, and fixture work after
+P2. Lane 1 can inspect existing reproduction evidence independently and write
+new reproductions after P2. Lanes 1 and 2 may share the fork
 but should use separate changes and tests. One integration owner handles shared
 manifests, lockfiles, workspace pins and final documentation reconciliation.
 If lanes 3 or 4 discover a missing low-level API, record that dependency before
@@ -147,16 +192,37 @@ qualification work without a reason.
    or test-only Cargo override is not release availability. Account for the
    existing package publication workflow, feature set and single native library
    linkage. Coordinate production manifests/lockfiles through the integrator.
-5. Connect the qualified dependency to core and rerun the binding/adapter gates.
-   Document exact revisions and how to reproduce builds outside this workspace.
+5. Prove core consumption in isolated candidate builds and rerun the binding/
+   adapter gates. Document exact revisions and reproducible builds outside this
+   workspace. Keep production manifests and locks on the existing dependency
+   until the activation gate below passes.
+
+Before any production manifest/lock switch, the integrator must enumerate all
+direct consumers (at least core, repo-inspect, local-testrepo and CLI's git2
+dev-dependency), their features, package versions/sources and native library pins.
+Qualify that exact proposed manifest/lock set in isolated candidate copies:
+fresh workspace, standalone-core and CLI builds on every supported native
+platform and required object format must resolve the same qualified Rust package
+and one libgit2 native library, preserving each consumer's feature requirements.
+Reproduce standalone release packaging without sibling checkouts or root-only
+Cargo patches. Carry forward the accepted adapter-foundation package provenance
+and tests rather than treating the fork checkout as equivalent evidence.
+
+Production dependency activation is a separate reviewed change after those
+distribution, consumer, native-link and platform gates pass. Its candidate must
+match the qualified inputs; any source/pin/feature change requires relevant
+requalification. A publication or host-local test result alone cannot pass it.
+Missing platform evidence leaves activation pending, without blocking the other
+lanes. This does not activate SSH/message/pool production routing.
 
 No C asynchronous/resumable API is required by the stream model: the controlled
 Git-facing adapter blocks while an independent worker moves messages. Test that
 back pressure progresses and cancellation wakes blocked operations; do not leak
 `WouldBlock` into libgit2 as an ordinary retry signal.
 
-Deliverable: supported Rust API, release-consumable dependency and core binding
-integration. Actual SSH pumping, pooling activation and all-network-verb rollout
+Independent deliverable: supported Rust API, qualified distribution candidate and
+isolated core binding consumption. Production dependency integration follows the
+separate activation gate. Actual SSH pumping, pooling activation and all-network-verb rollout
 remain governed by the remote transport plan; this lane alone does not finish it.
 
 ## 6. Lane 3 — Commit and tag without Git command execution
@@ -223,7 +289,7 @@ on small graphs. Product traversal must run with Git unavailable.
 
 ## 8. Integration, review and completion
 
-Each lane starts with failing regression/compatibility tests, then implementation,
+After P2, each lane starts with failing regression/compatibility tests, then implementation,
 green tests and refactoring. Review lane-specific design decisions and final
 changes independently; no lane must wait for all others to finish. Reuse qualified
 transport tests and retained review context where applicable. Historical GO for
@@ -231,8 +297,9 @@ the binding prototype does not qualify new packaging or production activation.
 
 The integration owner:
 
-1. Reconciles dependency changes, tests the combined supported feature/platform
-   matrix, and verifies packaging outside the developer's checkout.
+1. Reconciles dependency changes under the lane 2 preactivation gate, then checks
+   combined lane results against the supported feature/platform matrix. Aggregate
+   checks do not replace the qualification required before a dependency switch.
 2. Audits product subprocess launch sites and indirect Git delegation; retains a
    regression guard as well as operation-level execution tests. Removing Git from
    PATH alone is insufficient if an absolute executable path is still available.
@@ -241,9 +308,10 @@ The integration owner:
 4. Reconciles this plan, the gap inventory, AD1/core policy and remote transport
    checkpoints. States remaining external-tool requirements precisely.
 
-Completion means all four inventory subprocess paths are removed, compatibility
-and no-Git execution gates pass, and the per-remote API is reproducibly consumable
-by core. The broader transport program has its own remaining activation gates.
+Completion means all in-scope subprocess paths (including any inventory additions)
+are removed, compatibility and no-Git execution gates pass, and the per-remote API
+is reproducibly consumed by core through the separately qualified and reviewed
+dependency switch. The broader transport program has its own remaining activation gates.
 
 ## 9. Decisions to close within the work
 
@@ -251,10 +319,11 @@ by core. The broader transport program has its own remaining activation gates.
 |---|---|---|
 | Compatibility oracle versions and supported matrix | Integrator with lanes 3/4 | Parity implementation |
 | Local-fetch C fix versus direct object transfer | Lane 1 | Replacement implementation |
-| Fork/package distribution and any C source pin | Lane 2 with integrator | Production dependency activation |
+| Shared interface/path ownership, package budgets and review tiers | Integrator with all lanes | P2 acceptance, before lane implementation |
+| Fork/package distribution, consumer/platform matrix and any C source pin | Lane 2 with integrator | Separate production dependency activation review |
 | Commit/tag and internal-commit policy details | Lane 3 | Behavior changes |
 | Pathspec component and traversal design | Lane 4 | Traversal implementation |
 
 These decisions are local gates within independent lanes, not reasons to serialize
 the whole project. The next execution step, once work resumes, is P0/P1 followed
-by the four lanes; creating this plan does not itself resume implementation.
+by P2 and the four lanes; creating this plan does not itself resume implementation.
