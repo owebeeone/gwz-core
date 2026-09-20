@@ -12,6 +12,40 @@ The two initial P2 findings were closed in one merged documentation remediation.
 No interface freeze, member provisioning, dependency switch or publication is
 claimed. This acceptance annotation does not change the reviewed plan body.
 
+## Operator direction — separate Rust Git library (2026-09-20)
+
+The operator selected the following long-term ownership boundary after N1/N2
+acceptance. This records that decision; it does not freeze a new API or authorize
+implementation outside a reviewed package scope.
+
+- Keep changes to libgit2 and git2-rs small and suitable for upstream submission:
+  the native local-fetch correction and the per-remote safe binding capability.
+- Use patched libgit2 1.9.7 as the current baseline, through the qualified Rust
+  binding candidate. Production activation retains its existing gates.
+- Build a separate Rust Git library above git2-rs to own the supported behavior
+  GWZ needs, including commit/tag orchestration and path-filtered history. The
+  implementation must preserve the plan's operation/configuration semantics and
+  prohibition on delegating product Git operations to the Git executable.
+- Keep that library as a durable dependency boundary. A future libgit2 feature
+  may simplify its internals; it is neither a prerequisite for this work nor a
+  reason to relocate our higher-level behavior into either upstream fork.
+- Keep workspace coordination in gwz-core and discrete-message streams/pooling
+  in gwz-transport. Design the Git library's integration with those owners before
+  moving code or establishing new shared signatures.
+
+Next: design the library's scope, API, errors/lifetimes, configuration and hook
+ownership, package/repository placement, and lane migration; record budgets and
+review its shared interface before implementation. No package name or repository
+has been selected by this direction. Existing characterization evidence remains
+applicable; publication and all-consumer/platform qualification remain required.
+
+This direction supersedes the next-action requirement to assess libgit2 main's
+APIs first in CurrentProgramCheckpoint/NativeFix, and the original plan's
+assumption that no C fork is selected. It does not supersede accepted N1/N2
+implementation, current lane file ownership, or any activation/compatibility gate.
+The previously reviewed plan body below is retained as its historical baseline;
+the new library's exact ownership map awaits the next reviewed checkpoint.
+
 ## 1. Objective and scope
 
 Remove gwz-core's use of the Git executable to implement supported product
