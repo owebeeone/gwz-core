@@ -153,3 +153,47 @@ other lanes had concurrent unowned edits; only the owned file was checked.
 
 Review follow-up: the post-rejection index assertion passed in a fresh
 Rust 1.95 locked focused run (five tests and their clean children).
+
+## C1 identity/date/message evidence — 2026-09-21
+
+Status: implemented characterization candidate; State review pending under
+[NextPackages](GwzGitLibraryNextPackages.md). Owned new test child
+`src/git/gitbackend/commit_tag_identity_characterization.rs`: 394 test lines,
+plus one integrator declaration inside the existing braced test cfg boundary.
+No production behavior, library API, dependency or lock changes.
+
+Seven exact tests re-execute in hermetic children: cleared environment, fixture
+HOME/USERPROFILE, explicit fixture global config, disabled system config,
+empty hooks directory, disabled commit/tag signing and a failing editor.
+Windows fixtures select unique `D:/gwz-tests/` roots; only macOS arm64 ran here.
+The parent verifies the selected test actually passed exactly once. Temporary
+configuration and repositories are removed by TempDir ownership.
+
+| Row | Observed Git 2.52.0 result |
+|---|---|
+| C-ID | Repository user identity overrides fixture global identity; author and committer environment overrides act independently. Annotated tagger follows committer, not author, identity. No local identity falls back to fixture global. |
+| C-DATE | Author `2001-02-03T04:05:06 +0530` stores seconds `981153306`, offset `330`; committer `2002-03-04T05:06:07 -0700` stores `1015243567`, offset `-420`. Annotated tagger uses the committer date; a lightweight tag resolves directly to a commit object. |
+| C-MSG | Input `\n  body  \n# comment\nnext  \n\n`: default stores `  body\n# comment\nnext\n`; strip stores `  body\nnext\n`; verbatim retains the input exactly. Ordinary nonempty `-m` calls need no editor. |
+| C-EMPTY | Empty/whitespace messages return `GitCommandFailed`; HEAD/branch ref, HEAD reflog, staged path/mode/OID/blob and tracked worktree bytes remain unchanged. Git refreshes index TREE-cache bytes and writes an empty COMMIT_EDITMSG. No blanket repository rollback is promised. |
+
+The first run passed five cases and failed two draft assumptions. libgit2's
+parsed message accessor skipped the leading blank line, so C-MSG now reads the
+raw ODB payload after the header separator; verbatim bytes were present all
+along. Empty-message failure refreshed the index TREE cache, so C-EMPTY asserts
+logical index entries/blob contents separately and positively observes the raw
+index change on the first rejection. These are fixture/evidence corrections,
+not product fixes or proof that a failed commit leaves no side effects.
+
+From core, Rust 1.95 locked command:
+
+```sh
+cargo +1.95.0 test --locked --lib characterization -- --nocapture
+```
+
+Passed **17 tests**: seven C1, five existing L3-A, two H1 and three existing
+L4-A, plus their exact child executions; zero failures/ignored. Owned-source
+rustfmt and changed-range whitespace checks pass. Existing history fixture
+changes justified including all characterization tests in this focused run.
+No no-Git replacement, successful signer, hook expansion, filter parity,
+SHA-256 mutation, concurrent refs, interruption or cross-platform execution
+is claimed. Those remain requirements before a mutation API/implementation freeze.

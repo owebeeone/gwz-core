@@ -1,6 +1,6 @@
 # gwz-git next-package scope
 
-Date: 2026-09-21. Status: **scope correction awaiting State closure**.
+Date: 2026-09-21. Status: **scope accepted after retained Code/State GO**.
 Implementation starts only after that gate passes. The controlling records are [GwzGitLibraryDesign](GwzGitLibraryDesign.md),
 [GwzGitLibraryApi](GwzGitLibraryApi.md), and the accepted [G0 record](GwzGitLibraryG0.md).
 G0 is a read-only `gwz-git` foundation. It does not freeze operation APIs,
@@ -165,3 +165,10 @@ paths/ceilings above, one test-only wiring line and root checkpoint/review
 records. Integrator owns all commits and the root checkpoint. Production APIs
 remain read-only. Evidence is public regression code plus concise reports;
 any campaign-only raw runs follow EVIDENCE.md in the private evidence member.
+
+Accepted at core `6586768396886fe1aeb1371bbd3064377cfa70ec`, root
+`3589aa05092abb7c38d90747384954565510301f` after retained
+[Code](../../dev-docs/GwzGitLibraryNextPackages-ReviewCode-1.md) and
+[State](../../dev-docs/GwzGitLibraryNextPackages-ReviewState-1.md) GO.
+One scope P2 (omitted Python graph) closed in one text-only remediation.
+This accepts package execution only; results require their named reviews.

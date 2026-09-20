@@ -414,5 +414,6 @@ pub(crate) use factory::GitTestRepository;
 cfg_if::cfg_if! {
     if #[cfg(test)] {
         mod commit_tag_characterization;
+        mod commit_tag_identity_characterization;
     }
 }

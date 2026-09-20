@@ -7,7 +7,7 @@ Replacement design/implementation and activation remain separate gates.
 
 Date: 2026-09-20
 Package: L4-A history characterization/design
-Status: focused characterization tests pass; the replacement design remains pending.
+Status: G0 focused characterization passed; the H1 extension is pending its coordinated run and the replacement design remains pending.
 
 ## Scope and ownership
 
@@ -75,6 +75,10 @@ Focused command:
 cargo +1.95.0 test --locked -p gwz-core --lib operation::commit_log::tests::path_characterization
 ```
 
+The recorded three-test pass below is the G0 baseline. The H1 extension is
+intentionally not included in that result and remains pending the coordinated
+run.
+
 The first attempt stopped before tests because the integrator-wired sibling
 module `src/git/gitbackend/commit_tag_characterization.rs` was not yet present.
 After that handoff appeared, the same command passed: 3 focused tests passed,
@@ -95,3 +99,62 @@ protocol/dependency/flag deltas: 0
 
 No runtime replacement, dependency activation, Git mutation, or shared-file
 edit is part of this package.
+
+## H1 direct-member and bare-repository follow-up
+
+The H1 extension remains test-only and is implemented in the existing child
+module. It adds no wiring, visibility, production, dependency, protocol, or
+CLI changes. Each new test re-executes the exact fully-qualified test in a
+clean child with `env_clear`, isolated HOME/XDG/global/system Git config,
+fixed identity and locale, and a unique temporary root. The root is removed
+after child output is captured, and the parent asserts that exactly one test
+reported `... ok`. Windows child fixtures use `D:/gwz-tests/<unique>`.
+
+### H-MEMBER
+
+The fixture creates an active `app` member with the existing committed
+attribute history. Workspace-root pathspecs are routed directly to the member:
+
+| Form | Repository pathspec | Native IDs | Current cursor IDs |
+| --- | --- | --- | --- |
+| `attr:gwz-path` | `:(attr:gwz-path)src` | `[head, base]` | `[]` |
+| `attr:-gwz-path` | `:(attr:-gwz-path)src` | `[base]` | `[]` |
+| `attr=blue` | `:(attr:gwz-path=blue)src` | `[base]` | `[]` |
+| `attr:!gwz-path` | `:(attr:!gwz-path)src` | `[]` | `[head, base]` |
+
+Each row asserts that only `mem_app` is selected, the full magic envelope is
+preserved while `app/` is removed, and the current sequence is checked
+separately from the native member oracle. Git directory bytes and the member
+`.gitattributes` bytes are snapshotted after fixture construction and must be
+unchanged after the complete row set.
+
+Executed with C1 after the source drafts were stable. From core:
+`cargo +1.95.0 test --locked --lib characterization -- --nocapture`.
+All 17 selected tests passed (two H1, three existing L4-A, seven C1 and five
+existing L3-A), including exact child runs; none ignored. Rustfmt and changed-
+range whitespace checks pass. Current H1 code is 471 total lines, a 325-line
+addition with two baseline lines replaced, within the 400-added-line ceiling.
+Only macOS arm64 / Git 2.52.0 ran. Status: Code review pending.
+
+### H-BARE and H-INFO
+
+The same committed-attribute fixture is cloned into a bare `mem_bare` member.
+The native oracle uses `git --git-dir <bare> rev-list`. Exact results:
+
+| Row | Positive attribute | Unspecified attribute | Current cursor |
+|---|---|---|---|
+| H-BARE: committed attributes only | `[]` | `[head, base]` | Matches each native vector |
+| H-INFO: info/attributes sets src/unset, unsets src/set and gives src/value a value | `[base]` | `[]` | Matches each native vector |
+
+Committed `.gitattributes` supplies no worktree attributes in this bare fixture;
+repository-local info attributes are consulted. The first draft expected the
+head in H-INFO too, but that commit changes only src/set, now unset, so Git
+correctly selects only base for the positive query. The executed test pins
+those exact native/current vectors; a future refusal is an assertion failure,
+not silently accepted as equivalent behavior. Bare bytes and info attributes
+are unchanged across each read group; only fixture setup writes the override.
+
+These rows characterize direct member routing only. They do not freeze positive
+attribute fan-out from a workspace-root `.` pathspec, where current routing can
+synthesize `.` and lose the magic envelope for member plans. That remains a
+separate design row before a `gwz-git` path-history API is frozen.
