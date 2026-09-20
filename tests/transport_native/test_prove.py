@@ -1,6 +1,6 @@
 import hashlib
-import io
-import tarfile
+import os
+import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
@@ -53,14 +53,10 @@ class MemberSourceTests(unittest.TestCase):
             'src/transport.rs': b'original transport',
             'src/lib.rs': b'unchanged library',
         }
-        output = io.BytesIO()
-        with tarfile.open(fileobj=output, mode='w') as archive:
-            for name, content in self.original.items():
-                entry = tarfile.TarInfo(name)
-                entry.size = len(content)
-                entry.mode = 0o644
-                archive.addfile(entry, io.BytesIO(content))
-        self.archive = output.getvalue()
+        self.blobs = {hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest(): data
+                      for data in self.original.values()}
+        self.listing = b''.join(b'100644 blob ' + oid.encode() + b'\t' + name.encode() + b'\0'
+                                for name, oid in zip(self.original, self.blobs))
         self.pin = {'patched_files': {}}
         for name, content in self.original.items():
             if name.startswith('src/') and name != 'src/lib.rs':
@@ -73,11 +69,15 @@ class MemberSourceTests(unittest.TestCase):
             path.write_bytes(content)
 
     def admit(self):
-        with patch.object(prove.subprocess, 'check_output', return_value=self.archive) as command:
-            result = prove.copy_member(self.source, self.root / 'copy', self.pin)
-            command.assert_called_once_with(
-                ['git', '--no-replace-objects', 'archive', '--format=tar', prove.RELEASE], cwd=self.source)
-            return result
+        def objects(args, cwd):
+            self.assertEqual(cwd, self.source)
+            self.assertEqual(args[:2], ['git', '--no-replace-objects'])
+            if args[2:] == ['ls-tree', '-rz', prove.RELEASE]:
+                return self.listing
+            self.assertEqual(args[2:4], ['cat-file', 'blob'])
+            return self.blobs[args[4]]
+        with patch.object(prove.subprocess, 'check_output', side_effect=objects):
+            return prove.copy_member(self.source, self.root / 'copy', self.pin)
 
     def test_exact_release_plus_binding_and_manifest_is_isolated(self):
         result = self.admit()
@@ -111,6 +111,25 @@ class MemberSourceTests(unittest.TestCase):
         path.symlink_to(self.source / 'src/transport.rs')
         with self.assertRaises(SystemExit):
             self.admit()
+
+    def test_real_repository_attributes_cannot_hide_a_missing_release_file(self):
+        patched = {name: (self.source / name).read_bytes() for name in self.original}
+        for name, content in self.original.items():
+            (self.source / name).write_bytes(content)
+        env = {**os.environ, 'GIT_CONFIG_GLOBAL': os.devnull, 'GIT_CONFIG_NOSYSTEM': '1'}
+        def git(*args):
+            return subprocess.check_output(['git', *args], cwd=self.source, env=env)
+        git('init', '--quiet')
+        git('add', '.')
+        git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+            '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'release fixture')
+        release = git('rev-parse', 'HEAD').decode().strip()
+        for name, content in patched.items():
+            (self.source / name).write_bytes(content)
+        (self.source / '.git/info/attributes').write_text('src/lib.rs export-ignore\n')
+        (self.source / 'src/lib.rs').unlink()
+        with patch.object(prove, 'RELEASE', release), self.assertRaises(SystemExit):
+            prove.copy_member(self.source, self.root / 'copy', self.pin)
 
 
 if __name__ == '__main__':

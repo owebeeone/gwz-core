@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import io
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -69,19 +68,21 @@ def extract(archive: Path, destination: Path) -> Path:
 
 def copy_member(source: Path, destination: Path, pin: dict) -> Path:
     """Admit exact release files plus the reviewed patch and native dependency edge."""
-    archive = subprocess.check_output(['git', '--no-replace-objects', 'archive', '--format=tar', RELEASE], cwd=source)
+    git = ['git', '--no-replace-objects']
+    listing = subprocess.check_output(git + ['ls-tree', '-rz', RELEASE], cwd=source)
     expected = {}
-    with tarfile.open(fileobj=io.BytesIO(archive)) as tree:
-        for entry in tree:
-            if entry.isdir():
-                continue
-            if entry.issym():
-                content = os.fsencode(entry.linkname)
-            elif entry.isfile():
-                content = tree.extractfile(entry).read()
-            else:
-                raise SystemExit(f'unsupported release entry: {entry.name}')
-            expected[entry.name] = (entry, content)
+    for record in listing.split(b'\0'):
+        if not record:
+            continue
+        header, raw_name = record.split(b'\t', 1)
+        mode, kind, oid = header.decode('ascii').split()
+        name = os.fsdecode(raw_name)
+        if (mode, kind, name) == ('160000', 'commit', 'libgit2-sys/libgit2'):
+            continue
+        if kind != 'blob' or mode not in ('100644', '100755', '120000'):
+            raise SystemExit(f'unsupported release entry: {name}')
+        content = subprocess.check_output(git + ['cat-file', 'blob', oid], cwd=source)
+        expected[name] = (int(mode, 8), content)
     seen = set()
     for directory, dirs, files in os.walk(source, followlinks=False):
         relative = Path(directory).relative_to(source)
@@ -99,12 +100,12 @@ def copy_member(source: Path, destination: Path, pin: dict) -> Path:
     for name, (entry, original) in expected.items():
         path = source / name
         mode = path.lstat().st_mode
-        if entry.issym():
+        if stat.S_ISLNK(entry):
             if not stat.S_ISLNK(mode) or os.fsencode(os.readlink(path)) != original:
                 raise SystemExit(f'member symlink drift: {name}')
             content = original
         else:
-            if not stat.S_ISREG(mode) or bool(mode & 0o111) != bool(entry.mode & 0o111):
+            if not stat.S_ISREG(mode) or bool(mode & 0o111) != bool(entry & 0o111):
                 raise SystemExit(f'member file type/mode drift: {name}')
             content = path.read_bytes()
             if name == 'Cargo.toml':
@@ -119,11 +120,11 @@ def copy_member(source: Path, destination: Path, pin: dict) -> Path:
     for name, entry, content in admitted:
         output = destination / name
         output.parent.mkdir(parents=True, exist_ok=True)
-        if entry.issym():
+        if stat.S_ISLNK(entry):
             output.symlink_to(os.fsdecode(content))
         else:
             output.write_bytes(content)
-            output.chmod(entry.mode)
+            output.chmod(entry & 0o777)
     return destination
 
 

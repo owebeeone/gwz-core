@@ -23,7 +23,7 @@ qualifies the root git2 library as an external dependency only.
 
 `prove.py` retains archive mode and adds mutually exclusive member mode.
 Member admission compares the complete file set and content against the exact
-release archive, allowing only the two pinned binding outputs and the exact
+release tree/blob objects (not attribute-sensitive archives), allowing only the two pinned binding outputs and the exact
 manifest edit. It rejects unrelated tracked/untracked/ignored input changes,
 missing files, executable-mode changes and file/symlink substitution. It omits
 Git metadata, root build output and the unused C submodule directory. Verified
@@ -35,9 +35,12 @@ production manifests and checked-in fixture lock are not mutated.
 Host: macOS aarch64, Rust 1.95.0; Git 2.52.0.
 
 - Source-admission tests first failed because `copy_member` did not exist.
-  Six Python tests now pass, including the two retained lock-graph guards,
+  Seven Python tests now pass, including the two retained lock-graph guards,
   exact admission/isolation, content/native-edge/partial-patch drift, extra and
-  missing files, and symlink substitution.
+  missing files, and symlink substitution. A real-repository regression first reproduced
+  hidden `info/attributes` concealing a missing release file; object reads now
+  reject that attack. The same attack was rejected in a temporary clone
+  containing the actual pinned release, after positive admission succeeded.
 - The unmodified member was refused by source admission. A temporary isolated
   copy with only the native manifest alignment reproduced compile errors for
   the missing `RemoteCallbacks::smart_transport` method in both existing test
@@ -73,7 +76,7 @@ Windows, Linux and macOS x86_64, all production consumers/features, packaged
 release consumption and eventual dependency activation remain separate gates.
 
 Actual diff: 72 added/changed Rust lines across the two binding files; one
-manifest line replacement; 87 changed runner lines; 79 added Python test lines;
+manifest line replacement; 88 changed runner lines; 98 added Python test lines;
 18 README lines plus this report. Seven L2-owned/source-alignment files total;
 within the accepted 150 Rust/8 manifest/100 test/120 tool/180 documentation
 ceilings. Shared test wiring and other lane outputs are outside this package.
