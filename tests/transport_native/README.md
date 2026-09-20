@@ -53,6 +53,24 @@ python3 gwz-core/tests/transport_native/prove.py \
   --git2-archive "$HOME/.cargo/registry/cache"/index.crates.io-*/git2-0.21.0.crate
 ```
 
+Alternatively, qualify the registered patched member checkout:
+
+```sh
+python3 gwz-core/tests/transport_native/prove.py --git2-source git2-rs
+```
+
+Exactly one of `--git2-archive` and `--git2-source` is required; neither input
+has a default. Source mode requires the git2 0.21.0 release commit
+`dffaf272eb0e62ac15b74283c4e488252db9afc3` in the checkout's Git object database.
+Its files must match that release plus the two pinned patched binding files and
+one manifest change: `libgit2-sys = "=0.18.8"` replaces the release's path edge.
+Unrelated edits, extra files (even ignored build inputs), missing files and
+file/symlink substitutions are refused. Only `.git`, root `target/`, and the
+unused `libgit2-sys/libgit2` submodule checkout are omitted. The latter is not
+built: the fixture uses locked registry sys 0.18.8+1.9.7. Admission copies verified
+bytes into temporary storage; no member files or registry caches are changed.
+The member remains unpublished and GWZ production dependencies remain unchanged.
+
 The runner selects Rust 1.95.0 by default. `--toolchain TOOLCHAIN` selects a
 different rustup toolchain for additional qualification; it does not replace
 the recorded Rust 1.95.0 baseline.
