@@ -1,6 +1,10 @@
 # gwz-git consumer and native-source qualification
 
 Date: 2026-09-21. Status: **Q1 inventory/plan accepted; activation pending**.
+Operator sequencing, 2026-09-21: outstanding platform and selected-source/
+distribution checks are deferred into one later batch against the integrated
+stack. They do not block local SSH pool/per-remote implementation. See
+[continuation and deferred batch](GwzRemoteTransportSshIntegration.md).
 Authority: [next-package scope](GwzGitLibraryNextPackages.md),
 [library design](GwzGitLibraryDesign.md), [G0 acceptance](GwzGitLibraryG0.md).
 Follow-up: [Q2 candidate](GwzGitLibraryCandidate.md) records the source-key

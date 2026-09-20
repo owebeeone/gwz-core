@@ -10,3 +10,5 @@ rust-version = "1.95"
 [dependencies]
 ssh2 = "=0.9.6"
 tempfile = "3"
+gwz-transport = { path = "../../../gwz-transport", version = "=0.1.0" }
+git2 = { path = "../../../git2-rs", default-features = false, features = ["ssh", "unstable-sha256", "vendored-libgit2"] }

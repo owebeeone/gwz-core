@@ -1,10 +1,11 @@
-# Nonblocking SSH channel qualification
+# SSH channel, pool and per-remote integration qualification
 
 This unpublished fixture compiles core's preactivation
 `src/git/endpoint/ssh_channel.rs` and `ssh_connection.rs` with ssh2 0.9.6. It does not enable the GWZ SSH
-endpoint or change production dependencies. It qualifies channel ownership and
-cleanup, not production authentication, known-host lookup, agent behavior, pool
-integration or platform parity.
+endpoint or change production dependencies. It also compiles the internal pump,
+pool host and per-remote bridge against local gwz-transport and prepared git2-rs
+checkout dependencies. It qualifies controlled pooling/composition; production
+authentication, known-host lookup, agent policy and platform parity remain open.
 
 Use Rust 1.95.0 or newer, Git, `ssh-keygen`, `ps`, `kill`, and a local OpenSSH
 `sshd` at `/usr/sbin/sshd`. A missing server fails this native gate; it is not counted as a passing skipped test. From the
@@ -21,7 +22,7 @@ host before authenticating with its temporary client key. Server processes are
 terminated and reaped by the fixture; temporary files are removed on teardown.
 The stalled-peer regression temporarily pauses only processes belonging to its
 own SSH server, then resumes them during cleanup.
-Build outputs remain under `tests/transport_ssh/target` and can be deleted.
+Use an external build directory, for example `CARGO_TARGET_DIR=/tmp/gwz-ssh-target`.
 
 ## Host API
 
@@ -65,3 +66,22 @@ Neither early drop nor abort proves reusable health.
 EOF is distinct from WouldBlock or a native error. Native control errors retain
 the ssh2 error as their io::Error source. Read/write error detail follows ssh2's
 standard I/O implementation. No operation is automatically replayed.
+
+## Message stream and pool composition
+
+`pool_host` scripts physical resource disposal, capacity, deadlines and reuse.
+`pump` scripts partial I/O, backpressure, EOF, cleanup and bounded stderr.
+`remote_bridge` checks per-remote lifetime and error behavior. `pooled_remote`
+runs native libgit2 clone/push/fetch over discrete in-memory transport messages
+and SSH, proving five Git commands reuse one authenticated physical connection
+across two repositories. Its `common/pooled.rs` worker is a bounded test harness,
+not a production credential resolver or worker implementation. Temporary fixture
+keys/trust are established before pool injection. There is no Git client fallback
+or global transport registration, and gwz-transport contains no wire transport.
+
+The pool host must receive leases from its own returned pool; connection IDs are
+local to that ledger. Pump mirror capacity must cover the configured receive
+window. Keep native ownership inside the host resource through cleanup and lease
+release. The fixture uses 4 KiB windows/mirrors, 1 KiB payloads, bounded message
+turns, a 1 ms scheduler and a 45 s watchdog; these are test settings.
+See `dev-docs/GwzRemoteTransportSshIntegration.md` for the deferred batch and limits.
