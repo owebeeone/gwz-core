@@ -1,6 +1,6 @@
 # Git library Q4 — native Windows qualification
 
-Date: 2026-09-21. Status: **execution passed; retained review pending**.
+Date: 2026-09-21. Status: **bounded Windows source/binding/library qualification accepted**.
 Authority: [Q1 qualification](GwzGitLibraryQualification.md),
 [accepted Q3](GwzGitLibraryNativeConsumers.md), operator continuation.
 
@@ -137,7 +137,14 @@ was not checked. [Remediation](../../dev-docs/GwzGitLibraryWindows-RemPlan.md)
 adds explicit refusal/regression and a fresh native rerun. Windows-e alone is
 not configuration-isolated acceptance evidence. Native windows-f repeats all rows successfully, with before/after absence
 records for both config names throughout every Cargo search chain and Cargo
-home. The new refusal guard passes on Windows and macOS. State closure is pending. This qualifies Windows source
+home. The new refusal guard passes on Windows and macOS. [State re-review](../../dev-docs/GwzGitLibraryWindows-ReviewState-1.md) closes
+P2-1 with GO and no new findings. Together with the retained
+[Code GO](../../dev-docs/GwzGitLibraryWindows-ReviewCode.md), this accepts Q4 at
+root `5d11a6c3444d4a58c774fc083db1dbbd4e621fd8`, core
+`f1029847cd964a012ccec12495f897f444acdcd1`, evidence
+`040e3ab4db7871350650382d01d4f7c5f62d7615`. Reports are filed verbatim;
+acceptance annotations change no executable statements. One aggregate review
+and one focused remediation round; no known escaped defects. This qualifies Windows source
 admission, the native fixture and G0 library only. Root/standalone CLI, core
 and Python consumer artifacts on Windows, the other native targets, broader
 operation coverage, distribution/publication and activation remain pending.
