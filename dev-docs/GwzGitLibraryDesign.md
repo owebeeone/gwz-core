@@ -81,9 +81,10 @@ repository opening, repository paths/format, full object IDs and reading one
 commit into owned data. This is useful groundwork for both commit/tag results
 and history entries; it makes no claim to eliminate a fallback yet.
 
-`Repository` owns one native handle, is not Clone or Sync, and has no promised
-cross-thread transfer contract. Construct/use/drop on the worker doing the
-synchronous operation. Owned results can outlive it. Subsequent mutation APIs
+`Repository` owns one native handle and is `Send`, not Clone or Sync. Ownership
+may move between workers for sequential use; shared concurrent access to the
+handle is prohibited. Construct, use and drop need not occur on the same worker.
+Run synchronous calls on a suitable worker. Owned results can outlive it. Subsequent mutation APIs
 will require exclusive handle access, but that will not imply cross-process
 locking or an atomic multi-repository transaction. Borrowed native cursors stay
 within a repository borrow; do not build self-referential owning revwalk structs.
@@ -212,7 +213,12 @@ passed as commit and malformed commit errors; missing parent references; owned
 record surviving Repository drop. Verify unchanged refs/index/worktree and
 ambient cwd/environment. Fixtures may use Git; runtime calls must work with Git
 unavailable. Use existing test tools, not a new Monte Carlo framework for simple
-parsing. Borrow/thread restrictions get compile checks where needed.
+parsing. Require a positive compile-time `Repository: Send` assertion and
+compile-fail `Repository: Sync` and `Repository: Clone` checks, plus sequential
+ownership transfer to another worker followed by read/drop. Qualify concurrent
+SHA-256 reads through independent handles as a native-baseline regression: the
+pinned 1.9.7 source includes the builtin hash thread-safety fix despite the stale
+warning in the Rust manifest. No new C patch is needed for that resolved defect.
 
 Run format/check/test and clippy on the selected Rust baseline with locked
 dependencies, plus native source proof. Cover macOS arm64/x86, Linux arm64/x86

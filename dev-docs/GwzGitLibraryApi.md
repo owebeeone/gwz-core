@@ -36,8 +36,11 @@ filesystem links are followed; opening is not a path-security boundary.
 No remote access, lazy fetching, credential prompt or subprocess is performed.
 No refs, index, worktree or process cwd/environment are changed.
 
-`Repository` is opaque, not Clone or Sync; create/use/drop it on the same worker
-(no Send guarantee). No explicit close is needed: drop releases resources.
+`Repository` is opaque and `Send`, but not Clone or Sync. Ownership may move
+between workers for sequential use, including opening on one worker and reading
+or dropping on another. Shared concurrent access to one handle is prohibited;
+independent handles may be used concurrently. Run synchronous reads on a suitable
+worker. No explicit close is needed: drop releases resources.
 It does not lock the repository against other handles/processes, so a sequence
 of reads is not a snapshot. Returned records own their memory. Read methods:
 
