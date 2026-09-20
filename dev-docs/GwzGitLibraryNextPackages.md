@@ -1,6 +1,6 @@
 # gwz-git next-package scope
 
-Date: 2026-09-21. Status: **scope proposal awaiting Code/State review**.
+Date: 2026-09-21. Status: **scope correction awaiting State closure**.
 Implementation starts only after that gate passes. The controlling records are [GwzGitLibraryDesign](GwzGitLibraryDesign.md),
 [GwzGitLibraryApi](GwzGitLibraryApi.md), and the accepted [G0 record](GwzGitLibraryG0.md).
 G0 is a read-only `gwz-git` foundation. It does not freeze operation APIs,
@@ -121,8 +121,17 @@ The future qualification document must refresh, without changing manifests:
 
 * every consumer and lock source: core `git2 0.21` with `https`, `ssh`, and
   `unstable-sha256`, independent repo-inspect/local-testrepo/CLI consumers,
-  direct `libgit2-sys = 0.18.8`, and `gwz-git`'s local fork with vendored
-  libgit2 and SHA-256 features;
+  direct `libgit2-sys = 0.18.8`, `gwz-git`'s local fork with vendored
+  libgit2 and SHA-256 features, and the indirect `gwz-py` core consumer with
+  its independent `Cargo.toml`/`Cargo.lock`. Pin Python revision
+  `d07d55dacb1725d9306be9c04d157ac29a78e000`; its current graph resolves
+  git2 0.21.0 and sys 0.18.5+1.9.4. Resolve/inspect that graph independently
+  and include it in provider uniqueness and native-platform/package gates;
+* distinguish root-workspace CLI resolution from the CLI member's standalone
+  lock. Pin CLI `7db07bbdefd2897c07fd0f9e550bf032bd8b1314`; its standalone
+  lock also records sys 0.18.5+1.9.4. Enumerate all active members from GWZ and
+  inspect direct and indirect dependencies, documenting nonconsumers too.
+  A differing or unqualified consumer keeps activation pending;
 * exact source-byte proof using
   `python3 tests/transport_native/prove.py --git2-source ../git2-rs`, before
   and after tests, plus lock/provider uniqueness and runtime libgit2 version;
