@@ -1,6 +1,8 @@
 # gwz-git: proposed foundation API
 
-Status: proposed, unimplemented, unpublished. This guide describes the first
+Status: API design accepted 2026-09-21 at core
+`3efc1a79a1e5044b6e2495ed392a5c43d8f90b64`; unimplemented and unpublished.
+This guide describes the first
 read-only package only. It does not provide commit/tag/history/fetch operations
 yet. It runs synchronous local repository reads; call it on a suitable worker.
 

@@ -1,8 +1,15 @@
 # Single-repository Rust Git library
 
-Date: 2026-09-20. Status: **DRAFT for interface review; no implementation or
-production activation**. Proposed package/repository name: `gwz-git`, Rust
-import `gwz_git`. This selects a local working name, not a published identity.
+Date: 2026-09-20. Status: **design and G0 API accepted 2026-09-21** at core
+`3efc1a79a1e5044b6e2495ed392a5c43d8f90b64`, root
+`bba620ed7806628cdde26254261043eb9266b0f9`, after retained
+[Code](../../dev-docs/GwzGitLibraryDesign-ReviewCode-1.md),
+[State](../../dev-docs/GwzGitLibraryDesign-ReviewState-1.md) and
+[Surface](../../dev-docs/GwzGitLibraryDesign-ReviewSurface-1.md) GO.
+One P2 Send-contract ambiguity closed in one remediation; no open findings.
+This annotation changes no reviewed contract. No implementation or production
+activation. Selected local package/repository name: `gwz-git`, Rust import
+`gwz_git`; not a published identity.
 
 ## Decision and authority
 

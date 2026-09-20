@@ -17,7 +17,9 @@ claimed. This acceptance annotation does not change the reviewed plan body.
 Design follow-up: [GwzGitLibraryDesign](GwzGitLibraryDesign.md) proposes the
 sibling `gwz-git` package, ownership map and bounded G0 foundation;
 [API guide](GwzGitLibraryApi.md) is its proposed public surface. Those documents
-await their own interface review. The direction record below is historical;
+have passed retained Code/State/Surface interface review at core
+`3efc1a79a1e5044b6e2495ed392a5c43d8f90b64`; no implementation is claimed.
+The direction record below is historical;
 its statement that no package name was selected applied before that proposal.
 
 The operator selected the following long-term ownership boundary after N1/N2
