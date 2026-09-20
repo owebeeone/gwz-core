@@ -1,6 +1,6 @@
 # Git library Q2 — source keys and isolated consumer composition
 
-Date: 2026-09-21. Status: **bounded implementation in progress**.
+Date: 2026-09-21. Status: **accepted local admission/composition evidence; activation pending**.
 Authority: [Q1 qualification map](GwzGitLibraryQualification.md),
 [accepted library design](GwzGitLibraryDesign.md), operator continuation.
 
@@ -136,7 +136,12 @@ No single all-green build run or installed-wheel/protocol suite is claimed.
 Manual guard checks additionally reject wrong/duplicate native packages, an
 extra library dependency, a foreign package and the observed unrelated edge.
 
-Retained aggregate Code/State review pending. Production manifests, locks,
+Accepted at core `ea059ba89b1b61201b75c26708a99c7ca780d2a9`, evidence
+`c82e38394947611b3848c9e73701ac378ae2917c`, root
+`7c017a5f1c3db1a743e5e1a0a62413fa5130755b` after retained
+[Code](../../dev-docs/GwzGitLibraryCandidate-ReviewCode.md) and
+[State](../../dev-docs/GwzGitLibraryCandidate-ReviewState.md) both reported GO
+with no P0–P3 findings. This accepts only the bounded Q2 evidence above. Production manifests, locks,
 call sites, source publication and transport activation remain unchanged.
 Next required gate is native per-consumer identity/object-format and platform
 qualification, followed by independently reproducible source packaging before
