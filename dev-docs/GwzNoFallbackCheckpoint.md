@@ -250,3 +250,30 @@ listed `commit_log/mod.rs` wiring path. No helper visibility, production module,
 public interface, file count or wiring budget changes. The lane still owns only
 its new test module and report. This follows the checkpoint's privacy handoff
 rule; the affected L4 Code review must inspect these two wiring lines.
+
+## First-package results
+
+L2-A is accepted at core `5eb29f07`, fork `e883be38`, root `a02f91f6` after
+Code/State GO and Surface GO on the unchanged public interface. Seven Python
+guards and seven native tests in each member/archive mode pass. One P2 source
+admission defect was corrected in one round; no runtime activation.
+
+L1-A/L3-A/L4-A characterization is accepted at core `c63f497d`, root `9592320d`
+after their recorded State/State/Code GO. Reports are filed as root
+`GwzNoFallbackCharacterization-Review{State,Code}.md`. Tests: L1 three, L3 five
+(with clean child executions), L4 three. L1 reproduces the shared-tree native
+InvalidSpec failure; L3 records hook/signing/configuration behavior; L4 records
+the current attribute worktree-context gap and ordered native comparisons.
+
+Two nonblocking P3 follow-ups: L4 report whitespace was removed and its package
+range diff checked; L3 now reads and checks the staged blob after hook rejection,
+with its focused tests rerun. These are routine owner corrections, not a new
+implementation review or replacement acceptance. Test actuals: L1 476 lines
+(within the 20% allowance), L3 304, L4 148; shared wiring 11 lines. No production
+runtime or protocol changes. Remaining matrices are explicit in each report.
+
+Next: design/budget the minimal local-fetch native correction against the
+reproducer and compare direct transfer; finish commit/tag identity/signing and
+history/pathspec decisions. Qualify all binding consumers/platforms/packaging
+before any separately reviewed dependency activation. The complete four-lane
+no-fallback objective remains in progress.

@@ -165,6 +165,10 @@ mod unix {
             Some(rewritten.as_str())
         );
         assert_eq!(tree_file(&path, &first, "tracked.txt").unwrap(), b"base\n");
+        let repo = git2::Repository::open(&path).unwrap();
+        let index = repo.index().unwrap();
+        let staged = index.get_path(Path::new("tracked.txt"), 0).unwrap();
+        assert_eq!(repo.find_blob(staged.id).unwrap().content(), b"rejected\n");
     }
 
     #[test]

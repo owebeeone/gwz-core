@@ -1,5 +1,10 @@
 # Commit/tag characterization and bounded design input
 
+Accepted **L3-A characterization and design input only**, reviewed at core
+`c63f497df29d51ad5d864738fa0056b513c3ab7d` after
+[State GO](../../dev-docs/GwzNoFallbackCharacterization-ReviewState.md).
+Replacement design/implementation and activation remain separate gates.
+
 Status: L3-A characterization package, State review.  This document records
 the physical-backend observations required by the accepted
 `GwzNoFallbackCheckpoint.md` package.  It proposes a later private design; it
@@ -9,7 +14,7 @@ does not change the backend, protocol, options, or operation policy.
 
 The only files owned by this package are:
 
-* `src/git/gitbackend/commit_tag_characterization.rs` (292 test lines).
+* `src/git/gitbackend/commit_tag_characterization.rs` (304 test lines).
 * `dev-docs/GwzNoFallbackCommitTagDesign.md` (this document).
 
 The accepted ceilings are 0 production additions/moves, 500 test lines, 0
@@ -64,6 +69,7 @@ physical backend:
 * `prepare-commit-msg` can replace the message supplied by `-m`; the committed
   bytes are the hook-written message. A failing `pre-commit` returns an error,
   leaves HEAD at the prior commit, and leaves the staged change available.
+  The post-failure index entry is resolved to its blob and checked byte-for-byte.
 * A nonzero `post-commit` hook does not roll back the commit and the backend
   observes success with an advanced HEAD. This is distinct from a rejecting
   pre-commit hook.
@@ -144,3 +150,6 @@ rustfmt +1.95.0 --check --edition 2024 src/git/gitbackend/commit_tag_characteriz
 
 The workspace-wide formatter check was not used as package acceptance because
 other lanes had concurrent unowned edits; only the owned file was checked.
+
+Review follow-up: the post-rejection index assertion passed in a fresh
+Rust 1.95 locked focused run (five tests and their clean children).

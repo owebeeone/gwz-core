@@ -1,7 +1,12 @@
 # No-fallback history characterization and design input
 
-Date: 2026-09-20  
-Package: L4-A history characterization/design  
+Accepted **L4-A characterization and design input only**, reviewed at core
+`c63f497df29d51ad5d864738fa0056b513c3ab7d` after
+[Code GO](../../dev-docs/GwzNoFallbackCharacterization-ReviewCode.md).
+Replacement design/implementation and activation remain separate gates.
+
+Date: 2026-09-20
+Package: L4-A history characterization/design
 Status: focused characterization tests pass; the replacement design remains pending.
 
 ## Scope and ownership

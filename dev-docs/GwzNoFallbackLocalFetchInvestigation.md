@@ -1,5 +1,10 @@
 # No-fallback local fetch investigation
 
+Accepted **L1-A route-selection evidence only**, reviewed at core
+`c63f497df29d51ad5d864738fa0056b513c3ab7d` after
+[State GO](../../dev-docs/GwzNoFallbackCharacterization-ReviewState.md).
+Replacement design/implementation and activation remain separate gates.
+
 ## Status and scope
 
 This is the L1-A characterization package for the accepted no-fallback plan.
@@ -112,5 +117,7 @@ manifest, lockfile, compiler, or C-source changes.
 Focused runner:
 
 ```text
-cargo test -p gwz-core --lib local_clone::tests::transport_noncommit -- --nocapture
+cargo +1.95.0 test --locked -p gwz-core --lib local_clone::tests::transport_noncommit -- --nocapture
 ```
+
+Executed on macOS aarch64: three focused tests passed; no failures.
