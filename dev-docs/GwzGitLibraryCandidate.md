@@ -89,5 +89,56 @@ reconstruction, production activation and fallback removal remain separate.
 
 ## Results
 
-Pending execution and retained review. Original product source selection is
-unchanged throughout this package.
+Verifier implemented at core `3829f2bb30e96241f73368fcfe26cc7877497e5b`:
+14 added runner lines, 86 added test lines; existing admission rules remain.
+Drafter observed the new traversal regression fail before the correction;
+owner reran the complete Python guard suite afterward: 12 passed on macOS.
+The runner and test fixtures also select `D:/gwz-tests` on Windows. This is
+source-level regression evidence, not native Windows execution.
+
+All five independent graphs pass final locked/offline metadata and source,
+version, feature and lock guards. Local build evidence is deliberately split
+across recorded attempts; failed attempts remain failed:
+
+| Consumer | Executed local result | Evidence run |
+|---|---|---|
+| Root workspace | Build; CLI version/help pass | local-b |
+| Core standalone | Build; 17 characterization tests pass | local-b |
+| CLI standalone | Build; version/help pass using its own lock | local-b |
+| Python standalone | Maturin wheel build; direct extension import/health pass | python-d |
+| Library standalone | Build; 13 integration tests and 7 documentation checks pass | local-b |
+| All five | Final runner metadata, unique source/providers, exact features and allowed locks pass | metadata-e |
+
+Source baseline for these runs is core `3829f2bb30e96241f73368fcfe26cc7877497e5b`;
+other library/fork/C pins above and Q1 CLI/Python pins remain unchanged. Each
+run records the full tuple, exported source fingerprints, exact command and
+runner hash. Current campaign runner is 231 lines. Raw evidence is
+[private: git-library campaign](../../gwz-core-evidence/campaigns/git-library/README.md),
+under `runs/2026-09-20-*` (UTC; local date 2026-09-21). Source admission passed
+before/after each run; successful candidate rows also compare source snapshots
+after testing. This does not claim failed rows completed every later check.
+
+Three execution lessons are incorporated without widening product scope:
+
+- Initial `cargo update -p git2` also rewrote a tempfile/getrandom dependency
+  edge. The guard refused root/core. Resolving the candidate with metadata
+  preserves that edge, verified against the same strict lock comparison.
+- Raw Cargo builds do not supply this macOS Python extension's required linker
+  setup. Using the project's maturin build path fixes that build invocation.
+- Maturin's metadata discovery did not receive command-line source patches and
+  encountered duplicate native providers. Explicit patches in the copied
+  Python root manifest align discovery with compilation. The original Python
+  manifest remains unchanged. Python packaging plus import passes in python-d.
+
+The final metadata-only run covers the final runner across all five rows;
+local-b/python-d supply the build evidence for identical product revisions.
+No single all-green build run or installed-wheel/protocol suite is claimed.
+Manual guard checks additionally reject wrong/duplicate native packages, an
+extra library dependency, a foreign package and the observed unrelated edge.
+
+Retained aggregate Code/State review pending. Production manifests, locks,
+call sites, source publication and transport activation remain unchanged.
+Next required gate is native per-consumer identity/object-format and platform
+qualification, followed by independently reproducible source packaging before
+any production activation. Remaining C1/H1 operation evidence proceeds under
+its own accepted scopes; this candidate does not freeze those APIs.
