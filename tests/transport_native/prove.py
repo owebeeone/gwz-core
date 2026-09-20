@@ -17,6 +17,14 @@ ROOT = Path(__file__).resolve().parent
 RELEASE = "dffaf272eb0e62ac15b74283c4e488252db9afc3"
 
 
+def _temporary_directory(prefix: str):
+    if os.name == 'nt':
+        root = Path('D:/gwz-tests')
+        root.mkdir(parents=True, exist_ok=True)
+        return tempfile.TemporaryDirectory(prefix=prefix, dir=root)
+    return tempfile.TemporaryDirectory(prefix=prefix)
+
+
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -123,12 +131,15 @@ def verify_copy(source: Path, destination: Path, expected: dict,
         relative = Path(directory).relative_to(source)
         for name in list(dirs):
             path = relative / name
-            if str(path) in excluded:
+            if path.as_posix() in excluded:
                 dirs.remove(name)
             elif (source / path).is_symlink():
                 dirs.remove(name)
                 files.append(name)
-        seen.update(str(relative / name) for name in files if str(relative / name) not in excluded)
+        for name in files:
+            path = relative / name
+            if path.as_posix() not in excluded:
+                seen.add(path.as_posix())
     if seen != set(expected):
         raise SystemExit(f'member file set drift: {sorted(seen ^ set(expected))}')
     admitted = []
@@ -207,7 +218,7 @@ def main() -> None:
     checked_digest(patch, pin['patch_sha256'])
     original_lock = (ROOT / 'Cargo.lock').read_text()
     checked_digest(ROOT / 'Cargo.lock', pin['lock_sha256'])
-    with tempfile.TemporaryDirectory(prefix='gwz-native-binding-') as temporary:
+    with _temporary_directory(prefix='gwz-native-binding-') as temporary:
         work = Path(temporary)
         if args.git2_source:
             owner = copy_member(args.git2_source.resolve(strict=True), work / 'git2', pin)

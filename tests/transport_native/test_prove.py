@@ -2,12 +2,94 @@ import hashlib
 import os
 import shutil
 import subprocess
-import tempfile
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from unittest.mock import patch
 import unittest
 
 import prove
+
+
+def fixture_tempdir():
+    return prove._temporary_directory('gwz-native-test-')
+
+
+class WindowsFlavorPath:
+    """Filesystem-backed path whose display key follows Windows separators."""
+
+    def __init__(self, value):
+        self.inner = Path(value)
+
+    def relative_to(self, other):
+        return type(self)(self.inner.relative_to(os.fspath(other)))
+
+    def __truediv__(self, child):
+        return type(self)(self.inner / os.fspath(child))
+
+    def __fspath__(self):
+        return os.fspath(self.inner)
+
+    def __str__(self):
+        return str(PureWindowsPath(self.inner.as_posix()))
+
+    def as_posix(self):
+        return self.inner.as_posix()
+
+
+class WindowsPathKeyTests(unittest.TestCase):
+    def fixture(self, git_kind):
+        temporary = fixture_tempdir()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        source = root / 'source'
+        source.mkdir()
+        nested = source / 'nested'
+        (nested / 'deep').mkdir(parents=True)
+        (nested / 'deep' / 'value.txt').write_bytes(b'nested')
+        if os.name != 'nt':
+            (nested / 'literal\\name.txt').write_bytes(b'literal')
+        nested_git = nested / '.git'
+        if git_kind == 'directory':
+            nested_git.mkdir()
+            (nested_git / 'config').write_text('ignored')
+        else:
+            nested_git.write_text('gitdir: outside')
+        expected = {'nested/deep/value.txt': (0o100644, b'nested')}
+        if os.name != 'nt':
+            expected['nested/literal\\name.txt'] = (0o100644, b'literal')
+        return source, root / 'destination', expected
+
+    def verify_windows_keys(self, source, destination, expected, excluded):
+        with patch.object(prove, 'Path', WindowsFlavorPath):
+            return prove.verify_copy(source, destination, expected, excluded)
+
+    def test_nested_windows_keys_and_git_directory_or_file_are_excluded(self):
+        for git_kind in ('directory', 'file'):
+            with self.subTest(git_kind=git_kind):
+                source, destination, expected = self.fixture(git_kind)
+                self.verify_windows_keys(source, destination, expected,
+                                         ('.git', 'nested/.git', 'target'))
+                for name, (_, content) in expected.items():
+                    self.assertEqual((destination / name).read_bytes(), content)
+
+    def test_windows_key_normalization_keeps_admission_guards(self):
+        source, destination, expected = self.fixture('file')
+        extra = source / 'nested' / 'unexpected.txt'
+        extra.write_bytes(b'unexpected')
+        with self.assertRaises(SystemExit):
+            self.verify_windows_keys(source, destination, expected,
+                                     ('.git', 'nested/.git', 'target'))
+        extra.unlink()
+        expected['nested/deep/value.txt'] = (0o100644, b'wrong')
+        with self.assertRaises(SystemExit):
+            self.verify_windows_keys(source, destination, expected,
+                                     ('.git', 'nested/.git', 'target'))
+        expected['nested/deep/value.txt'] = (0o100644, b'nested')
+        guarded = source / 'nested' / 'deep' / 'value.txt'
+        guarded.unlink()
+        guarded.symlink_to(source / 'nested' / 'deep' / 'other.txt')
+        with self.assertRaises(SystemExit):
+            self.verify_windows_keys(source, destination, expected,
+                                     ('.git', 'nested/.git', 'target'))
 
 
 class LockedGraphTests(unittest.TestCase):
@@ -43,7 +125,7 @@ class LockedGraphTests(unittest.TestCase):
 
 class MemberSourceTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = fixture_tempdir()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.source = self.root / 'member'
@@ -155,7 +237,7 @@ class NativeLockTests(unittest.TestCase):
             prove.verify_lock(original, original, native=True)
 
     def test_native_tree_is_exact_and_submodule_head_is_checked(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with fixture_tempdir() as directory:
             root = Path(directory)
             def git(*args):
                 return subprocess.check_output(['git', *args], cwd=root)
