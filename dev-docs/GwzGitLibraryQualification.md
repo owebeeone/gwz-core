@@ -5,7 +5,9 @@ Authority: [next-package scope](GwzGitLibraryNextPackages.md),
 [library design](GwzGitLibraryDesign.md), [G0 acceptance](GwzGitLibraryG0.md).
 Follow-up: [Q2 candidate](GwzGitLibraryCandidate.md) records the source-key
 correction and isolated local composition evidence; native Windows and the
-remaining matrix below are still pending.
+remaining matrix below are still pending. [Q3 native consumers](GwzGitLibraryNativeConsumers.md)
+adds instrumented macOS arm64 execution; it does not close other platforms,
+full operation coverage or distribution.
 This is an inventory and executable gate plan, not all-consumer qualification.
 No source distribution, production dependency, lock or runtime changed.
 

@@ -81,4 +81,36 @@ production surface is frozen. P0–P2 block; at most two remediation rounds.
 
 ## Results
 
-Pending execution and retained review.
+One complete native run passed on macOS arm64, Rust 1.95.0. Public fixture
+baseline: core `b68d3c5aa53165e868acbae2f5cc13699951c8e0`; unchanged G0
+library/Rust/C sources and Q1 CLI/Python pins. Full tuple, commands, frozen
+inputs and artifact hashes are in [private raw evidence](../../gwz-core-evidence/campaigns/git-library/runs/2026-09-21-native-a/README.md).
+
+| Instrumented artifact | Native features | SHA1 / SHA256 objects, fetch, diagnostics |
+|---|---|---|
+| Root workspace CLI executable | Vendored 1.9.7; HTTPS + SSH | Both pass |
+| Standalone core downstream example | Vendored 1.9.7; HTTPS + SSH | Both pass |
+| Standalone CLI executable | Vendored 1.9.7; HTTPS + SSH | Both pass |
+| Explicitly loaded Python extension | Vendored 1.9.7; HTTPS + SSH | Both pass |
+| Library downstream example | Vendored 1.9.7; neither HTTPS nor SSH | Both pass |
+
+Stock C 1.9.7 built successfully and failed specifically at the required
+noncommit-hint fetch with InvalidSpec (-12). The patched same-version builds
+passed that operation for both formats in every row. All five consumers
+returned identical deterministic IDs; Python independently verified the Git
+blob hashes. Malformed-graft opens preserve raw class 36/code -1 for each
+format through the owned library error. This combines executed behavior with
+source admission, rather than claiming a version string identifies a patch.
+
+Three parser tests pass, including rejection of altered identity/features,
+object hash/width, fetch/error results and incomplete/duplicate frames.
+Fixture rustfmt passes. Actual size: 168 public Rust lines, 196 private runner
+lines, 41 parser-test lines. Public scope/docs and private raw evidence are the
+only other additions. No existing Q2 runner or production dependency changed.
+
+Original fork admission passed before/after; copied source, locks and built
+artifact hashes remained unchanged during each probe. Runtime PATH was empty
+and Git config isolated. Native execution made no Git subprocess calls.
+Retained aggregate review is pending. Native Windows and other architectures,
+full operation/network coverage and source distribution remain open; no
+production endpoint activation or fallback removal follows from Q3 alone.
