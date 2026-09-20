@@ -57,7 +57,7 @@ The Q3 probe remains self-contained for its existing consumer instrumentation. U
 outside these bounds stop the affected row and receive a precise report.
 
 Private owned paths: git-library campaign `runner/windows.py` (at most 260
-lines), README extension, named raw runs with frozen inputs/results. The runner
+lines), `runner/test_windows.py` (at most 100 lines), README extension, named raw runs with frozen inputs/results. The runner
 is campaign orchestration, not a public build dependency. It must use fresh
 paths, retain command/exit/output records and source fingerprints, preserve
 failed attempts, and verify source before and after tests. Avoid a generalized
@@ -66,7 +66,10 @@ to the integrator.
 
 ## Execution and acceptance
 
-Use a fixture-owned Cargo home/config, HOME and Git configuration. TMP/TEMP
+Use a fixture-owned Cargo home/config, HOME and Git configuration. Refuse both
+Cargo config filenames in every effective working-directory ancestor and the
+Cargo home; record their absence before/after each Cargo invocation, including
+the proof runner's temporary D: child. Never modify external configuration. TMP/TEMP
 also point below the unique D: root so unchanged tests using the OS temporary
 directory cannot create fixtures on C:. Download locked registry dependencies
 deliberately before offline execution; retain locks and prohibit unrelated
@@ -100,10 +103,10 @@ Executed on Dabeest, Windows NT 10.0.26200, Python3.13.5, Rust1.95.0
 x86_64-pc-windows-msvc. Final public fixture revision:
 `5f6cc919c880f7c540013bbfbc3bcb0fa81f2ec8`; library/Rust/C pins above unchanged.
 [Private raw evidence](../../gwz-core-evidence/campaigns/git-library/README.md)
-retains git-library runs `2026-09-21-windows-a` through `windows-e`, plus
+retains git-library runs `2026-09-21-windows-a` through `windows-f`, plus
 `2026-09-21-mac-q4-e`. The archive requires private-member access.
 
-| Final Windows row (windows-e) | Observed result |
+| Final Windows row (windows-f) | Observed result |
 |---|---|
 | Python source/lock guards | 13 passed; one explicit POSIX-only skip |
 | Patched-source native binding proof | All nine tests pass, including per-remote callbacks and corrected local fetch |
@@ -128,8 +131,13 @@ repository paths and percent-encodes path bytes; explicit file transport stays.
 MacOS regression: nine native tests and both-format minimal library probe pass.
 
 Change size: five added verifier lines, 44 added Python test lines, 34 added
-Rust fixture lines (four replaced URL lines); 213-line private Windows runner.
-Retained aggregate Code/State review is pending. This qualifies Windows source
+Rust fixture lines (four replaced URL lines); 237-line private Windows runner and 37-line config guard suite.
+Initial Code review returned GO; State P2-1 found that Cargo ancestor config
+was not checked. [Remediation](../../dev-docs/GwzGitLibraryWindows-RemPlan.md)
+adds explicit refusal/regression and a fresh native rerun. Windows-e alone is
+not configuration-isolated acceptance evidence. Native windows-f repeats all rows successfully, with before/after absence
+records for both config names throughout every Cargo search chain and Cargo
+home. The new refusal guard passes on Windows and macOS. State closure is pending. This qualifies Windows source
 admission, the native fixture and G0 library only. Root/standalone CLI, core
 and Python consumer artifacts on Windows, the other native targets, broader
 operation coverage, distribution/publication and activation remain pending.
