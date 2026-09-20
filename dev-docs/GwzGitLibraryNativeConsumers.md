@@ -1,6 +1,6 @@
 # Git library Q3 — native consumer execution
 
-Date: 2026-09-21. Status: **bounded qualification in progress**.
+Date: 2026-09-21. Status: **instrumented macOS qualification accepted; activation pending**.
 Authority: [Q1 gates](GwzGitLibraryQualification.md),
 [accepted Q2 composition](GwzGitLibraryCandidate.md), operator continuation.
 
@@ -111,6 +111,14 @@ only other additions. No existing Q2 runner or production dependency changed.
 Original fork admission passed before/after; copied source, locks and built
 artifact hashes remained unchanged during each probe. Runtime PATH was empty
 and Git config isolated. Native execution made no Git subprocess calls.
-Retained aggregate review is pending. Native Windows and other architectures,
+Retained [Code](../../dev-docs/GwzGitLibraryNativeConsumers-ReviewCode.md) and
+[State](../../dev-docs/GwzGitLibraryNativeConsumers-ReviewState.md) reviews both
+returned GO with zero P0–P3 findings at root
+`9008e13262d4e24f1cbef150a3717dd79ca31a22`, core
+`468fd5e41fe369cc2892a330c8b2df9241023d38`, evidence
+`9c2daec1652f22b1c135e8205f794f38db514f37`. Reports are filed verbatim.
+One aggregate round, no remediation rounds or known escaped defects.
+Acceptance annotations change no executable statements from that tuple.
+Native Windows and other architectures,
 full operation/network coverage and source distribution remain open; no
 production endpoint activation or fallback removal follows from Q3 alone.
