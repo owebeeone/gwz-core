@@ -409,3 +409,10 @@ mod fixture_native;
 
 #[cfg(test)]
 pub(crate) use factory::GitTestRepository;
+
+// Characterization remains outside the production backend.
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        mod commit_tag_characterization;
+    }
+}

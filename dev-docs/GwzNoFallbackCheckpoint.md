@@ -89,7 +89,7 @@ lane execution and then leaves those files stable while lanes run.
 | Writer/package | Owned paths | Read/call-only or forbidden |
 |---|---|---|
 | Integrator P0/P1/P2 | GWZ-managed membership/lock/integrity artifacts via GWZ; `gwz-core/dev-docs/GwzNoFallbackPreparation.md`, `GwzNoFallbackCheckpoint.md`, `GwzNoFallbackPlan.md`; root `dev-docs/CurrentProgramCheckpoint.md` and this object's review/prompt/remediation documents | No manual `gwz.conf` edits; inventory discussion is a separate completed artifact |
-| Integrator wiring | `gwz-core/src/local_clone/tests/mod.rs`, `gwz-core/src/git/gitbackend.rs`, `gwz-core/src/operation/commit_log/mod.rs` | Test-module declarations only; preserve runtime behavior and all unrelated code |
+| Integrator wiring | `gwz-core/src/local_clone/tests/mod.rs`, `gwz-core/src/git/gitbackend.rs`, `gwz-core/src/operation/commit_log/tests.rs` | Test-module declarations only; preserve runtime behavior and all unrelated code |
 | Lane 1 L1-A | `gwz-core/src/local_clone/tests/transport_noncommit.rs`; `gwz-core/dev-docs/GwzNoFallbackLocalFetchInvestigation.md` | Existing `transport.rs`, local-import port/adapter and fixture helpers read-only; no C/package edits |
 | Lane 2 L2-A | `git2-rs/src/remote_callbacks.rs`, `git2-rs/src/transport.rs`; `gwz-core/tests/transport_native/prove.py`, `test_prove.py`, `README.md`; `gwz-core/dev-docs/GwzNoFallbackBindingPort.md` | Existing seven native test cases and archive/patch pins retained; no GWZ production manifests or transport runtime edits |
 | Integrator L2-A source alignment | Branch selection for `git2-rs`; `git2-rs/Cargo.toml` only | No C checkout/pin changes, package publication or unrelated upstream upgrade |
@@ -241,3 +241,12 @@ no new CLI/protocol surface frozen here. Lane 2's later source-input/public
 documentation change receives its named Surface review. After first-package
 evidence, choose and review each replacement design, ownership and budgets,
 then implement it without reopening unrelated lanes or broadening the product.
+
+## Bounded test-wiring handoff
+
+L4-A uses private helpers in `commit_log/tests.rs`. Integrator wiring is therefore
+a child module declaration in that existing test file, replacing the originally
+listed `commit_log/mod.rs` wiring path. No helper visibility, production module,
+public interface, file count or wiring budget changes. The lane still owns only
+its new test module and report. This follows the checkpoint's privacy handoff
+rule; the affected L4 Code review must inspect these two wiring lines.

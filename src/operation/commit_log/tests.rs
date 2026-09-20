@@ -3048,3 +3048,6 @@ cfg_if::cfg_if! {
         }
     }
 }
+
+#[path = "path_characterization.rs"]
+mod path_characterization;

@@ -1,8 +1,9 @@
 # No-fallback preparation: baseline and compatibility
 
-Date: 2026-09-20. Status: **P0 member registration complete; P1/P2 preparation
-in progress**. Operator resumed the accepted plan with "go". No production
-dependency or runtime activation is implied.
+Date: 2026-09-20. Status: **P0 registration and P1 baseline complete; P2 accepted**. Operator resumed the accepted plan with "go". No production
+dependency or runtime activation is implied. Current execution state is in
+the [first-package checkpoint](GwzNoFallbackCheckpoint.md) and root
+[program checkpoint](../../dev-docs/CurrentProgramCheckpoint.md).
 
 ## P0: registered fork and source identities
 

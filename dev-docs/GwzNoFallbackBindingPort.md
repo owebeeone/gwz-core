@@ -1,6 +1,14 @@
 # Qualified member binding port (L2-A)
 
-Date: 2026-09-20. Status: candidate, awaiting Code/State/Surface review.
+Date: 2026-09-20. Status: **accepted unpublished external-consumption candidate**.
+Reviewed core `5eb29f073a536901b23f96c3d4b1d05ac59ac01c`, fork
+`e883be38abeb845a776d5e0a8c9bbf5ef8e0bc68`, root
+`a02f91f66b4efe483e44c3fa4e85dfb6d94c19e0`: retained
+[Code](../../dev-docs/GwzNoFallbackBindingPort-ReviewCode-1.md) and
+[State](../../dev-docs/GwzNoFallbackBindingPort-ReviewState-1.md) GO.
+[Surface](../../dev-docs/GwzNoFallbackBindingPort-ReviewSurface.md) GO applies
+to unchanged README/help/API bytes from core `f9794d55`. One P2 corrected,
+one remediation round, zero open findings; no activation acceptance.
 Authority: [first-package checkpoint](GwzNoFallbackCheckpoint.md).
 This ports the already accepted per-remote binding; it introduces no new Rust
 API or production route. The only new public tool input is `--git2-source`.
