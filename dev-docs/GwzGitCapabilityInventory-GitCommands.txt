@@ -1,0 +1,252 @@
+GWZ Git command-universe baseline
+=================================
+
+Captured 2026-09-20 in gwz-dev.  This is a reproducibility companion for
+GwzGitCapabilityInventory.md; it is not a product allow-list.
+
+Installed Git:
+  git version 2.52.0
+
+Commands used to capture the baseline:
+  git --list-cmds=builtins
+  git --list-cmds=main
+  git help -a
+
+`builtins` count: 146.  `main` count: 177.  `main` includes commands in the
+Git exec directory, including script and protocol helpers.  `git help -a`
+also reports documented user-facing categories, internal helpers, and the
+currently installed external command `filter-repo`.  Git aliases and external
+git-* programs are not part of the stable universe: aliases come from the
+user's configuration and external programs vary with PATH.
+
+The report's auditable appendix classifies the 184-name union of the 177-name
+`main` set plus the seven names visible in `git help -a` but outside that set:
+`citool`, `filter-repo`, `gitk`, `gitweb`, `gui`, `scalar`, and `svn`.
+
+Builtins (the exact `git --list-cmds=builtins` result, one per line):
+
+add
+am
+annotate
+apply
+archive
+backfill
+bisect
+blame
+branch
+bugreport
+bundle
+cat-file
+check-attr
+check-ignore
+check-mailmap
+check-ref-format
+checkout
+checkout--worker
+checkout-index
+cherry
+cherry-pick
+clean
+clone
+column
+commit
+commit-graph
+commit-tree
+config
+count-objects
+credential
+credential-cache
+credential-cache--daemon
+credential-store
+describe
+diagnose
+diff
+diff-files
+diff-index
+diff-pairs
+diff-tree
+difftool
+fast-export
+fast-import
+fetch
+fetch-pack
+fmt-merge-msg
+for-each-ref
+for-each-repo
+format-patch
+fsck
+fsck-objects
+fsmonitor--daemon
+gc
+get-tar-commit-id
+grep
+hash-object
+help
+hook
+index-pack
+init
+init-db
+interpret-trailers
+last-modified
+log
+ls-files
+ls-remote
+ls-tree
+mailinfo
+mailsplit
+maintenance
+merge
+merge-base
+merge-file
+merge-index
+merge-ours
+merge-recursive
+merge-recursive-ours
+merge-recursive-theirs
+merge-subtree
+merge-tree
+mktag
+mktree
+multi-pack-index
+mv
+name-rev
+notes
+pack-objects
+pack-redundant
+pack-refs
+patch-id
+pickaxe
+prune
+prune-packed
+pull
+push
+range-diff
+read-tree
+rebase
+receive-pack
+reflog
+refs
+remote
+remote-ext
+remote-fd
+repack
+replace
+replay
+repo
+rerere
+reset
+restore
+rev-list
+rev-parse
+revert
+rm
+send-pack
+shortlog
+show
+show-branch
+show-index
+show-ref
+sparse-checkout
+stage
+stash
+status
+stripspace
+submodule--helper
+switch
+symbolic-ref
+tag
+unpack-file
+unpack-objects
+update-index
+update-ref
+update-server-info
+upload-archive
+upload-archive--writer
+upload-pack
+var
+verify-commit
+verify-pack
+verify-tag
+version
+whatchanged
+worktree
+write-tree
+
+Additional `main` commands not in `builtins` on this host:
+
+archimport
+credential-netrc
+credential-osxkeychain
+cvsexportcommit
+cvsimport
+cvsserver
+daemon
+difftool--helper
+filter-branch
+http-backend
+http-fetch
+http-push
+imap-send
+instaweb
+merge-octopus
+merge-one-file
+merge-resolve
+mergetool
+p4
+quiltimport
+remote-ftp
+remote-ftps
+remote-http
+remote-https
+request-pull
+send-email
+sh-i18n--envsubst
+shell
+submodule
+subtree
+web--browse
+
+Documented `git help -a` categories (the 2.52.0 installed documentation is
+the authoritative grouping used by the report):
+
+Main porcelain:
+  add am archive backfill bisect branch bundle checkout cherry-pick citool
+  clean clone commit describe diff fetch format-patch gc grep init log
+  maintenance merge mv notes pull push range-diff rebase reset restore revert
+  rm show shortlog sparse-checkout stash status submodule switch tag worktree
+  gitk gui scalar
+
+Ancillary manipulators:
+  config fast-export fast-import filter-branch mergetool pack-refs prune reflog
+  refs remote repack replace
+
+Ancillary interrogators:
+  annotate blame bugreport count-objects diagnose difftool fsck help instaweb
+  merge-tree rerere show-branch verify-commit verify-tag version whatchanged
+  gitweb
+
+Foreign SCM / mail:
+  archimport cvsexportcommit cvsimport cvsserver imap-send p4 quiltimport
+  request-pull send-email svn
+
+Plumbing manipulators:
+  apply checkout-index commit-graph commit-tree hash-object index-pack merge-file
+  merge-index mktag mktree multi-pack-index pack-objects prune-packed read-tree
+  replay symbolic-ref unpack-objects update-index update-ref write-tree
+
+Plumbing interrogators:
+  cat-file cherry diff-files diff-index diff-pairs diff-tree for-each-ref
+  for-each-repo get-tar-commit-id last-modified ls-files ls-remote ls-tree
+  merge-base name-rev pack-redundant repo rev-list rev-parse show-index show-ref
+  unpack-file var verify-pack
+
+Plumbing repository syncing:
+  daemon fetch-pack http-backend send-pack update-server-info
+
+Plumbing internal helpers:
+  check-attr check-ignore check-mailmap check-ref-format column credential
+  credential-cache credential-store fmt-merge-msg hook interpret-trailers
+  mailinfo mailsplit merge-one-file patch-id sh-i18n sh-setup stripspace
+
+The complete official versioned reference is:
+  https://git-scm.com/docs/git/2.52.0

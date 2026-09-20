@@ -5,7 +5,8 @@ Date: 2026-09-20. Status: **accepted for planning at core
 `57a0aba0a808417cb4c72a796ddb8926ce85179b`, after
 [Consistency](../../dev-docs/GwzNoFallbackPlan-ReviewConsistency-1.md) and
 [Safety](../../dev-docs/GwzNoFallbackPlan-ReviewSafety-1.md) reported GO.
-This accepts the plan only; implementation remains paused.**
+This accepts the plan only. Implementation resumed by operator "go" on
+2026-09-20; the P2 and activation gates below remain required.**
 
 The two initial P2 findings were closed in one merged documentation remediation.
 No interface freeze, member provisioning, dependency switch or publication is
