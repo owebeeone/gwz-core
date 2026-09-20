@@ -172,3 +172,10 @@ Accepted at core `6586768396886fe1aeb1371bbd3064377cfa70ec`, root
 [State](../../dev-docs/GwzGitLibraryNextPackages-ReviewState-1.md) GO.
 One scope P2 (omitted Python graph) closed in one text-only remediation.
 This accepts package execution only; results require their named reviews.
+
+C1/H1/Q1 results accepted at core `deba48c93a04e6aaf0bab36066b12d1547d5469e`,
+root `9fc664de8389ea334f36bc41135cd59448893e05`, after scoped
+[State C1](../../dev-docs/GwzGitLibraryEvidence-ReviewState.md) and
+[Code H1/Q1](../../dev-docs/GwzGitLibraryEvidence-ReviewCode.md) GO.
+Two nonblocking P3 wording/precision findings receive owner corrections in
+the evidence reports; no runtime delta or blocking implementation finding.

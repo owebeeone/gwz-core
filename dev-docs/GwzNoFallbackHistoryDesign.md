@@ -7,7 +7,7 @@ Replacement design/implementation and activation remain separate gates.
 
 Date: 2026-09-20
 Package: L4-A history characterization/design
-Status: G0 focused characterization passed; the H1 extension is pending its coordinated run and the replacement design remains pending.
+Status: L4-A baseline and H1 characterization completed; H1 accepted after Code GO as recorded below. Replacement design remains pending.
 
 ## Scope and ownership
 
@@ -75,9 +75,9 @@ Focused command:
 cargo +1.95.0 test --locked -p gwz-core --lib operation::commit_log::tests::path_characterization
 ```
 
-The recorded three-test pass below is the G0 baseline. The H1 extension is
-intentionally not included in that result and remains pending the coordinated
-run.
+The recorded three-test pass below is the historical L4-A baseline. The
+completed H1 run and its exact 17-test aggregate result are recorded separately
+in the follow-up section below.
 
 The first attempt stopped before tests because the integrator-wired sibling
 module `src/git/gitbackend/commit_tag_characterization.rs` was not yet present.
@@ -134,7 +134,11 @@ All 17 selected tests passed (two H1, three existing L4-A, seven C1 and five
 existing L3-A), including exact child runs; none ignored. Rustfmt and changed-
 range whitespace checks pass. Current H1 code is 471 total lines, a 325-line
 addition with two baseline lines replaced, within the 400-added-line ceiling.
-Only macOS arm64 / Git 2.52.0 ran. Status: Code review pending.
+Only macOS arm64 / Git 2.52.0 ran. H1 accepted after
+[Code GO](../../dev-docs/GwzGitLibraryEvidence-ReviewCode.md) at core
+`deba48c93a04e6aaf0bab36066b12d1547d5469e`, root
+`9fc664de8389ea334f36bc41135cd59448893e05`. Code P3-1 stale pending-run
+wording corrected when filing; the historical baseline remains distinct.
 
 ### H-BARE and H-INFO
 

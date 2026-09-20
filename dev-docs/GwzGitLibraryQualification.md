@@ -1,6 +1,6 @@
 # gwz-git consumer and native-source qualification
 
-Date: 2026-09-21. Status: **Q1 inventory/plan candidate; activation pending**.
+Date: 2026-09-21. Status: **Q1 inventory/plan accepted; activation pending**.
 Authority: [next-package scope](GwzGitLibraryNextPackages.md),
 [library design](GwzGitLibraryDesign.md), [G0 acceptance](GwzGitLibraryG0.md).
 This is an inventory and executable gate plan, not all-consumer qualification.
@@ -129,3 +129,8 @@ owned paths, numerical scope and review before changing shared source selection.
 A final separately reviewed activation package must cover all consumers,
 compatibility, native matrix and denied-Git runtime tests before removing a
 fallback or enabling production transport. Q1 itself is the readiness map.
+
+Q1 accepted after [Code GO](../../dev-docs/GwzGitLibraryEvidence-ReviewCode.md)
+at core `deba48c93a04e6aaf0bab36066b12d1547d5469e`, root
+`9fc664de8389ea334f36bc41135cd59448893e05`. This accepts the audited readiness
+map only; no pending qualification row is promoted to a pass.

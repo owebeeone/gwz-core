@@ -380,7 +380,7 @@ fn empty_messages_preserve_refs_and_staged_content_but_refresh_index() {
             backend.head(&path).unwrap().commit.as_deref(),
             Some(base.as_str())
         );
-        // Git refreshes TREE cache bytes even though no commit is published.
+        // First rejection changes raw index bytes without publishing a commit.
         if attempt == 0 {
             assert_ne!(fs::read(&index).unwrap(), before_index);
         }
