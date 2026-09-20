@@ -1,6 +1,15 @@
 # GWZ no Git subprocess fallback plan
 
-Date: 2026-09-20. Status: **draft for review; implementation paused**.
+Date: 2026-09-20. Status: **accepted for planning at core
+`bf9446762a7c51358679ed04e147aa51dedfb2bc`, root
+`57a0aba0a808417cb4c72a796ddb8926ce85179b`, after
+[Consistency](../../dev-docs/GwzNoFallbackPlan-ReviewConsistency-1.md) and
+[Safety](../../dev-docs/GwzNoFallbackPlan-ReviewSafety-1.md) reported GO.
+This accepts the plan only; implementation remains paused.**
+
+The two initial P2 findings were closed in one merged documentation remediation.
+No interface freeze, member provisioning, dependency switch or publication is
+claimed. This acceptance annotation does not change the reviewed plan body.
 
 ## 1. Objective and scope
 
