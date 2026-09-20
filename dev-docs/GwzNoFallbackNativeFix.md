@@ -12,7 +12,8 @@ A receiver ref naming a tree/blob or a tag ultimately naming a tree/blob is not
 a commit-negotiation hint. Local fetch must skip it even when the named object
 exists in the source. Missing source-side receiver hints remain ignored as today.
 Wanted objects still transfer, including explicitly requested non-commit objects.
-Other lookup, parse, allocation, pack and publication failures still propagate.
+Errors other than the existing `GIT_ENOTFOUND` suppression and the two newly
+recognized noncommittish codes continue to propagate.
 
 The defect is a return code compared with the error class `GIT_ERROR_INVALID`
 in `foreach_reference_cb`. Replace that comparison with the applicable negative
@@ -20,7 +21,11 @@ return codes from `git_revwalk_hide`: `GIT_EINVALIDSPEC` and, if needed for tags
 `GIT_EPEEL`. Verify their origin through object peeling before selecting the final
 condition. Do not suppress errors by broad class or message matching. Preserve
 existing missing-object behavior; this package makes no stricter missing-tag-
-target guarantee than stock libgit2.
+target guarantee than stock libgit2. `GIT_ENOTFOUND` also represents a parsed
+tag declaring the wrong target type; that pre-existing suppression is preserved
+and explicitly characterized here. N1 does not claim comprehensive malformed-
+object rejection. Separate type-consistency hardening remains a prerequisite
+to deciding production fallback removal, not part of this upstream bug fix.
 
 No change to FETCH_HEAD semantics, ref publication atomicity, wanted-ref policy,
 GitBackend interfaces, CLI/core messages, SSH, credentials, or pooling. No removal
@@ -38,7 +43,9 @@ All unlisted runtime files remain read-only. No pushes, PR publication or tags.
 Tests must force an actual transfer with a wanted commit absent in the receiver,
 while a receiver hint's object is present at the source. Cover direct tree/blob,
 annotated non-commit tags, commit/tag-to-commit controls, receiver-only object,
-explicit wanted non-commit objects and a genuine malformed-object error. Check
+explicit wanted non-commit objects and a syntax-malformed tag error (`GIT_EINVALID`). Also characterize a parsed
+tag with mismatched declared/actual target type and a missing tag target: both
+retain stock suppression; record this limitation without calling it corrected. Check
 requested destination OIDs and object availability, plus unchanged hint refs.
 Run regression red before production correction, then the fetchlocal suite and
 normal C suite. Record environmental failures separately from pass claims.
