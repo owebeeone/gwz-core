@@ -3,6 +3,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path, PureWindowsPath
+from types import SimpleNamespace
 from unittest.mock import patch
 import unittest
 
@@ -90,6 +91,49 @@ class WindowsPathKeyTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.verify_windows_keys(source, destination, expected,
                                      ('.git', 'nested/.git', 'target'))
+
+
+class PlatformModeTests(unittest.TestCase):
+    def test_windows_suffix_modes_do_not_replace_git_modes(self):
+        with fixture_tempdir() as directory:
+            root = Path(directory)
+            source = root / 'source'
+            source.mkdir()
+            expected = {'run.sh': (0o100755, b'echo fixture\n'),
+                        'suffix.exe': (0o100644, b'not a binary\n')}
+            for name, (_, data) in expected.items():
+                path = source / name
+                path.write_bytes(data)
+                path.chmod(0o644 if name.endswith('.sh') else 0o755)
+            windows = SimpleNamespace(name='nt', walk=os.walk, readlink=os.readlink,
+                                      fsencode=os.fsencode)
+            with patch.object(prove, 'os', windows):
+                prove.verify_copy(source, root / 'copy', expected)
+                for name, (_, data) in expected.items():
+                    self.assertEqual((root / 'copy' / name).read_bytes(), data)
+                (source / 'run.sh').write_bytes(b'changed')
+                with self.assertRaisesRegex(SystemExit, 'source drift'):
+                    prove.verify_copy(source, root / 'refused', expected)
+                (source / 'run.sh').unlink()
+                (source / 'run.sh').symlink_to(source / 'suffix.exe')
+                with self.assertRaisesRegex(SystemExit, 'type/mode drift'):
+                    prove.verify_copy(source, root / 'refused', expected)
+
+    def test_posix_executable_drift_still_refuses(self):
+        if os.name == 'nt':
+            self.skipTest('POSIX permission bits are not representable on Windows')
+        with fixture_tempdir() as directory:
+            root = Path(directory)
+            source = root / 'source'
+            source.mkdir()
+            script = source / 'script'
+            script.write_bytes(b'fixture')
+            for actual, expected in [(0o644, 0o100755), (0o755, 0o100644)]:
+                with self.subTest(actual=actual, expected=expected):
+                    script.chmod(actual)
+                    with self.assertRaisesRegex(SystemExit, 'type/mode drift'):
+                        prove.verify_copy(source, root / 'refused',
+                                          {'script': (expected, b'fixture')})
 
 
 class LockedGraphTests(unittest.TestCase):

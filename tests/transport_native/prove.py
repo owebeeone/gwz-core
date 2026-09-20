@@ -151,7 +151,11 @@ def verify_copy(source: Path, destination: Path, expected: dict,
                 raise SystemExit(f'member symlink drift: {name}')
             content = original
         else:
-            if not stat.S_ISREG(mode) or bool(mode & 0o111) != bool(entry & 0o111):
+            # Windows reports suffix-derived executable bits, not Git's POSIX
+            # permission bit. Types, source bytes and symlink targets still
+            # require exact admission there; modes remain Git-tree metadata.
+            executable_drift = os.name != 'nt' and bool(mode & 0o111) != bool(entry & 0o111)
+            if not stat.S_ISREG(mode) or executable_drift:
                 raise SystemExit(f'member file type/mode drift: {name}')
             content = path.read_bytes()
             if content != original:

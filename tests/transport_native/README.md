@@ -71,7 +71,12 @@ characterizes its known noncommit-hint fetch failure. Source mode requires:
 The Rust checkout must match the release plus the three pinned binding files,
 exact sys baseline, path dependency and operator-fork submodule URL. The C
 checkout and parent gitlink must both match the pinned commit. All source paths,
-bytes and modes are checked against Git objects before an isolated copy is built.
+bytes and source types are checked against Git objects before an isolated copy
+is built. POSIX executable bits must also match. Windows exposes executable bits
+derived from filename suffixes, so those bits are not compared with Git's POSIX
+mode. Git tree modes remain the recorded source authority; no Windows ACL or
+execution-policy equivalence is claimed. Symlinks must remain real symlinks
+with exact targets on both platforms; a plain-file checkout is refused.
 Unrelated edits, extra files (even ignored build inputs), missing files and
 file/symlink substitutions are refused. Only root `.git`, root `target/`, and
 nested C `.git` metadata are omitted. Both modes force vendored C; source mode
