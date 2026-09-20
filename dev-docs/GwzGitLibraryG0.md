@@ -82,10 +82,51 @@ and x86_64, and Windows x86_64 MSVC remain pending; local G0 candidate acceptanc
 must not be described as all-platform or production qualification. Both fork
 commits are unpublished; remote-only reconstruction is still unavailable.
 
+## Remediation verification — 2026-09-21
+
+Initial Code review found two P2 defects and one P3 contract excess; State and
+Surface returned GO. The [bounded scope amendment](../../dev-docs/GwzGitLibraryG0-RemPlan.md)
+received retained Code/State GO before the correction. Earlier measurements
+above describe the original candidate, not this superseding composition.
+
+New Rust source: `ce78628308e11b4e8901d5061602619109bce21a`, descending
+from the prior pin and changing only `src/error.rs` (24 added / 45 deleted lines,
+including tests). Existing per-remote files and C gitlink are byte-identical.
+The raw getter now preserves every stored native class and callback replay uses
+that value; the safe enum conversion is unchanged. C remains `b172e3d187a4b6866fd9f696f40a1b8e7f56d348`.
+
+Library tree/ordered-parent fields now come from validated raw ODB headers,
+independent of shallow/graft traversal rewriting. Native validation/signatures
+are retained. Error/NativeDiagnostic expose only their accepted traits.
+
+The new shallow/graft and malformed-graft tests failed on the old source:
+empty parents instead of two stored parents; class 0 instead of native class 36.
+They pass after correction for SHA-1/SHA-256, preserving traversal metadata.
+Full fmt/check/test/clippy pass on macOS arm64: **13 integration tests** (4 + 9),
+**7 documentation checks** (one compiled usage example, six compile-fail trait
+checks), none ignored. Corrected totals: **367 source lines, 652 test lines**,
+11 maintained files plus generated lock. No conditional attributes introduced.
+
+Updated three-file patch and hashes passed the unchanged qualification runner:
+**9 native tests before and after library checks**, **9 archive-mode tests**,
+and **10 Python admission guards**. Archive mode retains stock C and its
+expected local-fetch failure characterization; source mode proves the C fix.
+The raw-class/callback-replay unit test passed in a verified isolated fork copy
+for classes 0, 1, 34, 35, 36, 12345 and -1. Its first offline attempt lacked the
+upstream workspace's curl dependency; the isolated retry fetched dependencies
+and passed (one test, 227 filtered). This supplemental unit run does not replace
+the locked source/archive proofs or change any member manifest/lock.
+
+Final metadata still shows exactly one local git2 0.21.0 and sys 0.18.8+1.9.7,
+the same vendored SHA-256 features, no SSH/HTTPS. Library/core/fork manifests and
+locks are unchanged by remediation. Native C identity, source admission runner,
+and production activation remain unchanged. All other native-platform and
+publication gates above remain pending.
+
 ## Review and next boundary
 
-Settle the implementation tuple, then retained Code/State plus Surface on README
-and API examples. Blocking findings require original-reviewer closure. G0's
-600 production-line / 12 maintained-library-file budget remains controlling.
-Later L1 hardening and L3/L4 characterization/design retain separate packages;
-this checkpoint does not freeze their operation APIs.
+Corrected implementation awaits retained Code/State re-verdict, plus Surface
+on revised qualification instructions. Original Code findings remain open until
+that reviewer verifies closure. G0's 600 production-line / 12 maintained-file
+budget remains controlling. Later L1 hardening and L3/L4 characterization/design
+retain separate packages; G0 does not freeze their operation APIs.

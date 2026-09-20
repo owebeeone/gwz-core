@@ -1,7 +1,7 @@
 # Per-remote git2 binding qualification
 
 This unpublished test package qualifies the per-remote binding patch to git2
-0.21.0 and, in source mode, the native local-fetch correction on libgit2 1.9.7.
+0.21.0, lossless raw native error classes (including callback replay), and, in source mode, the native local-fetch correction on libgit2 1.9.7.
 It is not linked into GWZ production, and does not enable SSH or pooling.
 It needs Rust 1.95.0 (rustup), Python 3.10+, Git, and the native build tools
 already required by git2/libgit2. Git also supplies local upload-pack and
@@ -68,7 +68,7 @@ characterizes its known noncommit-hint fetch failure. Source mode requires:
 - sys source commit `6c93812dbc1c34aef6e6464a645545b4a4299807` (0.18.8+1.9.7);
 - the initialized C submodule at the exact patched commit in `binding-pin.json`.
 
-The Rust checkout must match the release plus the two pinned binding files,
+The Rust checkout must match the release plus the three pinned binding files,
 exact sys baseline, path dependency and operator-fork submodule URL. The C
 checkout and parent gitlink must both match the pinned commit. All source paths,
 bytes and modes are checked against Git objects before an isolated copy is built.
@@ -76,6 +76,11 @@ Unrelated edits, extra files (even ignored build inputs), missing files and
 file/symlink substitutions are refused. Only root `.git`, root `target/`, and
 nested C `.git` metadata are omitted. Both modes force vendored C; source mode
 also proves that the shared-object fetch regression now succeeds.
+
+The prepared Rust fork for G0 is `ce78628308e11b4e8901d5061602619109bce21a`; the added
+`src/error.rs` correction preserves classes unknown to the safe Rust enum. The
+original per-remote binding files and native C identity are unchanged. Both
+archive and source modes run nine integration tests.
 
 The forks remain unpublished. In this workspace the C submodule is initialized
 from the sibling `libgit2` checkout containing the unpublished backport commit.

@@ -121,3 +121,38 @@ fn receiver_noncommit_hints_do_not_block_a_new_commit() {
         );
     }
 }
+
+#[test]
+fn native_error_classes_are_lossless() {
+    let temp = if cfg!(windows) {
+        std::fs::create_dir_all("D:/gwz-tests").unwrap();
+        tempfile::Builder::new()
+            .prefix("native-error-")
+            .tempdir_in("D:/gwz-tests")
+            .unwrap()
+    } else {
+        tempfile::tempdir().unwrap()
+    };
+    let path = temp.path().join("repo");
+    let repo = Repository::init_bare(&path).unwrap();
+    let message = std::ffi::CString::new("raw class fixture").unwrap();
+    for class in [0, 1, 34, 35, 36, 12345] {
+        unsafe {
+            assert_eq!(libgit2_sys::git_error_set_str(class, message.as_ptr()), 0);
+        }
+        let error = git2::Error::last_error(-1);
+        assert_eq!(error.raw_code(), -1);
+        assert_eq!(error.raw_class() as i32, class);
+        assert_eq!(error.message(), "raw class fixture");
+    }
+    let metadata = repo.path().join("info/grafts");
+    std::fs::create_dir_all(metadata.parent().unwrap()).unwrap();
+    drop(repo);
+    std::fs::write(metadata, b"invalid\n").unwrap();
+    let error = Repository::open(&path)
+        .err()
+        .expect("malformed graft must fail");
+    // Pinned libgit2 1.9.7 errors.h, independent of Rust's enum/getter.
+    assert_eq!(error.raw_class() as i32, 36);
+    assert_eq!(error.raw_code(), -1);
+}

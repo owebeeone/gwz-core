@@ -63,7 +63,11 @@ Initial prepared-workspace dependency:
 `git2 = { path = "../git2-rs", version = "=0.21.0", default-features = false,
 features = ["unstable-sha256", "vendored-libgit2"] }`.
 No network feature is needed for G0. Own and commit the library Cargo.lock.
-The selected source is Rust fork `4c1caabbce7d56426c763dd94114052302b23e4c`,
+The original selected source was Rust fork `4c1caabbce7d56426c763dd94114052302b23e4c`.
+The bounded [G0 remediation amendment](../../dev-docs/GwzGitLibraryG0-RemPlan.md),
+accepted at root `409d86d8e1c61831dfd52d6dd57d71b386c920b4` by retained Code/State,
+supersedes only that Rust source selection with
+`ce78628308e11b4e8901d5061602619109bce21a` (lossless native error classes). G0 uses that fork,
 sys 0.18.8+1.9.7 and native C
 `b172e3d187a4b6866fd9f696f40a1b8e7f56d348` (accepted N2 composition).
 The path declaration is not a source pin: G0 acceptance must verify that exact

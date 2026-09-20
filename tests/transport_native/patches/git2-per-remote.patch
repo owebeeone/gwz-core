@@ -129,3 +129,99 @@
      /// for transferring data.
      ///
      /// A smart transport requires a *subtransport* over which data is actually
+
+diff --git a/src/error.rs b/src/error.rs
+index 403389a..5872559 100644
+--- a/src/error.rs
++++ b/src/error.rs
+@@ -302,51 +302,10 @@ impl Error {
+         )
+     }
+ 
+-    /// Return the raw error class associated with this error.
++    /// Return the stored native error class, including classes unknown to this binding.
++    #[allow(clippy::unnecessary_cast)] // The raw alias is signed on MSVC, unsigned elsewhere.
+     pub fn raw_class(&self) -> raw::git_error_t {
+-        macro_rules! check( ($($e:ident,)*) => (
+-            $(if self.klass == raw::$e as c_int { raw::$e }) else *
+-            else {
+-                raw::GIT_ERROR_NONE
+-            }
+-        ) );
+-        check!(
+-            GIT_ERROR_NONE,
+-            GIT_ERROR_NOMEMORY,
+-            GIT_ERROR_OS,
+-            GIT_ERROR_INVALID,
+-            GIT_ERROR_REFERENCE,
+-            GIT_ERROR_ZLIB,
+-            GIT_ERROR_REPOSITORY,
+-            GIT_ERROR_CONFIG,
+-            GIT_ERROR_REGEX,
+-            GIT_ERROR_ODB,
+-            GIT_ERROR_INDEX,
+-            GIT_ERROR_OBJECT,
+-            GIT_ERROR_NET,
+-            GIT_ERROR_TAG,
+-            GIT_ERROR_TREE,
+-            GIT_ERROR_INDEXER,
+-            GIT_ERROR_SSL,
+-            GIT_ERROR_SUBMODULE,
+-            GIT_ERROR_THREAD,
+-            GIT_ERROR_STASH,
+-            GIT_ERROR_CHECKOUT,
+-            GIT_ERROR_FETCHHEAD,
+-            GIT_ERROR_MERGE,
+-            GIT_ERROR_SSH,
+-            GIT_ERROR_FILTER,
+-            GIT_ERROR_REVERT,
+-            GIT_ERROR_CALLBACK,
+-            GIT_ERROR_CHERRYPICK,
+-            GIT_ERROR_DESCRIBE,
+-            GIT_ERROR_REBASE,
+-            GIT_ERROR_FILESYSTEM,
+-            GIT_ERROR_PATCH,
+-            GIT_ERROR_WORKTREE,
+-            GIT_ERROR_SHA1,
+-            GIT_ERROR_HTTP,
+-        )
++        self.klass as raw::git_error_t
+     }
+ 
+     /// Return the message associated with this error
+@@ -361,7 +320,7 @@ impl Error {
+     /// needed from a C callback.
+     pub(crate) unsafe fn raw_set_git_error(&self) -> raw::git_error_code {
+         let s = CString::new(self.message()).unwrap();
+-        raw::git_error_set_str(self.class() as c_int, s.as_ptr());
++        raw::git_error_set_str(self.raw_class() as c_int, s.as_ptr());
+         self.raw_code()
+     }
+ }
+@@ -408,6 +367,26 @@ impl From<JoinPathsError> for Error {
+ mod tests {
+     use crate::{ErrorClass, ErrorCode};
+ 
++    #[test]
++    fn raw_classes_survive_observation_and_callback_replay() {
++        crate::init();
++        for klass in [0, 1, 34, 35, 36, 12345, -1] {
++            let error = super::Error {
++                code: -1,
++                klass,
++                message: "native class fixture".into(),
++            };
++            assert_eq!(error.raw_class() as i32, klass);
++            if klass == 36 || klass == 12345 || klass == -1 {
++                assert_eq!(error.class(), ErrorClass::None);
++            }
++            let code = unsafe { error.raw_set_git_error() };
++            let replay = super::Error::last_error(code);
++            assert_eq!(replay.raw_class() as i32, klass);
++            assert_eq!(replay.message(), "native class fixture");
++        }
++    }
++
+     #[test]
+     fn smoke() {
+         let (_td, repo) = crate::test::repo_init();
