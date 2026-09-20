@@ -1,12 +1,14 @@
 # gwz-git: proposed foundation API
 
 Status: API design accepted 2026-09-21 at core
-`3efc1a79a1e5044b6e2495ed392a5c43d8f90b64`; unimplemented and unpublished.
+`3efc1a79a1e5044b6e2495ed392a5c43d8f90b64`. G0 implementation candidate now
+exists in the sibling `gwz-git` member; unpublished and pending implementation
+review. See its [README](../../gwz-git/README.md) for build/test instructions.
 This guide describes the first
 read-only package only. It does not provide commit/tag/history/fetch operations
 yet. It runs synchronous local repository reads; call it on a suitable worker.
 
-The initial development checkout will be a sibling `gwz-git` member in the
+The initial development checkout is a sibling `gwz-git` member in the
 prepared GWZ workspace, with its own Cargo workspace and lockfile. It requires
 Rust 1.95 and the qualified sibling git2-rs checkout. There is no crates.io
 install or remote-only bootstrap yet. Downstream production use awaits source
@@ -14,7 +16,7 @@ distribution and platform qualification. No service is installed or configured.
 
 ## Open, inspect, close
 
-Proposed usage (not runnable until the first package is implemented):
+Usage with the G0 implementation candidate:
 
 ```rust,no_run
 use gwz_git::{ObjectId, Repository};
