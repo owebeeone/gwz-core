@@ -14,6 +14,12 @@ claimed. This acceptance annotation does not change the reviewed plan body.
 
 ## Operator direction — separate Rust Git library (2026-09-20)
 
+Design follow-up: [GwzGitLibraryDesign](GwzGitLibraryDesign.md) proposes the
+sibling `gwz-git` package, ownership map and bounded G0 foundation;
+[API guide](GwzGitLibraryApi.md) is its proposed public surface. Those documents
+await their own interface review. The direction record below is historical;
+its statement that no package name was selected applied before that proposal.
+
 The operator selected the following long-term ownership boundary after N1/N2
 acceptance. This records that decision; it does not freeze a new API or authorize
 implementation outside a reviewed package scope.
