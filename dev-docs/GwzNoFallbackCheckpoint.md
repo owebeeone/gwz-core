@@ -1,6 +1,11 @@
 # No-fallback first implementation checkpoint
 
-Date: 2026-09-20. Status: **draft for P2 review; first packages only**.
+Date: 2026-09-20. Status: **accepted first-package scope after Code/State GO**.
+Reviewed core `dd47810ece5980cfa35017ae0dfd7a8f33701e80`, root
+`d98922e03b837d030477f1d9a696fef2464b8b17`; unchanged fork/transport/taut
+identities are in the [Code](../../dev-docs/GwzNoFallbackCheckpoint-ReviewCode.md)
+and [State](../../dev-docs/GwzNoFallbackCheckpoint-ReviewState.md) reports.
+One review-entry P2 corrected; zero open findings. No implementation accepted yet.
 Authority: [accepted plan](GwzNoFallbackPlan.md) and
 [preparation baseline](GwzNoFallbackPreparation.md). Operator has resumed work.
 This checkpoint does not activate a new production dependency or approve a C
