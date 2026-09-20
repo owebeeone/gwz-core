@@ -1,6 +1,6 @@
 # gwz-git G0 implementation checkpoint
 
-Date: 2026-09-21. Status: **implemented local candidate; acceptance review pending**.
+Date: 2026-09-21. Status: **local G0 foundation accepted after retained Code/State/Surface GO**.
 Controlling [design](GwzGitLibraryDesign.md) and [API](GwzGitLibraryApi.md)
 were accepted at core `3efc1a79a1e5044b6e2495ed392a5c43d8f90b64`.
 
@@ -123,10 +123,29 @@ locks are unchanged by remediation. Native C identity, source admission runner,
 and production activation remain unchanged. All other native-platform and
 publication gates above remain pending.
 
-## Review and next boundary
+## Acceptance and next boundary
 
-Corrected implementation awaits retained Code/State re-verdict, plus Surface
-on revised qualification instructions. Original Code findings remain open until
-that reviewer verifies closure. G0's 600 production-line / 12 maintained-file
-budget remains controlling. Later L1 hardening and L3/L4 characterization/design
-retain separate packages; G0 does not freeze their operation APIs.
+Accepted exact implementation tuple: root `699c584a93185ef5e73dc96318603e25354018e2`,
+core `2a5bd773df04450148c7630e01913edba2bbedb8`, library
+`aa77c2ce5ad0bf6b4f4b64b2d8fd75e8547c3b4c`, Rust fork
+`ce78628308e11b4e8901d5061602619109bce21a`, C
+`b172e3d187a4b6866fd9f696f40a1b8e7f56d348`, after retained
+[Code](../../dev-docs/GwzGitLibraryG0-ReviewCode-1.md),
+[State](../../dev-docs/GwzGitLibraryG0-ReviewState-1.md), and
+[Surface](../../dev-docs/GwzGitLibraryG0-ReviewSurface-1.md) GO.
+All reports are filed verbatim. Original Code reviewer closed both P2 and P3
+findings; zero open P0–P3. This annotation changes no reviewed runtime bytes.
+
+One merged remediation round, with its source amendment reviewed before
+implementation. Two correctness defects and one contract-trait defect were
+found at implementation review; none escaped this gate. No blind convergence
+on the original findings (State and Surface originally GO). Elapsed time was
+not instrumented. Scope stayed within the accepted 600-line / 12-file ceiling.
+Changed source/document whitespace checks and current local document links
+pass; the generated patch retains necessary blank context markers.
+
+Acceptance covers this unpublished macOS arm64 local foundation only. Later
+L1 hardening and L3/L4 characterization/design retain separate packages;
+each needs its exact API/paths/ceiling/review checkpoint. G0 does not freeze
+those operation APIs, activate production consumers, or satisfy unexecuted
+native-platform and clean remote-only distribution gates.

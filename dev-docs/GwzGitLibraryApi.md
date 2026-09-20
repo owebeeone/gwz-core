@@ -1,9 +1,9 @@
-# gwz-git: proposed foundation API
+# gwz-git: foundation API
 
 Status: API design accepted 2026-09-21 at core
-`3efc1a79a1e5044b6e2495ed392a5c43d8f90b64`. G0 implementation candidate now
-exists in the sibling `gwz-git` member; unpublished and pending implementation
-review. See its [README](../../gwz-git/README.md) for build/test instructions.
+`3efc1a79a1e5044b6e2495ed392a5c43d8f90b64`. G0 implementation is accepted locally at library
+`aa77c2ce5ad0bf6b4f4b64b2d8fd75e8547c3b4c`; unpublished, with production
+and platform gates still pending. See the [acceptance record](GwzGitLibraryG0.md). See its [README](../../gwz-git/README.md) for build/test instructions.
 This guide describes the first
 read-only package only. It does not provide commit/tag/history/fetch operations
 yet. It runs synchronous local repository reads; call it on a suitable worker.
@@ -16,7 +16,7 @@ distribution and platform qualification. No service is installed or configured.
 
 ## Open, inspect, close
 
-Usage with the G0 implementation candidate:
+Usage with the accepted local G0 foundation:
 
 ```rust,no_run
 use gwz_git::{ObjectId, Repository};
