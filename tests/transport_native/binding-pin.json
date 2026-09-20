@@ -11,5 +11,9 @@
   "patched_files": {
     "src/remote_callbacks.rs": "c5c75b6eac90c9b64fb4d9b35a15a4857a4d7c5fb2002986795ae363e897dd45",
     "src/transport.rs": "f60a7cf933efe7b8ebe0422b4fce6af4d80a6b80abcfa45e784bfa43fbe09dc7"
+  },
+  "native": {
+    "sys_revision": "6c93812dbc1c34aef6e6464a645545b4a4299807",
+    "c_revision": "b172e3d187a4b6866fd9f696f40a1b8e7f56d348"
   }
 }

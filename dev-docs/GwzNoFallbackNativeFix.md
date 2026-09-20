@@ -1,6 +1,10 @@
 # Native local-fetch correction and isolated Rust integration
 
-Date: 2026-09-20. Status: **DRAFT; implementation requires Code/State GO**.
+Date: 2026-09-20. Status: **design accepted at core `e45025d622c0d5993d4daba609a68d1cee463c45`,
+root `179231adbab23144b20b62428ca56525edc7c9c3`, after retained Code/State GO**.
+Reports: root `GwzNoFallbackNativeFix-DesignReview{Code,State}-1.md`.
+One P2 scope-claim correction closed; P3 fetch-visible oracle corrected below.
+Implementation acceptance remains pending.
 Authority: [plan](GwzNoFallbackPlan.md), [first checkpoint](GwzNoFallbackCheckpoint.md),
 [local investigation](GwzNoFallbackLocalFetchInvestigation.md), and
 [binding port](GwzNoFallbackBindingPort.md). This is the separately budgeted
@@ -43,7 +47,8 @@ All unlisted runtime files remain read-only. No pushes, PR publication or tags.
 Tests must force an actual transfer with a wanted commit absent in the receiver,
 while a receiver hint's object is present at the source. Cover direct tree/blob,
 annotated non-commit tags, commit/tag-to-commit controls, receiver-only object,
-explicit wanted non-commit objects and a syntax-malformed tag error (`GIT_EINVALID`). Also characterize a parsed
+explicit wanted non-commit objects and a syntax-malformed tag error (parser `GIT_EINVALID`, fetch-visible
+`GIT_ERROR` with tag error detail). Also characterize a parsed
 tag with mismatched declared/actual target type and a missing tag target: both
 retain stock suppression; record this limitation without calling it corrected. Check
 requested destination OIDs and object availability, plus unchanged hint refs.
@@ -61,7 +66,7 @@ import `libgit2-sys` verbatim from upstream git2-rs commit
 `6c93812dbc1c34aef6e6464a645545b4a4299807` (published 0.18.8+1.9.7).
 Retain the 0.21.0 Rust release and the reviewed two-file binding extension.
 Owned files: `git2-rs/libgit2-sys/{CHANGELOG.md,Cargo.toml,build.rs,lib.rs,libgit2}`,
-`git2-rs/Cargo.toml`, `git2-rs/.gitmodules`. Root manifest selects exact0.18.8
+`git2-rs/Cargo.toml`, `git2-rs/.gitmodules`. Root manifest selects exact 0.18.8
 by path; C submodule URL becomes the operator's fork and gitlink becomes the
 reviewed N1 backport. The sibling C member and nested submodule are separate
 checkouts. No symlink, custom native build layout or product manifest edit.
@@ -98,7 +103,7 @@ Surface review. No new public product command/API is introduced.
 | N1, per C branch | 12 | 260 | 0 | 0 | 2 |
 | N2 integration | 12 manifest/metadata | 220 | 220 | 220 | 14 |
 
-N2's exact upstream sys import (currently115 insertions/21 deletions, five paths)
+N2's exact upstream sys import (currently 115 insertions/21 deletions, five paths)
 is recorded separately as baseline alignment; native gitlink is not a copied
 source fork. No unrelated upstream import. No production owner or protocol delta.
 Stop/re-scope on new ownership, >120% growth or an unlisted changed path.
@@ -113,3 +118,84 @@ and the source/native identity. Any P0/P1/P2 blocks; merged remediation, max two
 architectural rounds. Record local platform/toolchain, actual executed results,
 source import identity and budget actuals. This is local isolated qualification,
 not all-consumer, five-platform, release or production activation evidence.
+
+## Execution evidence (acceptance pending)
+
+Host: macOS arm64; Apple Clang via CMake 4.3.3, Rust 1.95.0, Python 3.10.15.
+N1 upstream-facing commit: `fe618d0f5de9e506b9714643afc42d2fcba6e984`, branch
+`codex/local-fetch-noncommit`, parent `0551dfd4ad989b6a3d5683c0d4cf326c6efef929`.
+Production delta is one replaced condition; 243 added Clar test lines.
+Neutral fixtures exercise shared tree/blob/annotated hints, commit controls,
+receiver-only objects, explicit tree/blob/tag wants, syntax-malformed failure
+and preserved mismatched/missing-target behavior. All hint refs remain unchanged;
+syntax failure leaves the wanted destination absent.
+
+C commands use an external build directory:
+
+```sh
+cmake -S libgit2 -B /tmp/gwz-libgit2-main-build -DBUILD_TESTS=ON \
+  -DBUILD_CLI=OFF -DUSE_SSH=OFF -DUSE_HTTPS=SecureTransport -DBUILD_SHARED_LIBS=OFF
+cmake --build /tmp/gwz-libgit2-main-build -j8
+/tmp/gwz-libgit2-main-build/libgit2_tests -snetwork::fetchlocal
+ctest --test-dir /tmp/gwz-libgit2-main-build -R '^offline$' --output-on-failure
+```
+
+Unmodified main offline suite passed (145.72s); patched focused suite and normal
+offline suite passed (145.88s). The initial HTTPS=OFF configuration was invalid
+with the default NTLM crypto choice; the recorded SecureTransport configuration
+builds successfully. No source workaround was made for that configuration error.
+The standalone Rust archive proof passes eight tests, including the original
+seven binding tests and a four-row characterization that still expects stock
+1.9.7's direct and annotated noncommit-hint errors. Ten Python admission/lock
+guards pass. These results do not yet qualify the patched source integration.
+
+N1 backport commit: `b172e3d187a4b6866fd9f696f40a1b8e7f56d348`, branch
+`codex/local-fetch-noncommit-1.9.7`, parent `49e408b3208bc3093757a1c2db938d3590f3f412`.
+Added/deleted lines match the upstream-facing patch exactly (only base blob IDs
+and context offsets differ). Final tests applied before the production fix on
+1.9.7 failed twice: receiver hints returned `-19` (EPEEL), explicit noncommit
+wants with a shared tree hint returned `-12` (EINVALIDSPEC). Applying the one-line
+condition correction made the complete fetchlocal suite pass. Build configuration
+is identical to main, using `/tmp/gwz-libgit2-197-build`.
+
+### Baseline comparison raised during implementation
+
+Operator asked about main versus 1.9.7. They are divergent development/maintenance
+lines (148 commits unique to 1.9.7, 548 unique to the checked-out main); do not
+interpret main's still-1.9.0 version macro as its API compatibility level.
+Comparing `src/libgit2` and `include/git2` gives 160 changed files, 6219 insertions
+and 2353 deletions. Main adds pathspec-filtered revwalk, richer commit/create/amend
+and signing callbacks, reftable, and unconditional SHA256 with changed OID APIs.
+It also avoids creating nonexistent FETCH_HEAD when update is suppressed, while
+retaining the receiver-hint bug fixed here. These are source observations, not
+claims of Git semantic parity or compatibility with our Rust bindings.
+Assess main's commit/history APIs before implementing the remaining lanes; this
+package retains 1.9.7 solely for the already-qualified isolated integration.
+No baseline upgrade is selected by that comparison.
+
+The patched 1.9.7 normal offline C suite also passed (145.25s).
+N2 Rust candidate is `4c1caabbce7d56426c763dd94114052302b23e4c`; the exact four
+upstream sys files were imported from `6c93812dbc1c34aef6e6464a645545b4a4299807`.
+The sys gitlink now selects `b172e3d187a4b6866fd9f696f40a1b8e7f56d348` and the
+parent path dependency selects exact 0.18.8. Initialization used the sibling C
+checkout for unpublished objects; submodule metadata and origin are synchronized
+to `https://github.com/owebeeone/libgit2`. This is an unpublished local candidate,
+not proof that a fresh remote-only checkout can reproduce it today.
+
+Final source proof passes eight native tests, including the four-row fixed fetch
+matrix and all unchanged binding tests. Its output identifies exact sys/C pins;
+Cargo replaces only git2/sys provenance while the lock guard preserves versions
+and every other dependency. Both source and archive builds assert vendored C and
+native 1.9.7. Ten Python guards pass; rustfmt and changed-range whitespace checks
+pass. Git-object reads are batched, with checked object headers/lengths/modes and
+exact checkout file admission before building the isolated copy.
+
+N2 actuals: two manifest/metadata lines plus native gitlink; upstream sys import
+114 additions/20 deletions across four ordinary files (the fifth imported path
+is the separately patched C gitlink); proof 136 added/deleted tool lines,
+96 Python test changes plus 123 Rust test lines, 36 README changes, four pin lines.
+N2 touches 13 files across core/fork excluding this document and owner reports.
+Both packages remain within the accepted 120% stop boundary; no unlisted runtime
+path or production owner changed. Existing upstream conditional sections remain
+baseline debt. Production manifests, fallback branches, CLI/core and transport
+runtime remain unchanged. No PR, push, tag or release was published.

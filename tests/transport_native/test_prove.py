@@ -1,5 +1,6 @@
 import hashlib
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -69,13 +70,15 @@ class MemberSourceTests(unittest.TestCase):
             path.write_bytes(content)
 
     def admit(self):
-        def objects(args, cwd):
+        def objects(args, cwd, input=None):
             self.assertEqual(cwd, self.source)
             self.assertEqual(args[:2], ['git', '--no-replace-objects'])
             if args[2:] == ['ls-tree', '-rz', prove.RELEASE]:
                 return self.listing
-            self.assertEqual(args[2:4], ['cat-file', 'blob'])
-            return self.blobs[args[4]]
+            self.assertEqual(args[2:], ['cat-file', '--batch'])
+            return b''.join(oid + b' blob ' + str(len(self.blobs[oid.decode()])).encode() +
+                            b'\n' + self.blobs[oid.decode()] + b'\n'
+                            for oid in input.splitlines())
         with patch.object(prove.subprocess, 'check_output', side_effect=objects):
             return prove.copy_member(self.source, self.root / 'copy', self.pin)
 
@@ -130,6 +133,93 @@ class MemberSourceTests(unittest.TestCase):
         (self.source / 'src/lib.rs').unlink()
         with patch.object(prove, 'RELEASE', release), self.assertRaises(SystemExit):
             prove.copy_member(self.source, self.root / 'copy', self.pin)
+
+
+class NativeLockTests(unittest.TestCase):
+    def test_native_mode_changes_only_two_source_provenances(self):
+        original = (prove.ROOT / 'Cargo.lock').read_text()
+        blocks = original.split('[[package]]')
+        for i, block in enumerate(blocks[1:], 1):
+            if any('\nname = "' + name + '"\n' in block
+                   for name in ('git2', 'libgit2-sys')):
+                blocks[i] = '\n'.join(line for line in block.splitlines()
+                                      if not line.startswith(('source =', 'checksum ='))) + '\n'
+        patched = '[[package]]'.join(blocks)
+        prove.verify_lock(original, patched, native=True)
+        for changed in [patched.replace('0.18.8+1.9.7', '0.18.8+1.9.6'),
+                        patched.replace('name = "tempfile"', 'name = "foreign"'),
+                        patched.replace(' "libz-sys",', '')]:
+            with self.assertRaises(SystemExit):
+                prove.verify_lock(original, changed, native=True)
+        with self.assertRaises(SystemExit):
+            prove.verify_lock(original, original, native=True)
+
+    def test_native_tree_is_exact_and_submodule_head_is_checked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            def git(*args):
+                return subprocess.check_output(['git', *args], cwd=root)
+            git('init', '--quiet')
+            (root / 'source.c').write_text('original\n')
+            git('add', '.')
+            git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'native fixture')
+            revision = git('rev-parse', 'HEAD').decode().strip()
+            expected = prove.read_tree(root, revision)
+            prove.verify_copy(root, root.parent / (root.name + '-copy'), expected)
+            shutil.rmtree(root.parent / (root.name + '-copy'))
+            (root / 'source.c').write_text('unapproved\n')
+            with self.assertRaises(SystemExit):
+                prove.verify_copy(root, root / 'unused', expected)
+            with self.assertRaises(SystemExit):
+                prove.check_revision(root, '0' * 40)
+
+
+class NativeMemberTests(unittest.TestCase):
+    def test_native_sys_metadata_and_checkout_drift_are_refused(self):
+        fixture = MemberSourceTests()
+        fixture.setUp()
+        self.addCleanup(fixture.temp.cleanup)
+        source = fixture.source
+        original = {name: (0o100644, content) for name, content in fixture.original.items()}
+        original['.gitmodules'] = (0o100644, b'url = https://github.com/libgit2/libgit2\n')
+        aligned = {'libgit2-sys/Cargo.toml': (0o100644, b'version = "0.18.8+1.9.7"\n')}
+        native = {'source.c': (0o100644, b'reviewed C source\n')}
+        pin = {**fixture.pin, 'native': {'sys_revision': 'sys-pin', 'c_revision': 'c-pin'}}
+        (source / 'Cargo.toml').write_bytes(
+            b'libgit2-sys = { path = "libgit2-sys", version = "=0.18.8" }\n')
+        entries = {**aligned, '.gitmodules': (0o100644, b'url = https://github.com/owebeeone/libgit2\n'),
+                   'libgit2-sys/libgit2/source.c': native['source.c']}
+        for name, (_, data) in entries.items():
+            path = source / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        def tree(path, revision):
+            if revision == prove.RELEASE:
+                self.assertEqual(path, source)
+                return original.copy()
+            if revision == 'sys-pin':
+                self.assertEqual(path, source)
+                return aligned.copy()
+            self.assertEqual((path, revision), (source / 'libgit2-sys/libgit2', 'c-pin'))
+            return native.copy()
+        def revision(args, cwd):
+            self.assertEqual(args[:3], ['git', '--no-replace-objects', 'rev-parse'])
+            self.assertIn(args[3], ['HEAD', 'HEAD:libgit2-sys/libgit2'])
+            return b'c-pin\n'
+        with patch.object(prove, 'read_tree', side_effect=tree), patch.object(
+                prove.subprocess, 'check_output', side_effect=revision):
+            prove.copy_member(source, fixture.root / 'copy', pin)
+            for name in entries:
+                path = source / name
+                saved = path.read_bytes()
+                path.write_bytes(saved + b'drift')
+                with self.subTest(name=name), self.assertRaises(SystemExit):
+                    prove.copy_member(source, fixture.root / 'copy', pin)
+                path.write_bytes(saved)
+            (source / 'libgit2-sys/libgit2/source.c').unlink()
+            with self.assertRaises(SystemExit):
+                prove.copy_member(source, fixture.root / 'copy', pin)
 
 
 if __name__ == '__main__':

@@ -1,6 +1,7 @@
 # Per-remote git2 binding qualification
 
-This unpublished test package qualifies a proposed patch to git2 0.21.0.
+This unpublished test package qualifies the per-remote binding patch to git2
+0.21.0 and, in source mode, the native local-fetch correction on libgit2 1.9.7.
 It is not linked into GWZ production, and does not enable SSH or pooling.
 It needs Rust 1.95.0 (rustup), Python 3.10+, Git, and the native build tools
 already required by git2/libgit2. Git also supplies local upload-pack and
@@ -60,16 +61,28 @@ python3 gwz-core/tests/transport_native/prove.py --git2-source git2-rs
 ```
 
 Exactly one of `--git2-archive` and `--git2-source` is required; neither input
-has a default. Source mode requires the git2 0.21.0 release commit
-`dffaf272eb0e62ac15b74283c4e488252db9afc3` in the checkout's Git object database.
-Its files must match that release plus the two pinned patched binding files and
-one manifest change: `libgit2-sys = "=0.18.8"` replaces the release's path edge.
+has a default. Archive mode retains the released registry sys 0.18.8+1.9.7 and
+characterizes its known noncommit-hint fetch failure. Source mode requires:
+
+- the git2 0.21.0 release commit `dffaf272eb0e62ac15b74283c4e488252db9afc3`;
+- sys source commit `6c93812dbc1c34aef6e6464a645545b4a4299807` (0.18.8+1.9.7);
+- the initialized C submodule at the exact patched commit in `binding-pin.json`.
+
+The Rust checkout must match the release plus the two pinned binding files,
+exact sys baseline, path dependency and operator-fork submodule URL. The C
+checkout and parent gitlink must both match the pinned commit. All source paths,
+bytes and modes are checked against Git objects before an isolated copy is built.
 Unrelated edits, extra files (even ignored build inputs), missing files and
-file/symlink substitutions are refused. Only `.git`, root `target/`, and the
-unused `libgit2-sys/libgit2` submodule checkout are omitted. The latter is not
-built: the fixture uses locked registry sys 0.18.8+1.9.7. Admission copies verified
-bytes into temporary storage; no member files or registry caches are changed.
-The member remains unpublished and GWZ production dependencies remain unchanged.
+file/symlink substitutions are refused. Only root `.git`, root `target/`, and
+nested C `.git` metadata are omitted. Both modes force vendored C; source mode
+also proves that the shared-object fetch regression now succeeds.
+
+The forks remain unpublished. In this workspace the C submodule is initialized
+from the sibling `libgit2` checkout containing the unpublished backport commit.
+Its tracked URL is the operator's GitHub fork, but a fresh remote-only clone
+cannot yet obtain that unpublished commit. Use the prepared workspace for source
+qualification; publication and clean remote-only reproduction remain later gates.
+No member files or registry caches are changed by the proof runner.
 
 The runner selects Rust 1.95.0 by default. `--toolchain TOOLCHAIN` selects a
 different rustup toolchain for additional qualification; it does not replace
@@ -79,7 +92,8 @@ If several registries match that glob, supply one exact path instead. The runner
 verifies the archive and patch digests in `binding-pin.json`, extracts into a
 temporary directory, applies the binding patch there, and copies this fixture.
 It verifies that the lock graph changes only from registry git2 to the patched
-local git2, then runs locked offline tests. It does not edit Cargo's cache, the
+local git2, plus registry sys to exact local sys in source mode, then runs locked
+offline tests. Versions and all unrelated dependency entries remain unchanged. It does not edit Cargo's cache, the
 checked-in lockfile, or GWZ production dependencies. Normal Cargo tests directly
 against this package's stock manifest are expected to reject the missing new
 method; use the proof runner to qualify the patch.

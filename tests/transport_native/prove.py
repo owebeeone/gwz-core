@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Qualify a pinned git2 binding patch without changing a production dependency."""
+"""Qualify pinned Rust bindings and the local-fetch C correction in isolation."""
 from __future__ import annotations
 
 import argparse
@@ -27,15 +27,19 @@ def checked_digest(path: Path, expected: str) -> None:
         raise SystemExit(f"digest mismatch for {path.name}: expected {expected}, got {actual}")
 
 
-def normalized_lock(text: str, patched: bool) -> str:
+def normalized_lock(text: str, patched: bool, native: bool = False) -> str:
     blocks = text.split("[[package]]")
-    found = 0
+    versions = {"git2": "0.21.0"}
+    if native:
+        versions["libgit2-sys"] = "0.18.8+1.9.7"
+    found = []
     for index, block in enumerate(blocks[1:], 1):
-        if '\nname = "git2"\n' not in block:
+        name = next((name for name in versions if '\nname = "' + name + '"\n' in block), None)
+        if name is None:
             continue
-        found += 1
-        if '\nversion = "0.21.0"\n' not in block:
-            raise SystemExit("unexpected git2 version in lock")
+        found.append(name)
+        if '\nversion = "' + versions[name] + '"\n' not in block:
+            raise SystemExit("unexpected qualified package version in lock")
         source = [line for line in block.splitlines() if line.startswith(('source =', 'checksum ='))]
         if patched and source:
             raise SystemExit("patched git2 still has registry provenance")
@@ -44,14 +48,14 @@ def normalized_lock(text: str, patched: bool) -> str:
         blocks[index] = '\n'.join(
             line for line in block.splitlines() if not line.startswith(('source =', 'checksum ='))
         ) + '\n'
-    if found != 1:
-        raise SystemExit("expected exactly one git2 package")
+    if sorted(found) != sorted(versions):
+        raise SystemExit("expected exactly one of each qualified package")
     return '[[package]]'.join(blocks)
 
 
-def verify_lock(original: str, patched: str) -> None:
-    if normalized_lock(original, False) != normalized_lock(patched, True):
-        raise SystemExit('dependency graph changed beyond the explicit git2 source patch')
+def verify_lock(original: str, patched: str, native: bool = False) -> None:
+    if normalized_lock(original, False, native) != normalized_lock(patched, True, native):
+        raise SystemExit('dependency graph changed beyond the explicit source patches')
 
 
 def extract(archive: Path, destination: Path) -> Path:
@@ -66,11 +70,11 @@ def extract(archive: Path, destination: Path) -> Path:
     return destination / 'git2-0.21.0'
 
 
-def copy_member(source: Path, destination: Path, pin: dict) -> Path:
-    """Admit exact release files plus the reviewed patch and native dependency edge."""
+def read_tree(source: Path, revision: str) -> dict:
+    """Read immutable blobs and modes, never export-filtered archive contents."""
     git = ['git', '--no-replace-objects']
-    listing = subprocess.check_output(git + ['ls-tree', '-rz', RELEASE], cwd=source)
-    expected = {}
+    listing = subprocess.check_output(git + ['ls-tree', '-rz', revision], cwd=source)
+    entries = []
     for record in listing.split(b'\0'):
         if not record:
             continue
@@ -81,19 +85,50 @@ def copy_member(source: Path, destination: Path, pin: dict) -> Path:
             continue
         if kind != 'blob' or mode not in ('100644', '100755', '120000'):
             raise SystemExit(f'unsupported release entry: {name}')
-        content = subprocess.check_output(git + ['cat-file', 'blob', oid], cwd=source)
-        expected[name] = (int(mode, 8), content)
+        entries.append((name, int(mode, 8), oid))
+    if not entries:
+        raise SystemExit('empty source tree')
+    objects = subprocess.check_output(git + ['cat-file', '--batch'], cwd=source,
+                                     input=''.join(oid + '\n' for _, _, oid in entries).encode())
+    expected = {}
+    offset = 0
+    for name, mode, oid in entries:
+        end = objects.index(b'\n', offset)
+        actual_oid, kind, raw_size = objects[offset:end].decode('ascii').split()
+        size = int(raw_size)
+        if actual_oid != oid or kind != 'blob' or size < 0:
+            raise SystemExit(f'invalid Git object response: {name}')
+        start = end + 1
+        content = objects[start:start + size]
+        if len(content) != size or objects[start + size:start + size + 1] != b'\n':
+            raise SystemExit(f'truncated Git object response: {name}')
+        expected[name] = (mode, content)
+        offset = start + size + 1
+    if offset != len(objects):
+        raise SystemExit('unexpected Git object response suffix')
+    return expected
+
+
+def check_revision(source: Path, revision: str, ref: str = 'HEAD') -> None:
+    actual = subprocess.check_output(
+        ['git', '--no-replace-objects', 'rev-parse', ref], cwd=source).decode().strip()
+    if actual != revision:
+        raise SystemExit(f'source revision mismatch: {ref}: {actual} != {revision}')
+
+
+def verify_copy(source: Path, destination: Path, expected: dict,
+                excluded: tuple = ('.git', 'target')) -> Path:
     seen = set()
     for directory, dirs, files in os.walk(source, followlinks=False):
         relative = Path(directory).relative_to(source)
         for name in list(dirs):
             path = relative / name
-            if str(path) in ('.git', 'target', 'libgit2-sys/libgit2'):
+            if str(path) in excluded:
                 dirs.remove(name)
             elif (source / path).is_symlink():
                 dirs.remove(name)
                 files.append(name)
-        seen.update(str(relative / name) for name in files if str(relative / name) != '.git')
+        seen.update(str(relative / name) for name in files if str(relative / name) not in excluded)
     if seen != set(expected):
         raise SystemExit(f'member file set drift: {sorted(seen ^ set(expected))}')
     admitted = []
@@ -108,13 +143,7 @@ def copy_member(source: Path, destination: Path, pin: dict) -> Path:
             if not stat.S_ISREG(mode) or bool(mode & 0o111) != bool(entry & 0o111):
                 raise SystemExit(f'member file type/mode drift: {name}')
             content = path.read_bytes()
-            if name == 'Cargo.toml':
-                old = b'libgit2-sys = { path = "libgit2-sys", version = "0.18.4" }'
-                if original.count(old) != 1:
-                    raise SystemExit('unexpected release native dependency')
-                original = original.replace(old, b'libgit2-sys = "=0.18.8"')
-            required = pin['patched_files'].get(name, hashlib.sha256(original).hexdigest())
-            if hashlib.sha256(content).hexdigest() != required:
+            if content != original:
                 raise SystemExit(f'member source drift: {name}')
         admitted.append((name, entry, content))
     for name, entry, content in admitted:
@@ -128,11 +157,48 @@ def copy_member(source: Path, destination: Path, pin: dict) -> Path:
     return destination
 
 
+def copy_member(source: Path, destination: Path, pin: dict) -> Path:
+    """Admit release + binding + exact sys baseline + pinned native subtree."""
+    expected = read_tree(source, RELEASE)
+    native = pin.get('native')
+    excluded = ('.git', 'target', 'libgit2-sys/libgit2')
+    if native:
+        baseline = read_tree(source, native['sys_revision'])
+        expected = {name: entry for name, entry in expected.items()
+                    if not name.startswith('libgit2-sys/')}
+        expected.update({name: entry for name, entry in baseline.items()
+                         if name.startswith('libgit2-sys/')})
+        check_revision(source, native['c_revision'], 'HEAD:libgit2-sys/libgit2')
+        child = source / 'libgit2-sys/libgit2'
+        check_revision(child, native['c_revision'])
+        expected.update({'libgit2-sys/libgit2/' + name: entry
+                         for name, entry in read_tree(child, native['c_revision']).items()})
+        excluded = ('.git', 'target', 'libgit2-sys/libgit2/.git')
+        mode, content = expected['.gitmodules']
+        expected['.gitmodules'] = (mode, content.replace(
+            b'https://github.com/libgit2/libgit2', b'https://github.com/owebeeone/libgit2'))
+    mode, content = expected['Cargo.toml']
+    old = b'libgit2-sys = { path = "libgit2-sys", version = "0.18.4" }'
+    if content.count(old) != 1:
+        raise SystemExit('unexpected release native dependency')
+    new = (b'libgit2-sys = { path = "libgit2-sys", version = "=0.18.8" }'
+           if native else b'libgit2-sys = "=0.18.8"')
+    expected['Cargo.toml'] = (mode, content.replace(old, new))
+    for name, sha in pin['patched_files'].items():
+        # Binding bytes are identified by the pre-existing reviewed digest.
+        path = source / name
+        content = path.read_bytes()
+        if hashlib.sha256(content).hexdigest() != sha:
+            raise SystemExit(f'member binding drift: {name}')
+        expected[name] = (expected[name][0], content)
+    return verify_copy(source, destination, expected, excluded)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     inputs = parser.add_mutually_exclusive_group(required=True)
     inputs.add_argument('--git2-archive', type=Path, help='exact upstream 0.21.0 crate archive')
-    inputs.add_argument('--git2-source', type=Path, help='qualified patched member checkout')
+    inputs.add_argument('--git2-source', type=Path, help='qualified member checkout with initialized pinned C submodule')
     parser.add_argument('--toolchain', default='1.95.0',
                         help='rustup toolchain selector (default: 1.95.0)')
     args = parser.parse_args()
@@ -146,6 +212,7 @@ def main() -> None:
         if args.git2_source:
             owner = copy_member(args.git2_source.resolve(strict=True), work / 'git2', pin)
             print('member_release=' + RELEASE, flush=True)
+            print('native_source=' + json.dumps(pin.get('native')), flush=True)
         else:
             archive = args.git2_archive.resolve(strict=True)
             checked_digest(archive, pin['upstream_archive_sha256'])
@@ -158,15 +225,20 @@ def main() -> None:
             checked_digest(owner / name, expected)
         fixture = work / 'proof'
         shutil.copytree(ROOT, fixture, ignore=shutil.ignore_patterns('target', '__pycache__'))
-        config = 'patch.crates-io.git2.path=' + json.dumps(str(owner))
+        native = bool(args.git2_source and pin.get('native'))
+        configs = ['--config', 'patch.crates-io.git2.path=' + json.dumps(str(owner))]
+        if native:
+            configs += ['--config', 'patch.crates-io.libgit2-sys.path=' +
+                        json.dumps(str(owner / 'libgit2-sys'))]
         cargo = ['cargo', '+' + args.toolchain]
         env = os.environ.copy()
         env['CARGO_TARGET_DIR'] = str(ROOT / 'target' / 'qualified')
-        command = cargo + ['update', '--offline', '-p', 'git2', '--config', config]
+        env['GWZ_NATIVE_FIX'] = '1' if native else '0'
+        command = cargo + ['update', '--offline', '-p', 'git2'] + configs
         subprocess.run(command, cwd=fixture, env=env, check=True)
         patched_lock = (fixture / 'Cargo.lock').read_text()
-        verify_lock(original_lock, patched_lock)
-        command = cargo + ['test', '--offline', '--locked', '--config', config]
+        verify_lock(original_lock, patched_lock, native)
+        command = cargo + ['test', '--offline', '--locked'] + configs
         print('upstream_git2=0.21.0 reference_archive_sha256=' + pin['upstream_archive_sha256'], flush=True)
         print('patch_sha256=' + pin['patch_sha256'], flush=True)
         print('command=' + ' '.join(command), flush=True)
