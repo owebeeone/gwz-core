@@ -1,6 +1,15 @@
 # SSH pool and per-remote integration continuation
 
-Date: 2026-09-21. Status: implementation authorized; acceptance pending.
+Date: 2026-09-21. Status: **accepted local integration checkpoint** after retained
+[Code GO](../../dev-docs/GwzRemoteTransportSshIntegration-ReviewCode.md) and
+[State GO](../../dev-docs/GwzRemoteTransportSshIntegration-ReviewState.md), no findings.
+Accepted tuple: root `d1273951ec5b2746f9215206440e5ffb56232293`, core
+`f39a6ed260332534aee8b0cf73955803b6a5bf81`, evidence
+`359d4fbf236182192f035ca8e42e3eb756c1a4ad`; transport
+`28f5afb3938a2aa8af0e1e8d5b07779add6ab776`, Rust fork
+`ce78628308e11b4e8901d5061602619109bce21a`, C
+`b172e3d187a4b6866fd9f696f40a1b8e7f56d348`.
+This accepts controlled local composition only; production activation remains open.
 Authority: operator direction to defer platform/source checks and continue SSH
 pool/per-remote integration; RemoteTransport Plan Phase 3, accepted stream/pool,
 SSH channel, blocking bridge and native per-remote binding checkpoints.
@@ -93,7 +102,9 @@ The final native fixture passes with that correction. Private raw evidence:
 `gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-21-local-a/`
 (access required); public tests run without this evidence repository.
 
-Acceptance review is pending on the settled implementation. This checkpoint
+Both reviewers independently reran the 21-test gate and returned GO. One review
+round, no remediation, no blind-convergent or known escaped defects; elapsed
+time not measured. Development defects are recorded above. This checkpoint
 proves controlled local composition only. Next is production endpoint wiring:
 trusted credential setup, URL/identity resolution, bounded worker scheduling and
 network-entry coverage. No production endpoint capability is advertised.
