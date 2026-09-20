@@ -1,6 +1,6 @@
 # Git library Q5 — native Windows consumer qualification
 
-Date: 2026-09-21. Status: **native execution passed; review pending**.
+Date: 2026-09-21. Status: **bounded native Windows consumer qualification accepted**.
 Authority: [Q1](GwzGitLibraryQualification.md), [Q2](GwzGitLibraryCandidate.md),
 [Q3](GwzGitLibraryNativeConsumers.md), [Q4](GwzGitLibraryWindows.md),
 operator continuation.
@@ -104,3 +104,22 @@ helpers and all production sources are unchanged. Q4 plus Q5 establishes the
 five Windows instrumented consumer shapes within their stated bounds; it does
 not establish general command parity, installed-package behavior, other native
 targets, remote-only reconstruction or production activation.
+
+## Acceptance and remaining diagnostic debt
+
+Accepted at root `97b01e752a6ac7709970f49daa24f017e762aebf`, core
+`54a04a381272806d9f6bddd2c319294ff63bcc79`, evidence
+`0c1c34b85064bff2d8e75536ce3351063f74316b`, after retained
+[Code GO](../../dev-docs/GwzGitLibraryWindowsConsumers-ReviewCode.md) and
+[State GO](../../dev-docs/GwzGitLibraryWindowsConsumers-ReviewState.md).
+No P0–P2 findings. One State P3-1 remains recorded: a post-command Cargo-config
+rejection can prevent the completed command's output/return code from being
+saved. It fails the row and does not undermine this successful execution.
+Before reusing the runner for a release decision, retain command completion
+and any post-check rejection independently; regress both completed-command
+and timeout cases. This is nonblocking diagnostic debt, not a closed finding.
+
+Reports are filed verbatim. One aggregate review round, no remediation rounds,
+no blind convergence and no known escaped defects; elapsed time not measured.
+Acceptance annotations change no executable statements or frozen evidence.
+Production and all previously deferred gates remain unchanged.
