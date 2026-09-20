@@ -139,7 +139,7 @@ Result: `5 passed; 0 failed` (outer harness; each clean child also passed).
 The owned file also passes:
 
 ```text
-rustfmt --check src/git/gitbackend/commit_tag_characterization.rs
+rustfmt +1.95.0 --check --edition 2024 src/git/gitbackend/commit_tag_characterization.rs
 ```
 
 The workspace-wide formatter check was not used as package acceptance because

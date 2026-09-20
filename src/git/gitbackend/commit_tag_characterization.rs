@@ -231,11 +231,13 @@ mod unix {
         assert!(hook_text.contains("refs/tags/light"));
         assert!(hook_text.contains("refs/tags/annotated"));
         backend.tag_delete(&path, "annotated").unwrap();
-        assert!(!backend
-            .tag_list(&path)
-            .unwrap()
-            .iter()
-            .any(|name| name == "annotated"));
+        assert!(
+            !backend
+                .tag_list(&path)
+                .unwrap()
+                .iter()
+                .any(|name| name == "annotated")
+        );
         let after_delete = fs::read_to_string(&log).unwrap();
         assert!(
             after_delete.matches("refs/tags/annotated").count()
@@ -269,11 +271,13 @@ mod unix {
             no_message.is_err(),
             "tag.gpgSign turns a no-message tag into an annotated-tag request"
         );
-        assert!(!backend
-            .tag_list(&path)
-            .unwrap()
-            .iter()
-            .any(|name| name == "config-no-message"));
+        assert!(
+            !backend
+                .tag_list(&path)
+                .unwrap()
+                .iter()
+                .any(|name| name == "config-no-message")
+        );
         assert!(
             !signer_log.exists(),
             "the editor requirement precedes signer invocation"
@@ -284,11 +288,13 @@ mod unix {
             signed.is_err(),
             "configured signer failure must fail annotated tag creation"
         );
-        assert!(!backend
-            .tag_list(&path)
-            .unwrap()
-            .iter()
-            .any(|name| name == "config-annotated"));
+        assert!(
+            !backend
+                .tag_list(&path)
+                .unwrap()
+                .iter()
+                .any(|name| name == "config-annotated")
+        );
         assert_eq!(fs::read_to_string(&signer_log).unwrap().trim(), "invoked");
     }
 }
