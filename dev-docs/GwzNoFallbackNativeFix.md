@@ -4,7 +4,13 @@ Date: 2026-09-20. Status: **design accepted at core `e45025d622c0d5993d4daba609a
 root `179231adbab23144b20b62428ca56525edc7c9c3`, after retained Code/State GO**.
 Reports: root `GwzNoFallbackNativeFix-DesignReview{Code,State}-1.md`.
 One P2 scope-claim correction closed; P3 fetch-visible oracle corrected below.
-Implementation acceptance remains pending.
+Implementation **accepted** at core `01d6f6624472620c215693243f7ac3865aeb31a4`,
+root `62c2f122c28ededdefb7af32058f4b058b018dcb`, Rust
+`4c1caabbce7d56426c763dd94114052302b23e4c`, C backport
+`b172e3d187a4b6866fd9f696f40a1b8e7f56d348`, upstream-facing C
+`fe618d0f5de9e506b9714643afc42d2fcba6e984` after retained Code/State/Surface GO.
+Reports: root `GwzNoFallbackNativeFix-Review{Code,State,Surface}.md`.
+This accepts the bounded native correction and isolated integration only.
 Authority: [plan](GwzNoFallbackPlan.md), [first checkpoint](GwzNoFallbackCheckpoint.md),
 [local investigation](GwzNoFallbackLocalFetchInvestigation.md), and
 [binding port](GwzNoFallbackBindingPort.md). This is the separately budgeted
@@ -119,7 +125,7 @@ architectural rounds. Record local platform/toolchain, actual executed results,
 source import identity and budget actuals. This is local isolated qualification,
 not all-consumer, five-platform, release or production activation evidence.
 
-## Execution evidence (acceptance pending)
+## Execution evidence (accepted tuple above)
 
 Host: macOS arm64; Apple Clang via CMake 4.3.3, Rust 1.95.0, Python 3.10.15.
 N1 upstream-facing commit: `fe618d0f5de9e506b9714643afc42d2fcba6e984`, branch
