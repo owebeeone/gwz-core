@@ -8,6 +8,8 @@ correction and isolated local composition evidence; native Windows and the
 remaining matrix below are still pending. [Q3 native consumers](GwzGitLibraryNativeConsumers.md)
 adds instrumented macOS arm64 execution; it does not close other platforms,
 full operation coverage or distribution.
+[Q4 Windows](GwzGitLibraryWindows.md) records native source/binding/library
+execution and its limits; it does not close the full Windows consumer matrix.
 This is an inventory and executable gate plan, not all-consumer qualification.
 No source distribution, production dependency, lock or runtime changed.
 

@@ -1,6 +1,6 @@
 # Git library Q4 — native Windows qualification
 
-Date: 2026-09-21. Status: **bounded scope; execution pending**.
+Date: 2026-09-21. Status: **execution passed; retained review pending**.
 Authority: [Q1 qualification](GwzGitLibraryQualification.md),
 [accepted Q3](GwzGitLibraryNativeConsumers.md), operator continuation.
 
@@ -93,3 +93,43 @@ The four remaining consumer shapes on Windows, other native target rows,
 full operation parity, independently fetchable sources and package publication
 remain later gates. Keep forks on C 1.9.7. No endpoint activation or fallback
 removal follows from this evidence.
+
+## Results
+
+Executed on Dabeest, Windows NT 10.0.26200, Python3.13.5, Rust1.95.0
+x86_64-pc-windows-msvc. Final public fixture revision:
+`5f6cc919c880f7c540013bbfbc3bcb0fa81f2ec8`; library/Rust/C pins above unchanged.
+[Private raw evidence](../../gwz-core-evidence/campaigns/git-library/README.md)
+retains git-library runs `2026-09-21-windows-a` through `windows-e`, plus
+`2026-09-21-mac-q4-e`. The archive requires private-member access.
+
+| Final Windows row (windows-e) | Observed result |
+|---|---|
+| Python source/lock guards | 13 passed; one explicit POSIX-only skip |
+| Patched-source native binding proof | All nine tests pass, including per-remote callbacks and corrected local fetch |
+| Existing gwz-git suite | 13 integration tests and seven documentation checks pass |
+| Instrumented library example | Vendored 1.9.7, minimal features, SHA-1/SHA-256 objects, local fetch and raw diagnostics pass |
+| Source/lock/artifact integrity | Before/after source admission and fingerprints pass; probe binary unchanged |
+
+Q3's unchanged parser independently validates Windows probe output; all IDs
+match Q3's macOS library output. The probe executes with an empty tools PATH.
+Native fixture tests use Git only as their documented local servers/oracles.
+Fresh registry acquisition preceded locked offline execution. Target/cache and
+fixtures remain on D: outside repositories. Local-source Git bundles preserve
+provenance but are not independently fetchable remote source distribution.
+
+Failures remain explicit: windows-a reproduces executable-mode refusal;
+windows-b refuses Git-normalized link target text; windows-c refuses CRLF
+checkout under text=auto; windows-d passes G0 but rejects malformed Windows
+fixture file URLs before fetch. The final run corrects source preparation and
+test-only URL construction, without weakening bytes/type/link admission or
+changing product, native-fork or library behavior. The helper uses normalized
+repository paths and percent-encodes path bytes; explicit file transport stays.
+MacOS regression: nine native tests and both-format minimal library probe pass.
+
+Change size: five added verifier lines, 44 added Python test lines, 34 added
+Rust fixture lines (four replaced URL lines); 213-line private Windows runner.
+Retained aggregate Code/State review is pending. This qualifies Windows source
+admission, the native fixture and G0 library only. Root/standalone CLI, core
+and Python consumer artifacts on Windows, the other native targets, broader
+operation coverage, distribution/publication and activation remain pending.
