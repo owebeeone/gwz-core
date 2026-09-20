@@ -113,7 +113,7 @@ or new production runtime owner is permitted in any first package.
 | Package | Production additions/changes | Production moves | Test lines | Tool lines | Doc lines | Files | Review |
 |---|---:|---:|---:|---:|---:|---:|---|
 | P0/P1 preparation | 0 | 0 | 0 | 0 | 450 | 8 | This dual checkpoint review |
-| P2 checkpoint/shared test wiring | 0 runtime; at most 24 test-wiring lines | 0 | 24 | 0 | 300 | 5 | Dual Consistency/Safety; wiring checked with affected lane |
+| P2 checkpoint/shared test wiring | 0 runtime; at most 24 test-wiring lines | 0 | 24 | 0 | 300 | 5 | Dual Code/State before wiring or execution; wiring checked with affected lane |
 | L1-A local fetch characterization | 0 | 0 | 400 | 0 | 180 | 2 | State; escalate on P0/P1/P2 |
 | L2-A qualified-source binding port | 150 Rust + 8 manifest | 0 | 100 | 120 | 180 | 7 | Code/State and Surface for any changed public fixture input |
 | L3-A commit/tag characterization/design | 0 | 0 | 500 | 0 | 250 | 2 | State; escalate on P0/P1/P2 |
@@ -228,7 +228,9 @@ revisions, observed results, unexecuted rows and actual budget use. No hidden
 fallback removal, dependency activation or production speedup is claimed until
 the corresponding later implementation gate passes.
 
-Independent reviewers qualify this P2 document before fixtures/code start.
+Independent Code and State reviewers must both report GO on this exact P2
+shared-boundary object before wiring, fixtures or code start. Consistency/Safety
+document reviews are additional evidence and do not substitute for that gate.
 The shared runtime interfaces are unchanged from accepted contracts; there is
 no new CLI/protocol surface frozen here. Lane 2's later source-input/public
 documentation change receives its named Surface review. After first-package
