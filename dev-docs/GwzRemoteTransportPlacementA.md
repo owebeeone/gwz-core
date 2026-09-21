@@ -1,6 +1,6 @@
 # Endpoint placement — batch A
 
-Status: **DRAFT implementation; aggregate Code/State/Surface review pending.**
+Status: **DRAFT correction 1; focused retained re-verdicts pending.**
 2026-09-22. Implements batch A of the accepted
 [placement design](GwzRemoteTransportPlacementDesign.md#8-implementation-batches-and-evidence).
 The design acceptance does not imply implementation acceptance.
@@ -99,3 +99,27 @@ dependency activation, HTTPS and release are later gates. The pinned Taut source
 extension is committed locally; coordinated publication is required before the
 updated remote CI recipe can retrieve it. No push, publication or remote CI
 success is claimed. The unrelated CLI release-documentation checker debt remains.
+
+## Aggregate review and correction 1
+
+Initial [Code](../../dev-docs/GwzRemoteTransportPlacementA-ReviewCode.md) and
+[State](../../dev-docs/GwzRemoteTransportPlacementA-ReviewState.md) independently
+found that request finish could discard an admitted terminal reply. Code also
+found typed binding rejection was collapsed into closure. The merged
+[correction](../../dev-docs/GwzRemoteTransportPlacementA-RemPlan.md) preserves
+terminal ownership until port/action handoff, expires stalled handoffs through
+closure, and retains/exposes exact BindRejected failures. Unsupported negotiation
+and malformed bootstrap now have distinct outcomes. No wire tags changed.
+
+The [Surface](../../dev-docs/GwzRemoteTransportPlacementA-ReviewSurface.md) GO
+carried one P3 setup-example gap, addressed by the README construction, bind,
+check, finish and disconnect snippet. Its Rust doctest type-checks the example;
+this does not compile or implement the proposed batch B facade.
+
+Correction owner gates: 131 transport tests plus one README compile doctest
+pass; two extended campaigns remain ignored. Scoped formatting and whitespace
+pass. New causal tests cover every terminal family through direct/async ports,
+facts, timeout terminals, local cleanup delivery, saturation, repeated cancellation,
+shutdown/drop, incompatible versions/limits, malformed Bind and stalled rejection.
+Private [correction evidence](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-22-placement-a-rem1/README.md)
+retains original failures and final results. Acceptance still requires re-verdicts.
