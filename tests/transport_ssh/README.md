@@ -85,3 +85,17 @@ window. Keep native ownership inside the host resource through cleanup and lease
 release. The fixture uses 4 KiB windows/mirrors, 1 KiB payloads, bounded message
 turns, a 1 ms scheduler and a 45 s watchdog; these are test settings.
 See `dev-docs/GwzRemoteTransportSshIntegration.md` for the deferred batch and limits.
+
+## Shared endpoint worker checkpoint
+
+`worker` now compiles the reusable internal endpoint worker, destination resolver
+and per-remote Route. It tests clone/push/fetch reuse, endpoint clone lifetime,
+admission, failure isolation and explicit shutdown with disabled connect timeout.
+`destination` and `route` test URL admission and current identity eligibility.
+Setup still injects an already authenticated, fixture-trusted owned connection;
+this does not activate the production backend or qualify its credentials.
+
+`agent_wait` characterizes a native API limitation with an isolated fake Unix
+agent and reaped child: the native agent read remains blocked despite session
+nonblocking mode and timeout. Its ignored child entry is run by its parent test.
+See `dev-docs/GwzRemoteTransportSshWorker.md` for scope, results and next work.

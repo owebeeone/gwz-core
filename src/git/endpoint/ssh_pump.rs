@@ -145,8 +145,13 @@ impl<C: ChannelIo> SshPump<C> {
         }
         Ok(())
     }
-    pub(crate) fn tick(&mut self, cx: &mut Context<'_>, now: u64) -> Result<(), PumpError> {
+    /// Advance before admitting messages as well as before backend I/O: an
+    /// incoming Close must not suppress a network deadline already reached.
+    pub(crate) fn advance(&self, now: u64) {
         self.endpoint.advance(now);
+    }
+    pub(crate) fn tick(&mut self, cx: &mut Context<'_>, now: u64) -> Result<(), PumpError> {
+        self.advance(now);
         let result = self.tick_inner(cx);
         if result.is_err() {
             self.invalidate_after_error();

@@ -98,6 +98,7 @@ version = "0.1.0"
 name = "gwz-transport-ssh-proof"
 version = "0.0.0"
 dependencies = [
+ "cfg-if",
  "git2",
  "gwz-transport",
  "ssh2",

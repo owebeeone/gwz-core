@@ -373,3 +373,28 @@ fn stderr_work_is_bounded_per_turn_and_exact_timeout_prevents_backend_writes() {
     assert!(pump.channel().writes.is_empty());
     assert!(pump.channel().disposed);
 }
+
+#[test]
+fn advancing_before_ingress_prevents_close_from_hiding_an_expired_network_clock() {
+    let mut config = Config::new("pump-session", 1, Side::Endpoint);
+    config.io_timeout_ms = 5;
+    let (stream, endpoint) = Stream::new(config).unwrap();
+    let mut pump = SshPump::new(stream, endpoint, FakeChannel::active(), 4, 8);
+    pump.tick(&mut cx(), 0).unwrap();
+    pump.advance(5);
+    assert!(pump.stream_stats().terminal);
+    pump.deliver(end(0)).unwrap();
+    pump.deliver(Envelope {
+        version: 1,
+        session_id: "pump-session".into(),
+        stream_id: 1,
+        kind: MessageKind::Close,
+        close: Some(gwz_transport::protocol::Close { final_offset: 0 }),
+        ..Default::default()
+    })
+    .unwrap();
+    pump.tick(&mut cx(), 5).unwrap();
+    assert!(pump.stream_stats().terminal);
+    assert!(pump.channel().writes.is_empty());
+    assert!(pump.channel().disposed);
+}
