@@ -52,7 +52,7 @@ The full locked/offline isolated SSH suite passes with Rust 1.95 on this Mac.
 Raw reds, intermediate results and final full-suite output plus source fingerprints
 are in [private evidence](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-21-selected-key-n2a/README.md)
 (access required). Native test fixtures are disposable localhost SSH servers.
-598 production lines across three files; 868 test lines across two files, within
+598 production lines across three files; 876 test lines across two files, within
 600/900 scope bounds. Counts describe scope, not a test-count release gate.
 
 Next: retained aggregate Code/State review of a settled tuple, at most two merged
@@ -83,3 +83,16 @@ exactly128 predicate calls and proves no later chunk is visited. The full isolat
 suite passes after these corrections. [Remediation evidence](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-21-selected-key-n2a-rem1/README.md)
 requires private archive access; initial evidence is retained unchanged. Retained
 Code/State closure of this settled correction is pending.
+
+## Evidence-only remediation 2
+
+Both retained reviewers gave production GO at remediation1. State P3-2 caught
+that the scanner regression stopped via its predicate, so its causal evidence
+was insufficient; Code independently missed that test defect. The test now keeps
+scanning after the barrier and the parent checks the scanner's own cancellation
+result independently of Job arbitration. The old predicate reproduces Ok instead
+of ConnectionAborted; the correction returns ConnectionAborted at exactly128
+predicate invocations. All six container tests pass. Production is unchanged;
+the prior full-suite pass remains its baseline. [Corrected evidence](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-21-selected-key-n2a-rem2/README.md)
+is private. Final retained closure pending; this is the second merged remediation,
+confined to evidence, with no new architectural cause.
