@@ -13,6 +13,7 @@ pub struct Git2Repository {
     pub(crate) credential_helpers: CredentialHelperPolicy,
     pub(crate) identities: super::transport_support::identity::Selection,
     pub(crate) observations: super::transport_observations::TransportObservations,
+    pub(crate) ssh: super::transport_binding::Runtime,
 }
 
 /// Compatibility name for existing callers.
@@ -44,6 +45,7 @@ impl Git2Backend {
             credential_helpers: CredentialHelperPolicy::AllowConfigured,
             identities: Default::default(),
             observations: Default::default(),
+            ssh: Default::default(),
         }
     }
 
@@ -54,6 +56,7 @@ impl Git2Backend {
             credential_helpers: CredentialHelperPolicy::Disabled,
             identities: Default::default(),
             observations: Default::default(),
+            ssh: Default::default(),
         }
     }
 

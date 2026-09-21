@@ -197,7 +197,12 @@ fn resolve_remote(
         && url
             .split_once(':')
             .is_some_and(|(host, _)| host.len() > 1 && !host.contains('/'));
-    if !url.starts_with("ssh://") && !scp {
+    let ssh_scheme = url.split_once("://").is_some_and(|(scheme, _)| {
+        ["ssh", "git+ssh", "ssh+git"]
+            .iter()
+            .any(|v| scheme.eq_ignore_ascii_case(v))
+    });
+    if !ssh_scheme && !scp {
         if remote.is_some_and(|remote| backend.identities.remotes.contains_key(remote)) {
             return Err(invalid(
                 "a per-remote SSH identity override names a non-SSH destination; use --identity PATH, which non-SSH destinations ignore, or no override for that remote",

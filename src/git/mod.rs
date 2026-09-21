@@ -1,6 +1,11 @@
 mod git_host;
 mod git_transfer_progress;
 mod gitbackend;
+cfg_if::cfg_if! {
+    if #[cfg(all(unix, gwz_transport_candidate))] {
+        pub(crate) mod endpoint;
+    }
+}
 mod index_status_char;
 #[cfg(test)]
 mod tests;

@@ -2,7 +2,7 @@
 //! One endpoint worker drives this host and its timer independently of Git calls.
 use gwz_transport::{
     pool::{Action, Config, ConnectionId, Error, Identity, Key, Lease, Pool, PoolDriver},
-    protocol::{Disposition, Effect, ErrorCode, Failure},
+    protocol::{Disposition, Effect, ErrorCode, Facts, Failure},
 };
 use std::{
     collections::BTreeMap,
@@ -10,8 +10,10 @@ use std::{
     io,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     pin::pin,
+    sync::{Arc, Mutex},
     task::{Context, Poll},
 };
+pub(crate) type Progress = Arc<Mutex<Facts>>;
 
 /// Connection setup is nonblocking. An error returned by start owns no remaining
 /// physical resources, including after an unwinding panic. Trust must be checked
@@ -24,6 +26,15 @@ pub(crate) trait Connector {
         identity: &Identity,
         deadline: Option<u64>,
     ) -> Result<Self::Resource, Failure>;
+    fn start_reported(
+        &mut self,
+        key: &Key,
+        identity: &Identity,
+        deadline: Option<u64>,
+        _progress: Progress,
+    ) -> Result<Self::Resource, Failure> {
+        self.start(key, identity, deadline)
+    }
 }
 
 /// Single-owner connecting, idle or active SSH resource. Drop MUST terminate its
@@ -127,8 +138,16 @@ impl<C: Connector> PoolHost<C> {
     /// Bounded turn. Advance BEFORE processing completions: exact deadline wins.
     /// Host must call periodically even when no checkout or action wakes it.
     pub(crate) fn step(&mut self, cx: &mut Context<'_>, now: u64) -> Result<(), Error> {
+        self.step_reported(cx, now, |_| Progress::default())
+    }
+    pub(crate) fn step_reported(
+        &mut self,
+        cx: &mut Context<'_>,
+        now: u64,
+        mut progress: impl FnMut(ConnectionId) -> Progress,
+    ) -> Result<(), Error> {
         self.driver.advance(now);
-        self.actions(cx)?;
+        self.actions(cx, &mut progress)?;
         let ids: Vec<_> = self.entries.keys().copied().collect();
         for id in ids {
             let entry = self.entries.get_mut(&id).expect("worker-owned entry");
@@ -173,10 +192,14 @@ impl<C: Connector> PoolHost<C> {
                 Phase::Ready => {}
             }
         }
-        self.actions(cx)
+        self.actions(cx, &mut progress)
     }
 
-    fn actions(&mut self, cx: &mut Context<'_>) -> Result<(), Error> {
+    fn actions(
+        &mut self,
+        cx: &mut Context<'_>,
+        progress: &mut impl FnMut(ConnectionId) -> Progress,
+    ) -> Result<(), Error> {
         for _ in 0..self.action_budget {
             let action = match pin!(self.driver.next_action()).poll(cx) {
                 Poll::Ready(Some(action)) => action,
@@ -189,7 +212,12 @@ impl<C: Connector> PoolHost<C> {
                     identity,
                     network_deadline,
                 } => match catch_unwind(AssertUnwindSafe(|| {
-                    self.connector.start(&key, &identity, network_deadline)
+                    self.connector.start_reported(
+                        &key,
+                        &identity,
+                        network_deadline,
+                        progress(connection),
+                    )
                 })) {
                     Err(panic) => {
                         // The dequeued Connect has no physical owner after start

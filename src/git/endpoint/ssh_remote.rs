@@ -14,6 +14,16 @@ pub(crate) trait OpenStream: Send + Sync + 'static {
     fn open(&self, url: &str, service: GitService) -> io::Result<BlockingStream>;
 }
 
+/// An explicit native authentication refusal, distinct from local permissions.
+#[derive(Debug)]
+pub(crate) struct AuthenticationRejected;
+impl std::fmt::Display for AuthenticationRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SSH authentication rejected")
+    }
+}
+impl std::error::Error for AuthenticationRejected {}
+
 pub(crate) struct RemoteTransport {
     endpoint: Arc<dyn OpenStream>,
     active: Mutex<Option<BlockingStream>>,
@@ -66,7 +76,16 @@ impl SmartSubtransport for RemoteTransport {
             Service::UploadPackLs | Service::UploadPack => GitService::UploadPack,
             Service::ReceivePackLs | Service::ReceivePack => GitService::ReceivePack,
         };
-        let stream = self.endpoint.open(url, service).map_err(network_error)?;
+        let stream = self.endpoint.open(url, service).map_err(|error| {
+            if error
+                .get_ref()
+                .is_some_and(|cause| cause.is::<AuthenticationRejected>())
+            {
+                Error::new(ErrorCode::Auth, ErrorClass::Ssh, error.to_string())
+            } else {
+                network_error(error)
+            }
+        })?;
         *active = Some(stream.clone());
         Ok(Box::new(stream))
     }

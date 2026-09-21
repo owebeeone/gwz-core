@@ -5,7 +5,7 @@ use super::{
     ssh_admission::{Admissions, Reader},
     ssh_channel::{GitService, SshChannel},
     ssh_key_snapshot::{Entry, Registry},
-    ssh_pool::{Connector, PoolHost, Resource},
+    ssh_pool::{Connector, PoolHost, Progress, Resource},
     ssh_pump::SshPump,
     ssh_shutdown::{self, Status},
     stream_io::BlockingStream,
@@ -96,6 +96,7 @@ pub(super) struct OpenRequest {
     pub(super) reply: Option<SyncSender<io::Result<(BlockingStream, Opened)>>>,
     pub(super) selected: Option<PathBuf>,
     pub(super) authority: Option<Arc<Entry>>,
+    pub(super) progress: Progress,
     pub(super) permit: Permit,
 }
 impl OpenRequest {
@@ -261,7 +262,7 @@ impl Endpoint {
         service: GitService,
         path: &str,
     ) -> io::Result<(BlockingStream, Opened)> {
-        self.enqueue(key, identity, None, service, path)
+        self.enqueue(key, identity, None, service, path, Progress::default())
     }
     pub(crate) fn open_selected(
         &self,
@@ -270,7 +271,24 @@ impl Endpoint {
         service: GitService,
         path: &str,
     ) -> io::Result<(BlockingStream, Opened)> {
-        self.enqueue(key, Identity::Ambient, Some(selected), service, path)
+        self.enqueue(
+            key,
+            Identity::Ambient,
+            Some(selected),
+            service,
+            path,
+            Progress::default(),
+        )
+    }
+    pub(crate) fn open_reported(
+        &self,
+        key: Key,
+        selected: Option<PathBuf>,
+        service: GitService,
+        path: &str,
+        progress: Progress,
+    ) -> io::Result<(BlockingStream, Opened)> {
+        self.enqueue(key, Identity::Ambient, selected, service, path, progress)
     }
     pub(crate) fn pending_requests(&self) -> usize {
         self.shared.outstanding.load(Ordering::Acquire)
@@ -282,6 +300,7 @@ impl Endpoint {
         selected: Option<PathBuf>,
         service: GitService,
         path: &str,
+        progress: Progress,
     ) -> io::Result<(BlockingStream, Opened)> {
         if self.shared.stop.load(Ordering::Acquire) {
             return Err(stopped());
@@ -311,6 +330,7 @@ impl Endpoint {
             reply: Some(reply),
             selected,
             authority: None,
+            progress,
             cancelled: cancelled.clone(),
             deadline: absolute.map(|at| at.duration_since(self.shared.origin).as_millis() as u64),
         };
@@ -417,7 +437,16 @@ fn run<C>(
             ssh_shutdown::fail(status, error);
             stop.store(true, Ordering::Release);
         }
-        if host.step(&mut cx, now).is_err() {
+        if host
+            .step_reported(&mut cx, now, |connection| {
+                pending
+                    .iter()
+                    .find(|p| p.checkout.opening_connection() == Some(connection))
+                    .map(|p| p.request.progress.clone())
+                    .unwrap_or_default()
+            })
+            .is_err()
+        {
             ssh_shutdown::fail(status, io::ErrorKind::Other);
             break;
         }
@@ -579,6 +608,7 @@ where
     if reused {
         facts.credential_offered = false;
     }
+    *request.progress.lock().unwrap_or_else(|e| e.into_inner()) = facts.clone();
     resource.start_exchange(stream, endpoint, request.service, &request.path)?;
     if resource.pump().is_none() {
         return Err(io::Error::other("resource did not install a channel pump"));

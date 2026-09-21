@@ -50,7 +50,8 @@ pub(super) fn clone_repo_named(
         identity.as_ref(),
     );
     builder.fetch_options(fetch_options_with_progress(
-        backend.credential_helpers,
+        backend,
+        url,
         identity,
         Some(attempt.clone()),
         Some(progress),
@@ -73,6 +74,7 @@ pub(super) fn fetch(
 ) -> ModelResult<GitFetchResult> {
     let repo = open_repo(path)?;
     let mut remote_handle = find_remote(&repo, remote)?;
+    let url = remote_handle.url().map_err(git_error)?.to_owned();
     let identity = identity::for_remote(
         backend,
         Some(&repo),
@@ -90,7 +92,8 @@ pub(super) fn fetch(
         .fetch(
             &refspecs,
             Some(&mut remote_fetch_options(
-                backend.credential_helpers,
+                backend,
+                &url,
                 identity,
                 Some(attempt.clone()),
             )),
@@ -111,6 +114,7 @@ pub(super) fn tag_fetch(
     let repo = open_repo(path)?;
     let mut remote_handle = find_remote(&repo, remote)?;
     // Fetch every tag, force-updating local copies.
+    let url = remote_handle.url().map_err(git_error)?.to_owned();
     let identity = identity::for_remote(
         backend,
         Some(&repo),
@@ -128,7 +132,8 @@ pub(super) fn tag_fetch(
         .fetch(
             &[refspec],
             Some(&mut remote_fetch_options(
-                backend.credential_helpers,
+                backend,
+                &url,
                 identity,
                 Some(attempt.clone()),
             )),
@@ -190,11 +195,13 @@ fn advertised_refs(
     identity: Option<identity::SelectedIdentity>,
     attempt: super::transport_observations::TransportAttempt,
 ) -> ModelResult<Vec<GitRemoteRef>> {
+    let url = remote_handle.url().map_err(git_error)?.to_owned();
     let connection = remote_handle
         .connect_auth(
             git2::Direction::Fetch,
             Some(remote_callbacks(
-                backend.credential_helpers,
+                backend,
+                &url,
                 identity,
                 Some(attempt.clone()),
             )),
@@ -498,12 +505,8 @@ fn perform_push(
         identity.as_ref(),
     );
     let report = super::transport_support::PushReport::default();
-    let mut options = remote_push_options(
-        backend.credential_helpers,
-        identity,
-        Some(attempt.clone()),
-        &report,
-    );
+    let mut options =
+        remote_push_options(backend, &plan.url, identity, Some(attempt.clone()), &report);
     let pushed = match local_push_remote.as_mut() {
         Some(anonymous) => anonymous.push(&plan.refspecs, Some(&mut options)),
         None => remote_handle.push(&plan.refspecs, Some(&mut options)),
@@ -734,7 +737,8 @@ pub(super) fn read_remote_file(
         identity.as_ref(),
     );
     builder.fetch_options(remote_fetch_options(
-        backend.credential_helpers,
+        backend,
+        url,
         identity,
         Some(attempt.clone()),
     ));

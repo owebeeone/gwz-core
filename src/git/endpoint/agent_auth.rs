@@ -44,7 +44,15 @@ cfg_if::cfg_if! {
                 control: Arc<Control>,
                 open: impl FnOnce() -> io::Result<Agent<C>>,
             ) -> io::Result<SshConnection> {
-                authenticate_inner(connection, user, trusted_key, control, open, |_, _| {})
+                authenticate_inner(connection, user, trusted_key, control, open, |_, _| {}, || {})
+            }
+            pub(crate) fn authenticate_reporting<C: Channel>(
+                connection: SshConnection, user: &str, trusted_key: &[u8], control: Arc<Control>,
+                open: impl FnOnce() -> io::Result<Agent<C>>, offered: impl FnMut(),
+                mut rejected: impl FnMut(),
+            ) -> io::Result<SshConnection> {
+                authenticate_inner(connection, user, trusted_key, control, open,
+                    |_, rc| { if rc == LIBSSH2_ERROR_AUTHENTICATION_FAILED { rejected(); } }, offered)
             }
             fn authenticate_inner<C: Channel>(
                 mut connection: SshConnection,
@@ -53,6 +61,7 @@ cfg_if::cfg_if! {
                 control: Arc<Control>,
                 open: impl FnOnce() -> io::Result<Agent<C>>,
                 mut observe: impl FnMut(&[u8], c_int),
+                mut offered: impl FnMut(),
             ) -> io::Result<SshConnection> {
                 control.check()?;
                 let user = CString::new(user).map_err(|_| io::ErrorKind::InvalidInput)?;
@@ -81,6 +90,7 @@ cfg_if::cfg_if! {
                     let mut context = (&mut signer as *mut Signer<'_, C>).cast::<c_void>();
                     loop {
                         control.check()?;
+                        offered();
                         let rc = {
                             let mut session = connection.session().raw();
                             // SAFETY: exclusive session guard, NUL-terminated user, bounded key,
@@ -129,7 +139,7 @@ cfg_if::cfg_if! {
                         connection: SshConnection, user: &str, trusted_key: &[u8], control: Arc<Control>,
                         open: impl FnOnce() -> io::Result<Agent<C>>, observe: impl FnMut(&[u8], c_int),
                     ) -> io::Result<SshConnection> {
-                        authenticate_inner(connection, user, trusted_key, control, open, observe)
+                        authenticate_inner(connection, user, trusted_key, control, open, observe, || {})
                     }
                 }
             }
@@ -259,7 +269,7 @@ cfg_if::cfg_if! {
                 Ok(method)
             }
         }
-        pub(crate) use unix::authenticate;
+        pub(crate) use unix::{authenticate, authenticate_reporting};
         cfg_if::cfg_if! {
             if #[cfg(test)] { pub(crate) use unix::observed_authenticate; }
         }

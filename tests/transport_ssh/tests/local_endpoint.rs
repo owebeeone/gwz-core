@@ -284,5 +284,40 @@ cfg_if::cfg_if! {
             f.no_requests();
             finish(&e);
         }
+        #[test]
+        fn agent_reporting_survives_a_failed_signature_and_does_not_claim_rejection() {
+            let f = support::Fixture::new("ssh-ed25519", false);
+            f.fault.store(1, std::sync::atomic::Ordering::SeqCst);
+            let e = endpoint(&f.ssh, Some(f.path.clone()));
+            let facts = Arc::new(Mutex::new(Vec::new()));
+            let capture = facts.clone();
+            let route = ssh_endpoint::Route::reporting(e.clone(), None, Arc::new(move |f| capture.lock().unwrap().push(f.clone())));
+            assert!(exchange(&route, &url(&f.ssh, &f.ssh.repository)).is_err());
+            let facts = facts.lock().unwrap();
+            assert_eq!(facts.len(), 1);
+            assert_eq!(facts[0].method, AuthMethod::SshAgent);
+            assert!(facts[0].credential_offered);
+            assert_eq!(facts[0].authenticated, None, "a local signing error is not a server rejection");
+            finish(&e);
+        }
+        #[test]
+        fn concurrent_authentication_receipts_belong_to_the_initiating_request() {
+            let f = support::Fixture::new("ssh-ed25519", false);
+            let e = ssh_local::connect(Config { total: 2, per_host: 2, per_user_host: 2, ..Config::default() }, f.ssh.known_hosts.clone(), Some(f.path.clone()), 3000).unwrap();
+            let good = Arc::new(Mutex::new(Vec::new()));
+            let bad = Arc::new(Mutex::new(Vec::new()));
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let threads: Vec<_> = [("auth_key",good.clone(),true),("client_ed25519",bad.clone(),false)].into_iter().map(|(key, facts, succeeds)| {
+                let route = ssh_endpoint::Route::reporting(e.clone(), Some(f.ssh.temp.path().join(key)), Arc::new(move |f| facts.lock().unwrap().push(f.clone())));
+                let barrier=barrier.clone();let url=url(&f.ssh,&f.ssh.repository);
+                std::thread::spawn(move || {barrier.wait(); assert_eq!(exchange(&route,&url).is_ok(),succeeds);})
+            }).collect();
+            for t in threads {t.join().unwrap();}
+            let good=good.lock().unwrap();let bad=bad.lock().unwrap();
+            assert_eq!(good.len(),1);assert_eq!(bad.len(),1);
+            assert!(good[0].credential_offered && bad[0].credential_offered);
+            assert_eq!(good[0].authenticated,Some(true));assert_eq!(bad[0].authenticated,Some(false));
+            f.no_requests();finish(&e);
+        }
     }
 }

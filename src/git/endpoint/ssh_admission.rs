@@ -47,7 +47,7 @@ impl Admissions {
             failure: None,
         }
     }
-    pub(crate) fn start(&mut self, mut request: OpenRequest) {
+    pub(super) fn start(&mut self, mut request: OpenRequest) {
         let path = request.selected.take().expect("selected plan");
         let deadline = request
             .deadline
@@ -72,7 +72,7 @@ impl Admissions {
     pub(crate) fn take_failure(&mut self) -> Option<io::ErrorKind> {
         self.failure.take()
     }
-    pub(crate) fn poll(
+    pub(super) fn poll(
         &mut self,
         cx: &mut Context<'_>,
         now: u64,

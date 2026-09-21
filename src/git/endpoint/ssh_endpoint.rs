@@ -6,7 +6,7 @@ use super::{
 };
 use gwz_transport::{
     pool::{Identity, Key},
-    protocol::Opened,
+    protocol::{Facts, Opened},
 };
 use std::{io, path::PathBuf, sync::Arc};
 
@@ -20,6 +20,7 @@ pub(crate) struct Route {
     endpoint: Endpoint,
     authority: Authority,
     observe: Arc<dyn Fn(&Opened) + Send + Sync>,
+    report: Option<Arc<dyn Fn(&Facts) + Send + Sync>>,
 }
 enum Authority {
     Resolved(Arc<dyn IdentityResolver>),
@@ -38,7 +39,17 @@ impl Route {
             endpoint,
             authority: selected.map_or(Authority::Ambient, Authority::Selected),
             observe,
+            report: None,
         }
+    }
+    pub(crate) fn reporting(
+        endpoint: Endpoint,
+        selected: Option<PathBuf>,
+        report: Arc<dyn Fn(&Facts) + Send + Sync>,
+    ) -> Self {
+        let mut route = Self::local(endpoint, selected, Arc::new(|_| {}));
+        route.report = Some(report);
+        route
     }
     pub(crate) fn new(endpoint: Endpoint, identities: Arc<dyn IdentityResolver>) -> Self {
         Self::observed(endpoint, identities, Arc::new(|_| {}))
@@ -52,11 +63,34 @@ impl Route {
             endpoint,
             authority: Authority::Resolved(identities),
             observe,
+            report: None,
         }
     }
 }
 impl OpenStream for Route {
     fn open(&self, url: &str, service: GitService) -> io::Result<BlockingStream> {
+        let progress = super::ssh_pool::Progress::default();
+        let result = self.open_inner(url, service, progress.clone());
+        let facts = progress.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(report) = &self.report {
+            report(&facts);
+        }
+        if result.is_err() && facts.authenticated == Some(false) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                super::ssh_remote::AuthenticationRejected,
+            ));
+        }
+        result
+    }
+}
+impl Route {
+    fn open_inner(
+        &self,
+        url: &str,
+        service: GitService,
+        progress: super::ssh_pool::Progress,
+    ) -> io::Result<BlockingStream> {
         let destination = Destination::parse(url)?.ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -64,11 +98,19 @@ impl OpenStream for Route {
             )
         })?;
         let (stream, facts) = match &self.authority {
-            Authority::Selected(path) => self.endpoint.open_selected(
+            Authority::Selected(path) => self.endpoint.open_reported(
                 destination.key,
-                path.clone(),
+                Some(path.clone()),
                 service,
                 &destination.path,
+                progress,
+            )?,
+            Authority::Ambient => self.endpoint.open_reported(
+                destination.key,
+                None,
+                service,
+                &destination.path,
+                progress,
             )?,
             authority => {
                 let identity = match authority {

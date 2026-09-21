@@ -64,20 +64,22 @@ fn apply_server_timeout(ms: i32) -> ModelResult<()> {
 }
 
 pub(crate) fn remote_fetch_options(
-    credential_helpers: CredentialHelperPolicy,
+    backend: &Git2Backend,
+    url: &str,
     identity: Option<identity::SelectedIdentity>,
     attempt: Option<TransportAttempt>,
 ) -> git2::FetchOptions<'static> {
-    fetch_options_with_progress(credential_helpers, identity, attempt, None)
+    fetch_options_with_progress(backend, url, identity, attempt, None)
 }
 
 pub(crate) fn fetch_options_with_progress<'a>(
-    credential_helpers: CredentialHelperPolicy,
+    backend: &Git2Backend,
+    url: &str,
     identity: Option<identity::SelectedIdentity>,
     attempt: Option<TransportAttempt>,
     progress: Option<&'a dyn Fn(crate::GitTransferProgress)>,
 ) -> git2::FetchOptions<'a> {
-    let mut callbacks = remote_callbacks(credential_helpers, identity, attempt);
+    let mut callbacks = remote_callbacks(backend, url, identity, attempt);
     if let Some(progress) = progress {
         callbacks.transfer_progress(move |stats| {
             progress(git_transfer_progress(&stats));
@@ -101,13 +103,14 @@ pub(crate) struct PushReport {
     pub(crate) updates: std::cell::RefCell<Vec<(String, git2::Oid)>>,
 }
 
-pub(crate) fn remote_push_options(
-    credential_helpers: CredentialHelperPolicy,
+pub(crate) fn remote_push_options<'a>(
+    backend: &Git2Backend,
+    url: &str,
     identity: Option<identity::SelectedIdentity>,
     attempt: Option<TransportAttempt>,
-    report: &PushReport,
-) -> git2::PushOptions<'_> {
-    let mut callbacks = remote_callbacks(credential_helpers, identity, attempt);
+    report: &'a PushReport,
+) -> git2::PushOptions<'a> {
+    let mut callbacks = remote_callbacks(backend, url, identity, attempt);
     callbacks.push_negotiation(|updates| {
         report
             .updates
@@ -138,11 +141,20 @@ pub(crate) fn remote_push_options(
 }
 
 pub(crate) fn remote_callbacks<'a>(
-    credential_helpers: CredentialHelperPolicy,
+    backend: &Git2Backend,
+    url: &str,
     identity: Option<identity::SelectedIdentity>,
     attempt: Option<TransportAttempt>,
 ) -> git2::RemoteCallbacks<'a> {
     let mut callbacks = git2::RemoteCallbacks::new();
+    super::transport_binding::configure(
+        backend,
+        url,
+        identity.as_ref(),
+        attempt.as_ref(),
+        &mut callbacks,
+    );
+    let credential_helpers = backend.credential_helpers;
     // libgit2 re-invokes this after each auth rejection; track SSH attempts so we offer
     // the agent once and then fail, instead of re-offering a dead credential forever.
     let mut ssh_attempts = 0u32;
@@ -260,4 +272,12 @@ pub(crate) fn remote_credential(
         git2::ErrorClass::Callback,
         "GWZ could not acquire credentials for the requested remote",
     ))
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(all(unix, gwz_transport_candidate))] {
+        pub(super) fn server_timeout_ms() -> u64 {
+            TIMEOUT_STATE.lock().unwrap_or_else(|e| e.into_inner()).milliseconds.unwrap_or(3000) as u64
+        }
+    }
 }

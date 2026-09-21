@@ -31,8 +31,14 @@ mod scoped_support;
 mod stash;
 mod stash_support;
 mod transport;
+mod transport_binding;
 mod transport_observations;
 mod transport_support;
+cfg_if::cfg_if! {
+    if #[cfg(all(test, unix, gwz_transport_candidate))] {
+        mod transport_candidate_tests;
+    }
+}
 mod types;
 
 pub use authority_backend::MergeAuthorityBackend;
@@ -203,6 +209,7 @@ impl GitBackend for Git2Backend {
         Ok(Some(Self {
             filesystem: self.filesystem.clone(),
             credential_helpers: self.credential_helpers,
+            ssh: self.ssh.clone(),
             identities,
             observations: Default::default(),
         }))

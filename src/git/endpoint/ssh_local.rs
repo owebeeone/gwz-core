@@ -26,10 +26,10 @@ cfg_if::cfg_if! {
                 config,
                 Registry::new(),
                 move |origin, registry| {
-                    SetupConnector::new(
+                    SetupConnector::reported(
                         origin,
                         cleanup,
-                        move |key: &Key, identity: &Identity| -> io::Result<Setup> {
+                        move |key: &Key, identity: &Identity, progress| -> io::Result<Setup> {
                             // Lookup pins the already admitted snapshot. It performs no
                             // file access; the path is never reopened during setup.
                             let selected = match identity {
@@ -41,22 +41,33 @@ cfg_if::cfg_if! {
                             let known_hosts = known_hosts.clone();
                             let agent_socket = agent_socket.clone();
                             Ok(Box::new(move |control| {
+                                let offered = |method| {
+                                    let mut facts = progress.lock().unwrap_or_else(|e| e.into_inner());
+                                    facts.method = method;
+                                    facts.credential_offered = true;
+                                    facts.authenticated = None;
+                                };
+                                let rejected = || {
+                                    progress.lock().unwrap_or_else(|e| e.into_inner()).authenticated = Some(false);
+                                };
                                 let (connection, trusted) =
                                     ssh_network::establish(&key, &known_hosts, &control)?;
                                 if let Some(selected) = selected {
-                                    return ssh_key_auth::authenticate(
+                                    return ssh_key_auth::authenticate_reporting(
                                         connection, &trusted, selected, control,
+                                        || offered(AuthMethod::SshKey), rejected,
                                     )
                                     .and_then(Authenticated::selected);
                                 }
                                 let socket = agent_socket.ok_or(io::ErrorKind::NotFound)?;
                                 let user = key.username.as_deref().ok_or(io::ErrorKind::InvalidInput)?;
-                                let connection = agent_auth::authenticate(
+                                let connection = agent_auth::authenticate_reporting(
                                     connection,
                                     user,
                                     &trusted,
                                     control.clone(),
                                     || agent_socket::connect(&socket, control),
+                                    || offered(AuthMethod::SshAgent), rejected,
                                 )?;
                                 Authenticated::new(
                                     connection,

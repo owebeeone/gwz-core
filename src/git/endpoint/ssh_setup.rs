@@ -5,7 +5,7 @@ use super::{
     ssh_connection::SshConnection,
     ssh_key_auth::Verified,
     ssh_key_snapshot::Entry,
-    ssh_pool::{Connector, Resource},
+    ssh_pool::{Connector, Progress, Resource},
     ssh_pump::SshPump,
     ssh_worker::ChannelResource,
 };
@@ -62,24 +62,35 @@ impl Authenticated {
         })
     }
 }
-pub(crate) struct SetupConnector<F> {
+type Factory = Box<dyn FnMut(&Key, &Identity, Progress) -> io::Result<Setup> + Send>;
+pub(crate) struct SetupConnector {
     origin: Instant,
     cleanup: Duration,
-    factory: F,
+    factory: Factory,
 }
-impl<F> SetupConnector<F> {
-    pub(crate) fn new(origin: Instant, cleanup: Duration, factory: F) -> Self {
+impl SetupConnector {
+    pub(crate) fn new(
+        origin: Instant,
+        cleanup: Duration,
+        mut factory: impl FnMut(&Key, &Identity) -> io::Result<Setup> + Send + 'static,
+    ) -> Self {
+        Self::reported(origin, cleanup, move |key, identity, _| {
+            factory(key, identity)
+        })
+    }
+    pub(crate) fn reported(
+        origin: Instant,
+        cleanup: Duration,
+        factory: impl FnMut(&Key, &Identity, Progress) -> io::Result<Setup> + Send + 'static,
+    ) -> Self {
         Self {
             origin,
             cleanup,
-            factory,
+            factory: Box::new(factory),
         }
     }
 }
-impl<F> Connector for SetupConnector<F>
-where
-    F: FnMut(&Key, &Identity) -> io::Result<Setup>,
-{
+impl Connector for SetupConnector {
     type Resource = NativeResource;
 
     fn start(
@@ -88,6 +99,15 @@ where
         identity: &Identity,
         deadline: Option<u64>,
     ) -> Result<Self::Resource, Failure> {
+        self.start_reported(key, identity, deadline, Progress::default())
+    }
+    fn start_reported(
+        &mut self,
+        key: &Key,
+        identity: &Identity,
+        deadline: Option<u64>,
+        progress: Progress,
+    ) -> Result<Self::Resource, Failure> {
         let deadline = deadline
             .map(|milliseconds| {
                 self.origin
@@ -95,7 +115,8 @@ where
                     .ok_or_else(|| failure(io::ErrorKind::InvalidInput))
             })
             .transpose()?;
-        let setup = (self.factory)(key, identity).map_err(|error| failure(error.kind()))?;
+        let setup = (self.factory)(key, identity, progress.clone())
+            .map_err(|error| failure(error.kind()))?;
         let requested = identity.clone();
         let job = Job::start(deadline, self.cleanup, move |control| setup(control))
             .map_err(|error| failure(error.kind()))?;
@@ -105,6 +126,7 @@ where
             exchanges: 0,
             deadline,
             authority: None,
+            progress,
         })
     }
 }
@@ -124,6 +146,7 @@ pub(crate) struct NativeResource {
     exchanges: u64,
     deadline: Option<Instant>,
     authority: Option<Arc<Entry>>,
+    progress: Progress,
 }
 impl Resource for NativeResource {
     fn poll_connected(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Identity>, Failure>> {
@@ -142,6 +165,8 @@ impl Resource for NativeResource {
                         && authenticated.connection.session().authenticated()
                         && authenticated.facts.authenticated == Some(true);
                     if valid {
+                        *self.progress.lock().unwrap_or_else(|e| e.into_inner()) =
+                            authenticated.facts.clone();
                         self.authority = authenticated.authority.take();
                         if let Some(entry) = &self.authority {
                             entry.promote();

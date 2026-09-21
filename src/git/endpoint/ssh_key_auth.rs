@@ -35,6 +35,12 @@ cfg_if::cfg_if! {
             entry: Arc<Entry>,
             control: Arc<Control>,
         ) -> io::Result<Verified> {
+            authenticate_reporting(connection, trusted, entry, control, || {}, || {})
+        }
+        pub(crate) fn authenticate_reporting(
+            connection: SshConnection, trusted: &[u8], entry: Arc<Entry>, control: Arc<Control>,
+            mut offered: impl FnMut(), mut rejected: impl FnMut(),
+        ) -> io::Result<Verified> {
             let mut owner = Verified { connection, entry };
             control.check()?;
             let user = owner
@@ -58,6 +64,7 @@ cfg_if::cfg_if! {
             owner.connection.set_nonblocking()?;
             loop {
                 control.check()?;
+                offered();
                 let result =
                     owner
                         .connection
@@ -82,6 +89,7 @@ cfg_if::cfg_if! {
                                 libssh2_sys::LIBSSH2_ERROR_AUTHENTICATION_FAILED,
                             ) =>
                     {
+                        rejected();
                         return Err(io::ErrorKind::PermissionDenied.into());
                     }
                     // PUBLICKEY_UNVERIFIED also hides response/socket failures.

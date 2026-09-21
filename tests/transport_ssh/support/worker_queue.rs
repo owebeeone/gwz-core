@@ -55,6 +55,7 @@ fn queued_expiry_releases_admission_without_stopping_worker() {
         permits.fetch_add(1, Ordering::SeqCst);
         sender
             .send(OpenRequest {
+                progress: Default::default(),
                 key: Key::ssh("git", "host", 22),
                 identity: Identity::Ambient,
                 service: GitService::UploadPack,

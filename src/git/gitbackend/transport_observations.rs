@@ -84,6 +84,21 @@ impl TransportObservations {
 }
 
 impl TransportAttempt {
+    cfg_if::cfg_if! {
+        if #[cfg(all(unix, gwz_transport_candidate))] {
+            pub(crate) fn facts(&self, facts: &gwz_transport::protocol::Facts) {
+                let mut row = self.0.lock().unwrap_or_else(|e| e.into_inner());
+                row.credential_method = match facts.method {
+                    gwz_transport::protocol::AuthMethod::SshKey => crate::TransportCredentialMethod::File,
+                    gwz_transport::protocol::AuthMethod::SshAgent => crate::TransportCredentialMethod::Agent,
+                    _ => row.credential_method,
+                };
+                row.credential_offered |= facts.credential_offered;
+                if facts.authenticated.is_some() { row.authenticated = facts.authenticated; }
+                if facts.key_fingerprint.is_some() { row.public_key_fingerprint = facts.key_fingerprint.clone(); }
+            }
+        }
+    }
     pub(crate) fn offered(&self, method: crate::TransportCredentialMethod) {
         let mut row = self.0.lock().unwrap_or_else(|error| error.into_inner());
         row.credential_method = method;
