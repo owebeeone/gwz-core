@@ -1,6 +1,12 @@
 # Endpoint placement — batch A
 
-Status: **DRAFT correction 2; focused retained re-verdicts pending.**
+Status: **accepted at root `d20e168bb93cbe6bf5238b0b0295f0cd51f5cd20`,
+core `28f667c0462c74798761ec9710de793c697c7fb8`, transport
+`03d3011b3ae9b8205bcf07f7f7862194af114856` after retained
+[Code](../../dev-docs/GwzRemoteTransportPlacementA-ReviewCode-2.md),
+[State](../../dev-docs/GwzRemoteTransportPlacementA-ReviewState-2.md) and
+[Surface](../../dev-docs/GwzRemoteTransportPlacementA-ReviewSurface-2.md) GO;
+this accepts batch A only.** Full nine-repository tuple is in those reports.
 2026-09-22. Implements batch A of the accepted
 [placement design](GwzRemoteTransportPlacementDesign.md#8-implementation-batches-and-evidence).
 The design acceptance does not imply implementation acceptance.
@@ -122,7 +128,7 @@ pass. New causal tests cover every terminal family through direct/async ports,
 facts, timeout terminals, local cleanup delivery, saturation, repeated cancellation,
 shutdown/drop, incompatible versions/limits, malformed Bind and stalled rejection.
 Private [correction evidence](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-22-placement-a-rem1/README.md)
-retains original failures and final results. Acceptance still requires re-verdicts.
+retains original failures and final results. The round-one reports close these findings.
 
 ## Correction 2 — bootstrap error domain
 
@@ -136,4 +142,6 @@ Both permitted outcomes survive async handoff and closure. No schema/API change.
 
 Causal red tests and final outputs are in the private
 [round-two evidence](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-22-placement-a-rem2/README.md).
-The retained reviewers must verify closure before acceptance.
+Retained Code verified P2-3 closure; State and Surface also returned GO on the
+same correction-two tuple. Final gate: 134 transport tests plus one README compile
+doctest passed, two extended campaigns ignored. No open A review findings remain.

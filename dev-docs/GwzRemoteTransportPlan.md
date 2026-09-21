@@ -401,10 +401,12 @@ fetch does not complete the programme.
 
 N3 local candidate backend attachment and the [Phase4 placement interface](GwzRemoteTransportPlacementDesign.md)
 are accepted; see the current workspace checkpoint and filed review verdicts.
-Implement placement batch A: shared v2 schema, missing-field compatibility,
-bounded mux/check/terminal lifecycle and deterministic in-memory tests. Then
-batch B integrates the shared SSH endpoint across all backend funnels. Include
-Surface P3-1's port direction/tuple labeling in A's documentation fixture.
+[Placement batch A](GwzRemoteTransportPlacementA.md) is implemented and accepted
+after retained Code/State/Surface GO: shared v2 schema, missing-field compatibility,
+bounded mux/check/terminal lifecycle and in-memory tests. Surface documentation
+findings are closed. Next is one complete batch B integrating the core host facade
+and shared SSH endpoint across all backend funnels, with scoped metadata enforcement,
+endpoint-local preflight, request cleanup ownership and the compiled guide fixture.
 No new physical carrier or service surface is authorized. Supplied-carrier
 qualification remains batch C; HTTPS remains Phase5.
 
