@@ -46,8 +46,10 @@ selected-key admission, worker and pool rather than duplicate them. Physical
 adapters remain outside gwz-transport. Extracting another repository is not a
 prerequisite. The facade accepts host delivery callbacks and returns an owned
 runtime handle with explicit bounded shutdown; last-owner drop initiates the
-same cleanup without requiring an async destructor. Exact Rust signatures may
-follow implementation, but these ownership and lifecycle semantics are frozen.
+same cleanup without requiring an async destructor. The concrete proposed Rust interface and lifecycle example in the
+[embedding guide](../docs/TransportPlacement.md#proposed-rust-interface) are part
+of this freeze. The application port supplies next_message/deliver/disconnect
+hooks; it does not implement an outer carrier.
 
 Placement is an operation-wide choice: `local` or `cli`. Omission means local.
 A request cannot supply an arbitrary endpoint address or choose another client's
@@ -99,8 +101,12 @@ test runtime can advertise it for qualification. Unavailable endpoint instances
 do not become supported because a version number is present.
 
 Import the owner schema/exported types using the existing transport_consumer
-proof; do not copy a second Envelope definition into core. Update the production
-regenerator, its pinned tool dependency and external type mapping together.
+proof; do not copy a second Envelope definition into core. Update the candidate
+regeneration path, its pinned tool dependency and external type mapping together.
+Until dependency qualification/activation, generate the full candidate projection
+in the isolated consumer/backend harness; normal production artifacts and Cargo
+dependencies remain unchanged. Activation later selects those same pinned inputs
+for the production regenerator, rather than creating another schema definition.
 A generated optional field currently calls try_get and requires a map slot:
 nullable is not proof of additive decoding. Before integration, qualify a
 schema/generator mechanism that accepts missing *new* fields in Rust and Python,
@@ -113,6 +119,21 @@ The transport owner profile is independently versioned (§6). GWZ continues its
 existing schema/service version. New drivers query capabilities before sending
 cli placement. Missing fields or an old core imply unsupported; the driver
 refuses locally instead of allowing an old decoder to ignore the placement.
+The capability result belongs to one live, nonserialized host admission
+generation identifying the exact receiving core instance and backend-family
+runtime. The host must pin that receiver from capability query through operation
+dispatch acceptance; checking a generation and then allowing an independent
+routing choice is insufficient. Direct embedding uses the same TransportRuntime
+object. A supplied remote host must provide equivalent connection/receiver
+affinity and disable hidden rerouting/retry of admitted operations. Closure,
+reconnection, failover or instance replacement invalidates that generation and
+its cached capabilities before any new explicit-cli operation can be sent. Query
+again on the replacement, and still refuse if it is old/unsupported. An already
+sent operation interrupted by replacement fails; it is not replayed. Hosts that
+cannot guarantee this affinity must report cli placement unavailable. This is a
+host-adapter precondition, not a new wire field or a claim that old decoders
+reject placement. Endpoint Bind/Bound cannot substitute for receiver affinity.
+
 Old-driver/new-core local requests remain valid. Direct Rust struct-literal
 source compatibility is not promised for additive generated fields: consumers
 must use defaults/builders and be rebuilt together; wire compatibility is tested.
@@ -135,9 +156,26 @@ This programme does not invent its missing outer framing or service mechanism.
 Admission of a command registers its unique live request_id and caller-owned
 operation_id before binding or checks. The first request needing a binding
 owns the Bind/Bound exchange (stream_id=0); concurrent requests wait on that
-single bounded bootstrap. Its cancellation/loss abandons bootstrap; late Bound
-cannot install it. Later requests reuse the established binding. The endpoint
-validates each request context before accepting its checks/opens. Core's private
+single bounded bootstrap. Serialize verified Bound installation against owner
+cancellation/expiry/loss. If installation wins, the established binding survives
+that owner's later cancellation; only its request is cancelled. If abandonment
+wins, atomically retire the session, fail/wake every bootstrap waiter, close the
+application port and require the host to propagate closure to the endpoint. The
+endpoint retires its ready/pending binding on that closure under bounded cleanup;
+no usable old binding remains and no late Bound can install it. While closure is
+in flight, the mux sends no Open/check and the endpoint cannot grant authority to
+another session from the old acknowledgement. Local waiters terminate without
+waiting for proof of peer cleanup. Fresh bootstrap requires a new installed port,
+fresh session id and endpoint instance; never resend Bind on an abandoned
+session. Duplicate Bound after a successful installation is only idempotent when
+it exactly matches the established acknowledgement; disagreement is a protocol
+error. Shutdown retires pending and established generations under the same rule.
+Later requests reuse only an established binding. The endpoint
+validates each request context before accepting its checks/opens. The client host
+registers its live request_id before command dispatch; the first valid Open/check
+fixes operation_id, and later disagreement refuses. A frame cannot create an
+unregistered request. The guide's ClientRequest owner defines registration and
+retirement; its finish/drop seals new work and preserves bounded cleanup. Core's private
 registry maps each positive stream_id to (request_id, operation_id, session_id,
 endpoint_id); Open's operation_id must match. A positive identifier is unique
 for all checks and streams in the session and is never reused; overflow retires
@@ -175,7 +213,7 @@ this includes repository-local selected path strings; core's repository root
 must never become their base. Absolute paths need no base; ~user remains refused.
 InvocationContext.caller_cwd continues to describe the execution filesystem and
 must not be repurposed. Local placement keeps existing path-base behavior;
-endpoint_path_base is inapplicable there and a nonempty supplied value is invalid.
+endpoint_path_base is inapplicable there and any non-null supplied value is invalid.
 
 Preflight includes the same invocation-selected files currently checked by
 with_transport, plus each planned remote's effective selection, before the first
@@ -228,9 +266,14 @@ late supervised completion; no terminal response can resurrect a retired check.
 Check failures always have Effect::None and no authentication facts. The check
 identity mode/base/path rules are identical to Open's explicit selection rules.
 
-Failure.facts carries current-attempt evidence on OpenFailed/Failed and failures
-inside Closed, bounded by existing metadata caps. Bind/check failures have no
-authentication facts. Late facts cannot change the selected failure code: a
+Failure.facts carries current-attempt evidence on OpenFailed/Failed, bounded by
+existing metadata caps. Closed.facts is the sole authority for every Closed,
+including failed Closed: Closed.failure.facts MUST be absent/null. A nested
+Failure.facts value is rejected before dispatch even if equal to Closed.facts;
+it never supplies a second authority. Bind/check failures also forbid facts.
+The typed terminal adapter combines Closed.failure's code/effect with Closed.facts
+when producing one internal failure receipt. The public observation and failure
+projection use that same receipt, not independently chosen copies. Late facts cannot change the selected failure code: a
 prior rejected key must not turn a later Timeout into Authentication. Reuse
 reports credential_offered=false and independently proven authentication facts.
 
@@ -262,7 +305,7 @@ are part of the gate. Existing v1 kinds/fields/codes never change semantics.
 ## 7. Observations, errors and authority
 
 Construct each observation from its current operation selection plus that
-stream's verified Opened/terminal facts. endpoint/connection/stream/reused are
+stream's verified Opened/terminal facts, using §6's single Closed facts authority. endpoint/connection/stream/reused are
 optional when not yet known. Do not copy another operation's row, infer offered
 from authenticated, or retain private-member details after suppression. Preserve
 facts on ordinary results, early errors, events and nested operation drivers.
@@ -311,7 +354,17 @@ Test retained old/new core/driver and gwz-py ordinary-local combinations; new
 explicit-cli/old-core must be rejected before sending the operation. Test missing,
 null, malformed and unknown fields, negotiated v1/v2, unchanged old slot semantics,
 bounded outer attachments, endpoint teardown, cleanup after user-visible return,
-and explicit cli with unsupported/mixed routes. No passing test claim is made
+and explicit cli with unsupported/mixed routes. Add deterministic bootstrap
+barriers immediately before/after endpoint readiness and mux installation, with
+owner cancellation, multiple waiters, delayed/lost/duplicate Bound and shutdown.
+Require bounded waiter release, no stale authority and recovery only through the
+permitted established or fresh binding. Probe new-core capabilities, replace or
+reroute the receiver to old core, then request cli: assert zero operation sends
+and zero local/remote effects. Cover channel replacement, unsupported affinity
+and retained local requests. Decode Closed with nested equal/conflicting facts
+(both rejected) and absent/null nested facts (one authoritative Closed.facts).
+Compile the guide example once the proposed API exists; design review traces it
+against declared signatures only. No passing test claim is made
 by this document. Production activation, HTTPS and final performance/platform
 qualification remain separate later work.
 
