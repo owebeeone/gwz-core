@@ -1,6 +1,6 @@
 # SSH agent A3 — supervised pool ownership and observations
 
-Date: 2026-09-21. Status: implemented locally; retained aggregate review pending.
+Date: 2026-09-21. Status: accepted local integration after retained Code/State GO.
 Authority: accepted helper design A3 and accepted A1/A2. Local integration only;
 production discovery/routing activation and deferred platform/source batch remain
 separate gates. No CLI/core message or gwz-transport schema changes.
@@ -87,6 +87,27 @@ The native resource and all later resource polls remain bounded as contracted.
 627 added production lines across seven files, 37 removed; 481 new focused test
 lines across two files plus existing fixture wiring. No ceiling expansion.
 [Raw red/green evidence](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-21-agent-a3/README.md)
-requires private archive access. Review findings and exact acceptance tuple will
-be filed after retained Code/State review. No known escaped defect; one owner
-regression discovered and corrected the panic ledger defect before review.
+requires private archive access. No known escaped defect; one owner regression
+discovered and corrected the panic ledger defect before review.
+
+## Acceptance
+
+Accepted at root `fe68d36f939de8cba2bc8a509f85a24cefe85db5`, core
+`e92c5d1ec09dd64a397dbacf6c78888955e4ae12`, evidence
+`dd5b5f144c4db29968d578655ca279a7f74c1119`, transport
+`28f5afb3938a2aa8af0e1e8d5b07779add6ab776`, Rust fork
+`ce78628308e11b4e8901d5061602619109bce21a`, C fork
+`b172e3d187a4b6866fd9f696f40a1b8e7f56d348` after retained
+[Code GO](../../dev-docs/GwzRemoteTransportSshAgentA3-ReviewCode.md) and
+[State GO](../../dev-docs/GwzRemoteTransportSshAgentA3-ReviewState.md).
+Both report zero P0–P3 findings. State independently reran the full isolated
+suite: 73 executed tests passed; the documented child-only test is exercised
+through its parent. One aggregate round, zero review remediation rounds, no
+blind-convergent finding or known escaped defect. Reports are filed verbatim.
+Acceptance annotations and report filing change no executable statements.
+
+This accepts local fixture-compiled integration only. Next is bounded production
+setup (discovery/connect/handshake/trust and explicit-key handling), followed by
+backend operation-sink and all-network-entry attachment. The deferred platform/
+selected-source batch remains required before capability activation. No production
+routing or dependency activation is claimed.
