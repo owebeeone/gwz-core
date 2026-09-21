@@ -8,10 +8,7 @@ cfg_if::cfg_if! {
                 agent_job::Control,
                 ssh_connection::SshConnection,
             };
-            use libssh2_sys::{
-                LIBSSH2_ERROR_AUTHENTICATION_FAILED, LIBSSH2_ERROR_EAGAIN,
-                LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED, LIBSSH2_SESSION,
-            };
+            use libssh2_sys::{LIBSSH2_ERROR_AUTHENTICATION_FAILED, LIBSSH2_ERROR_EAGAIN, LIBSSH2_SESSION};
             use std::{
                 ffi::{CString, c_char, c_int, c_void},
                 io,
@@ -41,11 +38,21 @@ cfg_if::cfg_if! {
             /// `trusted_key` is endpoint policy's independently approved host key.
             /// `open` must use owned bounded agent I/O (normally agent_socket::connect).
             pub(crate) fn authenticate<C: Channel>(
+                connection: SshConnection,
+                user: &str,
+                trusted_key: &[u8],
+                control: Arc<Control>,
+                open: impl FnOnce() -> io::Result<Agent<C>>,
+            ) -> io::Result<SshConnection> {
+                authenticate_inner(connection, user, trusted_key, control, open, |_, _| {})
+            }
+            fn authenticate_inner<C: Channel>(
                 mut connection: SshConnection,
                 user: &str,
                 trusted_key: &[u8],
                 control: Arc<Control>,
                 open: impl FnOnce() -> io::Result<Agent<C>>,
+                mut observe: impl FnMut(&[u8], c_int),
             ) -> io::Result<SshConnection> {
                 control.check()?;
                 let user = CString::new(user).map_err(|_| io::ErrorKind::InvalidInput)?;
@@ -89,6 +96,7 @@ cfg_if::cfg_if! {
                                 )
                             }
                         };
+                        observe(&key, rc);
                         control.check()?;
                         if let Some(error) = signer.error {
                             return Err(error.into());
@@ -104,16 +112,26 @@ cfg_if::cfg_if! {
                         if rc == LIBSSH2_ERROR_EAGAIN {
                             // Bounded polling fallback: no hidden blocking native agent calls.
                             std::thread::sleep(control.quantum()?);
-                        } else if rc == LIBSSH2_ERROR_AUTHENTICATION_FAILED
-                            || rc == LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED
-                        {
+                        } else if rc == LIBSSH2_ERROR_AUTHENTICATION_FAILED {
                             break; // Server rejected this key; attempt the next listed identity once.
                         } else {
+                            // PUBLICKEY_UNVERIFIED also hides packet/transport failures.
+                            // Its origin is lost: terminate, never offer another identity.
                             return Err(io::ErrorKind::Other.into());
                         }
                     }
                 }
                 Err(io::ErrorKind::PermissionDenied.into())
+            }
+            cfg_if::cfg_if! {
+                if #[cfg(test)] {
+                    pub(crate) fn observed_authenticate<C: Channel>(
+                        connection: SshConnection, user: &str, trusted_key: &[u8], control: Arc<Control>,
+                        open: impl FnOnce() -> io::Result<Agent<C>>, observe: impl FnMut(&[u8], c_int),
+                    ) -> io::Result<SshConnection> {
+                        authenticate_inner(connection, user, trusted_key, control, open, observe)
+                    }
+                }
             }
             struct Signer<'a, C> {
                 agent: &'a mut Agent<C>,
@@ -242,5 +260,8 @@ cfg_if::cfg_if! {
             }
         }
         pub(crate) use unix::authenticate;
+        cfg_if::cfg_if! {
+            if #[cfg(test)] { pub(crate) use unix::observed_authenticate; }
+        }
     }
 }

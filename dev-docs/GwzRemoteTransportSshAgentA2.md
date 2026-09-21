@@ -1,6 +1,6 @@
 # SSH agent A2 — native signing and connection handoff
 
-Date: 2026-09-21. Status: implemented; aggregate Code/State review pending.
+Date: 2026-09-21. Status: remediation 1 implemented; retained re-review pending.
 Authority: [accepted helper design](GwzRemoteTransportSshAgentDesign.md), A2,
 and [accepted A1](GwzRemoteTransportSshAgentA1.md). This is an isolated fixture
 checkpoint; production routing and dependencies remain inactive.
@@ -11,7 +11,7 @@ agent_auth.rs takes exclusive ownership of a handshaken SshConnection, username,
 independently approved host-key bytes, the A1 cancellation/deadline control, and
 a factory for its owned bounded Agent. It checks the supplied trust before opening
 the agent and makes the SSH socket/session nonblocking. Enumeration occurs once;
-each key is attempted once in order. Server refusal advances to the next key;
+each key is attempted once in order. Only explicit native AUTHENTICATION_FAILED advances to the next key;
 agent/protocol errors, cancellation and native failures terminate the connection.
 
 The private binding calls pinned libssh2_userauth_publickey under Session::raw's
@@ -45,7 +45,7 @@ A3 still owns physical pool accounting, cleanup refusal and auth observations.
 
 ## Evidence and limits
 
-61 focused executions pass, including seven A2 tests and 54 retained tests.
+62 focused executions pass, including eight A2 tests and 54 retained tests.
 Private loopback fixtures prove Ed25519, RSA-SHA256 and RSA-SHA512 authentication,
 a rejected first key, all keys rejected, wrong-host refusal before agent access,
 malformed signature shape/algorithm, callback panic containment, sign deadline
@@ -60,9 +60,9 @@ No heap census, injected malloc failure, Windows/Linux primitive qualification,
 or selected-source reconstruction is claimed. Platform/source work remains the
 operator-deferred batch. No public API, CLI/core envelope or gwz-transport change.
 
-246 production lines/one file. 552 test/support lines/two files: refine the A2
-500-line test ceiling to 560 for the isolated native agent proxy, process cleanup
-and native-wait fault tests; production remains below 350 lines/two files.
+267 source lines/one file (including the test-only observer entry). 617
+test/support lines/two files: refine the A2 500-line test ceiling to 620 for the isolated native agent proxy, process cleanup
+and native-wait/disconnect fault tests; production remains below 350 lines/two files.
 This supersedes only the A2 test line ceiling in design §8. No scope expansion.
 
 Raw failures, passing runs and exact final source/native-source hashes are in
@@ -70,3 +70,20 @@ Raw failures, passing runs and exact final source/native-source hashes are in
 (private archive). Product shape failure was caught in TDD; fixture failures are
 labelled separately. No known escaped defect. Retained dual Code/State gate,
 P0–P2 blocking, at most two merged remediation rounds.
+
+## Remediation 1
+
+Retained Code P2-1 identified an overloaded libssh2 return: PUBLICKEY_UNVERIFIED
+also represents packet/transport failure. The corrected loop treats it as terminal
+Other, never PermissionDenied or permission to try another identity. This also
+means a final signed rejection returning that ambiguous code stops the attempt;
+only the unambiguous unsigned-probe AUTHENTICATION_FAILED permits the next key.
+No error-text matching or native/library patch is introduced.
+
+A test-only observer records the real native key/return boundary and disconnects
+TCP at the first native EAGAIN. Two identities remain enumerated; the regression
+proves the ambiguous error terminates before any call with the second key. The
+normal entry always supplies a no-op observer. [Red/green evidence](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-21-agent-a2-rem-1/README.md)
+is private. Initial State GO and Code NO-GO; one P2, one merged correction,
+retained re-verdict pending. The test ceiling moves from 560 to 620 for this
+review regression, not additional product scope. No known escaped defect.

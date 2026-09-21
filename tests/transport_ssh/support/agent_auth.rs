@@ -171,7 +171,9 @@ impl Fixture {
                     assert_eq!(u32::from_be_bytes(response[1..5].try_into().unwrap()), 2);
                 }
                 write_frame(&mut peer, &response);
-                if body[0] == 11 { let _ = list.send(()); }
+                if body[0] == 11 {
+                    let _ = list.send(());
+                }
             }
         }));
         fixture
@@ -211,6 +213,15 @@ impl Fixture {
             signatures,
         ));
         assert_eq!(*self.events.lock().unwrap(), expected);
+    }
+    pub fn network_handle(&self) -> TcpStream {
+        self.monitor
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .try_clone()
+            .unwrap()
     }
     pub fn assert_tcp_closed(&self) {
         let mut guard = self.monitor.lock().unwrap();

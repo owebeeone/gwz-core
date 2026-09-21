@@ -282,5 +282,59 @@ cfg_if::cfg_if! {
             }
         }
 
+        #[test]
+        fn native_disconnect_is_terminal_before_a_second_identity() {
+            use std::sync::Mutex;
+            let fixture = support::Fixture::new("ssh-ed25519", false);
+            let (connection, host) = fixture.prepared("ssh-ed25519");
+            let mut paused = common::pause_process_tree(fixture.ssh.child.id());
+            let breaker = fixture.network_handle();
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let observed = calls.clone();
+            let path = fixture.path.clone();
+            let user = fixture.ssh.user.clone();
+            let mut disconnected = false;
+            let mut job = Job::start(
+                Some(Instant::now() + Duration::from_secs(3)),
+                Duration::from_secs(1),
+                move |control| {
+                    agent_auth::observed_authenticate(
+                        connection,
+                        &user,
+                        &host,
+                        control.clone(),
+                        || agent_socket::connect(&path, control),
+                        |key, rc| {
+                            observed.lock().unwrap().push((key.to_vec(), rc));
+                            if !disconnected && rc == libssh2_sys::LIBSSH2_ERROR_EAGAIN {
+                                breaker.shutdown(std::net::Shutdown::Both).unwrap();
+                                disconnected = true;
+                            }
+                        },
+                    )
+                },
+            )
+            .unwrap();
+            assert_eq!(finish(&mut job).err().unwrap().kind(), io::ErrorKind::Other);
+            let calls = calls.lock().unwrap();
+            assert!(
+                calls
+                    .iter()
+                    .any(|(_, rc)| *rc == libssh2_sys::LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED)
+            );
+            assert!(
+                calls.iter().all(|(key, _)| *key == calls[0].0),
+                "native failure must not offer a second identity"
+            );
+            assert_eq!(
+                calls.last().unwrap().1,
+                libssh2_sys::LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED
+            );
+            fixture.assert_requests("ssh-ed25519", 0);
+            fixture.assert_tcp_closed();
+            fixture.wait_closed();
+            paused.resume();
+        }
+
     }
 }
