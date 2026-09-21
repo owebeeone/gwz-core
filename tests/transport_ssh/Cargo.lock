@@ -102,6 +102,7 @@ dependencies = [
  "git2",
  "gwz-transport",
  "libc",
+ "libssh2-sys",
  "socket2",
  "ssh2",
  "tempfile",

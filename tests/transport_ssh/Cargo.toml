@@ -12,6 +12,7 @@ cfg-if = "1"
 libc = "0.2"
 socket2 = "=0.6.4"
 ssh2 = "=0.9.6"
+libssh2-sys = "=0.3.3"
 tempfile = "3"
 gwz-transport = { path = "../../../gwz-transport", version = "=0.1.0" }
 git2 = { path = "../../../git2-rs", default-features = false, features = ["ssh", "unstable-sha256", "vendored-libgit2"] }
