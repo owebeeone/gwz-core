@@ -176,3 +176,14 @@ and CR-token counterexamples require deterministic connector and terminal-Contro
 regressions, a separate native ending/comment matrix and CRLF cap checks. The
 660-line allowance is refined to770; final tests764. Production remains within
 350 lines/one module. The added seam does not change the setup or wire API.
+
+## N2 concrete refinement (draft review)
+
+GwzRemoteTransportSshSelectedIdentityDesign.md specifies bounds, ownership and
+native in-memory authentication. On its acceptance it refines the earlier
+“validated snapshot before allocation” wording: representation/current file
+admission precedes lookup; reuse additionally needs exact bytes matching native-
+proven material; an unproven new token cannot match an old connection and becomes
+proven only after joined live native authentication. It also extends the retained
+endpoint owner to cover admission Jobs before pool entries exist. The new file
+and aggregate bounds are explicitly reflected in G1; no public/wire API changes.

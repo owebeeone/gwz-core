@@ -156,6 +156,13 @@ Conventions follow [GWZRequirements.md](GWZRequirements.md).
   to local-core and driver-hosted endpoints. Size/encoding admission errors
   are InvalidRequest before credential access; native malformed content still
   refuses. See GwzRemoteTransportSshProductionSetup.md for differential gates.
+  Selected-key admission is additionally bounded by N2: a regular, nonempty,
+  UTF-8, NUL-free snapshot of at most 1 MiB, with 64 live authority slots and
+  16 MiB charged snapshot/read capacity per endpoint. This can refuse a file
+  representation accepted by native path loading; bounds/encoding refuse before
+  pool lookup, DNS or credentials. Exact bytes are preserved for native parsing.
+  See GwzRemoteTransportSshSelectedIdentityDesign.md (DRAFT pending its review)
+  for reservation, proof, cancellation and differential gates.
   These supersede the original draft's blanket preservation of credential-helper
   behaviour and exact trust-file input compatibility; host/key/port matching
   and no-untrusted-host authentication remain unchanged.
