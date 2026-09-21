@@ -165,7 +165,7 @@ Conventions follow [GWZRequirements.md](GWZRequirements.md).
   ambiguous/multiple blocks refuse before native KDF work. Bounds, encoding and
   container refusals are InvalidRequest before pool lookup, DNS or credentials.
   Exact accepted bytes are preserved for native parsing.
-  See GwzRemoteTransportSshSelectedIdentityDesign.md (DRAFT pending its review)
+  See GwzRemoteTransportSshSelectedIdentityDesign.md (accepted N2 design)
   for reservation, proof, cancellation and differential gates.
   These supersede the original draft's blanket preservation of credential-helper
   behaviour and exact trust-file input compatibility; host/key/port matching

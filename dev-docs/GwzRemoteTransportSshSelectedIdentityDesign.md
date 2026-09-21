@@ -1,6 +1,6 @@
 # SSH N2 — selected identity admission
 
-Date: 2026-09-21. Status: DRAFT remediation 1 for retained focused review.
+Date: 2026-09-21. Status: accepted design after retained Consistency/Safety GO.
 Authority: accepted GwzRemoteTransportSshProductionSetup.md, N1 and A1–A3,
 requirements G1–G3, and the operator's explicit-no-agent-fallback direction.
 This specifies N2 only. Production backend attachment is N3; platform and
@@ -102,12 +102,12 @@ Open using O_NONBLOCK on admitted Unix paths, then verify the descriptor is
 regular, following existing endpoint-local symlink semantics. Read at most cap+1;
 check Control before/after OS calls and before returning. OS file stalls have
 N1's admitted retained-owner semantics, not a kernel-preemption guarantee.
-This byte/encoding cap is an explicit proposed G1 exception: native file loading
+This byte/encoding cap is an explicit accepted G1 exception: native file loading
 may accept a larger or differently encoded representation that N2 refuses.
 Refusal is InvalidInput/InvalidRequest before pool lookup, DNS or credentials.
 A bounded preflight below additionally refuses unsupported/encrypted or ambiguous
 containers before native authentication can run an uninterruptible KDF. This is
-also an explicit proposed G1 representation restriction. Native parsing decides
+also an explicit accepted G1 representation restriction. Native parsing decides
 accepted unencrypted key usability; do not normalize bytes.
 
 ### Bounded container preflight
@@ -316,3 +316,25 @@ exceptions and saturation/progress tests. No decryptor, key-math parser or proce
 supervisor is added. N3/backend/platform work remains excluded; N2a production
 budget stays600 lines, and its test allowance800→900 covers the classifier
 adversarial matrix. This is the same merged remediation as the fan-out correction.
+
+## Design acceptance
+
+Accepted at root `a9ad12dcafb51d77e7d0fbd28fac97934e070b09`, core
+`35df881b7075d7031082f61e0b99b838341149e1`, evidence
+`e842abf855e58de3c4381855fbc1b8374485a7cd`, transport
+`28f5afb3938a2aa8af0e1e8d5b07779add6ab776`, git2-rs
+`ce78628308e11b4e8901d5061602619109bce21a`, libgit2
+`b172e3d187a4b6866fd9f696f40a1b8e7f56d348`, after retained
+[Consistency GO](../../dev-docs/GwzRemoteTransportSshSelectedIdentityDesign-ReviewConsistency-1.md)
+and [Safety GO](../../dev-docs/GwzRemoteTransportSshSelectedIdentityDesign-ReviewSafety-1.md).
+
+One initial dual review plus one merged remediation. Safety P2-1 encrypted-KDF
+admission and owner P2-O1 first-fan-out token incompatibility are closed at the
+design boundary. No independent dual-axis convergence; no implementation or
+escaped-code defect claim. Reports are filed verbatim. This documentation-only
+gate ran inspection and diff checks, not native or platform experiments.
+
+Next is N2a implementation under §5: bounded snapshots/registry, framing preflight
+and native in-memory authentication, TDD then retained aggregate Code/State review.
+N2b worker admission and combined cleanup, N3 backend attachment, and the deferred
+platform/source qualification remain separate required gates before activation.

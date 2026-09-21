@@ -177,10 +177,11 @@ regressions, a separate native ending/comment matrix and CRLF cap checks. The
 660-line allowance is refined to770; final tests764. Production remains within
 350 lines/one module. The added seam does not change the setup or wire API.
 
-## N2 concrete refinement (draft review)
+## N2 concrete refinement (accepted design)
 
 GwzRemoteTransportSshSelectedIdentityDesign.md specifies bounds, ownership and
-native in-memory authentication. On its acceptance it refines the earlier
+native in-memory authentication. Its retained Consistency/Safety acceptance
+refines the earlier
 “validated snapshot before allocation” wording: representation/current file
 admission precedes lookup; exact same-Key snapshots share a canonical token even
 while unproven, and reuse additionally requires a matching authenticated reusable
