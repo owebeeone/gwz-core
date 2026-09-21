@@ -1,6 +1,6 @@
 # SSH agent A1 — bounded client and helper lifecycle
 
-Date: 2026-09-21. Status: implemented; aggregate review pending.
+Date: 2026-09-21. Status: remediation 1 implemented; retained focused re-review pending.
 Authority: [accepted helper design](GwzRemoteTransportSshAgentDesign.md), A1.
 This checkpoint does not authenticate SSH, activate production modules, modify
 gwz-transport, or change the CLI/core API. A2 signing and A3 pool/backend
@@ -46,7 +46,7 @@ always uses the standard thread builder. No caller can adjust the global cap.
 
 ## Local evidence
 
-Rust 1.95 offline locked fixture gate passed 52 test executions, including 14 new
+Rust 1.95 offline locked fixture gate passed 54 test executions, including 16 new
 A1 tests and all retained stream/pool/native Git composition regressions. The
 existing ignored fake-agent child is executed by its passing parent.
 
@@ -73,8 +73,8 @@ native backlog assumptions, and test cancellation racing before helper entry.
 The last case was corrected with explicit started barriers; product correctly
 refuses callbacks already cancelled before entry. No known escaped defect.
 
-550 production lines across three files (within the design's 20% allowance);
-560 test lines across two files. Fixture-only dependencies add socket2 0.6.4 and
+557 production lines across three files (within the design's 20% allowance);
+742 test lines across two files. Fixture-only dependencies add socket2 0.6.4 and
 explicit libc; production dependencies remain inactive. No new public surface.
 Aggregate review uses retained Code/State axes on one settled tuple; P0–P2 block
 and at most two merged remediation rounds apply.
@@ -82,3 +82,21 @@ and at most two merged remediation rounds apply.
 Raw red/green logs and final source hashes are in
 [agent-a1](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-21-agent-a1/README.md)
 (private archive). Build and runtime outputs remain outside the archive.
+
+## Remediation 1
+
+Code P2-1: channel ownership is sealed; tests observe shared fake-channel records
+without extracting and resetting protocol state. State P2-1: a transient initial
+supervisor spawn failure is retryable; serialized publication admits exactly one
+successful supervisor. Code P3-1: deterministic barriers cover publication before
+thread exit and joined completion before claim, plus transferred-owner lifetime.
+The wrapper spawner holds the helper after publication; the completion waker
+observes join without claiming success. No new production lifecycle hook is needed.
+
+The test ceiling is refined from 700 to 750 lines for these review-requested
+regressions (742 actual); production remains within the existing 20% allowance.
+This supersedes only the A1 test line ceiling in design §8. No capability or scope
+expansion. Two independent P2 findings, one P3 coverage finding, one merged
+remediation; no blind convergence and no known escaped defect. Reviewer closure
+is pending. [Remediation evidence](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-21-agent-a1-rem-1/README.md)
+is private; original development evidence remains unchanged.

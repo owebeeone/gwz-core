@@ -10,7 +10,7 @@ use agent_job::{Control, Job};
 use std::{
     io::{self, Read, Write},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker},
@@ -28,8 +28,14 @@ fn finish<T: Send + 'static>(job: &mut Job<T>) -> io::Result<T> {
 }
 struct Frag {
     input: std::io::Cursor<Vec<u8>>,
-    output: Vec<u8>,
+    output: Arc<Mutex<Vec<u8>>>,
+    closed: Arc<AtomicUsize>,
     seed: u64,
+}
+impl Drop for Frag {
+    fn drop(&mut self) {
+        self.closed.fetch_add(1, Ordering::SeqCst);
+    }
 }
 impl Frag {
     fn chunk(&mut self, len: usize) -> usize {
@@ -48,7 +54,7 @@ impl Read for Frag {
 impl Write for Frag {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let n = self.chunk(buf.len());
-        self.output.extend_from_slice(&buf[..n]);
+        self.output.lock().unwrap().extend_from_slice(&buf[..n]);
         Ok(n)
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -91,10 +97,12 @@ fn seeded_fragmentation_preserves_identity_and_signature_frames() {
         let mut replies = frame(identities);
         replies.extend(frame(signed));
         let mut job = Job::start(None, Duration::from_secs(1), move |control| {
+            let output = Arc::new(Mutex::new(Vec::new()));
             let mut agent = Agent::new(
                 Frag {
                     input: std::io::Cursor::new(replies),
-                    output: vec![],
+                    output: output.clone(),
+                    closed: Default::default(),
                     seed,
                 },
                 control,
@@ -104,14 +112,14 @@ fn seeded_fragmentation_preserves_identity_and_signature_frames() {
                 vec![b"key1".to_vec(), b"key2".to_vec()]
             );
             assert_eq!(agent.sign(b"key1", b"payload", "ssh-ed25519")?, b"signed");
-            let channel = agent.into_channel();
+            drop(agent);
             let mut expected = frame(vec![11]);
             let mut request = vec![13];
             string(&mut request, b"key1");
             string(&mut request, b"payload");
             request.extend_from_slice(&0_u32.to_be_bytes());
             expected.extend(frame(request));
-            assert_eq!(channel.output, expected);
+            assert_eq!(*output.lock().unwrap(), expected);
             Ok(())
         })
         .unwrap();
@@ -129,10 +137,12 @@ fn malformed_agent_frames_fail_without_payload_diagnostics() {
         vec![0, 0, 0, 6, 12],
     ] {
         let mut job = Job::start(None, Duration::from_secs(1), move |control| {
+            let output = Arc::new(Mutex::new(Vec::new()));
             Agent::new(
                 Frag {
                     input: std::io::Cursor::new(bytes),
-                    output: vec![],
+                    output: output.clone(),
+                    closed: Default::default(),
                     seed: 42,
                 },
                 control,
@@ -243,10 +253,12 @@ fn wrong_signature_algorithm_trailing_failure_and_oversized_input_are_refused() 
         frame(response)
     }] {
         let mut job = Job::start(None, Duration::from_secs(1), move |control| {
+            let output = Arc::new(Mutex::new(Vec::new()));
             let mut agent = Agent::new(
                 Frag {
                     input: std::io::Cursor::new(response),
-                    output: vec![],
+                    output: output.clone(),
+                    closed: Default::default(),
                     seed: 33,
                 },
                 control,
@@ -399,26 +411,30 @@ fn rsa_flags_are_explicit_and_oversized_sign_inputs_have_no_io() {
             string(&mut signature, b"sig");
             let mut response = vec![14];
             string(&mut response, &signature);
+            let output = Arc::new(Mutex::new(Vec::new()));
             let mut agent = Agent::new(
                 Frag {
                     input: std::io::Cursor::new(frame(response)),
-                    output: vec![],
+                    output: output.clone(),
+                    closed: Default::default(),
                     seed: 7,
                 },
                 control,
             );
             agent.sign(b"key", b"data", method)?;
-            assert!(agent.into_channel().output.ends_with(&flags.to_be_bytes()));
+            assert!(output.lock().unwrap().ends_with(&flags.to_be_bytes()));
             Ok(())
         })
         .unwrap();
         finish(&mut job).unwrap();
     }
     let mut job = Job::start(None, Duration::from_secs(1), |control| {
+        let output = Arc::new(Mutex::new(Vec::new()));
         let mut agent = Agent::new(
             Frag {
                 input: std::io::Cursor::new(vec![]),
-                output: vec![],
+                output: output.clone(),
+                closed: Default::default(),
                 seed: 7,
             },
             control,
@@ -430,7 +446,7 @@ fn rsa_flags_are_explicit_and_oversized_sign_inputs_have_no_io() {
                 .kind(),
             io::ErrorKind::InvalidInput
         );
-        assert!(agent.into_channel().output.is_empty());
+        assert!(output.lock().unwrap().is_empty());
         Ok(())
     })
     .unwrap();
@@ -451,4 +467,109 @@ fn expired_start_cannot_execute_setup_effects() {
         io::ErrorKind::TimedOut
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn used_and_failed_agents_keep_channel_state_until_drop() {
+    for reply in [frame(vec![12, 0, 0, 0, 0]), frame(vec![99])] {
+        let mut job = Job::start(None, Duration::from_secs(1), move |control| {
+            let output = Arc::new(Mutex::new(Vec::new()));
+            let closed = Arc::new(AtomicUsize::new(0));
+            let mut agent = Agent::new(
+                Frag {
+                    input: std::io::Cursor::new(reply),
+                    output: output.clone(),
+                    closed: closed.clone(),
+                    seed: 7,
+                },
+                control,
+            );
+            let _ = agent.identities();
+            assert!(agent.identities().is_err());
+            assert_eq!(*output.lock().unwrap(), frame(vec![11]));
+            assert!(agent.sign(b"key", b"data", "ssh-rsa").is_err());
+            assert!(agent.sign(b"key", b"data", "ssh-ed25519").is_err());
+            assert_eq!(*output.lock().unwrap(), frame(vec![11]));
+            drop(agent);
+            assert_eq!(closed.load(Ordering::SeqCst), 1);
+            Ok(())
+        })
+        .unwrap();
+        finish(&mut job).unwrap();
+    }
+}
+
+#[test]
+fn cancellation_at_publication_and_join_discards_once_but_claim_transfers_owner() {
+    struct Notice(std::sync::mpsc::Sender<()>);
+    impl std::task::Wake for Notice {
+        fn wake(self: Arc<Self>) {
+            let _ = self.0.send(());
+        }
+    }
+    for after_join in [false, true] {
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let observed = dropped.clone();
+        let (published, publication) = std::sync::mpsc::channel();
+        let (exit, allow_exit) = std::sync::mpsc::channel();
+        let mut boundary = Some((published, allow_exit));
+        let mut job = Job::start_with(
+            None,
+            Duration::from_secs(2),
+            move |_| Ok(Owned(observed)),
+            |name, body| {
+                if name == "gwz-setup-reaper" {
+                    return std::thread::Builder::new().name(name.into()).spawn(body);
+                }
+                let (published, allow_exit) = boundary.take().unwrap();
+                Ok(std::thread::spawn(move || {
+                    body(); // result published, but this thread cannot exit until released
+                    published.send(()).unwrap();
+                    allow_exit.recv_timeout(Duration::from_secs(3)).unwrap();
+                }))
+            },
+        )
+        .unwrap();
+        publication.recv_timeout(Duration::from_secs(3)).unwrap();
+        let (wake, joined) = std::sync::mpsc::channel();
+        let waker = Waker::from(Arc::new(Notice(wake)));
+        assert!(
+            job.poll_result(&mut Context::from_waker(&waker))
+                .is_pending()
+        );
+        if after_join {
+            exit.send(()).unwrap();
+            // No deadline/cancellation is set, so this wake can only follow join.
+            joined.recv_timeout(Duration::from_secs(3)).unwrap();
+        }
+        assert_eq!(dropped.load(Ordering::SeqCst), 0);
+        job.cancel();
+        if !after_join {
+            assert!(
+                job.poll_result(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            assert_eq!(dropped.load(Ordering::SeqCst), 0);
+            exit.send(()).unwrap();
+        }
+        assert_eq!(
+            finish(&mut job).err().unwrap().kind(),
+            io::ErrorKind::ConnectionAborted
+        );
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            job.poll_disposed(&mut Context::from_waker(Waker::noop())),
+            Poll::Ready(Ok(()))
+        ));
+        drop(job);
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    }
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let observed = dropped.clone();
+    let mut job = Job::start(None, Duration::from_secs(1), move |_| Ok(Owned(observed))).unwrap();
+    let owned = finish(&mut job).unwrap();
+    drop(job);
+    assert_eq!(dropped.load(Ordering::SeqCst), 0);
+    drop(owned);
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
 }

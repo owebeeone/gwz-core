@@ -128,14 +128,24 @@ struct Hub {
     _join: JoinHandle<()>,
 }
 impl Hub {
-    fn global() -> io::Result<&'static Self> {
-        static HUB: OnceLock<Result<Hub, io::ErrorKind>> = OnceLock::new();
-        HUB.get_or_init(|| {
+    fn global(
+        spawn: &mut impl FnMut(&str, Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
+    ) -> io::Result<&'static Self> {
+        static HUB: OnceLock<Hub> = OnceLock::new();
+        static INIT: Mutex<()> = Mutex::new(());
+        if let Some(hub) = HUB.get() {
+            return Ok(hub);
+        }
+        let _init = INIT.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(hub) = HUB.get() {
+            return Ok(hub);
+        }
+        let hub = {
             let entries = Arc::new(Mutex::new(Vec::<Box<dyn Reap>>::new()));
             let shared = entries.clone();
-            let join = thread::Builder::new()
-                .name("gwz-setup-reaper".into())
-                .spawn(move || {
+            let join = spawn(
+                "gwz-setup-reaper",
+                Box::new(move || {
                     loop {
                         let mut batch =
                             std::mem::take(&mut *shared.lock().unwrap_or_else(|e| e.into_inner()));
@@ -150,16 +160,15 @@ impl Hub {
                             thread::park_timeout(Duration::from_millis(20));
                         }
                     }
-                })
-                .map_err(|e| e.kind())?;
-            Ok(Self {
+                }),
+            )?;
+            Self {
                 entries,
                 worker: join.thread().clone(),
                 _join: join,
-            })
-        })
-        .as_ref()
-        .map_err(|kind| (*kind).into())
+            }
+        };
+        Ok(HUB.get_or_init(|| hub))
     }
 }
 /// T must have bounded, non-panicking destruction (the native connection owner
@@ -174,10 +183,8 @@ impl<T: Send + 'static> Job<T> {
         cleanup: Duration,
         work: impl FnOnce(Arc<Control>) -> io::Result<T> + Send + 'static,
     ) -> io::Result<Self> {
-        Self::start_with(deadline, cleanup, work, |body| {
-            thread::Builder::new()
-                .name("gwz-agent-setup".into())
-                .spawn(body)
+        Self::start_with(deadline, cleanup, work, |name, body| {
+            thread::Builder::new().name(name.into()).spawn(body)
         })
     }
     // Private injection seam for deterministic thread-creation failure tests.
@@ -185,9 +192,9 @@ impl<T: Send + 'static> Job<T> {
         deadline: Option<Instant>,
         cleanup: Duration,
         work: impl FnOnce(Arc<Control>) -> io::Result<T> + Send + 'static,
-        spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
+        mut spawn: impl FnMut(&str, Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
     ) -> io::Result<Self> {
-        let hub = Hub::global()?;
+        let hub = Hub::global(&mut spawn)?;
         COUNT
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
                 (n < LIMIT).then_some(n + 1)
@@ -211,15 +218,18 @@ impl<T: Send + 'static> Job<T> {
         });
         let target = cell.clone();
         let wake = hub.worker.clone();
-        let join = spawn(Box::new(move || {
-            let result = control.check().and_then(|_| work(control.clone()));
-            let mut state = control.state.lock().unwrap_or_else(|e| e.into_inner());
-            control.update(&mut state);
-            // Even cancelled results stay owned until the supervisor joins and disposes.
-            *target.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
-            drop(state);
-            wake.unpark();
-        }))?;
+        let join = spawn(
+            "gwz-agent-setup",
+            Box::new(move || {
+                let result = control.check().and_then(|_| work(control.clone()));
+                let mut state = control.state.lock().unwrap_or_else(|e| e.into_inner());
+                control.update(&mut state);
+                // Even cancelled results stay owned until the supervisor joins and disposes.
+                *target.result.lock().unwrap_or_else(|e| e.into_inner()) = Some(result);
+                drop(state);
+                wake.unpark();
+            }),
+        )?;
         hub.entries
             .lock()
             .unwrap_or_else(|e| e.into_inner())

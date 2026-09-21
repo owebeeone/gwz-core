@@ -24,9 +24,6 @@ impl<C: Channel> Agent<C> {
             enumerated: false,
         }
     }
-    pub(crate) fn into_channel(self) -> C {
-        self.channel
-    }
     pub(crate) fn identities(&mut self) -> io::Result<Vec<Vec<u8>>> {
         if self.enumerated {
             return Err(invalid());
