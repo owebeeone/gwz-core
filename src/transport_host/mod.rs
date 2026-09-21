@@ -1,7 +1,7 @@
 //! Candidate embedding ownership for endpoint placement. The host supplies message delivery.
 mod request;
 mod session;
-cfg_if::cfg_if! { if #[cfg(test)] { mod tests; mod driver_tests; mod fault_tests; mod command_tests; } }
+cfg_if::cfg_if! { if #[cfg(test)] { mod tests; mod driver_tests; mod fault_tests; mod command_tests; mod fetch_preflight_tests; } }
 use crate::git::endpoint::{ssh_local, ssh_worker::Endpoint};
 use crate::{
     RequestMeta, TransportCapabilitiesRequest, TransportCapabilitiesResponse, TransportPlacement,

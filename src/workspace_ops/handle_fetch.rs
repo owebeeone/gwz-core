@@ -108,6 +108,17 @@ where
                 .collect::<Vec<_>>(),
         )?;
 
+        // Validate every contactable repository-local identity before fanout.
+        for target in targets.iter().filter(|target| {
+            target.refusal.is_none() && target.remote.is_some() && target.branch.is_some()
+        }) {
+            backend.validate_remote_identity(
+                &target.path,
+                target.remote.as_deref().expect("filtered remote"),
+                false,
+            )?;
+        }
+
         if request.meta.dry_run.unwrap_or(false) {
             let rows: Vec<_> = targets.iter().map(FetchTarget::planned_row).collect();
             return Ok(fetch_response(context, rows));

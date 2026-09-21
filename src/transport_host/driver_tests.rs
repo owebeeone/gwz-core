@@ -54,7 +54,7 @@ fn endpoint_home(fixture: &common::SshdFixture) -> PathBuf {
     home
 }
 
-fn url(fixture: &common::SshdFixture) -> String {
+pub(super) fn fixture_url(fixture: &common::SshdFixture) -> String {
     format!(
         "ssh://{}@127.0.0.1:{}{}",
         fixture.user,
@@ -157,7 +157,9 @@ fn cli_driver_operations_share_one_host_scoped_request() {
         .unwrap()
         .unwrap();
 
-    backend.clone_repo(&url(&harness.fixture), &target).unwrap();
+    backend
+        .clone_repo(&fixture_url(&harness.fixture), &target)
+        .unwrap();
     assert!(
         backend
             .ls_remote(&target, "origin")
@@ -172,7 +174,7 @@ fn cli_driver_operations_share_one_host_scoped_request() {
     backend.tag_fetch(&target, "origin").unwrap();
     assert_eq!(
         backend
-            .read_remote_file(&url(&harness.fixture), "origin", "payload")
+            .read_remote_file(&fixture_url(&harness.fixture), "origin", "payload")
             .unwrap(),
         Some(b"first".to_vec())
     );
@@ -314,7 +316,7 @@ fn host_scoped_workspace_drivers_keep_request_identity_across_init_and_fetch() {
     let root = harness.fixture.temp.path().join("workspace");
     std::fs::create_dir(&root).unwrap();
     let source = crate::SourceUrl {
-        url: url(&harness.fixture),
+        url: fixture_url(&harness.fixture),
         path: Some("member".into()),
         remote_name: None,
         branch: None,
@@ -461,7 +463,7 @@ fn cli_endpoint_preserves_repository_refusal_and_reuses_binding_after_failure() 
         .unwrap();
     let error = backend
         .clone_repo(
-            &format!("{}-missing", url(&harness.fixture)),
+            &format!("{}-missing", fixture_url(&harness.fixture)),
             &harness.fixture.temp.path().join("absent"),
         )
         .unwrap_err();
@@ -476,7 +478,7 @@ fn cli_endpoint_preserves_repository_refusal_and_reuses_binding_after_failure() 
     assert!(denied.endpoint_id.is_some());
     backend
         .clone_repo(
-            &url(&harness.fixture),
+            &fixture_url(&harness.fixture),
             &harness.fixture.temp.path().join("present"),
         )
         .unwrap();
@@ -507,7 +509,7 @@ fn cli_authentication_failure_retains_attempt_facts_without_claiming_an_open_str
         .unwrap();
     let error = backend
         .clone_repo(
-            &url(&harness.fixture),
+            &fixture_url(&harness.fixture),
             &harness.fixture.temp.path().join("denied"),
         )
         .unwrap_err();
@@ -551,7 +553,7 @@ fn cli_one_request_supports_concurrent_git_streams() {
         let jobs: Vec<_> = (0..crate::operation::resolve_jobs(None))
             .map(|index| {
                 let backend = backend.clone();
-                let url = url(&harness.fixture);
+                let url = fixture_url(&harness.fixture);
                 let target = harness.fixture.temp.path().join(format!("fanout-{index}"));
                 threads.spawn(move || backend.clone_repo(&url, &target))
             })
@@ -583,7 +585,7 @@ fn cli_open_rechecks_a_selected_file_after_successful_preflight() {
     request.context.check_identity("client_ed25519").unwrap();
     std::fs::remove_file(harness.home.join("client_ed25519")).unwrap();
     let result = request.context.open(
-        &url(&harness.fixture),
+        &fixture_url(&harness.fixture),
         crate::git::endpoint::ssh_channel::GitService::UploadPack,
         Some("client_ed25519".into()),
         std::sync::Arc::new(|_, _| panic!("missing key must never open a stream")),

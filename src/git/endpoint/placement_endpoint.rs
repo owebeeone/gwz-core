@@ -249,6 +249,24 @@ impl PlacementEndpoint {
         if open.endpoint_id != self.endpoint_id || open.operation_id.is_empty() {
             return Err(EndpointError::InvalidRequest);
         }
+        // Reject unsupported peer policy before queue ownership or arithmetic.
+        if self.endpoint.validate_deadlines(&open.deadlines).is_err() {
+            let mut state = request_state(&envelope, open.operation_id.clone());
+            state.terminal = true;
+            let message = envelope_for(
+                &state,
+                MessageKind::OpenFailed,
+                Some(Failure {
+                    code: ErrorCode::InvalidRequest,
+                    effect: Effect::None,
+                    facts: None,
+                }),
+                None,
+            );
+            self.requests.insert(key.clone(), state);
+            self.push_outbound(key.0, message);
+            return Ok(());
+        }
         if self.opens.len() >= MAX_OPEN_JOBS {
             let state = request_state(&envelope, open.operation_id.clone());
             let now = self.now();
@@ -448,6 +466,36 @@ impl PlacementEndpoint {
     fn finish_checks(&mut self, now_ms: u64, cx: &mut Context<'_>) {
         let mut index = 0;
         while index < self.checks.len() {
+            // Logical completion never waits for a blocked filesystem job to
+            // return. Its physical owner remains charged until disposal.
+            let expired_key = {
+                let check = &mut self.checks[index];
+                if !check.cancelled && now_ms >= check.deadline {
+                    check.cancelled = true;
+                    check.job.cancel();
+                    Some(check.key.clone())
+                } else {
+                    None
+                }
+            };
+            if let Some(key) = expired_key {
+                if let Some(state) = self.requests.get_mut(&key) {
+                    if !state.terminal {
+                        state.terminal = true;
+                        let message = envelope_for(
+                            state,
+                            MessageKind::IdentityCheckFailed,
+                            Some(Failure {
+                                code: ErrorCode::Timeout,
+                                effect: Effect::None,
+                                facts: None,
+                            }),
+                            None,
+                        );
+                        self.push_outbound(key.0, message);
+                    }
+                }
+            }
             let check = &mut self.checks[index];
             let expired = now_ms >= check.deadline;
             if expired {
@@ -468,6 +516,7 @@ impl PlacementEndpoint {
                     Poll::Ready(Ok(())) => Some(Ok(())),
                     Poll::Ready(Err(error)) => Some(Err(match error.kind() {
                         io::ErrorKind::InvalidInput => ErrorCode::InvalidRequest,
+                        io::ErrorKind::TimedOut => ErrorCode::Timeout,
                         io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied => {
                             ErrorCode::Unavailable
                         }
@@ -933,8 +982,11 @@ fn request_state(envelope: &Envelope, operation_id: String) -> Request {
     }
 }
 fn deadline_from_open(deadlines: &gwz_transport::protocol::Deadlines) -> Option<u64> {
-    (deadlines.connect_ms != 0)
-        .then(|| (deadlines.allocation_ms + deadlines.connect_ms + deadlines.interaction_ms) as u64)
+    (deadlines.connect_ms != 0).then(|| {
+        (deadlines.allocation_ms as u64)
+            .saturating_add(deadlines.connect_ms as u64)
+            .saturating_add(deadlines.interaction_ms as u64)
+    })
 }
 fn envelope_for(
     state: &Request,
@@ -979,5 +1031,12 @@ fn failure_for(error: io::Error) -> Failure {
         code,
         effect: Effect::None,
         facts: None,
+    }
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        #[path = "../../../tests/transport_ssh/support/placement_checks.rs"]
+        mod check_tests;
     }
 }

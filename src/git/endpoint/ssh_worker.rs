@@ -624,6 +624,15 @@ impl Endpoint {
         {
             return Err(io::ErrorKind::InvalidInput.into());
         }
+        if d.connect_ms != 0 {
+            let total = (d.allocation_ms as u64)
+                .checked_add(d.connect_ms as u64)
+                .and_then(|value| value.checked_add(d.interaction_ms as u64))
+                .ok_or(io::ErrorKind::InvalidInput)?;
+            Instant::now()
+                .checked_add(Duration::from_millis(total))
+                .ok_or(io::ErrorKind::InvalidInput)?;
+        }
         Ok(())
     }
     pub(crate) fn start_identity_file_check(
@@ -633,8 +642,14 @@ impl Endpoint {
     ) -> io::Result<Job<()>> {
         Job::start(deadline, self.cleanup, move |control| {
             control.check()?;
-            let file =
-                std::fs::File::open(selected).map_err(|error| io::Error::from(error.kind()))?;
+            use std::os::unix::fs::OpenOptionsExt;
+            // O_NONBLOCK prevents special files (including a replaced FIFO) from
+            // blocking before fstat establishes the regular-file requirement.
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(selected)
+                .map_err(|error| io::Error::from(error.kind()))?;
             control.check()?;
             let metadata = file
                 .metadata()
@@ -691,12 +706,22 @@ impl Endpoint {
             self.validate_deadlines(&context.deadlines)?;
             let d = &context.deadlines;
             (d.connect_ms != 0).then(|| {
-                Duration::from_millis((d.allocation_ms + d.connect_ms + d.interaction_ms) as u64)
+                Duration::from_millis(
+                    (d.allocation_ms as u64)
+                        .saturating_add(d.connect_ms as u64)
+                        .saturating_add(d.interaction_ms as u64),
+                )
             })
         } else {
             self.shared.timeout
         };
-        let absolute = timeout.map(|d| Instant::now() + d);
+        let absolute = timeout
+            .map(|duration| {
+                Instant::now()
+                    .checked_add(duration)
+                    .ok_or(io::ErrorKind::InvalidInput)
+            })
+            .transpose()?;
         let request = OpenRequest {
             key,
             identity,

@@ -50,3 +50,28 @@ Raw failures, final commands and source/input hashes are in the
 (access required). Tests authored before implementation did not all capture an
 initial causal red; this is a TDD process deviation. Captured intermediate failures
 remain archived. No review verdict or production activation is claimed yet.
+
+
+## Correction 1 — pending retained re-review
+
+Initial Code/State reviews found four P2 findings across three roots: both axes
+found missing effective-identity preflight in ordinary fetch; Code additionally
+found identity-check timeout waiting for physical disposal; State found deadline
+aggregation before endpoint policy checks. Surface reported GO without findings.
+[The consolidated correction](../../dev-docs/GwzRemoteTransportPlacementB-RemPlan.md)
+addresses all three without changing the public API or shared protocol.
+
+Causal reds were captured for the ordinary two-member fetch, a FIFO without a
+writer, an injected physically blocked check, and the supervisor overflow with
+maximum admitted deadline values. Final gates: host25, SSH137/one ignored,
+existing fetch9 and N3 backend7 pass; production library check and scoped formatting
+pass. The maximum-deadline regression traverses a bound session, wakes its blocking
+caller and proves subsequent request progress; the direct endpoint companion
+asserts no queued/native work. Check timeout produces one terminal while the job
+stays charged until physical disposal. Fetch preserves both tracking refs and
+returns no attempt observations when its last configured identity is unavailable.
+
+This adds ordinary-handler coverage missing in the initial test, superseding the
+initial preflight coverage limitation above. Candidate/platform/release boundaries
+remain unchanged. Private raw evidence: `2026-09-22-placement-b-rem1` in the SSH
+integration campaign. Acceptance still requires the retained reviewers' verdicts.

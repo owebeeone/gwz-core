@@ -392,3 +392,95 @@ fn cancellation_wakes_open_and_late_terminals_cannot_close_sibling_binding() {
         .expect("sibling worker")
         .expect("sibling stream");
 }
+
+#[test]
+fn oversized_open_deadlines_fail_through_bound_session_without_stopping_progress() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir(home.path().join(".ssh")).unwrap();
+    std::fs::write(home.path().join(".ssh/known_hosts"), b"").unwrap();
+    let (driver, host) = session::Session::driver(3000).unwrap();
+    let (endpoint, client) =
+        session::Session::endpoint(SshEndpointConfig::fixture(home.path().into(), None)).unwrap();
+    driver
+        .register("oversize", Some("operation".into()))
+        .unwrap();
+    endpoint.register("oversize", None).unwrap();
+    driver.begin("oversize").unwrap();
+    wait_future(client.deliver(wait_future(host.next_message()).unwrap().unwrap())).unwrap();
+    wait_future(host.deliver(wait_future(client.next_message()).unwrap().unwrap())).unwrap();
+    let worker = driver.clone();
+    let (tx, rx) = mpsc::channel();
+    let open = thread::spawn(move || {
+        tx.send(worker.open(
+            "oversize",
+            "operation",
+            "ssh://git@example.invalid/repo",
+            GitService::UploadPack,
+            Identity::default(),
+            Arc::new(|_, _| {}),
+            Arc::new(|_| {}),
+        ))
+        .unwrap()
+    });
+    let mut attachment = wait_future(host.next_message()).unwrap().unwrap();
+    let deadlines = &mut attachment.1.open.as_mut().unwrap().deadlines;
+    deadlines.allocation_ms = i64::MAX;
+    deadlines.interaction_ms = i64::MAX;
+    deadlines.connect_ms = 1;
+    gwz_transport::codec::admit(&attachment.1).unwrap();
+    wait_future(client.deliver(attachment)).unwrap();
+    let response = {
+        let mut next = pin!(client.next_message());
+        let mut cx = Context::from_waker(Waker::noop());
+        let until = Instant::now() + Duration::from_millis(500);
+        loop {
+            if let Poll::Ready(result) = next.as_mut().poll(&mut cx) {
+                break result.ok().flatten();
+            }
+            if Instant::now() >= until {
+                break None;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+    };
+    if let Some(response) = &response {
+        wait_future(host.deliver(response.clone())).unwrap();
+    }
+    // Always wake/join the caller in a red run, even if the endpoint supervisor died.
+    if response.is_none() {
+        host.disconnect();
+    }
+    let result = rx
+        .recv_timeout(WAIT)
+        .expect("blocking open waiter was stranded");
+    open.join().unwrap();
+    assert_eq!(
+        response
+            .expect("endpoint supervisor lost progress")
+            .1
+            .open_failed
+            .unwrap()
+            .code,
+        gwz_transport::protocol::ErrorCode::InvalidRequest
+    );
+    assert!(result.is_err());
+    // Another request is serviced on the same binding after policy rejection.
+    driver.register("after", Some("operation".into())).unwrap();
+    endpoint.register("after", None).unwrap();
+    let worker = driver.clone();
+    let check = thread::spawn(move || {
+        worker.check(
+            "after",
+            Identity {
+                mode: IdentityMode::ExplicitKey,
+                key_path: Some("/missing-after-policy-rejection".into()),
+                path_base: None,
+            },
+        )
+    });
+    wait_future(client.deliver(wait_future(host.next_message()).unwrap().unwrap())).unwrap();
+    wait_future(host.deliver(wait_future(client.next_message()).unwrap().unwrap())).unwrap();
+    assert!(check.join().unwrap().is_err());
+    host.disconnect();
+    client.disconnect();
+}
