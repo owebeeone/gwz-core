@@ -8,6 +8,7 @@ rust-version = "1.95"
 [workspace]
 
 [dependencies]
+base64 = "=0.22.1"
 cfg-if = "1"
 libc = "0.2"
 socket2 = "=0.6.4"
