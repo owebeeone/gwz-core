@@ -1,7 +1,7 @@
 # SSH N2a — selected-key snapshots and native memory authentication
 
-Status: implemented; aggregate retained Code/State review pending. This checkpoint
-accepts no production activation. Controlling scope is
+Status: **accepted at the final tuple below after retained Code/State GO;
+this accepts isolated N2a only. Production activation remains inactive.** Controlling scope is
 [SelectedIdentityDesign](GwzRemoteTransportSshSelectedIdentityDesign.md), N2a.
 
 Three private files provide bounded container preflight, endpoint-local snapshot
@@ -96,3 +96,32 @@ predicate invocations. All six container tests pass. Production is unchanged;
 the prior full-suite pass remains its baseline. [Corrected evidence](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-21-selected-key-n2a-rem2/README.md)
 is private. Final retained closure pending; this is the second merged remediation,
 confined to evidence, with no new architectural cause.
+
+## Acceptance
+
+Accepted at root `06c74a31fc61f5a70bb02b01786f099c6ba198f9`, core
+`3fa6a23a2a05732ed9368e77048ba0caaf7e508d`, evidence
+`8af0f7ce002148ed31d16c52e830308faaf9e5de`, transport
+`28f5afb3938a2aa8af0e1e8d5b07779add6ab776`, git2-rs
+`ce78628308e11b4e8901d5061602619109bce21a`, libgit2
+`b172e3d187a4b6866fd9f696f40a1b8e7f56d348`, after retained
+[Code GO](../../dev-docs/GwzRemoteTransportSshN2a-ReviewCode-2.md) and
+[State GO](../../dev-docs/GwzRemoteTransportSshN2a-ReviewState-2.md).
+No open findings. Reports are filed verbatim. This acceptance filing changes no
+executable statements.
+
+One aggregate dual review and two merged corrections: production/evidence fixes,
+then an evidence-only test correction. Initial Code found two P2s and State one
+P3; State found the test-causality P3 during re-review, which Code independently
+missed. All are closed; no dual-axis blind convergence or new architectural cause
+in the second correction. Owner corrected armor matching and failure drop order
+before review. No known post-acceptance escaped defect. Full isolated suite passed
+for unchanged final production; all six final container tests passed, with both
+reviewers independently rerunning the corrected causal regression.
+
+Next: N2b supervised selected admission before pool lookup, strong snapshot pins
+through native resource transitions and combined retained cleanup, including the
+capacity-one first-fan-out reuse gate. N3 backend/module/dependency attachment
+and the operator-deferred platform/selected-source batch remain later requirements
+before capability activation. No further design document is required for N2b;
+its existing accepted scope still controls the next implementation/review gate.
