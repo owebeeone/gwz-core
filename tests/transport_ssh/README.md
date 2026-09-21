@@ -108,3 +108,14 @@ fragmentation, cancellation, helper cleanup and capacity; they do not authentica
 SSH or activate the backend. Replay printed fragmentation seeds with
 `GWZ_AGENT_SEED=<seed>`. See `dev-docs/GwzRemoteTransportSshAgentA1.md` for exact
 local evidence and remaining native-signing/platform gates.
+
+## Local endpoint assembly N3a
+
+`local_endpoint` composes supervised network/trust and both authentication modes
+through `ssh_local` and per-operation `Route::local`. It drives native Git
+clone/push/fetch/advertisement, verifies one connection is reused across remote
+repositories with separate observer sinks, and rejects cross-authority reuse,
+deleted selected files and untrusted hosts. It supplies fixture-owned paths and
+does not consult the user's agent or trust store. Changing operation context
+requires a fresh native Remote because disconnect retains the old transport.
+See `dev-docs/GwzRemoteTransportSshN3a.md`; backend attachment remains incomplete.

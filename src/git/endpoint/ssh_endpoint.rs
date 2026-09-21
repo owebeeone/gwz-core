@@ -8,7 +8,7 @@ use gwz_transport::{
     pool::{Identity, Key},
     protocol::Opened,
 };
-use std::{io, sync::Arc};
+use std::{io, path::PathBuf, sync::Arc};
 
 pub(crate) trait IdentityResolver: Send + Sync + 'static {
     /// Return an eligible identity only after validating its current authority.
@@ -18,10 +18,28 @@ pub(crate) trait IdentityResolver: Send + Sync + 'static {
 }
 pub(crate) struct Route {
     endpoint: Endpoint,
-    identities: Arc<dyn IdentityResolver>,
+    authority: Authority,
     observe: Arc<dyn Fn(&Opened) + Send + Sync>,
 }
+enum Authority {
+    Resolved(Arc<dyn IdentityResolver>),
+    Ambient,
+    Selected(PathBuf),
+}
 impl Route {
+    /// Selection is immutable per operation. File admission belongs to the
+    /// supervised worker and runs before every checkout, including reuse.
+    pub(crate) fn local(
+        endpoint: Endpoint,
+        selected: Option<PathBuf>,
+        observe: Arc<dyn Fn(&Opened) + Send + Sync>,
+    ) -> Self {
+        Self {
+            endpoint,
+            authority: selected.map_or(Authority::Ambient, Authority::Selected),
+            observe,
+        }
+    }
     pub(crate) fn new(endpoint: Endpoint, identities: Arc<dyn IdentityResolver>) -> Self {
         Self::observed(endpoint, identities, Arc::new(|_| {}))
     }
@@ -32,7 +50,7 @@ impl Route {
     ) -> Self {
         Self {
             endpoint,
-            identities,
+            authority: Authority::Resolved(identities),
             observe,
         }
     }
@@ -45,10 +63,26 @@ impl OpenStream for Route {
                 "SSH endpoint requires an SSH destination",
             )
         })?;
-        let identity = self.identities.resolve(&destination.key)?;
-        let (stream, facts) =
-            self.endpoint
-                .open_observed(destination.key, identity, service, &destination.path)?;
+        let (stream, facts) = match &self.authority {
+            Authority::Selected(path) => self.endpoint.open_selected(
+                destination.key,
+                path.clone(),
+                service,
+                &destination.path,
+            )?,
+            authority => {
+                let identity = match authority {
+                    Authority::Resolved(resolver) => resolver.resolve(&destination.key)?,
+                    _ => Identity::Ambient,
+                };
+                self.endpoint.open_observed(
+                    destination.key,
+                    identity,
+                    service,
+                    &destination.path,
+                )?
+            }
+        };
         (self.observe)(&facts);
         Ok(stream)
     }

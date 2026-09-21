@@ -32,9 +32,9 @@ transport pool changes are covered by direct absolute-deadline tests.
 
 Remediation round 1 closed the review findings for absolute deadline handling
 through interaction and ready states, and for causal admission ownership and
-retained-cleanup evidence. See [Code review](GwzRemoteTransportSshN2b-ReviewCode-1.md),
-[State review](GwzRemoteTransportSshN2b-ReviewState-1.md), and the
-[remediation plan](GwzRemoteTransportSshN2b-RemPlan-1.md).
+retained-cleanup evidence. See [Code review](../../dev-docs/GwzRemoteTransportSshN2b-ReviewCode-1.md),
+[State review](../../dev-docs/GwzRemoteTransportSshN2b-ReviewState-1.md), and the
+[remediation plan](../../dev-docs/GwzRemoteTransportSshN2b-RemPlan-1.md).
 
 ## Validation
 

@@ -1,7 +1,7 @@
 # GWZ Remote Transport Implementation Plan
 
 Status: **plan draft accepted after G46 re-review GO, 2026-09-19.
-Implementation authorized; Phase 1/2 interfaces frozen, Phase 3 next.**
+Implementation authorized; Phase 1/2 interfaces frozen, Phase 3 in progress.**
 The operator requested this plan before any repository creation or implementation.
 The accepted [design](GwzRemoteTransportDesign.md) and
 [requirements](GwzRemoteTransportRequirements.md) control behavior. Their
@@ -96,7 +96,11 @@ The [interface gate](GwzRemoteTransportPool-InterfaceGate.md) and workspace
 `dev-docs/GwzRemoteTransportInterfaces-Checkpoint.md` record the exact scope,
 89 owner tests, 18 isolated archive consumer tests, regeneration checks and
 review closures. One merged correction closed one P2 and three P3 findings.
-Phases 3–6 are **not started**. The owner CI workflow is prepared locally;
+Phase 3 is **in progress**: the shared worker, supervised native agent/network
+setup and selected-key admission are accepted locally through N2b. N3 backend
+attachment is next; see the current authority in
+[CurrentProgramCheckpoint.md](../../dev-docs/CurrentProgramCheckpoint.md).
+Phases 4–6 are not complete. The owner CI workflow is prepared locally;
 remote execution, consumer CI activation and registry resolution remain
 outstanding qualification/publication work. Local interface acceptance does
 not claim those outcomes or a production SSH/HTTPS endpoint.
@@ -387,10 +391,11 @@ fetch does not complete the programme.
 
 ## 6. Immediate next action
 
-Proceed to Phase 3 by qualifying the safe git2 per-remote callback and owned
-context boundary before writing the endpoint SSH adapter. Establish coexistence
-with ordinary transports and callback lifetime/error isolation under controlled
-fixtures. The accepted stream/pool API supplies discrete message semantics;
-physical SSH and host dispatch remain outside gwz-transport. Keep the existing
-CLI–core communication interface unchanged. Remote provisioning and publication
-are separate actions, not implied by this implementation gate.
+Continue Phase 3 N3 backend attachment from the accepted N2b worker/admission
+checkpoint. [N3a](GwzRemoteTransportSshN3a.md) composes local endpoint setup and
+per-operation routes before operation/failure observations and the complete
+network-driver map are attached. The safe git2 per-remote callback and the SSH
+worker have already passed their local gates. Production dependency selection,
+platform checks and capability activation remain in the operator-deferred batch.
+Physical SSH and host dispatch remain outside gwz-transport; the existing
+CLI–core communication interface remains unchanged. Publication is separate.
