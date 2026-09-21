@@ -70,8 +70,17 @@ cfg_if::cfg_if! {
                     {
                         std::thread::sleep(control.quantum()?);
                     }
-                    Err(_) => {
+                    Err(error)
+                        if error.code()
+                            == ssh2::ErrorCode::Session(
+                                libssh2_sys::LIBSSH2_ERROR_AUTHENTICATION_FAILED,
+                            ) =>
+                    {
                         return Err(io::ErrorKind::PermissionDenied.into());
+                    }
+                    // PUBLICKEY_UNVERIFIED also hides response/socket failures.
+                    Err(_) => {
+                        return Err(io::ErrorKind::Other.into());
                     }
                 }
             }

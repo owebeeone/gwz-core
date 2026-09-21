@@ -23,19 +23,43 @@ fn whitespace(byte: u8) -> bool {
     byte.is_ascii_whitespace()
 }
 
-fn line<'a>(bytes: &'a [u8], start: usize) -> Option<(&'a [u8], usize)> {
-    if start > bytes.len() {
-        return None;
+fn checked_scan<F>(
+    bytes: &[u8],
+    control: &agent_job::Control,
+    mut stop: F,
+) -> io::Result<Option<usize>>
+where
+    F: FnMut(u8) -> bool,
+{
+    for (base, chunk) in bytes.chunks(128).enumerate() {
+        control.check()?;
+        for (offset, byte) in chunk.iter().copied().enumerate() {
+            if stop(byte) {
+                return Ok(Some(base * 128 + offset));
+            }
+        }
     }
-    let end = bytes[start..]
-        .iter()
-        .position(|byte| *byte == b'\n')
+    Ok(None)
+}
+
+fn line<'a>(
+    bytes: &'a [u8],
+    start: usize,
+    control: &agent_job::Control,
+) -> io::Result<Option<(&'a [u8], usize)>> {
+    if start > bytes.len() {
+        return Ok(None);
+    }
+    let end = checked_scan(&bytes[start..], control, |byte| byte == b'\n')?
         .map_or(bytes.len(), |offset| start + offset);
     let mut value = &bytes[start..end];
     if value.last() == Some(&b'\r') {
         value = &value[..value.len() - 1];
     }
-    Some((value, (end < bytes.len()).then_some(end + 1).unwrap_or(end)))
+    Ok(Some((
+        value,
+        (end < bytes.len()).then_some(end + 1).unwrap_or(end),
+    )))
 }
 
 fn begin_label(line: &[u8]) -> Option<Label> {
@@ -201,16 +225,16 @@ fn openssh(prefix: &[u8; PREFIX], total: usize) -> io::Result<()> {
 }
 
 pub(crate) fn check(text: &str, control: &agent_job::Control) -> io::Result<()> {
-    if text.is_empty() || text.len() > MAX_TEXT || text.as_bytes().contains(&0) {
+    if text.is_empty() || text.len() > MAX_TEXT {
         return Err(invalid());
     }
     control.check()?;
     let bytes = text.as_bytes();
-    let mut start = 0;
-    while start < bytes.len() && whitespace(bytes[start]) {
-        start += 1;
+    if checked_scan(bytes, control, |byte| byte == 0)?.is_some() {
+        return Err(invalid());
     }
-    let (begin, mut cursor) = line(bytes, start).ok_or_else(invalid)?;
+    let start = checked_scan(bytes, control, |byte| !whitespace(byte))?.unwrap_or(bytes.len());
+    let (begin, mut cursor) = line(bytes, start, control)?.ok_or_else(invalid)?;
     let label = begin_label(begin).ok_or_else(invalid)?;
     if label == Label::Encrypted {
         return Err(invalid());
@@ -219,7 +243,7 @@ pub(crate) fn check(text: &str, control: &agent_job::Control) -> io::Result<()> 
     let body_end;
     loop {
         control.check()?;
-        let (current, next) = line(bytes, cursor).ok_or_else(invalid)?;
+        let (current, next) = line(bytes, cursor, control)?.ok_or_else(invalid)?;
         if end_label(current, label) {
             body_end = cursor;
             cursor = next;
@@ -233,11 +257,8 @@ pub(crate) fn check(text: &str, control: &agent_job::Control) -> io::Result<()> 
         }
         cursor = next;
     }
-    for chunk in bytes[cursor..].chunks(128) {
-        control.check()?;
-        if chunk.iter().any(|byte| !whitespace(*byte)) {
-            return Err(invalid());
-        }
+    if checked_scan(&bytes[cursor..], control, |byte| !whitespace(byte))?.is_some() {
+        return Err(invalid());
     }
     let mut prefix = [0; PREFIX];
     let total = decode(&bytes[body_start..body_end], control, &mut prefix)?;
@@ -249,5 +270,20 @@ pub(crate) fn check(text: &str, control: &agent_job::Control) -> io::Result<()> 
         Label::Private => private_key(&prefix, total),
         Label::OpenSsh => openssh(&prefix, total),
         Label::Encrypted => Err(invalid()),
+    }
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        pub(crate) fn scan_for_test<F>(
+            bytes: &[u8],
+            control: &agent_job::Control,
+            stop: F,
+        ) -> io::Result<Option<usize>>
+        where
+            F: FnMut(u8) -> bool,
+        {
+            checked_scan(bytes, control, stop)
+        }
     }
 }

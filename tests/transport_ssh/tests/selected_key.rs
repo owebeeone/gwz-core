@@ -13,7 +13,20 @@ cfg_if::cfg_if! {
         mod ssh_key_snapshot;
         #[path = "../../../src/git/endpoint/ssh_network.rs"]
         mod ssh_network;
+        #[path = "../../../src/git/endpoint/ssh_pool.rs"]
+        mod ssh_pool;
+        #[path = "../../../src/git/endpoint/ssh_pump.rs"]
+        mod ssh_pump;
+        #[path = "../../../src/git/endpoint/ssh_setup.rs"]
+        mod ssh_setup;
+        #[path = "../../../src/git/endpoint/ssh_shutdown.rs"]
+        mod ssh_shutdown;
+        #[path = "../../../src/git/endpoint/ssh_worker.rs"]
+        mod ssh_worker;
+        #[path = "../../../src/git/endpoint/stream_io.rs"]
+        mod stream_io;
         use agent_job::Job;
+        use common::ssh_channel;
         use gwz_transport::pool::Key;
         use ssh_key_snapshot::Registry;
         use std::{
@@ -413,31 +426,249 @@ cfg_if::cfg_if! {
             }
         }
         #[test]
-        fn encrypted_workfactor_payload_never_reaches_native_stage() {
-            use base64::{Engine as _, engine::general_purpose::STANDARD};
-            let mut bytes = b"openssh-key-v1\0".to_vec();
-            for value in [b"aes256-ctr".as_slice(), b"bcrypt", &[255; 64]] {
-                bytes.extend_from_slice(&(value.len() as u32).to_be_bytes());
-                bytes.extend_from_slice(value);
+        fn native_disconnect_is_io_at_the_setup_boundary_without_retry() {
+            use ssh_pool::{Connector, Resource};
+            use std::{
+                net::{Shutdown, TcpStream},
+                sync::atomic::{AtomicUsize, Ordering},
+            };
+            let f = common::SshdFixture::new();
+            let key = Key::ssh(&f.user, "127.0.0.1", f.port);
+            let r = Registry::new();
+            let entry = load(&r, key.clone(), &f.temp.path().join("client_ed25519")).unwrap();
+            let identity = entry.identity();
+            let socket = TcpStream::connect(("127.0.0.1", f.port)).unwrap();
+            let breaker = socket.try_clone().unwrap();
+            let mut conn = common::SshConnection::new(socket).unwrap();
+            conn.session().set_timeout(3000);
+            conn.session().handshake().unwrap();
+            let host = conn.session().host_key().unwrap().0.to_vec();
+            let mut known = conn.session().known_hosts().unwrap();
+            known
+                .read_file(&f.known_hosts, ssh2::KnownHostFileKind::OpenSSH)
+                .unwrap();
+            assert!(matches!(
+                known.check_port("127.0.0.1", f.port, &host),
+                ssh2::CheckResult::Match
+            ));
+            drop(known);
+            let mut paused = common::pause_process_tree(f.child.id());
+            let calls = Arc::new(AtomicUsize::new(0));
+            let count = calls.clone();
+            let mut owner = Some((conn, host, entry.clone()));
+            let mut connector = ssh_setup::SetupConnector::new(
+                Instant::now(),
+                Duration::from_secs(1),
+                move |_: &Key, _: &gwz_transport::pool::Identity| {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    let (conn, host, pin) = owner.take().unwrap();
+                    Ok(Box::new(move |c| {
+                        ssh_key_auth::authenticate(conn, &host, pin, c)
+                            .map(|_| -> ssh_setup::Authenticated { panic!("unexpected auth success") })
+                    }) as ssh_setup::Setup)
+                },
+            );
+            let mut resource = connector.start(&key, &identity, Some(3000)).unwrap();
+            let mut cx = Context::from_waker(Waker::noop());
+            assert!(resource.poll_connected(&mut cx).is_pending());
+            std::thread::sleep(Duration::from_millis(60));
+            breaker.shutdown(Shutdown::Both).unwrap();
+            let until = Instant::now() + Duration::from_secs(3);
+            let failure = loop {
+                if let Poll::Ready(result) = resource.poll_connected(&mut cx) {
+                    break result.unwrap_err();
+                }
+                assert!(Instant::now() < until);
+                std::thread::sleep(Duration::from_millis(1));
+            };
+            assert_eq!(failure.code, gwz_transport::protocol::ErrorCode::Io);
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+            assert!(!entry.proven());
+            drop(resource);
+            drop(entry);
+            assert_eq!(r.usage(), (0, 0));
+            paused.resume();
+        }
+        // Exact wrapper around the auth entry, with a veto so a classifier
+        // regression fails safely instead of executing a hostile KDF.
+        fn native_dispatch(
+            conn: common::SshConnection,
+            host: &[u8],
+            entry: Arc<ssh_key_snapshot::Entry>,
+            c: Arc<agent_job::Control>,
+            calls: &std::sync::atomic::AtomicUsize,
+            veto: bool,
+        ) -> io::Result<ssh_key_auth::Verified> {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if veto {
+                return Err(io::ErrorKind::Other.into());
             }
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("key");
+            ssh_key_auth::authenticate(conn, host, entry, c)
+        }
+        #[test]
+        fn valid_extreme_encrypted_containers_never_dispatch_native_auth() {
+            use base64::{Engine as _, engine::general_purpose::STANDARD};
+            use std::{
+                process::Command,
+                sync::atomic::{AtomicUsize, Ordering},
+            };
+            let f = common::SshdFixture::new();
+            let dir = f.temp.path();
+            let good = dir.join("client_ed25519");
+            let openssh = dir.join("encrypted-openssh");
+            fs::copy(&good, &openssh).unwrap();
+            common::run(
+                Command::new("ssh-keygen")
+                    .args(["-q", "-p", "-a", "1", "-P", "", "-N", "fixture-only", "-f"])
+                    .arg(&openssh),
+            );
+            let text = fs::read_to_string(&openssh).unwrap();
+            let mut body = STANDARD
+                .decode(
+                    text.lines()
+                        .filter(|line| !line.starts_with("-----"))
+                        .collect::<String>(),
+                )
+                .unwrap();
+            fn field<'a>(b: &'a [u8], at: &mut usize) -> &'a [u8] {
+                let n = u32::from_be_bytes(b[*at..*at + 4].try_into().unwrap()) as usize;
+                *at += 4;
+                let out = &b[*at..*at + n];
+                *at += n;
+                out
+            }
+            let mut at = 15;
+            assert_eq!(field(&body, &mut at), b"aes256-ctr");
+            assert_eq!(field(&body, &mut at), b"bcrypt");
+            let options = field(&body, &mut at);
+            let mut sub = 0;
+            assert!(!field(options, &mut sub).is_empty());
+            assert_eq!(options.len(), sub + 4);
+            assert_eq!(u32::from_be_bytes(options[sub..].try_into().unwrap()), 1);
+            body[at - 4..at].copy_from_slice(&u32::MAX.to_be_bytes());
             fs::write(
-                &path,
+                &openssh,
                 format!(
                     "-----BEGIN OPENSSH PRIVATE KEY-----\n{}\n-----END OPENSSH PRIVATE KEY-----\n",
-                    STANDARD.encode(bytes)
+                    STANDARD.encode(body)
+                ),
+            )
+            .unwrap();
+            let pem = dir.join("encrypted-pem");
+            common::run(
+                Command::new("ssh-keygen")
+                    .args([
+                        "-q",
+                        "-t",
+                        "rsa",
+                        "-b",
+                        "2048",
+                        "-m",
+                        "PEM",
+                        "-N",
+                        "fixture-only",
+                        "-f",
+                    ])
+                    .arg(&pem),
+            );
+            assert!(fs::read_to_string(&pem).unwrap().contains("DEK-Info:"));
+            let pkcs8 = dir.join("encrypted-pkcs8");
+            common::run(
+                Command::new("openssl")
+                    .args(["pkcs8", "-topk8", "-in"])
+                    .arg(&pem)
+                    .args([
+                        "-passin",
+                        "pass:fixture-only",
+                        "-passout",
+                        "pass:fixture-only",
+                        "-iter",
+                        "65536",
+                        "-out",
+                    ])
+                    .arg(&pkcs8),
+            );
+            let text = fs::read_to_string(&pkcs8).unwrap();
+            assert!(text.starts_with("-----BEGIN ENCRYPTED PRIVATE KEY-----"));
+            let mut body = STANDARD
+                .decode(
+                    text.lines()
+                        .filter(|line| !line.starts_with("-----"))
+                        .collect::<String>(),
+                )
+                .unwrap();
+            // Navigate DER parameters, never search the random ciphertext.
+            fn tlv(b: &[u8], at: &mut usize, tag: u8) -> std::ops::Range<usize> {
+                assert_eq!(b[*at], tag);
+                let length = b[*at + 1];
+                *at += 2;
+                let size = if length & 128 == 0 {
+                    length as usize
+                } else {
+                    let count = (length & 127) as usize;
+                    let mut n = 0;
+                    for byte in &b[*at..*at + count] {
+                        n = (n << 8) | *byte as usize;
+                    }
+                    *at += count;
+                    n
+                };
+                let value = *at..*at + size;
+                assert!(value.end <= b.len());
+                *at = value.end;
+                value
+            }
+            fn sequence(b: &[u8], at: &mut usize) {
+                *at = tlv(b, at, 0x30).start;
+            }
+            let mut at = 0;
+            sequence(&body, &mut at); // EncryptedPrivateKeyInfo
+            sequence(&body, &mut at); // AlgorithmIdentifier
+            let pbes2 = tlv(&body, &mut at, 6);
+            assert_eq!(&body[pbes2], &[42, 134, 72, 134, 247, 13, 1, 5, 13]);
+            sequence(&body, &mut at); // PBES2 parameters
+            sequence(&body, &mut at); // KDF AlgorithmIdentifier
+            let pbkdf2 = tlv(&body, &mut at, 6);
+            assert_eq!(&body[pbkdf2], &[42, 134, 72, 134, 247, 13, 1, 5, 12]);
+            sequence(&body, &mut at); // PBKDF2 parameters
+            let _salt = tlv(&body, &mut at, 4);
+            let iterations = tlv(&body, &mut at, 2);
+            assert_eq!(&body[iterations.clone()], &[1, 0, 0]);
+            body[iterations].copy_from_slice(&[127, 255, 255]); // 8,388,607; DER lengths unchanged.
+            fs::write(
+                &pkcs8,
+                format!(
+                    "-----BEGIN ENCRYPTED PRIVATE KEY-----\n{}\n-----END ENCRYPTED PRIVATE KEY-----\n",
+                    STANDARD.encode(body)
                 ),
             )
             .unwrap();
             let r = Registry::new();
-            let mut native_calls = 0;
-            let result = load(&r, Key::ssh("u", "h", 22), &path).map(|_| {
-                native_calls += 1;
-            });
-            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidInput);
-            assert_eq!(native_calls, 0);
-            assert_eq!(r.usage(), (0, 0));
+            for (path, veto) in [(openssh, true), (pem, true), (pkcs8, true), (good, false)] {
+                let calls = Arc::new(AtomicUsize::new(0));
+                let count = calls.clone();
+                let key = Key::ssh(&f.user, "127.0.0.1", f.port);
+                let known = f.known_hosts.clone();
+                let result = load(&r, key.clone(), &path).and_then(|entry| {
+                    finish(&mut Job::start(
+                        Some(Instant::now() + Duration::from_secs(3)),
+                        Duration::from_secs(1),
+                        move |c| {
+                            let (conn, host) = ssh_network::establish(&key, &known, &c)?;
+                            native_dispatch(conn, &host, entry, c, &count, veto)
+                        },
+                    )?)
+                });
+                if veto {
+                    assert_eq!(result.err().unwrap().kind(), io::ErrorKind::InvalidInput);
+                    assert_eq!(calls.load(Ordering::SeqCst), 0);
+                } else {
+                    let verified = result.unwrap();
+                    assert_eq!(calls.load(Ordering::SeqCst), 1);
+                    drop(verified);
+                }
+                assert_eq!(r.usage(), (0, 0));
+            }
         }
     }
 }

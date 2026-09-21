@@ -52,7 +52,7 @@ The full locked/offline isolated SSH suite passes with Rust 1.95 on this Mac.
 Raw reds, intermediate results and final full-suite output plus source fingerprints
 are in [private evidence](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-21-selected-key-n2a/README.md)
 (access required). Native test fixtures are disposable localhost SSH servers.
-553 production lines across three files; 603 test lines across two files, within
+598 production lines across three files; 868 test lines across two files, within
 600/900 scope bounds. Counts describe scope, not a test-count release gate.
 
 Next: retained aggregate Code/State review of a settled tuple, at most two merged
@@ -60,3 +60,26 @@ remediation rounds. N2b adds supervised admission before worker pool lookup,
 resource pins and combined retained cleanup; its capacity-one initial fan-out
 reuse gate remains outstanding. N3 attaches backend entry points. The operator's
 platform/selected-source qualification batch remains deferred until those gates.
+
+## Merged remediation 1
+
+Code reported two P2s; State reported GO with a bounded P3. No dual-axis blind
+convergence. [Remediation plan](../../dev-docs/GwzRemoteTransportSshN2a-RemPlan-1.md)
+records every disposition. Ambiguous native failures now become sanitized Other,
+which the actual setup boundary reports as Io; only unambiguous native auth
+failure becomes Authentication. The native disconnect regression reproduced the
+old incorrect classification and now passes with a single setup attempt.
+
+Valid encrypted PKCS#8/PBKDF2 (8,388,607 iterations), OpenSSH/bcrypt (u32::MAX
+rounds) and traditional encrypted PEM now prove InvalidInput, zero native dispatch
+and full quota recovery. Fixtures are generated at cheap parameters, then their
+framing parameters are changed; extreme KDFs are never executed. A guarded exact
+wrapper around native dispatch also authenticates an unencrypted positive control.
+This replaces the initial malformed-surrogate evidence for the mandatory gate.
+
+NUL, leading-whitespace and newline scans now use the same128-byte cancellation
+cadence as other classifier scans. A deterministic barrier test cancels after
+exactly128 predicate calls and proves no later chunk is visited. The full isolated
+suite passes after these corrections. [Remediation evidence](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-21-selected-key-n2a-rem1/README.md)
+requires private archive access; initial evidence is retained unchanged. Retained
+Code/State closure of this settled correction is pending.

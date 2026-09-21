@@ -11,7 +11,11 @@ cfg_if::cfg_if! {
         use base64::{Engine as _, engine::general_purpose::STANDARD};
         use std::{
             io,
-            sync::mpsc,
+            sync::{
+                Arc,
+                atomic::{AtomicUsize, Ordering},
+                mpsc,
+            },
             task::{Context, Poll, Waker},
             time::{Duration, Instant},
         };
@@ -155,6 +159,36 @@ cfg_if::cfg_if! {
                 finish(&mut job).unwrap_err().kind(),
                 io::ErrorKind::ConnectionAborted
             );
+        }
+
+        #[test]
+        fn checked_scan_observes_cancellation_after_first_chunk() {
+            let (first, reached) = mpsc::channel();
+            let (release, released) = mpsc::channel();
+            let observed = Arc::new(AtomicUsize::new(0));
+            let worker_observed = Arc::clone(&observed);
+            let input = vec![b'a'; 1_048_000];
+            let mut job = Job::start(None, Duration::from_secs(1), move |control| {
+                ssh_key_container::scan_for_test(&input, &control, |_| {
+                    let count = worker_observed.fetch_add(1, Ordering::AcqRel) + 1;
+                    if count == 128 {
+                        first.send(()).unwrap();
+                        released.recv().unwrap();
+                        return true;
+                    }
+                    false
+                })?;
+                control.check()
+            })
+            .unwrap();
+            reached.recv_timeout(Duration::from_secs(1)).unwrap();
+            job.cancel();
+            release.send(()).unwrap();
+            assert_eq!(
+                finish(&mut job).unwrap_err().kind(),
+                io::ErrorKind::ConnectionAborted
+            );
+            assert_eq!(observed.load(Ordering::Acquire), 128);
         }
     }
 }
