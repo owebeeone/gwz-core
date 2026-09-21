@@ -1,6 +1,6 @@
 # SSH production setup — admission and implementation sequence
 
-Date: 2026-09-21. Status: remediation 1; retained focused re-review pending.
+Date: 2026-09-21. Status: design accepted after retained Consistency/Safety GO.
 Authority: GwzRemoteTransportDesign.md §§6–7, accepted SSH worker and agent
 A1/A2/A3. This refines the later production-setup boundary in
 GwzRemoteTransportSshAgentDesign.md §2. It does not activate production routing,
@@ -10,7 +10,7 @@ change CLI/core messages, or waive the operator-deferred platform/source batch.
 
 All connection creation remains under A3's pool entry and A1's setup Job.
 Connector::start only captures owned bounded inputs and starts the Job. The
-helper performs name resolution, endpoint-local known-host loading, TCP connect,
+helper performs endpoint-local known-host loading/admission, name resolution, TCP connect,
 SSH handshake, trust validation, and authentication. Successful handoff still
 requires join, matching authority, and native authentication; no Git command is
 opened during setup. One original absolute deadline and cancellation Control
@@ -149,5 +149,18 @@ changes hidden by a preservation claim. G1 now explicitly authorizes both bounde
 refusal and complete-line admission, with exact limits, encoding, error class,
 placement coverage and native differential gates. No change to cryptographic
 trust or credential fallback. Consistency P2-2 separates whole-connection replay
-from accepted A2 ordered key progression. Retained focused re-verdict pending;
-no executable implementation has entered the working tree.
+from accepted A2 ordered key progression. Retained Consistency/Safety GO close all P2 findings. Consistency P3-1 is
+corrected here by explicitly ordering trust admission before name resolution.
+
+## Design acceptance
+
+Accepted at root `eadf8dc25f93b3f8d9d9c4f3660732367861559f`, core
+`9acf508aefe4ef974e52f19016f33ecf4bf56b34`, transport
+`28f5afb3938a2aa8af0e1e8d5b07779add6ab776` after retained
+[Consistency GO](../../dev-docs/GwzRemoteTransportSshProductionSetup-ReviewConsistency-1.md)
+and [Safety GO](../../dev-docs/GwzRemoteTransportSshProductionSetup-ReviewSafety-1.md).
+Two Consistency P2s and one Safety P2 close in one merged remediation; the trust
+compatibility boundary was independently identified by both axes. Nonblocking
+Consistency P3-1 operation-order wording is corrected in this annotation. N1
+must assert zero resolver calls for rejected size/encoding. Design acceptance
+authorizes N1 implementation, not capability or production activation.
