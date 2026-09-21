@@ -1,7 +1,7 @@
 # Interruptible SSH agent helper
 
-Date: 2026-09-21. Status: DRAFT for dual design review; no implementation or
-production activation accepted by this document.
+Date: 2026-09-21. Status: accepted architectural design for A1; no implementation,
+physical capability freeze or production activation accepted by this document.
 
 ## 1. Decision and authority
 
@@ -13,10 +13,11 @@ replacement does not terminate the underlying work.
 
 This refines [the transport design](GwzRemoteTransportDesign.md) §§7–8 and 10,
 [requirements](GwzRemoteTransportRequirements.md) G1/G2, P6–P9, and the next-work
-section of [the accepted worker](GwzRemoteTransportSshWorker.md). It supersedes
-only the worker document's candidate of making the shared worker itself service
-agent I/O: agent exchange and signing now belong to a setup helper. The shared
-worker remains nonblocking. Existing messages, CLI/core API, per-remote binding,
+section of [the accepted worker](GwzRemoteTransportSshWorker.md). It selects the
+helper-thread realization of that document's already-required bounded setup seam.
+It preserves the prohibition on opaque blocking agent calls in the shared worker.
+Agent exchange and signing belong to the setup helper; the shared worker remains
+nonblocking. Section 6 separately identifies the private Drop/shutdown refinements. Existing messages, CLI/core API, per-remote binding,
 pool keys, eligibility rules and native Git stream semantics are unchanged.
 
 This is an architectural design review, not a Track-P physical capability
@@ -267,3 +268,18 @@ source observations support this design but do not qualify the new client or FFI
 The current task produces a reviewed design only; all new implementation gates
 above remain unexecuted. Raw future experiments follow EVIDENCE.md and stay in
 the private evidence member with external build/runtime outputs.
+
+## 10. Design acceptance record
+
+Retained [Consistency](../../dev-docs/GwzRemoteTransportSshAgentDesign-ReviewConsistency.md)
+and [Safety](../../dev-docs/GwzRemoteTransportSshAgentDesign-ReviewSafety.md)
+returned GO at root `efb0d2a698755f3c1804f67495c4c9ded48e547d`, core
+`a91846eb0328106cb76cc0aa90846590aafd72df`; remaining exact pins are in both reports.
+One dual design round, no blocking findings or behavioral remediation, no blind
+convergence or known escaped defects. Consistency P3-1 identified an inaccurate
+supersession claim; section 1 now states the exact refinement instead. This
+clerical correction changes no ownership, cancellation or activation semantics.
+No build or new experiment was run for this documentation-only review.
+
+Acceptance authorizes A1 implementation and its fake-agent tests. A2/A3 remain
+separate implementation gates. Platform/source checks remain the later batch.
