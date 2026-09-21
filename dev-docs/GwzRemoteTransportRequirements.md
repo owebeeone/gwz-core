@@ -148,8 +148,17 @@ Conventions follow [GWZRequirements.md](GWZRequirements.md).
   and the `gh`-only HTTPS authentication restriction in G4, including refusal
   of HTTPS userinfo/query/fragment credential forms. HTTP/git retain local
   native behaviour; explicit nonlocal placement for them refuses before effects.
-  These supersede the
-  original draft's blanket preservation of credential-helper behaviour.
+  SSH endpoint trust-file admission is another intentional bounded change:
+  regular UTF-8, NUL-free input is limited to 4 MiB per store and 16 KiB per
+  physical line (excluding its CR/LF terminator), parsed as complete lines.
+  This can refuse a larger previously accepted file and accept a valid long
+  line the pinned native 4,091-byte chunk reader rejected. It applies equally
+  to local-core and driver-hosted endpoints. Size/encoding admission errors
+  are InvalidRequest before credential access; native malformed content still
+  refuses. See GwzRemoteTransportSshProductionSetup.md for differential gates.
+  These supersede the original draft's blanket preservation of credential-helper
+  behaviour and exact trust-file input compatibility; host/key/port matching
+  and no-untrusted-host authentication remain unchanged.
 - **G2.** Core MUST NOT own persistent credential storage. Explicit SSH identity
   MUST fail closed without an unrelated-key or Git CLI fallback. A local
   endpoint may use credentials transiently as the current native backend does.

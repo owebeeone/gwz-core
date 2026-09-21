@@ -1,6 +1,6 @@
 # SSH production setup — admission and implementation sequence
 
-Date: 2026-09-21. Status: DRAFT for retained design review.
+Date: 2026-09-21. Status: remediation 1; retained focused re-review pending.
 Authority: GwzRemoteTransportDesign.md §§6–7, accepted SSH worker and agent
 A1/A2/A3. This refines the later production-setup boundary in
 GwzRemoteTransportSshAgentDesign.md §2. It does not activate production routing,
@@ -30,15 +30,19 @@ termination deadline for OS DNS/filesystem calls is claimed.
 
 TCP and native SSH waits use nonblocking sockets and cancellable waits of at most
 20 ms. Try resolved addresses sequentially under the same deadline; no connection
-racing, background DNS cache or authentication retries. Retain at most 32 resolved
+racing, background DNS cache or whole-connection authentication replay. Retain at most 32 resolved
 addresses. Reject an empty result; a different address is eligible only before
 SSH negotiation begins. Once handshake starts, a failure ends this setup attempt.
-This changes neither pool keys nor DNS-equivalence rules.
+This prohibition concerns moving to another resolved address or restarting a
+connection after SSH negotiation, not A2's within-session identity progression.
+A2 still enumerates once and attempts each key once in order; only explicit
+AUTHENTICATION_FAILED advances, while ambiguous/terminal native failure ends
+setup. This changes neither pool keys nor DNS-equivalence rules.
 
 ## Host trust
 
 The endpoint supplies its known_hosts path, normally the local account's
-.ssh/known_hosts. Preserve the current libgit2 trust policy: no SSH config,
+.ssh/known_hosts. Preserve current libgit2 host/key/port matching and credential-access policy: no SSH config,
 ProxyCommand, interactive trust prompt, automatic insertion or fallback to an
 untrusted host. Missing/empty/unknown/mismatching trust refuses before opening an
 agent or offering a file key. The logical hostname and effective port, not the
@@ -48,8 +52,16 @@ handles hashed names and nondefault-port entries.
 Read only a regular file, with O_NONBLOCK on admitted Unix paths so a FIFO cannot
 trap opening. Follow ordinary endpoint-local symlink semantics, then verify the
 opened descriptor is regular. Limit known-host input to 4 MiB and each line to
-16 KiB; malformed/unsupported input fails closed. These are explicit internal
-admission limits, not new command-line settings. Cancellation checks also bound
+16 KiB excluding the CR/LF terminator. Require UTF-8, NUL-free chunks before
+native parsing; malformed/unsupported input fails closed. Parse complete physical
+lines through the native line parser. These are intentional G1 compatibility
+exceptions for both local-core and driver-hosted endpoints: larger stores can
+now refuse; valid 4,092–16,384-byte physical lines can now succeed where the pinned
+4,091-byte chunk reader refused. This broadens accepted representation only, never
+which host key is trusted. Size/encoding admission refuses with InvalidInput
+(mapped by the setup adapter to InvalidRequest), before DNS/TCP/credential access.
+Native malformed content remains a refusal, without an alternative parser or
+credential fallback. These are internal limits, not new command-line settings. Cancellation checks also bound
 work between lines. Preserve native known-host-aware host-key preference so a
 server offering several host-key algorithms can choose a trusted one; do not
 accept a different untrusted key merely because its algorithm is preferred.
@@ -107,6 +119,14 @@ a private snapshot token must not be presented as a public-key fingerprint.
    exercise every network driver in the accepted SSH worker call-site map.
    Capability activation still requires the deferred platform/source batch.
 
+N1 differential gates characterize native acceptance of a valid 5 MiB store and
+endpoint refusal; below/at/above the 4 MiB and 16 KiB bounds; and padded comments
+and host lists below/at/above the pinned 4,091-byte chunk boundary through both
+readers. Differences permitted by G1 must be labelled as intentional. Every
+unapproved delta refuses before TCP or credentials. N1 must also prove an agent's
+first key explicitly rejected and second accepted, while handshake/terminal
+authentication failure never tries another resolved address.
+
 N1 tests must cover fresh native connection/authentication/Git exchange and reuse,
 unknown/mismatched/missing trust before authentication, nondefault port, hashed
 host entry, multiple server host-key algorithms with only one trusted, malformed/
@@ -121,3 +141,13 @@ Code/State review on its exact committed implementation/evidence tuple. P0–P2
 block; at most two merged remediation rounds per object. Public commands and wire
 shapes remain unchanged. Raw runs belong in the private ssh-integration evidence
 campaign, with failed attempts, commands and exact source fingerprints retained.
+
+## Design remediation 1
+
+Consistency P2-1 and Safety P2-1 independently found trust-input compatibility
+changes hidden by a preservation claim. G1 now explicitly authorizes both bounded
+refusal and complete-line admission, with exact limits, encoding, error class,
+placement coverage and native differential gates. No change to cryptographic
+trust or credential fallback. Consistency P2-2 separates whole-connection replay
+from accepted A2 ordered key progression. Retained focused re-verdict pending;
+no executable implementation has entered the working tree.
