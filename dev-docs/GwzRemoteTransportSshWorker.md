@@ -1,6 +1,6 @@
 # Shared SSH endpoint worker and destination routing
 
-Date: 2026-09-21. Status: implemented; aggregate review pending; production activation pending.
+Date: 2026-09-21. Status: accepted local worker checkpoint; production activation pending.
 Authority: operator instruction to proceed with endpoint wiring after the accepted
 [SshIntegration](GwzRemoteTransportSshIntegration.md) checkpoint. Platform and
 selected-source qualification remain deferred as one integrated batch.
@@ -130,7 +130,7 @@ Raw passing/failing logs and exact final source hashes are retained in
 [worker-a](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-21-worker-a/README.md)
 (private member access required). Platform/source checks remain batched later.
 
-## Remediation 1 — awaiting retained re-verdicts
+## Remediation 1 — accepted
 
 Independent review found two P2 defects: Code found narrowed SCP grammar; State
 found queued expiry misreported as shutdown. Both reproduced red, then were
@@ -147,4 +147,24 @@ the test ceiling, excludes adjacent activation work and records both disposition
 The focused gate passes 38 test executions (one queue test in two fixture crates),
 plus the parent-executed ignored child entry. Raw red/green outputs and hashes:
 [worker-rem-1](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-21-worker-rem-1/README.md)
-(private archive). Neither finding is self-closed; retained reviewers re-verdict.
+(private archive). Both finding owners verified closure and returned GO.
+
+## Acceptance
+
+Accepted at root `60623f2a10895dd970595c5b818a68e5900a72a3`, core
+`073395b5a265c4d2a60265470cd5ba173243cc64`, evidence
+`5ea96433628b3bec8a8365525f8ee314d01cce99` after retained
+[Code](../../dev-docs/GwzRemoteTransportSshWorker-ReviewCode-1.md) and
+[State](../../dev-docs/GwzRemoteTransportSshWorker-ReviewState-1.md) reported GO.
+Frozen transport/Rust/C pins are unchanged and recorded in both reports.
+This accepts the internal shared worker and destination/identity binding only.
+One aggregate review plus one merged remediation; two independent review-found
+P2 defects closed, no blind convergence, no known escaped defects. All 38 focused
+test executions pass. Acceptance annotations change no executable statements.
+
+Next is bounded endpoint credential/setup implementation, including host trust
+before authentication, selected-key eligibility/proof, ambient agent cancellation,
+then per-operation observations and all production network-entry callbacks.
+The current native agent API cannot supply bounded waiting; qualify the signing
+callback/client seam before putting it in the worker. Platform and selected-source
+qualification remain one later batch. Production endpoint support is not enabled.
