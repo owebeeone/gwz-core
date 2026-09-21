@@ -1,5 +1,10 @@
 # GWZ Remote Transport Design
 
+
+Phase 4 detail: [endpoint-placement amendment](GwzRemoteTransportPlacementDesign.md)
+is draft pending its independent interface review; existing authority remains
+unchanged until acceptance.
+
 Status: design draft, 2026-09-19; implements the accepted direction in
 [GwzRemoteTransportRequirements.md](GwzRemoteTransportRequirements.md).
 Review status: **accepted at gwz-core

@@ -273,6 +273,10 @@ unadvertised until their own gates pass.
 
 ### Phase 4 — CLI endpoint placement over the message channel
 
+Concrete interface admission is in [the placement amendment](GwzRemoteTransportPlacementDesign.md)
+(currently draft). Its A/B integration batches precede supplied-carrier qualification;
+it does not authorize creating that carrier.
+
 Install the CLI-hosted endpoint and connect core's mux through the externally
 supplied communication layer without changing its existing interface.
 Keep both directions pumping during Git operations. Apply session binding,
