@@ -3,13 +3,15 @@ use super::{
     agent_job::{self, Job},
     ssh_channel::{GitService, SshChannel},
     ssh_connection::SshConnection,
+    ssh_key_auth::Verified,
+    ssh_key_snapshot::Entry,
     ssh_pool::{Connector, Resource},
     ssh_pump::SshPump,
     ssh_worker::ChannelResource,
 };
 use gwz_transport::{
     pool::{Identity, Key},
-    protocol::{Effect, ErrorCode, Facts, Failure},
+    protocol::{AuthMethod, Effect, ErrorCode, Facts, Failure},
     stream::{MessageEndpoint, Stream},
 };
 use std::{
@@ -25,8 +27,24 @@ pub(crate) struct Authenticated {
     connection: SshConnection,
     identity: Identity,
     facts: Facts,
+    authority: Option<Arc<Entry>>,
 }
 impl Authenticated {
+    pub(crate) fn selected(verified: Verified) -> io::Result<Self> {
+        let (connection, entry) = verified.into_parts();
+        Ok(Self {
+            connection,
+            identity: entry.identity(),
+            facts: Facts {
+                method: AuthMethod::SshKey,
+                authenticated: Some(true),
+                credential_offered: true,
+                ..Facts::default()
+            },
+            authority: Some(entry),
+        })
+    }
+
     pub(crate) fn new(
         mut connection: SshConnection,
         identity: Identity,
@@ -40,6 +58,7 @@ impl Authenticated {
             connection,
             identity,
             facts,
+            authority: None,
         })
     }
 }
@@ -84,6 +103,8 @@ where
             state: State::Connecting(job),
             requested,
             exchanges: 0,
+            deadline,
+            authority: None,
         })
     }
 }
@@ -101,6 +122,8 @@ pub(crate) struct NativeResource {
     state: State,
     requested: Identity,
     exchanges: u64,
+    deadline: Option<Instant>,
+    authority: Option<Arc<Entry>>,
 }
 impl Resource for NativeResource {
     fn poll_connected(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Identity>, Failure>> {
@@ -113,10 +136,16 @@ impl Resource for NativeResource {
                 }
                 Poll::Ready(Err(error)) => Poll::Ready(Err(failure(error.kind()))),
                 Poll::Ready(Ok(mut authenticated)) => {
-                    let valid = authenticated.identity == self.requested
+                    let live = self.deadline.is_none_or(|at| Instant::now() < at);
+                    let valid = live
+                        && authenticated.identity == self.requested
                         && authenticated.connection.session().authenticated()
                         && authenticated.facts.authenticated == Some(true);
                     if valid {
+                        self.authority = authenticated.authority.take();
+                        if let Some(entry) = &self.authority {
+                            entry.promote();
+                        }
                         let identity = authenticated.identity.clone();
                         self.state = State::Idle(authenticated);
                         Poll::Ready(Ok(Some(identity)))
@@ -203,6 +232,7 @@ impl ChannelResource for NativeResource {
                     connection,
                     identity,
                     facts,
+                    authority: _,
                 } = authenticated;
                 let channel = SshChannel::new(connection, service, path)?;
                 let mut pump = SshPump::new(stream, endpoint, channel, 65_536, 65_536);
@@ -250,6 +280,7 @@ impl ChannelResource for NativeResource {
                         connection,
                         identity,
                         facts,
+                        authority: None,
                     });
                     true
                 }

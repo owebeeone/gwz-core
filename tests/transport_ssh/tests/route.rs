@@ -15,6 +15,14 @@ mod ssh_pump;
 mod ssh_remote;
 #[path = "../../../src/git/endpoint/agent_job.rs"]
 mod agent_job;
+#[path = "../../../src/git/endpoint/ssh_key_auth.rs"]
+mod ssh_key_auth;
+#[path = "../../../src/git/endpoint/ssh_key_container.rs"]
+mod ssh_key_container;
+#[path = "../../../src/git/endpoint/ssh_key_snapshot.rs"]
+mod ssh_key_snapshot;
+#[path = "../../../src/git/endpoint/ssh_admission.rs"]
+mod ssh_admission;
 #[path = "../../../src/git/endpoint/ssh_shutdown.rs"]
 mod ssh_shutdown;
 #[path = "../../../src/git/endpoint/ssh_worker.rs"]

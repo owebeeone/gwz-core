@@ -61,7 +61,9 @@ fn queued_expiry_releases_admission_without_stopping_worker() {
                 path: "repo".into(),
                 deadline,
                 cancelled: Arc::new(AtomicBool::new(cancelled)),
-                reply,
+                reply: Some(reply),
+                selected: None,
+                authority: None,
                 permit: Permit(permits.clone()),
             })
             .unwrap();
@@ -71,11 +73,18 @@ fn queued_expiry_releases_admission_without_stopping_worker() {
     let exact = enqueue(Some(10), false);
     let worker_stop = stop.clone();
     let worker_clock = clock.clone();
+    let mut admissions = Admissions::new(
+        Registry::new(),
+        Arc::new(Registry::start),
+        Instant::now(),
+        100,
+    );
     let join = thread::spawn(move || {
         run(
             receiver,
             pool,
             &mut host,
+            &mut admissions,
             100,
             10,
             worker_stop,

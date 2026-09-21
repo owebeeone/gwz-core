@@ -59,6 +59,16 @@ impl Registry {
             entries: Vec::new(),
         })))
     }
+    pub(crate) fn lookup(&self, key: &Key, identity: &Identity) -> io::Result<Arc<Entry>> {
+        let mut pins = Vec::new();
+        let mut state = self.0.lock().unwrap();
+        state.entries.retain(|entry| entry.strong_count() != 0);
+        pins.extend(state.entries.iter().filter_map(Weak::upgrade));
+        drop(state);
+        pins.into_iter()
+            .find(|entry| entry.key() == key && entry.identity() == *identity)
+            .ok_or_else(|| io::ErrorKind::PermissionDenied.into())
+    }
     pub(crate) fn reserve(&self) -> io::Result<Reservation> {
         let mut state = self.0.lock().unwrap();
         let cap = state.key_cap + 1;

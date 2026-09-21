@@ -11,6 +11,8 @@ cfg_if::cfg_if! {
         mod ssh_key_container;
         #[path = "../../../src/git/endpoint/ssh_key_snapshot.rs"]
         mod ssh_key_snapshot;
+        #[path = "../../../src/git/endpoint/ssh_admission.rs"]
+        mod ssh_admission;
         #[path = "../../../src/git/endpoint/ssh_network.rs"]
         mod ssh_network;
         #[path = "../../../src/git/endpoint/ssh_pool.rs"]

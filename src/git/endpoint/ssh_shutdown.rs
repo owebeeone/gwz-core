@@ -1,6 +1,7 @@
 //! Bounded worker termination with retained physical-pool cleanup.
 use super::{
     agent_job::Cleanup,
+    ssh_admission::Admissions,
     ssh_pool::{Connector, PoolHost},
 };
 use gwz_transport::pool::Pool;
@@ -15,6 +16,7 @@ use std::{
 pub(crate) struct ShutdownStatus {
     pub cleanup_complete: bool,
     pub pending_connections: usize,
+    pub pending_admissions: usize,
     pub failure: Option<io::ErrorKind>,
 }
 pub(crate) type Status = Arc<Mutex<ShutdownStatus>>;
@@ -32,29 +34,36 @@ pub(crate) fn fail(status: &Status, error: io::ErrorKind) {
         .failure
         .get_or_insert(error);
 }
-pub(crate) fn sample<C: Connector>(status: &Status, host: &PoolHost<C>) {
+pub(crate) fn sample<C: Connector>(status: &Status, host: &PoolHost<C>, admissions: &Admissions) {
     status
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .pending_connections = host.physical_count();
+    status
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .pending_admissions = admissions.len();
 }
 pub(crate) fn manage<C>(
     mut host: PoolHost<C>,
+    mut admissions: Admissions,
     pool: Pool,
     status: Status,
     retention: Cleanup,
     origin: Instant,
-    run: impl FnOnce(&mut PoolHost<C>),
+    run: impl FnOnce(&mut PoolHost<C>, &mut Admissions),
 ) where
     C: Connector + Send + 'static,
     C::Resource: Send + 'static,
 {
-    if catch_unwind(AssertUnwindSafe(|| run(&mut host))).is_err() {
+    if catch_unwind(AssertUnwindSafe(|| run(&mut host, &mut admissions))).is_err() {
         fail(&status, io::ErrorKind::Other);
     }
     pool.shutdown();
-    sample(&status, &host);
-    if host.shutdown_complete() {
+    let mut cx = Context::from_waker(Waker::noop());
+    let _ = admissions.poll(&mut cx, origin.elapsed().as_millis() as u64, true);
+    sample(&status, &host, &admissions);
+    if host.shutdown_complete() && admissions.is_empty() {
         drop(host);
         status
             .lock()
@@ -71,11 +80,15 @@ pub(crate) fn manage<C>(
         {
             fail(&status, io::ErrorKind::Other);
         }
+        let _ = admissions.poll(&mut cx, origin.elapsed().as_millis() as u64, true);
+        if let Some(error) = admissions.take_failure() {
+            fail(&status, error);
+        }
         if let Some(error) = host.take_disposal_error() {
             fail(&status, error.kind());
         }
-        sample(&status, &host);
-        if host.shutdown_complete() {
+        sample(&status, &host, &admissions);
+        if host.shutdown_complete() && admissions.is_empty() {
             status
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())

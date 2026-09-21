@@ -2,7 +2,9 @@
 //! blocking Git callers never drive the worker that services their streams.
 use super::{
     agent_job::Cleanup,
+    ssh_admission::{Admissions, Reader},
     ssh_channel::{GitService, SshChannel},
+    ssh_key_snapshot::{Entry, Registry},
     ssh_pool::{Connector, PoolHost, Resource},
     ssh_pump::SshPump,
     ssh_shutdown::{self, Status},
@@ -16,6 +18,7 @@ use gwz_transport::{
 use std::{
     future::Future,
     io,
+    path::PathBuf,
     pin::pin,
     sync::{
         Arc, Mutex,
@@ -77,32 +80,42 @@ impl Drop for Shared {
         }
     }
 }
-struct Permit(Arc<AtomicUsize>);
+pub(super) struct Permit(Arc<AtomicUsize>);
 impl Drop for Permit {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
-struct OpenRequest {
-    key: Key,
-    identity: Identity,
-    service: GitService,
-    path: String,
-    deadline: Option<u64>,
-    cancelled: Arc<AtomicBool>,
-    reply: SyncSender<io::Result<(BlockingStream, Opened)>>,
-    permit: Permit,
+pub(super) struct OpenRequest {
+    pub(super) key: Key,
+    pub(super) identity: Identity,
+    pub(super) service: GitService,
+    pub(super) path: String,
+    pub(super) deadline: Option<u64>,
+    pub(super) cancelled: Arc<AtomicBool>,
+    pub(super) reply: Option<SyncSender<io::Result<(BlockingStream, Opened)>>>,
+    pub(super) selected: Option<PathBuf>,
+    pub(super) authority: Option<Arc<Entry>>,
+    pub(super) permit: Permit,
 }
 impl OpenRequest {
-    fn expired(&self, now: u64) -> bool {
+    pub(super) fn reject(&mut self, kind: io::ErrorKind) {
+        if let Some(reply) = self.reply.take() {
+            let _ = reply.send(Err(kind.into()));
+        }
+    }
+
+    pub(super) fn expired(&self, now: u64) -> bool {
         self.cancelled.load(Ordering::Acquire) || self.deadline.is_some_and(|at| now >= at)
     }
-    fn complete(self, result: io::Result<(BlockingStream, Opened)>) {
+    pub(super) fn complete(self, result: io::Result<(BlockingStream, Opened)>) {
         // Release admission before publishing the reply. The physical pool now
         // bounds an active stream; pending admission remains independently bounded.
         let Self { reply, permit, .. } = self;
         drop(permit);
-        let _ = reply.send(result);
+        if let Some(reply) = reply {
+            let _ = reply.send(result);
+        }
     }
 }
 #[derive(Clone)]
@@ -126,9 +139,45 @@ impl Endpoint {
         C: Connector + Send + 'static,
         C::Resource: ChannelResource,
     {
+        Self::with_registry(
+            config,
+            Registry::new(),
+            |origin, _| factory(origin),
+            io_timeout_ms,
+        )
+    }
+    pub(crate) fn with_registry<C>(
+        config: PoolConfig,
+        registry: Registry,
+        factory: impl FnOnce(Instant, Registry) -> C,
+        io_timeout_ms: u64,
+    ) -> io::Result<Self>
+    where
+        C: Connector + Send + 'static,
+        C::Resource: ChannelResource,
+    {
+        Self::with_reader(
+            config,
+            registry,
+            Arc::new(Registry::start),
+            factory,
+            io_timeout_ms,
+        )
+    }
+    pub(crate) fn with_reader<C>(
+        config: PoolConfig,
+        registry: Registry,
+        reader: Reader,
+        factory: impl FnOnce(Instant, Registry) -> C,
+        io_timeout_ms: u64,
+    ) -> io::Result<Self>
+    where
+        C: Connector + Send + 'static,
+        C::Resource: ChannelResource,
+    {
         let retention = Cleanup::reserve()?;
         let origin = Instant::now();
-        let connector = factory(origin);
+        let connector = factory(origin, registry.clone());
         if io_timeout_ms > i32::MAX as u64 {
             return Err(io::ErrorKind::InvalidInput.into());
         }
@@ -158,19 +207,28 @@ impl Endpoint {
             .spawn(move || {
                 let run_pool = pool.clone();
                 let report = worker_status.clone();
-                ssh_shutdown::manage(host, pool, worker_status, retention, origin, |host| {
-                    run(
-                        receiver,
-                        run_pool,
-                        host,
-                        io_timeout_ms,
-                        cleanup,
-                        worker_stop,
-                        move || elapsed(origin),
-                        id,
-                        &report,
-                    );
-                });
+                ssh_shutdown::manage(
+                    host,
+                    Admissions::new(registry, reader, origin, cleanup),
+                    pool,
+                    worker_status,
+                    retention,
+                    origin,
+                    |host, admissions| {
+                        run(
+                            receiver,
+                            run_pool,
+                            host,
+                            admissions,
+                            io_timeout_ms,
+                            cleanup,
+                            worker_stop,
+                            move || elapsed(origin),
+                            id,
+                            &report,
+                        );
+                    },
+                );
             })?;
         Ok(Self {
             shared: Arc::new(Shared {
@@ -203,6 +261,28 @@ impl Endpoint {
         service: GitService,
         path: &str,
     ) -> io::Result<(BlockingStream, Opened)> {
+        self.enqueue(key, identity, None, service, path)
+    }
+    pub(crate) fn open_selected(
+        &self,
+        key: Key,
+        selected: PathBuf,
+        service: GitService,
+        path: &str,
+    ) -> io::Result<(BlockingStream, Opened)> {
+        self.enqueue(key, Identity::Ambient, Some(selected), service, path)
+    }
+    pub(crate) fn pending_requests(&self) -> usize {
+        self.shared.outstanding.load(Ordering::Acquire)
+    }
+    fn enqueue(
+        &self,
+        key: Key,
+        identity: Identity,
+        selected: Option<PathBuf>,
+        service: GitService,
+        path: &str,
+    ) -> io::Result<(BlockingStream, Opened)> {
         if self.shared.stop.load(Ordering::Acquire) {
             return Err(stopped());
         }
@@ -221,17 +301,18 @@ impl Endpoint {
         let permit = Permit(self.shared.outstanding.clone());
         let (reply, result) = mpsc::sync_channel(1);
         let cancelled = Arc::new(AtomicBool::new(false));
+        let absolute = self.shared.timeout.map(|d| Instant::now() + d);
         let request = OpenRequest {
             key,
             identity,
             service,
             path: path.to_owned(),
             permit,
-            reply,
+            reply: Some(reply),
+            selected,
+            authority: None,
             cancelled: cancelled.clone(),
-            deadline: self.shared.timeout.map(|duration| {
-                elapsed(self.shared.origin).saturating_add(duration.as_millis() as u64)
-            }),
+            deadline: absolute.map(|at| at.duration_since(self.shared.origin).as_millis() as u64),
         };
         match self.shared.sender.try_send(request) {
             Ok(()) => self.shared.worker.unpark(),
@@ -243,8 +324,8 @@ impl Endpoint {
             }
             Err(TrySendError::Disconnected(_)) => return Err(stopped()),
         }
-        let received = match self.shared.timeout {
-            Some(timeout) => result.recv_timeout(timeout),
+        let received = match absolute {
+            Some(at) => result.recv_timeout(at.saturating_duration_since(Instant::now())),
             None => result.recv().map_err(|_| RecvTimeoutError::Disconnected),
         };
         match received {
@@ -294,6 +375,7 @@ fn run<C>(
     receiver: Receiver<OpenRequest>,
     pool: Pool,
     host: &mut PoolHost<C>,
+    admissions: &mut Admissions,
     io_timeout_ms: u64,
     cleanup: u64,
     stop: Arc<AtomicBool>,
@@ -322,11 +404,24 @@ fn run<C>(
             active.clear(); // disconnect Git callers before waiting for physical disposal
             pool.shutdown();
         }
+        pending.retain_mut(|item| {
+            if item.request.expired(now) {
+                item.request.reject(io::ErrorKind::TimedOut);
+                false
+            } else {
+                true
+            }
+        });
+        let ready = admissions.poll(&mut cx, now, stopping_at.is_some());
+        if let Some(error) = admissions.take_failure() {
+            ssh_shutdown::fail(status, error);
+            stop.store(true, Ordering::Release);
+        }
         if host.step(&mut cx, now).is_err() {
             ssh_shutdown::fail(status, io::ErrorKind::Other);
             break;
         }
-        ssh_shutdown::sample(status, host);
+        ssh_shutdown::sample(status, host, admissions);
         if let Some(error) = host.take_disposal_error() {
             ssh_shutdown::fail(status, error.kind());
             stop.store(true, Ordering::Release);
@@ -335,14 +430,12 @@ fn run<C>(
             }
         }
         if stopping_at.is_some_and(|at| now >= at)
-            || (stopping_at.is_some() && host.shutdown_complete())
+            || (stopping_at.is_some() && host.shutdown_complete() && admissions.is_empty())
         {
             break; // The owner transfers unfinished cleanup to the reserved supervisor slot.
         }
-        for _ in 0..32 {
-            let Ok(request) = receiver.try_recv() else {
-                break;
-            };
+        let incoming = receiver.try_iter().take(32);
+        for request in ready.into_iter().chain(incoming) {
             if stopping_at.is_some() {
                 request.complete(Err(stopped()));
                 continue;
@@ -351,16 +444,23 @@ fn run<C>(
                 request.complete(Err(io::ErrorKind::TimedOut.into()));
                 continue;
             }
+            if request.selected.is_some() {
+                admissions.start(request);
+                continue;
+            }
             let Some(next) = serial.checked_add(1) else {
                 request.complete(Err(io::Error::other("stream IDs exhausted")));
                 continue;
             };
             serial = next;
-            match pool.checkout(gwz_transport::pool::Request::new(
-                request.key.clone(),
-                request.identity.clone(),
-                Owner::new(&session, serial.to_string()),
-            )) {
+            match pool.checkout_until(
+                gwz_transport::pool::Request::new(
+                    request.key.clone(),
+                    request.identity.clone(),
+                    Owner::new(&session, serial.to_string()),
+                ),
+                request.deadline,
+            ) {
                 Ok(checkout) => pending.push(Pending { checkout, request }),
                 Err(error) => request.complete(Err(io::Error::other(error))),
             }
@@ -426,7 +526,11 @@ fn run<C>(
         }
         // The host has no socket readiness API yet. Park between bounded polls;
         // callers wake immediately, timers run independently, and idle pools sleep.
-        let wait = if active.is_empty() && pending.is_empty() && stopping_at.is_none() {
+        let wait = if active.is_empty()
+            && pending.is_empty()
+            && admissions.is_empty()
+            && stopping_at.is_none()
+        {
             host.next_deadline()
                 .map_or(1000, |at| at.saturating_sub(now).min(1000))
         } else {

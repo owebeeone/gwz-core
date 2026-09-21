@@ -13,6 +13,14 @@ cfg_if::cfg_if! {
         mod agent_socket;
         #[path = "../../../src/git/endpoint/ssh_network.rs"]
         mod ssh_network;
+        #[path = "../../../src/git/endpoint/ssh_key_auth.rs"]
+        mod ssh_key_auth;
+        #[path = "../../../src/git/endpoint/ssh_key_container.rs"]
+        mod ssh_key_container;
+        #[path = "../../../src/git/endpoint/ssh_key_snapshot.rs"]
+        mod ssh_key_snapshot;
+        #[path = "../../../src/git/endpoint/ssh_admission.rs"]
+        mod ssh_admission;
         #[path = "../../../src/git/endpoint/ssh_pool.rs"]
         mod ssh_pool;
         #[path = "../../../src/git/endpoint/ssh_pump.rs"]

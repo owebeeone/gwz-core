@@ -7,6 +7,12 @@ pub(crate) struct Verified {
     entry: Arc<Entry>,
 }
 impl Verified {
+    /// Transfers unpromoted proof into a supervised setup result. Its owner must
+    /// keep connection-before-pin drop order and promote only after joined handoff.
+    pub(crate) fn into_parts(self) -> (SshConnection, Arc<Entry>) {
+        (self.connection, self.entry)
+    }
+
     /// Only call after the authentication Job has joined. Check the original
     /// request, not the consumed helper Control, immediately before promotion.
     pub(crate) fn publish(
