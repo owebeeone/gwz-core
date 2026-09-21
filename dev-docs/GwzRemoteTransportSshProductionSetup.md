@@ -182,8 +182,9 @@ regressions, a separate native ending/comment matrix and CRLF cap checks. The
 GwzRemoteTransportSshSelectedIdentityDesign.md specifies bounds, ownership and
 native in-memory authentication. On its acceptance it refines the earlier
 “validated snapshot before allocation” wording: representation/current file
-admission precedes lookup; reuse additionally needs exact bytes matching native-
-proven material; an unproven new token cannot match an old connection and becomes
-proven only after joined live native authentication. It also extends the retained
+admission precedes lookup; exact same-Key snapshots share a canonical token even
+while unproven, and reuse additionally requires a matching authenticated reusable
+physical resource. A new token for different bytes cannot match an old connection;
+a candidate becomes proven only after joined live native authentication. It also extends the retained
 endpoint owner to cover admission Jobs before pool entries exist. The new file
 and aggregate bounds are explicitly reflected in G1; no public/wire API changes.

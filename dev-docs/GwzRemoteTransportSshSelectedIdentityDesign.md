@@ -1,6 +1,6 @@
 # SSH N2 — selected identity admission
 
-Date: 2026-09-21. Status: DRAFT for retained Consistency/Safety review.
+Date: 2026-09-21. Status: DRAFT remediation 1 for retained focused review.
 Authority: accepted GwzRemoteTransportSshProductionSetup.md, N1 and A1–A3,
 requirements G1–G3, and the operator's explicit-no-agent-fallback direction.
 This specifies N2 only. Production backend attachment is N3; platform and
@@ -23,22 +23,34 @@ N2 therefore distinguishes **admitted bytes** from **proven authority**:
 
 - A successful bounded file read admits an immutable candidate, not a usability
   or authentication claim. Do not infer validity from path, metadata or a digest.
-- Exact byte equality with a live, previously native-proven entry for the same
-  pool Key permits that entry's opaque token. Existing pool equality still
-  requires both Key and Identity; reuse still requires an idle authenticated owner.
-- Otherwise allocate a fresh unproven token. It cannot match an old pool entry.
-  It can request a new connection, whose native authentication must succeed
-  before the entry becomes proven or any stream receives an authenticated lease.
-- Concurrent unproven candidates are not interned together. A failed/cancelled
-  candidate never lends another request a usable proof. A proven entry is a
-  record of native usability; each new physical connection still authenticates.
+- Exact byte equality with a live entry for the same pool Key returns that
+  entry's token, whether it is still a candidate or already proven. Interning is
+  atomic in the worker after joined live file admission. Matching a token alone
+  never authenticates a request or creates a usable lease.
+- Otherwise allocate a fresh unproven token. It cannot match an entry for older
+  or different bytes. Concurrent requests for identical bytes pin the same entry
+  and token, so they can reuse a connection after its authentication succeeds.
+- Every new physical connection authenticates independently. Only an idle,
+  authenticated, reusable pool resource with matching Key/token can be reused;
+  a candidate token or a registry Proven bit alone cannot satisfy that rule.
+- A request's failure/cancellation does not promote authority, revive its request,
+  or cancel independent requests sharing the entry. Another request may prove
+  the same material by its own joined live native authentication. Reference
+  ownership, deadline and cancellation stay per request/connection.
 
 This explicitly refines ProductionSetup's “validated snapshot before allocation”:
 current file availability/representation is admitted before lookup; fresh key
 usability is established during new setup. Reuse requires the fresh bytes to
-match already-proven material. A malformed new file cannot reuse old authority.
+match the authenticated physical resource's material. Interning unproven bytes
+is only compatibility bookkeeping. A malformed new file cannot reuse old authority.
 There is no handwritten cryptographic parser and no token derived from private
 bytes. Public fingerprints remain absent unless derived from proven public data.
+
+First-fan-out invariant: if many same-Key requests admit identical bytes before
+any authentication completes, their identities still match. With pool capacity
+one, they wait and reuse the first successfully authenticated connection instead
+of assigning each request an incompatible token and reconnecting for every repo.
+This preserves the transport program's central connection-reuse benefit.
 
 ## 2. Bounded snapshot registry
 
@@ -61,11 +73,11 @@ Concrete internal limits, equal for local-core and driver-hosted endpoints:
 | Pending requests | Existing endpoint max_requests, held across admission and pool wait |
 | Endpoint cleanup owners | Existing A3 limit of 64 active-or-retained owners; no extra unreserved owner |
 
-Reserve a slot and a maximum read buffer (1 MiB plus one detection byte) before
-spawning file admission. Refuse unavailable capacity with WouldBlock, before
+Reserve a slot, a maximum read buffer (1 MiB plus one detection byte), and
+256 bytes of classifier scratch before spawning file admission. Refuse unavailable capacity with WouldBlock, before
 file I/O. Shrink the reservation only after storage capacity is actually released.
-Successful matching discards the new buffer before releasing its reservation and
-pins the existing entry. New entries take ownership of the same admitted bytes.
+Successful matching pins the existing exact-byte entry (candidate or proven),
+then discards the new buffer before releasing its reservation. New entries take ownership of the same admitted bytes.
 Never allocate an uncharged overflow buffer to perform comparison or transfer.
 Stale weak entries are pruned on registry access; map entries remain bounded.
 No global lock may span file I/O, native work, waiting or a destructor callback.
@@ -93,7 +105,51 @@ N1's admitted retained-owner semantics, not a kernel-preemption guarantee.
 This byte/encoding cap is an explicit proposed G1 exception: native file loading
 may accept a larger or differently encoded representation that N2 refuses.
 Refusal is InvalidInput/InvalidRequest before pool lookup, DNS or credentials.
-Native parsing otherwise decides key-format usability; do not normalize bytes.
+A bounded preflight below additionally refuses unsupported/encrypted or ambiguous
+containers before native authentication can run an uninterruptible KDF. This is
+also an explicit proposed G1 representation restriction. Native parsing decides
+accepted unencrypted key usability; do not normalize bytes.
+
+### Bounded container preflight
+
+Every selected-file admission runs this classifier before interning or checkout,
+even when the bytes could match an old entry. It proves only that the representation
+belongs to an allowed unencrypted container; it does not parse key mathematics,
+validate a signing key, decrypt, or perform a KDF. Native authentication remains
+the usability authority. Reject without invoking native auth on any ambiguity.
+
+Accept exactly one PEM armor block, with matching case-sensitive BEGIN/END labels,
+only ASCII whitespace outside, and base64 plus ASCII whitespace in its body.
+Do not accept auxiliary headers, concatenated blocks, garbage prefixes/suffixes,
+unknown labels or an encrypted block hidden behind a first allowed block. Use a
+maintained base64 decoder with bounded streaming input and fixed scratch, not a
+new handwritten decoder; inspect framing fields only. Read-only slices/streaming
+views retain the original snapshot unchanged. Check Control between bounded
+chunks. No complete decoded-key copy, algorithm execution or parameter-sized
+allocation. The 256-byte scratch reservation includes framing lookahead.
+
+| Container label | Pre-native disposition |
+| --- | --- |
+| ENCRYPTED PRIVATE KEY | Refuse immediately, regardless of password or KDF parameters |
+| RSA PRIVATE KEY, DSA PRIVATE KEY, EC PRIVATE KEY | Admit only the header-free base64 body form; Proc-Type/DEK-Info and all other auxiliary headers refuse |
+| PRIVATE KEY | Decode a bounded prefix and require definite-length DER PrivateKeyInfo framing beginning with version INTEGER 0 or 1; reject encrypted/ambiguous framing; native validates the remaining unencrypted key |
+| OPENSSH PRIVATE KEY | Decode magic and bounded cipher/KDF strings. Require openssh-key-v1 magic, ciphername=none, kdfname=none, and empty kdfoptions; reject every other combination without parsing/using KDF work factors |
+| All other labels/forms | Refuse as unsupported representation |
+
+Every SSH/DER declared length is checked against input bounds before advancing;
+a framing field longer than fixed lookahead refuses, never triggers allocation.
+Malformed/truncated/ambiguous containers return InvalidInput (InvalidRequest)
+before pool lookup, DNS, agent access or native authentication. These restrictions
+can reject representations accepted by native file loading and therefore belong
+to G1's explicit exceptions. Normal unencrypted OpenSSH, traditional PEM and
+PKCS#8 fixtures must remain accepted; no new passphrase or prompt surface.
+
+A native call can otherwise spend unbounded wall time in PBKDF2/bcrypt before
+reporting a bad empty password. Passing None is not an encryption classifier.
+The preflight excludes that unsupported work before the non-preemptible call.
+Non-preemptible parsing/signing of admitted unencrypted keys remains under the
+explicit supervised retained-owner policy; this is not a hard CPU termination
+claim for arbitrary native operations.
 
 ## 3. Request and cleanup ownership
 
@@ -157,7 +213,7 @@ immutable snapshot handle and original Control. Recheck the host key before
 credential work. Use Session::userauth_pubkey_memory(username, None, bytes, None)
 with nonblocking native session and bounded waits under the same deadline.
 Repeat only EAGAIN progress with identical bytes; no whole-auth/address replay.
-The native API derives the public key. A terminal failure destroys the connection
+The preflight-admitted unencrypted native API derives the public key. A terminal failure destroys the connection
 and cannot enumerate an agent, try another file, reopen this path, prompt, call
 Git, or enter the old native transport as fallback. Keys requiring a supplied
 passphrase remain unsupported; a nonempty-passphrase encrypted fixture must fail.
@@ -175,9 +231,10 @@ Never describe the opaque token as a public-key fingerprint.
 ## 5. Implementation packages and gates
 
 - **N2a snapshot authority and native bridge:** registry/reservation/entry lifetime,
-  file admission under A1 Job, memory-key authentication under N1 trust, and exact
+  file admission and bounded container preflight under A1 Job, memory-key
+  authentication under N1 trust, and exact
   proof promotion. At most 600 added production lines across three cohesive files
-  and 800 focused test/support lines. Does not activate routes or replace worker
+  and 900 focused test/support lines. Does not activate routes or replace worker
   request flow. Focused aggregate Code/State review on its settled tuple.
 - **N2b worker admission integration:** queued/admitting/checkout ownership,
   unchanged absolute deadline, selected Route plans, resource authority pins and
@@ -194,12 +251,26 @@ Required causal tests, without a count-based acceptance gate:
 1. Same bytes via same or alternate path can reuse a proven same-Key token;
    changed/deleted/unreadable/invalid file cannot reuse it. Change the pathname
    after admission and prove native auth receives the original snapshot.
-2. Fresh malformed and encrypted candidate has no old token and fails native
-   auth. Zero agent factory calls and no extra address/file/credential attempt.
-   Successful Ed25519 and RSA native auth followed by a real Git exchange.
+2. Malformed/unsupported/encrypted containers refuse before native auth; fresh
+   admissible but unusable key content cannot reuse old authority and native
+   failure has no agent/address/file/credential fallback. Observe zero native-auth
+   calls for encrypted PKCS#8 with extreme PBKDF2 parameters, traditional encrypted
+   PEM, and OpenSSH with extreme bcrypt rounds; never actually run those KDFs.
+   Saturate with these fixtures and prove bounded refusal, helper/byte recovery,
+   truthful cleanup completion and continued progress of an active stream.
+   Cover multiple/mislabelled/truncated blocks, length overflow, nonempty cipher
+   or KDF fields, and auxiliary PEM headers. Accept unencrypted Ed25519 and RSA
+   OpenSSH, traditional PEM and PKCS#8 through real auth/Git exchanges. Classifier
+   loops and scratch stay input-bounded; native usability is not inferred from
+   a successful classification.
 3. Token lifetime across queued, connecting, idle, active, cleanup-overrun and
    endpoint-drop states; no token recycling or stale resurrection. Concurrent
-   fresh candidates cannot turn unproven equality into reuse. Only worker-side
+   fresh candidates for the same bytes share one token, but cannot obtain a
+   lease from a connecting/unauthenticated resource. Admit a same-Key batch
+   before releasing a native authentication barrier, with physical capacity one;
+   all successful Git exchanges must use one connection. Changed bytes remain
+   incompatible. Cancel/fail one sharer while another authenticates and prove
+   independent outcomes, no early lease and retained ownership. Only worker-side
    joined live success promotes authority; wrong-token/failed proof refuses.
 4. Slot and byte reservation exhaustion/recovery, oversize exact/below/above,
    UTF-8/NUL refusal and FIFO/nonregular rejection before checkout/resolution.
@@ -222,3 +293,26 @@ core; raw campaigns and failed attempts in the private evidence member. Retained
 Consistency/Safety review accepts this design and the stated G1 refinement first.
 P0–P2 block; at most two merged remediation rounds per object. Budget increases
 must state excluded scope first, with no split solely to conceal aggregate size.
+
+## Owner remediation 1 — first-fan-out compatibility
+
+The initial design required a distinct token for every concurrent unproven
+snapshot. Against pool/allocation.rs, requests queued before the first native
+authentication would all be incompatible: with capacity one, each released
+connection would be evicted for the next token. That recreates one SSH connect
+per repository during the first fan-out. Owner identified this before design
+acceptance, independently of the initial reviewer verdicts.
+
+Canonicalize all live identical same-Key snapshots, including candidates. The
+existing pool/native-resource authenticated eligibility gate, not token uniqueness
+per request, prevents unauthenticated reuse. This changes no public shape, pool
+key or native-authentication requirement. The barrier/batch gate above makes the
+performance contract testable along with cancellation and proof isolation.
+
+Safety P2-1: the original absent-passphrase call could still enter an encrypted
+container's attacker-sized KDF. The bounded unencrypted-container preflight above
+now refuses this path before native authentication, with explicit G1 representation
+exceptions and saturation/progress tests. No decryptor, key-math parser or process
+supervisor is added. N3/backend/platform work remains excluded; N2a production
+budget stays600 lines, and its test allowance800→900 covers the classifier
+adversarial matrix. This is the same merged remediation as the fan-out correction.
