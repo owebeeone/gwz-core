@@ -4,7 +4,10 @@ use super::{
     ssh_channel::GitService, ssh_destination::Destination, ssh_remote::OpenStream,
     ssh_worker::Endpoint, stream_io::BlockingStream,
 };
-use gwz_transport::pool::{Identity, Key};
+use gwz_transport::{
+    pool::{Identity, Key},
+    protocol::Opened,
+};
 use std::{io, sync::Arc};
 
 pub(crate) trait IdentityResolver: Send + Sync + 'static {
@@ -16,12 +19,21 @@ pub(crate) trait IdentityResolver: Send + Sync + 'static {
 pub(crate) struct Route {
     endpoint: Endpoint,
     identities: Arc<dyn IdentityResolver>,
+    observe: Arc<dyn Fn(&Opened) + Send + Sync>,
 }
 impl Route {
     pub(crate) fn new(endpoint: Endpoint, identities: Arc<dyn IdentityResolver>) -> Self {
+        Self::observed(endpoint, identities, Arc::new(|_| {}))
+    }
+    pub(crate) fn observed(
+        endpoint: Endpoint,
+        identities: Arc<dyn IdentityResolver>,
+        observe: Arc<dyn Fn(&Opened) + Send + Sync>,
+    ) -> Self {
         Self {
             endpoint,
             identities,
+            observe,
         }
     }
 }
@@ -34,7 +46,10 @@ impl OpenStream for Route {
             )
         })?;
         let identity = self.identities.resolve(&destination.key)?;
-        self.endpoint
-            .open(destination.key, identity, service, &destination.path)
+        let (stream, facts) =
+            self.endpoint
+                .open_observed(destination.key, identity, service, &destination.path)?;
+        (self.observe)(&facts);
+        Ok(stream)
     }
 }

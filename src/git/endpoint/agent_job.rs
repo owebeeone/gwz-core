@@ -154,7 +154,7 @@ impl Hub {
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
                             .append(&mut batch);
-                        if COUNT.load(Ordering::Acquire) == 0 {
+                        if shared.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
                             thread::park();
                         } else {
                             thread::park_timeout(Duration::from_millis(20));
@@ -294,5 +294,66 @@ impl<T: Send + 'static> Job<T> {
 impl<T: Send + 'static> Drop for Job<T> {
     fn drop(&mut self) {
         self.cancel();
+    }
+}
+
+// Each active endpoint reserves its eventual cleanup record before spawning.
+// Retaining a stopped pool never allocates another thread or another permit.
+static CLEANUPS: AtomicUsize = AtomicUsize::new(0);
+struct CleanupPermit;
+impl Drop for CleanupPermit {
+    fn drop(&mut self) {
+        CLEANUPS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+pub(crate) struct Cleanup {
+    hub: &'static Hub,
+    permit: CleanupPermit,
+}
+impl Cleanup {
+    pub(crate) fn reserve() -> io::Result<Self> {
+        let hub =
+            Hub::global(&mut |name, body| thread::Builder::new().name(name.into()).spawn(body))?;
+        CLEANUPS
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < LIMIT).then_some(n + 1)
+            })
+            .map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))?;
+        Ok(Self {
+            hub,
+            permit: CleanupPermit,
+        })
+    }
+    /// Poll must be bounded; true means physical cleanup and ledger closure.
+    pub(crate) fn retain(self, poll: impl FnMut() -> bool + Send + 'static) {
+        struct Retained<F> {
+            poll: F,
+            _permit: CleanupPermit,
+            poisoned: bool,
+        }
+        impl<F: FnMut() -> bool + Send> Reap for Retained<F> {
+            fn reap(&mut self) -> bool {
+                if self.poisoned {
+                    return false;
+                }
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(&mut self.poll)) {
+                    Ok(done) => done,
+                    Err(_) => {
+                        self.poisoned = true;
+                        false
+                    } // retain ownership, never claim disposal
+                }
+            }
+        }
+        self.hub
+            .entries
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(Box::new(Retained {
+                poll,
+                _permit: self.permit,
+                poisoned: false,
+            }));
+        self.hub.worker.unpark();
     }
 }

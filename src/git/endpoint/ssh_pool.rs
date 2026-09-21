@@ -8,12 +8,14 @@ use std::{
     collections::BTreeMap,
     future::Future,
     io,
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     pin::pin,
     task::{Context, Poll},
 };
 
 /// Connection setup is nonblocking. An error returned by start owns no remaining
-/// physical resources. Trust must be checked before authentication is offered.
+/// physical resources, including after an unwinding panic. Trust must be checked
+/// before authentication is offered; setup ownership must transfer atomically.
 pub(crate) trait Connector {
     type Resource: Resource;
     fn start(
@@ -25,7 +27,8 @@ pub(crate) trait Connector {
 }
 
 /// Single-owner connecting, idle or active SSH resource. Drop MUST terminate its
-/// socket before native destructors; forced disposal must never wait on a peer.
+/// socket before native destructors, or retain a connecting job under its
+/// supervisor. Forced disposal never acknowledges a still-live helper.
 pub(crate) trait Resource {
     fn poll_connected(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Identity>, Failure>>;
     fn poll_dispose(&mut self, cx: &mut Context<'_>, force: bool) -> Poll<io::Result<()>>;
@@ -44,6 +47,7 @@ enum Phase {
 struct Entry<R> {
     resource: R,
     phase: Phase,
+    used: bool,
 }
 pub(crate) struct PoolHost<C: Connector> {
     // Physical owners are destroyed before driver loss invalidates clients.
@@ -84,6 +88,17 @@ impl<C: Connector> PoolHost<C> {
         Ok(&mut entry.resource)
     }
 
+    pub(crate) fn allocation_reused(&mut self, lease: &Lease) -> Result<bool, Error> {
+        let entry = self
+            .entries
+            .get_mut(&lease.connection()?)
+            .ok_or(Error::Stale)?;
+        if !matches!(entry.phase, Phase::Ready) {
+            return Err(Error::WrongState);
+        }
+        Ok(std::mem::replace(&mut entry.used, true))
+    }
+
     pub(crate) fn release(&mut self, lease: Lease, disposition: Disposition) -> Result<(), Error> {
         let reusable = self.resource(&lease)?.reusable();
         if disposition == Disposition::Reusable && !reusable {
@@ -95,6 +110,10 @@ impl<C: Connector> PoolHost<C> {
 
     pub(crate) fn next_deadline(&self) -> Option<u64> {
         self.driver.next_deadline()
+    }
+
+    pub(crate) fn physical_count(&self) -> usize {
+        self.entries.len()
     }
 
     pub(crate) fn shutdown_complete(&self) -> bool {
@@ -169,17 +188,35 @@ impl<C: Connector> PoolHost<C> {
                     key,
                     identity,
                     network_deadline,
-                } => match self.connector.start(&key, &identity, network_deadline) {
-                    Ok(resource) => {
-                        self.entries.insert(
+                } => match catch_unwind(AssertUnwindSafe(|| {
+                    self.connector.start(&key, &identity, network_deadline)
+                })) {
+                    Err(panic) => {
+                        // The dequeued Connect has no physical owner after start
+                        // unwinds. Settle that ledger entry before stopping the
+                        // worker; already-owned entries remain in this host.
+                        let _ = self.driver.connected(
                             connection,
-                            Entry {
-                                resource,
-                                phase: Phase::Connecting,
-                            },
+                            Err(Failure {
+                                code: ErrorCode::Io,
+                                effect: Effect::None,
+                            }),
                         );
+                        resume_unwind(panic);
                     }
-                    Err(failure) => self.driver.connected(connection, Err(failure))?,
+                    Ok(result) => match result {
+                        Ok(resource) => {
+                            self.entries.insert(
+                                connection,
+                                Entry {
+                                    resource,
+                                    phase: Phase::Connecting,
+                                    used: false,
+                                },
+                            );
+                        }
+                        Err(failure) => self.driver.connected(connection, Err(failure))?,
+                    },
                 },
                 Action::CancelConnect { connection, .. } | Action::AbortConnect { connection } => {
                     let force = matches!(action, Action::AbortConnect { .. });
@@ -218,8 +255,8 @@ impl<C: Connector> Drop for PoolHost<C> {
         for entry in self.entries.values_mut() {
             let _ = entry.resource.poll_dispose(&mut cx, true);
         }
-        // Resource::drop is the final socket-termination fallback, including
-        // when forced cleanup reports an OS failure. Never acknowledge reuse.
+        // Normal worker shutdown retains this entire host until disposal.
+        // Emergency Drop cancels supervised jobs; it never acknowledges reuse.
         self.entries.clear();
     }
 }

@@ -14,6 +14,10 @@ mod ssh_pool;
 mod ssh_pump;
 #[path = "../../../src/git/endpoint/ssh_remote.rs"]
 mod ssh_remote;
+#[path = "../../../src/git/endpoint/agent_job.rs"]
+mod agent_job;
+#[path = "../../../src/git/endpoint/ssh_shutdown.rs"]
+mod ssh_shutdown;
 #[path = "../../../src/git/endpoint/ssh_worker.rs"]
 mod ssh_worker;
 #[path = "../../../src/git/endpoint/stream_io.rs"]

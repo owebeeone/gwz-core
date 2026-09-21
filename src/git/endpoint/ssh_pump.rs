@@ -87,6 +87,7 @@ pub(crate) struct SshPump<C: ChannelIo> {
     closed_drained: bool,
     opened: bool,
     invalidated: bool,
+    facts: Facts,
 }
 impl<C: ChannelIo> SshPump<C> {
     pub(crate) fn new(
@@ -117,7 +118,11 @@ impl<C: ChannelIo> SshPump<C> {
             closed_drained: false,
             opened: false,
             invalidated: false,
+            facts: Facts::default(),
         }
+    }
+    pub(crate) fn set_facts(&mut self, facts: Facts) {
+        self.facts = facts;
     }
     pub(crate) fn deliver(&mut self, message: Envelope) -> Result<(), PumpError> {
         let payload = if message.kind == MessageKind::Data {
@@ -339,7 +344,7 @@ impl<C: ChannelIo> SshPump<C> {
             if self.endpoint.stats().end_sent {
                 match self
                     .endpoint
-                    .complete_close(Disposition::Reusable, Facts::default())
+                    .complete_close(Disposition::Reusable, self.facts.clone())
                 {
                     Ok(()) => self.close_completed = true,
                     Err(StreamError::WouldBlock) => {}

@@ -45,7 +45,7 @@ impl ChannelResource for Unused {
 fn queued_expiry_releases_admission_without_stopping_worker() {
     let config = PoolConfig::default();
     let calls = Arc::new(AtomicUsize::new(0));
-    let (pool, host) = PoolHost::new(config, Refuse(calls.clone()), 0).unwrap();
+    let (pool, mut host) = PoolHost::new(config, Refuse(calls.clone()), 0).unwrap();
     let (sender, receiver) = mpsc::sync_channel(1);
     let permits = Arc::new(AtomicUsize::new(0));
     let stop = Arc::new(AtomicBool::new(false));
@@ -75,15 +75,16 @@ fn queued_expiry_releases_admission_without_stopping_worker() {
         run(
             receiver,
             pool,
-            host,
+            &mut host,
             100,
             10,
             worker_stop,
             move || worker_clock.load(Ordering::SeqCst),
             999,
+            &Status::default(),
         )
     });
-    let check_expired = |result: Receiver<io::Result<BlockingStream>>| {
+    let check_expired = |result: Receiver<io::Result<(BlockingStream, Opened)>>| {
         let error = result
             .recv_timeout(Duration::from_secs(5))
             .unwrap()

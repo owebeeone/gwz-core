@@ -1,14 +1,16 @@
 //! Shared endpoint worker. Native setup is an injected nonblocking owner;
 //! blocking Git callers never drive the worker that services their streams.
 use super::{
+    agent_job::Cleanup,
     ssh_channel::{GitService, SshChannel},
     ssh_pool::{Connector, PoolHost, Resource},
     ssh_pump::SshPump,
+    ssh_shutdown::{self, Status},
     stream_io::BlockingStream,
 };
 use gwz_transport::{
     pool::{Checkout, Config as PoolConfig, Identity, Key, Lease, Owner, Pool},
-    protocol::Disposition,
+    protocol::{Disposition, Facts, Opened},
     stream::{Config as StreamConfig, MessageEndpoint, Side, Stream},
 };
 use std::{
@@ -25,7 +27,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+pub(crate) use super::ssh_shutdown::ShutdownStatus;
 pub(crate) trait ChannelResource: Resource + Send + 'static {
+    fn observation(&self) -> (bool, Facts) {
+        (false, Facts::default())
+    }
     fn start_exchange(
         &mut self,
         stream: Stream,
@@ -55,6 +61,7 @@ struct Shared {
     stop: Arc<AtomicBool>,
     origin: Instant,
     join: Mutex<Option<JoinHandle<()>>>,
+    status: Status,
 }
 impl Drop for Shared {
     fn drop(&mut self) {
@@ -83,14 +90,14 @@ struct OpenRequest {
     path: String,
     deadline: Option<u64>,
     cancelled: Arc<AtomicBool>,
-    reply: SyncSender<io::Result<BlockingStream>>,
+    reply: SyncSender<io::Result<(BlockingStream, Opened)>>,
     permit: Permit,
 }
 impl OpenRequest {
     fn expired(&self, now: u64) -> bool {
         self.cancelled.load(Ordering::Acquire) || self.deadline.is_some_and(|at| now >= at)
     }
-    fn complete(self, result: io::Result<BlockingStream>) {
+    fn complete(self, result: io::Result<(BlockingStream, Opened)>) {
         // Release admission before publishing the reply. The physical pool now
         // bounds an active stream; pending admission remains independently bounded.
         let Self { reply, permit, .. } = self;
@@ -108,6 +115,20 @@ impl Endpoint {
         C: Connector + Send + 'static,
         C::Resource: ChannelResource,
     {
+        Self::with_connector(config, |_| connector, io_timeout_ms)
+    }
+    pub(crate) fn with_connector<C>(
+        config: PoolConfig,
+        factory: impl FnOnce(Instant) -> C,
+        io_timeout_ms: u64,
+    ) -> io::Result<Self>
+    where
+        C: Connector + Send + 'static,
+        C::Resource: ChannelResource,
+    {
+        let retention = Cleanup::reserve()?;
+        let origin = Instant::now();
+        let connector = factory(origin);
         if io_timeout_ms > i32::MAX as u64 {
             return Err(io::ErrorKind::InvalidInput.into());
         }
@@ -130,20 +151,26 @@ impl Endpoint {
         let (sender, receiver) = mpsc::sync_channel(capacity);
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
-        let origin = Instant::now();
+        let status = Status::default();
+        let worker_status = status.clone();
         let join = thread::Builder::new()
             .name("gwz-ssh-endpoint".into())
             .spawn(move || {
-                run(
-                    receiver,
-                    pool,
-                    host,
-                    io_timeout_ms,
-                    cleanup,
-                    worker_stop,
-                    move || elapsed(origin),
-                    id,
-                );
+                let run_pool = pool.clone();
+                let report = worker_status.clone();
+                ssh_shutdown::manage(host, pool, worker_status, retention, origin, |host| {
+                    run(
+                        receiver,
+                        run_pool,
+                        host,
+                        io_timeout_ms,
+                        cleanup,
+                        worker_stop,
+                        move || elapsed(origin),
+                        id,
+                        &report,
+                    );
+                });
             })?;
         Ok(Self {
             shared: Arc::new(Shared {
@@ -155,6 +182,7 @@ impl Endpoint {
                 stop,
                 origin,
                 join: Mutex::new(Some(join)),
+                status,
             }),
         })
     }
@@ -165,6 +193,16 @@ impl Endpoint {
         service: GitService,
         path: &str,
     ) -> io::Result<BlockingStream> {
+        self.open_observed(key, identity, service, path)
+            .map(|(stream, _)| stream)
+    }
+    pub(crate) fn open_observed(
+        &self,
+        key: Key,
+        identity: Identity,
+        service: GitService,
+        path: &str,
+    ) -> io::Result<(BlockingStream, Opened)> {
         if self.shared.stop.load(Ordering::Acquire) {
             return Err(stopped());
         }
@@ -221,6 +259,12 @@ impl Endpoint {
             }
         }
     }
+    pub(crate) fn shutdown_watch(&self) -> ssh_shutdown::ShutdownWatch {
+        ssh_shutdown::ShutdownWatch(self.shared.status.clone())
+    }
+    pub(crate) fn shutdown_status(&self) -> ShutdownStatus {
+        *self.shared.status.lock().unwrap_or_else(|e| e.into_inner())
+    }
     /// Cancels pending/active work through every clone, even with timeouts disabled.
     pub(crate) fn shutdown(&self) {
         self.shared.stop.store(true, Ordering::Release);
@@ -249,12 +293,13 @@ impl Drop for StopOnExit {
 fn run<C>(
     receiver: Receiver<OpenRequest>,
     pool: Pool,
-    mut host: PoolHost<C>,
+    host: &mut PoolHost<C>,
     io_timeout_ms: u64,
     cleanup: u64,
     stop: Arc<AtomicBool>,
     clock: impl Fn() -> u64,
     worker_id: u64,
+    status: &Status,
 ) where
     C: Connector,
     C::Resource: ChannelResource,
@@ -278,12 +323,21 @@ fn run<C>(
             pool.shutdown();
         }
         if host.step(&mut cx, now).is_err() {
+            ssh_shutdown::fail(status, io::ErrorKind::Other);
             break;
+        }
+        ssh_shutdown::sample(status, host);
+        if let Some(error) = host.take_disposal_error() {
+            ssh_shutdown::fail(status, error.kind());
+            stop.store(true, Ordering::Release);
+            if stopping_at.is_none() {
+                continue;
+            }
         }
         if stopping_at.is_some_and(|at| now >= at)
             || (stopping_at.is_some() && host.shutdown_complete())
         {
-            break; // PoolHost Drop is the bounded forced-disposal fallback.
+            break; // The owner transfers unfinished cleanup to the reserved supervisor slot.
         }
         for _ in 0..32 {
             let Ok(request) = receiver.try_recv() else {
@@ -329,7 +383,7 @@ fn run<C>(
                         };
                         serial = next;
                         attach(
-                            &mut host,
+                            host,
                             lease,
                             &item.request,
                             &session,
@@ -365,7 +419,7 @@ fn run<C>(
                 let exchange = active.swap_remove(index);
                 // Active owns a disconnect guard, so consume its lease through
                 // a separate release helper after detaching that guard below.
-                release(&mut host, exchange, disposition);
+                release(host, exchange, disposition);
             } else {
                 index += 1;
             }
@@ -395,7 +449,7 @@ fn attach<C: Connector>(
     now: u64,
     io_timeout: u64,
     active: &mut Vec<Active>,
-) -> io::Result<BlockingStream>
+) -> io::Result<(BlockingStream, Opened)>
 where
     C::Resource: ChannelResource,
 {
@@ -411,7 +465,16 @@ where
     let (stream, endpoint) = Stream::new(config(Side::Endpoint)).map_err(io::Error::other)?;
     peer.advance(now);
     endpoint.advance(now);
+    let connection_id = format!(
+        "{session}-{}",
+        lease.connection().map_err(io::Error::other)?.sequence()
+    );
+    let reused = host.allocation_reused(&lease).map_err(io::Error::other)?;
     let resource = host.resource(&lease).map_err(io::Error::other)?;
+    let (_, mut facts) = resource.observation();
+    if reused {
+        facts.credential_offered = false;
+    }
     resource.start_exchange(stream, endpoint, request.service, &request.path)?;
     if resource.pump().is_none() {
         return Err(io::Error::other("resource did not install a channel pump"));
@@ -420,7 +483,17 @@ where
         lease: Some(lease),
         peer,
     });
-    Ok(BlockingStream::new(client))
+    Ok((
+        BlockingStream::new(client),
+        Opened {
+            connection_id,
+            reused,
+            endpoint_id: session.into(),
+            trust_owner: session.into(),
+            facts,
+            receive_limits: config(Side::Endpoint).receive_limits,
+        },
+    ))
 }
 fn transfer(
     pump: &mut SshPump<SshChannel>,
