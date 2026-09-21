@@ -1,6 +1,6 @@
 # SSH N3a — local endpoint assembly and per-operation routes
 
-Date: 2026-09-22. Status: implemented locally; retained Code/State review pending.
+Date: 2026-09-22. Status: accepted local assembly after retained Code/State GO.
 Authority: GwzRemoteTransportSshProductionSetup.md N3 and accepted N1/N2b.
 
 This bounded attachment step composes the accepted supervised network/trust,
@@ -63,3 +63,19 @@ and final green are retained in the private run
 `ssh-integration/runs/2026-09-22-local-endpoint-n3a` with source hashes.
 Scoped rustfmt and whitespace checks pass. No platform/source qualification was
 run. This is evidence for endpoint/route assembly, not backend-driver coverage.
+
+## Acceptance
+
+Accepted at root `514f3cfeb233acd4e3f6c9c7e1bc07f17275373a`, core
+`dfe76d0fc4a440f04262d2e1a22e40542e051925`, evidence
+`e6c9226bf204f9d96b4556878c272e6409636420`, transport
+`16a383e7d1c0e7e3234006688986afc2c6e54ca5`; fork pins remain unchanged.
+Retained [Code GO](../../dev-docs/GwzRemoteTransportSshN3a-ReviewCode.md) and
+[State GO](../../dev-docs/GwzRemoteTransportSshN3a-ReviewState.md), zero findings.
+Both independently reran the focused gate. One aggregate round, no remediation,
+no blind-convergent or known escaped defect. Test-authoring errors are recorded
+above; accepted production behavior required no correction after review.
+
+Production additions120 in two files (seven removed); tests288 in one file.
+This acceptance is confined to the stated N3a scope. N3b/N3c and the deferred
+activation prerequisites remain. This annotation changes no executable code.
