@@ -76,7 +76,6 @@ fn invalid_ssh_refuses_without_echoing_secrets_and_nonssh_stays_native() {
         "ssh://u:sentinel@host/a",
         "ssh://host/a?sentinel",
         "ssh://host/a#sentinel",
-        "ssh://host/",
         "host:",
         "ssh://host:0/a",
         "ssh://host:65536/a",
@@ -109,5 +108,71 @@ fn invalid_ssh_refuses_without_echoing_secrets_and_nonssh_stays_native() {
         "",
     ] {
         assert!(Destination::parse(url).unwrap().is_none(), "{url}");
+    }
+}
+
+#[test]
+fn pinned_native_scp_authorities_and_root_operands() {
+    for (url, user, host, port, path) in [
+        (
+            "[example.com]:/resource",
+            "git",
+            "example.com",
+            22,
+            "/resource",
+        ),
+        (
+            "[example.com:42]:/resource",
+            "git",
+            "example.com",
+            42,
+            "/resource",
+        ),
+        (
+            "[user@example.com:42]:/resource",
+            "user",
+            "example.com",
+            42,
+            "/resource",
+        ),
+        (
+            "user@[example.com:42]:/resource",
+            "user",
+            "example.com",
+            42,
+            "/resource",
+        ),
+        (
+            "[192.168.99.88]:/resource",
+            "git",
+            "192.168.99.88",
+            22,
+            "/resource",
+        ),
+        ("[::1]:/resource", "git", "::1", 22, "/resource"),
+        (
+            "[[fe80::1]:99]:/resource",
+            "git",
+            "fe80::1",
+            99,
+            "/resource",
+        ),
+        (
+            "[user@[fe80::1]:99]:/resource",
+            "user",
+            "fe80::1",
+            99,
+            "/resource",
+        ),
+        ("example.com:/", "git", "example.com", 22, "/"),
+        ("ssh://host/", "git", "host", 22, "/"),
+    ] {
+        let target = Destination::parse(url).unwrap().unwrap();
+        assert_eq!(
+            target.key,
+            gwz_transport::pool::Key::ssh(user, host, port),
+            "{url}"
+        );
+        assert_eq!(target.path, path);
     }
 }

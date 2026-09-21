@@ -25,13 +25,7 @@ impl Destination {
             (&rest[..slash], &rest[slash..], true)
         } else {
             // A colon after a slash or a Windows drive designates a local path.
-            let Some(colon) = scp_colon(input) else {
-                if input.contains(':')
-                    && !input.contains(['/', '\\'])
-                    && (input.starts_with('[') || input.contains("@["))
-                {
-                    return Err(invalid());
-                }
+            let Some(colon) = scp_colon(input)? else {
                 return Ok(None);
             };
             let authority = &input[..colon];
@@ -45,6 +39,13 @@ impl Destination {
         if input.len() > 18_000 || input.chars().any(char::is_control) {
             return Err(invalid());
         }
+        // Native SCP accepts brackets around the entire authority as well as
+        // around an IPv6 address. Strip only an outer, non-IPv6 grouping.
+        let authority = if escaped {
+            authority
+        } else {
+            scp_group(authority)
+        };
         let (user, host_port) = match authority.split_once('@') {
             Some((user, host))
                 if !user.is_empty() && !user.contains(':') && !host.contains('@') =>
@@ -73,11 +74,7 @@ impl Destination {
         if escaped && path.starts_with("/~") {
             path.remove(0);
         }
-        if path.is_empty()
-            || path == "/"
-            || path.len() > 16_384
-            || path.chars().any(char::is_control)
-        {
+        if path.is_empty() || path.len() > 16_384 || path.chars().any(char::is_control) {
             return Err(invalid());
         }
         Ok(Some(Self {
@@ -90,19 +87,33 @@ fn invalid() -> io::Error {
     // Do not echo a possibly credential-bearing URL in an error or observation.
     io::Error::new(io::ErrorKind::InvalidInput, "invalid SSH destination")
 }
-fn scp_colon(input: &str) -> Option<usize> {
-    let mut bracket = false;
+fn scp_colon(input: &str) -> io::Result<Option<usize>> {
+    if !input.contains(':') {
+        return Ok(None);
+    }
+    let mut depth = 0_usize;
     for (index, byte) in input.bytes().enumerate() {
         match byte {
-            b'[' => bracket = true,
-            b']' => bracket = false,
-            b':' if !bracket => return Some(index),
+            b'[' => depth += 1,
+            b']' => depth = depth.checked_sub(1).ok_or_else(invalid)?,
+            b':' if depth == 0 => return Ok(Some(index)),
+            b'/' | b'\\' if depth == 0 => return Ok(None),
             _ => {}
         }
     }
-    None
+    if depth != 0 {
+        return Err(invalid());
+    }
+    Ok(None)
+}
+fn scp_group(input: &str) -> &str {
+    match input.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        Some(inner) if inner.parse::<Ipv6Addr>().is_err() => inner,
+        _ => input,
+    }
 }
 fn host_port_parts(input: &str, url: bool) -> io::Result<(String, u16)> {
+    let input = if url { input } else { scp_group(input) };
     let (host, port) = if let Some(rest) = input.strip_prefix('[') {
         let (host, suffix) = rest.split_once(']').ok_or_else(invalid)?;
         host.parse::<Ipv6Addr>().map_err(|_| invalid())?;
@@ -124,7 +135,6 @@ fn host_port_parts(input: &str, url: bool) -> io::Result<(String, u16)> {
             .chars()
             .any(|c| c.is_whitespace() || c.is_control() || "@/?#\\%[]".contains(c))
         || (!input.starts_with('[') && host.contains(':'))
-        || (!url && port.is_some())
     {
         return Err(invalid());
     }

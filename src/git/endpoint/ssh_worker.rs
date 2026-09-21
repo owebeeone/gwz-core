@@ -141,7 +141,7 @@ impl Endpoint {
                     io_timeout_ms,
                     cleanup,
                     worker_stop,
-                    origin,
+                    move || elapsed(origin),
                     id,
                 );
             })?;
@@ -253,7 +253,7 @@ fn run<C>(
     io_timeout_ms: u64,
     cleanup: u64,
     stop: Arc<AtomicBool>,
-    origin: Instant,
+    clock: impl Fn() -> u64,
     worker_id: u64,
 ) where
     C: Connector,
@@ -268,7 +268,7 @@ fn run<C>(
     let mut stopping_at = None;
     let session = format!("ssh-worker-{worker_id}");
     loop {
-        let now = elapsed(origin);
+        let now = clock();
         if stop.load(Ordering::Acquire) && stopping_at.is_none() {
             stopping_at = Some(now.saturating_add(cleanup));
             for item in pending.drain(..) {
@@ -289,8 +289,12 @@ fn run<C>(
             let Ok(request) = receiver.try_recv() else {
                 break;
             };
-            if stopping_at.is_some() || request.expired(now) {
+            if stopping_at.is_some() {
                 request.complete(Err(stopped()));
+                continue;
+            }
+            if request.expired(now) {
+                request.complete(Err(io::ErrorKind::TimedOut.into()));
                 continue;
             }
             let Some(next) = serial.checked_add(1) else {
@@ -459,4 +463,11 @@ fn elapsed(origin: Instant) -> u64 {
 }
 fn stopped() -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, "SSH endpoint stopped")
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        #[path = "../../../tests/transport_ssh/support/worker_queue.rs"]
+        mod queue_tests;
+    }
 }

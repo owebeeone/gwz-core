@@ -129,3 +129,22 @@ No known escaped defect; formal review results are recorded after settlement.
 Raw passing/failing logs and exact final source hashes are retained in
 [worker-a](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-21-worker-a/README.md)
 (private member access required). Platform/source checks remain batched later.
+
+## Remediation 1 — awaiting retained re-verdicts
+
+Independent review found two P2 defects: Code found narrowed SCP grammar; State
+found queued expiry misreported as shutdown. Both reproduced red, then were
+corrected in one patch. Bracketed hostname/IPv4/IPv6/user/port and root operands
+now retain native compatibility. Queue expiry and cancellation caused by caller
+timeout return TimedOut; actual shutdown remains BrokenPipe. A deterministic
+clock seam (production still uses elapsed Instant) proves exact/past expiry,
+admission release and continued worker service without scheduling races.
+
+Final additions: 685 lines across three new internal source files plus five pump
+lines; tests/support 1,054 new-file lines plus the pump regression. The merged
+[remediation plan](../../dev-docs/GwzRemoteTransportSshWorker-RemPlan-1.md) refines
+the test ceiling, excludes adjacent activation work and records both dispositions.
+The focused gate passes 38 test executions (one queue test in two fixture crates),
+plus the parent-executed ignored child entry. Raw red/green outputs and hashes:
+[worker-rem-1](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-21-worker-rem-1/README.md)
+(private archive). Neither finding is self-closed; retained reviewers re-verdict.

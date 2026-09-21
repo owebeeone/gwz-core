@@ -104,7 +104,18 @@ fn admission_precedes_identity_and_current_authority_is_resolved_on_every_open()
     });
     let endpoint = Endpoint::new(Config::default(), Factory(counts.clone()), 1000).unwrap();
     let route = Route::new(endpoint, counts.clone());
-    for url in ["ssh://u:secret@host/repo", "https://host/repo"] {
+    for url in [
+        "ssh://u:secret@host/repo",
+        "https://host/repo",
+        "C:\\repo",
+        "C:/repo",
+        "[host:0]:repo",
+        "[host:65536]:repo",
+        "[host:bad]:repo",
+        "[host]:",
+        "[host:repo",
+        "host]:repo",
+    ] {
         assert!(route.open(url, GitService::UploadPack).is_err());
     }
     assert_eq!(counts.resolved.load(Ordering::SeqCst), 0);
@@ -121,6 +132,17 @@ fn admission_precedes_identity_and_current_authority_is_resolved_on_every_open()
     assert!(route.open("git@host:repo", GitService::UploadPack).is_err());
     assert_eq!(counts.starts.load(Ordering::SeqCst), 1);
     assert_eq!(counts.resolved.load(Ordering::SeqCst), 3);
+    counts.eligible.store(true, Ordering::SeqCst);
+    for url in [
+        "[host]:/resource",
+        "[host:42]:/resource",
+        "[git@host:42]:/resource",
+        "host:/",
+    ] {
+        let before = counts.starts.load(Ordering::SeqCst);
+        assert!(route.open(url, GitService::UploadPack).is_err()); // fixture authentication refusal
+        assert_eq!(counts.starts.load(Ordering::SeqCst), before + 1, "{url}");
+    }
 }
 
 #[test]
