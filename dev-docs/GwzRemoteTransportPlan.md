@@ -274,7 +274,7 @@ unadvertised until their own gates pass.
 ### Phase 4 — CLI endpoint placement over the message channel
 
 Concrete interface admission is in [the placement amendment](GwzRemoteTransportPlacementDesign.md)
-(currently draft). Its A/B integration batches precede supplied-carrier qualification;
+(accepted after Consistency, Safety and Surface GO). Its A/B integration batches precede supplied-carrier qualification;
 it does not authorize creating that carrier.
 
 Install the CLI-hosted endpoint and connect core's mux through the externally
@@ -399,11 +399,14 @@ fetch does not complete the programme.
 
 ## 6. Immediate next action
 
-N3 local candidate backend attachment is accepted; see [scope/results and dual
-GO](GwzRemoteTransportSshN3.md) and the current workspace checkpoint. Prepare
-Phase4's optional-field/placement interface admission using the supplied existing
-CLI–core message API, including terminal failure disposition. No new physical
-carrier or service surface is authorized by that step. HTTPS remains Phase5.
+N3 local candidate backend attachment and the [Phase4 placement interface](GwzRemoteTransportPlacementDesign.md)
+are accepted; see the current workspace checkpoint and filed review verdicts.
+Implement placement batch A: shared v2 schema, missing-field compatibility,
+bounded mux/check/terminal lifecycle and deterministic in-memory tests. Then
+batch B integrates the shared SSH endpoint across all backend funnels. Include
+Surface P3-1's port direction/tuple labeling in A's documentation fixture.
+No new physical carrier or service surface is authorized. Supplied-carrier
+qualification remains batch C; HTTPS remains Phase5.
 
 Keep platform and selected-source checks together in the operator-deferred batch;
 production dependency/route activation and the remaining native compatibility

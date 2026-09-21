@@ -1,6 +1,14 @@
 # GWZ transport — endpoint placement integration
 
-Status: **DRAFT for Consistency, Safety and Surface review.** 2026-09-22.
+Status: **accepted at core `6c9abaef8ef2257371637a3f02d0771cd84bab34`,
+root `a4c5b22299be9128fef4fd212b374c669353be14`, after retained
+[Consistency](../../dev-docs/GwzRemoteTransportPlacementDesign-ReviewConsistency-1.md),
+[Safety](../../dev-docs/GwzRemoteTransportPlacementDesign-ReviewSafety-1.md) and
+[Surface](../../dev-docs/GwzRemoteTransportPlacementDesign-ReviewSurface-1.md)
+reported GO.** 2026-09-22. This accepts the A/B implementation design only.
+One consolidated correction; all blocking findings closed. Nonblocking Surface
+P3-1 (port direction/tuple labeling) is assigned to batch A's documentation fixture
+before publication. Exact unchanged member pins are in the reports.
 This admits Phase 4 implementation, not production activation or a new carrier.
 
 ## 1. Scope, evidence and controlling documents
@@ -370,7 +378,7 @@ qualification remain separate later work.
 
 ## 9. Exact authority changes and acceptance
 
-On acceptance, this amendment refines Design §§3/3.0/3.1, 4.1.1 and 10 and
+This accepted amendment refines Design §§3/3.0/3.1, 4.1.1 and 10 and
 Plan Phase 4 with exact attachment tags, endpoint checks, failure facts and v2
 negotiation. It supersedes only v1-only implementation assumptions and the local
 N3 refusal receipt as a sufficient cross-placement mechanism. It preserves v1

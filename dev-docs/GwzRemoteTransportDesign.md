@@ -2,8 +2,8 @@
 
 
 Phase 4 detail: [endpoint-placement amendment](GwzRemoteTransportPlacementDesign.md)
-is draft pending its independent interface review; existing authority remains
-unchanged until acceptance.
+is accepted after Consistency, Safety and Surface GO; it controls the exact
+Phase 4 additions identified in its §9 without authorizing a new carrier.
 
 Status: design draft, 2026-09-19; implements the accepted direction in
 [GwzRemoteTransportRequirements.md](GwzRemoteTransportRequirements.md).
