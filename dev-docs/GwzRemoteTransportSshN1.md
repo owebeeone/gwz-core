@@ -1,6 +1,6 @@
 # SSH N1 — native connection and host trust
 
-Date:2026-09-21. Status: remediation 1 implemented; retained focused re-review pending.
+Date:2026-09-21. Status: accepted local N1 after retained Code/State GO.
 Authority: accepted GwzRemoteTransportSshProductionSetup.md N1, amended G1,
 accepted A1/A2/A3. No production routing/dependency or public wire activation.
 
@@ -76,5 +76,31 @@ attempt, native CR/comment parity and exact CRLF size bounds. An intermediate
 long combined regression hit sshd's native per-source unauthenticated-connection
 penalty, confirmed by a separate verbose native probe. Final small fixture groups
 isolate that server state without weakening protection or retrying assertions.
-Retained Code must close both findings; State confirms the changed range on the
-same corrected tuple. No acceptance, activation, or escaped-defect claim yet.
+Retained Code closes both findings; State confirms the changed range on the
+same corrected tuple. This accepts N1 only. No production activation or known
+post-acceptance escaped defect.
+
+## Acceptance
+
+Accepted at root `398ca8350a88723b24660b96f7f00a0fd3e02199`, core
+`5ff531cedf244e9e86d3cf33d73559b2c23bf1a9`, evidence
+`e842abf855e58de3c4381855fbc1b8374485a7cd`, transport
+`28f5afb3938a2aa8af0e1e8d5b07779add6ab776`, git2-rs
+`ce78628308e11b4e8901d5061602619109bce21a`, libgit2
+`b172e3d187a4b6866fd9f696f40a1b8e7f56d348` after retained
+[Code GO](../../dev-docs/GwzRemoteTransportSshN1-ReviewCode-1.md) and
+[State GO](../../dev-docs/GwzRemoteTransportSshN1-ReviewState-1.md).
+Both independently reran the18-test network binary. The owner full focused gate
+passed91 executions; the child-only ignored test is exercised by its parent.
+
+One aggregate review and one merged remediation. Discovery record: two owner
+parity corrections before initial review; two Code P2s at settled review, one
+independently reproduced by the owner; a CRLF boundary regression caught during
+remediation. No dual-axis blind convergence. The fixture source-penalty diagnosis
+is test isolation evidence, not a new production defect. Reports are verbatim.
+This acceptance filing changes no executable statements.
+
+Next: N2 concrete design/review for per-request supervised explicit-key admission,
+immutable snapshot/token bounds, native in-memory authentication and deadline
+propagation before pool reuse. N3 backend attachment follows. Other platforms,
+selected-source qualification and capability activation remain outstanding.
