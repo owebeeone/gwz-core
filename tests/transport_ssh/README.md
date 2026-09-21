@@ -99,3 +99,12 @@ this does not activate the production backend or qualify its credentials.
 agent and reaped child: the native agent read remains blocked despite session
 nonblocking mode and timeout. Its ignored child entry is run by its parent test.
 See `dev-docs/GwzRemoteTransportSshWorker.md` for scope, results and next work.
+
+## Agent helper A1
+
+`agent_client` and `agent_capacity` compile the preactivation bounded agent
+client, local Unix adapter and setup-job supervisor. They exercise fake-agent
+fragmentation, cancellation, helper cleanup and capacity; they do not authenticate
+SSH or activate the backend. Replay printed fragmentation seeds with
+`GWZ_AGENT_SEED=<seed>`. See `dev-docs/GwzRemoteTransportSshAgentA1.md` for exact
+local evidence and remaining native-signing/platform gates.

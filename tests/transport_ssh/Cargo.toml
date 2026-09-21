@@ -9,6 +9,8 @@ rust-version = "1.95"
 
 [dependencies]
 cfg-if = "1"
+libc = "0.2"
+socket2 = "=0.6.4"
 ssh2 = "=0.9.6"
 tempfile = "3"
 gwz-transport = { path = "../../../gwz-transport", version = "=0.1.0" }
