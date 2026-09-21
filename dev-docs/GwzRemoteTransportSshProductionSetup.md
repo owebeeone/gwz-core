@@ -104,7 +104,7 @@ a private snapshot token must not be presented as a public-key fingerprint.
    cancellable nonblocking connect/handshake, and native known-host verification.
    Compose it with A2/A3 ambient-agent setup in controlled native tests. This
    removes fixture-preconnected sessions from that path. At most 350 added
-   production lines across two cohesive modules and 650 focused test/support
+   production lines across two cohesive modules and 660 focused test/support
    lines. Endpoint discovery supplies owned paths; no user environment or
    credentials are consulted by tests. Exact explicit-key admission remains N2.
 2. **N2 selected authority:** specify bounded per-request admission, snapshot/token
@@ -164,3 +164,9 @@ compatibility boundary was independently identified by both axes. Nonblocking
 Consistency P3-1 operation-order wording is corrected in this annotation. N1
 must assert zero resolver calls for rejected size/encoding. Design acceptance
 authorizes N1 implementation, not capability or production activation.
+
+N1 test ceiling refinement: N2 authority and N3 backend work remain excluded.
+The original650-line test allowance moves to660 for native whitespace and
+key-type-prefix parity regressions; final tests652 lines. Production remains
+348/350 lines in one module. This adds no behavior beyond the stated native
+parity boundary. Implementation acceptance is recorded in GwzRemoteTransportSshN1.md.
