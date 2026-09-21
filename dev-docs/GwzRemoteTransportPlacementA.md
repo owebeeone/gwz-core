@@ -1,6 +1,6 @@
 # Endpoint placement — batch A
 
-Status: **DRAFT correction 1; focused retained re-verdicts pending.**
+Status: **DRAFT correction 2; focused retained re-verdicts pending.**
 2026-09-22. Implements batch A of the accepted
 [placement design](GwzRemoteTransportPlacementDesign.md#8-implementation-batches-and-evidence).
 The design acceptance does not imply implementation acceptance.
@@ -123,3 +123,17 @@ facts, timeout terminals, local cleanup delivery, saturation, repeated cancellat
 shutdown/drop, incompatible versions/limits, malformed Bind and stalled rejection.
 Private [correction evidence](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-22-placement-a-rem1/README.md)
 retains original failures and final results. Acceptance still requires re-verdicts.
+
+## Correction 2 — bootstrap error domain
+
+Round-one Code closed both prior P2s; State and Surface returned GO. Code found
+one changed-range P2: retained BindRejected admitted operation-time errors outside
+its frozen negotiation-only domain. [Correction 2](../../dev-docs/GwzRemoteTransportPlacementA-RemPlan-2.md)
+centralizes admission to UnsupportedVersion/UnsupportedOperation, Effect::None,
+and absent facts. Invalid endpoint limits/identity/capabilities fail locally;
+malformed peer rejections close as Protocol without an authoritative failure.
+Both permitted outcomes survive async handoff and closure. No schema/API change.
+
+Causal red tests and final outputs are in the private
+[round-two evidence](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-22-placement-a-rem2/README.md).
+The retained reviewers must verify closure before acceptance.
