@@ -769,6 +769,7 @@ pub(super) fn attach_transport_error<B: GitBackend>(
             message: None,
             attribution: context.attribution.as_ref().map(Into::into),
             transport: Some(rows),
+            ..Default::default()
         }));
     }
     error

@@ -35,3 +35,23 @@ existing native route. The existing synchronous key-availability preflight is
 preserved; definitive snapshot admission is independently supervised before every
 candidate pool checkout. This does not claim that inherited preflight filesystem
 calls are bounded.
+
+
+## Endpoint placement candidate
+
+The same prepared manifest also selects the shared generated schema and the
+`transport_host` facade. Run the complete host/CLI-endpoint integration suite:
+
+```sh
+RUSTFLAGS='--cfg gwz_transport_candidate' cargo +1.95.0 test \
+  --manifest-path /tmp/gwz-backend-new/Cargo.toml --locked --offline \
+  --target-dir /tmp/gwz-backend-new-target --lib transport_host -- --test-threads=1
+python3 -B -m pytest -q gwz-core/tests/transport_backend/test_prepare.py
+```
+
+This compiles the exact example from `docs/TransportPlacement.md` and tests
+in-memory host message delivery, separate credential homes, real SSH streams,
+shared pools, endpoint preflight, authentication/refusal facts, cancellation,
+concurrent streams, and ordinary workspace command drivers. It does not add a
+physical CLI/core carrier or qualify a split-process deployment. The local SSH
+fixture server uses disposable keys; no user's credentials are used.

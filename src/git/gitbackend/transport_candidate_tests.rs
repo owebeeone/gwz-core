@@ -36,6 +36,7 @@ fn fixture() -> (
         ),
         remote_identities: Vec::new(),
         url_scheme: None,
+        ..Default::default()
     };
     let backend = backend
         .with_transport(f.temp.path(), Some(&options))
@@ -157,6 +158,7 @@ fn candidate_failed_key_and_trust_have_distinct_facts() {
                 ),
                 remote_identities: vec![],
                 url_scheme: None,
+                ..Default::default()
             }),
         )
         .unwrap()

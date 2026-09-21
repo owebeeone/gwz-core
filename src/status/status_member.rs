@@ -90,6 +90,7 @@ where
                 operation_id: Some(context.operation_id),
                 message: None,
                 attribution: context.attribution.as_ref().map(Into::into),
+                ..Default::default()
             },
             members,
             errors: Vec::new(),

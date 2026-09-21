@@ -22,6 +22,7 @@ where
 {
     let start = invocation_start(start, &request.meta)?;
     let context = OperationRequest::Materialize(request.clone()).context(operation_id.into())?;
+    backend.validate_transport_scope(&request.meta, &context.operation_id)?;
     let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
     let services = crate::operation_context::OperationServices::for_merge(backend);

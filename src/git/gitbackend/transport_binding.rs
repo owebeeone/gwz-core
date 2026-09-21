@@ -9,8 +9,9 @@ cfg_if::cfg_if! {
     if #[cfg(all(unix, gwz_transport_candidate))] {
         use crate::git::endpoint::{
             ssh_destination::Destination, ssh_endpoint::Route, ssh_local, ssh_remote::RemoteTransport,
-            ssh_worker::Endpoint,
+            ssh_remote::OpenStream, ssh_channel::GitService, ssh_worker::Endpoint,
         };
+        use gwz_transport::protocol::{Facts, Opened};
         use std::{
             io,
             sync::{Arc, Mutex},
@@ -21,6 +22,7 @@ cfg_if::cfg_if! {
         struct RuntimeState {
             endpoint: Mutex<Option<Endpoint>>,
             factory: Box<dyn Fn() -> io::Result<Endpoint> + Send + Sync>,
+            host_context: Mutex<Option<crate::transport_host::RequestContext>>,
         }
         impl Default for Runtime {
             fn default() -> Self {
@@ -46,7 +48,36 @@ cfg_if::cfg_if! {
                 Self(Arc::new(RuntimeState {
                     endpoint: Mutex::new(None),
                     factory: Box::new(factory),
+                    host_context: Mutex::new(None),
                 }))
+            }
+            pub(crate) fn with_host_context(&self, context: crate::transport_host::RequestContext) -> Self {
+                *self.0.host_context.lock().unwrap_or_else(|e| e.into_inner()) = Some(context);
+                self.clone()
+            }
+            pub(crate) fn host_context(&self) -> Option<crate::transport_host::RequestContext> {
+                self.0.host_context.lock().unwrap_or_else(|e| e.into_inner()).clone()
+            }
+            pub(crate) fn is_cli_context(&self) -> bool {
+                self.host_context().is_some_and(|context| context.is_cli())
+            }
+            pub(crate) fn validate_scope(
+                &self,
+                meta: &crate::RequestMeta,
+                operation_id: &str,
+            ) -> crate::model::ModelResult<()> {
+                if let Some(context) = self.host_context() {
+                    context.validate(meta, operation_id)
+                } else {
+                    Ok(())
+                }
+            }
+            pub(crate) fn check_identity(&self, raw: &str) -> crate::model::ModelResult<()> {
+                if let Some(context) = self.host_context() {
+                    context.check_identity(raw)
+                } else {
+                    Ok(())
+                }
             }
             pub(super) fn endpoint(&self) -> io::Result<Endpoint> {
                 // Construction reserves ownership but performs no network/trust I/O.
@@ -67,6 +98,23 @@ cfg_if::cfg_if! {
                 }
             }
         }
+        struct HostRoute {
+            context: crate::transport_host::RequestContext,
+            selected: Option<String>,
+            report: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
+            facts: Arc<dyn Fn(&Facts) + Send + Sync>,
+        }
+        impl OpenStream for HostRoute {
+            fn open(&self, url: &str, service: GitService) -> io::Result<super::super::endpoint::stream_io::BlockingStream> {
+                self.context.open(
+                    url,
+                    service,
+                    self.selected.clone(),
+                    self.report.clone(),
+                    self.facts.clone(),
+                )
+            }
+        }
         pub(crate) fn configure(
             backend: &Git2Backend,
             url: &str,
@@ -82,6 +130,27 @@ cfg_if::cfg_if! {
             let attempt = attempt.cloned();
             callbacks.smart_transport(false, move |_| {
                 let attempt = attempt.clone();
+                if let Some(context) = runtime.host_context() {
+                    let selected = selected.as_ref().map(|path| path.to_string_lossy().into_owned());
+                    let facts_attempt = attempt.clone();
+                    let opened_attempt = attempt.clone();
+                    let route = HostRoute {
+                        context,
+                        selected,
+                        report: Arc::new(move |stream_id, opened| {
+                            if let Some(attempt) = &opened_attempt {
+                                attempt.opened(stream_id, opened);
+                                attempt.facts(&opened.facts);
+                            }
+                        }),
+                        facts: Arc::new(move |facts| {
+                            if let Some(attempt) = &facts_attempt {
+                                attempt.facts(facts);
+                            }
+                        }),
+                    };
+                    return Ok(RemoteTransport::new(Arc::new(route)));
+                }
                 let route = Route::reporting(
                     runtime.endpoint().map_err(|e| {
                         git2::Error::new(
@@ -107,6 +176,21 @@ cfg_if::cfg_if! {
     } else {
         #[derive(Clone, Default)]
         pub(crate) struct Runtime;
+        impl Runtime {
+            pub(crate) fn is_cli_context(&self) -> bool {
+                false
+            }
+            pub(crate) fn validate_scope(
+                &self,
+                _meta: &crate::RequestMeta,
+                _operation_id: &str,
+            ) -> crate::model::ModelResult<()> {
+                Ok(())
+            }
+            pub(crate) fn check_identity(&self, _raw: &str) -> crate::model::ModelResult<()> {
+                Ok(())
+            }
+        }
         pub(super) fn repository_refused(_error: &git2::Error) -> bool { false }
         pub(crate) fn configure(
             _backend: &Git2Backend, _url: &str, _identity: Option<&SelectedIdentity>,

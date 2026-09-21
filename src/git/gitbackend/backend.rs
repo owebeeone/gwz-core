@@ -60,6 +60,16 @@ impl Git2Backend {
         }
     }
 
+    cfg_if::cfg_if! {
+        if #[cfg(all(unix, gwz_transport_candidate))] {
+            pub(crate) fn with_host_context(&self, context: crate::transport_host::RequestContext) -> Self {
+                let mut backend = self.clone();
+                backend.ssh = backend.ssh.with_host_context(context);
+                backend
+            }
+        }
+    }
+
     /// Compose the filesystem and repository services for one operation from
     /// this exact production backend.
     ///

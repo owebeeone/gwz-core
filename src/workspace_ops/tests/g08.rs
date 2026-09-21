@@ -37,6 +37,7 @@ fn unknown_identity_override_refuses_before_root_publication() {
                         remote: "typo".into(),
                         private_key_path: key.to_str().unwrap().into(),
                     }],
+                    ..Default::default()
                 }),
                 ..request_meta_with_workspace()
             },
@@ -899,6 +900,7 @@ fn a_remote_identity_for_an_https_read_url_refuses_before_any_transfer() {
                             remote: "origin".into(),
                             private_key_path: key.to_str().unwrap().into(),
                         }],
+                        ..Default::default()
                     }),
                     ..request_meta_with_workspace()
                 },

@@ -47,6 +47,7 @@ where
     request.source.url = resolve_invocation_git_source(&start, &request.source.url)?;
     let context =
         OperationRequest::CloneRepoMember(request.clone()).context(operation_id.into())?;
+    backend.validate_transport_scope(&request.meta, &context.operation_id)?;
     let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
     let services = crate::operation_context::OperationServices::for_merge(backend);

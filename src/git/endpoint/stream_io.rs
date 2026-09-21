@@ -84,11 +84,16 @@ fn io_error(error: Error) -> io::Error {
         Error::Timeout => io::ErrorKind::TimedOut,
         Error::Protocol => io::ErrorKind::InvalidData,
         Error::InvalidConfig | Error::WrongState | Error::WrongSide => io::ErrorKind::InvalidInput,
-        Error::PeerFailed { code, .. } => match code {
-            gwz_transport::protocol::ErrorCode::Timeout => io::ErrorKind::TimedOut,
-            gwz_transport::protocol::ErrorCode::Cancelled => io::ErrorKind::ConnectionAborted,
-            _ => io::ErrorKind::Other,
-        },
+        Error::PeerFailed { code, .. } => {
+            if code == gwz_transport::protocol::ErrorCode::RepositoryRefused {
+                return io::Error::new(io::ErrorKind::PermissionDenied, REPOSITORY_REFUSED);
+            }
+            match code {
+                gwz_transport::protocol::ErrorCode::Timeout => io::ErrorKind::TimedOut,
+                gwz_transport::protocol::ErrorCode::Cancelled => io::ErrorKind::ConnectionAborted,
+                _ => io::ErrorKind::Other,
+            }
+        }
         Error::WouldBlock | Error::WaiterCapacity => io::ErrorKind::Other,
     };
     io::Error::new(kind, error)

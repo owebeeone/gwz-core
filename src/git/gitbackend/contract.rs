@@ -112,6 +112,17 @@ pub trait GitRepository {
         Ok(None)
     }
 
+    /// Validate the request-scoped receiver/operation binding before transport
+    /// work or workspace mutation. Candidate hosts provide the installed
+    /// request context; the native backend keeps the no-op default.
+    fn validate_transport_scope(
+        &self,
+        _meta: &crate::RequestMeta,
+        _operation_id: &str,
+    ) -> ModelResult<()> {
+        Ok(())
+    }
+
     fn transport_observations(
         &self,
     ) -> Option<super::transport_observations::TransportObservations> {

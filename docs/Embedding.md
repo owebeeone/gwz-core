@@ -101,8 +101,8 @@ and member statuses.
 
 See [ErrorCatalog](ErrorCatalog.md) and [OperationModel](OperationModel.md).
 
-## Planned endpoint placement
+## Candidate endpoint placement
 
-The proposed [endpoint placement API](TransportPlacement.md) describes how an
+The candidate [endpoint placement API](TransportPlacement.md) describes how an
 embedding can keep repository work in core while a supplied client endpoint owns
 Git connections. It is a candidate interface, not a released capability.

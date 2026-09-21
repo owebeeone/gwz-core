@@ -23,8 +23,10 @@ pub fn handle_repo_sync<B>(
 where
     B: GitBackend + MergeAuthorityBackend,
 {
-    let services = crate::operation_context::OperationServices::for_merge(backend);
+    let operation_id = operation_id.into();
+    backend.validate_transport_scope(&request.meta, &operation_id)?;
     let start = invocation_start(start, &request.meta)?;
+    let services = crate::operation_context::OperationServices::for_merge(backend);
     handle_repo_sync_in(&services, backend, &start, request, operation_id)
 }
 

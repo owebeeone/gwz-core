@@ -77,6 +77,39 @@ impl Selection {
         })
     }
 
+    // Candidate CLI placement keeps identity paths opaque to core. The
+    // endpoint owns path parsing, expansion and file checks.
+    cfg_if::cfg_if! {
+        if #[cfg(all(unix, gwz_transport_candidate))] {
+            pub(crate) fn from_options_cli(options: &crate::TransportOptions) -> ModelResult<Self> {
+        let default = options
+            .default_identity
+            .as_deref()
+            .map(opaque_path)
+            .transpose()?;
+        let mut remotes = BTreeMap::new();
+        for entry in &options.remote_identities {
+            if entry.remote.trim().is_empty()
+                || !git2::Reference::is_valid_name(&format!("refs/remotes/{}/HEAD", entry.remote))
+            {
+                return Err(invalid("invalid remote name in SSH identity override"));
+            }
+            if remotes
+                .insert(entry.remote.clone(), opaque_path(&entry.private_key_path)?)
+                .is_some()
+            {
+                return Err(invalid("duplicate remote SSH identity override"));
+            }
+        }
+        Ok(Self {
+            default,
+            remotes,
+            resolved: Some(Arc::new(Mutex::new(BTreeMap::new()))),
+        })
+            }
+        }
+    }
+
     pub(crate) fn validate_remote_names(&self, names: &[String]) -> ModelResult<()> {
         if let Some(name) = self.remotes.keys().find(|name| !names.contains(name)) {
             return Err(invalid(format!(
@@ -91,6 +124,23 @@ impl Selection {
             validate_file(path)?;
         }
         Ok(())
+    }
+
+    // CLI placement validates every invocation supplied identity before any
+    // driver starts. This includes an overridden default, so a malformed or
+    // unavailable path cannot be hidden by remote selection.
+    cfg_if::cfg_if! {
+        if #[cfg(all(unix, gwz_transport_candidate))] {
+            pub(crate) fn validate_endpoint_files(
+                &self,
+                backend: &super::super::Git2Backend,
+            ) -> ModelResult<()> {
+                for path in self.default.iter().chain(self.remotes.values()) {
+                    backend.ssh.check_identity(&path.to_string_lossy())?;
+                }
+                Ok(())
+            }
+        }
     }
 
     pub(crate) fn resolve(
@@ -131,6 +181,13 @@ pub(crate) fn resolve_path(start: &Path, path: &str) -> ModelResult<PathBuf> {
         start.join(path)
     };
     std::path::absolute(path).map_err(|_| invalid("cannot resolve SSH identity path"))
+}
+
+fn opaque_path(path: &str) -> ModelResult<PathBuf> {
+    if path.trim().is_empty() || path.contains('\0') {
+        return Err(invalid("SSH identity requires a nonempty file path"));
+    }
+    Ok(PathBuf::from(path))
 }
 
 pub(crate) fn validate_file(path: &Path) -> ModelResult<()> {
@@ -174,8 +231,13 @@ pub(crate) fn for_remote(
             )
         })?;
         if let Some(identity) = cache.get(&key) {
-            if let Some(identity) = identity {
+            if let Some(identity) = identity.as_ref().filter(|_| !backend.ssh.is_cli_context()) {
                 validate_file(&identity.path)?;
+            }
+            if let Some(identity) = identity.as_ref().filter(|_| backend.ssh.is_cli_context()) {
+                backend
+                    .ssh
+                    .check_identity(&identity.path.to_string_lossy())?;
             }
             return Ok(identity.clone());
         }
@@ -202,6 +264,12 @@ fn resolve_remote(
             .iter()
             .any(|v| scheme.eq_ignore_ascii_case(v))
     });
+    if backend.ssh.is_cli_context() && !ssh_scheme && !scp {
+        return Err(ModelError::new(
+            ErrorCode::UnsupportedOperation,
+            "explicit cli placement supports SSH routes only; native transport fallback is disabled",
+        ));
+    }
     if !ssh_scheme && !scp {
         if remote.is_some_and(|remote| backend.identities.remotes.contains_key(remote)) {
             return Err(invalid(
@@ -219,7 +287,11 @@ fn resolve_remote(
                 .open_level(git2::ConfigLevel::Local)
                 .map_err(crate::git::git_error)?;
             match local.get_string(&format!("remote.{remote}.gwzSshIdentity")) {
-                Ok(value) => Some(resolve_path(repo.workdir().unwrap_or(repo.path()), &value)?),
+                Ok(value) => Some(if backend.ssh.is_cli_context() {
+                    opaque_path(&value)?
+                } else {
+                    resolve_path(repo.workdir().unwrap_or(repo.path()), &value)?
+                }),
                 Err(error) if error.code() == git2::ErrorCode::NotFound => None,
                 Err(error) => return Err(crate::git::git_error(error)),
             }
@@ -228,7 +300,13 @@ fn resolve_remote(
     };
     let identity = invocation.or_else(|| backend.identities.resolve(remote, configured.as_deref()));
     if let Some(identity) = &identity {
-        validate_file(&identity.path)?;
+        if !backend.ssh.is_cli_context() {
+            validate_file(&identity.path)?;
+        } else {
+            backend
+                .ssh
+                .check_identity(&identity.path.to_string_lossy())?;
+        }
     }
     Ok(identity)
 }
@@ -356,6 +434,7 @@ mod tests {
                     url_scheme: None,
                     default_identity: Some("key".into()),
                     remote_identities: vec![],
+                    ..Default::default()
                 }),
             )
             .unwrap()
@@ -434,6 +513,7 @@ mod tests {
                 remote: "origin".into(),
                 private_key_path: "specific=key".into(),
             }],
+            ..Default::default()
         };
         let selection = Selection::from_options(temp.path(), &options).unwrap();
         let local = temp.path().join("configured");
@@ -472,6 +552,7 @@ mod tests {
             url_scheme: None,
             default_identity: None,
             remote_identities: vec![entry.clone(), entry.clone()],
+            ..Default::default()
         };
         assert!(Selection::from_options(temp.path(), &options).is_err());
         options.remote_identities = vec![entry];

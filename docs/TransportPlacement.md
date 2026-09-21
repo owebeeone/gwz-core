@@ -1,8 +1,9 @@
 # Choosing where Git connections run
 
-**Proposed embedding API, not yet available in released builds.** This guide
-specifies the interface being reviewed for endpoint placement. Existing CLI
-commands and the default `Git2Backend::new()` usage remain unchanged.
+**Candidate embedding API: available only in the isolated integration harness,
+not in default or released builds.** The implementation follows the accepted
+endpoint-placement contract. Existing CLI commands and the default
+`Git2Backend::new()` usage remain unchanged.
 
 An endpoint opens Git-host connections and owns SSH credentials, host trust and
 connection pools. Repository work stays in gwz-core. `local` means the core
@@ -50,8 +51,8 @@ are insufficient. The concrete connection mechanism is the host's responsibility
    Explicit bounded runtime shutdown releases pooled resources. Last-owner drop
    initiates cleanup too. A new runtime/session is required to reconnect later.
 
-The proposed signatures and complete lifecycle example appear below. They are
-part of this interface review, but are not callable in today's implementation.
+The candidate signatures and complete lifecycle example appear below. The exact
+example is compiled by the full-core candidate tests; it is not a released API.
 
 ## Options and defaults
 
@@ -103,14 +104,15 @@ credential was offered again: credential_offered is false on a reused connection
 while authenticated may describe previously proven connection authentication.
 Private-member omission follows existing core policy.
 
-This interface remains a candidate. Production availability requires implementation,
-compatibility tests, a real supplied connection test and the activation checks.
+This interface remains a candidate. Production availability still requires a
+real supplied connection test and the applicable qualification/activation checks.
 
-## Proposed Rust interface
+## Candidate Rust interface
 
-These names and signatures are the proposed interface contract in
-`gwz_core::transport_host`. They are not available in today's build. Implementation
-must compile the example below as a documentation fixture before publishing them.
+These names and signatures are implemented in `gwz_core::transport_host` under
+the isolated Unix candidate configuration. The production manifest does not enable
+that configuration. See [the integration harness](../tests/transport_backend/README.md)
+for preparation and tests; the example below is an exact-text compile fixture.
 `ModelResult<T>` and generated request/response types retain their existing meanings.
 
 ```rust
@@ -170,6 +172,16 @@ pub fn require_cli_ssh(
 
 `from_environment` captures the endpoint's own home, agent socket and existing
 startup timeout/pool policy; it performs no key/trust-file reads or connections.
+The candidate facade uses a 64 KiB receive window and the shared profile's other
+message limits. Each binding admits at most 256 distinct request IDs over its
+lifetime and 64 concurrent streams. IDs are not recycled; replace an exhausted
+CLI binding with `remove_cli`/`install_cli` and a new endpoint, or create a new
+runtime for local binding exhaustion. Endpoint pool defaults include a 60-second
+idle lifetime and the limits documented in the [transport pool guide](../../gwz-transport/README.md#connection-pool-api).
+Bootstrap and explicit cleanup waits are bounded to five seconds; endpoint identity
+checks allow up to 120 seconds. Network timing uses the core's startup timeout
+(default three seconds); disabling it does not disable bounded cleanup.
+
 Configuration is immutable after construction. Unsupported candidate/platform
 support returns UnsupportedOperation. `new` starts bounded local supervisors;
 resources belong to the returned owner, not the caller's executor. Physical
@@ -218,7 +230,7 @@ it does not add a serialized wrapper. Owner message profile version `2` is
 independent of the outer request schema version `gwz.protocol/v0`.
 The in-memory executable direction fixture is
 [`mux_async.rs`](../../gwz-transport/tests/mux_async.rs). It tests the lower-level
-ports; compilation of the proposed core facade below remains batch B.
+ports; the full facade is exercised by the core candidate lifecycle/command tests.
 
 Port calls support cancellation of the waiting future. `next_message` transfers
 one admitted outbound item, returning None after closure; dropping a pending
@@ -246,7 +258,7 @@ boundary reports peer_cleanup_confirmed=false. It is not a Git success result.
 
 ## Example: configure, fetch once, remove
 
-This is a proposed compile-check fixture. `connect` is supplied by the embedding:
+This example is compiled unchanged in the candidate harness. `connect` is supplied by the embedding:
 it installs two independently progressing forwarding loops using the port methods
 above and returns their owner. It is intentionally not a GWZ carrier API. In a
 split deployment the two ports live in different processes; the example puts both

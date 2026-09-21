@@ -64,9 +64,16 @@ fn queued_expiry_releases_admission_without_stopping_worker() {
                 deadline,
                 cancelled: Arc::new(AtomicBool::new(cancelled)),
                 reply: Some(reply),
+                bridge_reply: None,
                 selected: None,
                 authority: None,
                 permit: Permit(permits.clone()),
+                bridge: false,
+                bridge_session: None,
+                bridge_stream_id: 0,
+                bridge_version: 1,
+                bridge_limits: None,
+                bridge_deadlines: None,
             })
             .unwrap();
         result

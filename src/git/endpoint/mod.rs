@@ -4,6 +4,7 @@ pub(crate) mod agent_auth;
 pub(crate) mod agent_client;
 pub(crate) mod agent_job;
 pub(crate) mod agent_socket;
+pub(crate) mod placement_endpoint;
 pub(crate) mod ssh_admission;
 pub(crate) mod ssh_channel;
 pub(crate) mod ssh_connection;

@@ -244,6 +244,7 @@ impl ResponseBuilder {
                 operation_id: Some(context.operation_id.clone()),
                 message: None,
                 attribution: context.attribution.as_ref().map(Into::into),
+                ..Default::default()
             },
             members: members.iter().map(member_plan_to_protocol).collect(),
             errors: Vec::new(),
@@ -700,6 +701,7 @@ pub fn response_envelope_for(
             operation_id: Some(context.operation_id),
             message: None,
             attribution: context.attribution.as_ref().map(Into::into),
+            ..Default::default()
         },
         members: Vec::new(),
         errors,

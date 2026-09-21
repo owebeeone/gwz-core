@@ -1,6 +1,6 @@
 use super::ssh_channel::SshChannel;
 use gwz_transport::{
-    protocol::{Disposition, Envelope, Facts, MessageKind},
+    protocol::{Disposition, Effect, Envelope, ErrorCode, Facts, Failure, MessageKind},
     stream::{Error as StreamError, IoState, MessageEndpoint, Snapshot, Stream},
 };
 use std::{
@@ -82,6 +82,7 @@ pub(crate) struct SshPump<C: ChannelIo> {
     stderr_truncated: bool,
     saw_stdout: bool,
     repository_refused: Option<Arc<AtomicBool>>,
+    typed_failures: bool,
     mirror_cap: usize,
     stderr_cap: usize,
     end_sent: bool,
@@ -116,6 +117,7 @@ impl<C: ChannelIo> SshPump<C> {
             stderr_truncated: false,
             saw_stdout: false,
             repository_refused: None,
+            typed_failures: false,
             mirror_cap,
             stderr_cap,
             end_sent: false,
@@ -137,6 +139,9 @@ impl<C: ChannelIo> SshPump<C> {
     /// Local stream-scoped classification only; no server text crosses this seam.
     pub(crate) fn track_repository_refusal(&mut self, receipt: Arc<AtomicBool>) {
         self.repository_refused = Some(receipt);
+    }
+    pub(crate) fn enable_typed_failures(&mut self) {
+        self.typed_failures = true;
     }
     pub(crate) fn deliver(&mut self, message: Envelope) -> Result<(), PumpError> {
         let payload = if message.kind == MessageKind::Data {
@@ -305,7 +310,18 @@ impl<C: ChannelIo> SshPump<C> {
                             && message.contains(" denied to ")
                             && !message.chars().any(char::is_control));
                     if refused {
-                        if let Some(receipt) = &self.repository_refused {
+                        if self.typed_failures {
+                            self.endpoint
+                                .fail_terminal(Failure {
+                                    code: ErrorCode::RepositoryRefused,
+                                    effect: Effect::None,
+                                    facts: Some(self.facts.clone()),
+                                })
+                                .map_err(PumpError::Stream)?;
+                            // The terminal now owns the outcome. Do not attempt
+                            // EndWrite or a successful service close after it.
+                            return Ok(());
+                        } else if let Some(receipt) = &self.repository_refused {
                             receipt.store(true, Ordering::Release);
                         }
                     }

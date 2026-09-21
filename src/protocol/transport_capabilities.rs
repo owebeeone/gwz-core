@@ -12,6 +12,7 @@ pub fn handle(request: TransportCapabilitiesRequest) -> ModelResult<TransportCap
     Ok(TransportCapabilitiesResponse {
         file_identity: true,
         exact_agent_identity: false,
+        ..Default::default()
     })
 }
 

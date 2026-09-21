@@ -276,7 +276,7 @@ pub(crate) fn remote_credential(
 
 cfg_if::cfg_if! {
     if #[cfg(all(unix, gwz_transport_candidate))] {
-        pub(super) fn server_timeout_ms() -> u64 {
+        pub(crate) fn server_timeout_ms() -> u64 {
             TIMEOUT_STATE.lock().unwrap_or_else(|e| e.into_inner()).milliseconds.unwrap_or(3000) as u64
         }
     }

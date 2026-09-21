@@ -38,6 +38,7 @@ where
     let root_resolution = resolve_root_url(&request.url, scheme)?;
     request.url = root_resolution.effective_url.clone();
     let context = OperationRequest::CloneWorkspace(request.clone()).context(operation_id.into())?;
+    backend.validate_transport_scope(&request.meta, &context.operation_id)?;
     let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
     let error_context = context.clone();

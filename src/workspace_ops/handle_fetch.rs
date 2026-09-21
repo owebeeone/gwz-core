@@ -54,6 +54,8 @@ where
     B: GitBackend + MergeAuthorityBackend + Sync,
 {
     let start = invocation_start(start, &request.meta)?;
+    let operation_id = operation_id.into();
+    backend.validate_transport_scope(&request.meta, &operation_id)?;
     let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
     handle_fetch_with_events_in(backend, &start, request, operation_id, events)

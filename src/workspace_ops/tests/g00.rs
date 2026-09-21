@@ -246,6 +246,7 @@ fn materialize_uses_the_named_fetch_remote_for_clone_identity() {
             remote: "upstream".into(),
             private_key_path: key.to_str().unwrap().into(),
         }],
+        ..Default::default()
     });
     let result = handle_materialize(
         &backend,
@@ -322,6 +323,7 @@ pub(crate) fn clone_workspace_clones_root_and_materializes_missing_members() {
                 remote: "typo".into(),
                 private_key_path: key.to_str().unwrap().into(),
             }],
+            ..Default::default()
         }),
         ..request_meta()
     };

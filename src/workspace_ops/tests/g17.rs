@@ -35,6 +35,7 @@ fn remote_tag_operations_refuse_unused_identity_overrides() {
                 remote: "typo".into(),
                 private_key_path: key.to_str().unwrap().into(),
             }],
+            ..Default::default()
         });
         let result = handle_tag(&backend, temp.path(), request, "tag");
         assert_eq!(read_repo_ref(&remote, "refs/tags/v1"), None, "{op:?}");

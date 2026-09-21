@@ -86,7 +86,7 @@ impl Admissions {
             self.cursor %= self.items.len();
             let item = &mut self.items[self.cursor];
             let now = now.max(self.origin.elapsed().as_millis() as u64);
-            if stopping || item.request.expired(now) || item.request.reply.is_none() {
+            if stopping || item.request.expired(now) || !item.request.has_reply() {
                 item.request.reject(if stopping {
                     io::ErrorKind::BrokenPipe
                 } else {

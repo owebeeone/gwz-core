@@ -54,6 +54,11 @@ pub(crate) use transport_support::identity::{
     resolve_path as resolve_ssh_identity_path, validate_file as validate_ssh_identity_file,
 };
 pub use transport_support::{configure_server_timeout_ms, set_server_timeout_ms};
+cfg_if::cfg_if! {
+    if #[cfg(all(unix, gwz_transport_candidate))] {
+        pub(crate) use transport_support::server_timeout_ms as transport_timeout_ms;
+    }
+}
 pub use types::*;
 
 pub(crate) use repository_support::open_repo;
@@ -203,9 +208,41 @@ impl GitBackend for Git2Backend {
         options: Option<&crate::TransportOptions>,
     ) -> ModelResult<Option<Self>> {
         let empty = crate::TransportOptions::default();
-        let identities =
-            transport_support::identity::Selection::from_options(start, options.unwrap_or(&empty))?;
-        identities.validate_files()?;
+        cfg_if::cfg_if! {
+            if #[cfg(all(unix, gwz_transport_candidate))] {
+                if options.is_some_and(|value| {
+                    value.placement == Some(crate::TransportPlacement::Cli)
+                        && !self.ssh.is_cli_context()
+                }) {
+                    return Err(ModelError::new(
+                        ErrorCode::UnsupportedOperation,
+                        "explicit cli placement requires an installed transport host context",
+                    ));
+                }
+            }
+        }
+        let identities;
+        if self.ssh.is_cli_context() {
+            cfg_if::cfg_if! {
+                if #[cfg(all(unix, gwz_transport_candidate))] {
+                    identities = transport_support::identity::Selection::from_options_cli(
+                        options.unwrap_or(&empty),
+                    )?;
+                    identities.validate_endpoint_files(self)?;
+                } else {
+                    identities = transport_support::identity::Selection::from_options(
+                        start,
+                        options.unwrap_or(&empty),
+                    )?;
+                }
+            }
+        } else {
+            identities = transport_support::identity::Selection::from_options(
+                start,
+                options.unwrap_or(&empty),
+            )?;
+            identities.validate_files()?;
+        }
         Ok(Some(Self {
             filesystem: self.filesystem.clone(),
             credential_helpers: self.credential_helpers,
@@ -213,6 +250,13 @@ impl GitBackend for Git2Backend {
             identities,
             observations: Default::default(),
         }))
+    }
+    fn validate_transport_scope(
+        &self,
+        meta: &crate::RequestMeta,
+        operation_id: &str,
+    ) -> ModelResult<()> {
+        self.ssh.validate_scope(meta, operation_id)
     }
     fn validate_transport_remotes(&self, names: &[String]) -> ModelResult<()> {
         self.identities.validate_remote_names(names)

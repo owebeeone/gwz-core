@@ -60,6 +60,7 @@ impl TransportObservations {
             Some(Source::LocalConfiguration) => crate::TransportSelectionSource::LocalConfiguration,
             None => crate::TransportSelectionSource::Ambient,
         };
+        #[allow(unused_mut)]
         let row = crate::TransportObservation {
             repository_path: path.to_string_lossy().into_owned(),
             remote: remote.into(),
@@ -73,6 +74,7 @@ impl TransportObservations {
             credential_offered: false,
             authenticated: None,
             public_key_fingerprint: None,
+            ..Default::default()
         };
         let attempt = TransportAttempt(Arc::new(Mutex::new(row)));
         self.rows
@@ -86,6 +88,13 @@ impl TransportObservations {
 impl TransportAttempt {
     cfg_if::cfg_if! {
         if #[cfg(all(unix, gwz_transport_candidate))] {
+            pub(crate) fn opened(&self, stream_id: i64, opened: &gwz_transport::protocol::Opened) {
+                let mut row = self.0.lock().unwrap_or_else(|e| e.into_inner());
+                row.endpoint_id = Some(opened.endpoint_id.clone());
+                row.connection_id = Some(opened.connection_id.clone());
+                row.stream_id = Some(stream_id);
+                row.reused = Some(opened.reused);
+            }
             pub(crate) fn facts(&self, facts: &gwz_transport::protocol::Facts) {
                 let mut row = self.0.lock().unwrap_or_else(|e| e.into_inner());
                 row.credential_method = match facts.method {

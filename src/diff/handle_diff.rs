@@ -610,6 +610,7 @@ fn envelope(request: &DiffRequest) -> ResponseEnvelope {
             operation_id: None,
             message: None,
             attribution: None,
+            ..Default::default()
         },
         members: Vec::new(),
         errors: Vec::new(),

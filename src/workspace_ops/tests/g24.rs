@@ -243,6 +243,7 @@ fn default_merge_pull_applies_a_planned_root_fast_forward_after_member_preflight
             remote: "typo".into(),
             private_key_path: key.to_str().unwrap().into(),
         }],
+        ..Default::default()
     });
     let rejected = handle_pull_head(&backend, temp.path(), invalid, "invalid_identity");
     assert_eq!(

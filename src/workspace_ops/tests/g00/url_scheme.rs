@@ -17,6 +17,7 @@ fn https_request() -> crate::RequestMeta {
             default_identity: None,
             remote_identities: vec![],
             url_scheme: Some(crate::UrlScheme::Https),
+            ..Default::default()
         }),
         ..request_meta()
     }
@@ -28,6 +29,7 @@ fn manifest_request() -> crate::RequestMeta {
             default_identity: None,
             remote_identities: vec![],
             url_scheme: Some(crate::UrlScheme::Manifest),
+            ..Default::default()
         }),
         ..request_meta()
     }
@@ -305,6 +307,7 @@ fn a_remote_identity_override_conflicts_with_https_before_any_network() {
             private_key_path: key.to_str().unwrap().to_owned(),
         }],
         url_scheme: Some(crate::UrlScheme::Https),
+        ..Default::default()
     });
     let error = handle_materialize(
         &Git2Backend::new(),

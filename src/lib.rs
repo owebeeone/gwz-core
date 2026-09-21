@@ -9,12 +9,18 @@
 
 extern crate alloc;
 
-#[rustfmt::skip]
-#[path = "cbor.rs"]
-// taut-generated runtime; not held to clippy style (cf. `#[allow(clippy::redundant_closure)]`
-// on `pub mod generated`). The 0.6.0 float encoder uses a nested `if let { if .. }`.
-#[allow(clippy::collapsible_if)]
-pub mod cbor;
+cfg_if::cfg_if! {
+    if #[cfg(gwz_transport_candidate)] {
+        pub use gwz_transport::cbor;
+    } else {
+        #[rustfmt::skip]
+        #[path = "cbor.rs"]
+        // taut-generated runtime; not held to clippy style (cf. `#[allow(clippy::redundant_closure)]`
+        // on `pub mod generated`). The 0.6.0 float encoder uses a nested `if let { if .. }`.
+        #[allow(clippy::collapsible_if)]
+        pub mod cbor;
+    }
+}
 
 pub mod artifact;
 mod checked_artifact;
@@ -40,6 +46,11 @@ pub mod local_clone;
 pub mod model;
 pub mod operation;
 pub mod protocol;
+cfg_if::cfg_if! {
+    if #[cfg(all(unix, gwz_transport_candidate))] {
+        pub mod transport_host;
+    }
+}
 pub mod runtime;
 pub mod stash;
 pub mod status;
