@@ -97,8 +97,10 @@ The [interface gate](GwzRemoteTransportPool-InterfaceGate.md) and workspace
 89 owner tests, 18 isolated archive consumer tests, regeneration checks and
 review closures. One merged correction closed one P2 and three P3 findings.
 Phase 3 is **in progress**: the shared worker, supervised native agent/network
-setup and selected-key admission are accepted locally through N2b. N3 backend
-attachment is next; see the current authority in
+setup, selected-key admission and N3 backend/driver attachment are accepted as a
+local candidate. [N3 acceptance](GwzRemoteTransportSshN3.md) records the exact tuple
+and retained Code/State GO. Production qualification/activation remain outstanding;
+see the current authority in
 [CurrentProgramCheckpoint.md](../../dev-docs/CurrentProgramCheckpoint.md).
 Phases 4–6 are not complete. The owner CI workflow is prepared locally;
 remote execution, consumer CI activation and registry resolution remain
@@ -232,19 +234,21 @@ from a successful connection on one developer machine.
 Route every GWZ SSH network entry through the per-remote callback before
 advertising local SSH endpoint support. The following is a required coverage
 ledger, not a claim of current implementation; record the exact call sites and
-fixture result for each row during Phase 3.
+fixture result for each row during Phase 3. N3 results below are from the isolated
+full-core candidate; they do not activate or qualify a production distribution.
+Tests and reproduction are linked from [N3](GwzRemoteTransportSshN3.md).
 
 | Entry | Required Phase 3 disposition | Current implementation evidence |
 |---|---|---|
-| Workspace bootstrap / init-from-sources clone | New endpoint adapter for SSH | Pending |
-| Ordinary clone and advertisement/ref reads | New endpoint adapter for SSH | Pending |
-| Materialize network work | New endpoint adapter for SSH | Pending |
-| Fetch, including all phases | New endpoint adapter for SSH | Pending |
-| Tag-related network work | New endpoint adapter for SSH | Pending |
-| Pull, including preflight and verification | New endpoint adapter for SSH | Pending |
-| Push and post-push verification | New endpoint adapter for SSH | Pending |
-| File/local-family operations | Existing credential-free local path | Pending parity fixture |
-| Native HTTP/git compatibility operations | Existing local-only transport | Pending parity fixture |
+| Workspace bootstrap / init-from-sources clone | New endpoint adapter for SSH | N3 driver gate: init_from_sources + workspace/member clone |
+| Ordinary clone and advertisement/ref reads | New endpoint adapter for SSH | N3 backend gate: clone + remote_refs + read_remote_file |
+| Materialize network work | New endpoint adapter for SSH | N3 driver gate: nested snapshot materialization, private refusal/observation cleanup |
+| Fetch, including all phases | New endpoint adapter for SSH | N3 backend fetch funnel and command-driver gate |
+| Tag-related network work | New endpoint adapter for SSH | N3 backend tag_fetch + tag driver |
+| Pull, including preflight and verification | New endpoint adapter for SSH | N3 pull_head and pull_snapshot driver gate |
+| Push and post-push verification | New endpoint adapter for SSH | N3 backend push/rejection/pushurl + push driver |
+| File/local-family operations | Existing credential-free local path | N3 local clone with stopped SSH endpoint; native local-family paths retained |
+| Native HTTP/git compatibility operations | Existing local-only transport | Dispatch unchanged; full native compatibility fixture remains qualification work |
 
 Any still-native SSH entry keeps the SSH advertisement gate closed. Partial
 measurements may name their covered entries but cannot claim general SSH support.
@@ -391,11 +395,13 @@ fetch does not complete the programme.
 
 ## 6. Immediate next action
 
-Continue Phase 3 N3 backend attachment from the accepted N2b worker/admission
-checkpoint. [N3a](GwzRemoteTransportSshN3a.md) composes local endpoint setup and
-per-operation routes before operation/failure observations and the complete
-network-driver map are attached. The safe git2 per-remote callback and the SSH
-worker have already passed their local gates. Production dependency selection,
-platform checks and capability activation remain in the operator-deferred batch.
-Physical SSH and host dispatch remain outside gwz-transport; the existing
-CLI–core communication interface remains unchanged. Publication is separate.
+N3 local candidate backend attachment is accepted; see [scope/results and dual
+GO](GwzRemoteTransportSshN3.md) and the current workspace checkpoint. Prepare
+Phase4's optional-field/placement interface admission using the supplied existing
+CLI–core message API, including terminal failure disposition. No new physical
+carrier or service surface is authorized by that step. HTTPS remains Phase5.
+
+Keep platform and selected-source checks together in the operator-deferred batch;
+production dependency/route activation and the remaining native compatibility
+qualification are still open. Physical SSH and host dispatch remain outside
+gwz-transport. Publication is separate.

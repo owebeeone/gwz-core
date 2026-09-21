@@ -1,6 +1,6 @@
 # SSH N3 — aggregate backend attachment
 
-2026-09-22. Implementation in progress. The operator combined the remaining
+2026-09-22. Local candidate implementation accepted after remediation 1. The operator combined the remaining
 N3b/N3c work into one batch and one retained Code/State review gate. This
 supersedes their separate checkpoint sequencing in N3a; accepted behavior and
 the deferred platform/source-distribution batch remain unchanged.
@@ -97,3 +97,29 @@ candidate clone boundary recognizes only the adapter's fixed refusal marker and
 converts it to RemoteRejected. No new fork API or wire field is introduced. This
 receipt is internal to the local candidate; future CLI-hosted placement must map
 terminal disposition through its admitted message API before it can be activated.
+
+## Acceptance
+
+Accepted source tuple: root `7f0a844b1bb851eedd3792eb13c0194b2231a190`, core
+`c79c7f13aebfcf582d0df75cff469d452e3477f1`, transport
+`a6562e654b52705b72ef1f793ae2045c320cee47`, evidence
+`36d29397faae5205e1e16812f9f573a122665b7f`; fork pins remain unchanged/in reports.
+Retained [Code GO](../../dev-docs/GwzRemoteTransportSshN3-ReviewCode-1.md) and
+[State GO](../../dev-docs/GwzRemoteTransportSshN3-ReviewState-1.md) close all three
+P2 findings. Reports are filed verbatim. Both reviewers independently passed the
+seven-test backend gate and local_endpoint10/pump10/cleanup_capacity1 closure gates.
+
+Final owner gates: backend7, ordinary backend8, SSH126 pass/1 ignored. The unchanged
+transport suite94 pass/2 ignored remains valid from the initial aggregate run.
+Private remediation evidence is in `ssh-integration/runs/2026-09-22-backend-n3-rem1`.
+No ignored campaign or whole-core/platform/source qualification is claimed.
+Aggregate additions: production523 across22 files, tests/harness1020 across8 files,
+within1200/1600. One aggregate review, one consolidated correction; three P2 at
+settled review, no new findings on re-review or known released escaped defect.
+Wall-clock/session accounting was not captured. Acceptance filing changes no code.
+
+Remaining programme: Phase4 CLI endpoint placement and terminal-disposition mapping,
+Phase5 HTTPS policy/adapter, and final tuning/rollout. The operator-deferred platform
+and selected-source checks remain one later batch; dependency/route activation is
+still gated. This acceptance completes N3's local candidate attachment, not Phase3
+production qualification or the entire transport programme.
