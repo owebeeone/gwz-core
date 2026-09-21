@@ -404,9 +404,11 @@ are accepted; see the current workspace checkpoint and filed review verdicts.
 [Placement batch A](GwzRemoteTransportPlacementA.md) is implemented and accepted
 after retained Code/State/Surface GO: shared v2 schema, missing-field compatibility,
 bounded mux/check/terminal lifecycle and in-memory tests. Surface documentation
-findings are closed. Next is one complete batch B integrating the core host facade
-and shared SSH endpoint across all backend funnels, with scoped metadata enforcement,
-endpoint-local preflight, request cleanup ownership and the compiled guide fixture.
+findings are closed. [Placement batch B](GwzRemoteTransportPlacementB.md) is also
+accepted after retained Code/State/Surface GO and one consolidated correction:
+core host facade and shared SSH endpoint across all backend funnels, scoped metadata
+enforcement, endpoint-local preflight, request cleanup ownership and the compiled
+guide fixture. Next is supplied-carrier qualification C.
 No new physical carrier or service surface is authorized. Supplied-carrier
 qualification remains batch C; HTTPS remains Phase5.
 

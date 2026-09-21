@@ -1,6 +1,26 @@
 # Endpoint placement — batch B
 
-Status: **implemented candidate; pending aggregate acceptance review.** 2026-09-22.
+Status: **accepted at the correction-1 tuple below after retained Code, State
+and Surface GO; this accepts the Placement B candidate only.** 2026-09-22.
+
+[Code GO](../../dev-docs/GwzRemoteTransportPlacementB-ReviewCode-1.md),
+[State GO](../../dev-docs/GwzRemoteTransportPlacementB-ReviewState-1.md) and
+[Surface GO](../../dev-docs/GwzRemoteTransportPlacementB-ReviewSurface-1.md)
+close all initial findings after one consolidated correction. Annotation commits
+do not expand the reviewed implementation.
+
+| Repository | Accepted revision |
+|---|---|
+| . | `93334058352828b1069b198d795c5860a395dc81` |
+| gwz-core | `4f06384397a67d3dcae4856a93fd032499fda5dc` |
+| gwz-transport | `03d3011b3ae9b8205bcf07f7f7862194af114856` |
+| taut | `bcf98b64d465fc54841121b6d1a2d46940f81a3c` |
+| gwz-cli | `7db07bbdefd2897c07fd0f9e550bf032bd8b1314` |
+| gwz-py | `d07d55dacb1725d9306be9c04d157ac29a78e000` |
+| git2-rs | `ce78628308e11b4e8901d5061602619109bce21a` |
+| libgit2 | `b172e3d187a4b6866fd9f696f40a1b8e7f56d348` |
+| gwz-core-evidence | `a2180f71f9f4f16ecc639eecd25125b980ea54f3` |
+
 Implements batch B of [the accepted placement design](GwzRemoteTransportPlacementDesign.md).
 Batch A is accepted; production activation, real supplied-carrier qualification,
 HTTPS and the operator-deferred platform/selected-source checks remain separate.
@@ -49,10 +69,10 @@ Raw failures, final commands and source/input hashes are in the
 [private evidence run](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-22-placement-b-integration/README.md)
 (access required). Tests authored before implementation did not all capture an
 initial causal red; this is a TDD process deviation. Captured intermediate failures
-remain archived. No review verdict or production activation is claimed yet.
+remain archived. These initial gates preceded the review and correction recorded below; no production activation is claimed.
 
 
-## Correction 1 — pending retained re-review
+## Correction 1 — accepted after retained re-review
 
 Initial Code/State reviews found four P2 findings across three roots: both axes
 found missing effective-identity preflight in ordinary fetch; Code additionally
@@ -74,4 +94,18 @@ returns no attempt observations when its last configured identity is unavailable
 This adds ordinary-handler coverage missing in the initial test, superseding the
 initial preflight coverage limitation above. Candidate/platform/release boundaries
 remain unchanged. Private raw evidence: `2026-09-22-placement-b-rem1` in the SSH
-integration campaign. Acceptance still requires the retained reviewers' verdicts.
+integration campaign. All three retained reviewers reported GO on this tuple; no open B findings remain.
+
+
+Review metrics: one aggregate three-axis gate, one consolidated correction.
+Initial Code twoP2 and State twoP2 represent three roots, with independent fetch
+preflight convergence. No new re-review findings or known released escaped defect.
+Wall time was not captured. Automated path classification from the accepted A
+annotation baseline counts implementation3397 added/65 deleted lines across36
+files; tests/harness2628 added across17 files, documentation separately. No
+repository-wide conditional-compilation migration is claimed.
+
+Next is Placement C qualification using a host-supplied message connection.
+Constructing a new physical carrier/interface is not authorized by this package.
+Keep platform and selected-source qualification together in the deferred batch;
+HTTPS, production activation and release remain separate gates.
