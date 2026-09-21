@@ -129,6 +129,7 @@ fn envelope_inventory() -> Vec<Envelope> {
             bind_rejected: Some(Failure {
                 code: ErrorCode::UnsupportedVersion,
                 effect: Effect::None,
+                facts: None,
             }),
             ..Default::default()
         },
@@ -156,6 +157,7 @@ fn envelope_inventory() -> Vec<Envelope> {
             open_failed: Some(Failure {
                 code: ErrorCode::Authentication,
                 effect: Effect::None,
+                facts: None,
             }),
             ..Default::default()
         },
@@ -247,6 +249,7 @@ fn envelope_inventory() -> Vec<Envelope> {
             failed: Some(Failure {
                 code: ErrorCode::Protocol,
                 effect: Effect::Possible,
+                facts: None,
             }),
             ..Default::default()
         },
@@ -370,6 +373,7 @@ fn bind_and_open_admission_precede_fake_endpoint_effects() {
                 open_failed: Some(Failure {
                     code: failure.code,
                     effect: failure.effect,
+                    facts: None,
                 }),
                 ..Default::default()
             },
@@ -461,6 +465,7 @@ fn dispatch_host_open(
     let message = handoff_with_limits(message, encoded, binding.limits()).map_err(|_| Failure {
         code: ErrorCode::InvalidRequest,
         effect: Effect::None,
+        facts: None,
     })?;
     binding.check_open(&message)?;
     let inputs = resolve_host_inputs(
@@ -492,6 +497,7 @@ fn resolve_host_inputs(
         .ok_or(Failure {
             code: ErrorCode::InvalidRequest,
             effect: Effect::None,
+            facts: None,
         })?;
     let identity = match (open.destination.scheme, open.identity.mode) {
         (Scheme::Ssh, IdentityMode::Ambient) => PoolIdentity::Ambient,
@@ -506,6 +512,7 @@ fn resolve_host_inputs(
             return Err(Failure {
                 code: ErrorCode::UnsupportedOperation,
                 effect: Effect::None,
+                facts: None,
             });
         }
     };
@@ -544,17 +551,20 @@ fn resolve_network_timeout(requested_ms: i64, endpoint_ms: u64) -> Result<u64, F
     let requested_ms = u64::try_from(requested_ms).map_err(|_| Failure {
         code: ErrorCode::InvalidRequest,
         effect: Effect::None,
+        facts: None,
     })?;
     if requested_ms > i32::MAX as u64 {
         return Err(Failure {
             code: ErrorCode::InvalidRequest,
             effect: Effect::None,
+            facts: None,
         });
     }
     if endpoint_ms != 0 && (requested_ms == 0 || requested_ms > endpoint_ms) {
         return Err(Failure {
             code: ErrorCode::UnsupportedOperation,
             effect: Effect::None,
+            facts: None,
         });
     }
     Ok(requested_ms)

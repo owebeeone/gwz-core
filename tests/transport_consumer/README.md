@@ -49,6 +49,30 @@ gwz-core/protocol/.regen-venv/bin/python \
   --taut-source taut/src --check
 ```
 
+The placement candidate uses a separate composition and output path. It loads
+the production core schema plus the explicit owner export, adds the accepted
+placement fields, and emits `candidate/candidate_generated.rs` and
+`candidate/candidate_generated.py`. Owner Rust declarations are imported as
+external types, so the candidate has one `Envelope` definition. The retained
+Rust reader is a pinned checked-in pre-placement baseline and is verified by
+the command rather than regenerated. This command never writes production
+protocol artifacts or Cargo manifests:
+
+```sh
+PYTHONPATH=taut/src .venv/bin/python \
+  gwz-core/tests/transport_consumer/protocol/candidate-regenerator.py \
+  --core-schema gwz-core/protocol/gwz.taut.py \
+  --owner-schema gwz-transport/protocol/transport.ir.json \
+  --taut-source taut/src --check
+```
+
+Candidate fixtures cover old/new Rust and Python readers, absent versus null
+new fields, malformed present values, default-local placement, capability
+gating, and stale receiver generations. The host guard shares receiver state
+across admission clones, validates usable limits and SSH policy, and executes
+the send callback under a generation pin so replacement or invalidation cannot
+send through an old permit.
+
 After `gwz-transport` is actually released, refresh this proof crate's lockfile
 against the registry package, then run the focused proof with:
 

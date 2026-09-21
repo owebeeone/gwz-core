@@ -8,6 +8,7 @@ impl Connector for Refuse {
     fn start(&mut self, _: &Key, _: &Identity, _: Option<u64>) -> Result<Unused, Failure> {
         self.0.fetch_add(1, Ordering::SeqCst);
         Err(Failure {
+            facts: None,
             code: ErrorCode::Authentication,
             effect: Effect::None,
         })

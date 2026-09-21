@@ -226,6 +226,7 @@ impl<C: Connector> PoolHost<C> {
                         let _ = self.driver.connected(
                             connection,
                             Err(Failure {
+                                facts: None,
                                 code: ErrorCode::Io,
                                 effect: Effect::None,
                             }),
@@ -254,6 +255,7 @@ impl<C: Connector> PoolHost<C> {
                         _ => {
                             entry.phase = Phase::Disposing {
                                 connect_failure: Some(Failure {
+                                    facts: None,
                                     code: ErrorCode::Cancelled,
                                     effect: Effect::None,
                                 }),

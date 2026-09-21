@@ -316,6 +316,7 @@ fn cancellation_preserves_received_prefix_and_first_terminal_in_both_handoffs() 
                 failed: Some(Failure {
                     code: ErrorCode::Io,
                     effect: Effect::Possible,
+                    facts: None,
                 }),
                 ..Default::default()
             },

@@ -74,6 +74,7 @@ impl Connector for Factory {
         );
         self.0.starts.fetch_add(1, Ordering::SeqCst);
         Err(Failure {
+            facts: None,
             code: ErrorCode::Authentication,
             effect: Effect::None,
         })

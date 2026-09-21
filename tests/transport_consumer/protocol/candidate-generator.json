@@ -1,0 +1,28 @@
+{
+  "taut-proto": "0.9.1",
+  "owner-package": "gwz-transport",
+  "owner-version": "0.1.0",
+  "owner-schema-sha256": "ed1e16edcb88ae555c18767ba7439c0ae26fe67cf0ec11e732e30f051355070e",
+  "retained-old-rust-source": "gwz-core/src/protocol/generated.rs",
+  "retained-old-rust-revision": "54618449b74a312abb192cf9fca456f45aab2e4e",
+  "retained-old-rust-sha256": "7073dd12c88475c2b4c769f7e1074865cbfa9c9fee9bc64bd9fd02009506df19",
+  "retained-old-schema-sha256": "551fe930546286bc25b247f9b0986efc7aacb99b556e4135d18e15949e100677",
+  "taut-source-revision": "bcf98b64d465fc54841121b6d1a2d46940f81a3c",
+  "rustfmt": "rustfmt 1.9.0-stable (ac68faa20c 2026-05-25)",
+  "rust-module": "gwz_transport::protocol",
+  "codec": "fail-closed",
+  "taut-source-sha256": {
+    "src/taut/gen/runtime/cbor.rs": "f6b96fb0fc038df2344bfd4c3f63c5fc7ddb8d24979ae9eb5d7b898184663d55",
+    "src/taut/gen/runtime/cbor_fail_closed.rs": "c276f0845efa48030a31cce8137516c5010c377781065cc353db186223275744",
+    "src/taut/gen/rust.py": "c768882082d740177b30518dbee6c3f5f7b69724c6e998043e4b64bc6e0ef432",
+    "src/taut/gen/scaffold.py": "92390d0508dc3724b2e49396f010b8f3bb4b15544bc4236db90ebecf3dd1012a",
+    "src/taut/ir/compat.py": "11159b368171c863635c9fb2815a4436a8a084ed158c9db4c035e390dcbceba8",
+    "src/taut/ir/dsl.py": "02bfebed1f8b8fc4a0b9450379a1b04acf23b44b3ae57b7c9c1255af8e0a6fa9",
+    "src/taut/ir/export.py": "cbe715d44d164a9c125944fd38319a745f438f008f7c59d0210d334df4dd5afa",
+    "src/taut/ir/load.py": "1d8a17ed0f3c7e12b85f5379a1ca4b33b1efb72f0c7f51c85b5ae3c30b18fd11",
+    "src/taut/ir/model.py": "242f380c821a36a2206877f09afdbaca839bff9baa15eaa0dc6fdac71393f50c",
+    "src/taut/ir/validate.py": "df06f246138b17fbde8d4850dff8dfa275eaaf0022850eee6ac1c51420c71d2c",
+    "src/taut/wire/codec.py": "5c22fc12d19edaa415c5d436d5e96db6c828d04a2a3c99a46472cc992e881272",
+    "src/taut/wire/jsoncodec.py": "2f025606322fe0023306e7ddd3eed3015e9620f0da1357f35a689a209cc9074a"
+  }
+}

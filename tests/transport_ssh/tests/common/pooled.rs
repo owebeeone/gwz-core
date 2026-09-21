@@ -75,6 +75,7 @@ impl Connector for Prepared {
                 pump: None,
             })
             .ok_or(Failure {
+                facts: None,
                 code: ErrorCode::Io,
                 effect: Effect::None,
             })

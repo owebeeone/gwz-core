@@ -361,6 +361,7 @@ fn failure(kind: io::ErrorKind) -> Failure {
         _ => ErrorCode::Io,
     };
     Failure {
+        facts: None,
         code,
         effect: Effect::None,
     }

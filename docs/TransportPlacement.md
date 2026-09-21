@@ -150,6 +150,7 @@ impl ClientRequest {
 }
 
 // Rust handoff value only; NOT another serialized host envelope.
+// The String is the existing host request_id.
 pub type Attachment = (String, gwz_transport::protocol::Envelope);
 pub struct TransportPort { /* Clone shares queues and closure */ }
 impl TransportPort {
@@ -204,6 +205,20 @@ cleanup; no new request id can be introduced just by sending an attachment.
 Bind is allowed only under a registered request. `ClientRequest::finish` seals
 that request against new work and waits for bounded cleanup; drop seals/cancels
 it. A failed dispatch must also finish/drop the registration.
+
+Port forwarding uses these directions:
+
+| Direction | Read from | Deliver to |
+|---|---|---|
+| Core to client | `core_port.next_message()` | `client_port.deliver(attachment)` |
+| Client to core | `client_port.next_message()` | `core_port.deliver(attachment)` |
+
+The tuple carries the existing request_id and the shared transport Envelope;
+it does not add a serialized wrapper. Owner message profile version `2` is
+independent of the outer request schema version `gwz.protocol/v0`.
+The in-memory executable direction fixture is
+[`mux_async.rs`](../../gwz-transport/tests/mux_async.rs). It tests the lower-level
+ports; compilation of the proposed core facade below remains batch B.
 
 Port calls support cancellation of the waiting future. `next_message` transfers
 one admitted outbound item, returning None after closure; dropping a pending

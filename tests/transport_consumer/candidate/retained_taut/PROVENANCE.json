@@ -1,0 +1,7 @@
+{
+  "source": "taut/src/taut/wire/codec.py",
+  "revision": "733e8a78897a90f017f4726e4331aed95e8cb977",
+  "sha256": "fb1f69e820f0462a89bcdf25978f84e632d39e1f8890c132806f5f738ed9f501",
+  "purpose": "retained pre-placement Python decoder fixture",
+  "license": "MIT; retained copyright and permission notice in LICENSE-taut"
+}
