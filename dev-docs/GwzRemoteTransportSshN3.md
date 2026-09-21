@@ -73,3 +73,27 @@ candidate module; it is not a claim that the whole core suite passes.
 Reproduction: [candidate harness](../tests/transport_backend/README.md).
 Raw logs, source hashes and generated manifest/lock are archived under the private
 evidence campaign `ssh-integration/runs/2026-09-22-backend-n3` (access required).
+
+## Remediation 1 contract clarification
+
+Lazy backend construction serializes only endpoint-owner creation and publishes
+success, never a transient error. The originating caller retains the error;
+later callers can retry. Once created, all family clones share that endpoint.
+
+Per-key authentication facts are observations. Terminal error classification
+requires the returned pool failure cause as well: a recorded rejection cannot
+turn timeout, cancellation or agent/transport failure into authentication denial.
+
+For the local candidate, a stream-scoped refusal receipt bridges bounded SSH
+stderr classification to the Git-facing file adapter. It carries one boolean,
+not arbitrary server text, authority, bytes or physical ownership. Only a complete,
+untruncated canonical refusal with an empty Git response sets it, before EOF is
+made visible. Other output and diagnostics remain generic failures. The native
+Git SSH path similarly reads repository-refusal stderr when advertisement is
+empty; this does not assert a completed cleanup or reuse from that diagnostic.
+Normal disposal remains authoritative and nonzero exit cannot manufacture reuse.
+The current git2-rs Read callback reduces io errors to Net-class strings, so the
+candidate clone boundary recognizes only the adapter's fixed refusal marker and
+converts it to RemoteRejected. No new fork API or wire field is introduced. This
+receipt is internal to the local candidate; future CLI-hosted placement must map
+terminal disposition through its admitted message API before it can be activated.

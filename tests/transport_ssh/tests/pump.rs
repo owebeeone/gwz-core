@@ -398,3 +398,54 @@ fn advancing_before_ingress_prevents_close_from_hiding_an_expired_network_clock(
     assert!(pump.channel().writes.is_empty());
     assert!(pump.channel().disposed);
 }
+
+#[test]
+fn refusal_receipt_precedes_eof_and_requires_complete_bounded_empty_response() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let canonical = b"ERROR: Repository not found.\n";
+    for (stderr, stdout, cap, expected) in [
+        (canonical.as_slice(), &b""[..], 64, true),
+        (
+            &b"error: Permission to org/repo denied to user.\n"[..],
+            &b""[..],
+            64,
+            true,
+        ),
+        (&b"fixture failed\n"[..], &b""[..], 64, false),
+        (canonical.as_slice(), &b"0000"[..], 64, false),
+        (canonical.as_slice(), &b""[..], 20, false),
+        (
+            &b"ERROR: Repository not found.\nmore"[..],
+            &b""[..],
+            28,
+            false,
+        ),
+    ] {
+        let (stream, endpoint) = pair(4);
+        let mut channel = FakeChannel::active();
+        channel.output.extend(stdout);
+        channel.output_eof = true;
+        channel.stderr.extend(stderr);
+        channel.stderr_eof = true;
+        channel.finish_status = 1;
+        let mut pump = SshPump::new(stream, endpoint, channel, 4, cap);
+        let refused = Arc::new(AtomicBool::new(false));
+        pump.track_repository_refusal(refused.clone());
+        let mut saw_eof = false;
+        for now in 0..8 {
+            pump.tick(&mut cx(), now).unwrap();
+            while let std::task::Poll::Ready(Ok(Some(message))) = pump.poll_next_message(&mut cx())
+            {
+                if message.kind == MessageKind::EndWrite {
+                    assert_eq!(refused.load(Ordering::Acquire), expected);
+                    saw_eof = true;
+                }
+            }
+        }
+        assert!(saw_eof);
+        assert!(pump.stderr_len() <= cap);
+    }
+}

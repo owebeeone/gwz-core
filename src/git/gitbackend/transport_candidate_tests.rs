@@ -278,3 +278,65 @@ fn candidate_backend_clones_and_nested_scopes_share_pool_not_observation_rows() 
     );
     e.shutdown();
 }
+
+#[test]
+fn candidate_runtime_retries_transient_failure_and_serializes_family_initialization() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let (f, mut b, e) = fixture();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let owned = e.clone();
+    b.ssh = transport_binding::Runtime::with_factory(move || {
+        if count.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Err(std::io::ErrorKind::WouldBlock.into());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        Ok(owned.clone())
+    });
+    assert_eq!(
+        b.ssh.endpoint().err().unwrap().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+    let options = crate::TransportOptions {
+        default_identity: Some(
+            f.temp
+                .path()
+                .join("client_ed25519")
+                .to_string_lossy()
+                .into(),
+        ),
+        ..Default::default()
+    };
+    let scoped = b
+        .with_transport(f.temp.path(), Some(&options))
+        .unwrap()
+        .unwrap();
+    std::thread::scope(|scope| {
+        for runtime in [b.ssh.clone(), b.clone().ssh, scoped.ssh.clone()] {
+            scope.spawn(move || {
+                runtime.endpoint().unwrap();
+            });
+        }
+    });
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        2,
+        "one failed construction, one shared success"
+    );
+    let server = git2::Repository::open_bare(&f.repository).unwrap();
+    commit(&server, "retry");
+    b.clone_repo(&url(&f), &f.temp.path().join("retry-a"))
+        .unwrap();
+    scoped
+        .clone_repo(&url(&f), &f.temp.path().join("retry-b"))
+        .unwrap();
+    assert_eq!(b.transport_observations().unwrap().snapshot().len(), 1);
+    let rows = scoped.transport_observations().unwrap().snapshot();
+    assert_eq!(rows.len(), 1);
+    assert!(!rows[0].credential_offered);
+    assert_eq!(rows[0].authenticated, Some(true));
+    e.shutdown();
+}

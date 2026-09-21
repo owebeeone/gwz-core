@@ -8,6 +8,10 @@ use std::{
     future::Future,
     io::{self, Read, Write},
     pin::pin,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll},
 };
 pub(crate) trait ChannelIo {
@@ -75,6 +79,9 @@ pub(crate) struct SshPump<C: ChannelIo> {
     forward: VecDeque<u8>,
     reverse: VecDeque<u8>,
     stderr: Vec<u8>,
+    stderr_truncated: bool,
+    saw_stdout: bool,
+    repository_refused: Option<Arc<AtomicBool>>,
     mirror_cap: usize,
     stderr_cap: usize,
     end_sent: bool,
@@ -106,6 +113,9 @@ impl<C: ChannelIo> SshPump<C> {
             forward: VecDeque::new(),
             reverse: VecDeque::new(),
             stderr: Vec::new(),
+            stderr_truncated: false,
+            saw_stdout: false,
+            repository_refused: None,
             mirror_cap,
             stderr_cap,
             end_sent: false,
@@ -123,6 +133,10 @@ impl<C: ChannelIo> SshPump<C> {
     }
     pub(crate) fn set_facts(&mut self, facts: Facts) {
         self.facts = facts;
+    }
+    /// Local stream-scoped classification only; no server text crosses this seam.
+    pub(crate) fn track_repository_refusal(&mut self, receipt: Arc<AtomicBool>) {
+        self.repository_refused = Some(receipt);
     }
     pub(crate) fn deliver(&mut self, message: Envelope) -> Result<(), PumpError> {
         let payload = if message.kind == MessageKind::Data {
@@ -270,6 +284,7 @@ impl<C: ChannelIo> SshPump<C> {
             }
             Ok(count) => {
                 self.record_progress(count)?;
+                self.saw_stdout = true;
                 self.reverse.extend(&bytes[..count]);
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
@@ -279,7 +294,22 @@ impl<C: ChannelIo> SshPump<C> {
     }
     fn write_reverse(&mut self, cx: &mut Context<'_>) -> Result<(), PumpError> {
         if self.reverse.is_empty() {
-            if self.stdout_eof && !self.reverse_end_sent {
+            if self.stdout_eof && self.stderr_eof && !self.reverse_end_sent {
+                if !self.saw_stdout && !self.stderr_truncated {
+                    let message = String::from_utf8_lossy(&self.stderr)
+                        .trim()
+                        .to_ascii_lowercase();
+                    let refused = message == "error: repository not found."
+                        || message == "repository not found."
+                        || (message.starts_with("error: permission to ")
+                            && message.contains(" denied to ")
+                            && !message.chars().any(char::is_control));
+                    if refused {
+                        if let Some(receipt) = &self.repository_refused {
+                            receipt.store(true, Ordering::Release);
+                        }
+                    }
+                }
                 match poll_end_write(&self.stream, cx) {
                     Poll::Ready(Ok(())) => self.reverse_end_sent = true,
                     Poll::Ready(Err(error)) => return Err(PumpError::Stream(error)),
@@ -316,6 +346,7 @@ impl<C: ChannelIo> SshPump<C> {
                 Ok(count) => {
                     self.record_progress(count)?;
                     let remaining = self.stderr_cap.saturating_sub(self.stderr.len());
+                    self.stderr_truncated |= count > remaining;
                     self.stderr
                         .extend_from_slice(&bytes[..count.min(remaining)]);
                 }

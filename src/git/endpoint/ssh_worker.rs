@@ -610,15 +610,17 @@ where
     }
     *request.progress.lock().unwrap_or_else(|e| e.into_inner()) = facts.clone();
     resource.start_exchange(stream, endpoint, request.service, &request.path)?;
-    if resource.pump().is_none() {
-        return Err(io::Error::other("resource did not install a channel pump"));
-    }
+    let receipt = Arc::new(AtomicBool::new(false));
+    resource
+        .pump()
+        .ok_or_else(|| io::Error::other("resource did not install a channel pump"))?
+        .track_repository_refusal(receipt.clone());
     active.push(Active {
         lease: Some(lease),
         peer,
     });
     Ok((
-        BlockingStream::new(client),
+        BlockingStream::with_repository_receipt(client, receipt),
         Opened {
             connection_id,
             reused,

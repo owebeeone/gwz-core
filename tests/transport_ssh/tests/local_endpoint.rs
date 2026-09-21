@@ -291,33 +291,183 @@ cfg_if::cfg_if! {
             let e = endpoint(&f.ssh, Some(f.path.clone()));
             let facts = Arc::new(Mutex::new(Vec::new()));
             let capture = facts.clone();
-            let route = ssh_endpoint::Route::reporting(e.clone(), None, Arc::new(move |f| capture.lock().unwrap().push(f.clone())));
+            let route = ssh_endpoint::Route::reporting(
+                e.clone(),
+                None,
+                Arc::new(move |f| capture.lock().unwrap().push(f.clone())),
+            );
             assert!(exchange(&route, &url(&f.ssh, &f.ssh.repository)).is_err());
             let facts = facts.lock().unwrap();
             assert_eq!(facts.len(), 1);
             assert_eq!(facts[0].method, AuthMethod::SshAgent);
             assert!(facts[0].credential_offered);
-            assert_eq!(facts[0].authenticated, None, "a local signing error is not a server rejection");
+            assert_eq!(
+                facts[0].authenticated, None,
+                "a local signing error is not a server rejection"
+            );
             finish(&e);
         }
         #[test]
         fn concurrent_authentication_receipts_belong_to_the_initiating_request() {
             let f = support::Fixture::new("ssh-ed25519", false);
-            let e = ssh_local::connect(Config { total: 2, per_host: 2, per_user_host: 2, ..Config::default() }, f.ssh.known_hosts.clone(), Some(f.path.clone()), 3000).unwrap();
+            let e = ssh_local::connect(
+                Config {
+                    total: 2,
+                    per_host: 2,
+                    per_user_host: 2,
+                    ..Config::default()
+                },
+                f.ssh.known_hosts.clone(),
+                Some(f.path.clone()),
+                3000,
+            )
+            .unwrap();
             let good = Arc::new(Mutex::new(Vec::new()));
             let bad = Arc::new(Mutex::new(Vec::new()));
             let barrier = Arc::new(std::sync::Barrier::new(2));
-            let threads: Vec<_> = [("auth_key",good.clone(),true),("client_ed25519",bad.clone(),false)].into_iter().map(|(key, facts, succeeds)| {
-                let route = ssh_endpoint::Route::reporting(e.clone(), Some(f.ssh.temp.path().join(key)), Arc::new(move |f| facts.lock().unwrap().push(f.clone())));
-                let barrier=barrier.clone();let url=url(&f.ssh,&f.ssh.repository);
-                std::thread::spawn(move || {barrier.wait(); assert_eq!(exchange(&route,&url).is_ok(),succeeds);})
-            }).collect();
-            for t in threads {t.join().unwrap();}
-            let good=good.lock().unwrap();let bad=bad.lock().unwrap();
-            assert_eq!(good.len(),1);assert_eq!(bad.len(),1);
+            let threads: Vec<_> = [
+                ("auth_key", good.clone(), true),
+                ("client_ed25519", bad.clone(), false),
+            ]
+            .into_iter()
+            .map(|(key, facts, succeeds)| {
+                let route = ssh_endpoint::Route::reporting(
+                    e.clone(),
+                    Some(f.ssh.temp.path().join(key)),
+                    Arc::new(move |f| facts.lock().unwrap().push(f.clone())),
+                );
+                let barrier = barrier.clone();
+                let url = url(&f.ssh, &f.ssh.repository);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    assert_eq!(exchange(&route, &url).is_ok(), succeeds);
+                })
+            })
+            .collect();
+            for t in threads {
+                t.join().unwrap();
+            }
+            let good = good.lock().unwrap();
+            let bad = bad.lock().unwrap();
+            assert_eq!(good.len(), 1);
+            assert_eq!(bad.len(), 1);
             assert!(good[0].credential_offered && bad[0].credential_offered);
-            assert_eq!(good[0].authenticated,Some(true));assert_eq!(bad[0].authenticated,Some(false));
-            f.no_requests();finish(&e);
+            assert_eq!(good[0].authenticated, Some(true));
+            assert_eq!(bad[0].authenticated, Some(false));
+            f.no_requests();
+            finish(&e);
+        }
+        #[test]
+        fn rejection_then_deadline_remains_timeout_at_remote_boundary() {
+            use git2::transport::{Service, SmartSubtransport};
+            let f = support::Fixture::new("ssh-ed25519", false);
+            let known = f.ssh.known_hosts.clone();
+            let socket = f.path.clone();
+            let e = Endpoint::with_connector(
+                Config {
+                    connect_timeout_ms: 800,
+                    cleanup_timeout_ms: 200,
+                    ..Default::default()
+                },
+                move |origin| {
+                    ssh_setup::SetupConnector::reported(
+                        origin,
+                        Duration::from_millis(200),
+                        move |key, _, progress| {
+                            let key = key.clone();
+                            let known = known.clone();
+                            let socket = socket.clone();
+                            Ok(Box::new(move |control| {
+                                let (connection, trusted) = ssh_network::establish(&key, &known, &control)?;
+                                let connection = agent_auth::authenticate_reporting(
+                                    connection,
+                                    key.username.as_deref().unwrap(),
+                                    &trusted,
+                                    control.clone(),
+                                    || agent_socket::connect(&socket, control.clone()),
+                                    || {
+                                        let mut facts = progress.lock().unwrap();
+                                        facts.method = AuthMethod::SshAgent;
+                                        facts.credential_offered = true;
+                                        facts.authenticated = None;
+                                    },
+                                    || {
+                                        progress.lock().unwrap().authenticated = Some(false);
+                                        while control.check().is_ok() {
+                                            std::thread::sleep(Duration::from_millis(1));
+                                        }
+                                    },
+                                )?;
+                                ssh_setup::Authenticated::new(
+                                    connection,
+                                    gwz_transport::pool::Identity::Ambient,
+                                    gwz_transport::protocol::Facts {
+                                        authenticated: Some(true),
+                                        ..Default::default()
+                                    },
+                                )
+                            }))
+                        },
+                    )
+                },
+                3000,
+            )
+            .unwrap();
+            let facts = Arc::new(Mutex::new(None));
+            let report = facts.clone();
+            let route = ssh_endpoint::Route::reporting(
+                e.clone(),
+                None,
+                Arc::new(move |f| *report.lock().unwrap() = Some(f.clone())),
+            );
+            let remote = ssh_remote::RemoteTransport::new(Arc::new(route));
+            let error = remote
+                .action(&url(&f.ssh, &f.ssh.repository), Service::UploadPackLs)
+                .err()
+                .unwrap();
+            assert_eq!(error.class(), git2::ErrorClass::Net, "{error:?}");
+            assert_ne!(error.code(), git2::ErrorCode::Auth);
+            let facts = facts.lock().unwrap().clone().unwrap();
+            assert!(facts.credential_offered);
+            assert_eq!(facts.authenticated, Some(false));
+            assert!(
+                f.signing.try_recv().is_err(),
+                "second, valid key was never offered"
+            );
+            drop(remote);
+            finish(&e);
+        }
+
+        #[test]
+        fn exhausted_agent_refusals_remain_authentication_rejection() {
+            use git2::transport::{Service, SmartSubtransport};
+            let f = support::Fixture::new("ssh-ed25519", false);
+            fs::copy(
+                f.ssh.temp.path().join("client_ed25519.pub"),
+                f.ssh.temp.path().join("authorized_keys"),
+            )
+            .unwrap();
+            let e = endpoint(&f.ssh, Some(f.path.clone()));
+            let facts = Arc::new(Mutex::new(None));
+            let report = facts.clone();
+            let route = ssh_endpoint::Route::reporting(
+                e.clone(),
+                None,
+                Arc::new(move |f| *report.lock().unwrap() = Some(f.clone())),
+            );
+            let remote = ssh_remote::RemoteTransport::new(Arc::new(route));
+            let error = remote
+                .action(&url(&f.ssh, &f.ssh.repository), Service::UploadPackLs)
+                .err()
+                .unwrap();
+            assert_eq!(error.class(), git2::ErrorClass::Ssh);
+            assert_eq!(error.code(), git2::ErrorCode::Auth);
+            assert_eq!(
+                facts.lock().unwrap().as_ref().unwrap().authenticated,
+                Some(false)
+            );
+            drop(remote);
+            finish(&e);
         }
     }
 }

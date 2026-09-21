@@ -234,3 +234,108 @@ fn candidate_command_drivers_share_pool_and_preserve_nested_observations() {
     );
     e.shutdown();
 }
+
+#[test]
+fn candidate_service_refusal_skips_only_private_members_and_forgets_observations() {
+    use std::os::unix::fs::PermissionsExt;
+    let (f, b, e) = fixture();
+    let server = git2::Repository::open_bare(&f.repository).unwrap();
+    commit(&server, "fixture");
+    let script = f.temp.path().join("service.sh");
+    std::fs::write(&script, "#!/bin/sh\ncase \"$SSH_ORIGINAL_COMMAND\" in\n *inaccessible.git*) echo 'ERROR: Repository not found.' >&2; exit 1 ;;\n *broken.git*) echo 'fixture backend failed' >&2; exit 2 ;;\n *) eval \"$SSH_ORIGINAL_COMMAND\" ;;\nesac\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let public = std::fs::read_to_string(f.temp.path().join("client_ed25519.pub")).unwrap();
+    std::fs::write(
+        f.temp.path().join("authorized_keys"),
+        format!("command=\"{}\" {}", script.display(), public),
+    )
+    .unwrap();
+    let denied = format!("ssh://{}@127.0.0.1:{}/inaccessible.git", f.user, f.port);
+    let broken = format!("ssh://{}@127.0.0.1:{}/broken.git", f.user, f.port);
+    assert_eq!(
+        b.clone_repo(&denied, &f.temp.path().join("refused"))
+            .unwrap_err()
+            .code,
+        crate::model::ErrorCode::RemoteRejected
+    );
+    assert_eq!(
+        b.clone_repo(&broken, &f.temp.path().join("broken"))
+            .unwrap_err()
+            .code,
+        crate::model::ErrorCode::GitCommandFailed
+    );
+    let root = f.temp.path().join("private-workspace");
+    std::fs::create_dir(&root).unwrap();
+    handle_init_from_sources(
+        &b,
+        &root,
+        crate::InitFromSourcesRequest {
+            meta: meta(&f, false),
+            workspace_root: root.to_string_lossy().into(),
+            sources: vec![crate::SourceUrl {
+                url: url(&f),
+                path: Some("secret".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        "init",
+        &NullSink,
+    )
+    .unwrap();
+    git2::Repository::open(root.join("secret"))
+        .unwrap()
+        .remote_set_url("origin", &denied)
+        .unwrap();
+    handle_repo_sync(
+        &b,
+        &root,
+        crate::RepoSyncRequest {
+            meta: crate::RequestMeta {
+                transport: None,
+                ..meta(&f, true)
+            },
+            private: Some(true),
+        },
+        "private",
+    )
+    .unwrap();
+    checkpoint(&root);
+    std::fs::remove_dir_all(root.join("secret")).unwrap();
+    let result = handle_materialize(
+        &b,
+        &root,
+        crate::MaterializeRequest {
+            meta: meta(&f, true),
+            target: crate::MaterializeTarget {
+                kind: crate::MaterializeTargetKind::Lock,
+                ..Default::default()
+            },
+        },
+        "private-materialize",
+        &NullSink,
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            result.response.meta.aggregate_status,
+            crate::AggregateStatus::Ok | crate::AggregateStatus::Noop
+        ),
+        "{result:?}"
+    );
+    assert!(!root.join("secret").exists());
+    assert!(
+        result
+            .response
+            .meta
+            .transport
+            .as_ref()
+            .is_none_or(Vec::is_empty),
+        "{result:?}"
+    );
+    assert!(
+        result.response.members.is_empty(),
+        "private refusal must be quiet: {result:?}"
+    );
+    e.shutdown();
+}

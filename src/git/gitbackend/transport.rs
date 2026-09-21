@@ -771,7 +771,8 @@ pub(super) fn read_remote_file(
 /// only its known refusal forms within the corresponding transport class.
 fn clone_error(url: &str, error: git2::Error) -> ModelError {
     let message = error.message().trim().to_ascii_lowercase();
-    let access_refused = error.code() == git2::ErrorCode::Auth && !message.contains("proxy")
+    let access_refused = super::transport_binding::repository_refused(&error)
+        || error.code() == git2::ErrorCode::Auth && !message.contains("proxy")
         || error.class() == git2::ErrorClass::Http
             && matches!(
                 message.as_str(),

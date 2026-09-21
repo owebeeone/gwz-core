@@ -5,7 +5,10 @@ use std::{
     future::Future,
     io::{self, Read, Write},
     pin::pin,
-    sync::{Arc, Condvar, Mutex},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll, Wake, Waker},
 };
 
@@ -14,10 +17,21 @@ use std::{
 #[derive(Clone)]
 pub struct BlockingStream {
     stream: Stream,
+    repository_refused: Option<Arc<AtomicBool>>,
 }
+pub(crate) const REPOSITORY_REFUSED: &str = "GWZ SSH repository access refused";
 impl BlockingStream {
     pub fn new(stream: Stream) -> Self {
-        Self { stream }
+        Self {
+            stream,
+            repository_refused: None,
+        }
+    }
+    pub(crate) fn with_repository_receipt(stream: Stream, receipt: Arc<AtomicBool>) -> Self {
+        Self {
+            stream,
+            repository_refused: Some(receipt),
+        }
     }
 
     /// Half-close outgoing bytes; incoming bytes remain readable.
@@ -37,7 +51,19 @@ impl BlockingStream {
 }
 impl Read for BlockingStream {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
-        wait(self.stream.read(output)).map_err(io_error)
+        let result = wait(self.stream.read(output)).map_err(io_error);
+        if !output.is_empty()
+            && self
+                .repository_refused
+                .as_ref()
+                .is_some_and(|r| r.load(Ordering::Acquire))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                REPOSITORY_REFUSED,
+            ));
+        }
+        result
     }
 }
 impl Write for BlockingStream {

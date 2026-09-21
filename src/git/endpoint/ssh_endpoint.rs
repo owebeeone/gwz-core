@@ -75,7 +75,21 @@ impl OpenStream for Route {
         if let Some(report) = &self.report {
             report(&facts);
         }
-        if result.is_err() && facts.authenticated == Some(false) {
+        let exhausted = result
+            .as_ref()
+            .err()
+            .and_then(|error| error.get_ref())
+            .and_then(|cause| cause.downcast_ref::<gwz_transport::pool::Error>())
+            .is_some_and(|cause| {
+                matches!(
+                    cause,
+                    gwz_transport::pool::Error::ConnectFailed {
+                        code: gwz_transport::protocol::ErrorCode::Authentication,
+                        ..
+                    }
+                )
+            });
+        if exhausted && facts.authenticated == Some(false) {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 super::ssh_remote::AuthenticationRejected,
