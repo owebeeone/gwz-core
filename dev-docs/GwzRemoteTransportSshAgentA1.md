@@ -1,6 +1,6 @@
 # SSH agent A1 — bounded client and helper lifecycle
 
-Date: 2026-09-21. Status: remediation 1 implemented; retained focused re-review pending.
+Date: 2026-09-21. Status: accepted after retained Code/State GO on remediation 1.
 Authority: [accepted helper design](GwzRemoteTransportSshAgentDesign.md), A1.
 This checkpoint does not authenticate SSH, activate production modules, modify
 gwz-transport, or change the CLI/core API. A2 signing and A3 pool/backend
@@ -97,6 +97,18 @@ The test ceiling is refined from 700 to 750 lines for these review-requested
 regressions (742 actual); production remains within the existing 20% allowance.
 This supersedes only the A1 test line ceiling in design §8. No capability or scope
 expansion. Two independent P2 findings, one P3 coverage finding, one merged
-remediation; no blind convergence and no known escaped defect. Reviewer closure
-is pending. [Remediation evidence](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-21-agent-a1-rem-1/README.md)
+remediation; no blind convergence and no known escaped defect. Both retained reviewers verified closure. [Remediation evidence](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-21-agent-a1-rem-1/README.md)
 is private; original development evidence remains unchanged.
+
+## Acceptance record
+
+Accepted implementation tuple: root `d552bbda5c5b8c14291243cdf73b1c1955443222`,
+core `14409399bc7404446200192ffaf585f9969eec49`, evidence
+`d5605a5ad81feff445d0d712940ba050c849dec3`; transport/Rust/C pins unchanged
+and listed in the reports. Retained [Code GO](../../dev-docs/GwzRemoteTransportSshAgentA1-ReviewCode-1.md)
+and [State GO](../../dev-docs/GwzRemoteTransportSshAgentA1-ReviewState-1.md)
+close both P2s and the P3 after one merged remediation. This accepts A1 only.
+Native signing and authenticated session handoff are the next A2 checkpoint;
+A3 pool/backend integration and deferred platform/source qualification remain.
+Acceptance filing changes documentation only; reviewed implementation bytes are
+unchanged. No push, release or production activation is part of this acceptance.
