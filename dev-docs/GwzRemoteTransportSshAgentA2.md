@@ -1,6 +1,6 @@
 # SSH agent A2 — native signing and connection handoff
 
-Date: 2026-09-21. Status: remediation 1 implemented; retained re-review pending.
+Date: 2026-09-21. Status: accepted after retained Code/State GO on remediation 1.
 Authority: [accepted helper design](GwzRemoteTransportSshAgentDesign.md), A2,
 and [accepted A1](GwzRemoteTransportSshAgentA1.md). This is an isolated fixture
 checkpoint; production routing and dependencies remain inactive.
@@ -85,5 +85,21 @@ TCP at the first native EAGAIN. Two identities remain enumerated; the regression
 proves the ambiguous error terminates before any call with the second key. The
 normal entry always supplies a no-op observer. [Red/green evidence](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-21-agent-a2-rem-1/README.md)
 is private. Initial State GO and Code NO-GO; one P2, one merged correction,
-retained re-verdict pending. The test ceiling moves from 560 to 620 for this
+both retained re-verdicts GO. The test ceiling moves from 560 to 620 for this
 review regression, not additional product scope. No known escaped defect.
+
+## Acceptance record
+
+Accepted implementation tuple: root `53d60168cf2e2e5dc59cb4fa831276a5f69884fd`,
+core `61da27a63a8df42ee92eab909be23d31db665005`, evidence
+`e242351237c2a1bc006c8f6c795f2b56b5ef947f`; transport/Rust/C pins unchanged and
+listed in the reports. Retained [Code GO](../../dev-docs/GwzRemoteTransportSshAgentA2-ReviewCode-1.md)
+and [State GO](../../dev-docs/GwzRemoteTransportSshAgentA2-ReviewState-1.md)
+accept this A2 boundary only. One aggregate review and one merged remediation;
+one P2 discovered by Code, no blind convergence, no known escaped defect.
+Acceptance filing is documentation only and leaves reviewed source unchanged.
+
+Next: A3 supervised setup as the pool's connecting resource, observable cleanup
+failure and shutdown, physical capacity retained until disposal, and correct
+authentication observations on new versus reused connections. Production setup
+and activation, plus the deferred platform/source batch, remain separate gates.
