@@ -59,18 +59,30 @@ cfg_if! {
                 if addresses.is_empty() {
                     return Err(io::ErrorKind::NotFound.into());
                 }
+                let socket = connect_addresses(addresses, control, connect)?;
+                handshake(socket, &key.host, key.port, &text, control)
+            }
+
+            pub(crate) fn connect_addresses<C>(
+                addresses: Vec<SocketAddr>,
+                control: &Control,
+                mut connect_address: C,
+            ) -> io::Result<TcpStream>
+            where
+                C: FnMut(SocketAddr, &Control) -> io::Result<TcpStream>,
+            {
                 let mut last = None;
                 for address in addresses {
                     control.check()?;
-                    let socket = match connect(address, control) {
+                    let socket = match connect_address(address, control) {
                         Ok(socket) => socket,
-                        Err(error) if terminal(&error) => return Err(error),
                         Err(error) => {
+                            control.check()?;
                             last = Some(error);
                             continue;
                         }
                     };
-                    return handshake(socket, &key.host, key.port, &text, control);
+                    return Ok(socket);
                 }
                 Err(last.unwrap_or_else(|| io::ErrorKind::NotFound.into()))
             }
@@ -292,16 +304,13 @@ cfg_if! {
                 control: &Control,
             ) -> io::Result<bool> {
                 let mut loaded = false;
-                for raw in text.split('\n') {
+                // CR/LF exclusion measures admission; preserve all native token bytes.
+                for line in text.split('\n') {
                     control.check()?;
-                    let line = raw.trim_end_matches('\r');
                     if line.trim_matches([' ', '\t']).is_empty()
                         || line.trim_start_matches([' ', '\t']).starts_with('#')
                     {
                         continue;
-                    }
-                    if line.len() > LINE_CAP {
-                        return Err(io::ErrorKind::InvalidInput.into());
                     }
                     if kind.is_some_and(|wanted| line_kind(line) != Some(wanted)) {
                         continue;
@@ -323,13 +332,6 @@ cfg_if! {
                     .find_map(|(kind, _)| kind.starts_with(key_type).then_some(*kind))
             }
 
-            fn terminal(error: &io::Error) -> bool {
-                matches!(
-                    error.kind(),
-                    io::ErrorKind::TimedOut | io::ErrorKind::ConnectionAborted
-                )
-            }
-
             fn clean(error: io::Error) -> io::Error {
                 io::Error::from(error.kind())
             }
@@ -341,7 +343,7 @@ cfg_if! {
         pub(crate) use unix::establish;
         cfg_if! {
             if #[cfg(test)] {
-                pub(crate) use unix::{establish_inner as establish_with, read_regular};
+                pub(crate) use unix::{connect_addresses, establish_inner as establish_with, read_regular};
             }
         }
     }

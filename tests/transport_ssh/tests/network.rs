@@ -354,16 +354,18 @@ cfg_if::cfg_if! {
                     assert_eq!(result.err().unwrap().kind(), io::ErrorKind::InvalidInput);
                 }
             }
-            for bytes in [16 * 1024 - 1, 16 * 1024, 16 * 1024 + 1] {
-                let mut text = line.trim_end().to_owned();
-                text.push_str(&" ".repeat(bytes - text.len()));
-                text.push('\n');
-                fs::write(&f.known_hosts, text).unwrap();
-                let result = establish(key(&f), f.known_hosts.clone());
-                if bytes <= 16 * 1024 {
-                    assert!(result.is_ok(), "{bytes}: {:?}", result.err());
-                } else {
-                    assert_eq!(result.err().unwrap().kind(), io::ErrorKind::InvalidInput);
+            for ending in ["\n", "\r\n"] {
+                for bytes in [16 * 1024 - 1, 16 * 1024, 16 * 1024 + 1] {
+                    let mut text = line.trim_end().to_owned();
+                    text.push_str(&" ".repeat(bytes - text.len()));
+                    text.push_str(ending);
+                    fs::write(&f.known_hosts, text).unwrap();
+                    let result = establish(key(&f), f.known_hosts.clone());
+                    if bytes <= 16 * 1024 {
+                        assert!(result.is_ok(), "{bytes}: {:?}", result.err());
+                    } else {
+                        assert_eq!(result.err().unwrap().kind(), io::ErrorKind::InvalidInput);
+                    }
                 }
             }
         }
@@ -444,6 +446,37 @@ cfg_if::cfg_if! {
             );
             drop(native);
             assert!(establish(key(&f), f.known_hosts.clone()).is_err());
+        }
+        #[test]
+        fn carriage_return_data_matches_native_trust() {
+            for comment in ["", " comment"] {
+                let mut f = common::SshdFixture::new();
+                let mut connection = f.session();
+                let host = connection.session().host_key().unwrap().0.to_vec();
+                let original = fs::read_to_string(&f.known_hosts).unwrap();
+                let fields: Vec<_> = original.split_whitespace().collect();
+                let bare = format!("{} {} {}", fields[0], fields[1], fields[2]);
+                for suffix in ["", "\n", "\r", "\r\n", "\r\r\n"] {
+                    fs::write(&f.known_hosts, format!("{bare}{comment}{suffix}")).unwrap();
+                    let mut native = connection.session().known_hosts().unwrap();
+                    let parsed = native
+                        .read_file(&f.known_hosts, ssh2::KnownHostFileKind::OpenSSH)
+                        .is_ok();
+                    let matched = parsed
+                        && matches!(
+                            native.check_port("127.0.0.1", f.port, &host),
+                            ssh2::CheckResult::Match
+                        );
+                    drop(native);
+                    let result = establish(key(&f), f.known_hosts.clone());
+                    assert_eq!(
+                        result.is_ok(),
+                        matched,
+                        "comment={comment:?}, suffix={suffix:?}, result={:?}",
+                        result.err()
+                    );
+                }
+            }
         }
         #[test]
         fn late_loader_and_resolver_results_are_disposed_without_later_effects() {
@@ -568,6 +601,85 @@ cfg_if::cfg_if! {
             assert!(finish(&mut job).is_err());
             server.join().unwrap();
             assert!(matches!(second.accept(),Err(e)if e.kind()==io::ErrorKind::WouldBlock));
+        }
+        #[test]
+        fn live_control_retries_socket_timeout_and_abort() {
+            use std::sync::atomic::AtomicUsize;
+            for kind in [io::ErrorKind::TimedOut, io::ErrorKind::ConnectionAborted] {
+                let peer = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+                let live = peer.local_addr().unwrap();
+                let attempts = Arc::new(AtomicUsize::new(0));
+                let observed = attempts.clone();
+                let mut job = Job::start(
+                    Some(Instant::now() + Duration::from_secs(3)),
+                    Duration::from_secs(1),
+                    move |c| {
+                        ssh_network::connect_addresses(vec![live, live], &c, |address, _| {
+                            if observed.fetch_add(1, Ordering::SeqCst) == 0 {
+                                Err(kind.into())
+                            } else {
+                                TcpStream::connect(address)
+                            }
+                        })
+                    },
+                )
+                .unwrap();
+                let socket = finish(&mut job).expect("live Control must allow the next address");
+                assert_eq!(socket.peer_addr().unwrap(), live);
+                assert_eq!(attempts.load(Ordering::SeqCst), 2);
+            }
+        }
+        #[test]
+        fn terminal_control_wins_over_socket_error_without_retry() {
+            use std::sync::{atomic::AtomicUsize, mpsc};
+            for cancel in [true, false] {
+                let (entered_tx, entered) = mpsc::channel();
+                let (release, released) = mpsc::channel();
+                let (result_tx, result) = mpsc::channel();
+                let attempts = Arc::new(AtomicUsize::new(0));
+                let observed = attempts.clone();
+                let expiry = Instant::now() + Duration::from_millis(200);
+                let mut job = Job::start(
+                    if cancel { None } else { Some(expiry) },
+                    Duration::from_secs(1),
+                    move |c| {
+                        let address = "127.0.0.1:1".parse().unwrap();
+                        let error = ssh_network::connect_addresses(vec![address, address], &c, |_, _| {
+                            assert_eq!(observed.fetch_add(1, Ordering::SeqCst), 0);
+                            entered_tx.send(()).unwrap();
+                            released.recv_timeout(Duration::from_secs(3)).unwrap();
+                            Err(if cancel {
+                                io::ErrorKind::TimedOut
+                            } else {
+                                io::ErrorKind::ConnectionAborted
+                            }
+                            .into())
+                        })
+                        .unwrap_err();
+                        result_tx.send(error.kind()).unwrap();
+                        Err::<(), _>(error)
+                    },
+                )
+                .unwrap();
+                entered.recv_timeout(Duration::from_secs(2)).unwrap();
+                if cancel {
+                    job.cancel();
+                } else {
+                    std::thread::sleep(expiry.saturating_duration_since(Instant::now()));
+                }
+                release.send(()).unwrap();
+                let expected = if cancel {
+                    io::ErrorKind::ConnectionAborted
+                } else {
+                    io::ErrorKind::TimedOut
+                };
+                assert_eq!(
+                    result.recv_timeout(Duration::from_secs(2)).unwrap(),
+                    expected
+                );
+                assert_eq!(finish(&mut job).unwrap_err().kind(), expected);
+                assert_eq!(attempts.load(Ordering::SeqCst), 1);
+            }
         }
         #[test]
         fn terminal_authentication_failure_never_tries_another_address() {

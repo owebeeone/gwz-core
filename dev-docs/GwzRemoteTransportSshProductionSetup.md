@@ -104,7 +104,7 @@ a private snapshot token must not be presented as a public-key fingerprint.
    cancellable nonblocking connect/handshake, and native known-host verification.
    Compose it with A2/A3 ambient-agent setup in controlled native tests. This
    removes fixture-preconnected sessions from that path. At most 350 added
-   production lines across two cohesive modules and 660 focused test/support
+   production lines across two cohesive modules and 770 focused test/support
    lines. Endpoint discovery supplies owned paths; no user environment or
    credentials are consulted by tests. Exact explicit-key admission remains N2.
 2. **N2 selected authority:** specify bounded per-request admission, snapshot/token
@@ -170,3 +170,9 @@ The original650-line test allowance moves to660 for native whitespace and
 key-type-prefix parity regressions; final tests652 lines. Production remains
 348/350 lines in one module. This adds no behavior beyond the stated native
 parity boundary. Implementation acceptance is recorded in GwzRemoteTransportSshN1.md.
+
+N1 remediation test allowance: N2/N3 remain excluded. The reviewed connect-error
+and CR-token counterexamples require deterministic connector and terminal-Control
+regressions, a separate native ending/comment matrix and CRLF cap checks. The
+660-line allowance is refined to770; final tests764. Production remains within
+350 lines/one module. The added seam does not change the setup or wire API.
