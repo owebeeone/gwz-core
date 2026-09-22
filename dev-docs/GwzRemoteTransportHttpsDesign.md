@@ -1,6 +1,6 @@
 # HTTPS endpoint adapter design
 
-Status: **DRAFT — correction 1 pending retained re-review**, 2026-09-22.
+Status: **DRAFT — correction 2 pending retained re-review**, 2026-09-22.
 This admits candidate implementation only. It does not activate production
 routes, freeze a new public constructor/command, or qualify physical CLI/core wire.
 Authority: [Requirements G4/C8/P4](GwzRemoteTransportRequirements.md),
@@ -84,8 +84,8 @@ before Opened; GET requires no caller body, so this does not create the POST
 cycle. Hold only bounded response bytes while awaiting delivery. Opened identifies
 the final connection actually serving the advertisement, never an abandoned
 redirect connection. Its facts truthfully include the request's offered flag and
-known status; terminal facts finalize the same request. A failed discovery may
-emit Failed before Opened with facts; do not manufacture a connection observation.
+known status; terminal facts finalize the same request. Every discovery failure before Opened must
+emit OpenFailed carrying Failure.facts; do not manufacture a connection observation.
 The HTTPS-specific reused/offered validator amendment in §10 admits these facts.
 Before handing any response body to Git, validate status and content type;
 advertisements retain the service pkt-line prefix expected by libgit2's RPC
@@ -440,3 +440,15 @@ it adds no tags/fields and does not activate existing production readers:
 Retained Consistency/Safety re-review covers these exact changes. Because item4
 refines an exposed observation meaning, add the retained Surface reviewer on the
 updated embedding guide. Public constructor/settings design remains a later gate.
+
+### Correction 2 — pre-open failure lifecycle
+
+For every failure while discovery is still Opening, send `OpenFailed`, never
+stream-state `Failed`. This includes401,403/404,5xx, malformed headers, trust,
+network loss and exhausted budget. Its v2 `Failure.facts` retains available HTTP
+status/auth facts; unknown facts remain absent. Do not send Opened or expose body
+bytes for these outcomes. H1 must route each case through the real mux, assert
+OpenFailed is accepted and Opening retires without entering Stream, and verify
+the typed first receipt remains available to the permitted authentication
+transition. Failures after Opened retain the existing stream Failed/Closed rules.
+No field/tag or state-machine change is needed for this correction.

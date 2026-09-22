@@ -318,8 +318,8 @@ ledger for carried placement before advertising that placement.
 ### Phase 5 — HTTPS adapter and authentication policy
 
 Detailed candidate admission: [HTTPS endpoint design](GwzRemoteTransportHttpsDesign.md),
-currently DRAFT correction1 pending retained Consistency/Safety re-review and
-Surface review of HTTPS observation semantics. It specifies two
+currently DRAFT correction2 pending focused retained review; correction1
+Safety/Surface are GO. It specifies two
 implementation batches (endpoint/RPC, then host/command integration), reusing the
 existing transport protocol and generic pool. It activates no public route.
 
