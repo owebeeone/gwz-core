@@ -35,7 +35,7 @@ impl Session {
             observe,
             facts,
         )
-        .map_err(failure_io)
+        .map_err(|(_, failure)| failure_io(failure))
     }
     pub(in crate::transport_host) fn open_https(
         &self,
@@ -46,9 +46,9 @@ impl Session {
         policy: AuthPolicy,
         observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
         facts: Arc<dyn Fn(&Facts) + Send + Sync>,
-    ) -> Result<BlockingStream, Failure> {
+    ) -> Result<BlockingStream, (Option<i64>, Failure)> {
         let destination = crate::git::endpoint::https_destination::Destination::parse(url)
-            .map_err(protocol_failure)?;
+            .map_err(|failure| (None, protocol_failure(failure)))?;
         self.open_stream(
             request,
             operation,
@@ -83,22 +83,29 @@ impl Session {
         policy: AuthPolicy,
         observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
         facts: Arc<dyn Fn(&Facts) + Send + Sync>,
-    ) -> Result<BlockingStream, Failure> {
+    ) -> Result<BlockingStream, (Option<i64>, Failure)> {
         let reply = Wait::new();
+        let stream_id;
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.closed {
-                return Err(protocol_failure(
-                    gwz_transport::protocol::ErrorCode::CarrierLost,
+                return Err((
+                    None,
+                    protocol_failure(gwz_transport::protocol::ErrorCode::CarrierLost),
                 ));
             }
-            let owner = state
-                .owner
-                .as_ref()
-                .ok_or_else(|| protocol_failure(gwz_transport::protocol::ErrorCode::Unavailable))?;
-            let binding = owner
-                .binding()
-                .ok_or_else(|| protocol_failure(gwz_transport::protocol::ErrorCode::Unavailable))?;
+            let owner = state.owner.as_ref().ok_or_else(|| {
+                (
+                    None,
+                    protocol_failure(gwz_transport::protocol::ErrorCode::Unavailable),
+                )
+            })?;
+            let binding = owner.binding().ok_or_else(|| {
+                (
+                    None,
+                    protocol_failure(gwz_transport::protocol::ErrorCode::Unavailable),
+                )
+            })?;
             let report_open_failure = destination.scheme == Scheme::Ssh;
             let open = Open {
                 endpoint_id: binding.endpoint_id().into(),
@@ -117,8 +124,12 @@ impl Session {
                 receive_limits: binding.limits().clone(),
             };
             let id = owner.open(request, open).map_err(|_| {
-                protocol_failure(gwz_transport::protocol::ErrorCode::UnsupportedOperation)
+                (
+                    None,
+                    protocol_failure(gwz_transport::protocol::ErrorCode::UnsupportedOperation),
+                )
             })?;
+            stream_id = Some(id);
             let mut config = stream::Config::new(binding.session_id(), id, stream::Side::Initiator);
             config.profile_version = 2;
             config.receive_limits = binding.limits().clone();
@@ -128,8 +139,12 @@ impl Session {
             config.max_payload = config
                 .max_payload
                 .min(binding.limits().data_payload as usize);
-            let (stream, peer) = Stream::new(config)
-                .map_err(|_| protocol_failure(gwz_transport::protocol::ErrorCode::Protocol))?;
+            let (stream, peer) = Stream::new(config).map_err(|_| {
+                (
+                    Some(id),
+                    protocol_failure(gwz_transport::protocol::ErrorCode::Protocol),
+                )
+            })?;
             let deadline = (state.io_timeout_ms != 0)
                 .then(|| Instant::now() + Duration::from_millis(150_000 + state.io_timeout_ms));
             state.streams.insert(
@@ -140,6 +155,11 @@ impl Session {
                     peer: Arc::new(peer),
                     opened: false,
                     report_open_failure,
+                    opening_cancel_effect: if report_open_failure {
+                        Effect::Possible
+                    } else {
+                        Effect::None
+                    },
                     reply: reply.clone(),
                     deadline,
                     pending: None,
@@ -150,7 +170,7 @@ impl Session {
         }
         match reply.get() {
             Ok((stream, _)) => Ok(stream),
-            Err(failure) => Err(failure),
+            Err(failure) => Err((stream_id, failure)),
         }
     }
     pub(in crate::transport_host) fn check(
@@ -292,8 +312,12 @@ impl Session {
                             let reply = entry.reply.clone();
                             let stream = entry.stream.clone();
                             reports.push(Box::new(move || {
-                                observe(message.stream_id, &value);
-                                reply.complete(Ok((BlockingStream::new(stream), opened)));
+                                reply.complete_with(
+                                    Ok((BlockingStream::new(stream), opened)),
+                                    || {
+                                        observe(message.stream_id, &value);
+                                    },
+                                );
                                 true
                             }));
                         } else if let Some(failure) = message.open_failed.clone() {
@@ -345,7 +369,7 @@ impl Session {
                     state.pending = item.map(|out| (out.request, out.envelope));
                     state.prefer_https = !state.prefer_https;
                 }
-                if let Some(item) = state.pending.take() {
+                if let Some(mut item) = state.pending.take() {
                     // Local seal makes the mux own the cancellation terminal. Late
                     // physical completion is cleanup only and cannot replace it.
                     let sealed = state
@@ -353,8 +377,15 @@ impl Session {
                         .get(&item.0)
                         .is_some_and(|r| r.sealed.is_some());
                     if !sealed {
+                        if let Some(engine) = &mut state.https {
+                            engine.before_handoff(&item.0, &mut item.1);
+                        }
                         match owner.send(&item.0, &item.1) {
-                            Ok(()) => {}
+                            Ok(()) => {
+                                if let Some(engine) = &mut state.https {
+                                    engine.handed_off(&item.0, &item.1);
+                                }
+                            }
                             Err(mux::Error::WouldBlock) => state.pending = Some(item),
                             Err(mux::Error::InvalidRequest)
                                 if matches!(

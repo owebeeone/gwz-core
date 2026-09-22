@@ -852,3 +852,55 @@ fn https_connect_proxy_preserves_origin_tls_verification() {
 
 #[path = "https_lifecycle_tests.rs"]
 mod lifecycle;
+
+#[test]
+fn exhausted_retry_domains_fail_before_gh_lookup_without_refilling() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let mut endpoint = Endpoint::new(
+                super::super::https_connection::Config::default(),
+                None,
+                gwz_transport::pool::Config::default(),
+            )
+            .unwrap();
+            for domain in 0..5 {
+                let mut budget = endpoint.client.budget_for_open(&Deadlines::default());
+                match domain {
+                    0 => budget.allocation = Duration::ZERO,
+                    1 => budget.helper = Duration::ZERO,
+                    2 => budget.connect = Some(Duration::ZERO),
+                    3 => budget.network = Some(Duration::ZERO),
+                    _ => budget.cleanup = Duration::ZERO,
+                }
+                let result = endpoint
+                    .client
+                    .prepare_budget(
+                        Input {
+                            destination: "https://example.invalid/repo".into(),
+                            service: GitService::UploadPackAdvertisement,
+                            policy: AuthPolicy::Gh,
+                            session: "s".into(),
+                            operation: "op".into(),
+                        },
+                        &CancellationToken::new(),
+                        &mut budget,
+                    )
+                    .await;
+                assert!(
+                    matches!(
+                        result,
+                        Err(Failure {
+                            code: ErrorCode::Timeout,
+                            effect: Effect::None,
+                            ..
+                        })
+                    ),
+                    "domain {domain} must fail before missing-gh authentication lookup"
+                );
+            }
+            assert_eq!(endpoint.shutdown(Duration::from_secs(1)).await, 0);
+        });
+}

@@ -26,6 +26,9 @@ struct Entry {
     cancel: CancellationToken,
     preparing: Option<JoinHandle<(Result<Prepared, Failure>, Budget)>>,
     serving: Option<JoinHandle<()>>,
+    prepared: Option<Prepared>,
+    handoff: bool,
+    opening_published: bool,
     // Retain the application half until its terminal message is drained.
     stream: Option<Stream>,
     peer: Option<Arc<MessageEndpoint>>,
@@ -119,10 +122,22 @@ impl HttpsEndpoint {
         if envelope.kind != MessageKind::Open {
             if let Some(entry) = self.entries.get_mut(&key) {
                 if envelope.kind == MessageKind::Cancel {
-                    entry.cancel.cancel();
-                    // Let the HTTP owner emit the terminal with its effect and
-                    // facts. Delivering Cancel to the byte machine first would
-                    // make fail_terminal a no-op and leave the mux route live.
+                    cancel_entry(entry);
+                    return Ok(());
+                }
+                if entry.cancel.is_cancelled() {
+                    return Ok(());
+                }
+                if entry.prepared.is_some()
+                    && matches!(envelope.kind, MessageKind::Data | MessageKind::EndWrite)
+                {
+                    entry.handoff = true;
+                    entry
+                        .peer
+                        .as_ref()
+                        .ok_or(EndpointError::Protocol)?
+                        .deliver(envelope)
+                        .map_err(|_| EndpointError::Protocol)?;
                     return Ok(());
                 }
                 if let Some(peer) = &entry.peer {
@@ -210,6 +225,9 @@ impl HttpsEndpoint {
                 cancel,
                 preparing: Some(preparing),
                 serving: None,
+                prepared: None,
+                handoff: false,
+                opening_published: false,
                 stream: None,
                 peer: None,
                 output: None,
@@ -276,11 +294,17 @@ impl HttpsEndpoint {
                                 Stream::new(config).map_err(|_| EndpointError::Protocol)?;
                             let peer = Arc::new(peer);
                             peer.advance(now);
-                            entry.serving = Some(self.runtime.spawn(prepared.serve(
-                                stream.clone(),
-                                peer.clone(),
-                                entry.cancel.clone(),
-                            )));
+                            if https_policy::advertisement(
+                                entry.envelope.open.as_ref().expect("Open").service,
+                            ) {
+                                entry.serving = Some(self.runtime.spawn(prepared.serve(
+                                    stream.clone(),
+                                    peer.clone(),
+                                    entry.cancel.clone(),
+                                )));
+                            } else {
+                                entry.prepared = Some(prepared);
+                            }
                             entry.stream = Some(stream);
                             entry.peer = Some(peer);
                         }
@@ -312,6 +336,25 @@ impl HttpsEndpoint {
             }
             if let Some(peer) = &entry.peer {
                 peer.advance(now);
+            }
+            if entry.serving.is_none() {
+                if entry.handoff {
+                    let Some(prepared) = entry.prepared.take() else {
+                        return Err(EndpointError::Protocol);
+                    };
+                    let Some(peer) = entry.peer.clone() else {
+                        return Err(EndpointError::Protocol);
+                    };
+                    let Some(stream) = entry.stream.clone() else {
+                        return Err(EndpointError::Protocol);
+                    };
+                    entry.serving = Some(self.runtime.spawn(prepared.serve(
+                        stream,
+                        peer.clone(),
+                        entry.cancel.clone(),
+                    )));
+                    entry.handoff = false;
+                }
             }
             if let Some(task) = entry.serving.as_mut() {
                 if let Poll::Ready(result) = Pin::new(task).poll(cx) {
@@ -367,10 +410,33 @@ impl HttpsEndpoint {
         }
         None
     }
+    // Called on every retry of the host's pending outbound slot. Taking a
+    // receipt is not publication; only successful mux send linearizes Opened.
+    pub(super) fn before_handoff(&mut self, request: &str, message: &mut Envelope) {
+        if let Some(entry) = self.entries.get_mut(&(request.into(), message.stream_id)) {
+            if message.kind == MessageKind::Opened && entry.cancel.is_cancelled() {
+                let facts = message.opened.as_ref().map(|opened| opened.facts.clone());
+                *message = cancelled_open(&entry.envelope, facts);
+                entry.output = None;
+                entry.prepared = None;
+                entry.handoff = false;
+                entry.retired = true;
+            }
+        }
+    }
+    pub(super) fn handed_off(&mut self, request: &str, message: &Envelope) {
+        if message.kind == MessageKind::Opened {
+            if let Some(entry) = self.entries.get_mut(&(request.into(), message.stream_id)) {
+                entry.opening_published = true;
+            }
+        }
+    }
     pub(super) fn cancel_request(&mut self, request: &str) {
         for ((id, _), entry) in &mut self.entries {
             if id == request {
                 entry.cancel.cancel();
+                entry.prepared = None;
+                entry.handoff = false;
                 entry.retired = true;
                 entry.output = None;
                 if let Some(peer) = &entry.peer {
@@ -418,3 +484,49 @@ fn retry_key(open: &Open) -> String {
         open.service, open.destination.host, open.destination.port, open.destination.path
     )
 }
+
+fn cancel_entry(entry: &mut Entry) {
+    entry.cancel.cancel();
+    entry.handoff = false;
+    if !entry.opening_published {
+        let facts = entry
+            .output
+            .as_ref()
+            .and_then(|m| m.opened.as_ref())
+            .map(|o| o.facts.clone());
+        entry.prepared = None;
+        entry.output = Some(cancelled_open(&entry.envelope, facts));
+    } else if let Some(prepared) = entry.prepared.take() {
+        // Opened was published, but the initiator supplied no POST data yet.
+        if let Some(peer) = &entry.peer {
+            let _ = peer.fail_terminal(Failure {
+                code: ErrorCode::Cancelled,
+                effect: Effect::None,
+                facts: Some(prepared.opened.facts.clone()),
+            });
+        }
+    }
+    // Retain preparing/serving handles. Their owners settle cancellation and
+    // physical disposal; after handoff the HTTP task owns terminal effects.
+}
+fn cancelled_open(envelope: &Envelope, facts: Option<Facts>) -> Envelope {
+    Envelope {
+        version: envelope.version,
+        session_id: envelope.session_id.clone(),
+        stream_id: envelope.stream_id,
+        kind: MessageKind::OpenFailed,
+        open_failed: Some(Failure {
+            code: ErrorCode::Cancelled,
+            effect: Effect::None,
+            facts,
+        }),
+        ..Default::default()
+    }
+}
+
+cfg_if::cfg_if! { if #[cfg(test)] {
+    #[path = "cancellation_tests.rs"]
+    mod cancellation_tests;
+    #[path = "https_cancel_mux_tests.rs"]
+    mod https_cancel_mux_tests;
+} }

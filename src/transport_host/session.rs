@@ -80,6 +80,16 @@ impl<T: Clone> Wait<T> {
             self.changed.notify_all();
         }
     }
+    fn complete_with(&self, value: T, before: impl FnOnce()) -> bool {
+        let mut state = self.value.lock().unwrap_or_else(|e| e.into_inner());
+        if state.is_some() {
+            return false;
+        }
+        before();
+        *state = Some(value);
+        self.changed.notify_all();
+        true
+    }
     fn get(&self) -> T {
         let mut state = self.value.lock().unwrap_or_else(|e| e.into_inner());
         loop {
@@ -96,6 +106,7 @@ struct Entry {
     peer: Arc<MessageEndpoint>,
     opened: bool,
     report_open_failure: bool,
+    opening_cancel_effect: Effect,
     reply: Arc<Wait<Result<(BlockingStream, Opened), Failure>>>,
     deadline: Option<Instant>,
     pending: Option<Envelope>,
@@ -378,7 +389,7 @@ impl Session {
             // the stream so cancellation never relies on a peer acknowledgment.
             entry.reply.complete(Err(Failure {
                 code: gwz_transport::protocol::ErrorCode::Cancelled,
-                effect: Effect::Possible,
+                effect: entry.opening_cancel_effect,
                 facts: None,
             }));
             entry.stream.cancel();

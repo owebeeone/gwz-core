@@ -336,6 +336,16 @@ impl Client {
         if cancel.is_cancelled() {
             return Err(failure(ErrorCode::Cancelled));
         }
+        // Continuations cannot do helper/connection work on an exhausted domain.
+        // Retained zero allowances are tombstones, never replaced by defaults.
+        if budget.allocation.is_zero()
+            || budget.cleanup.is_zero()
+            || (input.policy == AuthPolicy::Gh && budget.helper.is_zero())
+            || budget.connect.is_some_and(|remaining| remaining.is_zero())
+            || budget.network.is_some_and(|remaining| remaining.is_zero())
+        {
+            return Err(failure(ErrorCode::Timeout));
+        }
         let started = Instant::now();
         let mut slot = Some(acquire_slot(self.slots.clone(), budget.allocation, cancel).await?);
         budget.allocation = budget.allocation.saturating_sub(started.elapsed());
@@ -537,7 +547,8 @@ impl Client {
                     let disposed = lease.disposed.clone();
                     lease.finish(Disposition::Discarded)?;
                     // A retry must not overlap cleanup of its first attempt.
-                    let cleanup_until = Instant::now() + budget.cleanup;
+                    let cleanup_started = Instant::now();
+                    let cleanup_until = cleanup_started + budget.cleanup;
                     while !disposed.load(Ordering::Acquire) {
                         if Instant::now() >= cleanup_until {
                             failed.code = ErrorCode::Timeout;
@@ -545,6 +556,7 @@ impl Client {
                         }
                         tokio::time::sleep(Duration::from_millis(2)).await;
                     }
+                    budget.cleanup = budget.cleanup.saturating_sub(cleanup_started.elapsed());
                     return Err(failed);
                 }
                 _ => {

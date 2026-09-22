@@ -14,7 +14,7 @@ use gwz_transport::{
     protocol::{AuthPolicy, Scheme},
 };
 pub use request::{ClientRequest, TransportRequest};
-pub(crate) use request::{HttpsOpenFailure, RequestContext};
+pub(crate) use request::{HttpsAttemptReceipt, HttpsOpenFailure, RequestContext};
 use session::Session;
 pub use session::{Attachment, TransportPort};
 use std::{

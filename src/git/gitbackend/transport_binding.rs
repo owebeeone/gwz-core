@@ -111,6 +111,7 @@ cfg_if::cfg_if! {
             report: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
             facts: Arc<dyn Fn(&Facts) + Send + Sync>,
             active: Mutex<Option<crate::git::endpoint::stream_io::BlockingStream>>,
+            first_failure: Arc<Mutex<Option<crate::transport_host::HttpsAttemptReceipt>>>,
         }
         impl OpenRpc for HostHttpsRoute {
             fn open(
@@ -118,12 +119,13 @@ cfg_if::cfg_if! {
                 url: &str,
                 service: GitService,
             ) -> io::Result<crate::git::endpoint::stream_io::BlockingStream> {
-                self.context.open_https(
+                self.context.open_https_recording(
                     url,
                     service,
                     self.policy,
                     self.report.clone(),
                     self.facts.clone(),
+                    self.first_failure.clone(),
                 )
                 .map(|stream| {
                     *self.active.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -196,6 +198,7 @@ cfg_if::cfg_if! {
                         }
                     }),
                     active: Mutex::new(None),
+                    first_failure: Arc::new(Mutex::new(None)),
                 };
                 https_remote::install(callbacks, Arc::new(route));
                 return;

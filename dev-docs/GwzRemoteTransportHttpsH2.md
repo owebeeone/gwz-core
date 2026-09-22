@@ -1,6 +1,6 @@
 # HTTPS H2 — host and command integration
 
-Status: **implementation in progress; not accepted or activated**.
+Status: **correction 1 in progress after aggregate Code/State NO-GO; not accepted or activated**.
 
 Controlling design: [HTTPS design, §8](GwzRemoteTransportHttpsDesign.md#8-integration-and-implementation-gates).
 H1 remains the accepted endpoint implementation. H2 connects it to the existing
@@ -68,3 +68,27 @@ One substantial settled Code/State review with retained reviewers, after the
 focused native integration gates pass. Review tuple, counts, reports, remediation
 and final acceptance will be recorded here. No production or release claim follows
 from candidate tests.
+
+## Aggregate review and correction 1
+
+[Code](../../dev-docs/GwzRemoteTransportHttpsH2-ReviewCode.md) and
+[State](../../dev-docs/GwzRemoteTransportHttpsH2-ReviewState.md) found three blocking
+roots: causal retry budgets/receipts (blind convergence), canceled queued opening
+publication, and pre-send effect classification. The consolidated
+[correction plan](../../dev-docs/GwzRemoteTransportHttpsH2-RemPlan-1.md) governs
+closure; no finding is yet self-closed.
+
+Automatic opening transitions are serialized per canonical request/URL; stream
+exchange remains concurrent. The backend helper mode is fixed for that registered
+route. Private direct callers changing explicit policy must register a fresh
+request. The endpoint treats the next same-key Gh after a qualifying Anonymous
+failure as its continuation; an expired/exhausted budget never silently refills.
+This uses the existing protocol shape and adds no public constructor or field.
+
+Correction-1 gates: host50, endpoint69, observation3, binding2, ordinary core
+library check, scoped formatting and disabled-branch conditional checks pass.
+Private evidence is in the H2 run's `correction-1/` directory. The final host
+gate includes actual mux WouldBlock/cancellation handoff, retained first receipt,
+fixed explicit policy, same-route concurrency, and pre-send receive-pack effect
+regressions. Cleanup expenditure is deducted from the carried retry budget, and
+all exhausted domains fail before new helper work. Retained re-verdicts pending.

@@ -86,7 +86,9 @@ fn open_failure(
                 ..Default::default()
             }),
         },
-        anonymous_status: None,
+        stream_id: None,
+        policy: gwz_transport::protocol::AuthPolicy::Anonymous,
+        anonymous: None,
     };
     map_open_error(io::Error::new(io::ErrorKind::Other, failure), service)
 }
