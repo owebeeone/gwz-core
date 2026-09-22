@@ -487,10 +487,16 @@ impl Session {
                 || state.checks.values().any(|e| e.request == id)
                 || state.pending.as_ref().is_some_and(|p| p.0 == id)
                 || state.incoming.as_ref().is_some_and(|p| p.0 == id);
-            let retired = state
-                .owner
-                .as_ref()
-                .is_none_or(|o| o.finish(&id).is_ok() || o.phase() == Phase::Closed);
+            let retired = state.registrations[&id].mux_retired
+                || state
+                    .owner
+                    .as_ref()
+                    .is_none_or(|o| o.finish(&id).is_ok() || o.phase() == Phase::Closed);
+            if retired {
+                // finish removes the mux request. Repeating it would return
+                // InvalidRequest and erase proof that retirement completed.
+                state.registrations.get_mut(&id).unwrap().mux_retired = true;
+            }
             if (!pending && retired) || at.elapsed() >= CLEANUP || state.closed {
                 if at.elapsed() >= CLEANUP && !retired {
                     Self::close_state(&mut state);

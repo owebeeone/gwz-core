@@ -430,11 +430,13 @@ snapshots and the gated physical-disposal regression.
 Phase5 [HTTPS H1](GwzRemoteTransportHttpsH1.md) endpoint/RPC and
 [H2](GwzRemoteTransportHttpsH2.md) host/command integration are accepted candidates
 after retained review. Next: Phase6 local aggregate measurements, tuning and
-rollout readiness, with the deferred platform/source batch still outstanding. The C
+rollout readiness. The operator resumed platform/source checks alongside local
+performance on 2026-09-22; [Q6 batch A](GwzRemoteTransportQualification.md) records
+executed rows, the retirement correction and remaining matrix gaps. The C
 wire mapping is plausibility only; wire implementation/testing and iroh remain
 outside this development cycle.
 
-Keep platform and selected-source checks together in the operator-deferred batch;
+Keep remaining platform and selected-source checks together in the qualification batch;
 production dependency/route activation and the remaining native compatibility
 qualification are still open. Physical SSH and host dispatch remain outside
 gwz-transport. Publication is separate.

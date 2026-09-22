@@ -173,3 +173,63 @@ fn shutdown_reports_blocked_physical_disposal_then_eventual_zero() {
     let report = crate::transport_host::driver_tests::block_on(session.cleanup());
     assert_eq!(report.pending_local_work, 0);
 }
+
+#[test]
+fn completed_request_retirement_cannot_expire_the_shared_session() {
+    use crate::transport_host::{SshEndpointConfig, TransportRuntime};
+    use crate::{RequestMeta, TransportOptions, TransportPlacement};
+    let runtime = TransportRuntime::new(SshEndpointConfig::fixture(
+        std::path::PathBuf::from("/nonexistent-endpoint-home"),
+        None,
+    ))
+    .unwrap();
+    let request_meta = |id: &str| RequestMeta {
+        request_id: id.into(),
+        schema_version: "gwz.protocol/v0".into(),
+        transport: Some(TransportOptions {
+            placement: Some(TransportPlacement::Local),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let request = crate::transport_host::driver_tests::block_on(
+        runtime.request(request_meta("retired"), "fetch".into()),
+    )
+    .unwrap();
+    let session = request.context.session.clone();
+    let endpoint = runtime.0.lock().unwrap().local_endpoint.clone();
+    assert_eq!(
+        crate::transport_host::driver_tests::block_on(request.finish()).pending_local_work,
+        0
+    );
+    for side in [&session, &endpoint] {
+        let mut state = side.state.lock().unwrap();
+        let record = state.registrations.get_mut("retired").unwrap();
+        assert!(record.result.is_some());
+        // Advance only the retained cleanup age, without sleeping or touching
+        // another timeout domain. Retirement already completed successfully.
+        record.sealed = Some(Instant::now() - super::CLEANUP - Duration::from_millis(1));
+    }
+    session.drive();
+    endpoint.drive();
+    assert!(
+        !endpoint.is_closed(),
+        "completed retirement killed endpoint session"
+    );
+    assert!(
+        !session.is_closed(),
+        "completed retirement killed the shared session"
+    );
+    let next = crate::transport_host::driver_tests::block_on(
+        runtime.request(request_meta("next"), "fetch".into()),
+    )
+    .unwrap();
+    assert_eq!(
+        crate::transport_host::driver_tests::block_on(next.finish()).pending_local_work,
+        0
+    );
+    assert_eq!(
+        crate::transport_host::driver_tests::block_on(runtime.shutdown()).pending_local_work,
+        0
+    );
+}

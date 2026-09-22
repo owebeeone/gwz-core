@@ -5,6 +5,9 @@ Operator sequencing, 2026-09-21: outstanding platform and selected-source/
 distribution checks are deferred into one later batch against the integrated
 stack. They do not block local SSH pool/per-remote implementation. See
 [continuation and deferred batch](GwzRemoteTransportSshIntegration.md).
+2026-09-22 update: the operator resumed that batch. See
+[Q6 execution and current limits](GwzRemoteTransportQualification.md); older
+qualification rows below remain historical rather than current parity claims.
 Authority: [next-package scope](GwzGitLibraryNextPackages.md),
 [library design](GwzGitLibraryDesign.md), [G0 acceptance](GwzGitLibraryG0.md).
 Follow-up: [Q2 candidate](GwzGitLibraryCandidate.md) records the source-key

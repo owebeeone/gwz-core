@@ -120,6 +120,8 @@ struct Check {
 struct Registration {
     operation: Option<String>,
     sealed: Option<Instant>,
+    // Logical mux retirement is one-shot; physical cleanup can outlive it.
+    mux_retired: bool,
     result: Option<CleanupReport>,
 }
 struct State {
@@ -338,6 +340,7 @@ impl Session {
             Registration {
                 operation,
                 sealed: None,
+                mux_retired: false,
                 result: None,
             },
         );
