@@ -1,6 +1,9 @@
 # Endpoint placement C — in-process message embedding
 
-Status: **implemented proof; pending aggregate review.** 2026-09-22.
+Status: **accepted for same-process embedding only**, 2026-09-22, at the exact
+tuple below after retained Code and State GO. No blocking findings; State P3-1
+remains a tracked evidence follow-up. Annotation commits do not expand the
+reviewed implementation.
 Authority: the operator's narrowed C scope in
 [Placement Design](GwzRemoteTransportPlacementDesign.md#operator-scope-clarification--2026-09-22).
 A/B remain accepted. This package proves embedding, not production activation.
@@ -63,3 +66,40 @@ scoped formatting and the default production library check pass. No whole-core o
 platform pass claim. The wrapper boundary red and helper compile failures are
 preserved in the [private run](../../gwz-core-evidence/campaigns/ssh-integration/runs/2026-09-22-placement-c-in-process/README.md)
 (access required), with final source and consumer/input hashes.
+
+## Acceptance record
+
+Retained [Code GO](../../dev-docs/GwzRemoteTransportPlacementC-ReviewCode.md) and
+[State GO](../../dev-docs/GwzRemoteTransportPlacementC-ReviewState.md) reviewed:
+
+| Repository | Revision |
+| --- | --- |
+| `.` | `f3ad29ae5aa55ebd4e558f3f11a078e6b837196e` |
+| `gwz-core` | `c5dd307142e6958160efabf36a8521b5f104c157` |
+| `gwz-transport` | `03d3011b3ae9b8205bcf07f7f7862194af114856` |
+| `taut` | `bcf98b64d465fc54841121b6d1a2d46940f81a3c` |
+| `gwz-cli` | `7db07bbdefd2897c07fd0f9e550bf032bd8b1314` |
+| `gwz-py` | `d07d55dacb1725d9306be9c04d157ac29a78e000` |
+| `git2-rs` | `ce78628308e11b4e8901d5061602619109bce21a` |
+| `libgit2` | `b172e3d187a4b6866fd9f696f40a1b8e7f56d348` |
+| `gwz-core-evidence` | `d096a9dcf0d43e79ea32bced5b802bf8a877ce1d` |
+
+One aggregate gate, zero remediation rounds. Code found no P0–P3; State found
+one nonblocking P3 at settled review. No known released escaped defect. Both
+reviewers independently reran the eight embedding tests successfully. Owner
+host33 and Python13 results above remain the full local evidence. The captured
+initial adapter red is an implementation-stage unimplemented-boundary failure;
+compiler-attempt source hashes were not all captured. Wall time was not captured.
+Core delta: test/harness581 additions and2 deletions across7 files; documentation94
+additions across2 files; authored production implementation0.
+
+**Open State P3-1 — later activation gate:** assert `CleanupReport` from request
+finish and endpoint/runtime shutdown, inject retained work through the existing
+seam, and demonstrate unexpected pending work fails before successful retirement
+passes. Current tests prove waiter release and return from teardown, not complete
+physical worker retirement. This GO must not be cited as that stronger evidence.
+
+Next programme work is the Phase5 HTTPS adapter/authentication design and its
+reviewed implementation boundary. Platform and selected-source qualification
+remain together in the operator-deferred batch; frontend/production activation
+and release remain separate. No physical wire or iroh work is added to this cycle.

@@ -410,12 +410,17 @@ findings are closed. [Placement batch B](GwzRemoteTransportPlacementB.md) is als
 accepted after retained Code/State/Surface GO and one consolidated correction:
 core host facade and shared SSH endpoint across all backend funnels, scoped metadata
 enforcement, endpoint-local preflight, request cleanup ownership and the compiled
-guide fixture. Next is batch C: prove transport attachments in the existing Taut
-messages for both CLI/core and gwz-py/core in the same process, preserving ordinary
-dispatch and request IDs. Verify bidirectional progress, backpressure, cancellation
-and logical closure. Document how the same messages can plausibly cross a future
-wire; wire implementation/testing and iroh are outside this development cycle.
-HTTPS remains Phase5.
+guide fixture. [Placement batch C](GwzRemoteTransportPlacementC.md) is accepted
+after retained Code/State GO: transport attachments in existing operation messages
+at the CLI typed/direct-handler boundary and through the actual gwz-py codec in
+the same process, preserving ordinary dispatch and request IDs. Bidirectional
+progress, backpressure, cancellation and logical closure pass. Full frontend
+activation is not claimed. State P3-1 tracks cleanup-report/retirement assertions
+before later activation; current evidence proves teardown return only.
+
+Next: Phase5 HTTPS adapter/authentication design and interface review. The C
+wire mapping is plausibility only; wire implementation/testing and iroh remain
+outside this development cycle.
 
 Keep platform and selected-source checks together in the operator-deferred batch;
 production dependency/route activation and the remaining native compatibility
