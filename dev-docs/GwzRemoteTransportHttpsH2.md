@@ -1,6 +1,6 @@
 # HTTPS H2 — host and command integration
 
-Status: **correction 1 in progress after aggregate Code/State NO-GO; not accepted or activated**.
+Status: **correction 2 in progress after Code re-review NO-GO and State GO; not accepted or activated**.
 
 Controlling design: [HTTPS design, §8](GwzRemoteTransportHttpsDesign.md#8-integration-and-implementation-gates).
 H1 remains the accepted endpoint implementation. H2 connects it to the existing
@@ -91,4 +91,29 @@ Private evidence is in the H2 run's `correction-1/` directory. The final host
 gate includes actual mux WouldBlock/cancellation handoff, retained first receipt,
 fixed explicit policy, same-route concurrency, and pre-send receive-pack effect
 regressions. Cleanup expenditure is deducted from the carried retry budget, and
-all exhausted domains fail before new helper work. Retained re-verdicts pending.
+all exhausted domains fail before new helper work. Retained re-verdicts closed
+all original findings: [Code](../../dev-docs/GwzRemoteTransportHttpsH2-ReviewCode-1.md)
+and [State GO](../../dev-docs/GwzRemoteTransportHttpsH2-ReviewState-1.md).
+Code found one new P2 architectural root in gate allocation-time accounting;
+[correction 2](../../dev-docs/GwzRemoteTransportHttpsH2-RemPlan-2.md) is in progress.
+No acceptance or activation is claimed.
+
+
+## Correction 2 — allocation accounting
+
+The canonical-route gate and first session admission now share one allocation
+deadline. After taking the session mutex, the first Open carries only its positive
+remaining milliseconds. Expired or sub-millisecond allowance fails before Open.
+The endpoint retains the remainder across the Gh continuation; helper, connect,
+network and cleanup domains remain independent.
+
+The runtime red reproduced 1.624 seconds for a 1-second admission budget. The
+corrected real one-slot pool test requires gate plus pool waiting within that
+original budget (with scheduling margin), observes the reduced admitted Open
+allowance, and verifies exhausted gates issue no Open. Host52 and the default
+library check pass, as do scoped formatting and conditional-boundary checks.
+Private evidence: the H2 run's `correction-2/` directory, including per-command
+source fingerprints and raw red/green output. Retained re-verdict remains required.
+
+Final correction-2 focused gates: host52, endpoint69, observations3, binding2,
+default library check, scoped formatting and conditional-boundary checks pass.

@@ -32,6 +32,8 @@ impl Session {
             },
             identity,
             policy,
+            None,
+            None,
             observe,
             facts,
         )
@@ -44,6 +46,8 @@ impl Session {
         url: &str,
         service: gwz_transport::protocol::GitService,
         policy: AuthPolicy,
+        allocation_until: Option<Instant>,
+        allocation_observer: Option<Arc<dyn Fn(i64) + Send + Sync>>,
         observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
         facts: Arc<dyn Fn(&Facts) + Send + Sync>,
     ) -> Result<BlockingStream, (Option<i64>, Failure)> {
@@ -69,6 +73,8 @@ impl Session {
                 ..Default::default()
             },
             policy,
+            allocation_until,
+            allocation_observer,
             observe,
             facts,
         )
@@ -81,6 +87,8 @@ impl Session {
         service: gwz_transport::protocol::GitService,
         identity: Identity,
         policy: AuthPolicy,
+        allocation_until: Option<Instant>,
+        allocation_observer: Option<Arc<dyn Fn(i64) + Send + Sync>>,
         observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
         facts: Arc<dyn Fn(&Facts) + Send + Sync>,
     ) -> Result<BlockingStream, (Option<i64>, Failure)> {
@@ -107,6 +115,22 @@ impl Session {
                 )
             })?;
             let report_open_failure = destination.scheme == Scheme::Ssh;
+            // Check after taking the session mutex: contention here is part of
+            // admission too. Truncate sub-millisecond remainders and fail;
+            // never send zero, which an endpoint could interpret as a default.
+            let allocation_ms = match allocation_until {
+                Some(until) => {
+                    let remaining = until.saturating_duration_since(Instant::now()).as_millis();
+                    if remaining == 0 {
+                        return Err((
+                            None,
+                            protocol_failure(gwz_transport::protocol::ErrorCode::Timeout),
+                        ));
+                    }
+                    remaining.min(i64::MAX as u128) as i64
+                }
+                None => 30_000,
+            };
             let open = Open {
                 endpoint_id: binding.endpoint_id().into(),
                 operation_id: operation.into(),
@@ -115,7 +139,7 @@ impl Session {
                 identity,
                 policy,
                 deadlines: Deadlines {
-                    allocation_ms: 30000,
+                    allocation_ms,
                     connect_ms: state.io_timeout_ms as i64,
                     io_ms: state.io_timeout_ms as i64,
                     interaction_ms: 120000,
@@ -129,6 +153,9 @@ impl Session {
                     protocol_failure(gwz_transport::protocol::ErrorCode::UnsupportedOperation),
                 )
             })?;
+            if let Some(observer) = &allocation_observer {
+                observer(allocation_ms);
+            }
             stream_id = Some(id);
             let mut config = stream::Config::new(binding.session_id(), id, stream::Side::Initiator);
             config.profile_version = 2;

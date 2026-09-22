@@ -97,6 +97,29 @@ impl RequestContext {
         facts: Arc<dyn Fn(&Facts) + Send + Sync>,
         first_receipt: Arc<Mutex<Option<HttpsAttemptReceipt>>>,
     ) -> io::Result<BlockingStream> {
+        self.open_https_recording_with_allocation(
+            url,
+            service,
+            policy,
+            opened,
+            facts,
+            first_receipt,
+            30_000,
+            None,
+        )
+    }
+
+    fn open_https_recording_with_allocation(
+        &self,
+        url: &str,
+        service: gwz_transport::protocol::GitService,
+        policy: Option<gwz_transport::protocol::AuthPolicy>,
+        opened: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
+        facts: Arc<dyn Fn(&Facts) + Send + Sync>,
+        first_receipt: Arc<Mutex<Option<HttpsAttemptReceipt>>>,
+        allocation_ms: i64,
+        allocation_observer: Option<Arc<dyn Fn(i64) + Send + Sync>>,
+    ) -> io::Result<BlockingStream> {
         use gwz_transport::protocol::{AuthPolicy, Effect, ErrorCode, Failure};
         let early = |code| {
             io::Error::other(HttpsOpenFailure {
@@ -110,6 +133,10 @@ impl RequestContext {
                 anonymous: None,
             })
         };
+        // One admission deadline spans route contention and session admission.
+        // Other timeout domains start at the endpoint and remain independent.
+        let until = std::time::Instant::now()
+            + std::time::Duration::from_millis(allocation_ms.max(0) as u64);
         self.validate(&self.meta, &self.operation)
             .map_err(|_| early(ErrorCode::Cancelled))?;
         let canonical = crate::git::endpoint::https_destination::Destination::parse(url)
@@ -124,17 +151,16 @@ impl RequestContext {
         };
         // Serialize only opening, not stream exchange. The gate covers the full
         // Anonymous -> Gh pair and cache lookup. Equivalent URLs share it.
-        let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
         let mut route = loop {
             self.validate(&self.meta, &self.operation)
                 .map_err(|_| early(ErrorCode::Cancelled))?;
+            if std::time::Instant::now() >= until {
+                return Err(early(ErrorCode::Timeout));
+            }
             match route.try_lock() {
                 Ok(guard) => break guard,
                 Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
                 Err(std::sync::TryLockError::WouldBlock) => {
-                    if std::time::Instant::now() >= until {
-                        return Err(early(ErrorCode::Timeout));
-                    }
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
             }
@@ -165,6 +191,8 @@ impl RequestContext {
             &canonical,
             service,
             first,
+            Some(until),
+            allocation_observer.clone(),
             opened.clone(),
             facts.clone(),
         );
@@ -208,6 +236,11 @@ impl RequestContext {
                             &canonical,
                             service,
                             selected,
+                            // The endpoint retains the allocation remainder of
+                            // the first attempt; do not charge its independent
+                            // helper/connect/network work to allocation here.
+                            None,
+                            allocation_observer.clone(),
                             opened,
                             facts.clone(),
                         )
@@ -375,3 +408,35 @@ impl std::fmt::Display for HttpsOpenFailure {
     }
 }
 impl std::error::Error for HttpsOpenFailure {}
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        impl RequestContext {
+            pub(crate) fn open_https_recording_for_test(
+                &self,
+                url: &str,
+                service: gwz_transport::protocol::GitService,
+                policy: Option<gwz_transport::protocol::AuthPolicy>,
+                opened: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
+                facts: Arc<dyn Fn(&Facts) + Send + Sync>,
+                first_receipt: Arc<Mutex<Option<HttpsAttemptReceipt>>>,
+                allocation_ms: i64,
+                allocation_observer: Arc<dyn Fn(i64) + Send + Sync>,
+            ) -> io::Result<BlockingStream> {
+                self.open_https_recording_with_allocation(
+                    url,
+                    service,
+                    policy,
+                    opened,
+                    facts,
+                    first_receipt,
+                    allocation_ms,
+                    Some(allocation_observer),
+                )
+            }
+        }
+
+        #[path = "https_budget_gate_tests.rs"]
+        mod https_budget_gate_tests;
+    }
+}
