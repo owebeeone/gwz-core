@@ -2,7 +2,8 @@
 
 2026-09-22. Operator authorized enabling HTTPS in the installed local alpha,
 while asking to conserve quota. This is a bounded candidate activation, not
-production/release qualification. Review pending at this checkpoint.
+production/release qualification. Accepted at the tuple below after retained Code/State GO; installed as
+`/Users/owebeeone/.cargo/bin/gwz-alpha`, version `0.2.0-alpha.transport`.
 
 `gwz_transport_candidate` continues to isolate the implementation/dependencies.
 CLI network commands construct one local SSH+HTTPS host runtime per invocation,
@@ -34,3 +35,21 @@ in gwz-core-evidence (private access). No public build depends on that archive.
 The latest Q6 retirement fix is included, but Q6 aggregate review, sustained-memory
 qualification, performance tuning, Windows integration and normal release gates
 remain open. This local alpha exception does not resume that larger programme.
+
+## Acceptance
+
+Retained reports: root dev-docs/GwzRemoteTransportAlpha-ReviewCode-1.md and
+GwzRemoteTransportAlpha-ReviewState-1.md. One P2 found during review: local
+snapshots/tags depended on HTTPS configuration. One correction excludes those
+variants; actual-binary regression proves isolation while remote variants retain
+transport. Both axes GO, no open alpha findings. Q6/release scope remains separate.
+
+- .: `84961962fb4879f591c7195fb035d8c34d920b38`
+- gwz-core: `3b79fb26d731cce565a2319a2ae2d512d4d54c51`
+- gwz-cli: `ab59011db0ee00ab0c032fc23fc06b2578bf7b68`
+- gwz-core-evidence: `73370827da996b8bdfdcc817e81edc0286b6abe1`
+- gwz-transport: `aa40936d0805e8cb60f8027615abe20d4f2045e4`
+- git2-rs: `ce78628308e11b4e8901d5061602619109bce21a`
+- libgit2: `b172e3d187a4b6866fd9f696f40a1b8e7f56d348`
+
+Installed SHA256: `af16378a957786628f7be4c7feee8b4a1722ecd297392bdb39e902219aecf031`.
