@@ -8,10 +8,11 @@ use super::{
 cfg_if::cfg_if! {
     if #[cfg(all(unix, gwz_transport_candidate))] {
         use crate::git::endpoint::{
-            ssh_destination::Destination, ssh_endpoint::Route, ssh_local, ssh_remote::RemoteTransport,
-            ssh_remote::OpenStream, ssh_channel::GitService, ssh_worker::Endpoint,
+            https_remote, https_remote::OpenRpc, ssh_channel::GitService as SshGitService,
+            ssh_destination::Destination, ssh_endpoint::Route, ssh_local,
+            ssh_remote::OpenStream, ssh_remote::RemoteTransport, ssh_worker::Endpoint,
         };
-        use gwz_transport::protocol::{Facts, Opened};
+        use gwz_transport::protocol::{AuthPolicy, Facts, GitService, Opened};
         use std::{
             io,
             sync::{Arc, Mutex},
@@ -104,8 +105,57 @@ cfg_if::cfg_if! {
             report: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
             facts: Arc<dyn Fn(&Facts) + Send + Sync>,
         }
+        struct HostHttpsRoute {
+            context: crate::transport_host::RequestContext,
+            policy: Option<AuthPolicy>,
+            report: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
+            facts: Arc<dyn Fn(&Facts) + Send + Sync>,
+            active: Mutex<Option<crate::git::endpoint::stream_io::BlockingStream>>,
+        }
+        impl OpenRpc for HostHttpsRoute {
+            fn open(
+                &self,
+                url: &str,
+                service: GitService,
+            ) -> io::Result<crate::git::endpoint::stream_io::BlockingStream> {
+                self.context.open_https(
+                    url,
+                    service,
+                    self.policy,
+                    self.report.clone(),
+                    self.facts.clone(),
+                )
+                .map(|stream| {
+                    *self.active.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some(stream.clone());
+                    stream
+                })
+            }
+
+            fn cancel(&self) {
+                if let Some(stream) = self
+                    .active
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take()
+                {
+                    stream.cancel();
+                }
+            }
+        }
+        pub(super) fn is_https_remote(url: &str) -> bool {
+            url.split_once("://").is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("https"))
+        }
+        pub(super) fn https_policy_for(
+            policy: super::CredentialHelperPolicy,
+        ) -> Option<AuthPolicy> {
+            match policy {
+                super::CredentialHelperPolicy::AllowConfigured => None,
+                super::CredentialHelperPolicy::Disabled => Some(AuthPolicy::Anonymous),
+            }
+        }
         impl OpenStream for HostRoute {
-            fn open(&self, url: &str, service: GitService) -> io::Result<super::super::endpoint::stream_io::BlockingStream> {
+            fn open(&self, url: &str, service: SshGitService) -> io::Result<super::super::endpoint::stream_io::BlockingStream> {
                 self.context.open(
                     url,
                     service,
@@ -122,10 +172,37 @@ cfg_if::cfg_if! {
             attempt: Option<&TransportAttempt>,
             callbacks: &mut git2::RemoteCallbacks<'_>,
         ) {
+            let runtime = backend.ssh.clone();
+            if is_https_remote(url) {
+                let Some(context) = runtime.host_context() else {
+                    return;
+                };
+                let policy = https_policy_for(backend.credential_helpers);
+                let attempt = attempt.cloned();
+                let facts_attempt = attempt.clone();
+                let opened_attempt = attempt.clone();
+                let route = HostHttpsRoute {
+                    context,
+                    policy,
+                    report: Arc::new(move |stream_id, opened| {
+                        if let Some(attempt) = &opened_attempt {
+                            attempt.opened(stream_id, opened);
+                            attempt.facts(&opened.facts);
+                        }
+                    }),
+                    facts: Arc::new(move |facts| {
+                        if let Some(attempt) = &facts_attempt {
+                            attempt.facts(facts);
+                        }
+                    }),
+                    active: Mutex::new(None),
+                };
+                https_remote::install(callbacks, Arc::new(route));
+                return;
+            }
             if matches!(Destination::parse(url), Ok(None)) {
                 return;
             }
-            let runtime = backend.ssh.clone();
             let selected = identity.map(|i| i.path.clone());
             let attempt = attempt.cloned();
             callbacks.smart_transport(false, move |_| {
@@ -170,8 +247,10 @@ cfg_if::cfg_if! {
             });
         }
         pub(super) fn repository_refused(error: &git2::Error) -> bool {
-            error.class() == git2::ErrorClass::Net
-                && error.message() == crate::git::endpoint::stream_io::REPOSITORY_REFUSED
+            (error.class() == git2::ErrorClass::Net
+                && error.message() == crate::git::endpoint::stream_io::REPOSITORY_REFUSED)
+                || (error.class() == git2::ErrorClass::Http
+                    && error.message() == crate::git::endpoint::https_remote::REPOSITORY_REFUSED)
         }
     } else {
         #[derive(Clone, Default)]
@@ -196,5 +275,12 @@ cfg_if::cfg_if! {
             _backend: &Git2Backend, _url: &str, _identity: Option<&SelectedIdentity>,
             _attempt: Option<&TransportAttempt>, _callbacks: &mut git2::RemoteCallbacks<'_>,
         ) {}
+    }
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(all(test, unix, gwz_transport_candidate))] {
+        #[path = "https_transport_binding_tests.rs"]
+        mod https_transport_binding_tests;
     }
 }

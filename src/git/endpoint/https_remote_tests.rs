@@ -68,3 +68,59 @@ fn rpc_advertisement_rejects_body_and_unfinished_drop_cancels() {
     drop(rpc);
     assert_eq!(state.lock().unwrap().cancelled, 1);
 }
+
+fn open_failure(
+    service: GitService,
+    status: i64,
+    method: gwz_transport::protocol::AuthMethod,
+    authenticated: Option<bool>,
+) -> git2::Error {
+    let failure = crate::transport_host::HttpsOpenFailure {
+        failure: gwz_transport::protocol::Failure {
+            code: gwz_transport::protocol::ErrorCode::RepositoryRefused,
+            effect: gwz_transport::protocol::Effect::None,
+            facts: Some(gwz_transport::protocol::Facts {
+                method,
+                authenticated,
+                http_status: Some(status),
+                ..Default::default()
+            }),
+        },
+        anonymous_status: None,
+    };
+    map_open_error(io::Error::new(io::ErrorKind::Other, failure), service)
+}
+
+#[test]
+fn only_anonymous_or_gh_discovery_refusal_maps_to_private_repository_marker() {
+    let error = open_failure(
+        GitService::UploadPackAdvertisement,
+        404,
+        gwz_transport::protocol::AuthMethod::Gh,
+        None,
+    );
+    assert_eq!(error.code(), git2::ErrorCode::NotFound);
+    assert_eq!(error.class(), git2::ErrorClass::Http);
+    assert_eq!(error.message(), REPOSITORY_REFUSED);
+
+    let authenticated = open_failure(
+        GitService::UploadPackAdvertisement,
+        404,
+        gwz_transport::protocol::AuthMethod::Gh,
+        Some(true),
+    );
+    assert_eq!(authenticated.code(), git2::ErrorCode::GenericError);
+    assert_ne!(authenticated.message(), REPOSITORY_REFUSED);
+}
+
+#[test]
+fn exchange_refusal_never_maps_to_private_repository_marker() {
+    let error = open_failure(
+        GitService::ReceivePackExchange,
+        403,
+        gwz_transport::protocol::AuthMethod::None,
+        None,
+    );
+    assert_eq!(error.code(), git2::ErrorCode::GenericError);
+    assert_ne!(error.message(), REPOSITORY_REFUSED);
+}

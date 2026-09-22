@@ -19,19 +19,19 @@ use std::{
 mod python;
 
 #[derive(Clone, Copy)]
-enum Consumer {
+pub(super) enum Consumer {
     Rust,
     Python,
 }
 impl Consumer {
-    fn bytes(self, name: &str, value: &crate::Cbor) -> Vec<u8> {
+    pub(super) fn bytes(self, name: &str, value: &crate::Cbor) -> Vec<u8> {
         let bytes = crate::encode(value);
         match self {
             Self::Rust => bytes,
             Self::Python => python::roundtrip(name, &bytes),
         }
     }
-    fn request(self, value: &InitFromSourcesRequest) -> InitFromSourcesRequest {
+    pub(super) fn request(self, value: &InitFromSourcesRequest) -> InitFromSourcesRequest {
         let result = InitFromSourcesRequest::from_cbor(&crate::decode(
             &self.bytes("InitFromSourcesRequest", &value.to_cbor()),
         ))
@@ -39,7 +39,7 @@ impl Consumer {
         assert_eq!(&result, value);
         result
     }
-    fn response(self, value: &InitFromSourcesResponse) -> InitFromSourcesResponse {
+    pub(super) fn response(self, value: &InitFromSourcesResponse) -> InitFromSourcesResponse {
         let result = InitFromSourcesResponse::from_cbor(&crate::decode(
             &self.bytes("InitFromSourcesResponse", &value.to_cbor()),
         ))
@@ -48,14 +48,14 @@ impl Consumer {
         result
     }
 }
-fn extract_request(value: &mut InitFromSourcesRequest) -> Option<Attachment> {
+pub(super) fn extract_request(value: &mut InitFromSourcesRequest) -> Option<Attachment> {
     value
         .meta
         .transport_message
         .take()
         .map(|message| (value.meta.request_id.clone(), message))
 }
-fn extract_response(value: &mut InitFromSourcesResponse) -> Option<Attachment> {
+pub(super) fn extract_response(value: &mut InitFromSourcesResponse) -> Option<Attachment> {
     value
         .response
         .meta
@@ -63,7 +63,7 @@ fn extract_response(value: &mut InitFromSourcesResponse) -> Option<Attachment> {
         .take()
         .map(|message| (value.response.meta.request_id.clone(), message))
 }
-fn embedded(
+pub(super) fn embedded(
     consumer: Consumer,
     request: &InitFromSourcesRequest,
     from_core: bool,
@@ -99,16 +99,16 @@ fn embedded(
     assert_eq!(recovered, item);
     recovered
 }
-struct Link {
-    stop: Arc<AtomicBool>,
-    pause: Arc<AtomicBool>,
-    paused: Arc<AtomicBool>,
-    counts: Arc<Mutex<BTreeMap<String, usize>>>,
-    hold_first_data: Arc<AtomicBool>,
-    worker: Option<JoinHandle<()>>,
+pub(super) struct Link {
+    pub(super) stop: Arc<AtomicBool>,
+    pub(super) pause: Arc<AtomicBool>,
+    pub(super) paused: Arc<AtomicBool>,
+    pub(super) counts: Arc<Mutex<BTreeMap<String, usize>>>,
+    pub(super) hold_first_data: Arc<AtomicBool>,
+    pub(super) worker: Option<JoinHandle<()>>,
 }
 impl Link {
-    fn new(
+    pub(super) fn new(
         core: TransportPort,
         endpoint: TransportPort,
         consumer: Consumer,
@@ -195,7 +195,7 @@ impl Link {
             worker: Some(worker),
         }
     }
-    fn hold(&self) {
+    pub(super) fn hold(&self) {
         self.pause.store(true, Ordering::Release);
         let until = Instant::now() + Duration::from_secs(3);
         while !self.paused.load(Ordering::Acquire) {
@@ -215,7 +215,7 @@ impl Drop for Link {
         }
     }
 }
-fn run(consumer: Consumer, cancel: bool, disconnect: bool) {
+pub(super) fn run(consumer: Consumer, cancel: bool, disconnect: bool) {
     let fixture = common::SshdFixture::new();
     let endpoint_home = fixture.temp.path().join("endpoint-home");
     std::fs::create_dir_all(endpoint_home.join(".ssh")).unwrap();
@@ -363,11 +363,15 @@ fn run(consumer: Consumer, cancel: bool, disconnect: bool) {
             );
         }
     }
-    block_on(Arc::try_unwrap(scope).ok().unwrap().finish());
-    block_on(client_request.finish());
-    block_on(endpoint.shutdown());
+    let scope_report = block_on(Arc::try_unwrap(scope).ok().unwrap().finish());
+    let request_report = block_on(client_request.finish());
+    let endpoint_report = block_on(endpoint.shutdown());
     drop(link);
-    block_on(runtime.shutdown());
+    let runtime_report = block_on(runtime.shutdown());
+    assert_eq!(scope_report.pending_local_work, 0);
+    assert_eq!(request_report.pending_local_work, 0);
+    assert_eq!(endpoint_report.pending_local_work, 0);
+    assert_eq!(runtime_report.pending_local_work, 0);
 }
 #[test]
 fn rust_messages_embed_live_git_exchange() {

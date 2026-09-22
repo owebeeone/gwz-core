@@ -1,4 +1,5 @@
 //! Git HTTP RPC boundary: body completion is the first nonempty read, not flush.
+use super::https_policy;
 use super::stream_io::BlockingStream;
 use git2::{
     RemoteCallbacks,
@@ -12,6 +13,11 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+
+/// Stable, scheme-specific marker consumed by the existing private-member
+/// suppression boundary.  The response body and remote URL never cross that
+/// boundary.
+pub(crate) const REPOSITORY_REFUSED: &str = "GWZ HTTPS repository access refused";
 
 pub(crate) trait HalfClose: Read + Write {
     fn end_write(&self) -> io::Result<()>;
@@ -94,13 +100,17 @@ struct Remote {
 }
 pub(crate) fn callbacks(endpoint: Arc<dyn OpenRpc>) -> RemoteCallbacks<'static> {
     let mut callbacks = RemoteCallbacks::new();
+    install(&mut callbacks, endpoint);
+    callbacks
+}
+
+pub(crate) fn install<'a>(callbacks: &mut RemoteCallbacks<'a>, endpoint: Arc<dyn OpenRpc>) {
     callbacks.smart_transport(true, move |_| {
         Ok(Remote {
             endpoint: endpoint.clone(),
             active: Mutex::new(Weak::new()),
         })
     });
-    callbacks
 }
 impl SmartSubtransport for Remote {
     fn action(
@@ -126,13 +136,10 @@ impl SmartSubtransport for Remote {
             Service::ReceivePackLs => (GitService::ReceivePackAdvertisement, true),
             Service::ReceivePack => (GitService::ReceivePackExchange, false),
         };
-        let stream = self.endpoint.open(url, service).map_err(|_| {
-            git2::Error::new(
-                git2::ErrorCode::GenericError,
-                git2::ErrorClass::Http,
-                "HTTPS endpoint request failed",
-            )
-        })?;
+        let stream = self
+            .endpoint
+            .open(url, service)
+            .map_err(|error| map_open_error(error, service))?;
         let rpc = RpcIo::new(stream, advertisement);
         *active = Arc::downgrade(&rpc.alive);
         Ok(Box::new(rpc))
@@ -141,5 +148,56 @@ impl SmartSubtransport for Remote {
         self.endpoint.cancel();
         Ok(())
     }
+}
+
+fn map_open_error(error: io::Error, service: GitService) -> git2::Error {
+    let Some(failure) = error
+        .get_ref()
+        .and_then(|cause| cause.downcast_ref::<crate::transport_host::HttpsOpenFailure>())
+    else {
+        return git2::Error::new(
+            git2::ErrorCode::GenericError,
+            git2::ErrorClass::Http,
+            "HTTPS endpoint request failed",
+        );
+    };
+
+    if is_repository_refused(service, failure) {
+        return git2::Error::new(
+            git2::ErrorCode::NotFound,
+            git2::ErrorClass::Http,
+            REPOSITORY_REFUSED,
+        );
+    }
+
+    // Legacy clone handling treats libgit2 Auth as a suppressible access
+    // refusal. Only the verified discovery receipt above authorizes that for
+    // this endpoint; helper/authentication failures must remain visible.
+    git2::Error::new(
+        git2::ErrorCode::GenericError,
+        git2::ErrorClass::Http,
+        format!("HTTPS endpoint request failed: {:?}", failure.failure.code),
+    )
+}
+
+fn is_repository_refused(
+    service: GitService,
+    failure: &crate::transport_host::HttpsOpenFailure,
+) -> bool {
+    if !https_policy::advertisement(service)
+        || failure.failure.code != gwz_transport::protocol::ErrorCode::RepositoryRefused
+        || failure.failure.effect != gwz_transport::protocol::Effect::None
+    {
+        return false;
+    }
+    let Some(facts) = failure.failure.facts.as_ref() else {
+        return false;
+    };
+    facts.authenticated.is_none()
+        && matches!(facts.http_status, Some(403 | 404))
+        && matches!(
+            facts.method,
+            gwz_transport::protocol::AuthMethod::None | gwz_transport::protocol::AuthMethod::Gh
+        )
 }
 cfg_if::cfg_if! { if #[cfg(test)] { #[path="https_remote_tests.rs"] mod tests; } }

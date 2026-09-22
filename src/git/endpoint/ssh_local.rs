@@ -9,6 +9,7 @@ cfg_if::cfg_if! {
             ssh_setup::{Authenticated, Setup, SetupConnector},
             ssh_worker::Endpoint,
         };
+        use super::shared_reservation::{Authority, ReservedConnector};
         use gwz_transport::{
             pool::{Config, Identity, Key},
             protocol::{AuthMethod, Facts},
@@ -21,12 +22,28 @@ cfg_if::cfg_if! {
             agent_socket: Option<PathBuf>,
             io_timeout_ms: u64,
         ) -> io::Result<Endpoint> {
+            connect_with_authority(
+                config.clone(),
+                known_hosts,
+                agent_socket,
+                io_timeout_ms,
+                Authority::new(config.total, config.per_host),
+            )
+        }
+
+        pub(crate) fn connect_with_authority(
+            config: Config,
+            known_hosts: PathBuf,
+            agent_socket: Option<PathBuf>,
+            io_timeout_ms: u64,
+            authority: Authority,
+        ) -> io::Result<Endpoint> {
             let cleanup = Duration::from_millis(config.cleanup_timeout_ms);
             Endpoint::with_registry(
                 config,
                 Registry::new(),
                 move |origin, registry| {
-                    SetupConnector::reported(
+                    ReservedConnector::new(SetupConnector::reported(
                         origin,
                         cleanup,
                         move |key: &Key, identity: &Identity, progress| -> io::Result<Setup> {
@@ -81,7 +98,7 @@ cfg_if::cfg_if! {
                                 )
                             }))
                         },
-                    )
+                    ), authority.clone())
                 },
                 io_timeout_ms,
             )

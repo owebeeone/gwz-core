@@ -40,7 +40,7 @@ fn mux_config() -> mux::Config {
     }
 }
 static SERIAL: AtomicU64 = AtomicU64::new(1);
-fn unique() -> ModelResult<String> {
+pub(super) fn unique() -> ModelResult<String> {
     SERIAL
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| v.checked_add(1))
         .map(|n| format!("placement-{}-{n}", std::process::id()))
@@ -95,6 +95,7 @@ struct Entry {
     stream: Stream,
     peer: Arc<MessageEndpoint>,
     opened: bool,
+    report_open_failure: bool,
     reply: Arc<Wait<Result<(BlockingStream, Opened), Failure>>>,
     deadline: Option<Instant>,
     pending: Option<Envelope>,
@@ -120,6 +121,8 @@ struct State {
     streams: BTreeMap<i64, Entry>,
     checks: BTreeMap<i64, Check>,
     engine: Option<PlacementEndpoint>,
+    https: Option<super::https_endpoint::HttpsEndpoint>,
+    prefer_https: bool,
     endpoint_config: Option<binding::EndpointConfig>,
     pending: Option<Attachment>,
     incoming: Option<Attachment>,
@@ -186,7 +189,9 @@ impl Session {
                     session.drive();
                     let done = {
                         let state = session.state.lock().unwrap_or_else(|e| e.into_inner());
-                        state.closed && state.engine.as_ref().is_none_or(|e| e.pending() == 0)
+                        state.closed
+                            && state.engine.as_ref().is_none_or(|e| e.pending() == 0)
+                            && state.https.as_ref().is_none_or(|e| e.pending() == 0)
                     };
                     session.event.signal();
                     drop(session);
@@ -210,6 +215,8 @@ impl Session {
             streams: BTreeMap::new(),
             checks: BTreeMap::new(),
             engine: None,
+            https: None,
+            prefer_https: false,
             endpoint_config: None,
             pending: None,
             incoming: None,
@@ -228,18 +235,59 @@ impl Session {
         Ok((session.clone(), TransportPort(Arc::new(PortLease(session)))))
     }
     pub(super) fn endpoint(config: SshEndpointConfig) -> ModelResult<(Arc<Self>, TransportPort)> {
+        Self::endpoint_with_https(config, None)
+    }
+    pub(super) fn endpoint_with_https(
+        config: SshEndpointConfig,
+        https: Option<HttpsEndpointConfig>,
+    ) -> ModelResult<(Arc<Self>, TransportPort)> {
         let mut state = Self::empty();
         let id = unique()?;
+        let authority = crate::git::endpoint::shared_reservation::Authority::new(
+            config.pool.total,
+            config.pool.per_host,
+        );
+        let ssh = ssh_local::connect_with_authority(
+            config.pool.clone(),
+            config.home.join(".ssh/known_hosts"),
+            config.agent.clone(),
+            config.io_timeout_ms,
+            authority.clone(),
+        )
+        .map_err(|_| unavailable("SSH endpoint construction failed"))?;
+        if let Some(https) = https {
+            state.https = Some(super::https_endpoint::HttpsEndpoint::new(
+                https,
+                config.pool.clone(),
+                config.io_timeout_ms,
+                authority,
+                id.clone(),
+            )?);
+        }
+        let https_enabled = state.https.is_some();
         state.engine = Some(
-            PlacementEndpoint::new(config.endpoint()?, config.home, id.clone(), id.clone())
+            PlacementEndpoint::new(ssh, config.home, id.clone(), id.clone())
                 .map_err(|_| unavailable("endpoint supervisor unavailable"))?,
         );
         state.endpoint_config = Some(binding::EndpointConfig {
             endpoint_id: id.clone(),
             trust_owner: id,
             role: EndpointRole::Driver,
-            schemes: vec![Scheme::Ssh],
-            policies: vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit],
+            schemes: if https_enabled {
+                vec![Scheme::Ssh, Scheme::Https]
+            } else {
+                vec![Scheme::Ssh]
+            },
+            policies: if https_enabled {
+                vec![
+                    AuthPolicy::SshAmbient,
+                    AuthPolicy::SshExplicit,
+                    AuthPolicy::Anonymous,
+                    AuthPolicy::Gh,
+                ]
+            } else {
+                vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit]
+            },
             limits: limits(),
         });
         let session = Self::start(state)?;
@@ -314,6 +362,9 @@ impl Session {
         if let Some(engine) = &mut state.engine {
             engine.cancel_request(request);
         }
+        if let Some(engine) = &mut state.https {
+            engine.cancel_request(request);
+        }
         if state
             .incoming
             .as_ref()
@@ -351,7 +402,11 @@ impl Session {
         let pending = state
             .engine
             .as_ref()
-            .map_or(0, |e| e.pending_request_count(request));
+            .map_or(0, |e| e.pending_request_count(request))
+            + state
+                .https
+                .as_ref()
+                .map_or(0, |e| e.pending_request_count(request));
         if let Some(record) = state.registrations.get_mut(request) {
             record.sealed.get_or_insert(Instant::now());
             if closed {
@@ -393,6 +448,9 @@ impl Session {
         if let Some(engine) = &mut state.engine {
             engine.shutdown();
         }
+        if let Some(engine) = &mut state.https {
+            engine.shutdown();
+        }
         for (_, entry) in std::mem::take(&mut state.streams) {
             entry.peer.disconnect();
             entry.reply.complete(Err(protocol_failure(
@@ -412,7 +470,8 @@ impl Session {
         CleanupReport {
             pending_local_work: state.streams.len()
                 + state.checks.len()
-                + state.engine.as_ref().map_or(0, |e| e.pending()),
+                + state.engine.as_ref().map_or(0, |e| e.pending())
+                + state.https.as_ref().map_or(0, |e| e.pending()),
             peer_cleanup_confirmed: false,
         }
     }
@@ -574,3 +633,5 @@ impl Drop for LocalLink {
         self.stop();
     }
 }
+
+cfg_if::cfg_if! { if #[cfg(test)] { #[path="cleanup_tests.rs"] mod cleanup_tests; } }

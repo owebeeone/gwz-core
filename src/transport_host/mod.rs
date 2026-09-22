@@ -1,8 +1,9 @@
 //! Candidate embedding ownership for endpoint placement. The host supplies message delivery.
+mod https_endpoint;
 mod request;
 mod session;
-cfg_if::cfg_if! { if #[cfg(test)] { mod tests; mod driver_tests; mod fault_tests; mod command_tests; mod fetch_preflight_tests; mod message_embedding_tests; } }
-use crate::git::endpoint::{ssh_local, ssh_worker::Endpoint};
+cfg_if::cfg_if! { if #[cfg(test)] { mod tests; mod driver_tests; mod fault_tests; mod command_tests; mod fetch_preflight_tests; mod message_embedding_tests; mod https_tests; mod https_policy_tests; mod https_compat_tests; } }
+use crate::git::endpoint::ssh_local;
 use crate::{
     RequestMeta, TransportCapabilitiesRequest, TransportCapabilitiesResponse, TransportPlacement,
     git::Git2Backend,
@@ -12,8 +13,8 @@ use gwz_transport::{
     binding, pool,
     protocol::{AuthPolicy, Scheme},
 };
-pub(crate) use request::RequestContext;
 pub use request::{ClientRequest, TransportRequest};
+pub(crate) use request::{HttpsOpenFailure, RequestContext};
 use session::Session;
 pub use session::{Attachment, TransportPort};
 use std::{
@@ -49,20 +50,17 @@ impl SshEndpointConfig {
             io_timeout_ms: timeout,
         })
     }
-    fn endpoint(&self) -> ModelResult<Endpoint> {
-        ssh_local::connect(
-            self.pool.clone(),
-            self.home.join(".ssh/known_hosts"),
-            self.agent.clone(),
-            self.io_timeout_ms,
-        )
-        .map_err(|_| unavailable("SSH endpoint construction failed"))
-    }
     cfg_if::cfg_if! { if #[cfg(test)] {
         pub(crate) fn fixture(home: PathBuf, agent: Option<PathBuf>) -> Self {
             Self {home, agent, pool: pool::Config::default(), io_timeout_ms: 3000}
         }
     } }
+}
+// Candidate-only injection; public SSH constructors remain unchanged.
+#[derive(Clone)]
+pub(crate) struct HttpsEndpointConfig {
+    pub(crate) tls: crate::git::endpoint::https_connection::Config,
+    pub(crate) auth: Option<crate::git::endpoint::https_auth::Config>,
 }
 #[derive(Clone, Debug, Default)]
 pub struct CleanupReport {
@@ -76,6 +74,7 @@ struct RuntimeState {
     cli: Option<Arc<Session>>,
     closed: bool,
     io_timeout_ms: u64,
+    https: bool,
 }
 impl Drop for RuntimeState {
     fn drop(&mut self) {
@@ -90,8 +89,18 @@ impl Drop for RuntimeState {
 pub struct TransportRuntime(Arc<Mutex<RuntimeState>>);
 impl TransportRuntime {
     pub fn new(local: SshEndpointConfig) -> ModelResult<Self> {
+        Self::build(local, None)
+    }
+    pub(crate) fn with_https(
+        local: SshEndpointConfig,
+        https: HttpsEndpointConfig,
+    ) -> ModelResult<Self> {
+        Self::build(local, Some(https))
+    }
+    fn build(local: SshEndpointConfig, https: Option<HttpsEndpointConfig>) -> ModelResult<Self> {
+        let enabled = https.is_some();
         let io_timeout_ms = local.io_timeout_ms;
-        let (endpoint, peer_port) = Session::endpoint(local)?;
+        let (endpoint, peer_port) = Session::endpoint_with_https(local, https)?;
         let (driver, core_port) = Session::driver(io_timeout_ms)?;
         let link = session::LocalLink::new(core_port, peer_port)?;
         Ok(Self(Arc::new(Mutex::new(RuntimeState {
@@ -101,6 +110,7 @@ impl TransportRuntime {
             cli: None,
             closed: false,
             io_timeout_ms,
+            https: enabled,
         }))))
     }
     pub fn install_cli(&self) -> ModelResult<TransportPort> {
@@ -135,8 +145,21 @@ impl TransportRuntime {
             exact_agent_identity: true,
             message_versions: Some(vec![2]),
             placements: Some(placements),
-            schemes: Some(vec![Scheme::Ssh]),
-            auth_policies: Some(vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit]),
+            schemes: Some(if state.https {
+                vec![Scheme::Ssh, Scheme::Https]
+            } else {
+                vec![Scheme::Ssh]
+            }),
+            auth_policies: Some(if state.https {
+                vec![
+                    AuthPolicy::SshAmbient,
+                    AuthPolicy::SshExplicit,
+                    AuthPolicy::Anonymous,
+                    AuthPolicy::Gh,
+                ]
+            } else {
+                vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit]
+            }),
             message_limits: Some(session::limits()),
         })
     }
@@ -215,6 +238,13 @@ pub struct CliEndpoint(Arc<Session>);
 impl CliEndpoint {
     pub fn new(config: SshEndpointConfig) -> ModelResult<(Self, TransportPort)> {
         let (session, port) = Session::endpoint(config)?;
+        Ok((Self(session), port))
+    }
+    pub(crate) fn with_https(
+        config: SshEndpointConfig,
+        https: HttpsEndpointConfig,
+    ) -> ModelResult<(Self, TransportPort)> {
+        let (session, port) = Session::endpoint_with_https(config, Some(https))?;
         Ok((Self(session), port))
     }
     pub fn register_request(&self, request_id: &str) -> ModelResult<ClientRequest> {

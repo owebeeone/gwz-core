@@ -6,6 +6,9 @@
 //! each consuming a separate full-sized host/total budget.
 
 use super::ssh_pool::{Connector, Resource};
+use super::ssh_worker::ChannelResource;
+use super::{ssh_channel::GitService, ssh_pump::SshPump};
+use gwz_transport::stream::{MessageEndpoint, Stream};
 use gwz_transport::{
     pool::{Identity, Key},
     protocol::{Effect, ErrorCode, Failure},
@@ -130,6 +133,30 @@ impl<R: Resource> Resource for ReservedResource<R> {
     }
 }
 
+impl<R: ChannelResource> ChannelResource for ReservedResource<R> {
+    fn observation(&self) -> (bool, gwz_transport::protocol::Facts) {
+        self.inner.observation()
+    }
+
+    fn start_exchange(
+        &mut self,
+        stream: Stream,
+        endpoint: MessageEndpoint,
+        service: GitService,
+        path: &str,
+    ) -> io::Result<()> {
+        self.inner.start_exchange(stream, endpoint, service, path)
+    }
+
+    fn pump(&mut self) -> Option<&mut SshPump<super::ssh_channel::SshChannel>> {
+        self.inner.pump()
+    }
+
+    fn reclaim(&mut self) -> bool {
+        self.inner.reclaim()
+    }
+}
+
 impl<R> Drop for ReservedResource<R> {
     fn drop(&mut self) {
         // A host dropping an entry is not proof that the physical connector
@@ -196,6 +223,8 @@ impl Drop for Reservation {
 cfg_if::cfg_if! { if #[cfg(test)] {
 mod tests {
     use super::super::ssh_pool::{Connector, Resource};
+    use super::super::ssh_worker::ChannelResource;
+    use super::super::{ssh_channel::GitService, ssh_pump::SshPump};
     use super::{Authority, ReservedConnector};
     use gwz_transport::{
         pool::{Identity, Key},
@@ -252,6 +281,26 @@ mod tests {
             false
         }
     }
+    impl ChannelResource for FakeResource {
+        fn observation(&self) -> (bool, gwz_transport::protocol::Facts) {
+            (false, gwz_transport::protocol::Facts::default())
+        }
+        fn start_exchange(
+            &mut self,
+            _stream: gwz_transport::stream::Stream,
+            _endpoint: gwz_transport::stream::MessageEndpoint,
+            _service: GitService,
+            _path: &str,
+        ) -> io::Result<()> {
+            Ok(())
+        }
+        fn pump(&mut self) -> Option<&mut SshPump<super::super::ssh_channel::SshChannel>> {
+            None
+        }
+        fn reclaim(&mut self) -> bool {
+            true
+        }
+    }
 
     #[test]
     fn ssh_and_https_share_host_and_total_limits() {
@@ -290,6 +339,9 @@ mod tests {
         );
         let key = Key::ssh("git", "github.example", 22);
         let mut resource = ssh.start(&key, &Identity::Ambient, None).unwrap();
+        assert_eq!(resource.observation().0, false);
+        assert!(resource.reclaim());
+        assert!(resource.pump().is_none());
         let mut cx = Context::from_waker(Waker::noop());
         assert!(matches!(
             resource.poll_dispose(&mut cx, false),

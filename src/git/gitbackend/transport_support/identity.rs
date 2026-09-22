@@ -200,10 +200,11 @@ pub(crate) fn validate_file(path: &Path) -> ModelResult<()> {
     }
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NONBLOCK);
+    cfg_if::cfg_if! {
+        if #[cfg(unix)] {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NONBLOCK);
+        }
     }
     let file = options.open(path).map_err(|_| unavailable())?;
     if !file.metadata().map_err(|_| unavailable())?.is_file() {
@@ -264,10 +265,13 @@ fn resolve_remote(
             .iter()
             .any(|v| scheme.eq_ignore_ascii_case(v))
     });
-    if backend.ssh.is_cli_context() && !ssh_scheme && !scp {
+    let https_scheme = url
+        .split_once("://")
+        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("https"));
+    if backend.ssh.is_cli_context() && !ssh_scheme && !scp && !https_scheme {
         return Err(ModelError::new(
             ErrorCode::UnsupportedOperation,
-            "explicit cli placement supports SSH routes only; native transport fallback is disabled",
+            "explicit cli placement supports SSH and HTTPS routes only; native transport fallback is disabled",
         ));
     }
     if !ssh_scheme && !scp {
@@ -359,7 +363,7 @@ fn invalid(message: impl Into<String>) -> ModelError {
     ModelError::new(ErrorCode::InvalidRequest, message)
 }
 
-#[cfg(test)]
+cfg_if::cfg_if! { if #[cfg(test)] {
 mod tests {
     use super::*;
 
@@ -571,7 +575,6 @@ mod tests {
     }
 }
 
-#[cfg(test)]
 mod timeout_tests {
     #[test]
     fn native_backends_install_bounded_default_timeouts() {
@@ -584,3 +587,5 @@ mod timeout_tests {
         }
     }
 }
+
+} }

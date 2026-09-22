@@ -12,6 +12,8 @@ pub(crate) struct RequestContext {
     pub(super) meta: RequestMeta,
     operation: String,
     active: Arc<AtomicBool>,
+    https_policy:
+        Arc<Mutex<std::collections::BTreeMap<String, gwz_transport::protocol::AuthPolicy>>>,
 }
 impl RequestContext {
     pub(super) fn new(
@@ -25,6 +27,7 @@ impl RequestContext {
             meta,
             operation,
             active: Arc::new(AtomicBool::new(true)),
+            https_policy: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
         })
     }
     pub(crate) fn is_cli(&self) -> bool {
@@ -68,6 +71,90 @@ impl RequestContext {
             opened,
             facts,
         )
+    }
+    pub(crate) fn open_https(
+        &self,
+        url: &str,
+        service: gwz_transport::protocol::GitService,
+        policy: Option<gwz_transport::protocol::AuthPolicy>,
+        opened: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
+        facts: Arc<dyn Fn(&Facts) + Send + Sync>,
+    ) -> io::Result<BlockingStream> {
+        use gwz_transport::protocol::{AuthPolicy, ErrorCode};
+        self.validate(&self.meta, &self.operation)
+            .map_err(|_| io::ErrorKind::BrokenPipe)?;
+        let cached = *self
+            .https_policy
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(url)
+            .unwrap_or(&AuthPolicy::Anonymous);
+        let first = policy.unwrap_or_else(|| {
+            if crate::git::endpoint::https_policy::receive_pack(service) {
+                AuthPolicy::Gh
+            } else {
+                cached
+            }
+        });
+        let mut selected = first;
+        let mut result = self.session.open_https(
+            &self.meta.request_id,
+            &self.operation,
+            url,
+            service,
+            first,
+            opened.clone(),
+            facts.clone(),
+        );
+        let mut anonymous_status = None;
+        if policy.is_none()
+            && first == AuthPolicy::Anonymous
+            && crate::git::endpoint::https_policy::advertisement(service)
+        {
+            if let Err(failure) = &result {
+                if matches!(
+                    failure.code,
+                    ErrorCode::Authentication | ErrorCode::RepositoryRefused
+                ) && failure
+                    .facts
+                    .as_ref()
+                    .is_some_and(|f| matches!(f.http_status, Some(401 | 404)))
+                {
+                    anonymous_status = failure.facts.as_ref().and_then(|f| f.http_status);
+                    selected = AuthPolicy::Gh;
+                    result = self.session.open_https(
+                        &self.meta.request_id,
+                        &self.operation,
+                        url,
+                        service,
+                        selected,
+                        opened,
+                        facts.clone(),
+                    );
+                }
+            }
+        }
+        match result {
+            Ok(stream) => {
+                let mut policies = self.https_policy.lock().unwrap_or_else(|e| e.into_inner());
+                if policies.len() < 64 || policies.contains_key(url) {
+                    policies.insert(url.into(), selected);
+                }
+                Ok(stream)
+            }
+            Err(failure) => {
+                if let Some(value) = &failure.facts {
+                    facts(value);
+                }
+                Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    HttpsOpenFailure {
+                        failure,
+                        anonymous_status,
+                    },
+                ))
+            }
+        }
     }
     fn cancel(&self) {
         self.active.store(false, Ordering::Release);
@@ -171,3 +258,18 @@ pub(super) fn validate_meta(meta: &RequestMeta, operation: &str) -> ModelResult<
 pub(super) fn identifier(value: &str) -> bool {
     !value.is_empty() && value.len() <= 128 && !value.chars().any(char::is_control)
 }
+
+#[derive(Debug)]
+pub(crate) struct HttpsOpenFailure {
+    pub(crate) failure: gwz_transport::protocol::Failure,
+    pub(crate) anonymous_status: Option<i64>,
+}
+impl std::fmt::Display for HttpsOpenFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(status) = self.anonymous_status {
+            write!(f, "anonymous discovery returned HTTP {status}; ")?;
+        }
+        write!(f, "HTTPS endpoint request failed: {:?}", self.failure.code)
+    }
+}
+impl std::error::Error for HttpsOpenFailure {}

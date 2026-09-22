@@ -11,37 +11,100 @@ impl Session {
         facts: Arc<dyn Fn(&Facts) + Send + Sync>,
     ) -> io::Result<BlockingStream> {
         let destination = Destination::parse(url)?.ok_or(io::ErrorKind::Unsupported)?;
+        let policy = if identity.mode == IdentityMode::ExplicitKey {
+            AuthPolicy::SshExplicit
+        } else {
+            AuthPolicy::SshAmbient
+        };
+        self.open_stream(
+            request,
+            operation,
+            gwz_transport::protocol::Destination {
+                scheme: Scheme::Ssh,
+                ssh_username: destination.key.username,
+                host: destination.key.host,
+                port: destination.key.port as i64,
+                path: destination.path,
+            },
+            match service {
+                GitService::UploadPack => gwz_transport::protocol::GitService::UploadPackExchange,
+                GitService::ReceivePack => gwz_transport::protocol::GitService::ReceivePackExchange,
+            },
+            identity,
+            policy,
+            observe,
+            facts,
+        )
+        .map_err(failure_io)
+    }
+    pub(in crate::transport_host) fn open_https(
+        &self,
+        request: &str,
+        operation: &str,
+        url: &str,
+        service: gwz_transport::protocol::GitService,
+        policy: AuthPolicy,
+        observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
+        facts: Arc<dyn Fn(&Facts) + Send + Sync>,
+    ) -> Result<BlockingStream, Failure> {
+        let destination = crate::git::endpoint::https_destination::Destination::parse(url)
+            .map_err(protocol_failure)?;
+        self.open_stream(
+            request,
+            operation,
+            gwz_transport::protocol::Destination {
+                scheme: Scheme::Https,
+                ssh_username: None,
+                host: destination.host().into(),
+                port: destination.port() as i64,
+                path: destination.url.path().into(),
+            },
+            service,
+            Identity {
+                mode: if policy == AuthPolicy::Gh {
+                    IdentityMode::Ambient
+                } else {
+                    IdentityMode::CredentialsDisabled
+                },
+                ..Default::default()
+            },
+            policy,
+            observe,
+            facts,
+        )
+    }
+    fn open_stream(
+        &self,
+        request: &str,
+        operation: &str,
+        destination: gwz_transport::protocol::Destination,
+        service: gwz_transport::protocol::GitService,
+        identity: Identity,
+        policy: AuthPolicy,
+        observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
+        facts: Arc<dyn Fn(&Facts) + Send + Sync>,
+    ) -> Result<BlockingStream, Failure> {
         let reply = Wait::new();
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.closed {
-                return Err(io::ErrorKind::BrokenPipe.into());
+                return Err(protocol_failure(
+                    gwz_transport::protocol::ErrorCode::CarrierLost,
+                ));
             }
-            let owner = state.owner.as_ref().ok_or(io::ErrorKind::NotConnected)?;
-            let binding = owner.binding().ok_or(io::ErrorKind::NotConnected)?;
-            let policy = if identity.mode == IdentityMode::ExplicitKey {
-                AuthPolicy::SshExplicit
-            } else {
-                AuthPolicy::SshAmbient
-            };
+            let owner = state
+                .owner
+                .as_ref()
+                .ok_or_else(|| protocol_failure(gwz_transport::protocol::ErrorCode::Unavailable))?;
+            let binding = owner
+                .binding()
+                .ok_or_else(|| protocol_failure(gwz_transport::protocol::ErrorCode::Unavailable))?;
+            let report_open_failure = destination.scheme == Scheme::Ssh;
             let open = Open {
                 endpoint_id: binding.endpoint_id().into(),
                 operation_id: operation.into(),
-                destination: gwz_transport::protocol::Destination {
-                    scheme: Scheme::Ssh,
-                    ssh_username: destination.key.username.clone(),
-                    host: destination.key.host.clone(),
-                    port: i64::from(destination.key.port),
-                    path: destination.path,
-                },
-                service: match service {
-                    GitService::UploadPack => {
-                        gwz_transport::protocol::GitService::UploadPackExchange
-                    }
-                    GitService::ReceivePack => {
-                        gwz_transport::protocol::GitService::ReceivePackExchange
-                    }
-                },
+                destination,
+                service,
                 identity,
                 policy,
                 deadlines: Deadlines {
@@ -53,9 +116,9 @@ impl Session {
                 },
                 receive_limits: binding.limits().clone(),
             };
-            let id = owner
-                .open(request, open)
-                .map_err(|e| io::Error::other(format!("transport open: {e:?}")))?;
+            let id = owner.open(request, open).map_err(|_| {
+                protocol_failure(gwz_transport::protocol::ErrorCode::UnsupportedOperation)
+            })?;
             let mut config = stream::Config::new(binding.session_id(), id, stream::Side::Initiator);
             config.profile_version = 2;
             config.receive_limits = binding.limits().clone();
@@ -65,7 +128,8 @@ impl Session {
             config.max_payload = config
                 .max_payload
                 .min(binding.limits().data_payload as usize);
-            let (stream, peer) = Stream::new(config).map_err(io::Error::other)?;
+            let (stream, peer) = Stream::new(config)
+                .map_err(|_| protocol_failure(gwz_transport::protocol::ErrorCode::Protocol))?;
             let deadline = (state.io_timeout_ms != 0)
                 .then(|| Instant::now() + Duration::from_millis(150_000 + state.io_timeout_ms));
             state.streams.insert(
@@ -75,6 +139,7 @@ impl Session {
                     stream,
                     peer: Arc::new(peer),
                     opened: false,
+                    report_open_failure,
                     reply: reply.clone(),
                     deadline,
                     pending: None,
@@ -85,7 +150,7 @@ impl Session {
         }
         match reply.get() {
             Ok((stream, _)) => Ok(stream),
-            Err(failure) => Err(failure_io(failure)),
+            Err(failure) => Err(failure),
         }
     }
     pub(in crate::transport_host) fn check(
@@ -150,6 +215,11 @@ impl Session {
                 Self::close_state(&mut state);
             }
         }
+        if let Some(engine) = &mut state.https {
+            if engine.step(now, &mut cx).is_err() {
+                Self::close_state(&mut state);
+            }
+        }
         if !state.closed {
             if let Some(owner) = state.owner.clone() {
                 for _ in 0..64 {
@@ -166,8 +236,29 @@ impl Session {
                         }
                     };
                     let (request, message) = item;
-                    if let Some(engine) = &mut state.engine {
-                        match engine.accept(request.clone(), message.clone()) {
+                    let https = message
+                        .open
+                        .as_ref()
+                        .is_some_and(|o| o.destination.scheme == Scheme::Https)
+                        || state
+                            .https
+                            .as_ref()
+                            .is_some_and(|e| e.owns(&request, message.stream_id));
+                    if state.engine.is_some() {
+                        let result = if https {
+                            state
+                                .https
+                                .as_mut()
+                                .ok_or(EndpointError::InvalidRequest)
+                                .and_then(|engine| engine.accept(request.clone(), message.clone()))
+                        } else {
+                            state
+                                .engine
+                                .as_mut()
+                                .expect("endpoint")
+                                .accept(request.clone(), message.clone())
+                        };
+                        match result {
                             Ok(()) => {}
                             Err(EndpointError::WouldBlock) => {
                                 state.incoming = Some((request, message));
@@ -207,11 +298,14 @@ impl Session {
                             }));
                         } else if let Some(failure) = message.open_failed.clone() {
                             let report = entry.facts.clone();
+                            let report_open_failure = entry.report_open_failure;
                             let reply = entry.reply.clone();
                             let peer = entry.peer.clone();
                             reports.push(Box::new(move || {
-                                if let Some(facts) = &failure.facts {
-                                    report(facts);
+                                if report_open_failure {
+                                    if let Some(facts) = &failure.facts {
+                                        report(facts);
+                                    }
                                 }
                                 reply.complete(Err(failure));
                                 peer.disconnect();
@@ -234,13 +328,22 @@ impl Session {
                         }
                     }
                 }
-                // Transfer at most one engine result at a time across bounded mux admission.
+                // Alternate schemes; a busy SSH stream cannot starve HTTPS.
                 if state.pending.is_none() {
-                    state.pending = state.engine.as_mut().and_then(|engine| {
-                        engine
-                            .take_outbound()
-                            .map(|out| (out.request, out.envelope))
+                    let first = if state.prefer_https {
+                        state.https.as_mut().and_then(|e| e.take_outbound(&mut cx))
+                    } else {
+                        state.engine.as_mut().and_then(|e| e.take_outbound())
+                    };
+                    let item = first.or_else(|| {
+                        if state.prefer_https {
+                            state.engine.as_mut().and_then(|e| e.take_outbound())
+                        } else {
+                            state.https.as_mut().and_then(|e| e.take_outbound(&mut cx))
+                        }
                     });
+                    state.pending = item.map(|out| (out.request, out.envelope));
+                    state.prefer_https = !state.prefer_https;
                 }
                 if let Some(item) = state.pending.take() {
                     // Local seal makes the mux own the cancellation terminal. Late
@@ -318,6 +421,10 @@ impl Session {
                 .engine
                 .as_ref()
                 .is_some_and(|e| e.pending_request(&id))
+                || state
+                    .https
+                    .as_ref()
+                    .is_some_and(|e| e.pending_request_count(&id) > 0)
                 || state.streams.values().any(|e| e.request == id)
                 || state.checks.values().any(|e| e.request == id)
                 || state.pending.as_ref().is_some_and(|p| p.0 == id)
@@ -333,7 +440,11 @@ impl Session {
                 let count = state
                     .engine
                     .as_ref()
-                    .map_or(0, |e| e.pending_request_count(&id));
+                    .map_or(0, |e| e.pending_request_count(&id))
+                    + state
+                        .https
+                        .as_ref()
+                        .map_or(0, |e| e.pending_request_count(&id));
                 if let Some(record) = state.registrations.get_mut(&id) {
                     record.result.get_or_insert(CleanupReport {
                         pending_local_work: count,

@@ -17,12 +17,12 @@ use tokio::{
     net::TcpListener,
     task::{JoinHandle, JoinSet},
 };
-pub(super) type Handler = Arc<
+pub(crate) type Handler = Arc<
     dyn Fn(Request<Incoming>) -> Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
         + Send
         + Sync,
 >;
-pub(super) struct Server {
+pub(crate) struct Server {
     pub url: String,
     pub ca: Vec<u8>,
     pub connections: Arc<AtomicUsize>,
@@ -89,7 +89,7 @@ impl Server {
         }
     }
 }
-pub(super) fn response(
+pub(crate) fn response(
     status: u16,
     service: GitService,
     body: impl Into<Bytes>,

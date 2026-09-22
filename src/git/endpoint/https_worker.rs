@@ -5,6 +5,7 @@ use super::{
     https_destination::Destination,
     https_policy::{self, ResponseAction, RouteKey, Routes},
     https_pool::{HttpLease, HttpsPool, RunningPool},
+    shared_reservation::Authority,
 };
 use bytes::Bytes;
 use gwz_transport::{
@@ -69,10 +70,20 @@ impl Endpoint {
         config: pool::Config,
         io_timeout_ms: u64,
     ) -> Result<Self, Failure> {
+        let authority = Authority::new(config.total, config.per_host);
+        Self::with_authority(tls, auth, config, io_timeout_ms, authority)
+    }
+    pub(crate) fn with_authority(
+        tls: https_connection::Config,
+        auth: Option<https_auth::Config>,
+        config: pool::Config,
+        io_timeout_ms: u64,
+        authority: Authority,
+    ) -> Result<Self, Failure> {
         if io_timeout_ms > i32::MAX as u64 {
             return Err(failure(ErrorCode::InvalidRequest));
         }
-        let pool = RunningPool::new(config.clone(), tls)?;
+        let pool = RunningPool::with_authority(config.clone(), tls, authority)?;
         let routes = Arc::new(Mutex::new(Routes::new(64)));
         let operations = super::https_operation::Operations::new(routes.clone());
         let client = Client {
@@ -140,7 +151,30 @@ pub(crate) struct Budget {
     network: Option<Duration>,
     cleanup: Duration,
 }
+impl Budget {
+    pub(crate) fn shorten(&mut self, cap: Self) {
+        fn bounded(value: Option<Duration>, cap: Option<Duration>) -> Option<Duration> {
+            match (value, cap) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            }
+        }
+        self.allocation = self.allocation.min(cap.allocation);
+        self.helper = self.helper.min(cap.helper);
+        self.connect = bounded(self.connect, cap.connect);
+        self.network = bounded(self.network, cap.network);
+        self.cleanup = self.cleanup.min(cap.cleanup);
+    }
+}
 impl Client {
+    pub(crate) fn pending_cleanup(&self) -> usize {
+        self.auth_owner.pending_cleanup_count() + self.pool.pool.counts().closing
+    }
+
+    pub(crate) async fn reap_cleanup(&self, limit: Duration) -> usize {
+        self.auth_owner.reap_pending(Instant::now() + limit).await + self.pool.pool.counts().closing
+    }
+
     pub(crate) fn finish_operation(&self, operation: &str) {
         self.operations.finish(operation);
     }
