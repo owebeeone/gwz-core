@@ -35,6 +35,7 @@ extra = '\n'.join([
     'ssh2 = "=0.9.6"', 'libssh2-sys = "=0.3.3"',
 ])
 manifest = manifest.replace('[dependencies]\n', '[dependencies]\n' + extra + '\n', 1)
+manifest = manifest.replace('[dev-dependencies]\n', '[dev-dependencies]\npyo3 = { version = "=0.28.3", features = ["auto-initialize"] }\n', 1)
 manifest += '\n[patch.crates-io]\n'
 for name, path in [("git2", root / "git2-rs"), ("libgit2-sys", root / "git2-rs/libgit2-sys")]:
     manifest += name + ' = { path = ' + json.dumps(str(path)) + ' }\n'

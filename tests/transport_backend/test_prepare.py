@@ -61,3 +61,10 @@ def test_guide_fixture_is_exact_design_example():
     section = document.split("## Example: configure, fetch once, remove\n", 1)[1]
     expected = section.split("```rust\n", 1)[1].split("\n```", 1)[0] + "\n"
     assert GUIDE.read_text() == expected
+
+
+def test_in_process_python_dependency_is_candidate_only(tmp_path):
+    destination = prepare(tmp_path / "backend")
+    manifest = (destination / "Cargo.toml").read_text()
+    assert 'pyo3 = { version = "=0.28.3", features = ["auto-initialize"] }' in manifest
+    assert 'pyo3' not in (ROOT / "Cargo.toml").read_text()

@@ -55,3 +55,32 @@ shared pools, endpoint preflight, authentication/refusal facts, cancellation,
 concurrent streams, and ordinary workspace command drivers. It does not add a
 physical CLI/core carrier or qualify a split-process deployment. The local SSH
 fixture server uses disposable keys; no user's credentials are used.
+
+## In-process operation-message embedding
+
+The prepared candidate has a test-only PyO3 dependency (`auto-initialize`) to run
+Python inside the Rust test process. A Python installation with a linkable shared
+library is required; select it with `PYO3_PYTHON` if autodetection is unsuitable.
+Python and Taut sources are loaded from the same workspace's `gwz-py/src` and
+`taut/src`; no Python worker process or network carrier is started. The existing
+SSH fixture still starts its disposable loopback SSH server as usual.
+
+```sh
+python3 -B gwz-core/tests/transport_backend/prepare.py /tmp/gwz-placement-c-new
+RUSTFLAGS='--cfg gwz_transport_candidate' cargo +1.95.0 test \
+  --manifest-path /tmp/gwz-placement-c-new/Cargo.toml --offline \
+  --target-dir /tmp/gwz-placement-c-target --lib message_embedding_tests \
+  -- --test-threads=1
+```
+
+The first run resolves the external candidate lock; subsequent runs add `--locked`.
+Fixtures wrap live envelopes in `InitFromSourcesRequest`/`InitFromSourcesResponse`
+metadata and route attachments ahead of ordinary dispatch. The Rust branch uses
+the core-generated types used by the CLI's direct handler call. The Python branch
+uses the actual gwz-py codec with candidate dataclasses and schema selected only
+in that test interpreter. Full CLI executable/native-extension activation is not
+claimed. The test checks message embedding at their existing boundaries.
+
+See [Placement C](../../dev-docs/GwzRemoteTransportPlacementC.md) for scope and
+future wire plausibility. Production manifests and generated artifacts remain
+unchanged; physical wire testing and iroh are outside this cycle.

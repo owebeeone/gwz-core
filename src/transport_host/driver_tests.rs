@@ -22,7 +22,7 @@ use std::{
 
 #[allow(unused_imports)]
 #[path = "../../tests/transport_ssh/tests/common/mod.rs"]
-mod common;
+pub(super) mod common;
 
 pub(super) fn block_on<F: Future>(future: F) -> F::Output {
     let mut future = pin!(future);
