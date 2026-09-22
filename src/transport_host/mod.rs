@@ -1,5 +1,7 @@
 //! Candidate embedding ownership for endpoint placement. The host supplies message delivery.
 mod https_endpoint;
+mod local_command;
+pub use local_command::with_local_transport;
 mod request;
 mod session;
 cfg_if::cfg_if! { if #[cfg(test)] { mod tests; mod driver_tests; mod fault_tests; mod command_tests; mod fetch_preflight_tests; mod message_embedding_tests; mod https_tests; mod https_policy_tests; mod https_compat_tests; } }
