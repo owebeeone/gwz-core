@@ -33,6 +33,13 @@ extra = '\n'.join([
     'gwz-transport = { path = ' + json.dumps(str(root / "gwz-transport")) + ' }',
     'base64 = "=0.22.1"', 'socket2 = "=0.6.4"',
     'ssh2 = "=0.9.6"', 'libssh2-sys = "=0.3.3"',
+    'tokio = { version = "=1.53.1", features = ["rt", "net", "time", "sync", "macros", "process", "io-util"] }',
+    'tokio-util = { version = "=0.7.19", features = ["rt"] }',
+    'hyper = { version = "=1.11.1", features = ["client", "server", "http1"] }',
+    'hyper-util = { version = "=0.1.20", features = ["tokio"] }',
+    'http-body-util = "=0.1.5"', 'bytes = "=1.11.1"',
+    'native-tls = "=0.2.18"', 'tokio-native-tls = "=0.3.1"',
+
 ])
 manifest = manifest.replace('[dependencies]\n', '[dependencies]\n' + extra + '\n', 1)
 manifest = manifest.replace('[dev-dependencies]\n', '[dev-dependencies]\npyo3 = { version = "=0.28.3", features = ["auto-initialize"] }\n', 1)

@@ -22,3 +22,14 @@ pub(crate) mod ssh_setup;
 pub(crate) mod ssh_shutdown;
 pub(crate) mod ssh_worker;
 pub(crate) mod stream_io;
+
+pub(crate) mod https_auth;
+pub(crate) mod https_connection;
+pub(crate) mod https_destination;
+pub(crate) mod https_policy;
+pub(crate) mod https_pool;
+pub(crate) mod https_remote;
+pub(crate) mod https_worker;
+pub(crate) mod shared_reservation;
+pub(crate) mod https_local;
+pub(crate) mod https_progress;
