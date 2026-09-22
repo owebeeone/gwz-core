@@ -306,10 +306,12 @@ it never supplies a second authority. Bind/check failures also forbid facts.
 The typed terminal adapter combines Closed.failure's code/effect with Closed.facts
 when producing one internal failure receipt. The public observation and failure
 projection use that same receipt, not independently chosen copies. Late facts cannot change the selected failure code: a
-prior rejected key must not turn a later Timeout into Authentication. Reuse
-reports credential_offered=false and independently proven authentication facts.
+prior rejected key must not turn a later Timeout into Authentication. SSH reuse reports credential_offered=false and independently proven authentication
+facts. HTTPS reuse is TLS reuse only: each request may offer gh credentials,
+including in Opened after final GET headers. Apply HTTPS Design §10's bound-scheme
+validator/projection amendment; no account authentication is inferred from TLS.
 
-RepositoryRefused is endpoint-generated only for the N3 canonical refusal rule:
+For SSH, RepositoryRefused is endpoint-generated only for the N3 canonical refusal rule:
 no stdout bytes, complete/untruncated recognized repository-refusal stderr and
 completed command status. No raw stderr travels in Failure. Send Failed with
 that code before exposing clean EOF; loss of the terminal report is CarrierLost
@@ -317,7 +319,14 @@ or Io, never inferred repository refusal. Malformed/truncated/unrecognized
 messages stay generic failures. Authentication, trust, timeout, cancellation
 and possible publication retain their own classifications. Effect is None only
 when absence of Git request/publication effects is proved; otherwise Possible.
-No failed exchange is automatically retried.
+HTTPS gains the strictly bounded final discovery403/404 RepositoryRefused predicate
+in [HTTPS Design §7](GwzRemoteTransportHttpsDesign.md); require matching status,
+verified TLS/headers, no response data and Effect::None. No POST, trust, helper,
+timeout, cancellation or malformed/lost exchange can use that exception.
+No failed exchange is automatically retried except the once-only anonymous
+HTTPS discovery401/404 -> Gh transition with cumulative budgets and retained
+terminal receipts in HTTPS Design §4. Validated §5 discovery redirects are allowed;
+POST/network-failure replay remains forbidden.
 
 Provide a typed terminal-failure path through MessageEndpoint and the blocking
 stream adapter, including retained facts. Do not encode classification as data

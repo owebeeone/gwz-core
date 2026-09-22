@@ -189,7 +189,9 @@ fragment components before an `Open` is encoded, before helper invocation and
 before any network effect. This deliberately excludes URL-embedded/signed-token
 credentials from the gh-only policy. Apply validation after effective-URL
 rewriting and again at the endpoint; reject redirects with the same components
-before following them. Errors are typed `InvalidRequest` with a fixed redacted
+before following them, except the exact action-matching generated service query
+on discovery redirects defined in [HTTPS Design §§5/10](GwzRemoteTransportHttpsDesign.md).
+Caller URLs and Taut destinations remain query-free. Errors are typed `InvalidRequest` with a fixed redacted
 reason and never echo the supplied URL or rejected component.
 
 The taut destination is structured: canonical scheme, validated host, effective
@@ -593,6 +595,11 @@ transports remain on their existing credential-free path.
 
 ## 9. HTTPS adapter
 
+Detailed candidate authority: [HTTPS Design](GwzRemoteTransportHttpsDesign.md).
+Its §10 explicitly amends discovery authentication retry, redirect query grammar,
+scheme-specific repository refusal and request-scoped HTTPS offered facts. It
+adds no fields and requires validator/projection tests before HTTPS advertisement.
+
 Both placements require an endpoint-owned HTTPS adapter; merely tunnelling TCP
 would leave TLS and bearer authentication at core. Core's smart subtransport
 uses RPC mode. The endpoint maps service discovery to the smart-HTTP GET and
@@ -641,7 +648,7 @@ changes authenticated HTTPS behaviour on the new implementation; release notes
 must distinguish that policy change from wire compatibility.
 
 Add optional endpoint, connection id, stream id and reused fields to transport
-observations. On reuse, `credential_offered` remains false for this attempt;
+observations. On SSH reuse, `credential_offered` remains false for this attempt;
 proven authentication facts come from the connection record with explicit reuse
 context. Do not copy an earlier operation's entire observation row. Associate
 every fact with the current repository, remote and operation, and preserve it
@@ -804,7 +811,7 @@ These tests are specifications for future work, not a claim they have run.
 | Git semantics | Discovery-only reads, stateful SSH negotiation, multi-round HTTP fetch, large clone/push, rejection/uncertain push, post-push reads and publication ordering |
 | Context isolation | Per-remote callback lifetime/error/unwind; concurrent/nested GWZ routes; pre-existing custom and normal foreign libgit2 traffic before/during/after runtime construction; no process-global registry write |
 | Compatibility/reporting | Bind/Bound version and scheme intersections, minimum limits, stale sessions, absent binding and unsupported route with zero socket/helper calls; old local requests; offered/authenticated/reused facts and private-member suppression |
-| URL routing/credentials | SCP plus every SSH scheme alias in local/carried forms, canonical ssh pool keys, retained local HTTP/git, unsupported nonlocal schemes before effects; HTTPS username/password/query/fragment sentinel refusals including redirects, with no secret in messages/errors |
+| URL routing/credentials | SCP plus every SSH scheme alias in local/carried forms, canonical ssh pool keys, retained local HTTP/git, unsupported nonlocal schemes before effects; HTTPS username/password/query/fragment sentinel refusals including redirects, except the exact action-matching discovery service query (HTTPS Design §§5/10), with no secret in messages/errors |
 | Ingress bounds | Oversized Data/metadata, huge declared truncated frame, deep/large unknown collections, tiny-message storm; encoded+decoded peak storage and nesting stay bounded, typed failure wakes affected waiters and releases leases |
 | Platforms | Windows/macOS/Linux trust and agent fixtures; exact-agent support remains false until separately proven |
 | Performance | Cold versus warm SSH, connection/channel counts, large-pack throughput, control latency and memory under backpressure; local and carried endpoints |

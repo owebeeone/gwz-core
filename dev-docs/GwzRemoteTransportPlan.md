@@ -292,7 +292,7 @@ a transport RPC service or CLI command. Preserve tags and ordinary local request
 placement on an old core, missing driver endpoint or unsupported scheme refuses
 before socket/helper effects. Carry per-operation observations through success,
 events and early errors without copying an earlier operation's observation row.
-On reuse, `credential_offered` is false for this attempt; proven authentication
+On SSH reuse, `credential_offered` is false for this attempt; proven authentication
 facts come from the connection record with explicit reuse context. Preserve
 nullable `authenticated` when proof is unavailable and private-member suppression.
 
@@ -318,14 +318,18 @@ ledger for carried placement before advertising that placement.
 ### Phase 5 — HTTPS adapter and authentication policy
 
 Detailed candidate admission: [HTTPS endpoint design](GwzRemoteTransportHttpsDesign.md),
-currently DRAFT pending retained Consistency/Safety review. It specifies two
+currently DRAFT correction1 pending retained Consistency/Safety re-review and
+Surface review of HTTPS observation semantics. It specifies two
 implementation batches (endpoint/RPC, then host/command integration), reusing the
 existing transport protocol and generic pool. It activates no public route.
 
 Implement anonymous and gh-authenticated smart HTTPS at the owning endpoint,
 including streaming requests/responses, connection reuse, TLS, proxy and redirect
 semantics. Refuse other credential helpers. Reject disallowed userinfo, query and
-fragment forms before messages/helper/network effects and revalidate redirects.
+fragment forms before messages/helper/network effects and revalidate redirects;
+only the exact generated discovery service query exception in HTTPS Design §5
+is permitted. Apply its §4 bounded discovery authentication transition and §7
+scheme-specific final repository-refusal predicate; never replay POST.
 Credentials and Authorization headers remain endpoint-local. Missing gh login
 fails actionably without initiating a login workflow. Any supported helper or
 user-interaction wait is bounded, cancellable and separate from network timeouts.

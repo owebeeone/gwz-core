@@ -45,7 +45,10 @@ capabilities and limits are invalidated with the carrier session. SSH URL
 aliases share one canonical adapter. Existing HTTP/git protocols remain native
 and local-only; explicit nonlocal requests refuse before effects. HTTPS URL
 userinfo/query/fragment forms refuse before serialization/authentication, as a
-consequence of gh-only authentication. The native integration uses per-remote
+consequence of gh-only authentication. The HTTPS candidate's explicit amendment
+([HTTPS Design §§5/10](GwzRemoteTransportHttpsDesign.md)) allows only the exact
+action-matching generated service query on discovery redirects; caller URLs and
+Taut destinations remain query-free. The native integration uses per-remote
 transport callbacks, never a process-global registration. Graceful close orders
 Data/EndWrite/Close and reports discarded unread responses without claiming Git
 success. Encoded-frame and decoding resource bounds apply before allocation.

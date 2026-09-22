@@ -1,6 +1,6 @@
 # HTTPS endpoint adapter design
 
-Status: **DRAFT — pending retained Consistency/Safety review**, 2026-09-22.
+Status: **DRAFT — correction 1 pending retained re-review**, 2026-09-22.
 This admits candidate implementation only. It does not activate production
 routes, freeze a new public constructor/command, or qualify physical CLI/core wire.
 Authority: [Requirements G4/C8/P4](GwzRemoteTransportRequirements.md),
@@ -20,7 +20,8 @@ No token, Authorization header, socket or HTTP-client handle crosses those messa
 semantics, credit, deadlines, terminal facts and generic pool accounting. HTTPS
 network implementation stays in `gwz-core/src/git/endpoint`, beside SSH. No new
 repo, Git executable fallback, parallel schema, transport service or carrier.
-The existing `Scheme::Https`, `AuthPolicy::{Anonymous,Gh}`, four `GitService`
+The behavior amendments in §10 require candidate validator/observation tests in H1;
+existing fields and tags are unchanged. The existing `Scheme::Https`, `AuthPolicy::{Anonymous,Gh}`, four `GitService`
 values, `Data`, `EndWrite`, `Closed.facts` and HTTPS pool key cover this design.
 
 ## 2. Concrete implementation choice
@@ -75,10 +76,17 @@ end their write side before the first response read and reject nonempty writes.
 Endpoint body EOF is produced only on received EndWrite after all prior Data.
 Do not scan Git pkt-lines for body end; a pkt-line flush may precede a push pack.
 
-Send Opened after validating policy, acquiring a live connection and preparing
+For POST, send Opened after validating policy, acquiring a live connection and preparing
 request execution, **before awaiting POST body or HTTP response**. Waiting for
 an HTTP result before Opened would deadlock a caller waiting to write its body.
-For GET likewise use normal Opened followed by response bytes or typed failure.
+For discovery GET, resolve redirects and validate the final response headers
+before Opened; GET requires no caller body, so this does not create the POST
+cycle. Hold only bounded response bytes while awaiting delivery. Opened identifies
+the final connection actually serving the advertisement, never an abandoned
+redirect connection. Its facts truthfully include the request's offered flag and
+known status; terminal facts finalize the same request. A failed discovery may
+emit Failed before Opened with facts; do not manufacture a connection observation.
+The HTTPS-specific reused/offered validator amendment in §10 admits these facts.
 Before handing any response body to Git, validate status and content type;
 advertisements retain the service pkt-line prefix expected by libgit2's RPC
 parser. No second Git parser is introduced. Use the appropriate
@@ -106,9 +114,19 @@ actionable, redacted message. There is no fallback after explicit Gh failure.
 To preserve anonymous public access in the ordinary helper-enabled backend,
 start discovery anonymously. If discovery returns 401, or 404 (a host may hide
 private repositories), the core RPC adapter may retry that **GET only**, once
-with a new stream carrying Gh. This transition is allowed only when the caller's
+with a new stream carrying Gh. This is the sole authentication replay exception, expressly admitted by the
+controlling amendments in §10. It is allowed only when the caller's
 credential-helper policy permits gh and the negotiated endpoint supports it.
-It retains request/operation/placement and cumulative budgets. If disabled,
+It retains request/operation/placement and cumulative budgets. Retain the first
+stream's typed terminal receipt privately on the per-remote RPC adapter, including
+status, connection/stream identity when known and attempt policy. Complete that
+stream's cleanup before opening the next. Do not publish an intermediate operation
+result or apply private-member suppression to it. The public row describes the
+final attempt only, not merged facts; existing redacted diagnostic context may
+mention the anonymous status without adding fields. If the second attempt cannot
+start or fails, return its specific failure with that retained context. No fresh
+allocation/connect/interaction/network allowance is granted; pending cleanup can
+consume the remaining budget and prevent the retry. If disabled,
 return the original refusal and never invoke gh. No fallback to another provider.
 A successful authenticated discovery pins Gh for subsequent RPCs on that remote.
 A successful anonymous discovery keeps Anonymous. A POST challenge never triggers
@@ -172,16 +190,29 @@ single `service=` pair; remove that generated suffix/query to obtain a new valid
 repository base, then rebuild and compare the resulting request exactly. Other
 shapes refuse. Reject HTTPS downgrade before any new host/helper access.
 
-Keep redirect resolution endpoint-local. Cache only the validated effective
-repository base for this registered operation + original destination + service
-family, so later POSTs use the redirected base without first publishing to the
-old location. This bounded route record holds no credentials, expires on request
-finish, and is never shared across operations. Different service families discover
-separately. Each new origin gets a new pool key and gh lookup under the selected
-policy. Never copy Authorization across origins. Release/discard the old lease
-before acquiring the next; no two-origin hold-and-wait. **Never follow a POST
-redirect or retry a POST**, even 307/308, whether or not a body was fully sent.
-Return an actionable typed error with conservative effect accounting.
+Keep redirect resolution endpoint-local without inventing a remote-instance wire
+field. A registered operation has a **write-once route per original destination
+and service family**. Reserve/admit at most64 such records; excess refuses before
+network/helper effects. Each discovery may resolve independently, but before
+Opened/body exposure it must atomically compare/install its final base. The first
+successful discovery pins the route until the entire operation is finished.
+Later discovery of a different base is Protocol and is never delivered as a
+successful advertisement; matching discoveries can proceed. The losing remote
+therefore cannot proceed to its POST. Unredirected discovery pins its base too.
+Never overwrite a route. Per-stream cancellation/close cannot erase a shared
+route; only whole-operation retirement clears it after all dependent streams
+retire. A POST with no successful pinned discovery refuses before transmission.
+This deliberate conflict refusal safely handles concurrent same-URL remotes
+without assuming their endpoint-local route is secretly per-remote. Tests must
+interleave two distinct redirect outcomes: one can succeed, the other must
+refuse before advertisement exposure/POST, and cancelling either must not change
+the surviving route.
+
+Each redirect origin gets a new pool key and gh lookup under the selected policy.
+Never copy Authorization across origins. Release/discard the old lease before
+acquiring the next; no two-origin hold-and-wait. **Never follow a POST redirect or
+retry a POST**, even 307/308, whether or not a body was fully sent. Return an
+actionable typed error with conservative effect accounting.
 
 TLS verification and hostname checks are on. Load platform roots and explicit
 endpoint-local CA policy; core never resolves a CLI endpoint's CA paths. Keep
@@ -204,8 +235,12 @@ advertising support. No blanket native parity is claimed by this design.
 
 ## 6. Pooling, bounded work and lifecycle
 
-Use one endpoint-owned gwz-transport pool for HTTPS; retain its 60-second idle
-default and existing per-host/total ceilings. Key is HTTPS host/port, no username;
+Use endpoint-owned gwz-transport pool accounting for HTTPS; retain its 60-second
+idle default and existing per-host/total ceilings. SSH and HTTPS together must
+honor the endpoint's aggregate host/total ceilings: integrate scheme dispatch
+behind one pool driver, or a shared reservation authority with identical accounting,
+not two independent full-sized limits. H1 must choose and test one authority;
+private protocol-specific physical owners can remain separate. Key is HTTPS host/port, no username;
 TLS identity is not an authenticated GitHub account. Every request applies its
 own gh/anonymous policy. With immutable endpoint trust/proxy policy, one physical
 connection record owns one TCP/TLS tunnel, Hyper sender and driven connection task.
@@ -214,8 +249,9 @@ No HTTP library internal pool, concurrent lease or HTTP/2 coalescing.
 Pool Connect acknowledges only after DNS/TCP/proxy/TLS and HTTP setup succeed;
 CancelConnect/Abort/Close acknowledge actual completion/disposal. Idle peer close
 invalidates the cached connection. Sender readiness is a hint, not proof of live
-peer; any race to closed connection yields a typed failure. No transparent retry
-is required, even for GET. Connection health is reusable only after request body
+peer; any race to closed connection yields a typed failure. No transparent retry is permitted, including GET network failures; only the
+explicit discovery authentication transition and validated GET redirect sequence
+in §§4–5 are allowed. Connection health is reusable only after request body
 completion, validated response framing/EOF, no terminal failure and ready sender;
 otherwise discard. An authenticated request can reuse an anonymous TLS connection,
 but cannot inherit credentials or authenticated=true from it.
@@ -247,8 +283,9 @@ State P3-1 during H2 by testing a retained job and eventual retirement explicitl
 
 ## 7. Failures and observations
 
-Opened carries connection identity/reuse and initial facts; it does not assert
-HTTP authentication before a response. `credential_offered` becomes true only
+Opened carries connection identity/reuse and available request facts: POST opens
+before body/response; GET opens after final validated headers and redirect route
+admission. Unknown authentication remains unknown in either case. `credential_offered` becomes true only
 when Authorization is handed to the HTTP send path. Final facts accompany Closed
 or terminal Failure using the existing protocol. Keep authenticated unknown on
 ordinary 2xx: a public resource's acceptance alone does not prove an account.
@@ -256,12 +293,42 @@ ordinary 2xx: a public resource's acceptance alone does not prove an account.
 and do not prove bad credentials. TLS reuse remains distinct from request auth.
 
 Map invalid destinations to InvalidRequest, unavailable scheme/config to
-UnsupportedOperation, TLS rejection to Trust, helper rejection/missing login/401
-to Authentication, 403/404 to RepositoryRefused, timeout/cancel to their existing
-codes, malformed HTTP or unexpected success body type to Protocol, and network
-loss to Io. Retain sanitized status and service, never raw URLs, Location, body,
-helper stderr, arbitrary headers or secrets. A 404 anonymous discovery may be
-internally retried once under §4; only its final operation result is published.
+UnsupportedOperation, TLS rejection to Trust, helper rejection/missing login to
+Authentication, timeout/cancel to their existing codes and network loss to Io.
+Retain sanitized status and service, never raw URLs, Location, body, helper stderr,
+arbitrary headers or secrets. Apply this exhaustive HTTP response policy:
+
+| Status/event | Terminal behavior |
+| --- | --- |
+| 100/102/103 | Ignore interim headers, maximum8 informational responses under original I/O deadline; never success/facts replacing final status |
+| Other 1xx, including101 | Protocol; no upgrade |
+| 200 | Only success for all four actions; require service-specific content type and valid framing |
+| Other 2xx, including204/206 | Protocol |
+| 301/302/303/307/308 on discovery | Follow only validated bounded §5 route; otherwise InvalidRequest (bad destination) or UnsupportedOperation (hop limit/unsupported shape) |
+| Any POST3xx or other3xx, including304 | UnsupportedOperation; no retry/cache |
+| 401 | Authentication; anonymous discovery alone has the once-only §4 transition |
+| 403/404 on discovery | RepositoryRefused only under the precise predicate below; anonymous404 may first take §4 transition |
+| Any POST403/404 | Io with status and preserved effect; never suppress an uncertain push |
+| 407 | Authentication with fixed proxy category; do not invoke origin gh in response |
+| Remaining4xx (408/409/410/413/429 etc.) and5xx | Io with status, no Retry-After sleep or retry |
+| Outside100–599, malformed headers/framing | Protocol |
+
+All terminal non-success responses discard the connection; do not consume an
+unbounded error body to earn reuse. A validated followed redirect likewise
+discards its old connection. Status is evidence about the response, not proof
+of successful Git execution or remote nonpublication.
+
+HTTPS RepositoryRefused is endpoint-generated only for a final discovery GET
+403/404 over verified TLS with valid final HTTP headers, no Git response bytes
+delivered, Effect::None, Facts.http_status exactly matching, method/offer facts
+from that request and authenticated unknown unless independently proved. Error
+body text is neither necessary nor authority and is never forwarded. Intermediate
+anonymous404 and all POST responses are excluded. Invalid headers, TLS/trust,
+helper, cancellation, timeout, loss or body parsing failures keep their own
+classes and cannot be suppressed. Core preserves this scheme-specific receipt
+before mapping final RepositoryRefused to existing private-member policy. The
+SSH predicate remains unchanged. A 404 anonymous discovery may be internally
+retried once under §4; only its final operation result is published.
 
 For receive-pack POST, mark Effect::Possible before the first request byte is
 handed to the network client, and preserve it through timeout/cancel/redirect or
@@ -303,7 +370,9 @@ response, never replayed POST, 256KiB+ random payload reassembly, bounded queues
 paused credit, helper floods/hang/cancel, absent gh/public anonymous success,
 disabled helpers, no-login/auth rejection, token changes between RPCs, Enterprise
 host/port, sentinel redaction, different-origin redirect isolation and redirected
-GET->POST base continuity, five-hop limit, idle reap, idle-peer-close race,
+GET->POST base continuity, concurrent conflicting route refusal, final physical
+connection attribution, reused Gh offered facts, complete status matrix, query
+absent/exact/duplicate/unrelated/encoded/fragment rejection cases, five-hop limit, idle reap, idle-peer-close race,
 capacity while cancelled jobs linger, clean disposal versus pending reports.
 Raw evidence only in private evidence member; public tests are self-contained.
 
@@ -339,3 +408,35 @@ Local basis: `gwz-transport/src/{protocol.rs,policy.rs,pool/}`, core
 `src/transport_host/{mod.rs,session.rs,request.rs}`, and the pinned libgit2
 `src/libgit2/transports/smart.c`. No implementation or passing-test claim is made
 by this document-only gate.
+
+## 10. Narrow controlling-contract amendments
+
+This correction expressly amends the following behaviors for the HTTPS candidate;
+it adds no tags/fields and does not activate existing production readers:
+
+1. Requirements C3 and Placement Design §6 no-replay rule gain only §4's bounded
+   anonymous discovery401/404 -> Gh transition. All POST/network-failure replay
+   remains forbidden; valid §5 redirects are a discovery sequence, not retry of
+   a failed Git exchange. First terminal receipts are retained, not overwritten.
+2. Placement Design §6 RepositoryRefused gains only §7's final HTTPS discovery
+   predicate. SSH proof and uncertain-publication handling are unchanged.
+3. Requirements G4, Transport Design §3.3/matrix, and baseline GWZ requirements/
+   design summaries permit only §5's exact generated-service redirect query.
+   The user URL and Taut Destination remain query-free. Accept raw single
+   `service=git-upload-pack` or `service=git-receive-pack` matching the action;
+   reject encoded spellings, duplicate pairs, unrelated/empty queries or fragments.
+   A query-free redirect must identify `/info/refs`; append only the expected
+   generated query after base validation. No arbitrary base/path inference.
+4. SSH reuse still implies no new credential offer. HTTPS may offer a credential
+   per request even on a reused TLS connection. H1 must change the generic
+   `Opened.reused && credential_offered` refusal to retain it for SSH methods and
+   admit truthful Gh facts only on a stream whose validated Open is HTTPS/Gh.
+   Do not weaken SSH or allow a claimed method to override that bound Open.
+   Apply the same scheme-aware projection to core observations and public docs.
+   Unknown account authentication must remain nullable. This is a behavioral
+   compatibility amendment requiring reader/validator tests before advertising
+   HTTPS; unchanged candidate peers negotiate SSH-only and remain unaffected.
+
+Retained Consistency/Safety re-review covers these exact changes. Because item4
+refines an exposed observation meaning, add the retained Surface reviewer on the
+updated embedding guide. Public constructor/settings design remains a later gate.

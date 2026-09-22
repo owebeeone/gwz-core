@@ -180,7 +180,10 @@ Conventions follow [GWZRequirements.md](GWZRequirements.md).
   authentication MUST use `gh` at that endpoint; other authentication providers
   MUST NOT be used as fallback. HTTPS destinations MUST be validated into
   credential-free fields before Open/helper/network activity; userinfo, query
-  and fragment forms MUST refuse with redacted errors, including on redirects.
+  and fragment forms MUST refuse with redacted errors, including on redirects,
+  except the exact action-matching generated service query on discovery redirects
+  in [HTTPS Design §§5/10](GwzRemoteTransportHttpsDesign.md). Caller URLs and Taut
+  destinations remain query-free.
   Anonymous HTTPS remains supported. Additional
   HTTPS pooling optimisation ranks below SSH reuse.
 - **G5.** The contract MUST work on Windows, macOS and Linux. Capabilities that
@@ -209,9 +212,14 @@ Conventions follow [GWZRequirements.md](GWZRequirements.md).
   a request explicitly requiring B. Ambient selection uses endpoint-local policy.
 - **C3.** A stale connection MAY be replaced before an exchange has been sent.
   After transmission begins, a failure MUST surface without automatic replay of
-  the Git exchange. Successful connection reuse MUST NOT be reported as a new
-  credential offer. Existing connections are authenticated sessions, not a fresh
-  host-trust or credential check on every lease.
+  the Git exchange. The sole authentication exception is the once-only anonymous
+  HTTPS discovery401/404 -> Gh transition in [HTTPS Design §4](GwzRemoteTransportHttpsDesign.md),
+  with retained first-attempt facts and cumulative budgets; never POST or network
+  failure replay. Validated discovery redirects follow that design's §5.
+  Successful SSH reuse MUST NOT be reported as a new credential offer. HTTPS
+  credentials remain request-scoped and may be offered on a reused TLS connection.
+  Existing SSH connections are authenticated sessions, not a fresh host-trust or
+  credential check on every lease.
 - **C4.** Connections MUST be bounded per user/host, with the existing aggregate
   per-host limit retained. Opening reservations, idle, allocated and closing
   connections count against endpoint capacity. At capacity, allocation MUST

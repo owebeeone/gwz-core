@@ -100,8 +100,13 @@ cannot do that, client placement is unavailable until the host supplies it.
 
 Optional observation fields endpoint_id, connection_id, stream_id and reused
 identify the current attempt. Missing values mean unknown. Reuse does not mean a
-credential was offered again: credential_offered is false on a reused connection,
+credential was offered again. For SSH, credential_offered is false on reuse,
 while authenticated may describe previously proven connection authentication.
+For the planned HTTPS candidate, reuse describes the TLS connection: gh credentials
+may be offered afresh on each request, so reused and credential_offered can both
+be true. A successful public HTTP response does not prove which account was
+accepted; authenticated remains unknown without independent proof. This HTTPS
+behavior is specified for the candidate and is not advertised by current builds.
 Private-member omission follows existing core policy.
 
 This interface remains a candidate. The next integration gate proves transport
