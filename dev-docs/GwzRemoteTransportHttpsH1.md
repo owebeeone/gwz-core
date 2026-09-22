@@ -1,6 +1,7 @@
 # HTTPS H1 — endpoint and RPC candidate
 
-Status: **correction 2 implemented; final retained re-verdict pending**.
+Status: **accepted at the exact tuple below after retained Code and State
+correction-2 reviews reported GO; this accepts the private H1 candidate only**.
 Controlling contract: [accepted HTTPS design](GwzRemoteTransportHttpsDesign.md).
 No production activation, public constructor freeze, release or wire carrier.
 
@@ -183,3 +184,43 @@ includes exact red/final source fingerprints. This narrow case escaped the
 correction1 review; H1 remains nonactivated and no released escape is claimed.
 The original findings remain closed by their reviewers; correction2 acceptance
 awaits their focused final verdicts. All H2 and qualification deferrals remain.
+
+## Accepted checkpoint
+
+[Code GO](../../dev-docs/GwzRemoteTransportHttpsH1-ReviewCode-2.md) and
+[State GO](../../dev-docs/GwzRemoteTransportHttpsH1-ReviewState-2.md) verified the
+same immutable tuple. No open H1 P0/P1/P2/P3 findings. Later documentation-only
+annotation commits do not widen this acceptance.
+
+| Repository | Accepted revision |
+|---|---|
+| . | `63ef26308979b6ce2e2925d71a96f42afcde2645` |
+| gwz-core | `e29e799ee65fb9794ac2fad7972d94707262b4cb` |
+| gwz-transport | `aa40936d0805e8cb60f8027615abe20d4f2045e4` |
+| taut | `bcf98b64d465fc54841121b6d1a2d46940f81a3c` |
+| gwz-cli | `7db07bbdefd2897c07fd0f9e550bf032bd8b1314` |
+| gwz-py | `d07d55dacb1725d9306be9c04d157ac29a78e000` |
+| git2-rs | `ce78628308e11b4e8901d5061602619109bce21a` |
+| libgit2 | `b172e3d187a4b6866fd9f696f40a1b8e7f56d348` |
+| gwz-core-evidence | `fc1caa478c1fcd9539b2c061c51be17b64924d7c` |
+
+One initial aggregate gate, two consolidated corrections. Initial Code found
+three P2 and two P3 findings; State found four P2 findings, with blind convergence
+on route retirement (six distinct blocking roots). Correction1 received dual
+GO, then owner audit found the narrower reaping continuation before acceptance.
+Both retained reviewers classify correction2 as a bounded continuation of helper
+ownership/accounting, not a new architectural root. All findings are closed by
+reviewers. That cleanup interleaving escaped correction1 review; no released
+escape is claimed because the candidate remains nonactivated.
+
+Final validation: endpoint66, default core check, scoped formatting and syntax
+boundary inspection; full transport suite remains passing at unchanged sources.
+Private archive checks pass. TDD deviations and intermediate evidence limitations
+remain recorded above. Wall-clock/model usage were not measured.
+
+Next is H2: integrate this endpoint with the existing host and all network
+consumers, embed messages through the current Rust/Python paths, inject one
+shared SSH+HTTPS capacity authority, and close Placement C's retained-cleanup
+accounting P3. Platform and selected-source checks stay in the single deferred
+batch. Physical wire/iroh, production construction/activation and release remain
+separate gates.
