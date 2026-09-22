@@ -63,3 +63,22 @@ fn upload_pack_advertisement_and_abort_keep_cleanup_explicit() {
         "aborted channel must never yield a session"
     );
 }
+
+#[test]
+fn hosted_git_command_grammar_and_option_safety() {
+    for (service, executable) in [
+        (GitService::UploadPack, "git-upload-pack"),
+        (GitService::ReceivePack, "git-receive-pack"),
+    ] {
+        assert_eq!(
+            service.command("owner/repo.git").unwrap(),
+            format!("{executable} 'owner/repo.git'")
+        );
+        for operand in ["--help", "-repo", ""] {
+            assert_eq!(
+                service.command(operand).unwrap_err().kind(),
+                io::ErrorKind::InvalidInput
+            );
+        }
+    }
+}

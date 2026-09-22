@@ -10,6 +10,25 @@ pub enum GitService {
     ReceivePack,
 }
 
+impl GitService {
+    pub(crate) fn command(self, path: &str) -> io::Result<String> {
+        if path.is_empty() || path.len() > 16_384 || path.contains('\0') || path.starts_with('-') {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid Git repository operand",
+            ));
+        }
+        let executable = match self {
+            GitService::UploadPack => "git-upload-pack",
+            GitService::ReceivePack => "git-receive-pack",
+        };
+        // Hosted Git servers parse the canonical command, not a general shell
+        // argv. Reject option-shaped paths above instead of adding `--`.
+        let command = format!("{executable} '{}'", path.replace('\'', "'\\''"));
+        Ok(command)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Open,
@@ -44,17 +63,7 @@ impl SshChannel {
                 "requires authenticated nonblocking session",
             ));
         }
-        if path.is_empty() || path.len() > 16_384 || path.contains('\0') {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "invalid Git repository operand",
-            ));
-        }
-        let executable = match service {
-            GitService::UploadPack => "git-upload-pack",
-            GitService::ReceivePack => "git-receive-pack",
-        };
-        let command = format!("{executable} -- '{}'", path.replace('\'', "'\\''"));
+        let command = service.command(path)?;
         Ok(Self {
             channel: None,
             session: Some(session),
