@@ -1,6 +1,9 @@
 # HTTPS endpoint adapter design
 
-Status: **DRAFT — correction 2 pending retained re-review**, 2026-09-22.
+Status: **accepted for candidate implementation**, 2026-09-22, at the exact
+reviewed tuple below after retained Consistency/Safety/Surface GO and two
+consolidated corrections. No open findings. Annotation commits do not expand
+the reviewed design or claim implementation evidence.
 This admits candidate implementation only. It does not activate production
 routes, freeze a new public constructor/command, or qualify physical CLI/core wire.
 Authority: [Requirements G4/C8/P4](GwzRemoteTransportRequirements.md),
@@ -452,3 +455,38 @@ OpenFailed is accepted and Opening retires without entering Stream, and verify
 the typed first receipt remains available to the permitted authentication
 transition. Failures after Opened retain the existing stream Failed/Closed rules.
 No field/tag or state-machine change is needed for this correction.
+
+## Acceptance record
+
+Retained [Consistency GO](../../dev-docs/GwzRemoteTransportHttpsDesign-ReviewConsistency-2.md),
+[Safety GO](../../dev-docs/GwzRemoteTransportHttpsDesign-ReviewSafety-2.md) and
+[Surface GO](../../dev-docs/GwzRemoteTransportHttpsDesign-ReviewSurface-2.md) at:
+
+| Repository | Revision |
+| --- | --- |
+| `.` | `bcdca800ab19fb767f6e7d2ab8107f12dab48810` |
+| `gwz-core` | `2ea02835a15a9f56afdda43ccbcadec66b5b776e` |
+| `gwz-transport` | `03d3011b3ae9b8205bcf07f7f7862194af114856` |
+| `taut` | `bcf98b64d465fc54841121b6d1a2d46940f81a3c` |
+| `gwz-cli` | `7db07bbdefd2897c07fd0f9e550bf032bd8b1314` |
+| `gwz-py` | `d07d55dacb1725d9306be9c04d157ac29a78e000` |
+| `git2-rs` | `ce78628308e11b4e8901d5061602619109bce21a` |
+| `libgit2` | `b172e3d187a4b6866fd9f696f40a1b8e7f56d348` |
+| `gwz-core-evidence` | `d096a9dcf0d43e79ea32bced5b802bf8a877ce1d` |
+
+One initial dual gate, two consolidated corrections; retained Surface added for
+observation semantics. Initial Consistency3P2 and Safety2P2 shared the replay root
+(four distinct blocking roots), plus Safety1P3 status grammar. All closed by their
+raising reviewers. Correction1 introduced one Consistency P2 message-lifecycle
+defect, closed by correction2. Owner consolidation additionally clarified final
+connection attribution, scheme-bound offered facts and aggregate pool authority.
+No known released escaped defect. Documentation only: production/test code LOC0,
+no tests or platform/source qualification claimed; TDD begins at H1. Local links,
+fences and whitespace checks passed. Wall time was not captured.
+
+Next: H1 complete candidate endpoint/RPC implementation, then H2 host/command
+integration. Keep each a substantial aggregate review batch and retain the named
+closure tests. This acceptance does not close Placement C's cleanup-accounting
+P3; that remains assigned to H2. Platform and selected-source checks stay in the
+operator-deferred batch; production activation, physical wire/iroh and release
+are separate.

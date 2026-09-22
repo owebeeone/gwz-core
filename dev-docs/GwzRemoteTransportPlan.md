@@ -318,8 +318,8 @@ ledger for carried placement before advertising that placement.
 ### Phase 5 — HTTPS adapter and authentication policy
 
 Detailed candidate admission: [HTTPS endpoint design](GwzRemoteTransportHttpsDesign.md),
-currently DRAFT correction2 pending focused retained review; correction1
-Safety/Surface are GO. It specifies two
+accepted after retained Consistency/Safety/Surface GO and two consolidated
+corrections. It specifies two
 implementation batches (endpoint/RPC, then host/command integration), reusing the
 existing transport protocol and generic pool. It activates no public route.
 
@@ -427,7 +427,9 @@ progress, backpressure, cancellation and logical closure pass. Full frontend
 activation is not claimed. State P3-1 tracks cleanup-report/retirement assertions
 before later activation; current evidence proves teardown return only.
 
-Next: Phase5 HTTPS adapter/authentication design and interface review. The C
+Next: Phase5 [HTTPS H1](GwzRemoteTransportHttpsDesign.md) complete candidate
+endpoint/RPC implementation, then H2 host/command integration under the accepted
+detailed design and aggregate review gates. The C
 wire mapping is plausibility only; wire implementation/testing and iroh remain
 outside this development cycle.
 
