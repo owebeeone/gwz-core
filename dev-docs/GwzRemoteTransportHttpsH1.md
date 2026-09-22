@@ -1,6 +1,6 @@
 # HTTPS H1 — endpoint and RPC candidate
 
-Status: **correction 1 implemented; retained Code/State re-verdict pending**.
+Status: **correction 2 implemented; final retained re-verdict pending**.
 Controlling contract: [accepted HTTPS design](GwzRemoteTransportHttpsDesign.md).
 No production activation, public constructor freeze, release or wire carrier.
 
@@ -163,3 +163,23 @@ helpers were partly drafted before causal tests; universal TDD adherence is not
 claimed. Intermediate attempts do not all have source fingerprints. Twelve
 additional seeded replays belong to the unchanged initial H1 tuple, not the
 corrected candidate. Retained reviewers judge closure on the corrected tuple.
+
+## Child-reaper correction 2
+
+Correction1 received [Code GO](../../dev-docs/GwzRemoteTransportHttpsH1-ReviewCode-1.md)
+and [State GO](../../dev-docs/GwzRemoteTransportHttpsH1-ReviewState-1.md).
+Before recording acceptance, owner audit found that cancellation during reaping
+itself could lose child/permit ownership, and a reaper could omit concurrent
+arrivals from its return count. Both new regressions reproduced the defect.
+The [second correction](../../dev-docs/GwzRemoteTransportHttpsH1-RemPlan-2.md)
+retains guarded batches through cancelled awaits, counts in-flight reaping and
+queued arrivals, and orders the final shutdown snapshots so a preparation's
+transfer to retained cleanup cannot disappear. The orphan fallback preserves
+its original ownership tags through the same cancellation case.
+
+Final endpoint gate: **66 passed**; scoped formatting and conditional-boundary
+checks pass. [Private red/green evidence](../../gwz-core-evidence/campaigns/https-integration/runs/2026-09-22-h1-rem2/README.md)
+includes exact red/final source fingerprints. This narrow case escaped the
+correction1 review; H1 remains nonactivated and no released escape is claimed.
+The original findings remain closed by their reviewers; correction2 acceptance
+awaits their focused final verdicts. All H2 and qualification deferrals remain.

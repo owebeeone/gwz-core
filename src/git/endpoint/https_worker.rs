@@ -99,14 +99,17 @@ impl Endpoint {
         while self.client.slots.available_permits() != 64 && Instant::now() < until {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
-        let helpers = self.client.auth_owner.reap_pending(until).await;
+        self.client.auth_owner.reap_pending(until).await;
+        let physical = self
+            .pool
+            .shutdown(until.saturating_duration_since(Instant::now()))
+            .await;
+        // Transfer to retained helpers happens before a preparation releases
+        // its slot. This read order can overcount a racing completion, but
+        // cannot report a false zero during that transfer.
         let active = 64 - self.client.slots.available_permits();
-        helpers
-            + active
-            + self
-                .pool
-                .shutdown(until.saturating_duration_since(Instant::now()))
-                .await
+        let helpers = self.client.auth_owner.pending_cleanup_count();
+        active + helpers + physical
     }
 }
 impl Drop for Endpoint {

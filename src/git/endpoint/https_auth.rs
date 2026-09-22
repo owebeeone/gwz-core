@@ -50,6 +50,7 @@ struct AuthOwnerInner {
     id: u64,
     cancelled: CancellationToken,
     active: Arc<AtomicUsize>,
+    reaping: AtomicUsize,
     pending: Mutex<Vec<PendingChild>>,
 }
 
@@ -93,6 +94,7 @@ impl AuthOwner {
                 id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
                 cancelled: CancellationToken::new(),
                 active: Arc::new(AtomicUsize::new(0)),
+                reaping: AtomicUsize::new(0),
                 pending: Mutex::new(Vec::new()),
             }),
         }
@@ -113,47 +115,46 @@ impl AuthOwner {
     }
 
     pub(crate) fn pending_cleanup_count(&self) -> usize {
-        self.inner
+        let pending = self
+            .inner
             .pending
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .len()
+            .unwrap_or_else(|error| error.into_inner());
+        pending.len() + self.inner.reaping.load(Ordering::Acquire)
     }
 
-    /// Join this endpoint's retained children by the supplied deadline.
-    /// Children still alive remain owned by this endpoint and keep their
-    /// helper permits reserved.
+    /// Reaping owns a guarded batch, including while this future is cancelled.
+    /// Concurrent transfers into the owner remain visible in the returned count.
     pub(crate) async fn reap_pending(&self, deadline: Instant) -> usize {
-        let children = std::mem::take(
-            &mut *self
+        let children = {
+            let mut pending = self
                 .inner
                 .pending
                 .lock()
-                .unwrap_or_else(|error| error.into_inner()),
-        );
-        let mut pending = Vec::new();
-        for PendingChild {
-            mut child,
-            helper_slot,
-        } in children
-        {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                pending.push(PendingChild { child, helper_slot });
-                continue;
-            }
-            match timeout(remaining, child.wait()).await {
-                Ok(Ok(_)) => {}
-                Ok(Err(_)) | Err(_) => pending.push(PendingChild { child, helper_slot }),
+                .unwrap_or_else(|error| error.into_inner());
+            let children = std::mem::take(&mut *pending);
+            self.inner
+                .reaping
+                .fetch_add(children.len(), Ordering::AcqRel);
+            children
+        };
+        let mut batch = ReapBatch {
+            owner: self.clone(),
+            children,
+        };
+        let mut index = 0;
+        while index < batch.children.len() && Instant::now() < deadline {
+            let result =
+                tokio::time::timeout_at(deadline, batch.children[index].child.wait()).await;
+            if matches!(result, Ok(Ok(_))) {
+                batch.children.swap_remove(index);
+                self.inner.reaping.fetch_sub(1, Ordering::AcqRel);
+            } else {
+                index += 1;
             }
         }
-        let count = pending.len();
-        self.inner
-            .pending
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .extend(pending);
-        count
+        drop(batch);
+        self.pending_cleanup_count()
     }
 
     fn reap_ready(&self) {
@@ -170,6 +171,28 @@ impl AuthOwner {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .push(pending);
+    }
+}
+
+/// Unreaped children always keep their permits and their original owner.
+struct ReapBatch {
+    owner: AuthOwner,
+    children: Vec<PendingChild>,
+}
+impl Drop for ReapBatch {
+    fn drop(&mut self) {
+        let count = self.children.len();
+        let mut pending = self
+            .owner
+            .inner
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        for mut child in self.children.drain(..) {
+            let _ = child.child.start_kill();
+            pending.push(child);
+        }
+        self.owner.inner.reaping.fetch_sub(count, Ordering::AcqRel);
     }
 }
 
@@ -499,51 +522,48 @@ fn helper_slots() -> Arc<Semaphore> {
 /// Compatibility shim for callers that have not yet supplied an
 /// `AuthOwner`. New endpoint code must call `AuthOwner::reap_pending` so
 /// cleanup remains endpoint-scoped.
+static ORPHAN_REAPING: AtomicUsize = AtomicUsize::new(0);
 pub(crate) fn pending_cleanup_count() -> usize {
-    orphan_registry()
+    let pending = orphan_registry()
         .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .len()
+        .unwrap_or_else(|error| error.into_inner());
+    pending.len() + ORPHAN_REAPING.load(Ordering::Acquire)
 }
-
-async fn reap_orphans(deadline: Instant) -> usize {
-    let children = std::mem::take(
-        &mut *orphan_registry()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner()),
-    );
-    let mut pending = Vec::new();
-    for OrphanChild {
-        owner_id,
-        pending: retained,
-    } in children
-    {
-        let PendingChild {
-            mut child,
-            helper_slot,
-        } = retained;
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            pending.push(OrphanChild {
-                owner_id,
-                pending: PendingChild { child, helper_slot },
-            });
-            continue;
+struct OrphanReapBatch {
+    children: Vec<OrphanChild>,
+}
+impl Drop for OrphanReapBatch {
+    fn drop(&mut self) {
+        let count = self.children.len();
+        let mut pending = orphan_registry().lock().unwrap_or_else(|e| e.into_inner());
+        for mut child in self.children.drain(..) {
+            let _ = child.pending.child.start_kill();
+            pending.push(child);
         }
-        match timeout(remaining, child.wait()).await {
-            Ok(Ok(_)) => {}
-            Ok(Err(_)) | Err(_) => pending.push(OrphanChild {
-                owner_id,
-                pending: PendingChild { child, helper_slot },
-            }),
+        ORPHAN_REAPING.fetch_sub(count, Ordering::AcqRel);
+    }
+}
+async fn reap_orphans(deadline: Instant) -> usize {
+    let children = {
+        let mut pending = orphan_registry().lock().unwrap_or_else(|e| e.into_inner());
+        let children = std::mem::take(&mut *pending);
+        ORPHAN_REAPING.fetch_add(children.len(), Ordering::AcqRel);
+        children
+    };
+    let mut batch = OrphanReapBatch { children };
+    let mut index = 0;
+    while index < batch.children.len() && Instant::now() < deadline {
+        let result =
+            tokio::time::timeout_at(deadline, batch.children[index].pending.child.wait()).await;
+        if matches!(result, Ok(Ok(_))) {
+            batch.children.swap_remove(index);
+            ORPHAN_REAPING.fetch_sub(1, Ordering::AcqRel);
+        } else {
+            index += 1;
         }
     }
-    let count = pending.len();
-    orphan_registry()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .extend(pending);
-    count
+    drop(batch);
+    pending_cleanup_count()
 }
 
 /// Compatibility shim for the old process-wide cleanup call. Owned lookups
@@ -675,6 +695,43 @@ cfg_if::cfg_if! {
                 .await;
                 assert!(matches!(result, Err(AuthError::Cancelled) | Err(AuthError::CleanupPending)));
                 drop(directory);
+            }
+
+            #[tokio::test]
+            async fn aborting_reap_preserves_child_and_permit_ownership() {
+                let owner = AuthOwner::new();
+                let slots = helper_slots();
+                let before = slots.available_permits();
+                let child = Command::new("/bin/sleep").arg("5").kill_on_drop(true).spawn().unwrap();
+                owner.retain_pending(PendingChild { child, helper_slot: slots.try_acquire_owned().unwrap() });
+                let reaper = owner.clone();
+                let task = tokio::spawn(async move { reaper.reap_pending(Instant::now()+Duration::from_secs(5)).await });
+                while !owner.inner.pending.lock().unwrap().is_empty() { tokio::task::yield_now().await; }
+                task.abort(); let _ = task.await;
+                let retained = owner.pending_cleanup_count();
+                let permits = helper_slots().available_permits();
+                let _ = owner.reap_pending(Instant::now()+Duration::from_secs(1)).await;
+                assert_eq!(retained, 1, "aborting reap lost its owned child");
+                assert_eq!(permits, before-1, "permit released before actual reap");
+                assert_eq!(owner.pending_cleanup_count(), 0);
+            }
+
+            #[tokio::test]
+            async fn reap_reports_children_arriving_while_it_waits() {
+                let owner = AuthOwner::new();
+                let child = Command::new("/bin/sleep").arg("0.1").kill_on_drop(true).spawn().unwrap();
+                owner.retain_pending(PendingChild { child, helper_slot: helper_slots().try_acquire_owned().unwrap() });
+                let reaper = owner.clone();
+                let task = tokio::spawn(async move { reaper.reap_pending(Instant::now()+Duration::from_secs(1)).await });
+                while !owner.inner.pending.lock().unwrap().is_empty() { tokio::task::yield_now().await; }
+                let child = Command::new("/bin/sleep").arg("5").kill_on_drop(true).spawn().unwrap();
+                owner.retain_pending(PendingChild { child, helper_slot: helper_slots().try_acquire_owned().unwrap() });
+                let reported = task.await.unwrap();
+                let actual = owner.pending_cleanup_count();
+                for pending in owner.inner.pending.lock().unwrap().iter_mut() { let _ = pending.child.start_kill(); }
+                let _ = owner.reap_pending(Instant::now()+Duration::from_secs(1)).await;
+                assert_eq!(reported, actual, "reap omitted a child transferred during its wait");
+                assert_eq!(reported, 1);
             }
 
             #[tokio::test]
