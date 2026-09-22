@@ -317,6 +317,11 @@ ledger for carried placement before advertising that placement.
 
 ### Phase 5 — HTTPS adapter and authentication policy
 
+Detailed candidate admission: [HTTPS endpoint design](GwzRemoteTransportHttpsDesign.md),
+currently DRAFT pending retained Consistency/Safety review. It specifies two
+implementation batches (endpoint/RPC, then host/command integration), reusing the
+existing transport protocol and generic pool. It activates no public route.
+
 Implement anonymous and gh-authenticated smart HTTPS at the owning endpoint,
 including streaming requests/responses, connection reuse, TLS, proxy and redirect
 semantics. Refuse other credential helpers. Reject disallowed userinfo, query and
