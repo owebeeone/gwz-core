@@ -424,12 +424,13 @@ after retained Code/State GO: transport attachments in existing operation messag
 at the CLI typed/direct-handler boundary and through the actual gwz-py codec in
 the same process, preserving ordinary dispatch and request IDs. Bidirectional
 progress, backpressure, cancellation and logical closure pass. Full frontend
-activation is not claimed. State P3-1 tracks cleanup-report/retirement assertions
-before later activation; current evidence proves teardown return only.
+activation is not claimed. State P3-1 cleanup-report/retirement assertions are now closed in H2 by cleanup
+snapshots and the gated physical-disposal regression.
 
-Next: Phase5 [HTTPS H1](GwzRemoteTransportHttpsDesign.md) complete candidate
-endpoint/RPC implementation, then H2 host/command integration under the accepted
-detailed design and aggregate review gates. The C
+Phase5 [HTTPS H1](GwzRemoteTransportHttpsH1.md) endpoint/RPC and
+[H2](GwzRemoteTransportHttpsH2.md) host/command integration are accepted candidates
+after retained review. Next: Phase6 local aggregate measurements, tuning and
+rollout readiness, with the deferred platform/source batch still outstanding. The C
 wire mapping is plausibility only; wire implementation/testing and iroh remain
 outside this development cycle.
 
