@@ -22,7 +22,7 @@ do not expand the reviewed implementation.
 | gwz-core-evidence | `a2180f71f9f4f16ecc639eecd25125b980ea54f3` |
 
 Implements batch B of [the accepted placement design](GwzRemoteTransportPlacementDesign.md).
-Batch A is accepted; production activation, real supplied-carrier qualification,
+Batch A is accepted; production activation, consumer message embedding qualification,
 HTTPS and the operator-deferred platform/selected-source checks remain separate.
 
 ## Intended aggregate boundary
@@ -105,7 +105,9 @@ annotation baseline counts implementation3397 added/65 deleted lines across36
 files; tests/harness2628 added across17 files, documentation separately. No
 repository-wide conditional-compilation migration is claimed.
 
-Next is Placement C qualification using a host-supplied message connection.
-Constructing a new physical carrier/interface is not authorized by this package.
+Next, as clarified by the operator after B acceptance, is Placement C in-process
+embedding in existing CLI/core and gwz-py/core Taut messages. The prior references
+to supplied-carrier qualification do not require physical wire proof in this cycle.
+Document future wire plausibility; defer separate-process/wire tests and iroh.
 Keep platform and selected-source qualification together in the deferred batch;
 HTTPS, production activation and release remain separate gates.

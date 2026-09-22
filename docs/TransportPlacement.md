@@ -104,8 +104,12 @@ credential was offered again: credential_offered is false on a reused connection
 while authenticated may describe previously proven connection authentication.
 Private-member omission follows existing core policy.
 
-This interface remains a candidate. Production availability still requires a
-real supplied connection test and the applicable qualification/activation checks.
+This interface remains a candidate. The next integration gate proves transport
+attachments inside existing CLI/core and gwz-py/core messages in the same process.
+The serializable messages must retain a plausible future wire mapping, but physical
+wire and separate-process testing, including iroh integration, are deferred outside
+this development cycle. Production availability retains its applicable activation
+and qualification checks; a new physical connection is not this gate's prerequisite.
 
 ## Candidate Rust interface
 

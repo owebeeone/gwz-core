@@ -11,6 +11,30 @@ P3-1 (port direction/tuple labeling) is assigned to batch A's documentation fixt
 before publication. Exact unchanged member pins are in the reports.
 This admits Phase 4 implementation, not production activation or a new carrier.
 
+## Operator scope clarification — 2026-09-22
+
+The operator narrowed batch C to **in-process message embedding** for both
+`gwz-cli ↔ gwz-core` and `gwz-py ↔ gwz-core`. This supersedes the former §8C
+requirement for a real supplied connection, separate processes and process-kill
+qualification as a Phase 4 exit condition. The accepted A/B implementation and
+its reviewed revisions are unchanged.
+
+The current gate must prove that the shared transport envelopes fit and travel
+inside the existing Taut request/response messages, using the existing request
+IDs, while ordinary operation calls remain intact. Exercise asynchronous delivery
+in both directions during a running operation, bounded backpressure, cancellation
+and logical channel closure in the same process, through both consumer bindings.
+No new external service, command or physical framing is required.
+
+Keep a plausible future wire mapping: serializable shared messages, explicit
+correlation/ordering and lifecycle semantics, and no requirement to carry pointers,
+Rust owners or other process-local state across the message boundary. This is a
+documented architectural argument, not a claim of wire interoperability or
+split-process validation. Wire transport experiments, physical disconnection/
+process-kill qualification and iroh integration are deferred outside this cycle.
+Platform/selected-source checks retain their separate deferred batch; production
+activation retains its applicable gates without reinstating the deferred wire proof.
+
 ## 1. Scope, evidence and controlling documents
 
 This amendment implements the boundary in [RemoteTransportDesign](GwzRemoteTransportDesign.md)
@@ -350,13 +374,15 @@ last-target preflight failure, timeout vs prior rejection, canonical refusal,
 and selected-file changes after check. Existing direct local callers stay valid.
 No separate micro-review is required for each command funnel.
 
-C. Qualify a real supplied host connection when available: separate processes,
-distinct credential/trust environments, kills during allocation/connect/I/O/close,
-bounded cleanup and no fallback. Absence of a supplied connection leaves this
-exit evidence outstanding; it neither authorizes building one nor blocks A/B
-in-memory implementation. Do not claim Phase 4 complete or advertise production
-cli placement until this and applicable activation gates pass. Keep platform/
-selected-source qualification in the later operator-requested single batch.
+C. Prove in-process embedding in the existing CLI/core and gwz-py/core Taut
+messages, under the operator clarification above. Exercise optional transport
+attachments with existing request IDs through both consumer bindings and the core
+candidate, while ordinary operation dispatch remains unchanged. Demonstrate
+bidirectional progress during Git work, backpressure, cancellation and logical
+closure. Document a plausible serialized wire mapping; implementing or qualifying
+a physical wire connection, separate processes or iroh is not an exit condition
+for this batch. Production activation and the operator-deferred platform/selected-
+source checks remain separate gates.
 
 Test retained old/new core/driver and gwz-py ordinary-local combinations; new
 explicit-cli/old-core must be rejected before sending the operation. Test missing,

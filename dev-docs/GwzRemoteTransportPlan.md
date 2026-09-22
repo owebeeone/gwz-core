@@ -274,8 +274,10 @@ unadvertised until their own gates pass.
 ### Phase 4 — CLI endpoint placement over the message channel
 
 Concrete interface admission is in [the placement amendment](GwzRemoteTransportPlacementDesign.md)
-(accepted after Consistency, Safety and Surface GO). Its A/B integration batches precede supplied-carrier qualification;
-it does not authorize creating that carrier.
+(accepted after Consistency, Safety and Surface GO, with the operator's subsequent
+batch-C scope clarification). A/B integration precedes in-process message embedding
+qualification for both CLI/core and gwz-py/core. Wire plausibility is documented;
+physical wire and separate-process proof are deferred outside this cycle.
 
 Install the CLI-hosted endpoint and connect core's mux through the externally
 supplied communication layer without changing its existing interface.
@@ -408,9 +410,12 @@ findings are closed. [Placement batch B](GwzRemoteTransportPlacementB.md) is als
 accepted after retained Code/State/Surface GO and one consolidated correction:
 core host facade and shared SSH endpoint across all backend funnels, scoped metadata
 enforcement, endpoint-local preflight, request cleanup ownership and the compiled
-guide fixture. Next is supplied-carrier qualification C.
-No new physical carrier or service surface is authorized. Supplied-carrier
-qualification remains batch C; HTTPS remains Phase5.
+guide fixture. Next is batch C: prove transport attachments in the existing Taut
+messages for both CLI/core and gwz-py/core in the same process, preserving ordinary
+dispatch and request IDs. Verify bidirectional progress, backpressure, cancellation
+and logical closure. Document how the same messages can plausibly cross a future
+wire; wire implementation/testing and iroh are outside this development cycle.
+HTTPS remains Phase5.
 
 Keep platform and selected-source checks together in the operator-deferred batch;
 production dependency/route activation and the remaining native compatibility
