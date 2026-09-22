@@ -115,18 +115,35 @@ impl HttpsPool {
         &self,
         key: Key,
         owner: Owner,
-        until: u64,
+        allocation_ms: u64,
         connect_ms: u64,
         cancel: &CancellationToken,
     ) -> Result<HttpLease, Failure> {
         let mut request = Request::new(key, Identity::Https, owner);
         request.connect_timeout_ms = Some(connect_ms);
-        let checkout = self
-            .pool
-            .checkout_until(request, Some(until))
-            .map_err(pool_failure)?;
+        request.allocation_timeout_ms = Some(allocation_ms);
+        let started = Instant::now();
+        let checkout = {
+            let mut host = self.host.lock().unwrap_or_else(|e| e.into_inner());
+            let now = self.now();
+            let mut cx = Context::from_waker(Waker::noop());
+            host.step(&mut cx, now).map_err(pool_failure)?;
+            let checkout = self.pool.checkout(request).map_err(pool_failure)?;
+            // Both admission and immediate dispatch see one current clock.
+            // A stale supervisor tick must not expire a fresh short allowance.
+            host.step(&mut cx, now).map_err(pool_failure)?;
+            checkout
+        };
         let lease = tokio::select! {result=checkout=>result.map_err(pool_failure)?,_=cancel.cancelled()=>return Err(https_connection::failure(ErrorCode::Cancelled))};
-        let (connection, reusable, resource_cancel, disposed, connect_elapsed, reused) = {
+        let (
+            connection,
+            reusable,
+            resource_cancel,
+            disposed,
+            connect_elapsed,
+            allocation_elapsed,
+            reused,
+        ) = {
             let mut host = self.host.lock().unwrap_or_else(|e| e.into_inner());
             let reused = host.allocation_reused(&lease).map_err(pool_failure)?;
             let resource: &mut HttpResource =
@@ -148,6 +165,14 @@ impl HttpsPool {
                 } else {
                     resource.connect_elapsed
                 },
+                Duration::from_millis(if reused {
+                    started.elapsed().as_millis()
+                } else {
+                    resource
+                        .connect_started
+                        .saturating_duration_since(started)
+                        .as_millis()
+                } as u64),
                 reused,
             )
         };
@@ -160,6 +185,7 @@ impl HttpsPool {
             cancel: resource_cancel,
             disposed,
             connect_elapsed,
+            allocation_elapsed,
             id,
             reused,
         })
@@ -173,6 +199,7 @@ pub(crate) struct HttpLease {
     pub(crate) cancel: CancellationToken,
     pub(crate) disposed: Arc<AtomicBool>,
     pub(crate) connect_elapsed: Duration,
+    pub(crate) allocation_elapsed: Duration,
     pub(crate) id: String,
     pub(crate) reused: bool,
 }
@@ -199,7 +226,7 @@ fn pool_failure(error: pool::Error) -> Failure {
         Error::AllocationTimeout | Error::ConnectTimeout | Error::InteractionTimeout => {
             ErrorCode::Timeout
         }
-        Error::Cancelled => ErrorCode::Cancelled,
+        Error::Cancelled | Error::Shutdown => ErrorCode::Cancelled,
         Error::ConnectFailed { code, .. } => code,
         _ => ErrorCode::Io,
     })

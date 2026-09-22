@@ -35,13 +35,13 @@ impl std::fmt::Display for OpenFailure {
 impl std::error::Error for OpenFailure {}
 pub(crate) struct LocalRpc {
     client: Client,
+    dependency: Result<super::https_operation::Dependency, ErrorCode>,
     runtime: Handle,
     session: String,
     operation: String,
     policy: Option<AuthPolicy>,
     resolved: Arc<Mutex<Option<AuthPolicy>>>,
     first_failure: Arc<Mutex<Option<Failure>>>,
-    next: AtomicI64,
     current: Mutex<Option<CancellationToken>>,
     tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
 }
@@ -52,7 +52,9 @@ impl LocalRpc {
         operation: String,
         policy: Option<AuthPolicy>,
     ) -> Arc<Self> {
+        let dependency = client.operation(&operation);
         Arc::new(Self {
+            dependency,
             client,
             runtime: Handle::current(),
             session,
@@ -60,7 +62,6 @@ impl LocalRpc {
             policy,
             resolved: Arc::new(Mutex::new(None)),
             first_failure: Arc::new(Mutex::new(None)),
-            next: AtomicI64::new(1),
             current: Mutex::new(None),
             tasks: Mutex::new(Vec::new()),
         })
@@ -84,6 +85,11 @@ impl LocalRpc {
 }
 impl OpenRpc for LocalRpc {
     fn open(&self, url: &str, service: GitService) -> io::Result<BlockingStream> {
+        if let Err(code) = &self.dependency {
+            return Err(io::Error::other(format!(
+                "HTTPS operation unavailable: {code:?}"
+            )));
+        }
         let cancel = CancellationToken::new();
         *self.current.lock().map_err(|_| io::ErrorKind::Other)? = Some(cancel.clone());
         let policy = self
@@ -101,22 +107,38 @@ impl OpenRpc for LocalRpc {
         let resolved = self.resolved.clone();
         let receipt = self.first_failure.clone();
         let client = self.client.clone();
-        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        static NEXT_SESSION: AtomicI64 = AtomicI64::new(1);
+        let session = format!("h1-{}", NEXT_SESSION.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
         let task=self.runtime.spawn(async move {
-            let mut first=None;
-            let result=if auto {client.prepare_auto(input.clone(),&cancel,&mut first).await}else{client.prepare(input.clone(),&cancel).await};
-            *receipt.lock().unwrap_or_else(|e|e.into_inner())=first;
-            let prepared=match result {
-                Ok(p)=>p,
-                Err(f)=>{
-                    let anonymous_status=receipt.lock().unwrap_or_else(|e|e.into_inner()).as_ref().and_then(|f|f.facts.as_ref()).and_then(|f|f.http_status);
+            let result = async {
+                use super::https_opening::{self, OpeningSession, Outcome};
+                let mut input = input.clone();
+                if auto && super::https_policy::receive_pack(input.service) { input.policy = AuthPolicy::Gh; }
+                let open = https_opening::open_for(&client, &input).map_err(|f| (f, None))?;
+                let mut mux = OpeningSession::new(session, "rpc".into(), open, "https-endpoint".into(), "endpoint-account".into()).map_err(|f| (f, None))?;
+                let outcome = if auto {
+                    let mut gh_input = input.clone(); gh_input.policy = AuthPolicy::Gh;
+                    let gh_open = https_opening::open_for(&client, &gh_input).map_err(|f| (f, None))?;
+                    mux.prepare_automatic(&client, input, gh_open, gh_input, &cancel).await
+                } else { mux.prepare(&client, input, &cancel).await };
+                match outcome {
+                    Outcome::Ready {prepared, first_failure, ..} => Ok((prepared, mux, first_failure)),
+                    Outcome::Failed {failure, first_failure, ..} => Err((failure, first_failure)),
+                    Outcome::Rejected(failure) => Err((failure, None)),
+                }
+            }.await;
+            let (prepared, mut mux) = match result {
+                Ok((prepared, mux, first)) => { *receipt.lock().unwrap_or_else(|e|e.into_inner()) = first; (prepared, mux) },
+                Err((f, first)) => {
+                    let anonymous_status = first.as_ref().and_then(|f|f.facts.as_ref()).and_then(|f|f.http_status);
+                    *receipt.lock().unwrap_or_else(|e|e.into_inner()) = first;
                     let kind=match f.code {ErrorCode::Authentication|ErrorCode::RepositoryRefused=>io::ErrorKind::PermissionDenied,ErrorCode::Timeout=>io::ErrorKind::TimedOut,ErrorCode::Cancelled=>io::ErrorKind::ConnectionAborted,_=>io::ErrorKind::Other};
                     let _=tx.send(Err(io::Error::new(kind,OpenFailure {failure:f,anonymous_status})));return;
-                },
+                }
             };
             if auto {*resolved.lock().unwrap_or_else(|e|e.into_inner())=Some(if prepared.opened.facts.method==AuthMethod::Gh {AuthPolicy::Gh}else{AuthPolicy::Anonymous});}
-            let mut config=Config::new(input.session,id,Side::Initiator);config.profile_version=2;config.io_timeout_ms=prepared.io_timeout_ms();
+            let mut config=Config::new(mux.session_id(),mux.stream_id(),Side::Initiator);config.profile_version=2;config.io_timeout_ms=prepared.io_timeout_ms();
             let (stream,left)=match Stream::new(config.clone()){Ok(pair)=>pair,Err(e)=>{let _=tx.send(Err(io::Error::other(e)));return;}};
             config.side=Side::Endpoint;
             let (endpoint,right)=match Stream::new(config){Ok(pair)=>pair,Err(e)=>{let _=tx.send(Err(io::Error::other(e)));return;}};
@@ -128,8 +150,8 @@ impl OpenRpc for LocalRpc {
             loop {tokio::select! {
                 _=&mut work,if !finished=>{finished=true;},
                 _=cancel.cancelled()=>break,
-                message=left.next_message()=>match message {Ok(Some(m))=>{if right.deliver(m).is_err(){break;}},_=>break},
-                message=right.next_message()=>match message {Ok(Some(m))=>{let terminal=matches!(m.kind,MessageKind::Closed|MessageKind::Failed);let _=left.deliver(m);if terminal{break;}},_=>break},
+                message=left.next_message()=>match message {Ok(Some(m))=>{match mux.route_initiator(m) {Ok(m)=>{if right.deliver(m).is_err(){break;}},Err(_)=>break}},_=>break},
+                message=right.next_message()=>match message {Ok(Some(m))=>{let terminal=matches!(m.kind,MessageKind::Closed|MessageKind::Failed);match mux.route_endpoint(m) {Ok(m)=>{let _=left.deliver(m);},Err(_)=>break}if terminal{break;}},_=>break},
                 _=timer.tick()=>{let now=start.elapsed().as_millis() as u64;left.advance(now);right.advance(now);},
             }}
             left.disconnect();right.disconnect();
@@ -151,6 +173,5 @@ impl OpenRpc for LocalRpc {
 impl Drop for LocalRpc {
     fn drop(&mut self) {
         self.cancel();
-        self.client.finish_operation(&self.operation);
     }
 }

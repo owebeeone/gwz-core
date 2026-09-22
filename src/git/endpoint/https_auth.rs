@@ -10,6 +10,7 @@ use std::{
     ffi::{OsStr, OsString},
     fmt, io,
     path::PathBuf,
+    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
     sync::{Arc, Mutex, OnceLock},
     time::Duration,
 };
@@ -28,6 +29,148 @@ const CLEANUP_GRACE: Duration = Duration::from_millis(500);
 pub(crate) struct Config {
     pub(crate) executable: PathBuf,
     pub(crate) environment: Vec<(OsString, OsString)>,
+}
+
+struct PendingChild {
+    child: Child,
+    helper_slot: OwnedSemaphorePermit,
+}
+
+struct OrphanChild {
+    owner_id: u64,
+    pending: PendingChild,
+}
+
+fn orphan_registry() -> &'static Mutex<Vec<OrphanChild>> {
+    static ORPHANS: OnceLock<Mutex<Vec<OrphanChild>>> = OnceLock::new();
+    ORPHANS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+struct AuthOwnerInner {
+    id: u64,
+    cancelled: CancellationToken,
+    active: Arc<AtomicUsize>,
+    pending: Mutex<Vec<PendingChild>>,
+}
+
+impl Drop for AuthOwnerInner {
+    fn drop(&mut self) {
+        let pending = std::mem::take(
+            &mut *self
+                .pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+        if pending.is_empty() {
+            return;
+        }
+        orphan_registry()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .extend(pending.into_iter().map(|pending| OrphanChild {
+                owner_id: self.id,
+                pending,
+            }));
+    }
+}
+
+/// Endpoint-scoped ownership for credential helper processes.
+///
+/// Retained children and their admission permits live in this owner only. A
+/// dropped owner transfers them to an owner-ID-tagged fallback queue, so
+/// `kill_on_drop` is not used to release a still-reserved permit and cleanup
+/// cannot be accidentally attributed to another endpoint.
+#[derive(Clone)]
+pub(crate) struct AuthOwner {
+    inner: Arc<AuthOwnerInner>,
+}
+
+impl AuthOwner {
+    pub(crate) fn new() -> Self {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+        Self {
+            inner: Arc::new(AuthOwnerInner {
+                id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+                cancelled: CancellationToken::new(),
+                active: Arc::new(AtomicUsize::new(0)),
+                pending: Mutex::new(Vec::new()),
+            }),
+        }
+    }
+
+    pub(crate) fn id(&self) -> u64 {
+        self.inner.id
+    }
+
+    /// Cancel all owned active helper lookups. Retained children remain in the
+    /// owner registry until `reap_pending` joins them or the owner is dropped.
+    pub(crate) fn cancel(&self) {
+        self.inner.cancelled.cancel();
+    }
+
+    pub(crate) fn active_count(&self) -> usize {
+        self.inner.active.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn pending_cleanup_count(&self) -> usize {
+        self.inner
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .len()
+    }
+
+    /// Join this endpoint's retained children by the supplied deadline.
+    /// Children still alive remain owned by this endpoint and keep their
+    /// helper permits reserved.
+    pub(crate) async fn reap_pending(&self, deadline: Instant) -> usize {
+        let children = std::mem::take(
+            &mut *self
+                .inner
+                .pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+        let mut pending = Vec::new();
+        for PendingChild {
+            mut child,
+            helper_slot,
+        } in children
+        {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                pending.push(PendingChild { child, helper_slot });
+                continue;
+            }
+            match timeout(remaining, child.wait()).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(_)) | Err(_) => pending.push(PendingChild { child, helper_slot }),
+            }
+        }
+        let count = pending.len();
+        self.inner
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .extend(pending);
+        count
+    }
+
+    fn reap_ready(&self) {
+        self.inner
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .retain_mut(|pending| !matches!(pending.child.try_wait(), Ok(Some(_))));
+    }
+
+    fn retain_pending(&self, pending: PendingChild) {
+        self.inner
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(pending);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -120,16 +263,30 @@ pub(crate) async fn lookup(
     deadline: Instant,
     cancelled: &CancellationToken,
 ) -> Result<Secret, AuthError> {
+    // Compatibility wrapper for callers that have not yet adopted endpoint
+    // ownership. The temporary owner ensures a retained child cannot enter a
+    // process-wide cleanup pool; endpoint callers should use `lookup_owned`.
+    let owner = AuthOwner::new();
+    lookup_owned(&owner, config, destination, deadline, cancelled).await
+}
+
+pub(crate) async fn lookup_owned(
+    owner: &AuthOwner,
+    config: &Config,
+    destination: &Destination,
+    deadline: Instant,
+    cancelled: &CancellationToken,
+) -> Result<Secret, AuthError> {
     if config.executable.as_os_str().is_empty() {
         return Err(AuthError::MissingExecutable);
     }
-    if cancelled.is_cancelled() {
+    if cancelled.is_cancelled() || owner.inner.cancelled.is_cancelled() {
         return Err(AuthError::Cancelled);
     }
     if deadline <= Instant::now() {
         return Err(AuthError::Timeout);
     }
-    reap_ready();
+    owner.reap_ready();
     let helper_slot = helper_slots()
         .try_acquire_owned()
         .map_err(|_| AuthError::Capacity)?;
@@ -149,16 +306,29 @@ pub(crate) async fn lookup(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
-    let mut child = command.spawn().map_err(|error| {
+    let child = command.spawn().map_err(|error| {
         if error.kind() == io::ErrorKind::NotFound {
             AuthError::MissingExecutable
         } else {
             AuthError::SpawnFailed
         }
     })?;
-    let mut stdin = child.stdin.take().ok_or(AuthError::SpawnFailed)?;
-    let stdout = child.stdout.take().ok_or(AuthError::SpawnFailed)?;
-    let stderr = child.stderr.take().ok_or(AuthError::SpawnFailed)?;
+    owner.inner.active.fetch_add(1, Ordering::AcqRel);
+    let _active = ActiveGuard {
+        active: owner.inner.active.clone(),
+    };
+    let mut job = HelperJob::new(child, helper_slot, owner.clone());
+    let mut stdin = job.child_mut().stdin.take().ok_or(AuthError::SpawnFailed)?;
+    let stdout = job
+        .child_mut()
+        .stdout
+        .take()
+        .ok_or(AuthError::SpawnFailed)?;
+    let stderr = job
+        .child_mut()
+        .stderr
+        .take()
+        .ok_or(AuthError::SpawnFailed)?;
     let request = format!(
         "protocol=https\nhost={}\npath={}\n\n",
         destination.authority(),
@@ -175,7 +345,7 @@ pub(crate) async fn lookup(
     let mut work = Box::pin(async {
         let (write_result, stdout_result, stderr_result) =
             tokio::join!(write, read_stdout, read_stderr);
-        let status = child.wait().await.map_err(|_| AuthError::Io)?;
+        let status = job.child_mut().wait().await.map_err(|_| AuthError::Io)?;
         write_result?;
         stderr_result?;
         let mut stdout = stdout_result?;
@@ -189,24 +359,36 @@ pub(crate) async fn lookup(
     });
     let mut timer = Box::pin(sleep_until(deadline));
     tokio::select! {
-        result = &mut work => result,
+        result = &mut work => {
+            let result = result;
+            drop(work);
+            job.complete_if_exited();
+            result
+        },
         _ = cancelled.cancelled() => {
             drop(work);
-            match terminate(child, helper_slot).await {
+            match job.terminate().await {
+                Ok(()) => Err(AuthError::Cancelled),
+                Err(error) => Err(error),
+            }
+        }
+        _ = owner.inner.cancelled.cancelled() => {
+            drop(work);
+            match job.terminate().await {
                 Ok(()) => Err(AuthError::Cancelled),
                 Err(error) => Err(error),
             }
         }
         _ = &mut timer => {
             drop(work);
-            match terminate(child, helper_slot).await {
+            match job.terminate().await {
                 Ok(()) => Err(AuthError::Timeout),
                 Err(error) => Err(error),
             }
         }
         _ = overflow.cancelled() => {
             drop(work);
-            match terminate(child, helper_slot).await {
+            match job.terminate().await {
                 Ok(()) => Err(AuthError::OutputTooLarge),
                 Err(error) => Err(error),
             }
@@ -231,24 +413,82 @@ where
     Ok(output)
 }
 
-async fn terminate(child: Child, helper_slot: OwnedSemaphorePermit) -> Result<(), AuthError> {
-    let mut child = child;
-    let _ = child.start_kill();
-    match timeout(CLEANUP_GRACE, child.wait()).await {
-        Ok(Ok(_)) => Ok(()),
-        Ok(Err(_)) | Err(_) => {
-            pending_registry()
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .push((child, helper_slot));
-            Err(AuthError::CleanupPending)
+struct ActiveGuard {
+    active: Arc<AtomicUsize>,
+}
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+struct HelperJob {
+    child: Option<Child>,
+    helper_slot: Option<OwnedSemaphorePermit>,
+    owner: AuthOwner,
+}
+
+impl HelperJob {
+    fn new(child: Child, helper_slot: OwnedSemaphorePermit, owner: AuthOwner) -> Self {
+        Self {
+            child: Some(child),
+            helper_slot: Some(helper_slot),
+            owner,
+        }
+    }
+
+    fn child_mut(&mut self) -> &mut Child {
+        self.child.as_mut().expect("active helper child")
+    }
+
+    fn complete(&mut self) {
+        drop(self.child.take());
+        drop(self.helper_slot.take());
+    }
+
+    fn complete_if_exited(&mut self) {
+        if self
+            .child
+            .as_mut()
+            .is_some_and(|child| matches!(child.try_wait(), Ok(Some(_))))
+        {
+            self.complete();
+        }
+    }
+
+    async fn terminate(&mut self) -> Result<(), AuthError> {
+        let result = {
+            let child = self.child_mut();
+            let _ = child.start_kill();
+            timeout(CLEANUP_GRACE, child.wait()).await
+        };
+        match result {
+            Ok(Ok(_)) => {
+                self.complete();
+                Ok(())
+            }
+            Ok(Err(_)) | Err(_) => Err(AuthError::CleanupPending),
         }
     }
 }
 
-fn pending_registry() -> &'static Mutex<Vec<(Child, OwnedSemaphorePermit)>> {
-    static PENDING: OnceLock<Mutex<Vec<(Child, OwnedSemaphorePermit)>>> = OnceLock::new();
-    PENDING.get_or_init(|| Mutex::new(Vec::new()))
+impl Drop for HelperJob {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let Some(helper_slot) = self.helper_slot.take() else {
+            return;
+        };
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            drop(helper_slot);
+            return;
+        }
+        let _ = child.start_kill();
+        self.owner
+            .retain_pending(PendingChild { child, helper_slot });
+    }
 }
 
 fn helper_slots() -> Arc<Semaphore> {
@@ -256,46 +496,61 @@ fn helper_slots() -> Arc<Semaphore> {
     SLOTS.get_or_init(|| Arc::new(Semaphore::new(8))).clone()
 }
 
-fn reap_ready() {
-    pending_registry()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .retain_mut(|(child, _)| !matches!(child.try_wait(), Ok(Some(_))));
-}
-/// Retained children keep endpoint admission reserved until they are joined.
+/// Compatibility shim for callers that have not yet supplied an
+/// `AuthOwner`. New endpoint code must call `AuthOwner::reap_pending` so
+/// cleanup remains endpoint-scoped.
 pub(crate) fn pending_cleanup_count() -> usize {
-    pending_registry()
+    orphan_registry()
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .len()
 }
 
-/// Join retained children by the endpoint cleanup deadline. Children that do
-/// not finish remain owned by the registry and are counted on the next pass.
-pub(crate) async fn reap_pending(deadline: Instant) -> usize {
+async fn reap_orphans(deadline: Instant) -> usize {
     let children = std::mem::take(
-        &mut *pending_registry()
+        &mut *orphan_registry()
             .lock()
             .unwrap_or_else(|error| error.into_inner()),
     );
     let mut pending = Vec::new();
-    for (mut child, helper_slot) in children {
+    for OrphanChild {
+        owner_id,
+        pending: retained,
+    } in children
+    {
+        let PendingChild {
+            mut child,
+            helper_slot,
+        } = retained;
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            pending.push((child, helper_slot));
+            pending.push(OrphanChild {
+                owner_id,
+                pending: PendingChild { child, helper_slot },
+            });
             continue;
         }
         match timeout(remaining, child.wait()).await {
             Ok(Ok(_)) => {}
-            Ok(Err(_)) | Err(_) => pending.push((child, helper_slot)),
+            Ok(Err(_)) | Err(_) => pending.push(OrphanChild {
+                owner_id,
+                pending: PendingChild { child, helper_slot },
+            }),
         }
     }
     let count = pending.len();
-    pending_registry()
+    orphan_registry()
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .extend(pending);
     count
+}
+
+/// Compatibility shim for the old process-wide cleanup call. Owned lookups
+/// never place children in that pool, so there is no cross-endpoint work to
+/// perform here.
+pub(crate) async fn reap_pending(_deadline: Instant) -> usize {
+    reap_orphans(_deadline).await
 }
 
 fn parse_secret(output: &[u8]) -> Result<Secret, AuthError> {
@@ -406,7 +661,7 @@ cfg_if::cfg_if! {
             }
 
             #[tokio::test]
-            async fn cancellation_kills_and_reaps_hanging_helper() {
+            async fn pre_cancelled_lookup_does_not_start_helper() {
                 let (directory, config) = helper("sleep 5");
                 let destination = Destination::parse("https://example.com/owner/repo").unwrap();
                 let cancelled = CancellationToken::new();
@@ -420,6 +675,161 @@ cfg_if::cfg_if! {
                 .await;
                 assert!(matches!(result, Err(AuthError::Cancelled) | Err(AuthError::CleanupPending)));
                 drop(directory);
+            }
+
+            #[tokio::test]
+            async fn owner_cancellation_after_start_reclaims_helper_admission() {
+                let directory = tempdir().unwrap();
+                let started = directory.path().join("started");
+                let executable = directory.path().join("started-helper");
+                fs::write(
+                    &executable,
+                    "#!/bin/sh\nprintf '%s\\n' \"$$\" >> \"$GWZ_HELPER_STARTED\"\nexec /bin/sleep 5\n",
+                )
+                .unwrap();
+                let mut permissions = fs::metadata(&executable).unwrap().permissions();
+                permissions.set_mode(0o700);
+                fs::set_permissions(&executable, permissions).unwrap();
+                let config = Config {
+                    executable,
+                    environment: vec![(
+                        "GWZ_HELPER_STARTED".into(),
+                        started.as_os_str().into(),
+                    )],
+                };
+                let owner = AuthOwner::new();
+                let destination = Destination::parse("https://example.com/owner/repo").unwrap();
+                let cancelled = CancellationToken::new();
+                let mut tasks = Vec::new();
+                for _ in 0..8 {
+                    let owner = owner.clone();
+                    let config = config.clone();
+                    let destination = destination.clone();
+                    let cancelled = cancelled.clone();
+                    tasks.push(tokio::spawn(async move {
+                        lookup_owned(
+                            &owner,
+                            &config,
+                            &destination,
+                            Instant::now() + Duration::from_secs(5),
+                            &cancelled,
+                        )
+                        .await
+                    }));
+                }
+                let barrier = Instant::now() + Duration::from_secs(2);
+                loop {
+                    let count = fs::read_to_string(&started)
+                        .ok()
+                        .map(|contents| contents.lines().count())
+                        .unwrap_or(0);
+                    if count == 8 {
+                        break;
+                    }
+                    assert!(Instant::now() < barrier, "helper start barrier timed out");
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                assert_eq!(owner.active_count(), 8);
+                owner.cancel();
+                for task in tasks {
+                    let result = task.await.unwrap();
+                    assert!(
+                        matches!(result, Err(AuthError::Cancelled) | Err(AuthError::CleanupPending)),
+                        "unexpected helper result: {result:?}"
+                    );
+                }
+                assert_eq!(owner.active_count(), 0);
+                let retained = owner
+                    .reap_pending(Instant::now() + Duration::from_secs(2))
+                    .await;
+                assert_eq!(retained, 0);
+                assert_eq!(owner.pending_cleanup_count(), 0);
+
+                let quick_directory = tempdir().unwrap();
+                let quick_executable = quick_directory.path().join("quick-helper");
+                fs::write(
+                    &quick_executable,
+                    "#!/bin/sh\nprintf 'username=alice\\npassword=secret\\n\\n'\n",
+                )
+                .unwrap();
+                let mut quick_permissions = fs::metadata(&quick_executable).unwrap().permissions();
+                quick_permissions.set_mode(0o700);
+                fs::set_permissions(&quick_executable, quick_permissions).unwrap();
+                let quick_config = Config {
+                    executable: quick_executable,
+                    environment: Vec::new(),
+                };
+                let quick_owner = AuthOwner::new();
+                let secret = lookup_owned(
+                    &quick_owner,
+                    &quick_config,
+                    &destination,
+                    Instant::now() + Duration::from_secs(2),
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+                assert_eq!(secret.header(), "Basic YWxpY2U6c2VjcmV0");
+            }
+
+            #[tokio::test]
+            async fn abort_after_helper_start_retains_permit_until_owner_reap() {
+                let directory = tempdir().unwrap();
+                let started = directory.path().join("started");
+                let executable = directory.path().join("abort-helper");
+                fs::write(
+                    &executable,
+                    "#!/bin/sh\nprintf started > \"$GWZ_HELPER_STARTED\"\nexec /bin/sleep 5\n",
+                )
+                .unwrap();
+                let mut permissions = fs::metadata(&executable).unwrap().permissions();
+                permissions.set_mode(0o700);
+                fs::set_permissions(&executable, permissions).unwrap();
+                let config = Config {
+                    executable,
+                    environment: vec![(
+                        "GWZ_HELPER_STARTED".into(),
+                        started.as_os_str().into(),
+                    )],
+                };
+                let owner = AuthOwner::new();
+                let destination = Destination::parse("https://example.com/owner/repo").unwrap();
+                let available_before = helper_slots().available_permits();
+                assert!(available_before > 0, "helper admission unexpectedly exhausted");
+                let task_owner = owner.clone();
+                let task_config = config.clone();
+                let task_destination = destination.clone();
+                let task = tokio::spawn(async move {
+                    lookup_owned(
+                        &task_owner,
+                        &task_config,
+                        &task_destination,
+                        Instant::now() + Duration::from_secs(5),
+                        &CancellationToken::new(),
+                    )
+                    .await
+                });
+                let barrier = Instant::now() + Duration::from_secs(2);
+                while !started.exists() {
+                    assert!(Instant::now() < barrier, "helper start barrier timed out");
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                task.abort();
+                assert!(task.await.unwrap_err().is_cancelled());
+                assert_eq!(owner.active_count(), 0);
+                assert_eq!(owner.pending_cleanup_count(), 1);
+                assert_eq!(helper_slots().available_permits(), available_before - 1);
+
+                assert_eq!(
+                    owner.reap_pending(Instant::now()).await,
+                    1,
+                    "zero-time reap must retain a live aborted child"
+                );
+                assert_eq!(owner.pending_cleanup_count(), 1);
+                assert_eq!(helper_slots().available_permits(), available_before - 1);
+                assert_eq!(owner.reap_pending(Instant::now() + Duration::from_secs(2)).await, 0);
+                assert_eq!(owner.pending_cleanup_count(), 0);
+                assert_eq!(helper_slots().available_permits(), available_before);
             }
 
             #[tokio::test]

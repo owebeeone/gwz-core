@@ -849,3 +849,6 @@ fn https_connect_proxy_preserves_origin_tls_verification() {
             assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
         });
 }
+
+#[path = "https_lifecycle_tests.rs"]
+mod lifecycle;

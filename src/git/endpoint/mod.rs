@@ -33,3 +33,6 @@ pub(crate) mod https_worker;
 pub(crate) mod shared_reservation;
 pub(crate) mod https_local;
 pub(crate) mod https_progress;
+
+pub(crate) mod https_operation;
+pub(crate) mod https_opening;

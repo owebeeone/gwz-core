@@ -141,7 +141,7 @@ pub(crate) struct HttpResource {
     key: Key,
     pub(crate) disposed: Arc<AtomicBool>,
     pub(crate) connect_elapsed: Duration,
-    connect_started: Instant,
+    pub(crate) connect_started: Instant,
 }
 struct Setup {
     addresses: Vec<SocketAddr>,

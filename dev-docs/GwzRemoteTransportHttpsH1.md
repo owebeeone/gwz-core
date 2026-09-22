@@ -1,6 +1,6 @@
 # HTTPS H1 — endpoint and RPC candidate
 
-Status: **implementation checkpoint; aggregate Code/State acceptance pending**.
+Status: **correction 1 implemented; retained Code/State re-verdict pending**.
 Controlling contract: [accepted HTTPS design](GwzRemoteTransportHttpsDesign.md).
 No production activation, public constructor freeze, release or wire carrier.
 
@@ -56,7 +56,7 @@ failures use v2 OpenFailed with retained facts, not stream Failed.
 
 ## Validation and replay
 
-Final local gates: **45 endpoint tests passed** (37 HTTPS cases plus existing
+Initial local gates: **45 endpoint tests passed** (37 HTTPS cases plus existing
 endpoint/shared-reservation cases); the complete gwz-transport suite and default
 core library check passed. Scoped formatting and evidence archive verification
 also pass. This is not a whole-core or platform qualification claim.
@@ -113,3 +113,53 @@ Platform and selected-source checks remain the operator-deferred single batch.
 Actual gh versions/accounts/Enterprise behavior, environment precedence, platform
 TLS/proxy parity, final dependency selection, production construction/activation,
 physical wire/iroh, release and performance measurement remain separate gates.
+
+## Aggregate correction 1
+
+Initial [Code](../../dev-docs/GwzRemoteTransportHttpsH1-ReviewCode.md) and
+[State](../../dev-docs/GwzRemoteTransportHttpsH1-ReviewState.md) reviews reported
+NO-GO: six distinct P2 roots and two bounded P3 findings. Both axes independently
+found operation route retirement attached to per-remote Drop. The
+[consolidated correction plan](../../dev-docs/GwzRemoteTransportHttpsH1-RemPlan.md)
+maps every finding and closure test. Findings await the raising reviewers.
+
+Routes now have explicit whole-operation sealing and dependent guards. The
+operation owner calls `finish_operation`; individual remote Drop only cancels
+its work. Sealing prevents new preparations, and routes retire only after
+remote and prepared-stream dependencies drain. Endpoint shutdown/Drop closes
+admission and cancels owned helpers and pool work. Shutdown counts held
+preparations and retained child/physical work; repeated shutdown can converge.
+Aborting a lookup retains its child and admission permit until actual reap.
+
+Allocation wait, connection setup, helper interaction, active I/O and cleanup
+have separate budgets, carried over redirects and the allowed authentication
+transition. Candidate construction captures an independent active-I/O setting
+(default3000ms, zero disabled); Open can shorten it. The generic pool's existing
+wait-only request deadline is used, with current-clock admission before dispatch.
+No public pool configuration field was added.
+
+`https_opening` admits actual Open messages and routes actual worker outcomes
+through an in-process mux pair. Each local RPC uses a unique session; anonymous
+failure crosses as OpenFailed before a distinct Gh Open under the same remaining
+budgets. Successful Stream instances use the admitted session/stream identity,
+and their subsequent messages pass through the same mux. This is private H1
+composition; H2 still embeds into the existing host/session owner.
+
+HTTP parse failures map to Protocol, transport loss to Io. Credential-offered
+is cumulative across discovery redirects, while status/authentication describe
+the current origin; pre-response failures retain unknown status/authentication.
+No secret, raw URL or helper stderr is included in these receipts.
+
+Corrected local gate: **64 endpoint tests passed**, default core check passed,
+scoped formatting and token-aware conditional-boundary checks passed (including
+disabled branches). Transport sources are unchanged since the initial passing
+full-suite gate. Actual local Git clone, multi-round fetch and push now traverse
+the mux relay as well as the HTTP worker. No platform or source-admission claim.
+
+[Correction evidence (private access)](../../gwz-core-evidence/campaigns/https-integration/runs/2026-09-22-h1-rem1/README.md)
+retains regression failures, build attempts and final gates. Route/shutdown
+counterexamples were captured failing before their corrections. Auth/budget/mux
+helpers were partly drafted before causal tests; universal TDD adherence is not
+claimed. Intermediate attempts do not all have source fingerprints. Twelve
+additional seeded replays belong to the unchanged initial H1 tuple, not the
+corrected candidate. Retained reviewers judge closure on the corrected tuple.

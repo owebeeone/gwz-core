@@ -47,6 +47,9 @@ pub(crate) struct Client {
     helpers: Arc<Semaphore>,
     routes: Arc<Mutex<Routes>>,
     config: pool::Config,
+    io_timeout_ms: u64,
+    auth_owner: https_auth::AuthOwner,
+    operations: super::https_operation::Operations,
 }
 pub(crate) struct Endpoint {
     pub(crate) client: Client,
@@ -58,25 +61,60 @@ impl Endpoint {
         auth: Option<https_auth::Config>,
         config: pool::Config,
     ) -> Result<Self, Failure> {
+        Self::new_with_io_timeout(tls, auth, config, 3_000)
+    }
+    pub(crate) fn new_with_io_timeout(
+        tls: https_connection::Config,
+        auth: Option<https_auth::Config>,
+        config: pool::Config,
+        io_timeout_ms: u64,
+    ) -> Result<Self, Failure> {
+        if io_timeout_ms > i32::MAX as u64 {
+            return Err(failure(ErrorCode::InvalidRequest));
+        }
         let pool = RunningPool::new(config.clone(), tls)?;
+        let routes = Arc::new(Mutex::new(Routes::new(64)));
+        let operations = super::https_operation::Operations::new(routes.clone());
         let client = Client {
             pool: pool.client.clone(),
             auth,
             slots: Arc::new(Semaphore::new(64)),
             helpers: Arc::new(Semaphore::new(8)),
-            routes: Arc::new(Mutex::new(Routes::new(64))),
+            routes,
+            operations,
+            auth_owner: https_auth::AuthOwner::new(),
             config,
+            io_timeout_ms,
         };
         Ok(Self { client, pool })
     }
     pub(crate) async fn shutdown(&mut self, limit: Duration) -> usize {
         let until = Instant::now() + limit;
-        let helpers = https_auth::reap_pending(until).await;
+        // Close admission before cancelling work. Every preparation holds a
+        // slot through helper/network work and through the resulting stream.
+        self.client.slots.close();
+        self.client.helpers.close();
+        self.client.auth_owner.cancel();
+        self.client.pool.pool.shutdown();
+        while self.client.slots.available_permits() != 64 && Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        let helpers = self.client.auth_owner.reap_pending(until).await;
+        let active = 64 - self.client.slots.available_permits();
         helpers
+            + active
             + self
                 .pool
                 .shutdown(until.saturating_duration_since(Instant::now()))
                 .await
+    }
+}
+impl Drop for Endpoint {
+    fn drop(&mut self) {
+        self.client.slots.close();
+        self.client.helpers.close();
+        self.client.auth_owner.cancel();
+        self.client.pool.pool.shutdown();
     }
 }
 pub(crate) struct Prepared {
@@ -87,23 +125,29 @@ pub(crate) struct Prepared {
     destination: Destination,
     authorization: Option<String>,
     _slot: OwnedSemaphorePermit,
+    _operation: super::https_operation::Dependency,
     protocol_error: Arc<AtomicBool>,
     io_ms: u64,
     cleanup_ms: u64,
 }
-struct Budget {
-    until: Instant,
+pub(crate) struct Budget {
+    allocation: Duration,
     helper: Duration,
-    connect: Duration,
-    network: Duration,
+    connect: Option<Duration>,
+    network: Option<Duration>,
+    cleanup: Duration,
 }
 impl Client {
     pub(crate) fn finish_operation(&self, operation: &str) {
-        self.routes
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .finish(operation);
+        self.operations.finish(operation);
     }
+    pub(crate) fn operation(
+        &self,
+        operation: &str,
+    ) -> Result<super::https_operation::Dependency, ErrorCode> {
+        self.operations.acquire(operation)
+    }
+
     pub(crate) async fn prepare(
         &self,
         input: Input,
@@ -151,18 +195,24 @@ impl Client {
             other => other,
         }
     }
-    fn budget(&self) -> Budget {
-        Budget {
-            until: Instant::now() + Duration::from_millis(self.config.allocation_timeout_ms),
-            helper: Duration::from_millis(self.config.interaction_timeout_ms),
-            connect: Duration::from_millis(if self.config.connect_timeout_ms == 0 {
-                i32::MAX as u64
-            } else {
-                self.config.connect_timeout_ms
-            }),
-            network: Duration::from_secs(3),
-        }
+    pub(crate) fn budget(&self) -> Budget {
+        budget_for_config(&self.config, self.io_timeout_ms)
     }
+}
+
+fn budget_for_config(config: &pool::Config, io_timeout_ms: u64) -> Budget {
+    Budget {
+        allocation: Duration::from_millis(config.allocation_timeout_ms),
+        helper: Duration::from_millis(config.interaction_timeout_ms),
+        connect: (config.connect_timeout_ms != 0)
+            .then(|| Duration::from_millis(config.connect_timeout_ms)),
+        // Active I/O consumes one cumulative budget across redirects and
+        // authentication attempts; zero deliberately disables the deadline.
+        network: (io_timeout_ms != 0).then(|| Duration::from_millis(io_timeout_ms)),
+        cleanup: Duration::from_millis(config.cleanup_timeout_ms),
+    }
+}
+impl Client {
     pub(crate) async fn prepare_until(
         &self,
         input: Input,
@@ -171,17 +221,72 @@ impl Client {
         helper_remaining: Duration,
     ) -> Result<Prepared, Failure> {
         let mut budget = self.budget();
-        budget.until = until;
+        budget.allocation = until.saturating_duration_since(Instant::now());
         budget.helper = helper_remaining;
         self.prepare_budget(input, cancel, &mut budget).await
     }
-    async fn prepare_budget(
+    /// Apply an Open request's positive deadline values as upper bounds. Zero
+    /// retains the endpoint's captured setting, including zero-disabled I/O.
+    pub(crate) async fn prepare_open(
+        &self,
+        input: Input,
+        cancel: &CancellationToken,
+        deadlines: &Deadlines,
+    ) -> Result<Prepared, Failure> {
+        let mut budget = self.budget_for_open(deadlines);
+        self.prepare_budget(input, cancel, &mut budget).await
+    }
+    pub(crate) fn configured_deadlines(&self) -> Deadlines {
+        Deadlines {
+            allocation_ms: self.config.allocation_timeout_ms as i64,
+            connect_ms: self.config.connect_timeout_ms as i64,
+            io_ms: self.io_timeout_ms as i64,
+            interaction_ms: self.config.interaction_timeout_ms as i64,
+            cleanup_ms: self.config.cleanup_timeout_ms as i64,
+        }
+    }
+    pub(crate) fn budget_for_open(&self, deadlines: &Deadlines) -> Budget {
+        let mut budget = self.budget();
+        if deadlines.allocation_ms > 0 {
+            budget.allocation = budget
+                .allocation
+                .min(Duration::from_millis(deadlines.allocation_ms as u64));
+        }
+        if deadlines.connect_ms > 0 {
+            let requested = Duration::from_millis(deadlines.connect_ms as u64);
+            budget.connect = Some(
+                budget
+                    .connect
+                    .map_or(requested, |current| current.min(requested)),
+            );
+        }
+        if deadlines.interaction_ms >= 0 {
+            budget.helper = budget
+                .helper
+                .min(Duration::from_millis(deadlines.interaction_ms as u64));
+        }
+        if deadlines.io_ms > 0 {
+            let requested = Duration::from_millis(deadlines.io_ms as u64);
+            budget.network = Some(
+                budget
+                    .network
+                    .map_or(requested, |current| current.min(requested)),
+            );
+        }
+        if deadlines.cleanup_ms > 0 {
+            budget.cleanup = budget
+                .cleanup
+                .min(Duration::from_millis(deadlines.cleanup_ms as u64));
+        }
+        budget
+    }
+
+    pub(crate) async fn prepare_budget(
         &self,
         input: Input,
         cancel: &CancellationToken,
         budget: &mut Budget,
     ) -> Result<Prepared, Failure> {
-        let until = budget.until;
         let original = Destination::parse(&input.destination).map_err(failure)?;
         if input.session.is_empty()
             || input.session.len() > 128
@@ -194,12 +299,10 @@ impl Client {
         if cancel.is_cancelled() {
             return Err(failure(ErrorCode::Cancelled));
         }
-        let mut slot = Some(
-            self.slots
-                .clone()
-                .try_acquire_owned()
-                .map_err(|_| failure(ErrorCode::Capacity))?,
-        );
+        let started = Instant::now();
+        let mut slot = Some(acquire_slot(self.slots.clone(), budget.allocation, cancel).await?);
+        budget.allocation = budget.allocation.saturating_sub(started.elapsed());
+        let mut dependency = Some(self.operation(&input.operation).map_err(failure)?);
         let key = RouteKey::new(&input.operation, &original.base(), input.service);
         let mut destination = {
             let mut routes = self.routes.lock().unwrap_or_else(|e| e.into_inner());
@@ -211,50 +314,56 @@ impl Client {
             }
         };
         let mut hops = 0;
+        let mut credential_offered = false;
         loop {
-            if Instant::now() >= until {
-                return Err(failure(ErrorCode::Timeout));
-            }
             let mut authorization = None;
             let mut facts = Facts::default();
+            facts.credential_offered = credential_offered;
             if input.policy == AuthPolicy::Gh {
                 facts.method = AuthMethod::Gh;
                 let config = self
                     .auth
                     .as_ref()
-                    .ok_or_else(|| failure(ErrorCode::Authentication))?;
-                let _helper = self
-                    .helpers
-                    .clone()
-                    .try_acquire_owned()
-                    .map_err(|_| failure(ErrorCode::Capacity))?;
+                    .ok_or_else(|| with_facts(ErrorCode::Authentication, Effect::None, &facts))?;
                 let started = Instant::now();
-                let secret = https_auth::lookup(
+                let _helper = acquire_slot(self.helpers.clone(), budget.helper, cancel)
+                    .await
+                    .map_err(|error| with_facts(error.code, Effect::None, &facts))?;
+                budget.helper = budget.helper.saturating_sub(started.elapsed());
+                let started = Instant::now();
+                let secret = https_auth::lookup_owned(
+                    &self.auth_owner,
                     config,
                     &destination,
-                    (started + budget.helper).min(until),
+                    started + budget.helper,
                     cancel,
                 )
                 .await
-                .map_err(|error| failure(error.code()))?;
+                .map_err(|error| with_facts(error.code(), Effect::None, &facts))?;
                 budget.helper = budget.helper.saturating_sub(started.elapsed());
                 authorization = Some(secret.header());
             }
-            let remaining = until.saturating_duration_since(Instant::now());
-            if budget.connect.is_zero() || budget.network.is_zero() {
-                return Err(failure(ErrorCode::Timeout));
+            if budget.connect.is_some_and(|remaining| remaining.is_zero())
+                || budget.network.is_some_and(|remaining| remaining.is_zero())
+                || budget.allocation.is_zero()
+            {
+                return Err(with_facts(ErrorCode::Timeout, Effect::None, &facts));
             }
             let lease = self
                 .pool
                 .checkout(
                     Key::https(destination.host(), destination.port()),
                     Owner::new(&input.session, &input.operation),
-                    self.pool.now().saturating_add(remaining.as_millis() as u64),
-                    budget.connect.as_millis().max(1) as u64,
+                    duration_ms(budget.allocation),
+                    budget.connect.map_or(0, duration_ms),
                     cancel,
                 )
-                .await?;
-            budget.connect = budget.connect.saturating_sub(lease.connect_elapsed);
+                .await
+                .map_err(|error| with_facts(error.code, error.effect, &facts))?;
+            if let Some(remaining) = budget.connect.as_mut() {
+                *remaining = remaining.saturating_sub(lease.connect_elapsed);
+            }
+            budget.allocation = budget.allocation.saturating_sub(lease.allocation_elapsed);
             let opened = Opened {
                 connection_id: lease.id.clone(),
                 reused: lease.reused,
@@ -271,9 +380,10 @@ impl Client {
                 destination: destination.clone(),
                 authorization,
                 _slot: slot.take().expect("admitted request slot"),
+                _operation: dependency.take().expect("operation dependency"),
                 protocol_error: Arc::new(AtomicBool::new(false)),
-                io_ms: budget.network.as_millis().max(1) as u64,
-                cleanup_ms: self.config.cleanup_timeout_ms,
+                io_ms: budget.network.map_or(0, duration_ms),
+                cleanup_ms: duration_ms(budget.cleanup),
             };
             if !https_policy::advertisement(input.service) {
                 return Ok(prepared);
@@ -291,18 +401,36 @@ impl Client {
                 .clone();
             let mut guard = connection.lock().await;
             prepared.opened.facts.credential_offered =
-                request.headers().contains_key(AUTHORIZATION);
+                request.headers().contains_key(AUTHORIZATION) || credential_offered;
+            credential_offered = prepared.opened.facts.credential_offered;
             let header_started = Instant::now();
-            let header_deadline = (header_started + budget.network).min(until);
             let response = tokio::select! {
-                _=cancel.cancelled()=>return Err(failure(ErrorCode::Cancelled)),
-                _=prepared.lease.as_ref().unwrap().cancel.cancelled()=>return Err(failure(if prepared.protocol_error.load(Ordering::Acquire){ErrorCode::Protocol}else{ErrorCode::Cancelled})),
-                result=tokio::time::timeout_at(header_deadline,guard.sender.send_request(request))=>result.map_err(|_|failure(ErrorCode::Timeout))?.map_err(|_|failure(ErrorCode::Io))?,
+                _=cancel.cancelled()=>return Err(with_facts(ErrorCode::Cancelled, Effect::None, &prepared.opened.facts)),
+                _=prepared.lease.as_ref().unwrap().cancel.cancelled()=>return Err(with_facts(if prepared.protocol_error.load(Ordering::Acquire){ErrorCode::Protocol}else{ErrorCode::Cancelled}, Effect::None, &prepared.opened.facts)),
+                result=async {
+                    match budget.network {
+                        Some(remaining) => tokio::time::timeout(remaining, guard.sender.send_request(request)).await.map_err(|_| failure(ErrorCode::Timeout)),
+                        None => Ok(guard.sender.send_request(request).await),
+                    }
+                }=>result.map_err(|error| with_facts(error.code, Effect::None, &prepared.opened.facts))?.map_err(|error| with_facts(classify_hyper_error(&error), Effect::None, &prepared.opened.facts))?,
             };
-            budget.network = budget.network.saturating_sub(header_started.elapsed());
-            prepared.io_ms = budget.network.as_millis().max(1) as u64;
+            if let Some(remaining) = budget.network.as_mut() {
+                *remaining = remaining.saturating_sub(header_started.elapsed());
+                if remaining.is_zero() {
+                    return Err(with_facts(
+                        ErrorCode::Timeout,
+                        Effect::None,
+                        &prepared.opened.facts,
+                    ));
+                }
+                prepared.io_ms = duration_ms(*remaining);
+            }
             if prepared.protocol_error.load(Ordering::Acquire) {
-                return Err(failure(ErrorCode::Protocol));
+                return Err(with_facts(
+                    ErrorCode::Protocol,
+                    Effect::None,
+                    &prepared.opened.facts,
+                ));
             }
             drop(guard);
             drop(connection);
@@ -354,6 +482,7 @@ impl Client {
                     // Keep admission across hops, but release physical capacity before acquiring again.
                     let Prepared {
                         _slot: returned_slot,
+                        _operation: returned_dependency,
                         lease,
                         ..
                     } = prepared;
@@ -361,6 +490,7 @@ impl Client {
                     hops += 1;
                     // Re-enter with the existing slot below rather than reacquiring one.
                     slot = Some(returned_slot);
+                    dependency = Some(returned_dependency);
                     continue;
                 }
                 ResponseAction::Fail(code) => {
@@ -370,8 +500,9 @@ impl Client {
                     let disposed = lease.disposed.clone();
                     lease.finish(Disposition::Discarded)?;
                     // A retry must not overlap cleanup of its first attempt.
+                    let cleanup_until = Instant::now() + budget.cleanup;
                     while !disposed.load(Ordering::Acquire) {
-                        if Instant::now() >= until {
+                        if Instant::now() >= cleanup_until {
                             failed.code = ErrorCode::Timeout;
                             break;
                         }
@@ -390,6 +521,12 @@ impl Client {
         }
     }
 }
+fn duration_ms(duration: Duration) -> u64 {
+    duration
+        .as_millis()
+        .saturating_add(u128::from(duration.subsec_nanos() % 1_000_000 != 0))
+        .min(u64::MAX as u128) as u64
+}
 fn body_channel() -> (mpsc::Sender<std::io::Result<Bytes>>, RequestBody) {
     let (tx, rx) = mpsc::channel(1);
     (tx, RequestBody { rx })
@@ -399,6 +536,29 @@ fn with_facts(code: ErrorCode, effect: Effect, facts: &Facts) -> Failure {
         code,
         effect,
         facts: Some(facts.clone()),
+    }
+}
+async fn acquire_slot(
+    slots: Arc<Semaphore>,
+    allocation: Duration,
+    cancel: &CancellationToken,
+) -> Result<OwnedSemaphorePermit, Failure> {
+    if allocation.is_zero() {
+        return Err(failure(ErrorCode::Timeout));
+    }
+    tokio::select! {
+        _ = cancel.cancelled() => Err(failure(ErrorCode::Cancelled)),
+        result = tokio::time::timeout(allocation, slots.acquire_owned()) => {
+            result.map_err(|_| failure(ErrorCode::Timeout))?
+                .map_err(|_| failure(ErrorCode::Cancelled))
+        }
+    }
+}
+fn classify_hyper_error(error: &hyper::Error) -> ErrorCode {
+    if error.is_parse() {
+        ErrorCode::Protocol
+    } else {
+        ErrorCode::Io
     }
 }
 fn validate_content(response: &Response<Incoming>, service: GitService) -> Result<(), ErrorCode> {
@@ -567,7 +727,7 @@ impl Prepared {
                     .sender
                     .send_request(request)
                     .await
-                    .map_err(|_| ErrorCode::Io)
+                    .map_err(|error| classify_hyper_error(&error))
             };
             tokio::pin!(send, producer);
             tokio::select! {
@@ -675,3 +835,4 @@ fn stream_code(error: gwz_transport::stream::Error) -> ErrorCode {
     }
 }
 cfg_if::cfg_if! { if #[cfg(test)] { #[path="https_worker_tests.rs"] mod tests; } }
+cfg_if::cfg_if! { if #[cfg(test)] { #[path="https_budget_tests.rs"] mod budget_tests; } }

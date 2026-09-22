@@ -193,7 +193,7 @@ impl Drop for Reservation {
     }
 }
 
-#[cfg(test)]
+cfg_if::cfg_if! { if #[cfg(test)] {
 mod tests {
     use super::super::ssh_pool::{Connector, Resource};
     use super::{Authority, ReservedConnector};
@@ -336,3 +336,5 @@ mod tests {
         assert!(authority.try_reserve("github.example").is_some());
     }
 }
+
+} }
