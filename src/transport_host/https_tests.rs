@@ -788,7 +788,7 @@ fn embedded_https_init(consumer: super::message_embedding_tests::Consumer) {
         })
         .await
         .unwrap();
-        assert!(server_connections.load(Ordering::SeqCst) >= 2);
+        assert_eq!(server_connections.load(Ordering::SeqCst), 1);
     });
 }
 

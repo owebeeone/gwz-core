@@ -214,6 +214,14 @@ impl Session {
                 .as_ref()
                 .map(|engine| engine.pool().capacity())
         }
+        pub(super) fn https_counts_for_test(&self) -> Option<pool::Counts> {
+            self.state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .https
+                .as_ref()
+                .map(|endpoint| endpoint.pool().counts())
+        }
     } }
     fn start(state: State) -> ModelResult<Arc<Self>> {
         let session = Arc::new(Self {

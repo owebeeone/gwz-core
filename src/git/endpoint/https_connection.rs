@@ -151,6 +151,11 @@ pub(crate) struct Connection {
     driver: JoinHandle<()>,
     pub(crate) progress: Arc<AtomicU64>,
 }
+impl Connection {
+    pub(crate) fn alive(&self) -> bool {
+        !self.driver.is_finished()
+    }
+}
 pub(crate) struct HttpResource {
     setup: Option<Job<Setup>>,
     connecting: Option<JoinHandle<Result<Connection, Failure>>>,

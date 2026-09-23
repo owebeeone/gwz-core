@@ -17,7 +17,7 @@ use http_body_util::BodyExt;
 use hyper::{
     Request, Response,
     body::Incoming,
-    header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HOST, LOCATION},
+    header::{ACCEPT, AUTHORIZATION, CONNECTION, CONTENT_TYPE, HOST, LOCATION},
 };
 use std::{
     sync::{
@@ -144,6 +144,39 @@ pub(crate) struct Prepared {
     io_ms: u64,
     cleanup_ms: u64,
 }
+pub(crate) struct ChallengeLease {
+    lease: Option<HttpLease>,
+    destination: String,
+    session: String,
+    operation: String,
+    expires: Instant,
+}
+impl ChallengeLease {
+    pub(crate) fn expired(&self) -> bool {
+        Instant::now() >= self.expires
+    }
+    fn take_for(&mut self, destination: &Destination, input: &Input) -> Option<HttpLease> {
+        if self.destination == destination.base()
+            && self.session == input.session
+            && self.operation == input.operation
+            && self
+                .lease
+                .as_ref()
+                .is_some_and(|lease| !lease.cancel.is_cancelled())
+        {
+            self.lease.take()
+        } else {
+            None
+        }
+    }
+}
+impl Drop for ChallengeLease {
+    fn drop(&mut self) {
+        if let Some(lease) = self.lease.take() {
+            let _ = lease.finish(Disposition::Discarded);
+        }
+    }
+}
 pub(crate) struct Budget {
     allocation: Duration,
     helper: Duration,
@@ -210,11 +243,12 @@ impl Client {
         first: &mut Option<Failure>,
     ) -> Result<Prepared, Failure> {
         let mut budget = self.budget();
+        let mut challenge = None;
         if https_policy::receive_pack(input.service) {
             input.policy = AuthPolicy::Gh;
         }
         let result = self
-            .prepare_budget(input.clone(), cancel, &mut budget)
+            .prepare_budget_for_transition(input.clone(), cancel, &mut budget, &mut challenge)
             .await;
         match result {
             Err(f)
@@ -230,7 +264,8 @@ impl Client {
             {
                 *first = Some(f);
                 input.policy = AuthPolicy::Gh;
-                self.prepare_budget(input, cancel, &mut budget).await
+                self.prepare_budget_for_transition(input, cancel, &mut budget, &mut challenge)
+                    .await
             }
             other => other,
         }
@@ -327,7 +362,29 @@ impl Client {
         cancel: &CancellationToken,
         budget: &mut Budget,
     ) -> Result<Prepared, Failure> {
+        self.prepare_budget_inner(input, cancel, budget, &mut None, false)
+            .await
+    }
+    pub(crate) async fn prepare_budget_for_transition(
+        &self,
+        input: Input,
+        cancel: &CancellationToken,
+        budget: &mut Budget,
+        challenge: &mut Option<ChallengeLease>,
+    ) -> Result<Prepared, Failure> {
+        self.prepare_budget_inner(input, cancel, budget, challenge, true)
+            .await
+    }
+    async fn prepare_budget_inner(
+        &self,
+        input: Input,
+        cancel: &CancellationToken,
+        budget: &mut Budget,
+        challenge: &mut Option<ChallengeLease>,
+        allow_transition: bool,
+    ) -> Result<Prepared, Failure> {
         let original = Destination::parse(&input.destination).map_err(failure)?;
+        let original_base = original.base();
         if input.session.is_empty()
             || input.session.len() > 128
             || input.operation.is_empty()
@@ -399,17 +456,31 @@ impl Client {
             {
                 return Err(with_facts(ErrorCode::Timeout, Effect::None, &facts));
             }
-            let lease = self
-                .pool
-                .checkout(
-                    Key::https(destination.host(), destination.port()),
-                    Owner::new(&input.session, &input.operation),
-                    duration_ms(budget.allocation),
-                    budget.connect.map_or(0, duration_ms),
-                    cancel,
-                )
-                .await
-                .map_err(|error| with_facts(error.code, error.effect, &facts))?;
+            if challenge.as_ref().is_some_and(ChallengeLease::expired) {
+                *challenge = None;
+            }
+            let lease = if let Some(carried) = challenge.take() {
+                let mut carried = carried;
+                if let Some(mut lease) = carried.take_for(&destination, &input) {
+                    lease.reused = true;
+                    lease.connect_elapsed = Duration::ZERO;
+                    lease.allocation_elapsed = Duration::ZERO;
+                    lease
+                } else {
+                    return Err(with_facts(ErrorCode::Protocol, Effect::None, &facts));
+                }
+            } else {
+                self.pool
+                    .checkout(
+                        Key::https(destination.host(), destination.port()),
+                        Owner::new(&input.session, &input.operation),
+                        duration_ms(budget.allocation),
+                        budget.connect.map_or(0, duration_ms),
+                        cancel,
+                    )
+                    .await
+                    .map_err(|error| with_facts(error.code, error.effect, &facts))?
+            };
             if let Some(remaining) = budget.connect.as_mut() {
                 *remaining = remaining.saturating_sub(lease.connect_elapsed);
             }
@@ -545,7 +616,49 @@ impl Client {
                 }
                 ResponseAction::Fail(code) => {
                     let mut failed = with_facts(code, Effect::None, &prepared.opened.facts);
-                    drop(response);
+                    let may_carry = allow_transition
+                        && input.policy == AuthPolicy::Anonymous
+                        && self.auth.is_some()
+                        && matches!(status, 401 | 404)
+                        && matches!(
+                            code,
+                            ErrorCode::Authentication | ErrorCode::RepositoryRefused
+                        )
+                        && destination.base() == original_base;
+                    if may_carry {
+                        let connection = prepared
+                            .lease
+                            .as_ref()
+                            .unwrap()
+                            .connection
+                            .as_ref()
+                            .unwrap();
+                        match clean_challenge(
+                            response,
+                            connection,
+                            cancel,
+                            &prepared.lease.as_ref().unwrap().cancel,
+                            budget,
+                        )
+                        .await
+                        {
+                            Ok(true) => {
+                                *challenge = Some(ChallengeLease {
+                                    lease: prepared.lease.take(),
+                                    destination: destination.base(),
+                                    session: input.session.clone(),
+                                    operation: input.operation.clone(),
+                                    expires: Instant::now()
+                                        + budget.cleanup.min(Duration::from_secs(5)),
+                                });
+                                return Err(failed);
+                            }
+                            Ok(false) => {}
+                            Err(code) => failed.code = code,
+                        }
+                    } else {
+                        drop(response);
+                    }
                     let lease = prepared.lease.take().unwrap();
                     let disposed = lease.disposed.clone();
                     lease.finish(Disposition::Discarded)?;
@@ -578,6 +691,58 @@ fn duration_ms(duration: Duration) -> u64 {
         .as_millis()
         .saturating_add(u128::from(duration.subsec_nanos() % 1_000_000 != 0))
         .min(u64::MAX as u128) as u64
+}
+async fn clean_challenge(
+    mut response: Response<Incoming>,
+    connection: &Arc<tokio::sync::Mutex<https_connection::Connection>>,
+    cancel: &CancellationToken,
+    resource_cancel: &CancellationToken,
+    budget: &mut Budget,
+) -> Result<bool, ErrorCode> {
+    let keep_alive = response.headers().get_all(CONNECTION).iter().all(|value| {
+        value.to_str().is_ok_and(|text| {
+            !text
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("close"))
+        })
+    });
+    if !keep_alive {
+        return Ok(false);
+    }
+    let started = Instant::now();
+    let allowance = budget.cleanup.min(budget.network.unwrap_or(budget.cleanup));
+    let until = started + allowance;
+    let result = tokio::select! {
+        _ = cancel.cancelled() => Err(ErrorCode::Cancelled),
+        _ = resource_cancel.cancelled() => Err(ErrorCode::Cancelled),
+        result = tokio::time::timeout_at(until, async {
+            let mut size = 0usize;
+            while let Some(frame) = response.body_mut().frame().await {
+                let frame = frame.map_err(|_| ErrorCode::Protocol)?;
+                if let Some(data) = frame.data_ref() {
+                    size = size.saturating_add(data.len());
+                    if size > 64 * 1024 {
+                        return Ok(false);
+                    }
+                }
+            }
+            drop(response);
+            let mut guard = connection.lock().await;
+            Ok(guard.alive() && guard.sender.ready().await.is_ok() && guard.alive())
+        }) => result.map_err(|_| ErrorCode::Timeout)?,
+    };
+    let elapsed = started.elapsed();
+    budget.cleanup = budget.cleanup.saturating_sub(elapsed);
+    if let Some(remaining) = budget.network.as_mut() {
+        *remaining = remaining.saturating_sub(elapsed);
+    }
+    if cancel.is_cancelled() || resource_cancel.is_cancelled() {
+        return Err(ErrorCode::Cancelled);
+    }
+    if budget.cleanup.is_zero() || budget.network.is_some_and(|remaining| remaining.is_zero()) {
+        return Err(ErrorCode::Timeout);
+    }
+    result
 }
 fn body_channel() -> (mpsc::Sender<std::io::Result<Bytes>>, RequestBody) {
     let (tx, rx) = mpsc::channel(1);

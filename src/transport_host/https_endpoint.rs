@@ -3,7 +3,7 @@
 use super::{Arc, Duration, HttpsEndpointConfig, ModelResult, pool, unavailable};
 use crate::git::endpoint::{
     https_policy,
-    https_worker::{Budget, Client, Endpoint as HttpEndpoint, Input, Prepared},
+    https_worker::{Budget, ChallengeLease, Client, Endpoint as HttpEndpoint, Input, Prepared},
     placement_endpoint::{EndpointError, Outbound},
     shared_reservation::Authority,
 };
@@ -24,7 +24,7 @@ type Key = (String, i64);
 struct Entry {
     envelope: Envelope,
     cancel: CancellationToken,
-    preparing: Option<JoinHandle<(Result<Prepared, Failure>, Budget)>>,
+    preparing: Option<JoinHandle<(Result<Prepared, Failure>, Retry)>>,
     serving: Option<JoinHandle<()>>,
     prepared: Option<Prepared>,
     handoff: bool,
@@ -38,7 +38,11 @@ struct Entry {
 struct Operation {
     name: String,
     _guard: crate::git::endpoint::https_operation::Dependency,
-    retries: BTreeMap<String, Budget>,
+    retries: BTreeMap<String, Retry>,
+}
+struct Retry {
+    budget: Budget,
+    challenge: Option<ChallengeLease>,
 }
 pub(super) struct HttpsEndpoint {
     client: Client,
@@ -205,21 +209,36 @@ impl HttpsEndpoint {
             operation: operation.name.clone(),
         };
         let retry_key = retry_key(open);
-        let mut budget = if open.policy == AuthPolicy::Gh {
+        let mut retry = if open.policy == AuthPolicy::Gh {
             operation
                 .retries
                 .remove(&retry_key)
-                .unwrap_or_else(|| self.client.budget_for_open(&open.deadlines))
+                .unwrap_or_else(|| Retry {
+                    budget: self.client.budget_for_open(&open.deadlines),
+                    challenge: None,
+                })
         } else {
-            self.client.budget_for_open(&open.deadlines)
+            Retry {
+                budget: self.client.budget_for_open(&open.deadlines),
+                challenge: None,
+            }
         };
-        budget.shorten(self.client.budget_for_open(&open.deadlines));
+        retry
+            .budget
+            .shorten(self.client.budget_for_open(&open.deadlines));
         let cancel = CancellationToken::new();
         let cancelled = cancel.clone();
         let client = self.client.clone();
         let preparing = self.runtime.spawn(async move {
-            let result = client.prepare_budget(input, &cancelled, &mut budget).await;
-            (result, budget)
+            let result = client
+                .prepare_budget_for_transition(
+                    input,
+                    &cancelled,
+                    &mut retry.budget,
+                    &mut retry.challenge,
+                )
+                .await;
+            (result, retry)
         });
         self.entries.insert(
             key,
@@ -240,11 +259,22 @@ impl HttpsEndpoint {
         Ok(())
     }
     pub(super) fn step(&mut self, now: u64, cx: &mut Context<'_>) -> Result<(), EndpointError> {
+        for operation in self.operations.values_mut() {
+            for retry in operation.retries.values_mut() {
+                if retry
+                    .challenge
+                    .as_ref()
+                    .is_some_and(ChallengeLease::expired)
+                {
+                    retry.challenge = None;
+                }
+            }
+        }
         for ((request, _), entry) in &mut self.entries {
             if let Some(task) = entry.preparing.as_mut() {
                 if let Poll::Ready(result) = Pin::new(task).poll(cx) {
                     entry.preparing = None;
-                    let (mut result, budget) = result.map_err(|_| EndpointError::Protocol)?;
+                    let (mut result, retry) = result.map_err(|_| EndpointError::Protocol)?;
                     if entry.cancel.is_cancelled() && result.is_ok() {
                         let facts = result
                             .as_ref()
@@ -314,7 +344,8 @@ impl HttpsEndpoint {
                         }
                         Err(failure) => {
                             let open = entry.envelope.open.as_ref().expect("Open");
-                            if open.policy == AuthPolicy::Anonymous
+                            if !entry.cancel.is_cancelled()
+                                && open.policy == AuthPolicy::Anonymous
                                 && https_policy::advertisement(open.service)
                                 && matches!(
                                     failure.code,
@@ -327,7 +358,7 @@ impl HttpsEndpoint {
                             {
                                 if let Some(operation) = self.operations.get_mut(request) {
                                     if operation.retries.len() < 64 {
-                                        operation.retries.insert(retry_key(open), budget);
+                                        operation.retries.insert(retry_key(open), retry);
                                     }
                                 }
                             }

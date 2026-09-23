@@ -22,6 +22,8 @@ pub(crate) type Handler = Arc<
         + Send
         + Sync,
 >;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ConnectionId(pub usize);
 pub(crate) struct Server {
     pub url: String,
     pub ca: Vec<u8>,
@@ -66,9 +68,9 @@ impl Server {
             let mut children = JoinSet::new();
             loop {
                 tokio::select! {
-                    result=listener.accept()=>{let (socket,_)=result.unwrap();count.fetch_add(1,Ordering::SeqCst);let acceptor=acceptor.clone();let handler=handler.clone();children.spawn(async move {
+                    result=listener.accept()=>{let (socket,_)=result.unwrap();let connection_id=ConnectionId(count.fetch_add(1,Ordering::SeqCst)+1);let acceptor=acceptor.clone();let handler=handler.clone();children.spawn(async move {
                         if let Ok(tls)=acceptor.accept(socket).await {
-                            let _=hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(tls),service_fn(move |req|{let handler=handler.clone();async move {Ok::<_,Infallible>(handler(req).await)}})).await;
+                            let _=hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(tls),service_fn(move |mut req|{let handler=handler.clone();req.extensions_mut().insert(connection_id);async move {Ok::<_,Infallible>(handler(req).await)}})).await;
                         }
                     });},
                     _=children.join_next(),if !children.is_empty()=>{},

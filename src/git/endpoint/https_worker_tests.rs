@@ -703,10 +703,11 @@ fn stalled_post_response_times_out_after_endwrite_without_replay() {
                 })
             }))
             .await;
-            let mut endpoint = Endpoint::new(
+            let mut endpoint = Endpoint::new_with_io_timeout(
                 server.config(),
                 None,
                 gwz_transport::pool::Config::default(),
+                1_000,
             )
             .unwrap();
             finish(

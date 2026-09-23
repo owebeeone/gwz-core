@@ -39,7 +39,7 @@ gwz-repo-contract = { path = "../repo-contract", version = "0.0.8" }
 # `unstable-sha256` is what makes a SHA-256 fixture repository constructible
 # (`ObjectFormat::Sha256`); `default-features = false` keeps the https/ssh
 # transports out of a fixture build, exactly as `gwz-repo-inspect` declares it.
-git2 = { version = "0.21", default-features = false, features = ["unstable-sha256"] }
+git2 = { package = "gwz-git2", path = "../../../git2-rs", version = "=0.21.0", default-features = false, features = ["unstable-sha256"] }
 tempfile = "3"
 
 [dev-dependencies]

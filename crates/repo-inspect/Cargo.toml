@@ -25,9 +25,8 @@ path = "src/lib.rs"
 
 [dependencies]
 gwz-repo-contract = { path = "../repo-contract", version = "0.0.8" }
-git2 = { version = "0.21", default-features = false, features = ["unstable-sha256"] }
+git2 = { package = "gwz-git2", path = "../../../git2-rs", version = "=0.21.0", default-features = false, features = ["unstable-sha256"] }
 
 [dev-dependencies]
 gwz-repo-contract = { path = "../repo-contract", features = ["contract-tests"] }
 tempfile = "3"
-

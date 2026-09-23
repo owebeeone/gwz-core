@@ -52,6 +52,15 @@ fn local_config(root: &std::path::Path) -> SshEndpointConfig {
     config
 }
 
+fn single_host_meta(id: &str) -> RequestMeta {
+    let mut request = meta(id);
+    request.policy = Some(crate::OperationPolicy {
+        max_connections_per_host: Some(1),
+        ..Default::default()
+    });
+    request
+}
+
 #[test]
 fn route_wait_reduces_first_open_allocation_budget_and_second_stage_times_out() {
     run(async {
@@ -90,7 +99,7 @@ fn route_wait_reduces_first_open_allocation_budget_and_second_stage_times_out() 
         )
         .unwrap();
         let request = runtime
-            .request(meta("gate-budget"), "fetch".into())
+            .request(single_host_meta("gate-budget"), "fetch".into())
             .await
             .unwrap();
         let first_attempt = Arc::new(Notify::new());
@@ -197,7 +206,7 @@ fn exhausted_route_budget_sends_no_second_open() {
         )
         .unwrap();
         let request = runtime
-            .request(meta("gate-exhausted"), "fetch".into())
+            .request(single_host_meta("gate-exhausted"), "fetch".into())
             .await
             .unwrap();
         let first_attempt = Arc::new(Notify::new());

@@ -134,6 +134,60 @@ fn anonymous_failure_crosses_mux_before_distinct_gh_open() {
         assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
     });
 }
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        #[test]
+        fn automatic_gh_open_keeps_the_challenge_socket_across_mux_receipts() {
+            use std::os::unix::fs::PermissionsExt;
+            runtime().block_on(async {
+                let seen = Arc::new(Mutex::new(Vec::new()));
+                let records = seen.clone();
+                let server = Server::start(Arc::new(move |request| {
+                    let records = records.clone();
+                    Box::pin(async move {
+                        let auth = request.headers().contains_key(hyper::header::AUTHORIZATION);
+                        let id = request.extensions().get::<ConnectionId>().unwrap().0;
+                        records.lock().unwrap().push((auth, id));
+                        response(if auth { 200 } else { 401 }, GitService::UploadPackAdvertisement, "ok")
+                    })
+                })).await;
+                let helper = tempfile::tempdir().unwrap();
+                let executable = helper.path().join("gh");
+                std::fs::write(&executable, "#!/bin/sh\ncat >/dev/null\nprintf 'username=fixture\\npassword=token\\n\\n'\n").unwrap();
+                std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+                let auth = crate::git::endpoint::https_auth::Config { executable, environment: Vec::new() };
+                let mut endpoint = Endpoint::new(server.config(), Some(auth), gwz_transport::pool::Config::default()).unwrap();
+                let (outcome, session) = opening(
+                    &endpoint.client,
+                    input(&server, GitService::UploadPackAdvertisement),
+                    true,
+                ).await;
+                let prepared = match outcome {
+                    Outcome::Ready { prepared, first_failure: Some(first), .. } => {
+                        assert_eq!(first.facts.unwrap().http_status, Some(401));
+                        assert!(prepared.opened.reused);
+                        prepared
+                    }
+                    _ => panic!("expected authenticated Opened receipt"),
+                };
+                assert_eq!(session.receipts().len(), 2);
+                assert_ne!(session.receipts()[0].stream_id, session.receipts()[1].stream_id);
+                let (stream, task) = attach(prepared);
+                stream.end_write().await.unwrap();
+                let mut data = [0; 8];
+                while stream.read(&mut data).await.unwrap() != 0 {}
+                stream.close().await.unwrap();
+                task.await.unwrap();
+                let records = seen.lock().unwrap().clone();
+                assert_eq!(records.len(), 2);
+                assert_eq!(records[0].0, false);
+                assert_eq!(records[1].0, true);
+                assert_eq!(records[0].1, records[1].1);
+                assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
+            });
+        }
+    }
+}
 #[test]
 fn successful_headers_cross_mux_before_stream_construction() {
     runtime().block_on(async {

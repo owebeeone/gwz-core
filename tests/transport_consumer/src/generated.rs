@@ -30,6 +30,7 @@ pub use gwz_transport::protocol::MessageKind;
 pub use gwz_transport::protocol::Open;
 pub use gwz_transport::protocol::Opened;
 pub use gwz_transport::protocol::Scheme;
+pub use gwz_transport::protocol::SetupFailureCause;
 pub use gwz_transport::protocol::Window;
 
 #[derive(Clone, Debug, PartialEq, Default)]

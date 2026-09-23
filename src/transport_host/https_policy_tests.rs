@@ -33,10 +33,21 @@ fn automatic_discovery_crosses_real_failure_then_gh_open_and_keeps_receipts_priv
         let root = tempfile::tempdir().unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
         let seen = calls.clone();
+        let sockets = Arc::new(Mutex::new(Vec::new()));
+        let observed_sockets = sockets.clone();
         let server = fixture::Server::start(Arc::new(move |request| {
             let seen = seen.clone();
+            let observed_sockets = observed_sockets.clone();
             Box::pin(async move {
                 seen.fetch_add(1, Ordering::SeqCst);
+                observed_sockets.lock().unwrap().push((
+                    request.headers().contains_key("authorization"),
+                    request
+                        .extensions()
+                        .get::<fixture::ConnectionId>()
+                        .unwrap()
+                        .0,
+                ));
                 fixture::response(
                     if request.headers().contains_key("authorization") {
                         200
@@ -103,8 +114,18 @@ fn automatic_discovery_crosses_real_failure_then_gh_open_and_keeps_receipts_priv
         let rows = opened.lock().unwrap();
         assert_eq!(rows.len(), 2);
         assert_ne!(rows[0].endpoint_id, "https-endpoint");
+        assert!(
+            rows[0].reused,
+            "Gh Open should inherit the challenge socket"
+        );
         assert!(rows[1].reused);
         drop(rows);
+        let sockets = sockets.lock().unwrap().clone();
+        assert_eq!(sockets.len(), 3);
+        assert_eq!(sockets[0].0, false);
+        assert_eq!(sockets[1].0, true);
+        assert_eq!(sockets[0].1, sockets[1].1);
+        assert_eq!(server.connections.load(Ordering::SeqCst), 1);
         let facts = facts.lock().unwrap();
         assert!(!facts.is_empty());
         assert!(facts.iter().all(|f| f.method == AuthMethod::Gh
@@ -113,6 +134,80 @@ fn automatic_discovery_crosses_real_failure_then_gh_open_and_keeps_receipts_priv
             && f.http_status != Some(401)));
         drop(facts);
         assert_eq!(request.finish().await.pending_local_work, 0);
+        assert_eq!(runtime.shutdown().await.pending_local_work, 0);
+    });
+}
+
+#[test]
+fn explicit_anonymous_refusal_does_not_hold_capacity_for_the_request_lifetime() {
+    run(async {
+        let root = tempfile::tempdir().unwrap();
+        let server = fixture::Server::start(Arc::new(|_| {
+            Box::pin(async {
+                fixture::response(401, GitService::UploadPackAdvertisement, "challenge")
+            })
+        }))
+        .await;
+        let mut config = SshEndpointConfig::fixture(endpoint_home(root.path()), None);
+        config.pool.cleanup_timeout_ms = 200;
+        let runtime = TransportRuntime::with_https(
+            config,
+            HttpsEndpointConfig {
+                tls: server.config(),
+                auth: Some(auth(root.path())),
+            },
+        )
+        .unwrap();
+        let first = runtime
+            .request(meta("held-anonymous"), "fetch".into())
+            .await
+            .unwrap();
+        let context = first.context.clone();
+        let url = server.url.clone();
+        let failure = tokio::task::spawn_blocking(move || {
+            context
+                .open_https(
+                    &url,
+                    GitService::UploadPackAdvertisement,
+                    Some(gwz_transport::protocol::AuthPolicy::Anonymous),
+                    Arc::new(|_, _| {}),
+                    Arc::new(|_| {}),
+                )
+                .err()
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            failure
+                .get_ref()
+                .unwrap()
+                .downcast_ref::<HttpsOpenFailure>()
+                .unwrap()
+                .failure
+                .code,
+            TransportError::Authentication
+        );
+        let endpoint = runtime
+            .0
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .local_endpoint
+            .clone();
+        let until = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let counts = endpoint.https_counts_for_test().unwrap();
+            if counts.total() == 0 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < until,
+                "challenge still holds capacity: {counts:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(server.connections.load(Ordering::SeqCst), 1);
+        assert_eq!(first.finish().await.pending_local_work, 0);
         assert_eq!(runtime.shutdown().await.pending_local_work, 0);
     });
 }

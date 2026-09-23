@@ -4,7 +4,7 @@ use super::{
     https_connection::failure,
     https_destination::Destination as HttpsDestination,
     https_policy,
-    https_worker::{Budget, Client, Input, Prepared},
+    https_worker::{Budget, ChallengeLease, Client, Input, Prepared},
 };
 use gwz_transport::{
     binding::{self, EndpointConfig},
@@ -156,7 +156,8 @@ impl OpeningSession {
         cancel: &CancellationToken,
     ) -> Outcome {
         let mut budget = client.budget_for_open(&self.open.deadlines);
-        self.attempt(client, input, cancel, &mut budget).await
+        self.attempt(client, input, cancel, &mut budget, &mut None, false)
+            .await
     }
     async fn attempt(
         &mut self,
@@ -164,6 +165,8 @@ impl OpeningSession {
         mut input: Input,
         cancel: &CancellationToken,
         budget: &mut Budget,
+        challenge: &mut Option<ChallengeLease>,
+        automatic: bool,
     ) -> Outcome {
         let expected = match open_for(client, &input) {
             Ok(open) => open,
@@ -178,7 +181,13 @@ impl OpeningSession {
         }
         // Pool ownership uses the same session as the admitted message.
         input.session = self.session_id.clone();
-        let result = client.prepare_budget(input, cancel, budget).await;
+        let result = if automatic {
+            client
+                .prepare_budget_for_transition(input, cancel, budget, challenge)
+                .await
+        } else {
+            client.prepare_budget(input, cancel, budget).await
+        };
         let mut message = match self.endpoint.message(
             self.stream_id,
             if result.is_ok() {
@@ -221,8 +230,16 @@ impl OpeningSession {
         cancel: &CancellationToken,
     ) -> Outcome {
         let mut budget = client.budget_for_open(&self.open.deadlines);
+        let mut challenge = None;
         let first = self
-            .attempt(client, first_input.clone(), cancel, &mut budget)
+            .attempt(
+                client,
+                first_input.clone(),
+                cancel,
+                &mut budget,
+                &mut challenge,
+                true,
+            )
             .await;
         let first_failure = match first {
             Outcome::Failed { failure, .. }
@@ -247,7 +264,10 @@ impl OpeningSession {
         if let Err(error) = self.admit_open(gh_open) {
             return Outcome::Rejected(error);
         }
-        match self.attempt(client, gh_input, cancel, &mut budget).await {
+        match self
+            .attempt(client, gh_input, cancel, &mut budget, &mut challenge, true)
+            .await
+        {
             Outcome::Ready {
                 prepared, receipt, ..
             } => Outcome::Ready {

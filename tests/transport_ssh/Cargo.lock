@@ -86,14 +86,25 @@ dependencies = [
 ]
 
 [[package]]
-name = "git2"
+name = "gwz-git2"
 version = "0.21.0"
 dependencies = [
  "bitflags",
+ "gwz-libgit2-sys",
  "libc",
- "libgit2-sys",
  "log",
  "url",
+]
+
+[[package]]
+name = "gwz-libgit2-sys"
+version = "0.18.8+1.9.7"
+dependencies = [
+ "cc",
+ "libc",
+ "libssh2-sys",
+ "libz-sys",
+ "pkg-config",
 ]
 
 [[package]]
@@ -106,7 +117,7 @@ version = "0.0.0"
 dependencies = [
  "base64",
  "cfg-if",
- "git2",
+ "gwz-git2",
  "gwz-transport",
  "libc",
  "libssh2-sys",
@@ -234,17 +245,6 @@ name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3eaf3ede3fee6db1a4c2ee091bf8a8b4dccdc6d17f656fb07896ee72867612f2"
-
-[[package]]
-name = "libgit2-sys"
-version = "0.18.8+1.9.7"
-dependencies = [
- "cc",
- "libc",
- "libssh2-sys",
- "libz-sys",
- "pkg-config",
-]
 
 [[package]]
 name = "libssh2-sys"

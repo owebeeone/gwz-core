@@ -63,6 +63,15 @@ class ErrorCode(Enum):
     unsupported_operation = 2
     unsupported_version = 1
 
+class SetupFailureCause(Enum):
+    address_not_available = 7
+    aggregate = 2
+    allocation = 4
+    connection_refused = 5
+    interaction = 3
+    not_found = 6
+    stall = 1
+
 class Effect(Enum):
     none = 1
     possible = 2
@@ -736,6 +745,7 @@ class Failure:
     code: ErrorCode
     effect: Effect
     facts: Facts | None
+    setup_cause: SetupFailureCause | None
 
 @dataclass(slots=True)
 class Destination:
