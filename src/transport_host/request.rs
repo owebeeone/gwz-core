@@ -349,9 +349,6 @@ pub struct ClientRequest {
     request: String,
 }
 impl ClientRequest {
-    pub(super) fn session(&self) -> &Arc<Session> {
-        &self.session
-    }
     pub(super) fn new(session: Arc<Session>, request: &str) -> ModelResult<Self> {
         session.register(request, None)?;
         Ok(Self {

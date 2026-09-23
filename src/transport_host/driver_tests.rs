@@ -121,7 +121,7 @@ fn sequential_local_requests_reuse_an_idle_ssh_connection() {
 }
 
 #[test]
-fn a_live_local_lease_refuses_an_overlapping_request_with_the_same_capacity() {
+fn a_live_local_lease_admits_an_overlapping_request_with_the_same_capacity() {
     let fixture = common::SshdFixture::new();
     let home = endpoint_home(&fixture);
     let runtime = TransportRuntime::new(SshEndpointConfig::fixture(home.clone(), None)).unwrap();
@@ -137,11 +137,9 @@ fn a_live_local_lease_refuses_an_overlapping_request_with_the_same_capacity() {
             Arc::new(|_| {}),
         )
         .unwrap();
-    let error = block_on(runtime.request(local_meta("lease-second", &home), "fetch".into()))
-        .err()
-        .expect("a live lease must block capacity admission");
-    assert_eq!(error.code, crate::model::ErrorCode::IoError);
-    assert_eq!(error.message, "transport operation is active");
+    let second = block_on(runtime.request(local_meta("lease-second", &home), "fetch".into()))
+        .expect("equal capacity joins without touching the held physical lease");
+    assert_eq!(block_on(second.finish()).pending_local_work, 0);
     drop(stream);
     block_on(first.finish());
     block_on(runtime.shutdown());

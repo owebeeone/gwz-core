@@ -81,6 +81,10 @@ impl From<model::ErrorCode> for generated::GwzErrorCode {
             model::ErrorCode::UnknownEvidence => Self::UnknownEvidence,
             model::ErrorCode::DisposalIncomplete => Self::DisposalIncomplete,
             model::ErrorCode::UrlSchemeUnavailable => Self::UrlSchemeUnavailable,
+            // Native-session bridge errors do not enter an OperationResult.
+            model::ErrorCode::TransportCapacityConflict => Self::IoError,
+            model::ErrorCode::TransportSessionFull => Self::IoError,
+            model::ErrorCode::OperationExpired => Self::IoError,
         }
     }
 }

@@ -16,6 +16,11 @@ use gwz_transport::{
     protocol::{AuthPolicy, Scheme},
 };
 pub use request::{ClientRequest, TransportCancellation, TransportRequest};
+
+/// Validate an operation before constructing an endpoint or consulting credentials.
+pub fn validate_request_context(meta: &RequestMeta, operation_id: &str) -> ModelResult<()> {
+    request::validate_meta(meta, operation_id)
+}
 pub(crate) use request::{HttpsAttemptReceipt, HttpsOpenFailure, RequestContext};
 use session::Session;
 pub(crate) use session::SshOpenFailure;
@@ -202,18 +207,13 @@ impl TransportRuntime {
             }
         };
         // Endpoint registration precedes the driver Bind even for the in-process route.
-        let client_guard = local_endpoint
-            .map(|endpoint| ClientRequest::new(endpoint, &meta.request_id))
-            .transpose()?;
-        if let Some(client) = &client_guard {
+        let client_guard = if let Some(endpoint) = local_endpoint {
             let policy = meta.policy.as_ref();
             let jobs = crate::operation::resolve_jobs(policy.and_then(|value| value.concurrency));
             let per_host = crate::operation::resolve_per_host(
                 policy.and_then(|value| value.max_connections_per_host),
             );
-            client
-                .session()
-                .install_capacity(
+            Some(endpoint.admit_client_request(
                     &meta.request_id,
                     pool::Capacity {
                         per_user_host: per_host,
@@ -221,9 +221,10 @@ impl TransportRuntime {
                         total: jobs.max(256),
                         max_requests: jobs.max(1024),
                     },
-                )
-                .await?;
-        }
+                ).await?)
+        } else {
+            None
+        };
         let context = RequestContext::new(session, meta, operation_id)?;
         let mut guard = TransportRequest::pending(context, client_guard);
         guard

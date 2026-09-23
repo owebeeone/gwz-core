@@ -203,6 +203,15 @@ pub(super) struct Session {
     state: Mutex<State>,
     event: Event,
     origin: Instant,
+    capacity_gate: AtomicBool,
+    admission_gate: tokio::sync::Mutex<()>,
+}
+struct CapacityLeader<'a>(&'a Session);
+impl Drop for CapacityLeader<'_> {
+    fn drop(&mut self) {
+        self.0.capacity_gate.store(false, Ordering::Release);
+        self.0.event.signal();
+    }
 }
 impl Session {
     cfg_if::cfg_if! { if #[cfg(test)] {
@@ -228,6 +237,8 @@ impl Session {
             state: Mutex::new(state),
             event: Event::new(),
             origin: Instant::now(),
+            capacity_gate: AtomicBool::new(false),
+            admission_gate: tokio::sync::Mutex::new(()),
         });
         let weak = Arc::downgrade(&session);
         thread::Builder::new()
@@ -364,11 +375,68 @@ impl Session {
                 .as_ref()
                 .is_some_and(|o| o.phase() == Phase::Closed)
     }
+
+    pub(super) async fn admit_client_request(
+        self: &Arc<Self>,
+        request: &str,
+        capacity: pool::Capacity,
+    ) -> ModelResult<ClientRequest> {
+        // A differing physical policy is refused before consuming the mux's
+        // lifetime request ID. Serialize that check with local admissions.
+        let _admission = self.admission_gate.lock().await;
+        {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.closed {
+                return Err(unavailable("transport session is closed"));
+            }
+            if state.used.contains(request) || state.used.len() >= 256 {
+                return Err(invalid("invalid or exhausted request registration"));
+            }
+            if state.installed_capacity != Some(capacity)
+                && (state.registrations.values().any(|record| record.result.is_none())
+                    || state.engine.as_ref().is_some_and(|engine| {
+                        engine.pending().saturating_sub(engine.pool().counts().idle) != 0
+                    })
+                    || state.https.as_ref().is_some_and(|endpoint| endpoint.pending() != 0)
+                    || has_non_idle_lease(&state))
+            {
+                return Err(ModelError::new(
+                    crate::model::ErrorCode::TransportCapacityConflict,
+                    "transport physical capacity conflicts with live work",
+                ));
+            }
+        }
+        let client = ClientRequest::new(self.clone(), request)?;
+        self.install_capacity(request, capacity).await?;
+        Ok(client)
+    }
+
     pub(super) async fn install_capacity(
         &self,
         request: &str,
         capacity: pool::Capacity,
     ) -> ModelResult<()> {
+        // One physical-policy leader owns both pools and the shared authority
+        // through retirement. Followers wait without holding the state mutex.
+        let gate_deadline = Instant::now() + CLEANUP;
+        let gate_listener = self.listener();
+        let _leader = poll_fn(|cx| {
+            if !gate_listener.arm(cx) {
+                return Poll::Ready(Err(unavailable("transport capacity wait unavailable")));
+            }
+            if self
+                .capacity_gate
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Poll::Ready(Ok(CapacityLeader(self)));
+            }
+            if Instant::now() >= gate_deadline {
+                return Poll::Ready(Err(unavailable("transport capacity wait timed out")));
+            }
+            Poll::Pending
+        })
+        .await?;
         // A finished request can still have bounded physical cleanup behind
         // its terminal reply. Wait for that owner to retire before installing
         // the next operation's limits; live overlapping requests still fail.
@@ -382,17 +450,17 @@ impl Session {
             if state.closed || !state.registrations.contains_key(request) {
                 return Poll::Ready(Err(unavailable("transport operation is active")));
             }
+            // Identical physical policy shares the installed pools. In
+            // particular, a live lease must not trigger a reinstall.
+            if state.installed_capacity == Some(capacity) {
+                return Poll::Ready(Ok(true));
+            }
             if state
                 .registrations
                 .iter()
                 .any(|(id, record)| id != request && record.result.is_none())
             {
-                return if !has_non_idle_lease(&state) && state.installed_capacity == Some(capacity)
-                {
-                    Poll::Ready(Ok(true))
-                } else {
-                    Poll::Ready(Err(unavailable("transport operation is active")))
-                };
+                return Poll::Ready(Err(unavailable("transport operation is active")));
             }
             // The SSH worker's pending count includes healthy idle sockets.
             // Those sockets are the resource this operation is meant to reuse;
@@ -417,6 +485,9 @@ impl Session {
         }
         let (ssh, https, authority) = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.installed_capacity == Some(capacity) {
+                return Ok(());
+            }
             if state.closed
                 || !state.registrations.contains_key(request)
                 || state.engine.as_ref().is_some_and(|engine| {
@@ -434,12 +505,10 @@ impl Session {
                 .iter()
                 .any(|(id, record)| id != request && record.result.is_none())
             {
-                return if !has_non_idle_lease(&state) && state.installed_capacity == Some(capacity)
-                {
-                    Ok(())
-                } else {
-                    Err(unavailable("transport operation is active"))
-                };
+                return Err(unavailable("transport operation is active"));
+            }
+            if has_non_idle_lease(&state) {
+                return Err(unavailable("transport capacity is active"));
             }
             let ssh = state
                 .engine
@@ -469,7 +538,7 @@ impl Session {
         };
         let deadline = Instant::now() + CLEANUP;
         let listener = self.listener();
-        poll_fn(|cx| {
+        let retired = poll_fn(|cx| {
             if !listener.arm(cx) {
                 return Poll::Ready(Err(unavailable("transport capacity wait unavailable")));
             }
@@ -483,8 +552,15 @@ impl Session {
             }
             Poll::Pending
         })
-        .await?;
+        .await;
+        if let Err(error) = retired {
+            // The pools have already accepted the new policy. A failure to
+            // finish retirement cannot leave an unpaired usable endpoint.
+            self.close();
+            return Err(error);
+        }
         if !authority.install_capacity(capacity.total, capacity.per_host) {
+            self.close();
             return Err(unavailable("shared capacity remains occupied"));
         }
         self.state

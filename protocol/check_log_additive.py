@@ -189,6 +189,9 @@ from taut.ir.load import load_schema
 # MEASURED additive, not assumed: removing exactly that one enum member from
 # the new IR reproduced the previous pin below exactly.
 #   was: 4b6cf3fd9fb9d0a9338a7a25aa305435eb01ef9219f4ad80b0dad705d4301ee6
+# Python session v2 (2026-09-24) adds only GwzErrorCode.cancelled (73) and
+# transport_record_limit (74). The projection removes exactly those members
+# before comparing with the existing historical pin.
 PRE_LOG_WIRE_SHA256 = "4d377a496c8905293b5e9b53392b70867cf6dafccbb623841a623dbd2d555f14"
 LOG_METHODS = {"log", "log.output"}
 
@@ -268,6 +271,13 @@ def pre_log_projection(schema_ir: dict[str, Any]) -> dict[str, Any]:
     if added != [expected]:
         raise ValueError("RequestMeta.invocation must be the optional InvocationContext at tag 9")
     request_meta["fields"].remove(added[0])
+    # Python shared transport session v2 appends only two terminal codes.
+    # Remove exactly those additive members to retain the prior wire pin.
+    error_codes = next(enum for enum in projected["enums"] if enum["name"] == "GwzErrorCode")
+    for name, value in (("cancelled", 73), ("transport_record_limit", 74)):
+        actual = error_codes["members"].pop(name, None)
+        if actual != value:
+            raise ValueError(f"GwzErrorCode.{name} must occupy additive slot {value}")
     return projected
 
 

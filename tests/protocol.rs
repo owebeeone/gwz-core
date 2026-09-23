@@ -25,6 +25,17 @@ use gwz_core::{
     WorkspaceRootFileChange, WorkspaceRootGitStatus, decode, encode,
 };
 
+#[test]
+fn python_transport_terminal_codes_are_stable_and_round_trip() {
+    for (code, wire) in [
+        (GwzErrorCode::Cancelled, 73),
+        (GwzErrorCode::TransportRecordLimit, 74),
+    ] {
+        assert_eq!(code.wire(), wire);
+        assert_eq!(GwzErrorCode::from_wire(wire).unwrap(), code);
+    }
+}
+
 fn round_trip<T>(
     value: &T,
     to_cbor: impl Fn(&T) -> gwz_core::Cbor,

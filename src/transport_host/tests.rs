@@ -48,6 +48,25 @@ fn request_installs_its_resolved_pool_capacity_before_bind() {
     wait(request.finish());
     wait(runtime.shutdown());
 }
+#[test]
+fn live_request_between_leases_refuses_a_different_physical_capacity() {
+    let runtime = TransportRuntime::new(config()).unwrap();
+    let first = wait(runtime.request(meta("capacity-first", TransportPlacement::Local), "first".into())).unwrap();
+    let mut different = meta("capacity-different", TransportPlacement::Local);
+    different.policy = Some(crate::OperationPolicy {
+        max_connections_per_host: Some(16),
+        ..Default::default()
+    });
+    let error = wait(runtime.request(different.clone(), "different".into()))
+        .err()
+        .expect("a live request blocks physical policy replacement even between leases");
+    assert_eq!(error.code, crate::model::ErrorCode::TransportCapacityConflict);
+    wait(first.finish());
+    let retry = wait(runtime.request(different, "different-retry".into()))
+        .expect("pre-registration capacity refusal leaves request_id retryable");
+    wait(retry.finish());
+    wait(runtime.shutdown());
+}
 fn meta(id: &str, placement: TransportPlacement) -> RequestMeta {
     RequestMeta {
         request_id: id.into(),

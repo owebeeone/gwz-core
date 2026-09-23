@@ -827,7 +827,13 @@ SCHEMA = schema(
          disposal_incomplete=71,
          # A requested URL scheme cannot be derived for a known-host URL
          # (2026-09-12, gwz-dev dev-docs/GwzUrlSchemePlan.md §2.5).
-         url_scheme_unavailable=72),
+         url_scheme_unavailable=72,
+         # Python shared transport session: an admitted operation was
+         # cancelled after remote effects became possible.
+         cancelled=73,
+         # The operation's own bounded event/result record overflowed after
+         # admission; do not infer Git success from the truncated record.
+         transport_record_limit=74),
 
     # Compatibility wave required to execute an allocated durable merge record.
     MergeRecordRequiredWave=Enum(
