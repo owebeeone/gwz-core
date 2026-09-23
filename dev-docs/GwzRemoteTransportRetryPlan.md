@@ -461,3 +461,7 @@ live fetch.
 This text is not implementation authority until Consistency, Safety, and
 Surface report GO on the same hash. GO accepts the plan text only. It does
 not authorize the code, an alpha rebuild, a commit, or a tag.
+
+## Candidate Python concurrency amendment (2026-09-24; pending review)
+
+The [Python concurrency correction](../../dev-docs/GwzPyTransportConcurrencyDesign-1.md) proposes a narrow replacement for §3 item 7, §6 and S1.4's blanket refusal when any lease is non-idle. For a shared Python endpoint generation, an operation whose **resolved four-field physical capacity exactly equals the installed capacity** may join without reinstalling or resizing the pool, even while another operation has a non-idle lease. An operation needing different physical capacity is still refused before Git and credential effects until all conflicting operations and leases retire. Every initial and later installation is serialized and published atomically with its shared reservation authority. This candidate text is not implementation authority until the corrected design receives review GO and the core requirements/design are updated.

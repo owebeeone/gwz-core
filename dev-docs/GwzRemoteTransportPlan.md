@@ -440,3 +440,13 @@ Keep remaining platform and selected-source checks together in the qualification
 production dependency/route activation and the remaining native compatibility
 qualification are still open. Physical SSH and host dispatch remain outside
 gwz-transport. Publication is separate.
+
+Candidate Phase 2 exit-row correction (2026-09-24, pending Python concurrency
+design review): the [corrected Python design](../../dev-docs/GwzPyTransportConcurrencyDesign-1.md)
+replaces the unconditional different-per-host-limit overlap assertion above.
+Different **per-operation fan-out** may overlap when the resolved four-field
+physical capacity is identical; combined leases respect that capacity and
+lower fan-out does not evict a peer's connection. Different physical capacities
+do not overlap: the second operation is refused before endpoint effects and
+may install its limits only after the first operation and cleanup retire. The
+old Phase 2 row remains historical until review GO updates core authority.
