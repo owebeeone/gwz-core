@@ -3,7 +3,7 @@
 Status: **draft; requires Consistency and Safety review before implementation**.
 Date: 2026-09-23. This amends only the physical disposition of a completed
 anonymous HTTPS discovery `401` or `404` in
-`GwzRemoteTransportHttpsDesign.md` §4 and §7. It does not authorize a
+`GwzRemoteTransportHttpsDesign.md` §4 and §6. It does not authorize a
 release or change the authentication replay count.
 
 ## Observed gap
@@ -38,7 +38,7 @@ the endpoint may release the first physical HTTPS lease as reusable only after:
    logical stream, with the original request, operation, route and remaining
    cumulative budgets.
 
-This is a narrow exception to §7's “no terminal failure” reuse condition: the
+This is a narrow exception to §6's “no terminal failure” reuse condition: the
 completed anonymous challenge is a Git authorization transition, not a
 successful Git advertisement. The first typed failure receipt remains private
 and the final Gh result is the only public operation result. A reusable TLS
