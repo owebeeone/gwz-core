@@ -155,7 +155,7 @@ where
                 materialized_response(member, &plan.state, &observed, plan.url_resolution.clone());
             Ok(Some((plan.member_id.clone(), observed, response)))
         },
-    );
+    )?;
     let mut responses = Vec::with_capacity(outcomes.len());
     let mut observed_states: Vec<(String, ResolvedMemberArtifact)> = Vec::new();
     let mut first_error = None;

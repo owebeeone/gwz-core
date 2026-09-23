@@ -124,6 +124,7 @@ impl RequestContext {
         let early = |code| {
             io::Error::other(HttpsOpenFailure {
                 failure: Failure {
+                    setup_cause: None,
                     code,
                     effect: Effect::None,
                     facts: None,
@@ -224,6 +225,7 @@ impl RequestContext {
                         Err((
                             None,
                             Failure {
+                                setup_cause: None,
                                 code: ErrorCode::Cancelled,
                                 effect: Effect::None,
                                 facts: None,
@@ -281,6 +283,19 @@ fn identity(raw: &str, meta: &RequestMeta) -> gwz_transport::protocol::Identity 
             .and_then(|t| t.endpoint_path_base.clone()),
     }
 }
+#[derive(Clone)]
+pub struct TransportCancellation {
+    session: Arc<Session>,
+    request: String,
+    active: Arc<AtomicBool>,
+}
+impl TransportCancellation {
+    pub fn cancel(&self) {
+        if self.active.swap(false, Ordering::AcqRel) {
+            self.session.cancel(&self.request);
+        }
+    }
+}
 pub struct TransportRequest {
     pub(super) context: RequestContext,
     pub(super) backend: Option<Git2Backend>,
@@ -302,6 +317,13 @@ impl TransportRequest {
     }
     pub fn cancel(&self) {
         self.context.cancel();
+    }
+    pub fn cancellation_handle(&self) -> TransportCancellation {
+        TransportCancellation {
+            session: self.context.session.clone(),
+            request: self.context.meta.request_id.clone(),
+            active: self.context.active.clone(),
+        }
     }
     pub async fn finish(mut self) -> CleanupReport {
         self.context.cancel();
@@ -327,6 +349,9 @@ pub struct ClientRequest {
     request: String,
 }
 impl ClientRequest {
+    pub(super) fn session(&self) -> &Arc<Session> {
+        &self.session
+    }
     pub(super) fn new(session: Arc<Session>, request: &str) -> ModelResult<Self> {
         session.register(request, None)?;
         Ok(Self {

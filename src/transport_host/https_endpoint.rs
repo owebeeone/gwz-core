@@ -53,6 +53,9 @@ pub(super) struct HttpsEndpoint {
     last_outbound: Option<Key>,
 }
 impl HttpsEndpoint {
+    pub(super) fn pool(&self) -> &pool::Pool {
+        self.client.pool()
+    }
     pub(super) fn new(
         config: HttpsEndpointConfig,
         pool: pool::Config,
@@ -248,6 +251,7 @@ impl HttpsEndpoint {
                             .ok()
                             .map(|prepared| prepared.opened.facts.clone());
                         result = Err(Failure {
+                            setup_cause: None,
                             code: ErrorCode::Cancelled,
                             effect: Effect::None,
                             facts,
@@ -500,6 +504,7 @@ fn cancel_entry(entry: &mut Entry) {
         // Opened was published, but the initiator supplied no POST data yet.
         if let Some(peer) = &entry.peer {
             let _ = peer.fail_terminal(Failure {
+                setup_cause: None,
                 code: ErrorCode::Cancelled,
                 effect: Effect::None,
                 facts: Some(prepared.opened.facts.clone()),
@@ -516,6 +521,7 @@ fn cancelled_open(envelope: &Envelope, facts: Option<Facts>) -> Envelope {
         stream_id: envelope.stream_id,
         kind: MessageKind::OpenFailed,
         open_failed: Some(Failure {
+            setup_cause: None,
             code: ErrorCode::Cancelled,
             effect: Effect::None,
             facts,

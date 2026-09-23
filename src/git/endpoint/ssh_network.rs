@@ -145,11 +145,23 @@ cfg_if! {
             }
 
             fn resolve(host: &str, port: u16, control: &Control) -> io::Result<Vec<SocketAddr>> {
-                control.check()?;
-                let result = (host, port).to_socket_addrs().map_err(clean)?;
+                let result = timed_resolution(control, || (host, port).to_socket_addrs().map_err(clean))?;
                 let addresses: Vec<_> = result.take(ADDRESS_CAP).collect();
                 control.check()?;
                 Ok(addresses)
+            }
+
+            pub(crate) fn timed_resolution<T>(
+                control: &Control,
+                resolve: impl FnOnce() -> io::Result<T>,
+            ) -> io::Result<T> {
+                control.begin_wait()?;
+                let result = resolve();
+                control.check()?;
+                let result = result?;
+                control.complete_wait()?;
+                control.check()?;
+                Ok(result)
             }
 
             fn connect(address: SocketAddr, control: &Control) -> io::Result<TcpStream> {
@@ -161,8 +173,13 @@ cfg_if! {
                 control.check()?;
                 socket.set_nonblocking(true).map_err(clean)?;
                 control.check()?;
-                match socket.connect(&SockAddr::from(address)) {
-                    Ok(()) => {}
+                control.begin_wait()?;
+                let attempt = socket.connect(&SockAddr::from(address));
+                control.check()?;
+                match attempt {
+                    Ok(()) => {
+                        control.complete_wait()?;
+                    }
                     Err(error)
                         if matches!(
                             error.kind(),
@@ -176,6 +193,7 @@ cfg_if! {
                                 return Err(clean(error));
                             }
                             if socket.peer_addr().is_ok() {
+                                control.complete_wait()?;
                                 break;
                             }
                         }
@@ -187,22 +205,31 @@ cfg_if! {
             }
 
             fn wait_socket(socket: &Socket, control: &Control) -> io::Result<()> {
-                control.check()?;
-                let timeout = control.quantum()?.as_millis().min(20) as i32;
-                let mut poll = libc::pollfd {
-                    fd: socket.as_raw_fd(),
-                    events: libc::POLLOUT | libc::POLLERR | libc::POLLHUP,
-                    revents: 0,
-                };
-                let result = unsafe { libc::poll(&mut poll, 1, timeout) };
-                control.check()?;
-                if result < 0 {
-                    let error = io::Error::last_os_error();
-                    if error.kind() != io::ErrorKind::Interrupted {
-                        return Err(clean(error));
+                wait_step(control, |duration| {
+                    let timeout = duration.as_millis().min(20) as i32;
+                    let mut poll = libc::pollfd {
+                        fd: socket.as_raw_fd(),
+                        events: libc::POLLOUT | libc::POLLERR | libc::POLLHUP,
+                        revents: 0,
+                    };
+                    let result = unsafe { libc::poll(&mut poll, 1, timeout) };
+                    if result < 0 {
+                        let error = io::Error::last_os_error();
+                        if error.kind() != io::ErrorKind::Interrupted {
+                            return Err(clean(error));
+                        }
+                        return Ok(false);
                     }
-                }
-                Ok(())
+                    Ok(result > 0
+                        && (poll.revents & (libc::POLLOUT | libc::POLLERR | libc::POLLHUP)) != 0)
+                })
+            }
+
+            pub(crate) fn wait_step(
+                control: &Control,
+                poll: impl FnOnce(std::time::Duration) -> io::Result<bool>,
+            ) -> io::Result<()> {
+                control.wait_step(poll)
             }
 
             fn handshake(
@@ -228,9 +255,15 @@ cfg_if! {
                     control.check()?;
                 }
                 loop {
+                    control.begin_wait()?;
+                    let result = connection.session().handshake();
                     control.check()?;
-                    match connection.session().handshake() {
-                        Ok(()) => break,
+                    match result {
+                        Ok(()) => {
+                            control.complete_wait()?;
+                            control.check()?;
+                            break;
+                        }
                         Err(error) if error.code() == ssh2::ErrorCode::Session(-37) => {
                             wait_session(&mut connection, control)?;
                         }
@@ -257,21 +290,24 @@ cfg_if! {
                     BlockDirections::Both => libc::POLLIN | libc::POLLOUT,
                     BlockDirections::None => libc::POLLIN | libc::POLLOUT,
                 };
-                let timeout = control.quantum()?.as_millis().min(20) as i32;
-                let mut poll = libc::pollfd {
-                    fd: connection.session().as_raw_fd(),
-                    events,
-                    revents: 0,
-                };
-                let result = unsafe { libc::poll(&mut poll, 1, timeout) };
-                control.check()?;
-                if result < 0 {
-                    let error = io::Error::last_os_error();
-                    if error.kind() != io::ErrorKind::Interrupted {
-                        return Err(clean(error));
+                let fd = connection.session().as_raw_fd();
+                wait_step(control, |duration| {
+                    let timeout = duration.as_millis().min(20) as i32;
+                    let mut poll = libc::pollfd {
+                        fd,
+                        events,
+                        revents: 0,
+                    };
+                    let result = unsafe { libc::poll(&mut poll, 1, timeout) };
+                    if result < 0 {
+                        let error = io::Error::last_os_error();
+                        if error.kind() != io::ErrorKind::Interrupted {
+                            return Err(clean(error));
+                        }
+                        return Ok(false);
                     }
-                }
-                Ok(())
+                    Ok(result > 0 && (poll.revents & events) != 0)
+                })
             }
 
             fn preferences(
@@ -333,6 +369,9 @@ cfg_if! {
             }
 
             fn clean(error: io::Error) -> io::Error {
+                if super::super::agent_job::timeout_reason(&error).is_some() {
+                    return error;
+                }
                 io::Error::from(error.kind())
             }
 
@@ -340,10 +379,10 @@ cfg_if! {
                 clean(io::Error::from(error))
             }
         }
-        pub(crate) use unix::establish;
+        pub(crate) use unix::{establish, wait_step};
         cfg_if! {
             if #[cfg(test)] {
-                pub(crate) use unix::{connect_addresses, establish_inner as establish_with, read_regular};
+                pub(crate) use unix::{connect_addresses, establish_inner as establish_with, read_regular, timed_resolution};
             }
         }
     }

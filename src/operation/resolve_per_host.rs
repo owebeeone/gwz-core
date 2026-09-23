@@ -1,5 +1,5 @@
-/// Default maximum concurrent connections to any one host.
-pub const DEFAULT_MAX_PER_HOST: usize = 8;
+/// Default maximum concurrent member operations to any one hostname.
+pub const DEFAULT_MAX_PER_HOST: usize = 32;
 
 /// Maximum concurrent operations against any one host: the driver's value when
 /// valid, otherwise [`DEFAULT_MAX_PER_HOST`].

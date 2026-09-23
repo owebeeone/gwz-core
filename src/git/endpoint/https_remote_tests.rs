@@ -8,6 +8,7 @@ struct State {
     closed: usize,
     cancelled: usize,
     data: Vec<u8>,
+    reply: Vec<u8>,
 }
 struct Fake(Arc<Mutex<State>>);
 impl Read for Fake {
@@ -16,7 +17,11 @@ impl Read for Fake {
         if out.is_empty() {
             return Ok(0);
         }
-        Ok(0)
+        let mut state = self.0.lock().unwrap();
+        let count = out.len().min(state.reply.len());
+        out[..count].copy_from_slice(&state.reply[..count]);
+        state.reply.drain(..count);
+        Ok(count)
     }
 }
 impl Write for Fake {
@@ -69,6 +74,20 @@ fn rpc_advertisement_rejects_body_and_unfinished_drop_cancels() {
     assert_eq!(state.lock().unwrap().cancelled, 1);
 }
 
+#[test]
+fn advertisement_prefix_drop_gracefully_closes_unread_response() {
+    let state = Arc::new(Mutex::new(State {
+        reply: b"0000".to_vec(),
+        ..State::default()
+    }));
+    let mut rpc = RpcIo::new(Fake(state.clone()), true);
+    assert_eq!(rpc.read(&mut [0; 1]).unwrap(), 1);
+    drop(rpc);
+    let state = state.lock().unwrap();
+    assert_eq!(state.closed, 1);
+    assert_eq!(state.cancelled, 0);
+}
+
 fn open_failure(
     service: GitService,
     status: i64,
@@ -77,6 +96,7 @@ fn open_failure(
 ) -> git2::Error {
     let failure = crate::transport_host::HttpsOpenFailure {
         failure: gwz_transport::protocol::Failure {
+            setup_cause: None,
             code: gwz_transport::protocol::ErrorCode::RepositoryRefused,
             effect: gwz_transport::protocol::Effect::None,
             facts: Some(gwz_transport::protocol::Facts {

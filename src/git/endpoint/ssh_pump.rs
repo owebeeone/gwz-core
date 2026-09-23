@@ -313,6 +313,7 @@ impl<C: ChannelIo> SshPump<C> {
                         if self.typed_failures {
                             self.endpoint
                                 .fail_terminal(Failure {
+                                    setup_cause: None,
                                     code: ErrorCode::RepositoryRefused,
                                     effect: Effect::None,
                                     facts: Some(self.facts.clone()),

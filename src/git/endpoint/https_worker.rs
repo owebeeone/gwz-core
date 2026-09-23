@@ -62,7 +62,7 @@ impl Endpoint {
         auth: Option<https_auth::Config>,
         config: pool::Config,
     ) -> Result<Self, Failure> {
-        Self::new_with_io_timeout(tls, auth, config, 3_000)
+        Self::new_with_io_timeout(tls, auth, config, 9_000)
     }
     pub(crate) fn new_with_io_timeout(
         tls: https_connection::Config,
@@ -167,6 +167,9 @@ impl Budget {
     }
 }
 impl Client {
+    pub(crate) fn pool(&self) -> &pool::Pool {
+        &self.pool.pool
+    }
     pub(crate) fn pending_cleanup(&self) -> usize {
         self.auth_owner.pending_cleanup_count() + self.pool.pool.counts().closing
     }
@@ -582,6 +585,7 @@ fn body_channel() -> (mpsc::Sender<std::io::Result<Bytes>>, RequestBody) {
 }
 fn with_facts(code: ErrorCode, effect: Effect, facts: &Facts) -> Failure {
     Failure {
+        setup_cause: None,
         code,
         effect,
         facts: Some(facts.clone()),

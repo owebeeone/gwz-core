@@ -77,10 +77,12 @@ impl SmartSubtransport for RemoteTransport {
             Service::ReceivePackLs | Service::ReceivePack => GitService::ReceivePack,
         };
         let stream = self.endpoint.open(url, service).map_err(|error| {
-            if error
-                .get_ref()
-                .is_some_and(|cause| cause.is::<AuthenticationRejected>())
-            {
+            if error.get_ref().is_some_and(|cause| {
+                cause.is::<AuthenticationRejected>()
+                    || cause
+                        .source()
+                        .is_some_and(|source| source.is::<AuthenticationRejected>())
+            }) {
                 Error::new(ErrorCode::Auth, ErrorClass::Ssh, error.to_string())
             } else {
                 network_error(error)

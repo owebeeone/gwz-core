@@ -6,7 +6,7 @@ use super::{
 use bytes::Bytes;
 use gwz_transport::{
     pool::{Identity, Key},
-    protocol::{Effect, ErrorCode, Failure, Scheme},
+    protocol::{Effect, ErrorCode, Failure, Scheme, SetupFailureCause},
 };
 use hyper::{
     body::{Body, Frame},
@@ -35,7 +35,28 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) fn failure(code: ErrorCode) -> Failure {
     Failure {
+        setup_cause: None,
         code,
+        effect: Effect::None,
+        facts: None,
+    }
+}
+fn failure_from_io(error: &io::Error) -> Failure {
+    let (code, setup_cause) = match error.kind() {
+        io::ErrorKind::ConnectionRefused => (
+            ErrorCode::Unavailable,
+            Some(SetupFailureCause::ConnectionRefused),
+        ),
+        io::ErrorKind::NotFound => (ErrorCode::Unavailable, Some(SetupFailureCause::NotFound)),
+        io::ErrorKind::AddrNotAvailable => (
+            ErrorCode::Unavailable,
+            Some(SetupFailureCause::AddressNotAvailable),
+        ),
+        _ => (ErrorCode::Io, None),
+    };
+    Failure {
+        code,
+        setup_cause,
         effect: Effect::None,
         facts: None,
     }
@@ -225,11 +246,15 @@ impl Resource for HttpResource {
             let setup = match result {
                 Ok(setup) => setup,
                 Err(error) => {
-                    return Poll::Ready(Err(failure(if error.kind() == io::ErrorKind::TimedOut {
-                        ErrorCode::Timeout
+                    let failed = if let Some(reason) = super::agent_job::timeout_reason(&error) {
+                        Failure {
+                            setup_cause: Some(reason.setup_cause()),
+                            ..failure(ErrorCode::Timeout)
+                        }
                     } else {
-                        ErrorCode::Io
-                    })));
+                        failure_from_io(&error)
+                    };
+                    return Poll::Ready(Err(failed));
                 }
             };
             let key = self.key.clone();
@@ -238,7 +263,7 @@ impl Resource for HttpResource {
             self.connecting = Some(tokio::spawn(async move {
                 tokio::select! {
                     _=cancelled.cancelled()=>Err(failure(ErrorCode::Cancelled)),
-                    _=async {if let Some(at)=deadline {tokio::time::sleep_until(at.into()).await;} else {std::future::pending::<()>().await;}}=>Err(failure(ErrorCode::Timeout)),
+                    _=async {if let Some(at)=deadline {tokio::time::sleep_until(at.into()).await;} else {std::future::pending::<()>().await;}}=>Err(Failure { setup_cause: Some(SetupFailureCause::Aggregate), ..failure(ErrorCode::Timeout) }),
                     result=connect(setup,key)=>result,
                 }
             }));
@@ -329,13 +354,21 @@ impl Drop for HttpResource {
 }
 async fn connect(setup: Setup, key: Key) -> Result<Connection, Failure> {
     let mut socket = None;
+    let mut last_error = None;
     for address in setup.addresses {
-        if let Ok(connected) = TcpStream::connect(address).await {
-            socket = Some(connected);
-            break;
+        match TcpStream::connect(address).await {
+            Ok(connected) => {
+                socket = Some(connected);
+                break;
+            }
+            Err(error) => last_error = Some(error),
         }
     }
-    let socket = socket.ok_or_else(|| failure(ErrorCode::Io))?;
+    let socket = socket.ok_or_else(|| {
+        last_error
+            .as_ref()
+            .map_or_else(|| failure(ErrorCode::Io), failure_from_io)
+    })?;
     socket
         .set_nodelay(true)
         .map_err(|_| failure(ErrorCode::Io))?;
@@ -432,5 +465,28 @@ async fn connect(setup: Setup, key: Key) -> Result<Connection, Failure> {
 impl Drop for Connection {
     fn drop(&mut self) {
         self.driver.abort();
+    }
+}
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        mod setup_cause_tests {
+            use super::*;
+
+            #[test]
+            fn native_connect_kinds_keep_typed_origins() {
+                for (kind, cause) in [
+                    (io::ErrorKind::ConnectionRefused, SetupFailureCause::ConnectionRefused),
+                    (io::ErrorKind::NotFound, SetupFailureCause::NotFound),
+                    (io::ErrorKind::AddrNotAvailable, SetupFailureCause::AddressNotAvailable),
+                ] {
+                    let failure = failure_from_io(&io::Error::from(kind));
+                    assert_eq!(failure.code, ErrorCode::Unavailable);
+                    assert_eq!(failure.setup_cause, Some(cause));
+                }
+                let unknown = failure_from_io(&io::Error::from(io::ErrorKind::BrokenPipe));
+                assert_eq!(unknown.code, ErrorCode::Io);
+                assert_eq!(unknown.setup_cause, None);
+            }
+        }
     }
 }

@@ -48,7 +48,7 @@ stays in each repository's `release.published` workflow. Gearu does not run
 |---|---|
 | macOS ARM64, Linux x86-64, Windows x86-64 | Linux ARM64, macOS x86-64 |
 | SSH and gh-only HTTPS, both placements, one pool | iroh, a physical byte carrier, a separate-process wire |
-| The two setup clocks from the accepted timeout plan | A new timeout flag, or a changed 3 s stall / 10 s aggregate / 60 s idle |
+| The two setup clocks from the accepted timeout plan, with 9 s stall and 30 s aggregate defaults per the accepted retry plan | A new timeout flag, or a changed 60 s idle default |
 | Python using the same `gwz-transport` pool as Rust | A second pool implemented in Python |
 | New crates for this libgit2, the forked git2 bindings, `gwz-transport`, and `gwz-git` | Publishing those forks as `libgit2-sys` or `git2` |
 
@@ -436,8 +436,9 @@ S5.6, and S6. Phase 8 waits on S7.5 and S2.3.
 - Publishing under the names `libgit2-sys` or `git2`.
 - Treating Linux ARM64 or macOS x86-64 as 1.1.0 platforms.
 - iroh, a physical carrier, or a separate-process transport.
-- Changing the 3-second stall, the 10-second aggregate, the 60-second idle
-  default, or a frozen hard cap.
+- Changing the 60-second idle default, or adding a frozen hard cap. The stall
+  default is 9 seconds and the aggregate default is 30 seconds, per
+  `GwzRemoteTransportRetryPlan.md`.
 - A Python implementation of the pool.
 - Running Phase 8 because this file exists. The operator runs it after the
   phase exits above.

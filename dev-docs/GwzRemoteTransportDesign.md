@@ -660,7 +660,7 @@ Keep these timeout domains separate:
 | Domain | Meaning |
 |---|---|
 | Allocation wait | Time waiting for capacity; cancellable, no Git request sent |
-| Connect/auth network | Socket setup and protocol progress; preserve configured native timeout semantics |
+| Connect/auth network | Socket setup and protocol progress preserve the configured native timeout as the per-attempt stall. `Deadlines.connect_ms` and pool `connect_timeout_ms` are a separate aggregate. Endpoint construction must not copy `io_timeout_ms` into them. |
 | Active I/O | Peer network progress, not idle-pool lifetime; report deliberate local backpressure distinctly |
 | Write coalescing | Maximum avoidable batching delay while writable |
 | User interaction | If supported, visible and cancellable; excluded from network timeout accounting |
@@ -702,7 +702,7 @@ ticks have no effect, consistent with the existing stream/pool clocks. The host
 provides independent timer service; `next_deadline` remains a snapshot, not a
 subscription, and a pending action/message receiver never replaces that service.
 
-`Config::io_timeout_ms` defaults to 3,000 ms for a standalone stream; endpoint
+The product stall default captured at startup is 9,000 ms; endpoint
 construction captures its configured native timeout and an Open request can
 only shorten it. Zero disables the network timeout; positive values are
 1–2,147,483,647 ms, matching native startup configuration. With zero, Network
@@ -759,16 +759,19 @@ message scenarios run through typed handoff and bounded payload encoding.
 
 ### 10.2 Native timeout representation
 
-The pre-freeze implementation contact found that native GWZ accepts
-`--ssh-timeout 0` and core `configure_server_timeout_ms(0)` to disable network
-timeouts. Core also accepts positive milliseconds through `i32::MAX`. The
-transport must represent these settings, not silently clamp them or misreport
+Native GWZ accepts `--ssh-timeout 0` and core `configure_server_timeout_ms(0)`
+to disable both the per-attempt stall and the aggregate connect deadline. They
+do not disable cleanup, cancellation, or idle disposal. Core also accepts
+positive milliseconds through `i32::MAX`. The transport must represent these
+settings, not silently clamp them or misreport
 network activity as Idle. This section completes §10's preservation requirement
 and supersedes the prototype's positive-only, 24-hour network timeout range.
 It does not disable bounded allocation, helper, cleanup or idle policies.
 
 Existing `Deadlines.connect_ms` and `io_ms`, pool `connect_timeout_ms`, and stream
-`io_timeout_ms` use zero for disabled and 1–2,147,483,647 for a finite allowance.
+`io_timeout_ms` each keep zero for disabled and 1–2,147,483,647 for a finite
+allowance. `io_ms` and stream `io_timeout_ms` are the stall. `connect_ms` and
+pool `connect_timeout_ms` are the aggregate. Equal numbers are not required.
 No schema type, tag or message is added. Other Open deadlines remain positive;
 helper **remaining** allowance in the active stream may be zero as §10.1 states.
 A request can only tighten endpoint policy: zero is admissible only when the

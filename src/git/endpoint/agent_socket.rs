@@ -13,17 +13,21 @@ cfg_if::cfg_if! {
             }
             impl Channel for AgentSocket {
                 fn wait(&mut self, writing: bool, control: &Control) -> io::Result<()> {
-                    let duration = control.quantum()?;
-                    let timeout = duration.as_millis().min(20) as i32;
-                    let mut fd = libc::pollfd { fd: self.0.as_raw_fd(), events: if writing { libc::POLLOUT } else { libc::POLLIN }, revents: 0 };
-                    // SAFETY: one initialized pollfd lives throughout this bounded call.
-                    let result = unsafe { libc::poll(&mut fd, 1, timeout) };
-                    control.check()?;
-                    if result < 0 {
-                        let error = io::Error::last_os_error();
-                        if error.kind() != io::ErrorKind::Interrupted { return Err(error.kind().into()); }
-                    }
-                    Ok(())
+                    let events = if writing { libc::POLLOUT } else { libc::POLLIN };
+                    control.wait_step(|duration| {
+                        let timeout = duration.as_millis().min(20) as i32;
+                        let mut fd = libc::pollfd { fd: self.0.as_raw_fd(), events, revents: 0 };
+                        // SAFETY: one initialized pollfd lives throughout this bounded call.
+                        let result = unsafe { libc::poll(&mut fd, 1, timeout) };
+                        if result < 0 {
+                            let error = io::Error::last_os_error();
+                            if error.kind() != io::ErrorKind::Interrupted {
+                                return Err(error.kind().into());
+                            }
+                            return Ok(false);
+                        }
+                        Ok(result > 0 && (fd.revents & events) != 0)
+                    })
                 }
             }
             pub(crate) fn connect(path: &Path, control: Arc<Control>) -> io::Result<Agent<AgentSocket>> {
@@ -32,19 +36,33 @@ cfg_if::cfg_if! {
                 let mut socket = AgentSocket(Socket::new(Domain::UNIX, Type::STREAM, None)?);
                 socket.0.set_nonblocking(true)?;
                 loop {
+                    control.begin_wait()?;
+                    let attempt = socket.0.connect(&address);
                     control.check()?;
-                    match socket.0.connect(&address) {
-                        Ok(()) => break,
-                        Err(e) if e.raw_os_error() == Some(libc::EISCONN) => break,
+                    match attempt {
+                        Ok(()) => {
+                            control.complete_wait()?;
+                            break;
+                        }
+                        Err(e) if e.raw_os_error() == Some(libc::EISCONN) => {
+                            control.complete_wait()?;
+                            break;
+                        }
                         Err(e) if e.raw_os_error() == Some(libc::EINPROGRESS) || e.raw_os_error() == Some(libc::EALREADY) => {
                             socket.wait(true, &control)?;
                             if let Some(e) = socket.0.take_error()? { return Err(e.kind().into()); }
-                            if socket.0.peer_addr().is_ok() { break; }
+                            if socket.0.peer_addr().is_ok() {
+                                control.complete_wait()?;
+                                break;
+                            }
                         }
                         Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted) => {
                             // Unix backlog exhaustion may not initiate a connection.
                             // Avoid a writable socket producing a tight connect retry.
-                            std::thread::sleep(control.quantum()?);
+                            // This sleep is not a completion.
+                            let pause = control.quantum()?;
+                            std::thread::sleep(pause);
+                            control.check()?;
                         }
                         Err(e) => return Err(e.kind().into()),
                     }

@@ -42,7 +42,7 @@ where
                 .and_then(|member| pull_remote_host(member, policy))
         },
         |member_id| pull_validate_member(backend, root, manifest, lock, member_id, policy),
-    )
+    )?
     .into_iter()
     .collect::<ModelResult<Vec<()>>>()?;
 
@@ -60,7 +60,7 @@ where
         |member_id| {
             pull_head_member_preflight(backend, root, manifest, lock, member_id, policy, emitter)
         },
-    )
+    )?
     .into_iter()
     .collect()
 }

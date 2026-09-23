@@ -48,8 +48,8 @@ of that same instant.
 
 | Clock | Value | What it bounds |
 |---|---|---|
-| Native stall | `--ssh-timeout` / `io_timeout_ms`. Default 3,000 ms. Zero disables it | One blocking native attempt. The attempt completes when the socket is ready or the native call returns a finished result. A poll or sleep slice with no readiness does not complete it and does not reset the allowance |
-| Aggregate connect | Pool `connect_timeout_ms`. Construction default 10,000 ms. Leave it there | The whole setup attempt, as the outer bound for cancellation and physical disposal |
+| Native stall | `--ssh-timeout` / `io_timeout_ms`. Default 9,000 ms per the accepted retry plan. Zero disables it | One blocking native attempt. The attempt completes when the socket is ready or the native call returns a finished result. A poll or sleep slice with no readiness does not complete it and does not reset the allowance |
+| Aggregate connect | Pool `connect_timeout_ms`. Construction default 30,000 ms per the accepted retry plan | The whole setup attempt, as the outer bound for cancellation and physical disposal |
 
 A completed attempt starts a fresh stall allowance. DNS returning addresses,
 TCP becoming connected, `handshake()` returning success, and an agent RPC
@@ -69,7 +69,8 @@ remaining stall is preserved and resumes on `end_interaction`.
 `--ssh-timeout 0` disables the stall allowance and the aggregate network
 deadline together, matching stable `configure_server_timeout_ms(0)`. Cleanup,
 cancellation, and shutdown disposal stay on their own clocks (§10.2). A positive
-`--ssh-timeout` does not change the 10-second aggregate. There is no new flag.
+`--ssh-timeout` does not change the 30-second aggregate. `--max-retries` is
+not a timeout flag.
 
 Stall expiry and aggregate expiry are both setup-stage timeouts. Each carries
 a distinct reason, `stall` or `aggregate`, visible to the caller. A later
@@ -285,8 +286,8 @@ on S3.3 having passed, not only on a live fetch.
 
 ## 5. Out of scope
 
-- Changing the default 3-second `--ssh-timeout` or the default 10-second pool
-  connect budget.
+- Changing the 9-second stall or 30-second aggregate defaults established by
+  the accepted retry plan.
 - Resetting the pool `ConnectClock` on setup progress, or applying §10.1
   byte-progress rules to handshake and agent authentication.
 - A new CLI flag, schema field, or message. The `stall` / `aggregate` reason

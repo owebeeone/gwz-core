@@ -97,6 +97,12 @@ impl Drop for PlacementEndpoint {
     }
 }
 impl PlacementEndpoint {
+    pub(crate) fn pool(&self) -> &gwz_transport::pool::Pool {
+        self.endpoint.pool()
+    }
+    pub(crate) fn set_request_capacity(&self, capacity: usize) {
+        self.endpoint.set_request_capacity(capacity);
+    }
     pub(crate) fn new(
         endpoint: Endpoint,
         home: PathBuf,
@@ -178,6 +184,7 @@ impl PlacementEndpoint {
                     state,
                     MessageKind::OpenFailed,
                     Some(Failure {
+                        setup_cause: None,
                         code: ErrorCode::Cancelled,
                         effect: Effect::None,
                         facts: None,
@@ -194,6 +201,7 @@ impl PlacementEndpoint {
                     state,
                     MessageKind::IdentityCheckFailed,
                     Some(Failure {
+                        setup_cause: None,
                         code: ErrorCode::Cancelled,
                         effect: Effect::None,
                         facts: None,
@@ -212,6 +220,7 @@ impl PlacementEndpoint {
                     state,
                     MessageKind::OpenFailed,
                     Some(Failure {
+                        setup_cause: None,
                         code: ErrorCode::Cancelled,
                         effect: Effect::None,
                         facts: None,
@@ -257,6 +266,7 @@ impl PlacementEndpoint {
                 &state,
                 MessageKind::OpenFailed,
                 Some(Failure {
+                    setup_cause: None,
                     code: ErrorCode::InvalidRequest,
                     effect: Effect::None,
                     facts: None,
@@ -290,6 +300,7 @@ impl PlacementEndpoint {
                     &state,
                     MessageKind::OpenFailed,
                     Some(Failure {
+                        setup_cause: None,
                         code: ErrorCode::InvalidRequest,
                         effect: Effect::None,
                         facts: None,
@@ -376,6 +387,7 @@ impl PlacementEndpoint {
                     &state,
                     MessageKind::IdentityCheckFailed,
                     Some(Failure {
+                        setup_cause: None,
                         code: ErrorCode::InvalidRequest,
                         effect: Effect::None,
                         facts: None,
@@ -442,6 +454,7 @@ impl PlacementEndpoint {
                         state,
                         MessageKind::OpenFailed,
                         Some(Failure {
+                            setup_cause: None,
                             code: ErrorCode::Timeout,
                             effect: Effect::None,
                             facts: None,
@@ -486,6 +499,7 @@ impl PlacementEndpoint {
                             state,
                             MessageKind::IdentityCheckFailed,
                             Some(Failure {
+                                setup_cause: None,
                                 code: ErrorCode::Timeout,
                                 effect: Effect::None,
                                 facts: None,
@@ -544,6 +558,7 @@ impl PlacementEndpoint {
                     state,
                     MessageKind::IdentityCheckFailed,
                     Some(Failure {
+                        setup_cause: None,
                         code,
                         effect: Effect::None,
                         facts: None,
@@ -577,6 +592,7 @@ impl PlacementEndpoint {
                             state,
                             MessageKind::OpenFailed,
                             Some(Failure {
+                                setup_cause: None,
                                 code: ErrorCode::Timeout,
                                 effect: Effect::None,
                                 facts: None,
@@ -616,6 +632,7 @@ impl PlacementEndpoint {
                             state,
                             MessageKind::OpenFailed,
                             Some(Failure {
+                                setup_cause: None,
                                 code: ErrorCode::Timeout,
                                 effect: Effect::None,
                                 facts: None,
@@ -689,6 +706,7 @@ impl PlacementEndpoint {
                             state,
                             MessageKind::Failed,
                             Some(Failure {
+                                setup_cause: None,
                                 code: ErrorCode::Io,
                                 effect: Effect::Possible,
                                 facts: None,
@@ -720,6 +738,7 @@ impl PlacementEndpoint {
                             state,
                             MessageKind::Failed,
                             Some(Failure {
+                                setup_cause: None,
                                 code: ErrorCode::Io,
                                 effect: Effect::Possible,
                                 facts: None,
@@ -802,6 +821,7 @@ impl PlacementEndpoint {
                             MessageKind::Failed
                         },
                         Some(Failure {
+                            setup_cause: None,
                             code: ErrorCode::Cancelled,
                             effect: Effect::None,
                             facts: None,
@@ -857,6 +877,7 @@ impl PlacementEndpoint {
                             MessageKind::Failed
                         },
                         Some(Failure {
+                            setup_cause: None,
                             code: ErrorCode::CarrierLost,
                             effect: Effect::None,
                             facts: None,
@@ -1028,6 +1049,7 @@ fn failure_for(error: io::Error) -> Failure {
         _ => ErrorCode::Io,
     };
     Failure {
+        setup_cause: None,
         code,
         effect: Effect::None,
         facts: None,

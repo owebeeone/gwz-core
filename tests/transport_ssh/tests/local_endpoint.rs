@@ -33,6 +33,8 @@ cfg_if::cfg_if! {
         mod ssh_pump;
         #[path = "../../../src/git/endpoint/ssh_remote.rs"]
         mod ssh_remote;
+        #[path = "../../../src/git/endpoint/shared_reservation.rs"]
+        mod shared_reservation;
         #[path = "../../../src/git/endpoint/ssh_setup.rs"]
         mod ssh_setup;
         #[path = "../../../src/git/endpoint/ssh_shutdown.rs"]
@@ -101,6 +103,75 @@ cfg_if::cfg_if! {
             assert!(!bytes.is_empty());
             stream.close()?;
             Ok(())
+        }
+        #[test]
+        fn configured_stall_reaches_native_handshake_through_the_endpoint() {
+            use gwz_transport::protocol::SetupFailureCause;
+            use gwz_transport::pool::Key;
+            use std::net::TcpListener;
+            use std::sync::mpsc;
+
+            let temp = tempfile::tempdir().unwrap();
+            let known_hosts = temp.path().join("known_hosts");
+            fs::write(&known_hosts, "").unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let (accepted_tx, accepted_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel();
+            let server = std::thread::spawn(move || {
+                listener.set_nonblocking(true).unwrap();
+                let until = Instant::now() + Duration::from_secs(3);
+                loop {
+                    match listener.accept() {
+                        Ok((socket, _)) => {
+                            accepted_tx.send(()).unwrap();
+                            let _ = release_rx.recv_timeout(Duration::from_secs(3));
+                            drop(socket);
+                            return;
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                            assert!(Instant::now() < until, "setup never connected");
+                            std::thread::sleep(Duration::from_millis(1));
+                        }
+                        Err(error) => panic!("listener failed: {error}"),
+                    }
+                }
+            });
+            let aggregate = Duration::from_secs(2);
+            let endpoint = ssh_local::connect(
+                Config {
+                    connect_timeout_ms: aggregate.as_millis() as u64,
+                    cleanup_timeout_ms: 200,
+                    ..Config::default()
+                },
+                known_hosts,
+                None,
+                100,
+            )
+            .unwrap();
+            let started = Instant::now();
+            let error = endpoint
+                .open_endpoint_ambient(
+                    Key::ssh("git", "127.0.0.1", port),
+                    ssh_channel::GitService::UploadPack,
+                    "repo",
+                )
+                .err()
+                .expect("stalled native handshake must fail");
+            accepted_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            let failure = error
+                .get_ref()
+                .and_then(|cause| cause.downcast_ref::<ssh_worker::EndpointOpenFailure>())
+                .expect("bridge must retain typed setup failure");
+            assert_eq!(
+                failure.0.setup_cause,
+                Some(SetupFailureCause::Stall),
+                "aggregate expiry would mean the configured stall never reached setup"
+            );
+            assert!(started.elapsed() < aggregate);
+            release_tx.send(()).unwrap();
+            server.join().unwrap();
+            finish(&endpoint);
         }
         fn finish(e: &Endpoint) {
             e.shutdown();

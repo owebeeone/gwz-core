@@ -25,6 +25,14 @@ cfg_if::cfg_if! {
             factory: Box<dyn Fn() -> io::Result<Endpoint> + Send + Sync>,
             host_context: Mutex<Option<crate::transport_host::RequestContext>>,
         }
+
+        fn pool_config_for_timeout(timeout: u64) -> gwz_transport::pool::Config {
+            let mut config = gwz_transport::pool::Config::default();
+            if timeout == 0 {
+                config.connect_timeout_ms = 0;
+            }
+            config
+        }
         impl Default for Runtime {
             fn default() -> Self {
                 Self::with_factory(|| {
@@ -34,10 +42,7 @@ cfg_if::cfg_if! {
                         .filter(|p| !p.is_empty())
                         .map(Into::into);
                     let timeout = super::transport_support::server_timeout_ms();
-                    let config = gwz_transport::pool::Config {
-                        connect_timeout_ms: timeout,
-                        ..Default::default()
-                    };
+                    let config = pool_config_for_timeout(timeout);
                     ssh_local::connect(config, known, agent, timeout)
                 })
             }
@@ -285,5 +290,11 @@ cfg_if::cfg_if! {
     if #[cfg(all(test, unix, gwz_transport_candidate))] {
         #[path = "https_transport_binding_tests.rs"]
         mod https_transport_binding_tests;
+
+        #[test]
+        fn native_stall_does_not_shrink_the_pool_setup_budget() {
+            assert_eq!(pool_config_for_timeout(9_000).connect_timeout_ms, 30_000);
+            assert_eq!(pool_config_for_timeout(0).connect_timeout_ms, 0);
+        }
     }
 }

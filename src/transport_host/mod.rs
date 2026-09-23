@@ -15,9 +15,10 @@ use gwz_transport::{
     binding, pool,
     protocol::{AuthPolicy, Scheme},
 };
-pub use request::{ClientRequest, TransportRequest};
+pub use request::{ClientRequest, TransportCancellation, TransportRequest};
 pub(crate) use request::{HttpsAttemptReceipt, HttpsOpenFailure, RequestContext};
 use session::Session;
+pub(crate) use session::SshOpenFailure;
 pub use session::{Attachment, TransportPort};
 use std::{
     path::PathBuf,
@@ -25,6 +26,11 @@ use std::{
     time::Duration,
 };
 
+fn apply_native_timeout(pool: &mut pool::Config, native_ms: u64) {
+    if native_ms == 0 {
+        pool.connect_timeout_ms = 0;
+    }
+}
 #[derive(Clone)]
 pub struct SshEndpointConfig {
     home: PathBuf,
@@ -42,13 +48,12 @@ impl SshEndpointConfig {
             .filter(|p| !p.is_empty())
             .map(PathBuf::from);
         let timeout = crate::git::transport_timeout_ms();
+        let mut pool = pool::Config::default();
+        apply_native_timeout(&mut pool, timeout);
         Ok(Self {
             home,
             agent,
-            pool: pool::Config {
-                connect_timeout_ms: timeout,
-                ..Default::default()
-            },
+            pool,
             io_timeout_ms: timeout,
         })
     }
@@ -76,6 +81,7 @@ struct RuntimeState {
     cli: Option<Arc<Session>>,
     closed: bool,
     io_timeout_ms: u64,
+    connect_timeout_ms: u64,
     https: bool,
 }
 impl Drop for RuntimeState {
@@ -90,6 +96,10 @@ impl Drop for RuntimeState {
 #[derive(Clone)]
 pub struct TransportRuntime(Arc<Mutex<RuntimeState>>);
 impl TransportRuntime {
+    pub fn from_environment() -> ModelResult<Self> {
+        let (ssh, https) = local_command::environment_config()?;
+        Self::with_https(ssh, https)
+    }
     pub fn new(local: SshEndpointConfig) -> ModelResult<Self> {
         Self::build(local, None)
     }
@@ -102,8 +112,9 @@ impl TransportRuntime {
     fn build(local: SshEndpointConfig, https: Option<HttpsEndpointConfig>) -> ModelResult<Self> {
         let enabled = https.is_some();
         let io_timeout_ms = local.io_timeout_ms;
+        let connect_timeout_ms = local.pool.connect_timeout_ms;
         let (endpoint, peer_port) = Session::endpoint_with_https(local, https)?;
-        let (driver, core_port) = Session::driver(io_timeout_ms)?;
+        let (driver, core_port) = Session::driver(io_timeout_ms, connect_timeout_ms)?;
         let link = session::LocalLink::new(core_port, peer_port)?;
         Ok(Self(Arc::new(Mutex::new(RuntimeState {
             local: driver,
@@ -112,6 +123,7 @@ impl TransportRuntime {
             cli: None,
             closed: false,
             io_timeout_ms,
+            connect_timeout_ms,
             https: enabled,
         }))))
     }
@@ -123,7 +135,7 @@ impl TransportRuntime {
         if state.cli.is_some() {
             return Err(invalid("client endpoint already installed"));
         }
-        let (session, port) = Session::driver(state.io_timeout_ms)?;
+        let (session, port) = Session::driver(state.io_timeout_ms, state.connect_timeout_ms)?;
         state.cli = Some(session);
         Ok(port)
     }
@@ -193,6 +205,25 @@ impl TransportRuntime {
         let client_guard = local_endpoint
             .map(|endpoint| ClientRequest::new(endpoint, &meta.request_id))
             .transpose()?;
+        if let Some(client) = &client_guard {
+            let policy = meta.policy.as_ref();
+            let jobs = crate::operation::resolve_jobs(policy.and_then(|value| value.concurrency));
+            let per_host = crate::operation::resolve_per_host(
+                policy.and_then(|value| value.max_connections_per_host),
+            );
+            client
+                .session()
+                .install_capacity(
+                    &meta.request_id,
+                    pool::Capacity {
+                        per_user_host: per_host,
+                        per_host,
+                        total: jobs.max(256),
+                        max_requests: jobs.max(1024),
+                    },
+                )
+                .await?;
+        }
         let context = RequestContext::new(session, meta, operation_id)?;
         let mut guard = TransportRequest::pending(context, client_guard);
         guard
@@ -314,4 +345,25 @@ fn unavailable(message: &str) -> ModelError {
 }
 fn unsupported(message: &str) -> ModelError {
     ModelError::new(ErrorCode::UnsupportedOperation, message)
+}
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        #[test]
+        fn positive_native_timeout_keeps_the_pool_aggregate() {
+            let mut pool = pool::Config::default();
+            let aggregate = pool.connect_timeout_ms;
+            apply_native_timeout(&mut pool, 9_000);
+            assert_eq!(pool.connect_timeout_ms, aggregate);
+            assert_eq!(aggregate, 30_000);
+            apply_native_timeout(&mut pool, 15_000);
+            assert_eq!(pool.connect_timeout_ms, 30_000);
+        }
+
+        #[test]
+        fn zero_native_timeout_disables_the_pool_aggregate() {
+            let mut pool = pool::Config::default();
+            apply_native_timeout(&mut pool, 0);
+            assert_eq!(pool.connect_timeout_ms, 0);
+        }
+    }
 }

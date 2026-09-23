@@ -10,7 +10,10 @@ use std::{
     io,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     pin::pin,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     task::{Context, Poll},
 };
 pub(crate) type Progress = Arc<Mutex<Facts>>;
@@ -20,6 +23,7 @@ pub(crate) type Progress = Arc<Mutex<Facts>>;
 /// before authentication is offered; setup ownership must transfer atomically.
 pub(crate) trait Connector {
     type Resource: Resource;
+    fn set_stall_ms(&mut self, _stall_ms: u64) {}
     fn start(
         &mut self,
         key: &Key,
@@ -45,6 +49,8 @@ pub(crate) trait Resource {
     fn poll_dispose(&mut self, cx: &mut Context<'_>, force: bool) -> Poll<io::Result<()>>;
     /// True only for an idle authenticated session after complete channel cleanup.
     fn reusable(&self) -> bool;
+    fn begin_interaction(&mut self) {}
+    fn end_interaction(&mut self) {}
 }
 
 enum Phase {
@@ -67,6 +73,7 @@ pub(crate) struct PoolHost<C: Connector> {
     connector: C,
     action_budget: usize,
     disposal_error: Option<io::Error>,
+    stall_ms: Arc<AtomicU64>,
 }
 
 impl<C: Connector> PoolHost<C> {
@@ -82,8 +89,29 @@ impl<C: Connector> PoolHost<C> {
                 connector,
                 action_budget,
                 disposal_error: None,
+                stall_ms: Arc::new(AtomicU64::new(0)),
             },
         ))
+    }
+
+    pub(crate) fn stall_slot(&self) -> Arc<AtomicU64> {
+        self.stall_ms.clone()
+    }
+
+    pub(crate) fn begin_interaction(&mut self, id: ConnectionId) -> Result<(), Error> {
+        self.driver.begin_interaction(id)?;
+        if let Some(entry) = self.entries.get_mut(&id) {
+            entry.resource.begin_interaction();
+        }
+        Ok(())
+    }
+
+    pub(crate) fn end_interaction(&mut self, id: ConnectionId) -> Result<(), Error> {
+        self.driver.end_interaction(id)?;
+        if let Some(entry) = self.entries.get_mut(&id) {
+            entry.resource.end_interaction();
+        }
+        Ok(())
     }
 
     /// The borrow cannot outlive the worker; callers must never move/clone native
@@ -212,12 +240,11 @@ impl<C: Connector> PoolHost<C> {
                     identity,
                     network_deadline,
                 } => match catch_unwind(AssertUnwindSafe(|| {
-                    self.connector.start_reported(
-                        &key,
-                        &identity,
-                        network_deadline,
-                        progress(connection),
-                    )
+                    let reported = progress(connection);
+                    let stall = self.stall_ms.load(Ordering::Relaxed);
+                    self.connector.set_stall_ms(stall);
+                    self.connector
+                        .start_reported(&key, &identity, network_deadline, reported)
                 })) {
                     Err(panic) => {
                         // The dequeued Connect has no physical owner after start
@@ -226,6 +253,7 @@ impl<C: Connector> PoolHost<C> {
                         let _ = self.driver.connected(
                             connection,
                             Err(Failure {
+                                setup_cause: None,
                                 facts: None,
                                 code: ErrorCode::Io,
                                 effect: Effect::None,
@@ -255,6 +283,7 @@ impl<C: Connector> PoolHost<C> {
                         _ => {
                             entry.phase = Phase::Disposing {
                                 connect_failure: Some(Failure {
+                                    setup_cause: None,
                                     facts: None,
                                     code: ErrorCode::Cancelled,
                                     effect: Effect::None,

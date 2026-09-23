@@ -1,6 +1,6 @@
 //! Bounded setup ownership for one authenticated SSH connection.
 use super::{
-    agent_job::{self, Job},
+    agent_job::{self, Job, TimeoutReason, timeout_reason},
     ssh_channel::{GitService, SshChannel},
     ssh_connection::SshConnection,
     ssh_key_auth::Verified,
@@ -11,7 +11,7 @@ use super::{
 };
 use gwz_transport::{
     pool::{Identity, Key},
-    protocol::{AuthMethod, Effect, ErrorCode, Facts, Failure},
+    protocol::{AuthMethod, Effect, ErrorCode, Facts, Failure, SetupFailureCause},
     stream::{MessageEndpoint, Stream},
 };
 use std::{
@@ -66,6 +66,7 @@ type Factory = Box<dyn FnMut(&Key, &Identity, Progress) -> io::Result<Setup> + S
 pub(crate) struct SetupConnector {
     origin: Instant,
     cleanup: Duration,
+    stall_ms: u64,
     factory: Factory,
 }
 impl SetupConnector {
@@ -86,6 +87,7 @@ impl SetupConnector {
         Self {
             origin,
             cleanup,
+            stall_ms: 0,
             factory: Box::new(factory),
         }
     }
@@ -93,6 +95,9 @@ impl SetupConnector {
 impl Connector for SetupConnector {
     type Resource = NativeResource;
 
+    fn set_stall_ms(&mut self, stall_ms: u64) {
+        self.stall_ms = stall_ms;
+    }
     fn start(
         &mut self,
         key: &Key,
@@ -118,8 +123,14 @@ impl Connector for SetupConnector {
         let setup = (self.factory)(key, identity, progress.clone())
             .map_err(|error| failure(error.kind()))?;
         let requested = identity.clone();
-        let job = Job::start(deadline, self.cleanup, move |control| setup(control))
-            .map_err(|error| failure(error.kind()))?;
+        let job = Job::start_timed(
+            deadline,
+            Duration::from_millis(self.stall_ms),
+            self.cleanup,
+            agent_job::wall_clock(),
+            move |control| setup(control),
+        )
+        .map_err(|error| failure(error.kind()))?;
         Ok(NativeResource {
             state: State::Connecting(job),
             requested,
@@ -157,14 +168,18 @@ impl Resource for NativeResource {
                     self.state = State::Connecting(job);
                     Poll::Pending
                 }
-                Poll::Ready(Err(error)) => Poll::Ready(Err(failure(error.kind()))),
+                Poll::Ready(Err(error)) => Poll::Ready(Err(failure_from_io(&error))),
                 Poll::Ready(Ok(mut authenticated)) => {
-                    let live = self.deadline.is_none_or(|at| Instant::now() < at);
-                    let valid = live
-                        && authenticated.identity == self.requested
-                        && authenticated.connection.session().authenticated()
+                    let identity_matches = authenticated.identity == self.requested;
+                    let session_ok = authenticated.connection.session().authenticated()
                         && authenticated.facts.authenticated == Some(true);
-                    if valid {
+                    let decision = classify_setup_result(
+                        Instant::now(),
+                        self.deadline,
+                        identity_matches,
+                        session_ok,
+                    );
+                    if setup_is_reusable(&decision) {
                         *self.progress.lock().unwrap_or_else(|e| e.into_inner()) =
                             authenticated.facts.clone();
                         self.authority = authenticated.authority.take();
@@ -175,8 +190,9 @@ impl Resource for NativeResource {
                         self.state = State::Idle(authenticated);
                         Poll::Ready(Ok(Some(identity)))
                     } else {
+                        let failure = decision.expect_err("rejected setup");
                         drop(authenticated);
-                        Poll::Ready(Err(failure(io::ErrorKind::PermissionDenied)))
+                        Poll::Ready(Err(failure))
                     }
                 }
             },
@@ -240,6 +256,16 @@ impl Resource for NativeResource {
     }
     fn reusable(&self) -> bool {
         matches!(self.state, State::Idle(_))
+    }
+    fn begin_interaction(&mut self) {
+        if let State::Connecting(job) = &self.state {
+            job.begin_interaction();
+        }
+    }
+    fn end_interaction(&mut self) {
+        if let State::Connecting(job) = &self.state {
+            job.end_interaction();
+        }
     }
 }
 impl ChannelResource for NativeResource {
@@ -346,6 +372,38 @@ impl Drop for NativeResource {
         }
     }
 }
+pub(crate) fn classify_setup_result(
+    now: Instant,
+    deadline: Option<Instant>,
+    identity_matches: bool,
+    authenticated: bool,
+) -> Result<(), Failure> {
+    if deadline.is_some_and(|at| now >= at) {
+        return Err(timeout_failure(TimeoutReason::Aggregate));
+    }
+    if identity_matches && authenticated {
+        Ok(())
+    } else {
+        Err(failure(io::ErrorKind::PermissionDenied))
+    }
+}
+pub(crate) fn setup_is_reusable(result: &Result<(), Failure>) -> bool {
+    result.is_ok()
+}
+fn timeout_failure(reason: TimeoutReason) -> Failure {
+    Failure {
+        setup_cause: Some(reason.setup_cause()),
+        facts: None,
+        code: ErrorCode::Timeout,
+        effect: Effect::None,
+    }
+}
+fn failure_from_io(error: &io::Error) -> Failure {
+    if let Some(reason) = timeout_reason(error) {
+        return timeout_failure(reason);
+    }
+    failure(error.kind())
+}
 fn failure(kind: io::ErrorKind) -> Failure {
     let code = match kind {
         io::ErrorKind::TimedOut => ErrorCode::Timeout,
@@ -361,8 +419,84 @@ fn failure(kind: io::ErrorKind) -> Failure {
         _ => ErrorCode::Io,
     };
     Failure {
+        setup_cause: match kind {
+            io::ErrorKind::ConnectionRefused => Some(SetupFailureCause::ConnectionRefused),
+            io::ErrorKind::NotFound => Some(SetupFailureCause::NotFound),
+            io::ErrorKind::AddrNotAvailable => Some(SetupFailureCause::AddressNotAvailable),
+            _ => None,
+        },
         facts: None,
         code,
         effect: Effect::None,
+    }
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        use super::agent_job::SetupTimeout;
+
+        #[test]
+        fn success_before_the_aggregate_is_reusable() {
+            let start = Instant::now();
+            let decision = classify_setup_result(
+                start + Duration::from_secs(5),
+                Some(start + Duration::from_secs(10)),
+                true,
+                true,
+            );
+            assert!(setup_is_reusable(&decision));
+        }
+
+        #[test]
+        fn success_after_the_aggregate_is_a_setup_timeout() {
+            let start = Instant::now();
+            let decision = classify_setup_result(
+                start + Duration::from_secs(10),
+                Some(start + Duration::from_secs(10)),
+                true,
+                true,
+            );
+            assert!(!setup_is_reusable(&decision));
+            let failure = decision.expect_err("late success");
+            assert_eq!(failure.code, ErrorCode::Timeout);
+            assert_ne!(failure.code, ErrorCode::Authentication);
+        }
+
+        #[test]
+        fn identity_mismatch_stays_authentication() {
+            let decision = classify_setup_result(Instant::now(), None, false, true);
+            assert_eq!(decision.expect_err("mismatch").code, ErrorCode::Authentication);
+        }
+
+        #[test]
+        fn stall_rejection_is_not_reusable() {
+            let error = io::Error::new(
+                io::ErrorKind::TimedOut,
+                SetupTimeout {
+                    reason: TimeoutReason::Stall,
+                },
+            );
+            let failure = failure_from_io(&error);
+            assert_eq!(failure.code, ErrorCode::Timeout);
+            assert_eq!(failure.setup_cause, Some(SetupFailureCause::Stall));
+            assert_eq!(failure.facts.as_ref().and_then(|facts| facts.key_fingerprint.as_deref()), None);
+            assert!(!setup_is_reusable(&Err(failure)));
+        }
+
+        #[test]
+        fn unavailable_setup_kinds_are_distinct_and_generic_io_has_no_cause() {
+            for (kind, cause) in [
+                (io::ErrorKind::ConnectionRefused, SetupFailureCause::ConnectionRefused),
+                (io::ErrorKind::NotFound, SetupFailureCause::NotFound),
+                (io::ErrorKind::AddrNotAvailable, SetupFailureCause::AddressNotAvailable),
+            ] {
+                let failure = failure_from_io(&io::Error::from(kind));
+                assert_eq!(failure.code, ErrorCode::Unavailable);
+                assert_eq!(failure.setup_cause, Some(cause));
+            }
+            let generic = failure_from_io(&io::Error::from(io::ErrorKind::Other));
+            assert_eq!(generic.code, ErrorCode::Io);
+            assert_eq!(generic.setup_cause, None);
+        }
     }
 }

@@ -253,7 +253,7 @@ where
         let (mut read_preflight, failures) =
             super::publication::ReadPreflight::read_before_transfers(
                 backend, &root, &targets, jobs, per_host,
-            );
+            )?;
         let planned = preflight
             .iter_mut()
             .filter(|response| response.status == crate::MemberStatus::Planned);
@@ -335,7 +335,7 @@ where
                 emitter.member_finished(&member.id, &member.path);
                 Ok(response)
             },
-        )
+        )?
         .into_iter()
         .collect::<ModelResult<Vec<_>>>()?;
         if push_root_selected {

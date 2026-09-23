@@ -138,13 +138,11 @@ impl Session {
                 service,
                 identity,
                 policy,
-                deadlines: Deadlines {
+                deadlines: network_deadlines(
+                    state.io_timeout_ms,
+                    state.connect_timeout_ms,
                     allocation_ms,
-                    connect_ms: state.io_timeout_ms as i64,
-                    io_ms: state.io_timeout_ms as i64,
-                    interaction_ms: 120000,
-                    cleanup_ms: 5000,
-                },
+                ),
                 receive_limits: binding.limits().clone(),
             };
             let id = owner.open(request, open).map_err(|_| {
@@ -525,18 +523,151 @@ impl Session {
         }
     }
 }
-fn failure_io(failure: Failure) -> io::Error {
-    if failure.code == gwz_transport::protocol::ErrorCode::Authentication {
-        return io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            crate::git::endpoint::ssh_remote::AuthenticationRejected,
-        );
+fn network_deadlines(io_timeout_ms: u64, connect_timeout_ms: u64, allocation_ms: i64) -> Deadlines {
+    Deadlines {
+        allocation_ms,
+        connect_ms: connect_timeout_ms as i64,
+        io_ms: io_timeout_ms as i64,
+        interaction_ms: 120000,
+        cleanup_ms: 5000,
     }
-    io::Error::new(
-        io::ErrorKind::Other,
-        stream::Error::PeerFailed {
-            code: failure.code,
-            effect: failure.effect,
-        },
-    )
+}
+#[derive(Debug)]
+pub(crate) struct SshOpenFailure(pub(crate) Failure);
+impl std::fmt::Display for SshOpenFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use gwz_transport::protocol::{ErrorCode, SetupFailureCause};
+        if self.0.code == ErrorCode::Timeout {
+            let label = match self.0.setup_cause {
+                Some(SetupFailureCause::Stall) => "stall",
+                Some(SetupFailureCause::Aggregate) => "aggregate",
+                Some(SetupFailureCause::Interaction) => "interaction",
+                Some(SetupFailureCause::Allocation) => "allocation",
+                _ => "unknown",
+            };
+            return write!(f, "ssh setup timeout: {label}");
+        }
+        write!(f, "ssh setup failed: {:?}", self.0.code)
+    }
+}
+impl std::error::Error for SshOpenFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if self.0.code == gwz_transport::protocol::ErrorCode::Authentication {
+            Some(&crate::git::endpoint::ssh_remote::AuthenticationRejected)
+        } else {
+            None
+        }
+    }
+}
+fn failure_io(failure: Failure) -> io::Error {
+    let kind = match failure.code {
+        gwz_transport::protocol::ErrorCode::Authentication => io::ErrorKind::PermissionDenied,
+        gwz_transport::protocol::ErrorCode::Timeout => io::ErrorKind::TimedOut,
+        _ => io::ErrorKind::Other,
+    };
+    io::Error::new(kind, SshOpenFailure(failure))
+}
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        use crate::git::endpoint::agent_job::{
+            Control, ManualClock, TimeoutReason, timeout_reason,
+        };
+        use gwz_transport::protocol::{Effect, ErrorCode, Facts, Failure};
+
+        fn stamped(reason: TimeoutReason) -> Failure {
+            Failure {
+                setup_cause: Some(reason.setup_cause()),
+                code: ErrorCode::Timeout,
+                effect: Effect::None,
+                facts: Some(Facts::default()),
+            }
+        }
+
+        #[test]
+        fn default_ssh_open_splits_stall_and_aggregate() {
+            let deadlines = network_deadlines(9_000, 30_000, 30_000);
+            assert_eq!(deadlines.io_ms, 9_000);
+            assert_eq!(deadlines.connect_ms, 30_000);
+        }
+
+        #[test]
+        fn default_https_open_splits_stall_and_aggregate() {
+            let deadlines = network_deadlines(9_000, 30_000, 30_000);
+            assert_eq!(deadlines.io_ms, 9_000);
+            assert_eq!(deadlines.connect_ms, 30_000);
+        }
+
+        #[test]
+        fn disabled_native_timeout_clears_both_open_deadlines() {
+            let deadlines = network_deadlines(0, 0, 30_000);
+            assert_eq!(deadlines.io_ms, 0);
+            assert_eq!(deadlines.connect_ms, 0);
+        }
+
+        #[test]
+        fn idle_wait_is_a_setup_stall_not_a_peer_failure() {
+            let clock = ManualClock::new();
+            let start = clock.now();
+            let control = Control::scripted(
+                Some(start + std::time::Duration::from_secs(10)),
+                std::time::Duration::from_secs(3),
+                std::time::Duration::from_secs(5),
+                clock.clock(),
+            );
+            control.begin_slice().unwrap();
+            clock.advance(std::time::Duration::from_secs(3));
+            let error = control.end_slice(false).unwrap_err();
+            assert_eq!(timeout_reason(&error), Some(TimeoutReason::Stall));
+            let reported = failure_io(stamped(TimeoutReason::Stall));
+            assert_eq!(reported.kind(), io::ErrorKind::TimedOut);
+            assert!(reported.to_string().contains("ssh setup timeout: stall"));
+            assert_eq!(reported.get_ref().unwrap().downcast_ref::<SshOpenFailure>().unwrap().0.setup_cause, Some(gwz_transport::protocol::SetupFailureCause::Stall));
+        }
+
+        #[test]
+        fn short_waits_past_the_aggregate_name_that_reason() {
+            let clock = ManualClock::new();
+            let start = clock.now();
+            let control = Control::scripted(
+                Some(start + std::time::Duration::from_millis(2_500)),
+                std::time::Duration::from_millis(1_000),
+                std::time::Duration::from_secs(5),
+                clock.clock(),
+            );
+            for _ in 0..2 {
+                control.begin_slice().unwrap();
+                clock.advance(std::time::Duration::from_millis(800));
+                control.end_slice(true).unwrap();
+            }
+            control.begin_slice().unwrap();
+            clock.advance(std::time::Duration::from_millis(900));
+            let error = control.end_slice(true).unwrap_err();
+            assert_eq!(timeout_reason(&error), Some(TimeoutReason::Aggregate));
+            let reported = failure_io(stamped(TimeoutReason::Aggregate));
+            assert_eq!(reported.kind(), io::ErrorKind::TimedOut);
+            assert!(reported.to_string().contains("ssh setup timeout: aggregate"));
+            assert_eq!(reported.get_ref().unwrap().downcast_ref::<SshOpenFailure>().unwrap().0.setup_cause, Some(gwz_transport::protocol::SetupFailureCause::Aggregate));
+        }
+
+        #[test]
+        fn authentication_failure_stays_authentication() {
+            let reported = failure_io(Failure {
+                setup_cause: None,
+                code: ErrorCode::Authentication,
+                effect: Effect::None,
+                facts: None,
+            });
+            assert_eq!(reported.kind(), io::ErrorKind::PermissionDenied);
+            assert!(
+                reported
+                    .get_ref()
+                    .unwrap()
+                    .downcast_ref::<SshOpenFailure>()
+                    .is_some()
+            );
+            assert!(reported.get_ref().unwrap().source().is_some_and(|source| {
+                source.is::<crate::git::endpoint::ssh_remote::AuthenticationRejected>()
+            }));
+        }
+    }
 }

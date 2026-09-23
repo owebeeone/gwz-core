@@ -23,13 +23,13 @@ use std::{
 #[derive(Clone)]
 pub(crate) struct Authority {
     state: Arc<Mutex<State>>,
-    total: usize,
-    per_host: usize,
 }
 
 struct State {
     total: usize,
     hosts: BTreeMap<String, usize>,
+    total_limit: usize,
+    per_host_limit: usize,
 }
 
 pub(crate) struct Reservation {
@@ -62,6 +62,9 @@ impl<C> ReservedConnector<C> {
 impl<C: Connector> Connector for ReservedConnector<C> {
     type Resource = ReservedResource<C::Resource>;
 
+    fn set_stall_ms(&mut self, stall_ms: u64) {
+        self.inner.set_stall_ms(stall_ms);
+    }
     fn start(
         &mut self,
         key: &Key,
@@ -70,6 +73,7 @@ impl<C: Connector> Connector for ReservedConnector<C> {
     ) -> Result<Self::Resource, Failure> {
         let host = key.host.clone();
         let reservation = self.authority.try_reserve(host).ok_or(Failure {
+            setup_cause: None,
             code: ErrorCode::Capacity,
             effect: Effect::None,
             facts: None,
@@ -96,6 +100,7 @@ impl<C: Connector> Connector for ReservedConnector<C> {
             .authority
             .try_reserve(key.host.clone())
             .ok_or(Failure {
+                setup_cause: None,
                 code: ErrorCode::Capacity,
                 effect: Effect::None,
                 facts: None,
@@ -130,6 +135,12 @@ impl<R: Resource> Resource for ReservedResource<R> {
 
     fn reusable(&self) -> bool {
         self.inner.reusable()
+    }
+    fn begin_interaction(&mut self) {
+        self.inner.begin_interaction();
+    }
+    fn end_interaction(&mut self) {
+        self.inner.end_interaction();
     }
 }
 
@@ -176,17 +187,32 @@ impl Authority {
             state: Arc::new(Mutex::new(State {
                 total: 0,
                 hosts: BTreeMap::new(),
+                total_limit: total,
+                per_host_limit: per_host,
             })),
-            total,
-            per_host,
         }
+    }
+
+    /// Called after surplus idle owners have completed physical disposal.
+    pub(crate) fn install_capacity(&self, total: usize, per_host: usize) -> bool {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if total == 0
+            || per_host == 0
+            || state.total > total
+            || state.hosts.values().any(|count| *count > per_host)
+        {
+            return false;
+        }
+        state.total_limit = total;
+        state.per_host_limit = per_host;
+        true
     }
 
     pub(crate) fn try_reserve(&self, host: impl Into<String>) -> Option<Reservation> {
         let host = host.into();
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let host_count = state.hosts.get(&host).copied().unwrap_or(0);
-        if state.total >= self.total || host_count >= self.per_host {
+        if state.total >= state.total_limit || host_count >= state.per_host_limit {
             return None;
         }
         state.total += 1;
@@ -252,6 +278,7 @@ mod tests {
         ) -> Result<Self::Resource, Failure> {
             if self.fail {
                 return Err(Failure {
+                    setup_cause: None,
                     code: ErrorCode::Io,
                     effect: Effect::None,
                     facts: None,
@@ -368,6 +395,20 @@ mod tests {
                 .start(&Key::https("github.example", 443), &Identity::Https, None)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn shrinking_authority_waits_for_actual_disposal_across_schemes() {
+        let authority = Authority::new(2, 2);
+        let ssh = authority.try_reserve("host").unwrap();
+        let https = authority.try_reserve("host").unwrap();
+        assert!(!authority.install_capacity(1, 1));
+        assert_eq!(authority.counts("host"), (2, 2));
+        drop(https);
+        assert!(authority.install_capacity(1, 1));
+        assert!(authority.try_reserve("host").is_none());
+        drop(ssh);
+        assert!(authority.try_reserve("host").is_some());
     }
 
     #[test]

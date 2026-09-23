@@ -18,18 +18,8 @@ pub fn with_local_transport<T>(
         .enable_all()
         .build()
         .map_err(|_| unavailable("local transport executor unavailable"))?;
-    let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
-    let tls = tls_config(&environment)?;
-    let runtime = TransportRuntime::with_https(
-        SshEndpointConfig::from_environment()?,
-        HttpsEndpointConfig {
-            tls,
-            auth: Some(https_auth::Config {
-                executable: PathBuf::from("gh"),
-                environment,
-            }),
-        },
-    )?;
+    let (ssh, https) = environment_config()?;
+    let runtime = TransportRuntime::with_https(ssh, https)?;
     let request = executor.block_on(runtime.request(meta, operation))?;
     let mut command = Command {
         executor,
@@ -39,6 +29,20 @@ pub fn with_local_transport<T>(
     let result = action(command.request.as_ref().unwrap().backend());
     let cleanup = command.finish();
     Ok((result, cleanup))
+}
+pub(super) fn environment_config() -> ModelResult<(SshEndpointConfig, HttpsEndpointConfig)> {
+    let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+    let tls = tls_config(&environment)?;
+    Ok((
+        SshEndpointConfig::from_environment()?,
+        HttpsEndpointConfig {
+            tls,
+            auth: Some(https_auth::Config {
+                executable: PathBuf::from("gh"),
+                environment,
+            }),
+        },
+    ))
 }
 struct Command {
     executor: tokio::runtime::Runtime,

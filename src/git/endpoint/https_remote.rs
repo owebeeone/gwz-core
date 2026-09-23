@@ -40,6 +40,7 @@ pub(crate) struct RpcIo<S: HalfClose> {
     advertisement: bool,
     reading: bool,
     done: bool,
+    failed: bool,
     alive: Arc<AtomicBool>,
 }
 impl<S: HalfClose> RpcIo<S> {
@@ -49,6 +50,7 @@ impl<S: HalfClose> RpcIo<S> {
             advertisement,
             reading: false,
             done: false,
+            failed: false,
             alive: Arc::new(AtomicBool::new(true)),
         }
     }
@@ -59,12 +61,24 @@ impl<S: HalfClose> Read for RpcIo<S> {
             return Ok(0);
         }
         if !self.reading {
-            self.stream.end_write()?;
+            if let Err(error) = self.stream.end_write() {
+                self.failed = true;
+                return Err(error);
+            }
             self.reading = true;
         }
-        let count = self.stream.read(output)?;
+        let count = match self.stream.read(output) {
+            Ok(count) => count,
+            Err(error) => {
+                self.failed = true;
+                return Err(error);
+            }
+        };
         if count == 0 {
-            self.stream.finish()?;
+            if let Err(error) = self.stream.finish() {
+                self.failed = true;
+                return Err(error);
+            }
             self.done = true;
             self.alive.store(false, Ordering::Release);
         }
@@ -85,7 +99,14 @@ impl<S: HalfClose> Write for RpcIo<S> {
 impl<S: HalfClose> Drop for RpcIo<S> {
     fn drop(&mut self) {
         if !self.done {
-            self.stream.cancel();
+            // Git may stop reading an advertisement after its packet flush,
+            // before requesting stream EOF. Close discards only unread logical
+            // response bytes; the endpoint still drains the HTTP body and
+            // independently proves the physical connection reusable.
+            if !self.advertisement || !self.reading || self.failed || self.stream.finish().is_err()
+            {
+                self.stream.cancel();
+            }
         }
         self.alive.store(false, Ordering::Release);
     }

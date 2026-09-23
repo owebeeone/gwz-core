@@ -25,7 +25,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-        mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
+        mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError},
     },
     task::{Context, Poll, Wake, Waker},
     thread::{self, JoinHandle, Thread},
@@ -58,10 +58,11 @@ impl Wake for ThreadWake {
     }
 }
 struct Shared {
-    sender: SyncSender<OpenRequest>,
+    sender: Sender<OpenRequest>,
     worker: Thread,
     outstanding: Arc<AtomicUsize>,
-    capacity: usize,
+    capacity: AtomicUsize,
+    pool: Pool,
     timeout: Option<Duration>,
     policy: PoolConfig,
     io_timeout_ms: u64,
@@ -169,22 +170,29 @@ impl std::error::Error for EndpointOpenFailure {}
 impl EndpointOpenFailure {
     fn capture(error: io::Error, facts: Facts) -> io::Error {
         use gwz_transport::pool::Error as PoolError;
-        let (code, effect) = match error
+        use gwz_transport::protocol::SetupFailureCause;
+        let (code, effect, setup_cause) = match error
             .get_ref()
             .and_then(|cause| cause.downcast_ref::<PoolError>())
         {
-            Some(PoolError::ConnectFailed { code, effect }) => (*code, *effect),
-            Some(
-                PoolError::AllocationTimeout
-                | PoolError::ConnectTimeout
-                | PoolError::InteractionTimeout,
-            ) => (ErrorCode::Timeout, Effect::None),
-            Some(PoolError::Capacity | PoolError::WouldBlock) => {
-                (ErrorCode::Capacity, Effect::None)
+            Some(PoolError::ConnectFailed { code, effect, setup_cause }) => {
+                (*code, *effect, *setup_cause)
             }
-            Some(PoolError::Cancelled) => (ErrorCode::Cancelled, Effect::None),
+            Some(PoolError::AllocationTimeout) => {
+                (ErrorCode::Timeout, Effect::None, Some(SetupFailureCause::Allocation))
+            }
+            Some(PoolError::ConnectTimeout) => {
+                (ErrorCode::Timeout, Effect::None, Some(SetupFailureCause::Aggregate))
+            }
+            Some(PoolError::InteractionTimeout) => {
+                (ErrorCode::Timeout, Effect::None, Some(SetupFailureCause::Interaction))
+            }
+            Some(PoolError::Capacity | PoolError::WouldBlock) => {
+                (ErrorCode::Capacity, Effect::None, None)
+            }
+            Some(PoolError::Cancelled) => (ErrorCode::Cancelled, Effect::None, None),
             Some(PoolError::DriverLost | PoolError::Shutdown) => {
-                (ErrorCode::CarrierLost, Effect::None)
+                (ErrorCode::CarrierLost, Effect::None, None)
             }
             _ => (
                 match error.kind() {
@@ -199,11 +207,13 @@ impl EndpointOpenFailure {
                     _ => ErrorCode::Io,
                 },
                 Effect::None,
+                None,
             ),
         };
         io::Error::new(
             error.kind(),
             Self(Failure {
+                setup_cause,
                 code,
                 effect,
                 facts: Some(facts),
@@ -343,11 +353,12 @@ impl Endpoint {
         let id = NEXT_WORKER
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .map_err(|_| io::Error::other("endpoint IDs exhausted"))?;
-        let (sender, receiver) = mpsc::sync_channel(capacity);
+        let (sender, receiver) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let worker_stop = stop.clone();
         let status = Status::default();
         let worker_status = status.clone();
+        let client_pool = pool.clone();
         let join = thread::Builder::new()
             .name("gwz-ssh-endpoint".into())
             .spawn(move || {
@@ -381,7 +392,8 @@ impl Endpoint {
                 sender,
                 worker: join.thread().clone(),
                 outstanding: Arc::new(AtomicUsize::new(0)),
-                capacity,
+                capacity: AtomicUsize::new(capacity),
+                pool: client_pool,
                 timeout,
                 policy,
                 io_timeout_ms,
@@ -666,6 +678,12 @@ impl Endpoint {
     pub(crate) fn pending_requests(&self) -> usize {
         self.shared.outstanding.load(Ordering::Acquire)
     }
+    pub(crate) fn pool(&self) -> &Pool {
+        &self.shared.pool
+    }
+    pub(crate) fn set_request_capacity(&self, capacity: usize) {
+        self.shared.capacity.store(capacity, Ordering::Release);
+    }
     fn enqueue(
         &self,
         key: Key,
@@ -690,7 +708,7 @@ impl Endpoint {
         self.shared
             .outstanding
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < self.shared.capacity).then_some(n + 1)
+                (n < self.shared.capacity.load(Ordering::Acquire)).then_some(n + 1)
             })
             .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "endpoint admission full"))?;
         let permit = Permit(self.shared.outstanding.clone());
@@ -742,16 +760,10 @@ impl Endpoint {
             bridge_limits: context.as_ref().map(|value| value.limits.clone()),
             bridge_deadlines: context.as_ref().map(|value| value.deadlines.clone()),
         };
-        match self.shared.sender.try_send(request) {
-            Ok(()) => self.shared.worker.unpark(),
-            Err(TrySendError::Full(_)) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    "endpoint queue full",
-                ));
-            }
-            Err(TrySendError::Disconnected(_)) => return Err(stopped()),
+        if self.shared.sender.send(request).is_err() {
+            return Err(stopped());
         }
+        self.shared.worker.unpark();
         let received = match (result, absolute) {
             (OpenReceiver::Blocking(result), Some(at)) => result
                 .recv_timeout(at.saturating_duration_since(Instant::now()))
@@ -836,6 +848,8 @@ fn run<C>(
     C::Resource: ChannelResource,
 {
     let _stop_on_exit = StopOnExit(stop.clone());
+    let stall_ms = host.stall_slot();
+    stall_ms.store(io_timeout_ms, Ordering::Relaxed);
     let waker = Waker::from(Arc::new(ThreadWake(thread::current())));
     let mut cx = Context::from_waker(&waker);
     let mut pending = Vec::<Pending>::new();
@@ -868,11 +882,21 @@ fn run<C>(
         }
         if host
             .step_reported(&mut cx, now, |connection| {
-                pending
+                let item = pending
                     .iter()
-                    .find(|p| p.checkout.opening_connection() == Some(connection))
-                    .map(|p| p.request.progress.clone())
-                    .unwrap_or_default()
+                    .find(|p| p.checkout.opening_connection() == Some(connection));
+                let stall = item
+                    .and_then(|p| p.request.bridge_deadlines.as_ref())
+                    .map(|deadlines| {
+                        if deadlines.io_ms <= 0 {
+                            0
+                        } else {
+                            deadlines.io_ms as u64
+                        }
+                    })
+                    .unwrap_or(io_timeout_ms);
+                stall_ms.store(stall, Ordering::Relaxed);
+                item.map(|p| p.request.progress.clone()).unwrap_or_default()
             })
             .is_err()
         {

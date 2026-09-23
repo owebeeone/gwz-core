@@ -76,6 +76,107 @@ cfg_if::cfg_if! {
         fn key(f: &common::SshdFixture) -> Key {
             Key::ssh(&f.user, "127.0.0.1", f.port)
         }
+
+        #[test]
+        fn production_waits_complete_across_four_setup_stages() {
+            use agent_job::ManualClock;
+            let clock = ManualClock::new();
+            let start = clock.now();
+            let aggregate = start + Duration::from_secs(10);
+            let advancing = clock.clone();
+            let mut job = Job::start_timed(
+                Some(aggregate),
+                Duration::from_secs(1),
+                Duration::from_secs(5),
+                clock.clock(),
+                move |control| {
+                    ssh_network::timed_resolution(&control, || {
+                        advancing.advance(Duration::from_millis(600));
+                        Ok(())
+                    })?;
+                    // TCP, handshake, and agent socket call this production
+                    // poll boundary. Readiness completes each wait.
+                    for _ in 0..3 {
+                        ssh_network::wait_step(&control, |_| {
+                            advancing.advance(Duration::from_millis(600));
+                            Ok(true)
+                        })?;
+                    }
+                    control.check()
+                },
+            )
+            .unwrap();
+            finish(&mut job).unwrap();
+            assert!(clock.now().duration_since(start) > Duration::from_secs(1));
+            assert!(clock.now() < aggregate);
+        }
+
+        #[test]
+        fn production_tcp_poll_without_readiness_expires_stall() {
+            use agent_job::{ManualClock, TimeoutReason, timeout_reason};
+            let clock = ManualClock::new();
+            let aggregate = clock.now() + Duration::from_secs(10);
+            let advancing = clock.clone();
+            let mut job = Job::start_timed(
+                Some(aggregate),
+                Duration::from_secs(1),
+                Duration::from_secs(5),
+                clock.clock(),
+                move |control| {
+                    ssh_network::wait_step(&control, |_| {
+                        advancing.advance(Duration::from_secs(1));
+                        Ok(false)
+                    })
+                },
+            )
+            .unwrap();
+            let error = finish(&mut job).unwrap_err();
+            assert!(clock.now() < aggregate);
+            assert_eq!(timeout_reason(&error), Some(TimeoutReason::Stall));
+        }
+
+        #[test]
+        fn production_dns_error_after_stall_keeps_timeout_reason() {
+            use agent_job::{Control, ManualClock, TimeoutReason, timeout_reason};
+            let clock = ManualClock::new();
+            let aggregate = clock.now() + Duration::from_secs(10);
+            let control = Control::scripted(
+                Some(aggregate),
+                Duration::from_secs(1),
+                Duration::from_secs(5),
+                clock.clock(),
+            );
+            let error = ssh_network::timed_resolution(&control, || {
+                clock.advance(Duration::from_secs(1));
+                Err::<(), _>(io::ErrorKind::NotFound.into())
+            })
+            .unwrap_err();
+            assert!(clock.now() < aggregate);
+            assert_eq!(timeout_reason(&error), Some(TimeoutReason::Stall));
+        }
+
+        #[test]
+        fn production_agent_eagain_sleep_does_not_reset_stall() {
+            use agent_job::{Control, ManualClock, TimeoutReason, timeout_reason};
+            let clock = ManualClock::new();
+            let aggregate = clock.now() + Duration::from_secs(10);
+            let control = Control::scripted(
+                Some(aggregate),
+                Duration::from_secs(1),
+                Duration::from_secs(5),
+                clock.clock(),
+            );
+            for _ in 0..2 {
+                agent_auth::wait_eagain(&control, |_| clock.advance(Duration::from_millis(400)))
+                    .unwrap();
+            }
+            let error = agent_auth::wait_eagain(&control, |_| {
+                clock.advance(Duration::from_millis(200));
+            })
+            .unwrap_err();
+            assert!(clock.now() < aggregate);
+            assert_eq!(timeout_reason(&error), Some(TimeoutReason::Stall));
+        }
         #[test]
         fn fresh_network_setup_authenticates_and_reuses_in_the_shared_pool() {
             let fixture = support::Fixture::new("ssh-ed25519", false);

@@ -314,6 +314,65 @@ fn local_https_advertisement_and_clone_use_scoped_host_runtime() {
 }
 
 #[test]
+fn unchanged_fetch_reuses_the_advertisement_connection_across_requests() {
+    let runtime = Builder::new_current_thread().enable_all().build().unwrap();
+    runtime.block_on(async {
+        let root = tempfile::tempdir().unwrap();
+        let (repository, _) = repository(root.path());
+        let repository = Arc::new(repository);
+        let server = fixture::Server::start(Arc::new(move |request| {
+            let repository = repository.clone();
+            Box::pin(async move { git_http_backend(repository, request).await })
+        }))
+        .await;
+        let transport = TransportRuntime::with_https(
+            SshEndpointConfig::fixture(endpoint_home(root.path()), None),
+            HttpsEndpointConfig {
+                tls: server.config(),
+                auth: None,
+            },
+        )
+        .unwrap();
+        let target = root.path().join("clone");
+        let request = transport
+            .request(meta("reuse-clone"), "clone".into())
+            .await
+            .unwrap();
+        let backend = request.backend().clone();
+        let url = server.url.clone();
+        let clone_target = target.clone();
+        tokio::task::spawn_blocking(move || backend.clone_repo(&url, &clone_target))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(request.finish().await.pending_local_work, 0);
+        let mut prior = None;
+        for index in 0..2 {
+            let request = transport
+                .request(meta(&format!("reuse-fetch-{index}")), "fetch".into())
+                .await
+                .unwrap();
+            let backend = request.backend().clone();
+            let path = target.clone();
+            tokio::task::spawn_blocking(move || backend.fetch(&path, "origin"))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(request.finish().await.pending_local_work, 0);
+            let count = server.connections.load(Ordering::SeqCst);
+            if let Some(previous) = prior {
+                assert_eq!(
+                    count, previous,
+                    "unchanged fetch opened another TLS connection"
+                );
+            }
+            prior = Some(count);
+        }
+        assert_eq!(transport.shutdown().await.pending_local_work, 0);
+    });
+}
+
+#[test]
 fn local_https_workspace_commands_keep_the_same_host_scope() {
     let runtime = Builder::new_current_thread().enable_all().build().unwrap();
     runtime.block_on(async {

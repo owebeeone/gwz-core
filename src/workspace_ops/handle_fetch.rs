@@ -143,7 +143,7 @@ where
                 emitter.member_finished(&target.member_id, &target.member_path);
                 row
             },
-        );
+        )?;
         emitter.operation_finished();
 
         Ok(fetch_response(context, rows))

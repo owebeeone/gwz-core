@@ -83,6 +83,7 @@ fn active_io_custom_timeout_expires_delayed_headers() {
         assert!(matches!(
             result,
             Err(Failure {
+                setup_cause: None,
                 code: ErrorCode::Timeout,
                 ..
             })
@@ -153,6 +154,7 @@ fn physical_capacity_wait_uses_allocation_deadline() {
         assert!(matches!(
             result,
             Err(Failure {
+                setup_cause: None,
                 code: ErrorCode::Timeout,
                 ..
             })
@@ -200,6 +202,7 @@ fn redirects_do_not_refill_network_budget() {
         assert!(matches!(
             failed,
             Err(Failure {
+                setup_cause: None,
                 code: ErrorCode::Timeout,
                 ..
             })
@@ -241,6 +244,7 @@ fn open_can_shorten_but_cannot_disable_endpoint_network_timeout() {
         assert!(matches!(
             failed,
             Err(Failure {
+                setup_cause: None,
                 code: ErrorCode::Timeout,
                 ..
             })

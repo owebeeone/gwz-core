@@ -1,6 +1,7 @@
 use super::*;
 use crate::git::endpoint::{
     placement_endpoint::{EndpointError, PlacementEndpoint},
+    shared_reservation::Authority,
     ssh_channel::GitService,
     ssh_destination::Destination,
     stream_io::BlockingStream,
@@ -24,6 +25,7 @@ use std::{
     time::Instant,
 };
 mod driver;
+pub(crate) use driver::SshOpenFailure;
 pub type Attachment = (String, Envelope);
 const CLEANUP: Duration = Duration::from_secs(5);
 const CHECK_MS: u64 = 120_000;
@@ -48,6 +50,7 @@ pub(super) fn unique() -> ModelResult<String> {
 }
 fn protocol_failure(code: gwz_transport::protocol::ErrorCode) -> Failure {
     Failure {
+        setup_cause: None,
         code,
         effect: Effect::None,
         facts: None,
@@ -135,11 +138,25 @@ struct State {
     checks: BTreeMap<i64, Check>,
     engine: Option<PlacementEndpoint>,
     https: Option<super::https_endpoint::HttpsEndpoint>,
+    authority: Option<Authority>,
+    installed_capacity: Option<pool::Capacity>,
     prefer_https: bool,
     endpoint_config: Option<binding::EndpointConfig>,
     pending: Option<Attachment>,
     incoming: Option<Attachment>,
     io_timeout_ms: u64,
+    connect_timeout_ms: u64,
+}
+fn has_non_idle_lease(state: &State) -> bool {
+    let non_idle = |counts: pool::Counts| counts.total() != counts.idle;
+    state
+        .engine
+        .as_ref()
+        .is_some_and(|engine| non_idle(engine.pool().counts()))
+        || state
+            .https
+            .as_ref()
+            .is_some_and(|endpoint| non_idle(endpoint.pool().counts()))
 }
 struct Event {
     wakes: Mutex<BTreeMap<u64, Waker>>,
@@ -188,6 +205,16 @@ pub(super) struct Session {
     origin: Instant,
 }
 impl Session {
+    cfg_if::cfg_if! { if #[cfg(test)] {
+        pub(super) fn capacity_for_test(&self) -> Option<pool::Capacity> {
+            self.state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .engine
+                .as_ref()
+                .map(|engine| engine.pool().capacity())
+        }
+    } }
     fn start(state: State) -> ModelResult<Arc<Self>> {
         let session = Arc::new(Self {
             state: Mutex::new(state),
@@ -229,16 +256,23 @@ impl Session {
             checks: BTreeMap::new(),
             engine: None,
             https: None,
+            authority: None,
+            installed_capacity: None,
             prefer_https: false,
             endpoint_config: None,
             pending: None,
             incoming: None,
-            io_timeout_ms: 3000,
+            io_timeout_ms: 9000,
+            connect_timeout_ms: 30_000,
         }
     }
-    pub(super) fn driver(io_timeout_ms: u64) -> ModelResult<(Arc<Self>, TransportPort)> {
+    pub(super) fn driver(
+        io_timeout_ms: u64,
+        connect_timeout_ms: u64,
+    ) -> ModelResult<(Arc<Self>, TransportPort)> {
         let mut state = Self::empty();
         state.io_timeout_ms = io_timeout_ms;
+        state.connect_timeout_ms = connect_timeout_ms;
         let id = unique()?;
         let (owner, port) = Owner::new(Mux::initiator(&id, mux_config()).map_err(mux_error)?);
         state.owner = Some(owner);
@@ -260,6 +294,8 @@ impl Session {
             config.pool.total,
             config.pool.per_host,
         );
+        state.authority = Some(authority.clone());
+        state.installed_capacity = Some(pool::Capacity::from(&config.pool));
         let ssh = ssh_local::connect_with_authority(
             config.pool.clone(),
             config.home.join(".ssh/known_hosts"),
@@ -273,7 +309,7 @@ impl Session {
                 https,
                 config.pool.clone(),
                 config.io_timeout_ms,
-                authority,
+                authority.clone(),
                 id.clone(),
             )?);
         }
@@ -319,6 +355,135 @@ impl Session {
                 .owner
                 .as_ref()
                 .is_some_and(|o| o.phase() == Phase::Closed)
+    }
+    pub(super) async fn install_capacity(
+        &self,
+        request: &str,
+        capacity: pool::Capacity,
+    ) -> ModelResult<()> {
+        // A finished request can still have bounded physical cleanup behind
+        // its terminal reply. Wait for that owner to retire before installing
+        // the next operation's limits; live overlapping requests still fail.
+        let deadline = Instant::now() + CLEANUP;
+        let listener = self.listener();
+        let reused = poll_fn(|cx| {
+            if !listener.arm(cx) {
+                return Poll::Ready(Err(unavailable("transport capacity wait unavailable")));
+            }
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.closed || !state.registrations.contains_key(request) {
+                return Poll::Ready(Err(unavailable("transport operation is active")));
+            }
+            if state
+                .registrations
+                .iter()
+                .any(|(id, record)| id != request && record.result.is_none())
+            {
+                return if !has_non_idle_lease(&state) && state.installed_capacity == Some(capacity)
+                {
+                    Poll::Ready(Ok(true))
+                } else {
+                    Poll::Ready(Err(unavailable("transport operation is active")))
+                };
+            }
+            // The SSH worker's pending count includes healthy idle sockets.
+            // Those sockets are the resource this operation is meant to reuse;
+            // waiting for them to disappear makes a sequential request time out.
+            let pending = state.engine.as_ref().is_some_and(|engine| {
+                engine.pending().saturating_sub(engine.pool().counts().idle) != 0
+            }) || state
+                .https
+                .as_ref()
+                .is_some_and(|endpoint| endpoint.pending() != 0);
+            if !pending {
+                return Poll::Ready(Ok(false));
+            }
+            if Instant::now() >= deadline {
+                return Poll::Ready(Err(unavailable("prior transport cleanup incomplete")));
+            }
+            Poll::Pending
+        })
+        .await?;
+        if reused {
+            return Ok(());
+        }
+        let (ssh, https, authority) = {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.closed
+                || !state.registrations.contains_key(request)
+                || state.engine.as_ref().is_some_and(|engine| {
+                    engine.pending().saturating_sub(engine.pool().counts().idle) != 0
+                })
+                || state
+                    .https
+                    .as_ref()
+                    .is_some_and(|endpoint| endpoint.pending() != 0)
+            {
+                return Err(unavailable("transport operation is active"));
+            }
+            if state
+                .registrations
+                .iter()
+                .any(|(id, record)| id != request && record.result.is_none())
+            {
+                return if !has_non_idle_lease(&state) && state.installed_capacity == Some(capacity)
+                {
+                    Ok(())
+                } else {
+                    Err(unavailable("transport operation is active"))
+                };
+            }
+            let ssh = state
+                .engine
+                .as_ref()
+                .ok_or_else(|| unavailable("SSH endpoint unavailable"))?;
+            let https = state.https.as_ref().map(|endpoint| endpoint.pool().clone());
+            if let Some(https) = &https {
+                ssh.pool()
+                    .install_capacity_pair(https, capacity)
+                    .map_err(|_| unavailable("transport capacity is active"))?;
+            } else {
+                ssh.pool()
+                    .install_capacity(capacity)
+                    .map_err(|_| unavailable("transport capacity is active"))?;
+            }
+            ssh.set_request_capacity(capacity.max_requests);
+            let ssh_pool = ssh.pool().clone();
+            state.installed_capacity = None;
+            (
+                ssh_pool,
+                https,
+                state
+                    .authority
+                    .clone()
+                    .ok_or_else(|| unavailable("shared capacity unavailable"))?,
+            )
+        };
+        let deadline = Instant::now() + CLEANUP;
+        let listener = self.listener();
+        poll_fn(|cx| {
+            if !listener.arm(cx) {
+                return Poll::Ready(Err(unavailable("transport capacity wait unavailable")));
+            }
+            if ssh.counts().closing == 0
+                && https.as_ref().is_none_or(|pool| pool.counts().closing == 0)
+            {
+                return Poll::Ready(Ok(()));
+            }
+            if Instant::now() >= deadline || self.is_closed() {
+                return Poll::Ready(Err(unavailable("transport capacity retirement incomplete")));
+            }
+            Poll::Pending
+        })
+        .await?;
+        if !authority.install_capacity(capacity.total, capacity.per_host) {
+            return Err(unavailable("shared capacity remains occupied"));
+        }
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .installed_capacity = Some(capacity);
+        Ok(())
     }
     pub(super) fn register(&self, request: &str, operation: Option<String>) -> ModelResult<()> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -391,6 +556,7 @@ impl Session {
             // arrives. Complete its independent blocking waiter before retiring
             // the stream so cancellation never relies on a peer acknowledgment.
             entry.reply.complete(Err(Failure {
+                setup_cause: None,
                 code: gwz_transport::protocol::ErrorCode::Cancelled,
                 effect: entry.opening_cancel_effect,
                 facts: None,

@@ -26,6 +26,7 @@ fn request_rejects_non_https_before_any_helper_or_connection() {
         assert!(matches!(
             result,
             Err(Failure {
+                setup_cause: None,
                 code: ErrorCode::InvalidRequest,
                 ..
             })
@@ -567,6 +568,7 @@ fn discovery_failures_preserve_status_without_git_bytes_and_hops_are_bounded() {
             assert!(matches!(
                 failed,
                 Err(Failure {
+                    setup_cause: None,
                     code: ErrorCode::UnsupportedOperation,
                     ..
                 })
@@ -674,6 +676,7 @@ fn connect_proxy_and_no_proxy_keep_proxy_credentials_out_of_origin_requests() {
                     )
                     .await,
                 Err(Failure {
+                    setup_cause: None,
                     code: ErrorCode::Authentication,
                     ..
                 })
@@ -893,6 +896,7 @@ fn exhausted_retry_domains_fail_before_gh_lookup_without_refilling() {
                     matches!(
                         result,
                         Err(Failure {
+                            setup_cause: None,
                             code: ErrorCode::Timeout,
                             effect: Effect::None,
                             ..

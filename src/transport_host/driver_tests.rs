@@ -67,6 +67,86 @@ pub(super) fn fixture_url(fixture: &common::SshdFixture) -> String {
     )
 }
 
+fn local_meta(id: &str, home: &Path) -> RequestMeta {
+    RequestMeta {
+        request_id: id.into(),
+        schema_version: "gwz.protocol/v0".into(),
+        transport: Some(TransportOptions {
+            placement: Some(TransportPlacement::Local),
+            default_identity: Some(home.join("client_ed25519").to_string_lossy().into_owned()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn sequential_local_requests_reuse_an_idle_ssh_connection() {
+    let fixture = common::SshdFixture::new();
+    let server = git2::Repository::open_bare(&fixture.repository).unwrap();
+    commit(&server, "first");
+    let home = endpoint_home(&fixture);
+    let runtime = TransportRuntime::new(SshEndpointConfig::fixture(home.clone(), None)).unwrap();
+    let url = fixture_url(&fixture);
+    let mut connection = None;
+    for index in 0..2 {
+        let meta = local_meta(&format!("local-reuse-{index}"), &home);
+        let request = block_on(runtime.request(meta.clone(), "clone".into())).unwrap();
+        let backend = request
+            .backend()
+            .with_transport(fixture.temp.path(), meta.transport.as_ref())
+            .unwrap()
+            .unwrap();
+        backend
+            .clone_repo(
+                &url,
+                &fixture.temp.path().join(format!("local-reuse-{index}")),
+            )
+            .unwrap();
+        let row = backend
+            .transport_observations()
+            .unwrap()
+            .snapshot()
+            .pop()
+            .unwrap();
+        if let Some(first) = &connection {
+            assert_eq!(row.connection_id.as_ref(), Some(first));
+            assert_eq!(row.reused, Some(true));
+        } else {
+            connection = row.connection_id;
+        }
+        assert_eq!(block_on(request.finish()).pending_local_work, 0);
+    }
+    block_on(runtime.shutdown());
+}
+
+#[test]
+fn a_live_local_lease_refuses_an_overlapping_request_with_the_same_capacity() {
+    let fixture = common::SshdFixture::new();
+    let home = endpoint_home(&fixture);
+    let runtime = TransportRuntime::new(SshEndpointConfig::fixture(home.clone(), None)).unwrap();
+    let first =
+        block_on(runtime.request(local_meta("lease-first", &home), "fetch".into())).unwrap();
+    let stream = first
+        .context
+        .open(
+            &fixture_url(&fixture),
+            crate::git::endpoint::ssh_channel::GitService::UploadPack,
+            Some(home.join("client_ed25519").to_string_lossy().into_owned()),
+            Arc::new(|_, _| {}),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+    let error = block_on(runtime.request(local_meta("lease-second", &home), "fetch".into()))
+        .err()
+        .expect("a live lease must block capacity admission");
+    assert_eq!(error.code, crate::model::ErrorCode::IoError);
+    assert_eq!(error.message, "transport operation is active");
+    drop(stream);
+    block_on(first.finish());
+    block_on(runtime.shutdown());
+}
+
 fn commit(repository: &git2::Repository, text: &str) -> git2::Oid {
     let blob = repository.blob(text.as_bytes()).unwrap();
     let mut builder = repository.treebuilder(None).unwrap();

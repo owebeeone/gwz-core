@@ -37,7 +37,7 @@ struct Harness {
 
 impl Harness {
     fn new(requests: &[(&str, &str)]) -> Self {
-        let (session, host) = session::Session::driver(3000).expect("driver session");
+        let (session, host) = session::Session::driver(3000, 3000).expect("driver session");
         for (request, operation) in requests {
             session
                 .register(request, Some((*operation).into()))
@@ -136,6 +136,7 @@ impl Harness {
                 stream_id: open.1.stream_id,
                 kind: MessageKind::Failed,
                 failed: Some(Failure {
+                    setup_cause: None,
                     code: gwz_transport::protocol::ErrorCode::RepositoryRefused,
                     effect: Effect::None,
                     facts,
@@ -154,6 +155,7 @@ impl Harness {
                 stream_id: open.1.stream_id,
                 kind: MessageKind::OpenFailed,
                 open_failed: Some(Failure {
+                    setup_cause: None,
                     code: gwz_transport::protocol::ErrorCode::Cancelled,
                     effect: Effect::None,
                     facts: None,
@@ -398,7 +400,7 @@ fn oversized_open_deadlines_fail_through_bound_session_without_stopping_progress
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir(home.path().join(".ssh")).unwrap();
     std::fs::write(home.path().join(".ssh/known_hosts"), b"").unwrap();
-    let (driver, host) = session::Session::driver(3000).unwrap();
+    let (driver, host) = session::Session::driver(3000, 3000).unwrap();
     let (endpoint, client) =
         session::Session::endpoint(SshEndpointConfig::fixture(home.path().into(), None)).unwrap();
     driver

@@ -1,5 +1,5 @@
 /// Default global ceiling on concurrent member network operations (`--jobs`).
-pub const DEFAULT_JOBS: usize = 50;
+pub const DEFAULT_JOBS: usize = 100;
 /// Global ceiling on concurrent member operations: the driver's `--jobs` value
 /// when valid, otherwise [`DEFAULT_JOBS`].
 pub fn resolve_jobs(requested: Option<i64>) -> usize {

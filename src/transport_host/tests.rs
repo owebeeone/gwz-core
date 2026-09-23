@@ -9,6 +9,45 @@ use std::{
 fn config() -> SshEndpointConfig {
     SshEndpointConfig::fixture(std::path::PathBuf::from("/nonexistent-endpoint-home"), None)
 }
+#[test]
+fn request_installs_its_resolved_pool_capacity_before_bind() {
+    let runtime = TransportRuntime::new(config()).unwrap();
+    let mut custom = meta("capacity-custom", TransportPlacement::Local);
+    custom.policy = Some(crate::OperationPolicy {
+        concurrency: Some(400),
+        max_connections_per_host: Some(50),
+        ..Default::default()
+    });
+    let request = wait(runtime.request(custom, "operation-one".into())).unwrap();
+    let endpoint = runtime
+        .0
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .local_endpoint
+        .clone();
+    assert_eq!(
+        endpoint.capacity_for_test(),
+        Some(pool::Capacity {
+            per_user_host: 50,
+            per_host: 50,
+            total: 400,
+            max_requests: 1024,
+        })
+    );
+    wait(request.finish());
+    let request = wait(runtime.request(meta("capacity-default", TransportPlacement::Local), "operation-two".into())).unwrap();
+    assert_eq!(
+        endpoint.capacity_for_test(),
+        Some(pool::Capacity {
+            per_user_host: 32,
+            per_host: 32,
+            total: 256,
+            max_requests: 1024,
+        })
+    );
+    wait(request.finish());
+    wait(runtime.shutdown());
+}
 fn meta(id: &str, placement: TransportPlacement) -> RequestMeta {
     RequestMeta {
         request_id: id.into(),
@@ -146,6 +185,27 @@ fn cancelling_one_bound_request_preserves_its_sibling_and_future_requests() {
     let third =
         wait(runtime.request(meta("third", TransportPlacement::Local), "op3".into())).unwrap();
     assert_eq!(wait(third.finish()).pending_local_work, 0);
+    wait(runtime.shutdown());
+}
+
+#[test]
+fn cloned_cancellation_handle_only_cancels_its_live_request() {
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<super::TransportCancellation>();
+    let runtime = TransportRuntime::new(config()).unwrap();
+    let first_meta = meta("handle-first", TransportPlacement::Local);
+    let first = wait(runtime.request(first_meta.clone(), "op1".into())).unwrap();
+    let second_meta = meta("handle-second", TransportPlacement::Local);
+    let second = wait(runtime.request(second_meta.clone(), "op2".into())).unwrap();
+    let handle = first.cancellation_handle();
+    let clone = handle.clone();
+    std::thread::spawn(move || clone.cancel()).join().unwrap();
+    assert!(first.context.validate(&first_meta, "op1").is_err());
+    second.context.validate(&second_meta, "op2").unwrap();
+    wait(first.finish());
+    handle.cancel();
+    second.context.validate(&second_meta, "op2").unwrap();
+    wait(second.finish());
     wait(runtime.shutdown());
 }
 

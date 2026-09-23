@@ -6,7 +6,7 @@ use super::{
 };
 use gwz_transport::{
     pool::{self, Identity, Key, Lease, Owner, Request},
-    protocol::{Disposition, ErrorCode, Failure},
+    protocol::{Disposition, ErrorCode, Failure, SetupFailureCause},
 };
 use std::{
     sync::{
@@ -221,13 +221,46 @@ impl HttpLease {
 }
 fn pool_failure(error: pool::Error) -> Failure {
     use pool::Error;
-    https_connection::failure(match error {
-        Error::Capacity => ErrorCode::Capacity,
-        Error::AllocationTimeout | Error::ConnectTimeout | Error::InteractionTimeout => {
-            ErrorCode::Timeout
+    let (code, setup_cause) = match error {
+        Error::Capacity => (ErrorCode::Capacity, None),
+        Error::AllocationTimeout => (ErrorCode::Timeout, Some(SetupFailureCause::Allocation)),
+        Error::ConnectTimeout => (ErrorCode::Timeout, Some(SetupFailureCause::Aggregate)),
+        Error::InteractionTimeout => (ErrorCode::Timeout, Some(SetupFailureCause::Interaction)),
+        Error::Cancelled | Error::Shutdown => (ErrorCode::Cancelled, None),
+        Error::ConnectFailed {
+            code, setup_cause, ..
+        } => (code, setup_cause),
+        _ => (ErrorCode::Io, None),
+    };
+    Failure {
+        setup_cause,
+        ..https_connection::failure(code)
+    }
+}
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        mod setup_cause_tests {
+            use super::*;
+
+            #[test]
+            fn pool_failure_keeps_timeout_and_connector_origins() {
+                for (error, cause) in [
+                    (pool::Error::AllocationTimeout, SetupFailureCause::Allocation),
+                    (pool::Error::ConnectTimeout, SetupFailureCause::Aggregate),
+                    (pool::Error::InteractionTimeout, SetupFailureCause::Interaction),
+                ] {
+                    let failure = pool_failure(error);
+                    assert_eq!(failure.code, ErrorCode::Timeout);
+                    assert_eq!(failure.setup_cause, Some(cause));
+                }
+                let failure = pool_failure(pool::Error::ConnectFailed {
+                    code: ErrorCode::Unavailable,
+                    effect: gwz_transport::protocol::Effect::None,
+                    setup_cause: Some(SetupFailureCause::ConnectionRefused),
+                });
+                assert_eq!(failure.code, ErrorCode::Unavailable);
+                assert_eq!(failure.setup_cause, Some(SetupFailureCause::ConnectionRefused));
+            }
         }
-        Error::Cancelled | Error::Shutdown => ErrorCode::Cancelled,
-        Error::ConnectFailed { code, .. } => code,
-        _ => ErrorCode::Io,
-    })
+    }
 }

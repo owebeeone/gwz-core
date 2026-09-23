@@ -125,7 +125,7 @@ impl ReadPreflight {
         targets: &[PreflightTarget<'_>],
         jobs: usize,
         per_host: usize,
-    ) -> (Self, Vec<Option<ModelError>>) {
+    ) -> ModelResult<(Self, Vec<Option<ModelError>>)> {
         let mut round = ReadRound::default();
         let mut needs = Vec::with_capacity(targets.len());
         for target in targets {
@@ -144,7 +144,7 @@ impl ReadPreflight {
             }
             needs.push(need);
         }
-        let results = round.run(backend, jobs, per_host);
+        let results = round.run(backend, jobs, per_host)?;
         // Every read is in; keep the advertisements in plan order.
         let mut reads = Self::default();
         let mut failures = Vec::with_capacity(results.len());
@@ -168,7 +168,7 @@ impl ReadPreflight {
                 })
             })
             .collect();
-        (reads, target_failures)
+        Ok((reads, target_failures))
     }
 }
 
@@ -240,7 +240,7 @@ impl ReadRound {
         backend: &B,
         jobs: usize,
         per_host: usize,
-    ) -> Vec<ModelResult<Vec<GitRemoteRef>>> {
+    ) -> ModelResult<Vec<ModelResult<Vec<GitRemoteRef>>>> {
         let reads: Vec<&DestinationRead> = self.reads.iter().collect();
         par_map_per_host(
             reads,
@@ -352,7 +352,7 @@ pub(super) fn checked_root_request_concurrently<B: GitBackend + Sync>(
         .iter()
         .map(|dependency| round.plan_dependency(root, dependency))
         .collect();
-    let results = round.run(backend, jobs, per_host);
+    let results = round.run(backend, jobs, per_host)?;
     let remedy = if matches!(request.remote_check, Some(crate::RemoteCheck::Always)) {
         PUBLISH_OR_FETCH
     } else {

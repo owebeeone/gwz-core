@@ -1,10 +1,10 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Condvar, Mutex};
 
-#[cfg(test)]
-use super::*;
-#[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
+cfg_if::cfg_if! { if #[cfg(test)] {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+} }
 
 #[derive(Clone)]
 pub struct OperationRuntime {
@@ -24,7 +24,7 @@ pub(crate) struct OperationState {
     pub(crate) result: Option<crate::OperationResult>,
 }
 
-#[cfg(test)]
+cfg_if::cfg_if! { if #[cfg(test)] {
 mod tests {
     use crate::model::{
         GitObjectIdentity, MemberId, OperationActor, OperationAttribution, SourceKind,
@@ -116,7 +116,7 @@ mod tests {
                 value * 10
             },
         );
-        assert_eq!(results, (0..8).map(|value| value * 10).collect::<Vec<_>>());
+        assert_eq!(results.unwrap(), (0..8).map(|value| value * 10).collect::<Vec<_>>());
         max_active.load(Ordering::SeqCst)
     }
 
@@ -136,7 +136,7 @@ mod tests {
         assert_eq!(peak, 2, "two hosts at per_host=1 should overlap to 2");
         assert_eq!(
             par_map_per_host(Vec::<usize>::new(), 4, 8, |_| None, |value| value),
-            Vec::<usize>::new()
+            Ok(Vec::<usize>::new())
         );
     }
 
@@ -145,6 +145,32 @@ mod tests {
         // No host: bounded only by the global ceiling.
         let peak = run_tracking_peak(3, 1, |_| None);
         assert_eq!(peak, 3, "hostless items ignore per_host, use global=3");
+    }
+
+    #[test]
+    fn omitted_concurrency_uses_new_defaults() {
+        assert_eq!(super::resolve_jobs(None), 100);
+        assert_eq!(super::resolve_per_host(None), 32);
+        assert_eq!(super::resolve_jobs(Some(1)), 1);
+        assert_eq!(super::resolve_per_host(Some(1)), 1);
+    }
+
+    #[test]
+    fn jobs_one_creates_only_one_worker_even_with_a_large_host_limit() {
+        let worker_ids = std::sync::Mutex::new(std::collections::HashSet::new());
+        let result = par_map_per_host(
+            (0..256).collect::<Vec<_>>(),
+            1,
+            10_000,
+            |_| Some("one.example".to_owned()),
+            |value| {
+                worker_ids.lock().unwrap().insert(std::thread::current().id());
+                value
+            },
+        )
+        .unwrap();
+        assert_eq!(result, (0..256).collect::<Vec<_>>());
+        assert_eq!(worker_ids.lock().unwrap().len(), 1);
     }
 
     #[test]
@@ -611,3 +637,4 @@ mod tests {
         }
     }
 }
+} }

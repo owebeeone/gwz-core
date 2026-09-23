@@ -206,7 +206,7 @@ where
                 };
                 Ok((manifest_member, locked, response))
             },
-        );
+        )?;
         let mut members = Vec::with_capacity(outcomes.len());
         let mut first_error = None;
         for outcome in outcomes {

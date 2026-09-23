@@ -75,7 +75,10 @@ cfg_if::cfg_if! {
                 }
                 connection.set_nonblocking()?;
                 let mut agent = open()?;
+                control.begin_wait()?;
                 let keys = agent.identities()?;
+                control.complete_wait()?;
+                control.check()?;
                 for key in keys {
                     control.check()?;
                     let mut signer = Signer {
@@ -89,7 +92,7 @@ cfg_if::cfg_if! {
                     // This stack owner and its key remain stable across every native EAGAIN.
                     let mut context = (&mut signer as *mut Signer<'_, C>).cast::<c_void>();
                     loop {
-                        control.check()?;
+                        control.begin_wait()?;
                         offered();
                         let rc = {
                             let mut session = connection.session().raw();
@@ -108,20 +111,22 @@ cfg_if::cfg_if! {
                         };
                         observe(&key, rc);
                         control.check()?;
-                        if let Some(error) = signer.error {
-                            return Err(error.into());
+                        if let Some(error) = signer.error.take() {
+                            return Err(error);
                         }
                         if rc == 0 {
                             if !signer.invoked || !connection.session().authenticated() {
                                 return Err(io::ErrorKind::PermissionDenied.into());
                             }
                             drop(agent); // Agent handle and callback state cannot cross the handoff.
+                            control.complete_wait()?;
                             control.check()?;
                             return Ok(connection);
                         }
                         if rc == LIBSSH2_ERROR_EAGAIN {
                             // Bounded polling fallback: no hidden blocking native agent calls.
-                            std::thread::sleep(control.quantum()?);
+                            // Sleep is not a completion; the stall keeps running.
+                            wait_eagain(&control, std::thread::sleep)?;
                         } else if rc == LIBSSH2_ERROR_AUTHENTICATION_FAILED {
                             break; // Server rejected this key; attempt the next listed identity once.
                         } else {
@@ -132,6 +137,15 @@ cfg_if::cfg_if! {
                     }
                 }
                 Err(io::ErrorKind::PermissionDenied.into())
+            }
+            pub(crate) fn wait_eagain(
+                control: &Control,
+                pause: impl FnOnce(std::time::Duration),
+            ) -> io::Result<()> {
+                control.begin_wait()?;
+                let duration = control.quantum()?;
+                pause(duration);
+                control.check()
             }
             cfg_if::cfg_if! {
                 if #[cfg(test)] {
@@ -149,7 +163,7 @@ cfg_if::cfg_if! {
                 user: &'a [u8],
                 control: &'a Control,
                 invoked: bool,
-                error: Option<io::ErrorKind>,
+                error: Option<io::Error>,
             }
             unsafe extern "C" fn sign<C: Channel>(
                 _: *mut LIBSSH2_SESSION,
@@ -162,7 +176,7 @@ cfg_if::cfg_if! {
                 // SAFETY: pointers supplied by the pinned native API and our live Signer.
                 let signer = unsafe { &mut *((*context).cast::<Signer<'_, C>>()) };
                 let result = catch_unwind(AssertUnwindSafe(|| -> io::Result<Vec<u8>> {
-                    signer.control.check()?;
+                    signer.control.begin_wait()?;
                     if signer.invoked || len == 0 || len > 65536 {
                         return Err(io::ErrorKind::InvalidData.into());
                     }
@@ -175,6 +189,7 @@ cfg_if::cfg_if! {
                     }
                     let signature = signer.agent.sign(signer.key, bytes, method)?;
                     shape(method, signer.key, &signature)?;
+                    signer.control.complete_wait()?;
                     signer.control.check()?;
                     Ok(signature)
                 }))
@@ -186,7 +201,7 @@ cfg_if::cfg_if! {
                         // Never transfer a Rust Vec allocation into native ownership.
                         let memory = unsafe { libc::malloc(signature.len()) }.cast::<u8>();
                         if memory.is_null() {
-                            signer.error = Some(io::ErrorKind::OutOfMemory);
+                            signer.error = Some(io::Error::from(io::ErrorKind::OutOfMemory));
                             return -1;
                         }
                         // SAFETY: allocation has exact capacity; output slots are native-owned.
@@ -198,7 +213,7 @@ cfg_if::cfg_if! {
                         0 // libssh2 frees this signature on its success and failure paths.
                     }
                     Err(error) => {
-                        signer.error = Some(error.kind());
+                        signer.error = Some(error);
                         -1
                     }
                 }
@@ -270,6 +285,11 @@ cfg_if::cfg_if! {
             }
         }
         pub(crate) use unix::{authenticate, authenticate_reporting};
+        cfg_if::cfg_if! {
+            if #[cfg(test)] {
+                pub(crate) use unix::wait_eagain;
+            }
+        }
         cfg_if::cfg_if! {
             if #[cfg(test)] { pub(crate) use unix::observed_authenticate; }
         }

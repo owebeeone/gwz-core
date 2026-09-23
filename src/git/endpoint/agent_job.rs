@@ -1,6 +1,7 @@
 //! Bounded process-local ownership of setup threads, including abandoned jobs.
+use gwz_transport::protocol::SetupFailureCause;
 use std::{
-    io,
+    fmt, io,
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicUsize, Ordering},
@@ -17,46 +18,306 @@ impl Drop for Permit {
         COUNT.fetch_sub(1, Ordering::AcqRel);
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TimeoutReason {
+    Stall,
+    Aggregate,
+}
+impl TimeoutReason {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            TimeoutReason::Stall => "stall",
+            TimeoutReason::Aggregate => "aggregate",
+        }
+    }
+    pub(crate) fn setup_cause(self) -> SetupFailureCause {
+        match self {
+            TimeoutReason::Stall => SetupFailureCause::Stall,
+            TimeoutReason::Aggregate => SetupFailureCause::Aggregate,
+        }
+    }
+}
+#[derive(Debug)]
+pub(crate) struct SetupTimeout {
+    pub(crate) reason: TimeoutReason,
+}
+impl fmt::Display for SetupTimeout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.reason.label())
+    }
+}
+impl std::error::Error for SetupTimeout {}
+pub(crate) fn timeout_reason(error: &io::Error) -> Option<TimeoutReason> {
+    error
+        .get_ref()
+        .and_then(|cause| cause.downcast_ref::<SetupTimeout>())
+        .map(|timeout| timeout.reason)
+}
+pub(crate) fn wall_clock() -> Arc<dyn Fn() -> Instant + Send + Sync> {
+    Arc::new(Instant::now)
+}
+#[derive(Clone)]
+pub(crate) struct ManualClock {
+    now: Arc<Mutex<Instant>>,
+}
+impl ManualClock {
+    pub(crate) fn new() -> Self {
+        Self {
+            now: Arc::new(Mutex::new(Instant::now())),
+        }
+    }
+    pub(crate) fn now(&self) -> Instant {
+        *self.now.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    pub(crate) fn advance(&self, by: Duration) {
+        let mut now = self.now.lock().unwrap_or_else(|e| e.into_inner());
+        *now += by;
+    }
+    pub(crate) fn clock(&self) -> Arc<dyn Fn() -> Instant + Send + Sync> {
+        let now = self.now.clone();
+        Arc::new(move || *now.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+}
+#[derive(Clone, Copy)]
+struct Fail {
+    kind: io::ErrorKind,
+    reason: Option<TimeoutReason>,
+}
+impl Fail {
+    fn into_io(self) -> io::Error {
+        match self.reason {
+            Some(reason) => io::Error::new(self.kind, SetupTimeout { reason }),
+            None => self.kind.into(),
+        }
+    }
+}
 struct State {
-    failure: Option<io::ErrorKind>,
+    failure: Option<Fail>,
     cancelled_at: Option<Instant>,
     joined: bool,
     consumed: bool,
     waker: Option<Waker>,
+    aggregate: Option<Instant>,
+    wait_started: Option<Instant>,
+    interacting: bool,
+    interaction_started: Option<Instant>,
+    paused_elapsed: Option<Duration>,
 }
 pub(crate) struct Control {
     state: Mutex<State>,
-    deadline: Option<Instant>,
+    stall: Duration,
     cleanup: Duration,
+    clock: Arc<dyn Fn() -> Instant + Send + Sync>,
 }
 impl Control {
-    fn update(&self, state: &mut State) {
-        if !state.consumed
-            && state.failure.is_none()
-            && self.deadline.is_some_and(|at| Instant::now() >= at)
-        {
-            state.failure = Some(io::ErrorKind::TimedOut);
-            state.cancelled_at = Some(Instant::now());
+    pub(crate) fn scripted(
+        aggregate: Option<Instant>,
+        stall: Duration,
+        cleanup: Duration,
+        clock: Arc<dyn Fn() -> Instant + Send + Sync>,
+    ) -> Arc<Self> {
+        Arc::new(Self::new(aggregate, stall, cleanup, clock))
+    }
+    fn new(
+        aggregate: Option<Instant>,
+        stall: Duration,
+        cleanup: Duration,
+        clock: Arc<dyn Fn() -> Instant + Send + Sync>,
+    ) -> Self {
+        Self {
+            state: Mutex::new(State {
+                failure: None,
+                cancelled_at: None,
+                joined: false,
+                consumed: false,
+                waker: None,
+                aggregate,
+                wait_started: None,
+                interacting: false,
+                interaction_started: None,
+                paused_elapsed: None,
+            }),
+            stall,
+            cleanup,
+            clock,
         }
+    }
+    fn now(&self) -> Instant {
+        (self.clock)()
+    }
+    fn fail(&self, state: &mut State, reason: TimeoutReason) {
+        state.failure = Some(Fail {
+            kind: io::ErrorKind::TimedOut,
+            reason: Some(reason),
+        });
+        state.cancelled_at = Some(self.now());
+    }
+    fn update(&self, state: &mut State) {
+        if state.consumed || state.failure.is_some() || state.interacting {
+            return;
+        }
+        let now = self.now();
+        let stall_at = if self.stall > Duration::ZERO {
+            state
+                .wait_started
+                .and_then(|start| start.checked_add(self.stall))
+        } else {
+            None
+        };
+        let aggregate_at = state.aggregate;
+        let stall_due = stall_at.is_some_and(|at| now >= at);
+        let aggregate_due = aggregate_at.is_some_and(|at| now >= at);
+        let reason = match (stall_due, aggregate_due) {
+            (true, true) => {
+                if aggregate_at <= stall_at {
+                    TimeoutReason::Aggregate
+                } else {
+                    TimeoutReason::Stall
+                }
+            }
+            (false, true) => TimeoutReason::Aggregate,
+            (true, false) => TimeoutReason::Stall,
+            (false, false) => return,
+        };
+        self.fail(state, reason);
+    }
+    pub(crate) fn begin_wait(&self) -> io::Result<()> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        self.update(&mut state);
+        if let Some(failure) = state.failure {
+            return Err(failure.into_io());
+        }
+        if self.stall > Duration::ZERO && !state.interacting && state.wait_started.is_none() {
+            state.wait_started = Some(self.now());
+        }
+        Ok(())
+    }
+    pub(crate) fn complete_wait(&self) -> io::Result<()> {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        self.update(&mut state);
+        if let Some(failure) = state.failure {
+            return Err(failure.into_io());
+        }
+        let now = self.now();
+        if self.stall > Duration::ZERO {
+            if state.interacting {
+                state.paused_elapsed = Some(Duration::ZERO);
+            } else {
+                state.wait_started = Some(now);
+            }
+        }
+        Ok(())
+    }
+    pub(crate) fn begin_slice(&self) -> io::Result<Duration> {
+        self.begin_wait()?;
+        self.quantum()
+    }
+    pub(crate) fn end_slice(&self, ready: bool) -> io::Result<()> {
+        if ready {
+            self.complete_wait()?;
+        }
+        self.check()
+    }
+    pub(crate) fn wait_step(
+        &self,
+        poll: impl FnOnce(Duration) -> io::Result<bool>,
+    ) -> io::Result<()> {
+        let duration = self.begin_slice()?;
+        let outcome = poll(duration);
+        self.check()?;
+        let ready = outcome?;
+        self.end_slice(ready)
     }
     pub(crate) fn check(&self) -> io::Result<()> {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         self.update(&mut state);
-        state.failure.map_or(Ok(()), |kind| Err(kind.into()))
+        match state.failure {
+            Some(failure) => Err(failure.into_io()),
+            None => Ok(()),
+        }
     }
     pub(crate) fn quantum(&self) -> io::Result<Duration> {
         self.check()?;
-        Ok(self.deadline.map_or(Duration::from_millis(20), |at| {
-            at.saturating_duration_since(Instant::now())
-                .min(Duration::from_millis(20))
-        }))
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut limit = Duration::from_millis(20);
+        if let Some(left) = self.aggregate_remaining(&state) {
+            limit = limit.min(left);
+        }
+        if let Some(left) = self.stall_remaining(&state) {
+            limit = limit.min(left);
+        }
+        Ok(limit)
+    }
+    fn aggregate_remaining(&self, state: &State) -> Option<Duration> {
+        let at = state.aggregate?;
+        if state.interacting {
+            let origin = state.interaction_started.unwrap_or(at);
+            Some(at.saturating_duration_since(origin))
+        } else {
+            Some(at.saturating_duration_since(self.now()))
+        }
+    }
+    fn stall_remaining(&self, state: &State) -> Option<Duration> {
+        if self.stall == Duration::ZERO {
+            return None;
+        }
+        if state.interacting {
+            let elapsed = state.paused_elapsed.unwrap_or(Duration::ZERO);
+            return Some(self.stall.saturating_sub(elapsed));
+        }
+        let start = state.wait_started?;
+        let elapsed = self.now().saturating_duration_since(start);
+        Some(self.stall.saturating_sub(elapsed))
+    }
+    pub(crate) fn begin_interaction(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        self.update(&mut state);
+        if state.failure.is_some() || state.interacting {
+            return;
+        }
+        let now = self.now();
+        if let Some(start) = state.wait_started.take() {
+            state.paused_elapsed = Some(now.saturating_duration_since(start));
+        }
+        state.interaction_started = Some(now);
+        state.interacting = true;
+    }
+    pub(crate) fn end_interaction(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.interacting {
+            return;
+        }
+        let now = self.now();
+        if let Some(started) = state.interaction_started.take() {
+            let paused = now.saturating_duration_since(started);
+            if let Some(at) = state.aggregate {
+                state.aggregate = at.checked_add(paused).or(Some(at));
+            }
+        }
+        if let Some(elapsed) = state.paused_elapsed.take() {
+            state.wait_started = now.checked_sub(elapsed);
+        }
+        state.interacting = false;
+    }
+    pub(crate) fn disposal_due(&self) -> bool {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.cancelled_at.is_some_and(|at| self.cleanup_due(at))
+    }
+    fn cleanup_due(&self, at: Instant) -> bool {
+        match at.checked_add(self.cleanup) {
+            Some(due) => self.now() >= due,
+            None => true,
+        }
     }
     fn cancel(&self) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         self.update(&mut state);
         if !state.consumed && state.failure.is_none() {
-            state.failure = Some(io::ErrorKind::ConnectionAborted);
-            state.cancelled_at = Some(Instant::now());
+            state.failure = Some(Fail {
+                kind: io::ErrorKind::ConnectionAborted,
+                reason: None,
+            });
+            state.cancelled_at = Some(self.now());
         }
     }
 }
@@ -78,10 +339,7 @@ impl<T: Send + 'static> Reap for Entry<T> {
             let control = &self.cell.control;
             let mut state = control.state.lock().unwrap_or_else(|e| e.into_inner());
             control.update(&mut state);
-            let wake = if state
-                .cancelled_at
-                .is_some_and(|at| at.elapsed() >= control.cleanup)
-            {
+            let wake = if state.cancelled_at.is_some_and(|at| control.cleanup_due(at)) {
                 state.waker.take()
             } else {
                 None
@@ -97,7 +355,10 @@ impl<T: Send + 'static> Reap for Entry<T> {
         let mut state = control.state.lock().unwrap_or_else(|e| e.into_inner());
         control.update(&mut state);
         if panic && state.failure.is_none() {
-            state.failure = Some(io::ErrorKind::Other);
+            state.failure = Some(Fail {
+                kind: io::ErrorKind::Other,
+                reason: None,
+            });
         }
         if state.failure.is_some() && !state.consumed {
             let discarded = self
@@ -183,7 +444,16 @@ impl<T: Send + 'static> Job<T> {
         cleanup: Duration,
         work: impl FnOnce(Arc<Control>) -> io::Result<T> + Send + 'static,
     ) -> io::Result<Self> {
-        Self::start_with(deadline, cleanup, work, |name, body| {
+        Self::start_timed(deadline, Duration::ZERO, cleanup, wall_clock(), work)
+    }
+    pub(crate) fn start_timed(
+        aggregate: Option<Instant>,
+        stall: Duration,
+        cleanup: Duration,
+        clock: Arc<dyn Fn() -> Instant + Send + Sync>,
+        work: impl FnOnce(Arc<Control>) -> io::Result<T> + Send + 'static,
+    ) -> io::Result<Self> {
+        Self::start_inner(aggregate, stall, cleanup, clock, work, |name, body| {
             thread::Builder::new().name(name.into()).spawn(body)
         })
     }
@@ -191,6 +461,16 @@ impl<T: Send + 'static> Job<T> {
     pub(crate) fn start_with(
         deadline: Option<Instant>,
         cleanup: Duration,
+        work: impl FnOnce(Arc<Control>) -> io::Result<T> + Send + 'static,
+        spawn: impl FnMut(&str, Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
+    ) -> io::Result<Self> {
+        Self::start_inner(deadline, Duration::ZERO, cleanup, wall_clock(), work, spawn)
+    }
+    fn start_inner(
+        aggregate: Option<Instant>,
+        stall: Duration,
+        cleanup: Duration,
+        clock: Arc<dyn Fn() -> Instant + Send + Sync>,
         work: impl FnOnce(Arc<Control>) -> io::Result<T> + Send + 'static,
         mut spawn: impl FnMut(&str, Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
     ) -> io::Result<Self> {
@@ -201,17 +481,7 @@ impl<T: Send + 'static> Job<T> {
             })
             .map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))?;
         let permit = Permit;
-        let control = Arc::new(Control {
-            deadline,
-            cleanup,
-            state: Mutex::new(State {
-                failure: None,
-                cancelled_at: None,
-                joined: false,
-                consumed: false,
-                waker: None,
-            }),
-        });
+        let control = Arc::new(Control::new(aggregate, stall, cleanup, clock));
         let cell = Arc::new(Cell {
             control: control.clone(),
             result: Mutex::new(None),
@@ -245,6 +515,12 @@ impl<T: Send + 'static> Job<T> {
         self.cell.control.cancel();
         self.hub.worker.unpark();
     }
+    pub(crate) fn begin_interaction(&self) {
+        self.cell.control.begin_interaction();
+    }
+    pub(crate) fn end_interaction(&self) {
+        self.cell.control.end_interaction();
+    }
     pub(crate) fn poll_result(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<T>> {
         let control = &self.cell.control;
         let mut state = control.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -255,7 +531,7 @@ impl<T: Send + 'static> Job<T> {
             return Poll::Pending;
         }
         if let Some(error) = state.failure {
-            return Poll::Ready(Err(error.into()));
+            return Poll::Ready(Err(error.into_io()));
         }
         let result = self
             .cell
@@ -284,7 +560,7 @@ impl<T: Send + 'static> Job<T> {
         state.waker = Some(cx.waker().clone());
         if state
             .cancelled_at
-            .is_some_and(|at| at.elapsed() >= self.cell.control.cleanup)
+            .is_some_and(|at| self.cell.control.cleanup_due(at))
         {
             return Poll::Ready(Err(io::ErrorKind::TimedOut.into()));
         }
@@ -355,5 +631,139 @@ impl Cleanup {
                 poisoned: false,
             }));
         self.hub.worker.unpark();
+    }
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        fn scripted(stall: Duration, aggregate: Duration) -> (ManualClock, Arc<Control>) {
+            let clock = ManualClock::new();
+            let aggregate = (aggregate > Duration::ZERO).then(|| clock.now() + aggregate);
+            let control = Control::scripted(aggregate, stall, Duration::from_secs(5), clock.clock());
+            (clock, control)
+        }
+
+        #[test]
+        fn progressing_waits_outlive_one_stall_allowance() {
+            let (clock, control) = scripted(Duration::from_millis(1_000), Duration::from_millis(10_000));
+            for _ in 0..4 {
+                control.begin_slice().unwrap();
+                clock.advance(Duration::from_millis(600));
+                control.end_slice(true).unwrap();
+            }
+            control.check().unwrap();
+        }
+
+        #[test]
+        fn idle_slices_expire_as_stall_while_aggregate_remains() {
+            let (clock, control) = scripted(Duration::from_millis(1_000), Duration::from_millis(10_000));
+            control.begin_wait().unwrap();
+            let _ = control.quantum().unwrap();
+            let _ = control.quantum().unwrap();
+            clock.advance(Duration::from_millis(1_000));
+            let error = control.check().unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            assert_eq!(timeout_reason(&error), Some(TimeoutReason::Stall));
+        }
+
+        #[test]
+        fn completed_native_attempt_after_stall_is_rejected() {
+            let (clock, control) = scripted(Duration::from_millis(1_000), Duration::from_millis(10_000));
+            control.begin_wait().unwrap();
+            clock.advance(Duration::from_millis(1_001));
+            let error = control.complete_wait().unwrap_err();
+            assert_eq!(timeout_reason(&error), Some(TimeoutReason::Stall));
+        }
+
+        #[test]
+        fn terminal_stall_wins_over_a_poll_error() {
+            let (clock, control) = scripted(Duration::from_millis(1_000), Duration::from_millis(10_000));
+            let error = control
+                .wait_step(|_| {
+                    clock.advance(Duration::from_millis(1_000));
+                    Err(io::ErrorKind::ConnectionRefused.into())
+                })
+                .unwrap_err();
+            assert_eq!(timeout_reason(&error), Some(TimeoutReason::Stall));
+        }
+
+        #[test]
+        fn handshake_completions_reset_the_stall() {
+            let (clock, control) = scripted(Duration::from_millis(1_000), Duration::from_millis(10_000));
+            for _ in 0..3 {
+                control.begin_slice().unwrap();
+                clock.advance(Duration::from_millis(700));
+                control.end_slice(true).unwrap();
+            }
+            control.check().unwrap();
+        }
+
+        #[test]
+        fn interaction_spends_neither_clock() {
+            let (clock, control) = scripted(Duration::from_secs(1), Duration::from_secs(2));
+            control.begin_interaction();
+            clock.advance(Duration::from_secs(5));
+            control.check().unwrap();
+            control.end_interaction();
+            control.begin_wait().unwrap();
+            clock.advance(Duration::from_secs(1));
+            let error = control.check().unwrap_err();
+            assert_eq!(timeout_reason(&error), Some(TimeoutReason::Stall));
+        }
+
+        #[test]
+        fn disabled_stall_does_not_invent_a_deadline() {
+            let (clock, control) = scripted(Duration::ZERO, Duration::from_secs(10));
+            control.begin_wait().unwrap();
+            clock.advance(Duration::from_secs(3));
+            control.check().unwrap();
+            clock.advance(Duration::from_millis(6_999));
+            control.check().unwrap();
+            clock.advance(Duration::from_millis(1));
+            let error = control.check().unwrap_err();
+            assert_eq!(timeout_reason(&error), Some(TimeoutReason::Aggregate));
+        }
+
+        #[test]
+        fn zero_aggregate_has_no_network_deadline() {
+            let clock = ManualClock::new();
+            let control = Control::scripted(None, Duration::ZERO, Duration::from_secs(5), clock.clock());
+            control.begin_wait().unwrap();
+            clock.advance(Duration::from_secs(30));
+            control.complete_wait().unwrap();
+            control.check().unwrap();
+            control.cancel();
+            assert!(!control.disposal_due());
+            clock.advance(Duration::from_secs(5));
+            assert!(control.disposal_due());
+        }
+
+        #[test]
+        fn short_waits_fail_when_their_sum_passes_the_aggregate() {
+            let (clock, control) = scripted(Duration::from_millis(1_000), Duration::from_millis(2_500));
+            for _ in 0..2 {
+                control.begin_slice().unwrap();
+                clock.advance(Duration::from_millis(800));
+                control.end_slice(true).unwrap();
+            }
+            control.begin_slice().unwrap();
+            clock.advance(Duration::from_millis(900));
+            let error = control.end_slice(true).unwrap_err();
+            assert_eq!(timeout_reason(&error), Some(TimeoutReason::Aggregate));
+        }
+
+        #[test]
+        fn cancel_drops_a_success_inside_the_aggregate() {
+            let (clock, control) = scripted(Duration::from_secs(3), Duration::from_secs(10));
+            for _ in 0..4 {
+                control.begin_slice().unwrap();
+                clock.advance(Duration::from_millis(1_250));
+                control.end_slice(true).unwrap();
+            }
+            control.cancel();
+            let error = control.check().unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::ConnectionAborted);
+            assert!(timeout_reason(&error).is_none());
+        }
     }
 }

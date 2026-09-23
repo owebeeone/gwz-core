@@ -574,7 +574,9 @@ pub(crate) async fn reap_pending(_deadline: Instant) -> usize {
 }
 
 fn parse_secret(output: &[u8]) -> Result<Secret, AuthError> {
-    if !output.ends_with(b"\n\n") {
+    // `gh auth git-credential get` ends on the last attribute line. A blank
+    // line is optional; attributes after one are still rejected below.
+    if !output.ends_with(b"\n") {
         return Err(AuthError::MalformedOutput);
     }
     let text = std::str::from_utf8(output).map_err(|_| AuthError::MalformedOutput)?;
@@ -652,9 +654,15 @@ cfg_if::cfg_if! {
             }
 
             #[test]
+            fn gh_attribute_line_without_blank_line_is_a_credential() {
+                let secret = parse_secret(b"protocol=https\nhost=github.com\nusername=alice\npassword=secret\n").unwrap();
+                assert_eq!(secret.header(), "Basic YWxpY2U6c2VjcmV0");
+            }
+
+            #[test]
             fn malformed_or_ambiguous_helper_output_is_rejected() {
                 for output in [
-                    b"username=alice\npassword=secret\n".as_slice(),
+                    b"username=alice\npassword=secret".as_slice(),
                     b"username=alice\nusername=bob\npassword=secret\n\n",
                     b"username=al:ice\npassword=secret\n\n",
                     b"username=alice\npassword=\n\n",
@@ -662,6 +670,22 @@ cfg_if::cfg_if! {
                 ] {
                     assert!(matches!(parse_secret(output), Err(AuthError::MalformedOutput) | Err(AuthError::MissingCredential)));
                 }
+            }
+
+            #[tokio::test]
+            async fn lookup_accepts_gh_output_without_a_blank_line() {
+                let (directory, config) = helper("printf 'protocol=https\\nhost=github.com\\nusername=alice\\npassword=secret\\n'");
+                let destination = Destination::parse("https://github.com/owner/repo.git").unwrap();
+                let secret = lookup(
+                    &config,
+                    &destination,
+                    Instant::now() + Duration::from_secs(5),
+                    &CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+                assert_eq!(secret.header(), "Basic YWxpY2U6c2VjcmV0");
+                drop(directory);
             }
 
             #[tokio::test]
