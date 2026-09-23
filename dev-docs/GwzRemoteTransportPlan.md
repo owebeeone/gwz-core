@@ -442,7 +442,7 @@ qualification are still open. Physical SSH and host dispatch remain outside
 gwz-transport. Publication is separate.
 
 Candidate Phase 2 exit-row correction (2026-09-24, pending Python concurrency
-design review): the [corrected Python design](../../dev-docs/GwzPyTransportConcurrencyDesign-1.md)
+design review): the [Python session v2 design](../../dev-docs/GwzPyTransportSessionV2Design.md)
 replaces the unconditional different-per-host-limit overlap assertion above.
 Different **per-operation fan-out** may overlap when the resolved four-field
 physical capacity is identical; combined leases respect that capacity and

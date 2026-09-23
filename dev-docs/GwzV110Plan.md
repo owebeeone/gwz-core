@@ -444,7 +444,7 @@ S5.6, and S6. Phase 8 waits on S7.5 and S2.3.
   phase exits above.
 
 Candidate S6.3 clarification (2026-09-24, pending Python concurrency design
-review): the [corrected Python design](../../dev-docs/GwzPyTransportConcurrencyDesign-1.md)
+review): the [Python session v2 design](../../dev-docs/GwzPyTransportSessionV2Design.md)
 requires two genuinely overlapping Python operations on **one** Client and
 pool, with independent results and cancellation. The current Python 1.1
 session has only a local endpoint; explicit CLI placement must fail with a
