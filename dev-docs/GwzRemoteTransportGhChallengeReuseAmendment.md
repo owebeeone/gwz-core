@@ -3,7 +3,7 @@
 Status: **draft; requires Consistency and Safety review before implementation**.
 Date: 2026-09-23. This amends only the physical disposition of a completed
 anonymous HTTPS discovery `401` or `404` in
-`GwzRemoteTransportHttpsDesign.md` §4 and §6. It does not authorize a
+`GwzRemoteTransportHttpsDesign.md` §§4, 6 and 7. It does not authorize a
 release or change the authentication replay count.
 
 ## Observed gap
@@ -15,7 +15,10 @@ Git HTTP fixture demonstrates that a long-lived Python bridge can clone and
 perform two unchanged fetches successfully, yet the authenticated GETs use
 three distinct TCP sockets. The first unauthenticated GET of each fetch checks
 out the idle socket, receives a challenge, and discards it. The core's new
-anonymous fixture passes a reuse regression because it never challenges.
+anonymous fixture passes a reuse regression because it never challenges. The
+archived fixture records physical connection IDs only after Authorization
+succeeds; it demonstrates authenticated-request socket churn, but does not
+itself establish the identity of each preceding anonymous challenge socket.
 
 Raw failure and socket trace:
 `gwz-core-evidence/campaigns/transport-qualification/runs/2026-09-23-python-native-integration/`
@@ -38,9 +41,13 @@ the endpoint may release the first physical HTTPS lease as reusable only after:
    logical stream, with the original request, operation, route and remaining
    cumulative budgets.
 
-This is a narrow exception to §6's “no terminal failure” reuse condition: the
-completed anonymous challenge is a Git authorization transition, not a
-successful Git advertisement. The first typed failure receipt remains private
+This explicitly supersedes both §6's “no terminal failure” reuse condition and
+§7's “All terminal non-success responses discard the connection” sentence for
+only the clean anonymous discovery `401`/`404` taking §4's immediate once-only
+Gh transition. The bounded 64 KiB drain is the sole exception to §7's rule
+against consuming an unbounded error body to earn reuse; it grants no Git
+success. The completed anonymous challenge is a Git authorization transition,
+not a successful Git advertisement. The first typed failure receipt remains private
 and the final Gh result is the only public operation result. A reusable TLS
 socket carries no authentication state: gh credentials are looked up afresh
 for the next HTTP request, and only that request carries Authorization. No
@@ -54,16 +61,33 @@ own disposition. The exact same rule applies across sequential operations,
 allowing a later anonymous challenge on an idle pooled socket without granting
 it credentials until its own once-only transition.
 
+| Response and transition state | Physical disposition |
+|---|---|
+| Anonymous discovery `401`/`404`, immediate §4 Gh transition allowed, and the complete bounded drain, framing, sender readiness, keep-alive, destination, budget and cancellation checks above all pass | Release the first lease reusable for the new logical Gh GET. No success is reported for the challenge. |
+| Same qualifying status and transition, but any reuse check fails | Discard the first lease. §4 alone governs whether the Gh GET can still start with the remaining budgets; a terminal cancellation, deadline or protocol failure retains its own result and permits no new request. |
+| Anonymous discovery `401`/`404` with no permitted §4 transition | Discard the lease and report the original refusal. |
+| Every other terminal non-success response, including a Gh failure, anonymous `403`/`5xx`, POST failure, or an unvalidated redirect | Discard the lease under unchanged §7 rules. |
+| Successful Git response or validated redirect | Unchanged §6/§7 behavior; this amendment adds no reuse right. |
+
 ## Verification and compatibility
 
 A causal red regression must use an authenticated local Git HTTP fixture and
-a persistent core runtime: clone, fetch twice with no change, assert the
-second fetch causes no new TCP/TLS connection, and assert each request still
-makes the anonymous challenge and a fresh gh lookup. The actual Python native
-extension must show the same result with one bridge. Add adverse cases for
+a persistent core runtime: clone, fetch twice with no change. The fixture
+records every request before the authorization branch, with ordered anonymous
+or Gh policy, HTTP status, and an ID assigned at physical TCP/TLS connection
+accept; it also counts every gh invocation without recording credentials.
+For every qualifying challenge, assert the anonymous `401`/`404` and its
+immediate Gh GET use the **same** physical ID, including when another idle
+connection is available. Assert that each eligible read operation starts
+discovery anonymously, takes only its allowed Gh transition with a fresh gh
+lookup, and that the second fetch opens no new TCP/TLS
+connection. The actual Python native extension must show the same ordered
+identity and lookup results with one bridge. Add adverse cases for
 oversized/truncated challenge bodies, server close, sender error, cancellation,
 expired cleanup budget and Gh failure. They must discard and preserve the
-final error. Existing anonymous, redirect, POST and credential-containment
+final error; where another request occurs, it must use a different physical
+connection after a required discard, or there must be no retry. Existing
+anonymous, redirect, POST and credential-containment
 tests remain green. The 64 KiB cap is only for draining this failed response;
 it changes no normal successful body limit.
 
