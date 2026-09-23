@@ -1,15 +1,17 @@
 # Connection retry and concurrency defaults
 
-Status: **draft; not implementation authority**. Writing this document does not
-implement, commit, tag, push, or publish. Acceptance, if a later review grants
-it, accepts this text only.
+Status: **accepted as plan text at `ef29f8907875928b6e6891a2db12cbe3ca781fee`,
+SHA-256 `08e198e00c5f6ff697dca6b71f8117ce8963afb91126a30af2b5ea94a6ac6619`,
+after Consistency-3, Safety-3 and Surface-3 GO**. The operator subsequently
+authorized implementation. This status annotation does not itself implement,
+push, tag or publish anything.
 
 Date: 2026-09-23. Safety-2 and Surface-2 reported GO on `b40b75c0…`;
 [Consistency-1](GwzRemoteTransportRetryPlan-ReviewConsistency-1.md) retained
 one blocking supersession gap. The current bounded correction is mapped in
 [RemPlan-2](GwzRemoteTransportRetryPlan-RemPlan-2.md), following
-[RemPlan-1](GwzRemoteTransportRetryPlan-RemPlan-1.md). Acceptance is pending
-verification of this corrected text.
+[RemPlan-1](GwzRemoteTransportRetryPlan-RemPlan-1.md). All three axes verified the corrected text; their Review*-3 reports are
+the acceptance evidence.
 
 ## 1. Outcome
 
