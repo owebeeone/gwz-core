@@ -1,7 +1,11 @@
 # Typed connection setup failure causes
 
-Status: **draft; not implementation authority**. This bounded amendment needs
-review before code changes. It corrects the failure-cause carrier required by
+Status: **accepted for implementation, 2026-09-23**. Consistency, Safety and
+Surface all report GO on core `479926c18265276e5a45659c4523a13a71f4a51f`
+and the paired Python design at `259f73cc030c0da0bf29903bab258de0463b7d02`.
+Reports: `../../dev-docs/GwzTransportParallelInterfaces-Review{Consistency,Safety,Surface}-1.md`.
+Operator authorized implementation; product acceptance and release remain separate.
+This bounded amendment corrects the failure-cause carrier required by
 `GwzRemoteTransportRetryPlan.md` at SHA-256
 `08e198e00c5f6ff697dca6b71f8117ce8963afb91126a30af2b5ea94a6ac6619`.
 
