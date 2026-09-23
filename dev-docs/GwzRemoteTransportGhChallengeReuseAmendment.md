@@ -19,7 +19,7 @@ anonymous fixture passes a reuse regression because it never challenges.
 
 Raw failure and socket trace:
 `gwz-core-evidence/campaigns/transport-qualification/runs/2026-09-23-python-native-integration/`
-(to be archived from `/tmp/gwz-py-native-https-trace2.log`). This fixture
+(including `gwz-py-native-https-trace2.log`). This fixture
 uses a temporary CA, local Git HTTP server and fake gh helper; it contains no
 real account credentials. The actual native extension was loaded, not a mock.
 
