@@ -1,6 +1,10 @@
 # Reuse of a clean gh discovery challenge
 
-Status: **draft; requires Consistency and Safety review before implementation**.
+Status: **accepted as a design at root `78775e818b8a6398aad0859aa46a6662440ab95a`
+and core `e416faa1b23b578b5aa50eadea64a11c6561fdf9` after
+[Consistency-1](GwzRemoteTransportGhChallengeReuseAmendment-ReviewConsistency-1.md)
+and [Safety-1](GwzRemoteTransportGhChallengeReuseAmendment-ReviewSafety-1.md)
+reported GO; this accepts the document only, not implementation**.
 Date: 2026-09-23. This amends only the physical disposition of a completed
 anonymous HTTPS discovery `401` or `404` in
 `GwzRemoteTransportHttpsDesign.md` §§4, 6 and 7. It does not authorize a
