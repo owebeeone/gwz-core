@@ -1,7 +1,11 @@
 # Concurrent operation capacity amendment (draft)
 
-Date: 2026-09-23. Status: **DRAFT in the consolidated version-1 operation-session review; existing accepted
-plans remain authoritative until this amendment receives GO with that tuple**. This is a
+Date: 2026-09-23. Status: **DRAFT paired with the new
+[start-ticket design](../../dev-docs/GwzOperationStartTicketDesign.md); existing accepted
+plans remain authoritative until this amendment receives GO with that tuple**. A
+prepared start reserves only an application status/terminal record; the physical
+capacity epoch is reserved when its permitted commit enters charged admission,
+before endpoint construction or transport registration. This is a
 bounded textual replacement for the dynamic-capacity rules, not an
 implementation claim or a change to the physical transport messages.
 
