@@ -23,6 +23,14 @@ Add an optional typed `setup_cause` field (key 4) to the transport taut
 `SetupFailureCause` enum with `stall`, `aggregate`, `interaction`,
 `allocation`, `connection_refused`, `not_found`, and
 `address_not_available`. The field is `optional=True, missing_ok=True`.
+The immutable wire values are `stall = 1`, `aggregate = 2`,
+`interaction = 3`, `allocation = 4`, `connection_refused = 5`,
+`not_found = 6`, and `address_not_available = 7`. Zero is reserved and invalid;
+all other unassigned values are unknown and rejected. Existing values must
+never be reassigned or reordered into different meanings. Golden CBOR cases
+pin every mapping, including old-reader re-encoding that drops only key 4
+while preserving code, effect and facts.
+
 It is set only for a failed connection setup, never for a successful `Opened`
 or a fetch/push body failure. It contains no address, path, fingerprint,
 credential, or native error string. `Facts.key_fingerprint` retains its
