@@ -85,6 +85,7 @@ impl From<model::ErrorCode> for generated::GwzErrorCode {
             model::ErrorCode::TransportCapacityConflict => Self::IoError,
             model::ErrorCode::TransportSessionFull => Self::IoError,
             model::ErrorCode::OperationExpired => Self::IoError,
+            model::ErrorCode::Cancelled => Self::IoError,
         }
     }
 }

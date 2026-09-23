@@ -35,7 +35,11 @@ fn request_installs_its_resolved_pool_capacity_before_bind() {
         })
     );
     wait(request.finish());
-    let request = wait(runtime.request(meta("capacity-default", TransportPlacement::Local), "operation-two".into())).unwrap();
+    let request = wait(runtime.request(
+        meta("capacity-default", TransportPlacement::Local),
+        "operation-two".into(),
+    ))
+    .unwrap();
     assert_eq!(
         endpoint.capacity_for_test(),
         Some(pool::Capacity {
@@ -51,7 +55,11 @@ fn request_installs_its_resolved_pool_capacity_before_bind() {
 #[test]
 fn live_request_between_leases_refuses_a_different_physical_capacity() {
     let runtime = TransportRuntime::new(config()).unwrap();
-    let first = wait(runtime.request(meta("capacity-first", TransportPlacement::Local), "first".into())).unwrap();
+    let first = wait(runtime.request(
+        meta("capacity-first", TransportPlacement::Local),
+        "first".into(),
+    ))
+    .unwrap();
     let mut different = meta("capacity-different", TransportPlacement::Local);
     different.policy = Some(crate::OperationPolicy {
         max_connections_per_host: Some(16),
@@ -60,10 +68,36 @@ fn live_request_between_leases_refuses_a_different_physical_capacity() {
     let error = wait(runtime.request(different.clone(), "different".into()))
         .err()
         .expect("a live request blocks physical policy replacement even between leases");
-    assert_eq!(error.code, crate::model::ErrorCode::TransportCapacityConflict);
+    assert_eq!(
+        error.code,
+        crate::model::ErrorCode::TransportCapacityConflict
+    );
     wait(first.finish());
     let retry = wait(runtime.request(different, "different-retry".into()))
         .expect("pre-registration capacity refusal leaves request_id retryable");
+    wait(retry.finish());
+    wait(runtime.shutdown());
+}
+#[test]
+fn waiting_for_admission_leadership_times_out_before_registration() {
+    let runtime = TransportRuntime::new(config()).unwrap();
+    let endpoint = runtime
+        .0
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .local_endpoint
+        .clone();
+    endpoint.hold_admission_for_test();
+    let request = meta("waiting-capacity", TransportPlacement::Local);
+    let began = std::time::Instant::now();
+    let error = wait(runtime.request(request.clone(), "waiting".into()))
+        .err()
+        .expect("held admission leadership must time out");
+    assert!(error.message.contains("timed out"), "{error:?}");
+    assert!(began.elapsed() < std::time::Duration::from_secs(6));
+    endpoint.release_admission_for_test();
+    let retry = wait(runtime.request(request, "waiting-retry".into()))
+        .expect("timed-out wait must not consume its request ID");
     wait(retry.finish());
     wait(runtime.shutdown());
 }

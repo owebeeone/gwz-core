@@ -144,6 +144,8 @@ pub enum ErrorCode {
     /// A session-issued public operation ID whose retained record was released
     /// or reached its retention deadline.
     OperationExpired,
+    /// A native Python operation cancelled before core registration.
+    Cancelled,
 }
 
 #[derive(Clone, Debug, PartialEq)]

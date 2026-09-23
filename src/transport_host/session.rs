@@ -204,7 +204,14 @@ pub(super) struct Session {
     event: Event,
     origin: Instant,
     capacity_gate: AtomicBool,
-    admission_gate: tokio::sync::Mutex<()>,
+    admission_gate: AtomicBool,
+}
+struct AdmissionLeader<'a>(&'a Session);
+impl Drop for AdmissionLeader<'_> {
+    fn drop(&mut self) {
+        self.0.admission_gate.store(false, Ordering::Release);
+        self.0.event.signal();
+    }
 }
 struct CapacityLeader<'a>(&'a Session);
 impl Drop for CapacityLeader<'_> {
@@ -231,6 +238,13 @@ impl Session {
                 .as_ref()
                 .map(|endpoint| endpoint.pool().counts())
         }
+        pub(super) fn hold_admission_for_test(&self) {
+            assert!(!self.admission_gate.swap(true, Ordering::AcqRel));
+        }
+        pub(super) fn release_admission_for_test(&self) {
+            assert!(self.admission_gate.swap(false, Ordering::AcqRel));
+            self.event.signal();
+        }
     } }
     fn start(state: State) -> ModelResult<Arc<Self>> {
         let session = Arc::new(Self {
@@ -238,7 +252,7 @@ impl Session {
             event: Event::new(),
             origin: Instant::now(),
             capacity_gate: AtomicBool::new(false),
-            admission_gate: tokio::sync::Mutex::new(()),
+            admission_gate: AtomicBool::new(false),
         });
         let weak = Arc::downgrade(&session);
         thread::Builder::new()
@@ -383,7 +397,26 @@ impl Session {
     ) -> ModelResult<ClientRequest> {
         // A differing physical policy is refused before consuming the mux's
         // lifetime request ID. Serialize that check with local admissions.
-        let _admission = self.admission_gate.lock().await;
+        let deadline = Instant::now() + CLEANUP;
+        let listener = self.listener();
+        let _admission = poll_fn(|cx| {
+            if !listener.arm(cx) {
+                return Poll::Ready(Err(unavailable("transport capacity wait unavailable")));
+            }
+            if Instant::now() >= deadline {
+                return Poll::Ready(Err(unavailable("transport capacity wait timed out")));
+            }
+            if self
+                .admission_gate
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                Poll::Ready(Ok(AdmissionLeader(self)))
+            } else {
+                Poll::Pending
+            }
+        })
+        .await?;
         {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.closed {
@@ -393,11 +426,17 @@ impl Session {
                 return Err(invalid("invalid or exhausted request registration"));
             }
             if state.installed_capacity != Some(capacity)
-                && (state.registrations.values().any(|record| record.result.is_none())
+                && (state
+                    .registrations
+                    .values()
+                    .any(|record| record.result.is_none())
                     || state.engine.as_ref().is_some_and(|engine| {
                         engine.pending().saturating_sub(engine.pool().counts().idle) != 0
                     })
-                    || state.https.as_ref().is_some_and(|endpoint| endpoint.pending() != 0)
+                    || state
+                        .https
+                        .as_ref()
+                        .is_some_and(|endpoint| endpoint.pending() != 0)
                     || has_non_idle_lease(&state))
             {
                 return Err(ModelError::new(
@@ -407,7 +446,7 @@ impl Session {
             }
         }
         let client = ClientRequest::new(self.clone(), request)?;
-        self.install_capacity(request, capacity).await?;
+        self.install_capacity(request, capacity, deadline).await?;
         Ok(client)
     }
 
@@ -415,14 +454,17 @@ impl Session {
         &self,
         request: &str,
         capacity: pool::Capacity,
+        deadline: Instant,
     ) -> ModelResult<()> {
         // One physical-policy leader owns both pools and the shared authority
         // through retirement. Followers wait without holding the state mutex.
-        let gate_deadline = Instant::now() + CLEANUP;
         let gate_listener = self.listener();
         let _leader = poll_fn(|cx| {
             if !gate_listener.arm(cx) {
                 return Poll::Ready(Err(unavailable("transport capacity wait unavailable")));
+            }
+            if Instant::now() >= deadline {
+                return Poll::Ready(Err(unavailable("transport capacity wait timed out")));
             }
             if self
                 .capacity_gate
@@ -431,16 +473,12 @@ impl Session {
             {
                 return Poll::Ready(Ok(CapacityLeader(self)));
             }
-            if Instant::now() >= gate_deadline {
-                return Poll::Ready(Err(unavailable("transport capacity wait timed out")));
-            }
             Poll::Pending
         })
         .await?;
         // A finished request can still have bounded physical cleanup behind
         // its terminal reply. Wait for that owner to retire before installing
         // the next operation's limits; live overlapping requests still fail.
-        let deadline = Instant::now() + CLEANUP;
         let listener = self.listener();
         let reused = poll_fn(|cx| {
             if !listener.arm(cx) {
@@ -536,7 +574,6 @@ impl Session {
                     .ok_or_else(|| unavailable("shared capacity unavailable"))?,
             )
         };
-        let deadline = Instant::now() + CLEANUP;
         let listener = self.listener();
         let retired = poll_fn(|cx| {
             if !listener.arm(cx) {
