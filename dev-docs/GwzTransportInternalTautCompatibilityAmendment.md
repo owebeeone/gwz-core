@@ -1,6 +1,6 @@
 # GWZ transport — internal Taut compatibility amendment
 
-Date: 2026-09-24. Status: **DRAFT operator clarification for review; no implementation or activation**.
+Date: 2026-09-24. Status: **accepted at gwz-core `343cccc4032be47f8369c4eb297e3a6f50c87f11`, workspace `ac72a3c984348d9c9a8c7bc56c4590fee17bf378`, after [Consistency](../../dev-docs/GwzTransportInternalTautCompatibilityAmendment-ReviewConsistency-1.md) and [Safety](../../dev-docs/GwzTransportInternalTautCompatibilityAmendment-ReviewSafety-1.md) GO; design scope only, implementation pending**.
 
 The operator confirmed that the `gwz-transport` Envelope messages are currently internal and have no other clients. This narrows only that Envelope protocol's compatibility scope of the accepted [sequenced requirements](GwzTransportSequencedStreamRequirements.md) and [design](GwzTransportSequencedStreamDesign.md) for the planned profile-3 implementation. It does not change message ordering, endpoint authority, Git behavior or the future-carrier boundary.
 
