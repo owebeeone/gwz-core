@@ -101,6 +101,67 @@ fn waiting_for_admission_leadership_times_out_before_registration() {
     wait(retry.finish());
     wait(runtime.shutdown());
 }
+#[test]
+fn capacity_wait_after_leadership_does_not_register_request_id() {
+    let runtime = TransportRuntime::new(config()).unwrap();
+    let endpoint = runtime
+        .0
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .local_endpoint
+        .clone();
+    endpoint.hold_capacity_for_test();
+    let request = meta("late-capacity", TransportPlacement::Local);
+    let began = std::time::Instant::now();
+    let error = wait(runtime.request(request.clone(), "first".into()))
+        .err()
+        .expect("capacity gate must time out");
+    assert!(error.message.contains("timed out"), "{error:?}");
+    assert!(began.elapsed() < std::time::Duration::from_secs(6));
+    endpoint.release_capacity_for_test();
+    let retry = wait(runtime.request(request, "retry".into()))
+        .expect("pre-registration timeout must leave the ID reusable");
+    wait(retry.finish());
+    wait(runtime.shutdown());
+}
+
+#[test]
+fn dropping_staged_capacity_installation_closes_the_generation() {
+    let runtime = TransportRuntime::new(config()).unwrap();
+    let endpoint = runtime
+        .0
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .local_endpoint
+        .clone();
+    endpoint.hold_retirement_for_test();
+    let mut changed = meta("staged-capacity", TransportPlacement::Local);
+    changed.policy = Some(crate::OperationPolicy {
+        max_connections_per_host: Some(16),
+        ..Default::default()
+    });
+    let mut request = Box::pin(runtime.request(changed, "first".into()));
+    let mut context = Context::from_waker(Waker::noop());
+    let began = std::time::Instant::now();
+    while !endpoint.retirement_waiting_for_test() {
+        match request.as_mut().poll(&mut context) {
+            Poll::Pending => {}
+            Poll::Ready(Err(error)) => panic!("capacity installation failed early: {error:?}"),
+            Poll::Ready(Ok(_)) => panic!("capacity installation unexpectedly completed"),
+        }
+        assert!(began.elapsed() < std::time::Duration::from_secs(2));
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    drop(request);
+    assert!(
+        endpoint.is_closed(),
+        "dropped transaction closes mutated endpoint"
+    );
+    assert!(
+        wait(runtime.request(meta("later", TransportPlacement::Local), "later".into())).is_err()
+    );
+    wait(runtime.shutdown());
+}
 fn meta(id: &str, placement: TransportPlacement) -> RequestMeta {
     RequestMeta {
         request_id: id.into(),

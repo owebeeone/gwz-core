@@ -205,6 +205,48 @@ pub(super) struct Session {
     origin: Instant,
     capacity_gate: AtomicBool,
     admission_gate: AtomicBool,
+    test_hooks: TestHooks,
+}
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        struct TestHooks {
+            hold_retirement: AtomicBool,
+            waiting_retirement: AtomicBool,
+        }
+        impl TestHooks {
+            fn new() -> Self {
+                Self {
+                    hold_retirement: AtomicBool::new(false),
+                    waiting_retirement: AtomicBool::new(false),
+                }
+            }
+            fn should_hold_retirement(&self) -> bool {
+                if self.hold_retirement.load(Ordering::Acquire) {
+                    self.waiting_retirement.store(true, Ordering::Release);
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    } else {
+        struct TestHooks;
+        impl TestHooks {
+            fn new() -> Self { Self }
+            fn should_hold_retirement(&self) -> bool { false }
+        }
+    }
+}
+struct CapacityMutation<'a> {
+    session: &'a Session,
+    armed: bool,
+}
+impl Drop for CapacityMutation<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.session.close();
+        }
+    }
 }
 struct AdmissionLeader<'a>(&'a Session);
 impl Drop for AdmissionLeader<'_> {
@@ -245,6 +287,19 @@ impl Session {
             assert!(self.admission_gate.swap(false, Ordering::AcqRel));
             self.event.signal();
         }
+        pub(super) fn hold_capacity_for_test(&self) {
+            assert!(!self.capacity_gate.swap(true, Ordering::AcqRel));
+        }
+        pub(super) fn release_capacity_for_test(&self) {
+            assert!(self.capacity_gate.swap(false, Ordering::AcqRel));
+            self.event.signal();
+        }
+        pub(super) fn hold_retirement_for_test(&self) {
+            self.test_hooks.hold_retirement.store(true, Ordering::Release);
+        }
+        pub(super) fn retirement_waiting_for_test(&self) -> bool {
+            self.test_hooks.waiting_retirement.load(Ordering::Acquire)
+        }
     } }
     fn start(state: State) -> ModelResult<Arc<Self>> {
         let session = Arc::new(Self {
@@ -253,6 +308,7 @@ impl Session {
             origin: Instant::now(),
             capacity_gate: AtomicBool::new(false),
             admission_gate: AtomicBool::new(false),
+            test_hooks: TestHooks::new(),
         });
         let weak = Arc::downgrade(&session);
         thread::Builder::new()
@@ -422,7 +478,10 @@ impl Session {
             if state.closed {
                 return Err(unavailable("transport session is closed"));
             }
-            if state.used.contains(request) || state.used.len() >= 256 {
+            if !request::identifier(request)
+                || state.used.contains(request)
+                || state.used.len() >= 256
+            {
                 return Err(invalid("invalid or exhausted request registration"));
             }
             if state.installed_capacity != Some(capacity)
@@ -445,14 +504,15 @@ impl Session {
                 ));
             }
         }
-        let client = ClientRequest::new(self.clone(), request)?;
-        self.install_capacity(request, capacity, deadline).await?;
-        Ok(client)
+        self.install_capacity(capacity, deadline).await?;
+        if Instant::now() >= deadline {
+            return Err(unavailable("transport capacity wait timed out"));
+        }
+        ClientRequest::new(self.clone(), request)
     }
 
     pub(super) async fn install_capacity(
         &self,
-        request: &str,
         capacity: pool::Capacity,
         deadline: Instant,
     ) -> ModelResult<()> {
@@ -485,7 +545,7 @@ impl Session {
                 return Poll::Ready(Err(unavailable("transport capacity wait unavailable")));
             }
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if state.closed || !state.registrations.contains_key(request) {
+            if state.closed {
                 return Poll::Ready(Err(unavailable("transport operation is active")));
             }
             // Identical physical policy shares the installed pools. In
@@ -495,8 +555,8 @@ impl Session {
             }
             if state
                 .registrations
-                .iter()
-                .any(|(id, record)| id != request && record.result.is_none())
+                .values()
+                .any(|record| record.result.is_none())
             {
                 return Poll::Ready(Err(unavailable("transport operation is active")));
             }
@@ -521,13 +581,16 @@ impl Session {
         if reused {
             return Ok(());
         }
+        let mut mutation = CapacityMutation {
+            session: self,
+            armed: false,
+        };
         let (ssh, https, authority) = {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.installed_capacity == Some(capacity) {
                 return Ok(());
             }
             if state.closed
-                || !state.registrations.contains_key(request)
                 || state.engine.as_ref().is_some_and(|engine| {
                     engine.pending().saturating_sub(engine.pool().counts().idle) != 0
                 })
@@ -540,10 +603,13 @@ impl Session {
             }
             if state
                 .registrations
-                .iter()
-                .any(|(id, record)| id != request && record.result.is_none())
+                .values()
+                .any(|record| record.result.is_none())
             {
                 return Err(unavailable("transport operation is active"));
+            }
+            if Instant::now() >= deadline {
+                return Err(unavailable("transport capacity wait timed out"));
             }
             if has_non_idle_lease(&state) {
                 return Err(unavailable("transport capacity is active"));
@@ -553,6 +619,7 @@ impl Session {
                 .as_ref()
                 .ok_or_else(|| unavailable("SSH endpoint unavailable"))?;
             let https = state.https.as_ref().map(|endpoint| endpoint.pool().clone());
+            mutation.armed = true;
             if let Some(https) = &https {
                 ssh.pool()
                     .install_capacity_pair(https, capacity)
@@ -579,6 +646,9 @@ impl Session {
             if !listener.arm(cx) {
                 return Poll::Ready(Err(unavailable("transport capacity wait unavailable")));
             }
+            if self.test_hooks.should_hold_retirement() {
+                return Poll::Pending;
+            }
             if ssh.counts().closing == 0
                 && https.as_ref().is_none_or(|pool| pool.counts().closing == 0)
             {
@@ -604,6 +674,7 @@ impl Session {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .installed_capacity = Some(capacity);
+        mutation.armed = false;
         Ok(())
     }
     pub(super) fn register(&self, request: &str, operation: Option<String>) -> ModelResult<()> {
