@@ -98,6 +98,17 @@ The host must support delivery while the operation runs, bounded queues, closure
 notification and control-message progress. If its existing message interface
 cannot do that, client placement is unavailable until the host supplies it.
 
+The proposed [independent-delivery amendment](../dev-docs/GwzIndependentTransportDeliveryAmendment.md)
+changes the candidate host schedule: a generated `GwzTransportDeliveryV1`
+event carries `(registered transport request_id, Envelope)` even when no
+application request or response is moving. The optional metadata fields above
+remain additive compatibility slots; they cannot supply the pump's progress.
+For a ticketed Python route the Client-owned event-loop host runs separate
+bidirectional urgent-control and ordered delivery tasks. Bulk backpressure must
+not stop Window/Cancel/Failed delivery; graceful same-stream ordering is kept,
+and a delivery stall fails the binding after the amendment's deadline. The
+accepted placement gate remains authoritative until that amendment receives GO.
+
 Optional observation fields endpoint_id, connection_id, stream_id and reused
 identify the current attempt. Missing values mean unknown. Reuse does not mean a
 credential was offered again. For SSH, credential_offered is false on reuse,
@@ -253,6 +264,11 @@ metadata attachment fields and request_id. It must bound any storage between
 these calls and deliver concurrently in both directions. Cloning a port does not
 create another session. `disconnect`, loss of the supplied host connection, or
 last-port-owner drop invalidates it; disconnect is idempotent.
+
+For the **proposed** independent-delivery host, this one-loop forwarding example
+is replaced by the amendment's queue-selective urgent and ordered pumps. The
+current Rust port exposes only the original FIFO method, so the new host must
+not be advertised until the selective API and its saturation tests exist.
 
 `cancel` requests cancellation of active transport work; it does not roll back
 Git changes. `finish` seals new admissions and waits for owned work within the
