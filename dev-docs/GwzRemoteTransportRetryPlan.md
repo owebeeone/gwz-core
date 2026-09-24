@@ -462,6 +462,6 @@ This text is not implementation authority until Consistency, Safety, and
 Surface report GO on the same hash. GO accepts the plan text only. It does
 not authorize the code, an alpha rebuild, a commit, or a tag.
 
-## Candidate Python concurrency amendment (2026-09-24; pending review)
+## Candidate Python concurrency amendment (withdrawn 2026-09-24)
 
-The [Python session v2 design](../../dev-docs/GwzPyTransportSessionV2Design.md) proposes a replacement for **both** §3 item 7/§6/S1.4's blanket non-idle refusal **and** their no-non-idle-lease installation condition, for a shared Python endpoint generation only. An operation whose **resolved four-field physical capacity exactly equals the installed capacity** may join without reinstalling or resizing the pool, even while another operation has a non-idle lease. Installing **different** capacity requires zero live operations, zero non-idle leases and completed physical cleanup; a differing-capacity request while any of these remains is refused before Git and credential effects, including while a live operation is between leases. Every initial and later installation is serialized and published atomically with its shared reservation authority. The single-operation candidate CLI rule remains as written. The previous Python concurrency draft was rejected; this candidate text is not implementation authority until the new design receives review GO and the core requirements/design are updated.
+The candidate amendment that stood here was withdrawn when the Python concurrency design train was retired; its text is preserved in [history](history/GwzPythonSessionTrainExcerpts-20260924.md). §3 item 7, §6 and S1.4 stand as written.

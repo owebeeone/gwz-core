@@ -90,24 +90,13 @@ effects, so inspect the remote before choosing a retry.
 
 ## Attachments and results
 
-The accepted candidate has optional `RequestMeta.transport_message` and
-`ResponseMeta.transport_message` fields, correlated with the existing request_id.
-They remain compatible attachment slots and must never invoke the operation
-again or invent partial/final results. They are not a sufficient delivery
-schedule when application requests/responses are idle.
-
-The proposed [independent-delivery amendment](../dev-docs/GwzIndependentTransportDeliveryAmendment.md)
-changes the candidate host schedule: a generated `GwzTransportDeliveryV1`
-event carries `(registered transport request_id, Envelope)` even when no
-application request or response is moving. The optional metadata fields above
-remain additive compatibility slots; they cannot supply the pump's progress.
-For a ticketed Python route the Client-owned event-loop host runs separate
-bidirectional urgent-control and per-stream ordered delivery. Bulk backpressure
-must not stop eligible Window/Cancel/Failed delivery; opening transitions
-remain ordered before their dependent controls, and a delivery stall fails the
-binding after the amendment's deadline. Core and endpoint register request
-context during charged commit admission; the Python host forwards only. The
-accepted placement gate remains authoritative until that amendment receives GO.
+Host adapters carry the shared transport Envelope in optional
+`RequestMeta.transport_message` and `ResponseMeta.transport_message` fields,
+correlated with the existing request_id. They must process these attachments
+without invoking the operation again or inventing partial/final operation results.
+The host must support delivery while the operation runs, bounded queues, closure
+notification and control-message progress. If its existing message interface
+cannot do that, client placement is unavailable until the host supplies it.
 
 Optional observation fields endpoint_id, connection_id, stream_id and reused
 identify the current attempt. Missing values mean unknown. Reuse does not mean a
@@ -120,11 +109,8 @@ accepted; authenticated remains unknown without independent proof. This HTTPS
 behavior is specified for the candidate and is not advertised by current builds.
 Private-member omission follows existing core policy.
 
-This interface remains a candidate. Under the proposed amendment, the next
-integration gate proves bidirectional `GwzTransportDeliveryV1` events through
-CLI/core and gwz-py/core bindings in the same process, including while
-application dispatch is blocked or idle. Optional metadata attachments have
-separate old-reader compatibility fixtures; they do not prove delivery progress.
+This interface remains a candidate. The next integration gate proves transport
+attachments inside existing CLI/core and gwz-py/core messages in the same process.
 The serializable messages must retain a plausible future wire mapping, but physical
 wire and separate-process testing, including iroh integration, are deferred outside
 this development cycle. Production availability retains its applicable activation
@@ -267,12 +253,6 @@ metadata attachment fields and request_id. It must bound any storage between
 these calls and deliver concurrently in both directions. Cloning a port does not
 create another session. `disconnect`, loss of the supplied host connection, or
 last-port-owner drop invalidates it; disconnect is idempotent.
-
-For the **proposed** independent-delivery host, this one-loop forwarding example
-is replaced by the amendment's ready-selective urgent and per-key ordered
-dispatchers with stream-opening barriers and bounded admission deadlines. The
-current Rust port exposes only the original FIFO method, so the new host must
-not be advertised until the selective API and its saturation tests exist.
 
 `cancel` requests cancellation of active transport work; it does not roll back
 Git changes. `finish` seals new admissions and waits for owned work within the

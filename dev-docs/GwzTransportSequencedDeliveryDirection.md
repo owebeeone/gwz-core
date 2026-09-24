@@ -2,7 +2,7 @@
 
 Date: 2026-09-23. Status: **DRAFT direction, not a frozen protocol or implementation authorization**.
 
-The operator selected ordering in the virtual-stream protocol rather than relying on the host scheduler to preserve every stream's delivery order. This is a new design direction after the [profile-3 reordering NO-GO](../../dev-docs/GwzTransportV3ReorderingDesign-Verdict.md), not another patch to that stopped object. The accepted placement and existing profile-1/2 contracts remain controlling until a complete sequenced-stream design is reviewed. The proposed profile-3 number is unreleased and may be reused only after an explicit compatibility review; no field number, version or public API is frozen here.
+The operator selected ordering in the virtual-stream protocol rather than relying on the host scheduler to preserve every stream's delivery order. This is a new design direction after the [profile-3 reordering NO-GO](../../dev-docs/history/GwzTransportV3ReorderingDesign-Verdict.md), not another patch to that stopped object. The accepted placement and existing profile-1/2 contracts remain controlling until a complete sequenced-stream design is reviewed. The proposed profile-3 number is unreleased and may be reused only after an explicit compatibility review; no field number, version or public API is frozen here.
 
 ## Required behavior
 

@@ -443,11 +443,4 @@ S5.6, and S6. Phase 8 waits on S7.5 and S2.3.
 - Running Phase 8 because this file exists. The operator runs it after the
   phase exits above.
 
-Candidate S6.3 clarification (2026-09-24, pending Python concurrency design
-review): the [Python session v2 design](../../dev-docs/GwzPyTransportSessionV2Design.md)
-requires two genuinely overlapping Python operations on **one** Client and
-pool, with independent results and cancellation. The current Python 1.1
-session has only a local endpoint; explicit CLI placement must fail with a
-typed error before credential access until a separate CLI capacity-owner
-handshake is designed. This candidate does not close S6.3 or lift the Phase 6/7
-NO-GO by itself.
+The candidate S6.3 clarification of 2026-09-24 was withdrawn when the Python concurrency design train was retired; its text is preserved in [history](history/GwzPythonSessionTrainExcerpts-20260924.md). S6.3 and the Phase 6/7 NO-GO remain open.
