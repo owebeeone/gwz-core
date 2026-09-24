@@ -6,7 +6,9 @@ session host) and must stay replaceable by a wire. State kept in the process
 instead of an explicit context couples every session in that process and makes
 results depend on which process core happens to run in: statics with interior
 mutability, thread-local slots, environment/working-directory reads at the
-point of use, and libgit2's process-wide options (GwzCoreSessionDesign O9).
+point of use, libgit2's process-wide options, and child processes, which
+inherit the live process environment unless spawned with `env_clear`
+(GwzCoreSessionDesign O9).
 
 Every production occurrence must be listed in the allowlist with a disposition
 (`debt` = scheduled for removal, `permanent` = justified process-wide state).
@@ -377,6 +379,13 @@ class Analysis:
                 info.occurrences.append(Occurrence('libgit2', 'git2::transport::register', self.line(i)))
             elif nxt == '::' and (t.text, after) in HOOKS:
                 info.occurrences.append(Occurrence('hook', f'{t.text}::{after}', self.line(i)))
+            elif t.text == 'Command' and nxt == '::' and after == 'new':
+                # Keyed by the program literal when there is one, so each
+                # spawn site's environment handling is listed separately.
+                program = self.toks[i + 4] if self.text(i + 3) == '(' and i + 4 < self.n else None
+                name = f'Command::new("{program.text}")' if program is not None and program.kind == 'str' \
+                    else 'Command::new'
+                info.occurrences.append(Occurrence('process', name, self.line(i)))
         return info
 
     def _static(self, i: int, macro_bodies, info: FileInfo) -> None:
@@ -565,7 +574,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f'process-global state guard failed for {repo} (allowlist: {allowlist}):', file=sys.stderr)
         for error in errors:
             print(f'  {error}', file=sys.stderr)
-        print('Pass state through the operation/session context instead of the process. '
+        print('Pass state through the operation/session context instead of the process, and '
+              'spawn child processes with env_clear() plus the session\'s environment snapshot. '
               'A genuinely process-wide item needs an allowlist entry with a disposition '
               'and reason (GwzCoreSessionDesign O9).', file=sys.stderr)
         return 1

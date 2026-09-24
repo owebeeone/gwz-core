@@ -31,6 +31,8 @@ fn f() {
     std::panic::set_hook(hook);
     let h = dirs::home_dir();
     let p = unsafe { libc::getenv(name) };
+    let child = std::process::Command::new("git").arg("tag").status();
+    let helper = tokio::process::Command::new(program).spawn();
 }
 use std::env::{self, var};
 '''
@@ -40,6 +42,7 @@ use std::env::{self, var};
             ('env', 'env::current_dir'), ('libgit2', 'git2::opts::set_server_timeout_in_milliseconds'),
             ('libgit2', 'git2::opts::set_verify_owner_validation'), ('hook', 'panic::set_hook'),
             ('env', 'dirs::home_dir'), ('env', 'libc::getenv'), ('env', 'env::var'),
+            ('process', 'Command::new("git")'), ('process', 'Command::new'),
         ]))
 
     def test_ignores_immutable_data_lifetimes_comments_and_literals(self):
