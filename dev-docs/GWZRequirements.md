@@ -8,7 +8,19 @@ The Python session v2 amendment and the v4 foundation draft amendment that stood
 
 ## Core session host amendment (2026-09-24; DRAFT, design review pending)
 
-The draft [core session contract](../../dev-docs/GwzCoreSessionDesign.md) proposes these requirements; they are not baseline until its review reports GO. Clients MUST reach core's operations only through the session protocol's frames, and the same client and core code MUST work over the in-process adapter and over a byte stream. The session host MUST own each call from receipt and MUST send exactly one reply per call. It MUST own each operation from admission until release, eviction or session end. Each operation's terminal MUST be written once: by its worker, or by the host for an operation that never started. Handlers MUST run on threads the host owns, never on a client's threads. The host MUST NOT push events onto the channel; readers pull them. Workspace writes MUST be exclusive per workspace, and fetch and push member steps MUST be serialized per member. Closing a session MUST cancel its operations and wait for their workers. Additions to the GWZ Taut schema MUST be append-only.
+The draft [core session contract](../../dev-docs/GwzCoreSessionDesign.md), at revision 1, proposes these requirements. They are not baseline until its review reports GO.
+
+- gwz-cli and gwz-py MUST reach core's operations only through the session protocol's frames. Direct in-process embedding of the library remains supported (REQ-010, REQ-011). The same client and core code MUST work over the in-process adapter and over a byte stream.
+- The session host MUST own each call from receipt and MUST send exactly one reply per call. A call that reuses an outstanding call ID MUST end the session. The host MUST own each operation from admission until release, eviction or session end.
+- Each operation's terminal MUST be written once: by its worker, or by the host for an operation that never started or whose worker it detached at the close bound. Handlers MUST run on threads the host owns, never on a client's threads.
+- The party that uses a control handle MUST create it before the action starts: the host creates each operation's cancellation token at admission, and the client chooses call IDs before sending. No API on the session path may return a control handle after the action has begun.
+- Workers MUST reach session state and resources only through their operation's gate. The gate MUST refuse effectful requests after cancellation and MUST ignore reports after revocation.
+- Session-relevant configuration MUST live in the session context created at open. Code on the session path MUST NOT read the environment or process-global mutable state. New process-global state MUST fail the gwz-core and gwz-py test runs unless it is inventoried with a disposition.
+- The host MUST NOT push events onto the channel; readers pull them.
+- Workspace writes MUST be exclusive per workspace, at most one push per workspace MUST run at a time within a session, and fetch and push member steps MUST be serialized per member.
+- Admission MUST refuse, before any effect, a request it cannot hold, and MUST NOT evict an operation record whose result has not been delivered.
+- Closing a session MUST cancel its operations, wait for their workers up to the close bound, revoke the gates of any that remain and report them.
+- Additions to the GWZ Taut schema MUST be append-only.
 
 ## Sequenced virtual-stream amendment (2026-09-24; implementation pending)
 
