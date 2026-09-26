@@ -20,17 +20,23 @@ What the gate checks (pure manifest metadata, read with `tomllib`, no build):
 - All fourteen crates under `crates/` carry one and the same version, on the
   internal `^0\\.0\\.[0-9]+$` line (D2). A crate whose version differs is named;
   so is one whose version is off the line entirely.
-- Every `gwz-*` entry of a `[dependencies]` or `[build-dependencies]` table --
-  gwz-core's and each crate's, target-specific tables included -- has both a
+- Every entry naming one of the fourteen crates under `crates/` in a
+  `[dependencies]` or `[build-dependencies]` table -- gwz-core's and each
+  crate's, target-specific tables included -- has both a
   `path` (so a local build stays local) and a `version` equal to that internal
   version (so the registry build resolves). Build dependencies are kept in a
   published manifest exactly as normal ones are, hence the same rule; there
   are none today.
-- Every `gwz-*` entry of a `[dev-dependencies]` table has a `path` and NO
-  `version`. cargo drops a path-only dev-dependency from the published
+- Every entry naming one of those crates in a `[dev-dependencies]` table has a
+  `path` and NO `version`. cargo drops a path-only dev-dependency from the published
   manifest, and a versioned one would have to exist on crates.io -- which
   `gwz-local-testrepo`, being unpublished, never will.
 - No dependency of any kind in any of these manifests uses `git`.
+
+A `gwz-*` package maintained outside this repository, such as the `gwz-git2`
+fork of git2-rs and its `gwz-libgit2-sys`, is on its own version line: the
+internal crates are the manifests found under `crates/`, not every name with
+the `gwz-` prefix.
 - Each of the thirteen published crates carries `repository`, `readme`,
   `license` and `description`, and is not `publish = false`;
   `gwz-local-testrepo` is (D1).
@@ -79,7 +85,6 @@ REQUIRED_METADATA = ("repository", "readme", "license", "description")
 VERSIONED_KINDS = ("dependencies", "build-dependencies")
 PATH_ONLY_KINDS = ("dev-dependencies",)
 DEPENDENCY_KINDS = VERSIONED_KINDS + PATH_ONLY_KINDS
-INTERNAL_PREFIX = "gwz-"
 INTERNAL_VERSION = re.compile(r"^0\.0\.[0-9]+$")
 PRODUCT_VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-rc\.[0-9]+)?$")
 RELEASE_TAG = re.compile(r"^v(?P<version>[0-9]+\.[0-9]+\.[0-9]+(?:-rc\.[0-9]+)?)$")
@@ -278,7 +283,7 @@ def check_internal_versions(crates: list[Manifest], findings: list[str]) -> str:
 
 
 def check_dependencies(
-    manifest: Manifest, internal_version: str, findings: list[str]
+    manifest: Manifest, internal_version: str, internal: set[str], findings: list[str]
 ) -> tuple[int, int]:
     """Internal edges and git sources of one manifest; returns the edge counts."""
     versioned = 0
@@ -294,7 +299,7 @@ def check_dependencies(
                     "dependency goes to crates.io first (plan section 1)"
                 )
             package = str(spec.get("package", key))
-            if not package.startswith(INTERNAL_PREFIX):
+            if package not in internal:
                 continue
             path = spec.get("path")
             declared = spec.get("version")
@@ -389,7 +394,7 @@ def run(root: Path, tag: str | None) -> tuple[list[str], Summary]:
     path_only = 0
     for manifest in [core, *crates]:
         crate_versioned, crate_path_only = check_dependencies(
-            manifest, internal_version, findings
+            manifest, internal_version, present, findings
         )
         versioned += crate_versioned
         path_only += crate_path_only

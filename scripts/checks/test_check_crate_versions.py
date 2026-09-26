@@ -236,6 +236,24 @@ class CrateVersionGateTests(unittest.TestCase):
         self.assertEqual(self.gate.EXPECTED_CRATES, summary.crates)
         self.assertEqual(13, summary.published)
 
+    def test_an_external_gwz_package_keeps_its_own_version_line(self) -> None:
+        # The gwz-git2 fork of git2-rs and its gwz-libgit2-sys are gwz-* packages
+        # maintained outside this repository on their own version line, so they
+        # are not held to the internal lockstep version or the path-only rule.
+        findings = self.findings(
+            edit={
+                "gwz-core": (
+                    'serde = { version = "1", features = ["derive"] }\n\n[dev-dependencies]\n',
+                    'serde = { version = "1", features = ["derive"] }\n'
+                    'git2 = { package = "gwz-git2", path = "../git2-rs", version = "=0.21.0" }\n'
+                    "\n[dev-dependencies]\n"
+                    'libgit2-sys = { package = "gwz-libgit2-sys", '
+                    'path = "../git2-rs/libgit2-sys", version = "=0.18.8" }\n',
+                )
+            }
+        )
+        self.assertEqual([], findings)
+
     def test_a_release_candidate_version_is_accepted(self) -> None:
         self.assertEqual([], self.findings(core_version="1.0.12-rc.1", tag="1.0.12-rc.1"))
 
