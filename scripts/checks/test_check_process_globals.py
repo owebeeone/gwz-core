@@ -45,6 +45,14 @@ use std::env::{self, var};
             ('process', 'Command::new("git")'), ('process', 'Command::new'),
         ]))
 
+    def test_flags_libgit2_credential_helper_spawn_only(self):
+        self.assertEqual(found('''
+fn f() {
+    let credential = git2::Cred::credential_helper(&config, url, None);
+    let agent = git2::Cred::ssh_key_from_agent(user);
+}
+'''), [('process', 'Cred::credential_helper')])
+
     def test_ignores_immutable_data_lifetimes_comments_and_literals(self):
         self.assertEqual(found('''
 static NAMES: &[&str] = &["a", "b"];

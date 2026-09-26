@@ -50,6 +50,26 @@ def run(mode: str, cargo_args: list[str], test_args: list[str], *, filesystem: s
     return result.returncode
 
 
+def check_transport_process_globals() -> None:
+    # gwz-core checks the gwz-transport it builds against: the checkout beside
+    # it, which tests/transport_backend/prepare.py links into the transport build.
+    transport = ROOT.parent / "gwz-transport"
+    if not transport.is_dir():
+        print("gwz-transport is not checked out beside gwz-core; its process-global check is skipped", flush=True)
+        return
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/checks/check_process_globals.py"),
+            "--repo",
+            str(transport),
+            "--allowlist",
+            str(ROOT / "scripts/checks/process_globals_allowlist_gwz_transport.json"),
+        ],
+        check=True,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compare", action="store_true")
@@ -57,6 +77,7 @@ def main() -> None:
     library_args = ["--lib", *[arg for arg in cargo_args if arg != "--lib"]]
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_filesystem_boundary.py")], check=True)
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_process_globals.py")], check=True)
+    check_transport_process_globals()
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_crate_versions.py")], check=True)
     filesystem_result = run("fake", library_args, list(FILESYSTEM_CONTRACTS), filesystem="fake")
     if filesystem_result and "--no-fail-fast" not in cargo_args:

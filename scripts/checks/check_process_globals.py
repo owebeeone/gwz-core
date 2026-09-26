@@ -7,7 +7,8 @@ instead of an explicit context couples every session in that process and makes
 results depend on which process core happens to run in: statics with interior
 mutability, thread-local slots, environment/working-directory reads at the
 point of use, libgit2's process-wide options, and child processes, which
-inherit the live process environment unless spawned with `env_clear`
+inherit the live process environment unless spawned with `env_clear`,
+including the credential helpers `git2::Cred::credential_helper` spawns
 (GwzCoreSessionDesign O9).
 
 Every production occurrence must be listed in the allowlist with a disposition
@@ -386,6 +387,10 @@ class Analysis:
                 name = f'Command::new("{program.text}")' if program is not None and program.kind == 'str' \
                     else 'Command::new'
                 info.occurrences.append(Occurrence('process', name, self.line(i)))
+            elif t.text == 'Cred' and nxt == '::' and after == 'credential_helper':
+                # libgit2 spawns git's configured credential helpers itself,
+                # with the live process environment.
+                info.occurrences.append(Occurrence('process', 'Cred::credential_helper', self.line(i)))
         return info
 
     def _static(self, i: int, macro_bodies, info: FileInfo) -> None:

@@ -43,6 +43,8 @@
      "reason": "libgit2 has only a process-wide server timeout. Ordinary builds freeze it at startup (GWZDesign 'Native connection/read timeout'); RemPlan B5 gives transport builds session-owned timeouts."},
     {"path": "src/git/gitbackend/transport_support.rs", "kind": "libgit2", "name": "git2::opts::set_server_timeout_in_milliseconds", "disposition": "permanent",
      "reason": "As set_server_connect_timeout_in_milliseconds."},
+    {"path": "src/git/gitbackend/transport_support.rs", "kind": "process", "name": "Cred::credential_helper", "disposition": "debt",
+     "reason": "The default backend's HTTPS credential callback lets libgit2 spawn git's configured credential helpers with the live process environment. Run `git credential fill` with env_clear() plus the session's snapshot instead (GwzCoreSessionDesign §5.8, Safety P3-24 of Verdict-2)."},
     {"path": "src/git/gitbackend/transport_support.rs", "kind": "static", "name": "TIMEOUT_STATE", "disposition": "permanent",
      "reason": "Freezes libgit2's process-wide timeout at its first value so no request can change it for others (GWZDesign). Transport builds stop consulting it under RemPlan B5."},
     {"path": "src/git/gitbackend/transport_support/identity.rs", "kind": "env", "name": "env::home_dir", "disposition": "debt",
