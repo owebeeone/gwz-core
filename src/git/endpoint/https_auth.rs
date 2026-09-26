@@ -315,7 +315,9 @@ pub(crate) async fn lookup_owned(
         .map_err(|_| AuthError::Capacity)?;
 
     let mut command = Command::new(&config.executable);
+    // The helper needs no directory, and must not inherit the host's.
     command
+        .current_dir("/")
         .args([
             OsStr::new("auth"),
             OsStr::new("git-credential"),

@@ -298,7 +298,8 @@ pub(super) fn commit(
     // config are honored (libgit2's commit honors none of them).
     let before = backend.head(path)?.commit;
     let mut command = std::process::Command::new("git");
-    command.arg("-C").arg(path).arg("commit");
+    // The child's directory is explicit: it never inherits the host's.
+    command.current_dir(path).arg("-C").arg(path).arg("commit");
     if all {
         command.arg("-a");
     }

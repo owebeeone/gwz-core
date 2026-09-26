@@ -346,6 +346,7 @@ pub(super) fn fetch_anonymous(
 
 fn fetch_anonymous_with_git(path: &Path, peer: &str, refspecs: &[&str]) -> ModelResult<()> {
     let output = std::process::Command::new("git")
+        .current_dir(path)
         .arg("-C")
         .arg(path)
         .arg("fetch")

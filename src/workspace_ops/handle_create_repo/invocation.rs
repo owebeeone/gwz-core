@@ -16,9 +16,11 @@ pub fn resolve_workspace_root(
 /// Resolve the caller directory recorded with a request.
 ///
 /// Serialized requests carry their caller context explicitly, so a receiver
-/// never borrows meaning from its own process directory. The absent-context arm
-/// keeps direct, in-process callers source-compatible: their supplied `start`
-/// is the same explicit context and must already be absolute.
+/// never borrows meaning from its own process directory. Every production entry
+/// point takes its `start` from [`caller_directory`], so the two always agree.
+/// The absent-context arm serves only direct library callers, such as tests:
+/// their supplied `start` is the same explicit context and must already be
+/// absolute.
 pub fn invocation_start(start: &Path, meta: &crate::RequestMeta) -> ModelResult<PathBuf> {
     let supplied = meta
         .invocation
@@ -35,6 +37,29 @@ pub fn invocation_start(start: &Path, meta: &crate::RequestMeta) -> ModelResult<
         return Err(invalid("workspace root must be an absolute path"));
     }
     normalize_absolute_path(supplied, "invocation caller_cwd")
+}
+
+/// The caller's directory, taken only from the request.
+///
+/// A receiver has no directory of its own to fall back to: its process working
+/// directory is never consulted, so a request that carries `RequestMeta`
+/// without an invocation context is refused.
+pub fn caller_directory(meta: &crate::RequestMeta) -> ModelResult<PathBuf> {
+    let Some(context) = meta.invocation.as_ref() else {
+        return Err(invalid("request carries no invocation context (caller_cwd)"));
+    };
+    normalize_absolute_path(Path::new(&context.caller_cwd), "invocation caller_cwd")
+}
+
+/// A path as request text, exactly or not at all.
+///
+/// Request path fields are Unicode text. A path that is not valid Unicode is
+/// refused, with its invalid bytes escaped, instead of being sent altered.
+pub fn path_text(path: &Path, label: &str) -> ModelResult<String> {
+    match path.to_str() {
+        Some(text) => Ok(text.to_owned()),
+        None => Err(invalid(format!("{label} is not valid Unicode: {path:?}"))),
+    }
 }
 
 /// Normalize one absolute path without interpreting it against process state.
@@ -122,5 +147,47 @@ pub(crate) fn start_dir(start: &Path) -> &Path {
         start.parent().unwrap_or(start)
     } else {
         start
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::{caller_directory, path_text};
+
+    fn meta(caller_cwd: Option<&str>) -> crate::RequestMeta {
+        crate::RequestMeta {
+            invocation: caller_cwd.map(|cwd| crate::InvocationContext {
+                caller_cwd: cwd.to_owned(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn caller_directory_comes_only_from_the_request() {
+        let (given, expected) = if cfg!(windows) {
+            (r"C:\work\a\..\b", r"C:\work\b")
+        } else {
+            ("/work/a/../b", "/work/b")
+        };
+        assert_eq!(caller_directory(&meta(Some(given))).unwrap(), PathBuf::from(expected));
+        assert!(caller_directory(&meta(None)).is_err());
+        assert!(caller_directory(&meta(Some("relative/dir"))).is_err());
+    }
+
+    #[test]
+    fn path_text_is_exact_or_refused() {
+        let valid = if cfg!(windows) { r"C:\work\b" } else { "/work/b" };
+        assert_eq!(path_text(Path::new(valid), "root").unwrap(), valid);
+        cfg_if::cfg_if! {
+            if #[cfg(unix)] {
+                use std::os::unix::ffi::OsStrExt;
+                let path = Path::new(std::ffi::OsStr::from_bytes(b"/work/\xff"));
+                let error = path_text(path, "working directory").unwrap_err();
+                assert!(format!("{error}").contains("\\xFF"), "{error}");
+            }
+        }
     }
 }

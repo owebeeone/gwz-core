@@ -318,7 +318,9 @@ impl<'repo> RepositoryMessages<'repo> {
                 #[cfg(test)]
                 let _reader_probe = path_reader_probe_enter(self.target);
                 let mut command = Command::new("git");
+                // The child's directory is explicit: it never inherits the host's.
                 command
+                    .current_dir(repository.path())
                     .arg("--git-dir")
                     .arg(repository.path())
                     .arg("rev-list")

@@ -170,7 +170,8 @@ pub(super) fn tag_create(
 ) -> ModelResult<GitTagResult> {
     // AD1 CLI fallback: `git tag` so hooks / signing / tagger config are honored.
     let mut command = std::process::Command::new("git");
-    command.arg("-C").arg(path).arg("tag");
+    // The child's directory is explicit: it never inherits the host's.
+    command.current_dir(path).arg("-C").arg(path).arg("tag");
     if signed {
         command.arg("-s");
     } else if message.is_some() {
@@ -231,6 +232,7 @@ pub(super) fn tag_list(_backend: &Git2Backend, path: &Path) -> ModelResult<Vec<S
 
 pub(super) fn tag_delete(backend: &Git2Backend, path: &Path, name: &str) -> ModelResult<()> {
     let output = std::process::Command::new("git")
+        .current_dir(path)
         .arg("-C")
         .arg(path)
         .arg("tag")
