@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicI64;
 
 /// Delivery seam for operation events: an implementation decides what to do
 /// with each event (buffer it, stream it as JSONL, render progress, drop it).
@@ -23,7 +22,10 @@ pub struct EventEmitter<'a> {
     pub(crate) operation_id: String,
     pub(crate) request_id: String,
     pub(crate) attribution: Option<crate::OperationAttribution>,
-    pub(crate) sequence: AtomicI64,
+    /// The next sequence number. An event is built first, then numbered,
+    /// stamped and delivered while this lock is held, so every sink receives
+    /// events in sequence order even when member threads emit concurrently.
+    pub(crate) sequence: Mutex<i64>,
     /// Minimum ms between member_progress events per member; 0 = no limit.
     pub(crate) progress_min_interval_ms: i64,
     pub(crate) last_progress_ms: Mutex<HashMap<String, i64>>,

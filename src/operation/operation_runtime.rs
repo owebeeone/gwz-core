@@ -97,6 +97,44 @@ mod tests {
         assert_eq!(progress_event_count(&sink.take()), 5);
     }
 
+    /// Records each delivered sequence after yielding, which widens the window
+    /// between numbering an event and storing it.
+    #[derive(Default)]
+    struct YieldingSink {
+        sequences: Mutex<Vec<i64>>,
+    }
+
+    impl EventSink for YieldingSink {
+        fn deliver(&self, event: crate::OperationEvent) {
+            std::thread::yield_now();
+            self.sequences.lock().unwrap().push(event.sequence);
+        }
+    }
+
+    #[test]
+    fn concurrent_emitters_deliver_in_sequence_order() {
+        let context = sample_context(false);
+        let sink = YieldingSink::default();
+        let emitter = EventEmitter::new(&context, &sink, 0);
+        let threads = 8;
+        let per_thread = 250;
+        let start = std::sync::Barrier::new(threads);
+        std::thread::scope(|scope| {
+            for thread in 0..threads {
+                let (emitter, start) = (&emitter, &start);
+                scope.spawn(move || {
+                    let member_id = format!("mem_{thread}");
+                    start.wait();
+                    for _ in 0..per_thread {
+                        emitter.member_started(&member_id, "repos/app");
+                    }
+                });
+            }
+        });
+        let expected: Vec<i64> = (0..(threads * per_thread) as i64).collect();
+        assert_eq!(*sink.sequences.lock().unwrap(), expected);
+    }
+
     fn run_tracking_peak<K>(global: usize, per_host: usize, host_of: K) -> usize
     where
         K: Fn(&usize) -> Option<String>,

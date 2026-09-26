@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -393,7 +392,7 @@ impl<'a> EventEmitter<'a> {
             operation_id: operation_id.into(),
             request_id: meta.request_id.clone(),
             attribution: meta.attribution.clone(),
-            sequence: AtomicI64::new(0),
+            sequence: Mutex::new(0),
             progress_min_interval_ms: progress_min_interval_ms.max(0),
             last_progress_ms: Mutex::new(HashMap::new()),
             sink,
@@ -409,7 +408,7 @@ impl<'a> EventEmitter<'a> {
             operation_id: context.operation_id.clone(),
             request_id: context.request_id.clone(),
             attribution: context.attribution.as_ref().map(Into::into),
-            sequence: AtomicI64::new(0),
+            sequence: Mutex::new(0),
             progress_min_interval_ms: progress_min_interval_ms.max(0),
             last_progress_ms: Mutex::new(HashMap::new()),
             sink,
@@ -473,13 +472,12 @@ impl<'a> EventEmitter<'a> {
         merge_member: Option<crate::MergeRepoSummary>,
         artifact_path: Option<String>,
     ) {
-        let sequence = self.sequence.fetch_add(1, Ordering::Relaxed);
         let target_kind = member_id.as_ref().map(|_| crate::TargetKind::Member);
-        self.sink.deliver(crate::OperationEvent {
+        let mut event = crate::OperationEvent {
             operation_id: self.operation_id.clone(),
             request_id: self.request_id.clone(),
-            sequence,
-            timestamp_ms: now_ms().0,
+            sequence: 0,
+            timestamp_ms: 0,
             kind,
             severity,
             member_id,
@@ -493,7 +491,18 @@ impl<'a> EventEmitter<'a> {
             merge_state,
             merge_member,
             artifact_path,
-        });
+        };
+        // Only numbering, the timestamp and delivery share the lock: a sequence
+        // number taken here reaches the sink before any later one does, and
+        // timestamps are read in sequence order. Build the event outside it.
+        let mut next = self
+            .sequence
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        event.sequence = *next;
+        event.timestamp_ms = now_ms().0;
+        *next += 1;
+        self.sink.deliver(event);
     }
 
     pub fn operation_state_changed(&self, state: crate::MergeOperationState) {
