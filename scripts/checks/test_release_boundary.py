@@ -160,6 +160,33 @@ class ReleaseBoundaryTest(unittest.TestCase):
             ],
         )
 
+    def test_release_tests_name_the_gwz_transport_beside_this_checkout(self) -> None:
+        # run_tests.py fails closed without a gwz-transport checkout (B11,
+        # GwzCoreSessionDesign §5.7), and the release gates may run in a /tmp
+        # worktree that has none beside it. The release therefore names the
+        # one beside this checkout, unless the caller already named one.
+        worktree = Path("/tmp/gwz-core-v1.2.3-1/gwz-core")
+        sibling = str(release.REPO.parent / "gwz-transport")
+        for environment, named in (({}, sibling), ({"GWZ_TRANSPORT_CHECKOUT": "/elsewhere"}, "/elsewhere")):
+            with (
+                mock.patch.object(release, "run") as run,
+                mock.patch.object(release, "cargo_env", return_value=dict(environment)),
+                mock.patch.object(release, "regen_python"),
+                mock.patch.object(release, "run_fmt_check"),
+                mock.patch.object(release, "assert_lock_current"),
+                mock.patch.object(release, "run_checked_boundary_gates"),
+            ):
+                release.run_gates(cargo_root=worktree, skip_regen=True, no_test=False)
+            suites = [call for call in run.call_args_list if str(call.args[0][-1]).endswith("run_tests.py")]
+            self.assertEqual(len(suites), 1)
+            self.assertEqual(suites[0].kwargs["cwd"], worktree)
+            self.assertEqual(suites[0].kwargs["env"]["GWZ_TRANSPORT_CHECKOUT"], named)
+
+    def test_release_runs_the_test_suite_only_through_that_helper(self) -> None:
+        # Both release test runs, before the version bump and after it, go
+        # through run_test_suite, so neither loses the checkout it names.
+        self.assertEqual(RELEASE_PATH.read_text(encoding="utf-8").count('"run_tests.py"'), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,8 +8,9 @@ results depend on which process core happens to run in: statics with interior
 mutability, thread-local slots, environment/working-directory reads at the
 point of use, libgit2's process-wide options, and child processes, which
 inherit the live process environment unless spawned with `env_clear`,
-including the credential helpers `git2::Cred::credential_helper` spawns
-(GwzCoreSessionDesign O9).
+including the credential helpers git2 spawns. Both spellings of that spawn,
+`Cred::credential_helper` and the `CredentialHelper::new` it wraps, are the
+one occurrence `Cred::credential_helper` (GwzCoreSessionDesign O9, §5.7).
 
 Every production occurrence must be listed in the allowlist with a disposition
 (`debt` = scheduled for removal, `permanent` = justified process-wide state).
@@ -17,6 +18,10 @@ A new occurrence fails. A listed occurrence that disappears also fails, so the
 list only shrinks. Code compiled only under `cfg(test)` is exempt:
 `#[cfg(test)]` items and modules, `cfg_if!` test branches, and files reached
 only through test-only `mod` declarations.
+
+An allowlist for another repository may record `reconciled_commit`: the full
+commit SHA its entries were last reconciled against. `--reconciled-commit`
+prints it, so CI can check out exactly that commit.
 
 This is a lexical scan, not name resolution. It strips comments and literals,
 follows `mod`/`#[path]` declarations from the crate roots named in the
@@ -35,6 +40,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ALLOWLIST = Path(__file__).resolve().with_name('process_globals_allowlist.json')
 DISPOSITIONS = {'debt', 'permanent'}
+RECONCILED_COMMIT = re.compile(r'[0-9a-f]{40}')
 
 # Types whose statics are shared mutable (or lazily initialised) process state.
 INTERIOR = re.compile(
@@ -387,9 +393,13 @@ class Analysis:
                 name = f'Command::new("{program.text}")' if program is not None and program.kind == 'str' \
                     else 'Command::new'
                 info.occurrences.append(Occurrence('process', name, self.line(i)))
-            elif t.text == 'Cred' and nxt == '::' and after == 'credential_helper':
-                # libgit2 spawns git's configured credential helpers itself,
-                # with the live process environment.
+            elif (t.text == 'Cred' and nxt == '::' and after == 'credential_helper') or \
+                    (t.text == 'CredentialHelper' and nxt == '::' and after == 'new'):
+                # git2 spawns git's configured credential helpers itself, with
+                # the live process environment. Cred::credential_helper wraps
+                # CredentialHelper::new(..).execute(), so both spellings are
+                # one occurrence and switching between them never reads as
+                # the entry's debt paid (Safety P3-31 of Verdict-3).
                 info.occurrences.append(Occurrence('process', 'Cred::credential_helper', self.line(i)))
         return info
 
@@ -502,6 +512,7 @@ class Allowlist:
     roots: list[str]
     test_features: frozenset[str]
     entries: dict[tuple[str, str, str], dict]
+    reconciled_commit: str | None = None
 
 
 def load_allowlist(path: Path) -> tuple[Allowlist, list[str]]:
@@ -526,7 +537,11 @@ def load_allowlist(path: Path) -> tuple[Allowlist, list[str]]:
     if not roots:
         errors.append('allowlist must name the crate roots to scan')
     features = frozenset(data.get('test_features') or [])
-    return Allowlist(roots, features, entries), errors
+    reconciled = data.get('reconciled_commit')
+    if reconciled is not None and not (isinstance(reconciled, str) and RECONCILED_COMMIT.fullmatch(reconciled)):
+        errors.append(f'reconciled_commit must be a full 40-character lowercase commit SHA, got {reconciled!r}')
+        reconciled = None
+    return Allowlist(roots, features, entries, reconciled), errors
 
 
 def check(repo: Path, allowlist_path: Path) -> tuple[list[str], Scan, dict]:
@@ -557,9 +572,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--repo', type=Path, default=ROOT, help='repository root (default: gwz-core)')
     parser.add_argument('--allowlist', type=Path, help='allowlist JSON (default: next to this script)')
     parser.add_argument('--list', action='store_true', help='print every production occurrence and exit')
+    parser.add_argument('--reconciled-commit', action='store_true',
+                        help="print the allowlist's reconciled_commit and exit; fail if it has none")
     options = parser.parse_args(argv)
     repo = options.repo.resolve()
     allowlist = (options.allowlist or DEFAULT_ALLOWLIST).resolve()
+    if options.reconciled_commit:
+        loaded, errors = load_allowlist(allowlist)
+        if not errors and loaded.reconciled_commit is None:
+            errors = [f'{allowlist} records no reconciled_commit']
+        if errors:
+            print('\n'.join(errors), file=sys.stderr)
+            return 1
+        print(loaded.reconciled_commit)
+        return 0
     if options.list:
         loaded, errors = load_allowlist(allowlist)
         if errors:

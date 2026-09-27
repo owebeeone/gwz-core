@@ -220,7 +220,12 @@ class PublishOrderTests(unittest.TestCase):
     def test_the_script_holds_no_hand_written_publish_order(self) -> None:
         source = RELEASE_PATH.read_text(encoding="utf-8")
         self.assertIn("--print-publish-order", source)
-        internals = re.findall(r'"gwz-(?!core)[a-z-]+"', source)
+        # "gwz-transport" names the sibling repository whose checkout the
+        # release's test run is given (run_test_suite), not a crate that
+        # gwz-core publishes.
+        internals = [
+            name for name in re.findall(r'"gwz-(?!core)[a-z-]+"', source) if name != '"gwz-transport"'
+        ]
         self.assertEqual([], internals, internals)
 
 

@@ -15,14 +15,56 @@ jobs:
   boundary:
     name: Structural boundary
     runs-on: ubuntu-24.04
+    defaults:
+      run:
+        # gwz-core and gwz-transport are checked out side by side, as a
+        # workspace has them; every command runs in gwz-core.
+        working-directory: gwz-core
     steps:
       - uses: actions/checkout@v6
         with:
+          path: gwz-core
           persist-credentials: false
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      # B11 of the core session contract's Verdict-3 (GwzCoreSessionDesign
+      # §5.7): gwz-core, the consumer, checks the gwz-transport it builds
+      # against, here at exactly the commit the gwz-transport allowlist
+      # records as reconciled_commit. The allowlist is the only place that
+      # commit is written. gwz-transport's own CI carries no such gate.
+      - id: transport-pin
+        name: Read the gwz-transport commit its allowlist was reconciled against
+        run: |
+          commit="$(python scripts/checks/check_process_globals.py --allowlist scripts/checks/process_globals_allowlist_gwz_transport.json --reconciled-commit)"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - name: Check out gwz-transport at that commit, beside gwz-core
+        uses: actions/checkout@v6
+        with:
+          repository: owebeeone/gwz-transport
+          ref: ${{ steps.transport-pin.outputs.commit }}
+          path: gwz-transport
+          persist-credentials: false
+          fetch-depth: 0
+      - name: gwz-transport process globals at the reconciled commit
+        # This step has no skip. The bump rule keeps the pinned commit on
+        # gwz-transport's main: a gwz-core commit that changes the allowlist
+        # sets reconciled_commit in the same commit, to a gwz-transport
+        # commit that is already pushed.
+        env:
+          RECONCILED_COMMIT: ${{ steps.transport-pin.outputs.commit }}
+        run: |
+          head="$(git -C ../gwz-transport rev-parse HEAD)"
+          if [ "$head" != "$RECONCILED_COMMIT" ]; then
+            echo "::error::gwz-transport is checked out at $head, not at reconciled_commit $RECONCILED_COMMIT"
+            exit 1
+          fi
+          if ! git -C ../gwz-transport merge-base --is-ancestor "$RECONCILED_COMMIT" origin/main; then
+            echo "::error::reconciled_commit $RECONCILED_COMMIT is not on gwz-transport's main; push gwz-transport first"
+            exit 1
+          fi
+          python scripts/checks/check_process_globals.py --repo ../gwz-transport --allowlist scripts/checks/process_globals_allowlist_gwz_transport.json
       - name: Per-commit lane gate over the pushed range
         if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
         run: bash scripts/checks/check_lane_commits.sh "${{ github.event.before }}" "${{ github.sha }}"
@@ -35,7 +77,7 @@ jobs:
           python scripts/checks/check_checked_artifact_boundaries.py
           python scripts/checks/check_filesystem_boundary.py
           python scripts/checks/check_process_globals.py
-          python -m unittest scripts/checks/test_check_filesystem_boundary.py scripts/checks/test_run_tests_filesystem_mode.py scripts/checks/test_check_process_globals.py
+          python -m unittest scripts/checks/test_check_filesystem_boundary.py scripts/checks/test_run_tests_filesystem_mode.py scripts/checks/test_run_tests_transport_globals.py scripts/checks/test_check_process_globals.py
           python -m unittest scripts/checks/test_release_boundary.py -v
           # The release script's internal-version bump (plan S1.5) and the
           # crates.io publisher the release workflow runs (S2.1). This job

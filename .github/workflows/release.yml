@@ -84,7 +84,10 @@ jobs:
             python scripts/checks/check_checked_artifact_boundaries.py
           fi
       - name: Test
-        run: python scripts/run_tests.py
+        # This job checks out gwz-core alone, so it skips gwz-transport's
+        # process-global check, printing SKIPPED GATE; the checked-artifact
+        # boundary job runs that check (GwzCoreSessionDesign §5.7).
+        run: python scripts/run_tests.py --skip-transport-globals
       - name: Clippy
         run: CLIPPY_CONF_DIR="$PWD" cargo clippy --all-targets --all-features -- -D warnings
 
@@ -134,7 +137,9 @@ jobs:
       - name: Install taut-proto
         run: python -m pip install --upgrade pip "taut-proto==0.9.1"
       - name: Test
-        run: python scripts/run_tests.py
+        # Single checkout, as in `verify`: gwz-transport's check is skipped
+        # here and runs in the checked-artifact boundary job.
+        run: python scripts/run_tests.py --skip-transport-globals
 
   publish:
     # crates.io publication (plan D5 and step S2.1 of

@@ -1,13 +1,20 @@
 """Tests for the process-global state ratchet (GwzCoreSessionDesign O9)."""
+import contextlib
 import importlib.util
+import io
 import json
 from pathlib import Path
+import re
 import tempfile
 import unittest
 
 spec = importlib.util.spec_from_file_location('process_globals', Path(__file__).with_name('check_process_globals.py'))
 checker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(checker)
+
+TRANSPORT_ALLOWLIST = Path(__file__).with_name('process_globals_allowlist_gwz_transport.json')
+BOUNDARY_WORKFLOW = checker.ROOT / '.github' / 'workflows' / 'checked-artifact-boundary.yml'
+TRANSPORT_ALLOWLIST_ARG = '--allowlist scripts/checks/process_globals_allowlist_gwz_transport.json'
 
 
 def found(source, features=frozenset()):
@@ -50,6 +57,18 @@ use std::env::{self, var};
 fn f() {
     let credential = git2::Cred::credential_helper(&config, url, None);
     let agent = git2::Cred::ssh_key_from_agent(user);
+}
+'''), [('process', 'Cred::credential_helper')])
+
+    def test_flags_the_credential_helper_struct_as_the_same_spawn(self):
+        # Safety P3-31 of Verdict-3: git2's public CredentialHelper performs
+        # the spawn that Cred::credential_helper wraps, so both spellings are
+        # one occurrence and a switch between them never reads as debt paid.
+        self.assertEqual(found('''
+fn f() {
+    let found = git2::CredentialHelper::new(url).config(&config).execute();
+    let policy = CredentialHelperPolicy::AllowConfigured;
+    let helper: Option<CredentialHelper> = None;
 }
 '''), [('process', 'Cred::credential_helper')])
 
@@ -174,6 +193,118 @@ class Ratchet(unittest.TestCase):
     def test_entries_need_a_disposition_and_reason(self):
         errors = self.run_check([self.entry(disposition='later', reason='')], {'src/lib.rs': GLOBAL})
         self.assertEqual(len(errors), 2)
+
+    def test_injected_credential_helper_struct_is_the_listed_spawn(self):
+        # Safety P3-31's closure test: the fault injected into the fixture is
+        # CredentialHelper::new(url).execute(). Unlisted, it is NEW as
+        # `process` `Cred::credential_helper`. Listed as that, a switch from
+        # Cred::credential_helper to it keeps the entry matched, not STALE.
+        injected = 'fn f() { let found = CredentialHelper::new(url).execute(); }\n'
+        errors = self.run_check([], {'src/lib.rs': injected})
+        self.assertEqual(len(errors), 1)
+        self.assertTrue(errors[0].startswith('NEW   process Cred::credential_helper at src/lib.rs:1'), errors)
+        listed = self.entry(kind='process', name='Cred::credential_helper')
+        before = 'fn f() { let found = git2::Cred::credential_helper(&config, url, None); }\n'
+        self.assertEqual(self.run_check([listed], {'src/lib.rs': before}), [])
+        self.assertEqual(self.run_check([listed], {'src/lib.rs': injected}), [])
+
+
+class ReconciledCommit(unittest.TestCase):
+    """An allowlist for another repository records the commit it was reconciled against."""
+
+    def allowlist(self, directory, **fields):
+        path = Path(directory) / 'allowlist.json'
+        path.write_text(json.dumps({'roots': ['src/lib.rs'], 'entries': [], **fields}), encoding='utf-8')
+        return path
+
+    def test_only_a_full_lowercase_sha_is_accepted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            loaded, errors = checker.load_allowlist(self.allowlist(directory, reconciled_commit='a' * 40))
+            self.assertEqual((loaded.reconciled_commit, errors), ('a' * 40, []))
+            loaded, errors = checker.load_allowlist(self.allowlist(directory))
+            self.assertEqual((loaded.reconciled_commit, errors), (None, []))
+            for bad in ('46e65a9', 'A' * 40, 'g' * 40, 'a' * 41, '', 40):
+                loaded, errors = checker.load_allowlist(self.allowlist(directory, reconciled_commit=bad))
+                self.assertIsNone(loaded.reconciled_commit, bad)
+                self.assertEqual(len(errors), 1, bad)
+                self.assertIn('reconciled_commit', errors[0])
+
+    def test_reader_prints_the_commit_or_fails(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for fields, status, printed in (({'reconciled_commit': 'b' * 40}, 0, 'b' * 40 + '\n'),
+                                            ({}, 1, ''),
+                                            ({'reconciled_commit': 'b' * 12}, 1, '')):
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    result = checker.main(['--allowlist', str(self.allowlist(directory, **fields)),
+                                           '--reconciled-commit'])
+                self.assertEqual((result, stdout.getvalue()), (status, printed), fields)
+                self.assertEqual(bool(stderr.getvalue()), status != 0, fields)
+
+
+def job_steps(text, job):
+    """The step blocks of one job in a workflow: jobs sit at two spaces, steps at six."""
+    lines = text.splitlines()
+    start = lines.index(f'  {job}:')
+    end = next((i for i in range(start + 1, len(lines)) if re.match(r'  [\w-]+:', lines[i])), len(lines))
+    steps = []
+    for line in lines[start + 1:end]:
+        if line.startswith('      - '):
+            steps.append([line])
+        elif steps and (line.startswith('        ') or not line.strip()):
+            steps[-1].append(line)
+    return '\n'.join(lines[start:end]), ['\n'.join(step) for step in steps]
+
+
+def field(step, key):
+    match = re.search(rf'^ +(?:- )?{key}: *(.*)$', step, re.M)
+    return match.group(1).strip() if match else None
+
+
+class TransportPin(unittest.TestCase):
+    """B11 of Verdict-3: gwz-core's boundary job checks gwz-transport at the allowlist's commit."""
+
+    def test_reconciled_commit_is_a_full_sha(self):
+        loaded, errors = checker.load_allowlist(TRANSPORT_ALLOWLIST)
+        self.assertEqual(errors, [])
+        self.assertRegex(loaded.reconciled_commit or '', r'^[0-9a-f]{40}$')
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(checker.main(['--allowlist', str(TRANSPORT_ALLOWLIST), '--reconciled-commit']), 0)
+        self.assertEqual(stdout.getvalue(), loaded.reconciled_commit + '\n')
+
+    def test_boundary_job_checks_out_gwz_transport_at_the_reconciled_commit(self):
+        text = BOUNDARY_WORKFLOW.read_text(encoding='utf-8')
+        job, steps = job_steps(text, 'boundary')
+        checkouts = [step for step in steps if field(step, 'repository') == 'owebeeone/gwz-transport']
+        self.assertEqual(len(checkouts), 1, 'one gwz-transport checkout in the boundary job')
+        checkout = checkouts[0]
+        ref = re.fullmatch(r'\$\{\{ steps\.([\w-]+)\.outputs\.(\w+) \}\}', field(checkout, 'ref') or '')
+        self.assertIsNotNone(ref, 'the checkout takes its ref from a step output')
+        step_id, output = ref.groups()
+        readers = [step for step in steps if field(step, 'id') == step_id]
+        self.assertEqual(len(readers), 1)
+        reader = readers[0]
+        self.assertLess(steps.index(reader), steps.index(checkout))
+        self.assertIn('python scripts/checks/check_process_globals.py', reader)
+        self.assertIn(TRANSPORT_ALLOWLIST_ARG, reader)
+        self.assertIn('--reconciled-commit', reader)
+        self.assertIn(f'{output}=', reader)
+        self.assertIn('"$GITHUB_OUTPUT"', reader)
+        # Beside gwz-core, as a workspace has them, and every command runs in gwz-core.
+        self.assertIn('actions/checkout', steps[0])
+        self.assertEqual(field(steps[0], 'path'), 'gwz-core')
+        self.assertEqual(field(checkout, 'path'), 'gwz-transport')
+        self.assertEqual(field(job, 'working-directory'), 'gwz-core')
+        # The check runs over that checkout, and the job has no way to skip it.
+        runs = [step for step in steps if '--repo ../gwz-transport' in step]
+        self.assertEqual(len(runs), 1)
+        self.assertLess(steps.index(checkout), steps.index(runs[0]))
+        self.assertIn(TRANSPORT_ALLOWLIST_ARG, runs[0])
+        self.assertNotIn('--skip-transport-globals', job)
+        # The allowlist is the only place the commit is written.
+        loaded, _ = checker.load_allowlist(TRANSPORT_ALLOWLIST)
+        self.assertNotIn(loaded.reconciled_commit, text)
 
 
 class Repository(unittest.TestCase):

@@ -116,6 +116,19 @@ def cargo_env() -> dict[str, str]:
     return env
 
 
+def run_test_suite(*, cargo_root: Path):
+    """Run scripts/run_tests.py in cargo_root, naming the gwz-transport checkout.
+
+    run_tests.py checks the gwz-transport checkout beside gwz-core and fails
+    closed without one (GwzCoreSessionDesign §5.7). cargo_root may be a /tmp
+    worktree with nothing beside it, so name the checkout beside this
+    repository, unless the caller has named one already.
+    """
+    env = cargo_env()
+    env.setdefault("GWZ_TRANSPORT_CHECKOUT", str(REPO.parent / "gwz-transport"))
+    run([sys.executable, str(cargo_root / "scripts" / "run_tests.py")], cwd=cargo_root, env=env)
+
+
 def run_fmt_check(*, cargo_root: Path):
     result = run(["cargo", "fmt", "--check"], cwd=cargo_root, check=False)
     if result.returncode != 0:
@@ -712,10 +725,9 @@ def run_gates(*, cargo_root: Path, skip_regen: bool, no_test: bool):
     # version bump has landed (gate_release_publication).
     run([sys.executable, CRATE_VERSIONS, "--root", cargo_root], cwd=cargo_root)
     run_checked_boundary_gates(cargo_root=cargo_root)
-    test_env = cargo_env()
 
     if not no_test:
-        run([sys.executable, str(cargo_root / "scripts" / "run_tests.py")], cwd=cargo_root, env=test_env)
+        run_test_suite(cargo_root=cargo_root)
     else:
         log("skipping `cargo test`")
 
@@ -823,7 +835,7 @@ def main():
             if worktree is not None:
                 copy_lock_from_cargo_root(cargo_root)
             if not args.no_test:
-                run([sys.executable, str(cargo_root / "scripts" / "run_tests.py")], cwd=cargo_root, env=cargo_env())
+                run_test_suite(cargo_root=cargo_root)
             staged = [
                 str(manifest.relative_to(REPO).as_posix()) for manifest in crate_manifests()
             ]

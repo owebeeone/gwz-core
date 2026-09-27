@@ -3,6 +3,12 @@
 
 Use --compare for the migrated tests against both backends. Other arguments
 are passed to Cargo (for example --lib or --no-fail-fast).
+
+The source checks run first. gwz-transport's process-global check runs over
+the checkout that GWZ_TRANSPORT_CHECKOUT names, or else the one beside
+gwz-core; with neither, the run fails. --skip-transport-globals skips that
+check and prints SKIPPED GATE instead; only a CI job that has no gwz-transport
+checkout passes it (GwzCoreSessionDesign §5.7).
 """
 from __future__ import annotations
 
@@ -50,13 +56,47 @@ def run(mode: str, cargo_args: list[str], test_args: list[str], *, filesystem: s
     return result.returncode
 
 
-def check_transport_process_globals() -> None:
-    # gwz-core checks the gwz-transport it builds against: the checkout beside
-    # it, which tests/transport_backend/prepare.py links into the transport build.
-    transport = ROOT.parent / "gwz-transport"
-    if not transport.is_dir():
-        print("gwz-transport is not checked out beside gwz-core; its process-global check is skipped", flush=True)
+TRANSPORT_CHECKOUT = "GWZ_TRANSPORT_CHECKOUT"
+SKIP_TRANSPORT_GLOBALS = "--skip-transport-globals"
+
+
+def transport_checkout() -> Path:
+    """The gwz-transport checkout that gwz-core builds against.
+
+    GWZ_TRANSPORT_CHECKOUT names it, or else it is the checkout beside
+    gwz-core, which tests/transport_backend/prepare.py links into the
+    transport build. A named checkout that is missing is an error, never a
+    reason to look elsewhere, and so is finding neither.
+    """
+    sibling = ROOT.parent / "gwz-transport"
+    ways = (
+        "gwz-transport's process-global check needs a gwz-transport checkout: "
+        f"set {TRANSPORT_CHECKOUT}=<path>, or check gwz-transport out beside gwz-core at {sibling}"
+    )
+    named = os.environ.get(TRANSPORT_CHECKOUT)
+    if named:
+        checkout = Path(named)
+        if not checkout.is_dir():
+            raise SystemExit(f"{TRANSPORT_CHECKOUT} names {named}, which is not a directory. {ways}")
+        return checkout
+    if sibling.is_dir():
+        return sibling
+    raise SystemExit(f"no gwz-transport checkout found. {ways}")
+
+
+def check_transport_process_globals(skip: bool) -> None:
+    # gwz-core, the consumer, checks the gwz-transport it builds against;
+    # gwz-transport's own CI carries no such gate (GwzCoreSessionDesign §5.7).
+    if skip:
+        print(
+            f"SKIPPED GATE: gwz-transport process-global check ({SKIP_TRANSPORT_GLOBALS}): this run "
+            "has no gwz-transport checkout; gwz-core's boundary CI job runs the check at the "
+            "gwz-transport commit its allowlist records as reconciled_commit",
+            flush=True,
+        )
         return
+    transport = transport_checkout()
+    print(f"gwz-transport process-global check: {transport}", flush=True)
     subprocess.run(
         [
             sys.executable,
@@ -70,14 +110,21 @@ def check_transport_process_globals() -> None:
     )
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+def main(argv: list[str] | None = None) -> None:
+    # No abbreviations: a prefix such as --skip must never turn a gate off.
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--compare", action="store_true")
-    options, cargo_args = parser.parse_known_args()
+    parser.add_argument(
+        SKIP_TRANSPORT_GLOBALS,
+        action="store_true",
+        help="skip gwz-transport's process-global check and print SKIPPED GATE; "
+        "only for a CI job that has no gwz-transport checkout",
+    )
+    options, cargo_args = parser.parse_known_args(argv)
     library_args = ["--lib", *[arg for arg in cargo_args if arg != "--lib"]]
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_filesystem_boundary.py")], check=True)
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_process_globals.py")], check=True)
-    check_transport_process_globals()
+    check_transport_process_globals(options.skip_transport_globals)
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_crate_versions.py")], check=True)
     filesystem_result = run("fake", library_args, list(FILESYSTEM_CONTRACTS), filesystem="fake")
     if filesystem_result and "--no-fail-fast" not in cargo_args:
