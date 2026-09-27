@@ -5,6 +5,7 @@ Date: 2026-09-27. Status: **accepted at SHA-256 `4ec6ba33da5311921edfe15e5e7f8c9
 - So were the corrections the reviewers cleared without a further round. [Verdict-1](GwzTransportReleasePlan-Verdict-1.md) records them.
 - Revision 1 applied the [first remediation plan](GwzTransportReleasePlan-RemPlan.md) after the [first verdict](GwzTransportReleasePlan-Verdict.md).
 - On 2026-09-27 the operator adopted every recommendation in §7 (OD1–OD10).
+- Amended 2026-09-27 by [`GwzTransportReleasePlanAmendment.md`](GwzTransportReleasePlanAmendment.md). This document remains authoritative only as amended for its status block's decision record, §1's outcome and decisions, §2's scope rows and redaction list, TR1.2, TR1.3, Phase 2's new steps and TR2.6, Phase 7's exit, Phase 8's sign-off, S7.2, S7.3, S7.5, Phase 10's post-release check, §6, §7, §8 and §9.
 - Acceptance authorizes no implementation, commit, tag, push or publish.
 
 This plan replaces the [1.1.0 plan](GwzV110Plan.md), as its [amendment](GwzV110PlanAmendment.md) left it, as the plan for the next minor release. It adopts, by their IDs, the accepted steps of those documents that still hold (§4), and adds the work the operator put into the release on 2026-09-27. Superseded text in both documents stays readable.
@@ -587,3 +588,4 @@ Phase 10  S7.5 + S2.3 + TR3.2 ── release steps 1–7 ── post-release che
 ## Changelog
 
 - 2026-09-27: accepted at SHA-256 `4ec6ba33…` ([Verdict-1](GwzTransportReleasePlan-Verdict-1.md)), with the corrections it records. The operator then adopted every §7 recommendation.
+- 2026-09-27: amended by [`GwzTransportReleasePlanAmendment.md`](GwzTransportReleasePlanAmendment.md), accepted at SHA-256 `213a164b…` ([its Verdict-1](GwzTransportReleasePlanAmendment-Verdict-1.md)). It adds OD11, which the operator adopted, and OD12, which is open until TR1.3's GO. The entry above stays as the record of OD1–OD10.

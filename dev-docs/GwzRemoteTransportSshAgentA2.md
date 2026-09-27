@@ -103,3 +103,10 @@ Next: A3 supervised setup as the pool's connecting resource, observable cleanup
 failure and shutdown, physical capacity retained until disposal, and correct
 authentication observations on new versus reused connections. Production setup
 and activation, plus the deferred platform/source batch, remain separate gates.
+
+## Changelog
+
+- 2026-09-27: "Only Ed25519 and RSA SHA-256/512 are admitted in A2" describes A2
+  as accepted. After it, the transport release plan's
+  [amendment](GwzTransportReleasePlanAmendment.md), TR2.8 (OD11), admits ECDSA
+  (P-256, P-384, P-521), and the transport never offers a key it cannot sign with.

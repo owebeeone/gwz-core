@@ -2,6 +2,8 @@
 
 Date: 2026-09-21. Status: accepted architectural design for A1; no implementation,
 physical capability freeze or production activation accepted by this document.
+Amended 2026-09-27 by [`GwzTransportReleasePlanAmendment.md`](GwzTransportReleasePlanAmendment.md).
+This document remains authoritative only as amended for §5's algorithm sentence.
 
 ## 1. Decision and authority
 
@@ -283,3 +285,12 @@ No build or new experiment was run for this documentation-only review.
 
 Acceptance authorizes A1 implementation and its fake-agent tests. A2/A3 remain
 separate implementation gates. Platform/source checks remain the later batch.
+
+## Changelog
+
+- 2026-09-27: §5's sentence "Ed25519 and RSA modern-signature fixtures are
+  required; unsupported algorithms fail explicitly." is amended by the transport
+  release plan's [amendment](GwzTransportReleasePlanAmendment.md), TR2.8 (OD11):
+  ECDSA (P-256, P-384, P-521) joins Ed25519 and RSA SHA-2; a key of any other type
+  is never offered, and a remote whose agent holds one takes the native route
+  before any connection opens.
