@@ -1,6 +1,6 @@
 # GWZ 1.1.0 plan
 
-Status: **accepted at plan SHA-256 `9d49af85bd340addc1c35e6c11eefe3e4ab9f2bc2a9143b8f13f3af5a7fc8f62` after [Consistency-2](GwzV110Plan-ReviewConsistency-2.md) and [Safety-2](GwzV110Plan-ReviewSafety-2.md) reported GO; this accepts the plan text only**. The status sentence was added after that GO. Round-1 NO-GO on `a52cd7a8…` was remediated in [GwzV110Plan-RemPlan.md](GwzV110Plan-RemPlan.md). Round-2 NO-GO on `6ec8f7e7…` was remediated in [GwzV110Plan-RemPlan-1.md](GwzV110Plan-RemPlan-1.md). Writing this document does not implement, commit, tag, push, or publish.
+Status: **superseded for its release scope, phases and steps, except those [`GwzTransportReleasePlan.md`](GwzTransportReleasePlan.md) §4 adopts, by `GwzTransportReleasePlan.md` as of 2026-09-27. Historical evidence and already-completed gates remain valid only where the new document says they do**. The earlier status, kept for the record: **accepted at plan SHA-256 `9d49af85bd340addc1c35e6c11eefe3e4ab9f2bc2a9143b8f13f3af5a7fc8f62` after [Consistency-2](GwzV110Plan-ReviewConsistency-2.md) and [Safety-2](GwzV110Plan-ReviewSafety-2.md) reported GO; this accepts the plan text only**. The status sentence was added after that GO. Round-1 NO-GO on `a52cd7a8…` was remediated in [GwzV110Plan-RemPlan.md](GwzV110Plan-RemPlan.md). Round-2 NO-GO on `6ec8f7e7…` was remediated in [GwzV110Plan-RemPlan-1.md](GwzV110Plan-RemPlan-1.md). Writing this document does not implement, commit, tag, push, or publish. Amended 2026-09-26 by [`GwzV110PlanAmendment.md`](GwzV110PlanAmendment.md). This document remains authoritative only as amended for §2's scope rows and evidence rule, Phase 1, S2.2's cross-repo edges, Phase 6, S7.1, S7.2, S7.3 and the exit-row table, Phase 8 steps 2, 3 and 7 and its post-release check, the dependency sketch and its prose, §5 and the closing note.
 The product release this plan leads to is **v1.1.0** of `gwz-core`, the
 `gwz` CLI, and `gwz-py`. The published line today is **1.0.17**. When this
 plan is accepted, amend `dev-docs/CurrentProgramCheckpoint.md` so it names
@@ -444,3 +444,7 @@ S5.6, and S6. Phase 8 waits on S7.5 and S2.3.
   phase exits above.
 
 The candidate S6.3 clarification of 2026-09-24 was withdrawn when the Python concurrency design train was retired; its text is preserved in [history](history/GwzPythonSessionTrainExcerpts-20260924.md). S6.3 and the Phase 6/7 NO-GO remain open.
+
+## Changelog
+
+- 2026-09-27: superseded as the release plan by [`GwzTransportReleasePlan.md`](GwzTransportReleasePlan.md), accepted at SHA-256 `4ec6ba33…` ([Verdict-1](GwzTransportReleasePlan-Verdict-1.md)). Its §4 lists the steps it adopts from this plan.
