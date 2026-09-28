@@ -6,9 +6,9 @@ Status: complete
 
 The Python session v2 amendment and the v4 foundation draft amendment that stood here were retired with their design train on 2026-09-24. Their text is preserved in [history](history/GwzPythonSessionTrainExcerpts-20260924.md). A [clean-slate proposal](../../dev-docs/GwzClientCoreTransportProposals.md) for the client, core and transport boundary replaces them.
 
-## Core session host amendment (2026-09-24; DRAFT, design review pending)
+## Core session host amendment (2026-09-24; implementation pending)
 
-The draft [core session contract](../../dev-docs/GwzCoreSessionDesign.md), at revision 4, proposes these requirements. They are not baseline until its review reports GO.
+The accepted [core session contract](../../dev-docs/GwzCoreSessionDesign.md), at revision 5, adds these requirements to the baseline. It is not a claim that the existing implementation already meets them.
 
 - gwz-cli and gwz-py MUST reach core's operations only through the session protocol's frames. Direct in-process embedding of the library remains supported (REQ-010, REQ-011). The same client and core code MUST work over the in-process adapter and over a byte stream.
 - The session host MUST own each call from receipt and MUST send exactly one reply per call. A call whose call ID is not greater than every earlier call ID in the session MUST end the session. The host MUST own each operation from admission until release, eviction or session end.
@@ -21,6 +21,22 @@ The draft [core session contract](../../dev-docs/GwzCoreSessionDesign.md), at re
 - Admission MUST refuse, before any effect, a request it cannot hold, and MUST NOT evict an operation record before every view of its result has been delivered or the record has been released. Control frames and reads MUST NOT wait for admission.
 - Closing a session MUST cancel its operations, wait for their workers up to the close bound, revoke the gates of any that remain, mark their results as detached and report them. Sessions sharing the host context MUST wait for a detached worker before touching its workspace or member.
 - Additions to the GWZ Taut schema MUST be append-only.
+
+## Core server amendment (2026-09-28; implementation pending)
+
+The accepted [server design](../../dev-docs/GwzCoreServerDesign.md) adds these requirements to the baseline. It is not a claim that the existing implementation already meets them.
+
+- A server MUST be opt-in. Without `--server` or `GWZ_SERVER`, gwz-cli and gwz-py MUST run core in-process as before, and core MUST NOT start a server or daemon on its own; REQ-011 stands, and daemon use MUST NOT be required. A command that asked for a server MUST fail, naming its cause and `--no-server`, when the server cannot be used, and MUST NOT fall back to in-process (design §1, §7).
+- A server MUST open sessions only for the same user, on the same machine, from outside any sandbox. The host MUST read each peer's credentials before it reads a byte, and MUST refuse another user, a sandboxed peer and a peer whose check cannot be made. A sandboxed caller that asks for a socket server or the stdio local form MUST be refused before any connect or start, and `server start` MUST refuse inside a sandbox it detects (design §4).
+- A client MUST NOT send any byte of its environment snapshot before it has verified the listener's user, sandbox and process and holds a well-formed `SessionHello` whose versions it accepts. The snapshot MUST cross a byte stream once, in `SessionOpen`, and the host MUST zeroize it when the session ends (design §3, §4).
+- A command run through a server MUST behave as the same command run in the client's own process, or be refused. Each value in the design's must-match set MUST equal the server's, or the session or operation MUST be refused with `server_environment_mismatch`, naming the value and never its content; the server's value MUST NOT silently replace the client's (design §5).
+- Every address MUST be parsed before any open. `--server`, `GWZ_SERVER` and `SocketCoreBridge` MUST accept only the design's forms, and a refused form MUST NOT reach the file system, a pipe or the network. On Linux and macOS the path MUST be walked component by component, with no probe that follows a symbolic link or triggers a mount, and MUST be refused at an automount point or on a network or FUSE file system (design §3).
+- Every file the host creates or opens in its per-user directory or at `--log`, the lock and the log among them, MUST be opened without following a link or reparse point, and used only if it is a regular file the user owns, which on Linux and macOS has no group or other permission bits; the log MUST only be appended to. The host MUST NOT remove a socket it finds at an address unless a connection to it is refused and the lock file beside it holds a record naming exactly that socket (design §4).
+- A child process MUST NOT inherit the stdio mode's stream, at either end. A copy of a CLI that the CLI or `SocketCoreBridge` starts MUST be that CLI's own program, gwz's own executable or gwz-py's own interpreter on `gwz.cli`, never the `gwz` executable for gwz-py, and MUST receive no descriptor or handle beyond its standard streams (design §6, §15).
+- The SSH remote form MUST send no environment, and its session MUST use the remote process's own environment. `ssh` MUST be resolved through `PATH` alone and run directly, never through a shell, with `--` before the destination and a fixed remote command. The form MUST come from `--server` only, never from `GWZ_SERVER`, the library or a configuration file (design §16).
+- A client's wait for a socket server or a stdio child MUST be bounded: its handshake, the connect included, MUST end within the design's bound with `server_unavailable` naming the process, so a server that stops answering cannot hang a command or a `server` subcommand (design §3).
+- A server's log MUST NOT contain environment values, request bodies, credentials, remote URLs or repository names (design §6).
+- Additions to the GWZ Taut schema MUST be append-only: the handshake and control frames at tags 4 to 8, and error codes 77 to 83 after `operation_expired` (76) (design §9).
 
 ## Sequenced virtual-stream amendment (2026-09-24; implementation pending)
 

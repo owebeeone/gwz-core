@@ -4,6 +4,12 @@ Date: 2026-09-21. Status: accepted local integration after retained Code/State G
 Authority: accepted helper design A3 and accepted A1/A2. Local integration only;
 production discovery/routing activation and deferred platform/source batch remain
 separate gates. No CLI/core message or gwz-transport schema changes.
+Amended 2026-09-28 by
+[`GwzConnectionReuseDesign.md`](../../dev-docs/GwzConnectionReuseDesign.md).
+This document remains authoritative only as amended for its single-origin
+sentence: the worker and connector share one origin on the endpoint instance's
+clock. Its cleanup-error sentence is read as closing admission without an
+immediate worker stop, so that active exchanges drain (that design's §8).
 
 ## Refined ownership boundary
 
@@ -111,3 +117,15 @@ setup (discovery/connect/handshake/trust and explicit-key handling), followed by
 backend operation-sink and all-network-entry attachment. The deferred platform/
 selected-source batch remains required before capability activation. No production
 routing or dependency activation is claimed.
+
+## Changelog
+
+- 2026-09-28: amended by the
+  [connection reuse design](../../dev-docs/GwzConnectionReuseDesign.md) §7, §8
+  and §13, accepted at SHA-256 `e8ee63f8…`. "The worker and connector share one
+  Instant origin" becomes one origin on the instance's clock, which includes
+  suspended time where the platform has such a clock. "A worker cleanup error
+  closes endpoint admission and is sticky in its shutdown status" is read as
+  closing admission without stopping the worker at once, so exchanges already
+  active run to their own terminal. A fault that ends the worker's thread still
+  stops the instance.

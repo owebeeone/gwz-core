@@ -6,6 +6,9 @@ The decisions in §7 replace the previously open alternatives. The companion
 [design](GwzRemoteTransportDesign.md) specifies the proposed implementation;
 its tuning values and library qualification items are identified separately
 from accepted behaviour. No implementation or new performance result is claimed.
+Amended 2026-09-28 by
+[`GwzConnectionReuseDesign.md`](../../dev-docs/GwzConnectionReuseDesign.md).
+This document remains authoritative only as amended for C3.
 
 ## 1. Purpose
 
@@ -352,3 +355,13 @@ settings. These are bounded implementation decisions, not a reopening of D7–D1
 No repository relocation, implementation, generated schema change or experiment
 is part of this documentation revision. Future measurements must follow the
 workspace `EVIDENCE.md`; the original prototype figures in §3 are historical.
+
+## Changelog
+
+- 2026-09-28: C3's "Existing SSH connections are authenticated sessions, not a
+  fresh host-trust or credential check on every lease." gains an exception from
+  the [connection reuse design](../../dev-docs/GwzConnectionReuseDesign.md) §4
+  and §13, accepted at SHA-256 `e8ee63f8…`. A lease across operations re-checks
+  host trust and proves possession of the connection's key locally. The server
+  never re-authenticates, and a different configuration selects another
+  endpoint instance.

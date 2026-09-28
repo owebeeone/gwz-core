@@ -4,6 +4,10 @@ Date: 2026-09-21. Status: accepted architectural design for A1; no implementatio
 physical capability freeze or production activation accepted by this document.
 Amended 2026-09-27 by [`GwzTransportReleasePlanAmendment.md`](GwzTransportReleasePlanAmendment.md).
 This document remains authoritative only as amended for §5's algorithm sentence.
+Amended 2026-09-28 by
+[`GwzConnectionReuseDesign.md`](../../dev-docs/GwzConnectionReuseDesign.md).
+This document remains authoritative only as amended for §2's list of agent
+operations.
 
 ## 1. Decision and authority
 
@@ -294,3 +298,9 @@ separate implementation gates. Platform/source checks remain the later batch.
   ECDSA (P-256, P-384, P-521) joins Ed25519 and RSA SHA-2; a key of any other type
   is never offered, and a remote whose agent holds one takes the native route
   before any connection opens.
+- 2026-09-28: §2's "only the agent operations needed for authentication: list
+  public keys and sign" adds the possession proof of the
+  [connection reuse design](../../dev-docs/GwzConnectionReuseDesign.md) §4,
+  accepted at SHA-256 `e8ee63f8…`. At a lease across operations, the agent
+  signs a fresh random nonce with the connection's key under a fixed gwz SSHSIG
+  namespace, which cannot stand in for an authentication signature.

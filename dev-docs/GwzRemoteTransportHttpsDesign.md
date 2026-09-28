@@ -9,6 +9,9 @@ routes, freeze a new public constructor/command, or qualify physical CLI/core wi
 Authority: [Requirements G4/C8/P4](GwzRemoteTransportRequirements.md),
 [Design §§3,9,10](GwzRemoteTransportDesign.md), and
 [Plan Phase5](GwzRemoteTransportPlan.md). Accepted placement A/B/C remains intact.
+Amended 2026-09-28 by
+[`GwzConnectionReuseDesign.md`](../../dev-docs/GwzConnectionReuseDesign.md).
+This document remains authoritative only as amended for §4, §5 and §6.
 
 ## 1. Outcome and ownership
 
@@ -490,3 +493,16 @@ closure tests. This acceptance does not close Placement C's cleanup-accounting
 P3; that remains assigned to H2. Platform and selected-source checks stay in the
 operator-deferred batch; production activation, physical wire/iroh and release
 are separate.
+
+## Changelog
+
+- 2026-09-28: amended by the
+  [connection reuse design](../../dev-docs/GwzConnectionReuseDesign.md) §13,
+  accepted at SHA-256 `e8ee63f8…`.
+  - §4: `gh` uses the requesting session's environment snapshot, per request,
+    instead of a snapshot taken at runtime construction.
+  - §5: a session with a different configuration selects or builds another
+    endpoint instance. The old instance's connections are never used under the
+    new configuration; they expire or are disposed with their instance.
+  - §6: the shared authority reserves before connect and evicts idle entries
+    across schemes.

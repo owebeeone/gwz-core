@@ -18,6 +18,9 @@ this document. Policy decisions are recorded there as D1–D15. This document
 makes the implementation concrete; library selection and tuning proposals are
 called out in §12. [GWZDesign.md](GWZDesign.md) incorporates the direction as a
 planned transport amendment.
+Amended 2026-09-28 by
+[`GwzConnectionReuseDesign.md`](../../dev-docs/GwzConnectionReuseDesign.md).
+This document remains authoritative only as amended for §7.1 and §7.2.
 
 ## 1. Boundary and outcome
 
@@ -873,3 +876,17 @@ revision.
   facts to recheck if the dependency changes. The libgit2 1.9.7
   `include/git2/remote.h` callback struct supplies the per-remote transport hook;
   adding its safe Rust binding is a prerequisite, not completed work.
+
+## Changelog
+
+- 2026-09-28: amended by the
+  [connection reuse design](../../dev-docs/GwzConnectionReuseDesign.md) §13,
+  accepted at SHA-256 `e8ee63f8…`.
+  - §7.1's "They do not reauthenticate or re-read known_hosts on every lease.
+    Endpoint shutdown/reconfiguration clears the pool" gains the exception the
+    requirements' C3 gains: a lease across operations re-checks host trust and
+    proves possession of the connection's key locally, the server never
+    re-authenticates, and a different configuration selects another endpoint
+    instance.
+  - §7.2, as the retry plan's §3 item 7 replaced it, is replaced by that
+    design's §5.

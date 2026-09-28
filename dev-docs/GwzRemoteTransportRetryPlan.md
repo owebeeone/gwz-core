@@ -12,6 +12,9 @@ one blocking supersession gap. The current bounded correction is mapped in
 [RemPlan-2](GwzRemoteTransportRetryPlan-RemPlan-2.md), following
 [RemPlan-1](GwzRemoteTransportRetryPlan-RemPlan-1.md). All three axes verified the corrected text; their Review*-3 reports are
 the acceptance evidence.
+Amended 2026-09-28 by
+[`GwzConnectionReuseDesign.md`](../../dev-docs/GwzConnectionReuseDesign.md).
+This document remains authoritative only as amended for §3 item 7, §6 and S1.4.
 
 ## 1. Outcome
 
@@ -464,4 +467,19 @@ not authorize the code, an alpha rebuild, a commit, or a tag.
 
 ## Candidate Python concurrency amendment (withdrawn 2026-09-24)
 
-The candidate amendment that stood here was withdrawn when the Python concurrency design train was retired; its text is preserved in [history](history/GwzPythonSessionTrainExcerpts-20260924.md). §3 item 7, §6 and S1.4 stand as written.
+The candidate amendment that stood here was withdrawn when the Python concurrency design train was retired; its text is preserved in [history](history/GwzPythonSessionTrainExcerpts-20260924.md). §3 item 7, §6 and S1.4 stood as written until the connection reuse design amended them for the transport host on 2026-09-28.
+
+## Changelog
+
+- 2026-09-28: amended by the
+  [connection reuse design](../../dev-docs/GwzConnectionReuseDesign.md) §13,
+  accepted at SHA-256 `e8ee63f8…`. For the transport host, its §5 replaces the
+  rule of §3 item 7, §6 and S1.4 that installs an operation's caps at its start
+  and refuses an operation while a lease is non-idle. Each request carries its
+  operation's limits, counted per operation, within the endpoint instance's
+  physical ceilings; nothing is installed or refused for differing limits.
+  S1.4's removal of the 4096 and 16384 bounds, and `Config::default`'s 32 and
+  32, stand. §5's Cold state reads as that design's §9 says: members wait only
+  to open a new connection, and may lease an eligible idle one. The note on the
+  withdrawn Python concurrency amendment, that §3 item 7, §6 and S1.4 "stand as
+  written", now says they stood until this amendment.

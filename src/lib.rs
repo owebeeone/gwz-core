@@ -52,6 +52,10 @@ cfg_if::cfg_if! {
     }
 }
 pub mod runtime;
+// CS1.4 and CS1.5 (gwz-dev dev-docs/GwzCoreSessionPlan.md): the core session
+// contract's host and session contexts, operation gates, limits, `open` and
+// endpoint environment snapshot. Frozen interfaces; nothing calls them yet.
+pub mod session_host;
 pub mod stash;
 pub mod status;
 // M5d step (3) (dev-docs/GwzM5-8M5d-Charter.md §3/§4): the NEUTRAL home of the

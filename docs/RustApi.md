@@ -16,6 +16,7 @@ operations.
 | `operation` | Operation runtime, events, aggregate/member execution helpers, concurrency helpers, and response envelope helpers. |
 | `protocol` | Generated taut protocol module and conversion helpers. |
 | `runtime` | Clock and id helpers. |
+| `session_host` | The core session host's frozen foundations (see "Session Host" below): `HostContext`, `EnvironmentSnapshot`, `Limits` with `MAX_READ_WAIT` and `MAX_FRAME_BYTES`, `SessionOptions`, `open` and `ClientChannel`. Nothing calls them yet. |
 | `status` | `handle_status` and status projections. |
 | `workspace` | Workspace path parsing, discovery, and create preflight. |
 | `workspace_ops` | Synchronous operation handlers. |
@@ -119,6 +120,65 @@ new wire request type.
 
 `ExecRequest`, `ExecResponse`, and `ExecResult` are generated types for CLI
 support. They have no `gwz-core` service method and no core handler.
+
+## Session Host
+
+`session_host` holds the first interfaces of the core session host that the
+core session contract specifies (gwz-dev `dev-docs/GwzCoreSessionDesign.md`,
+built by steps CS1.4 and CS1.5 of `dev-docs/GwzCoreSessionPlan.md`). A driver
+opens a session with them. The channel's `send` and `recv` arrive with CS1.2,
+so a session cannot carry calls yet.
+
+```rust
+use gwz_core::session_host::{EnvironmentSnapshot, HostContext, SessionOptions, open};
+
+let host = HostContext::new(); // one per driver process, shared by its sessions
+// The driver reads its own environment, once, at its edge; core never does.
+let environment = EnvironmentSnapshot::from_os_pairs(std::env::vars_os())?;
+let mut options = SessionOptions::new(host.clone(), environment);
+options.limits.running_operations = 4; // `open` validates the limits
+let channel = open(options)?; // the client end of the in-process channel
+```
+
+- `HostContext` holds what one driver's sessions share (contract §5.6). A
+  clone is another handle to the same context; sessions keep theirs, and core
+  keeps none in a static. It starts its supervisor thread only for its first
+  job, and once every handle is gone the thread stops when each job has
+  finished or, having panicked, been set aside. Dropping it does not wait.
+- `EnvironmentSnapshot` is the session's endpoint environment (§5.6). Core
+  never reads the process environment: the driver reads it at its edge and
+  passes the pairs in. A Rust driver passes `std::env::vars_os()` to
+  `from_os_pairs`, as above. `from_byte_pairs` takes byte-string pairs, from a
+  driver such as the Python bridge: raw bytes on POSIX, WTF-8 on Windows, so
+  non-UTF-8 bytes and unpaired surrogates survive. Both refuse an entry no
+  environment can hold (an empty name, a NUL, or `=` after a name's first
+  character, and, for `from_byte_pairs` on Windows, bytes that are not WTF-8)
+  with `invalid_request`, naming only the entry's index. A repeated name keeps
+  its first value. Names compare byte for byte on POSIX, and on Windows
+  ordinally ignoring case, as the OS and std's `Command` compare them. The
+  snapshot is secret-bearing: its `Debug` output is its entry count, and it
+  has no `Display` or serialization. It overwrites its own buffers when it
+  drops with the session; the copies that std's `Command` and the OS make for
+  a child are outside it.
+- `Limits` carries the contract's §1 limits and defaults: 8 running and 64
+  queued operations, a 128-entry operation table, 8 direct workers, 4096
+  events per operation log, 64 open logs, 1024 outstanding calls, a 64-frame
+  control reserve, 1 MiB per read and a 60-second close wait.
+  `MAX_READ_WAIT` (30 seconds) and `MAX_FRAME_BYTES` (64 MiB) are fixed.
+  `open` refuses with `invalid_request`, before any effect, an operation
+  table smaller than the running plus the queued operations. It also refuses
+  a count below 1, an event log below 2, queue sizes that overflow, a read
+  size above 32 MiB and a close wait above one hour. A read may use half the
+  frame: the read path counts each record's encoded size against
+  `read_bytes`, so a reply is at most `read_bytes` plus its envelope, which
+  the frame's other half bounds. A close wait of zero detaches every running
+  worker at once.
+- `SessionOptions` carries the host context, the snapshot and the limits.
+  Build it with `SessionOptions::new`; the type is `non_exhaustive`, and so is
+  `Limits`.
+- `open(options)` validates the limits, then creates the session's context on
+  the calling thread and returns a `ClientChannel`. Dropping the
+  `ClientChannel` ends the session and drops its context, snapshot included.
 
 ## Backend Injection
 

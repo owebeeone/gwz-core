@@ -91,7 +91,7 @@ libc = "0.2"
 rustix = { version = "1", features = ["fs"] }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 libgit2-sys = { package = "gwz-libgit2-sys", path = "../git2-rs/libgit2-sys", version = "=0.18.8" }

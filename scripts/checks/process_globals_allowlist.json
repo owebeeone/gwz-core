@@ -51,6 +51,8 @@
      "reason": "Resolves '~/' identity paths against the process home directory at the point of use; take it from the captured session/request context (RemPlan B5)."},
     {"path": "src/operation/commit_log/mod.rs", "kind": "process", "name": "Command::new(\"git\")", "disposition": "debt",
      "reason": "The commit-log path walk's git rev-list inherits the live process environment; spawn it with env_clear() plus the session's snapshot (GwzCoreSessionDesign RemPlan-1, Safety P3-11)."},
+    {"path": "src/session_host/gate.rs", "kind": "thread_local", "name": "CROSSING", "disposition": "permanent",
+     "reason": "Whether this thread is running a gate crossing's closure or a cancel callback, where crossing or revoking a gate panics instead of deadlocking (session plan CS1.4, S-P3-3). Set only for that closure's run and restored after it; no session state."},
     {"path": "src/transport_host/local_command.rs", "kind": "env", "name": "env::vars_os", "disposition": "debt",
      "reason": "with_local_transport snapshots the whole process environment inside core; the driver must capture it and pass it in (RemPlan B5)."},
     {"path": "src/transport_host/mod.rs", "kind": "env", "name": "env::var_os", "count": 2, "disposition": "debt",

@@ -122,11 +122,18 @@ def run_test_suite(*, cargo_root: Path):
     run_tests.py checks the gwz-transport checkout beside gwz-core and fails
     closed without one (GwzCoreSessionDesign §5.7). cargo_root may be a /tmp
     worktree with nothing beside it, so name the checkout beside this
-    repository, unless the caller has named one already.
+    repository, unless the caller has named one already. Such a worktree has
+    no gwz-cli or gwz-py beside it either, and the release gates gwz-core, so
+    the conditional-compilation check covers gwz-core alone and prints
+    SKIPPED GATE for the two (--skip-cfg-siblings, GwzCoreSessionPlan CS1.7).
     """
     env = cargo_env()
     env.setdefault("GWZ_TRANSPORT_CHECKOUT", str(REPO.parent / "gwz-transport"))
-    run([sys.executable, str(cargo_root / "scripts" / "run_tests.py")], cwd=cargo_root, env=env)
+    run(
+        [sys.executable, str(cargo_root / "scripts" / "run_tests.py"), "--skip-cfg-siblings"],
+        cwd=cargo_root,
+        env=env,
+    )
 
 
 def run_fmt_check(*, cargo_root: Path):

@@ -5,6 +5,10 @@ Authority: GwzRemoteTransportDesign.md §§6–7, accepted SSH worker and agent
 A1/A2/A3. This refines the later production-setup boundary in
 GwzRemoteTransportSshAgentDesign.md §2. It does not activate production routing,
 change CLI/core messages, or waive the operator-deferred platform/source batch.
+Amended 2026-09-28 by
+[`GwzConnectionReuseDesign.md`](../../dev-docs/GwzConnectionReuseDesign.md).
+This document remains authoritative only as amended for Host trust's sentence
+on pooled sessions.
 
 ## Ownership and operating-system admission
 
@@ -189,3 +193,11 @@ physical resource. A new token for different bytes cannot match an old connectio
 a candidate becomes proven only after joined live native authentication. It also extends the retained
 endpoint owner to cover admission Jobs before pool entries exist. The new file
 and aggregate bounds are explicitly reflected in G1; no public/wire API changes.
+
+## Changelog
+
+- 2026-09-28: Host trust's "Already authenticated pooled sessions retain their
+  trust until disposal" gains the exception of the
+  [connection reuse design](../../dev-docs/GwzConnectionReuseDesign.md) §4 and
+  §13, accepted at SHA-256 `e8ee63f8…`: a lease across operations re-checks
+  host trust and proves possession of the connection's key locally.

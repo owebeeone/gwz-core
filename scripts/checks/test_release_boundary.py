@@ -177,10 +177,21 @@ class ReleaseBoundaryTest(unittest.TestCase):
                 mock.patch.object(release, "run_checked_boundary_gates"),
             ):
                 release.run_gates(cargo_root=worktree, skip_regen=True, no_test=False)
-            suites = [call for call in run.call_args_list if str(call.args[0][-1]).endswith("run_tests.py")]
+            suites = [call for call in run.call_args_list
+                      if any(str(part).endswith("run_tests.py") for part in call.args[0])]
             self.assertEqual(len(suites), 1)
             self.assertEqual(suites[0].kwargs["cwd"], worktree)
             self.assertEqual(suites[0].kwargs["env"]["GWZ_TRANSPORT_CHECKOUT"], named)
+
+    def test_release_tests_skip_the_cfg_siblings_the_worktree_lacks(self) -> None:
+        # Nor are gwz-cli and gwz-py beside that worktree, and the release
+        # gates gwz-core, so the conditional-compilation check covers gwz-core
+        # alone and prints SKIPPED GATE for the two (GwzCoreSessionPlan CS1.7).
+        with mock.patch.object(release, "run") as run, mock.patch.object(release, "cargo_env", return_value={}):
+            release.run_test_suite(cargo_root=Path("/tmp/gwz-core-v1.2.3-1/gwz-core"))
+        command = [str(part) for part in run.call_args.args[0]]
+        self.assertTrue(command[1].endswith("run_tests.py"), command)
+        self.assertEqual(command[2:], ["--skip-cfg-siblings"])
 
     def test_release_runs_the_test_suite_only_through_that_helper(self) -> None:
         # Both release test runs, before the version bump and after it, go

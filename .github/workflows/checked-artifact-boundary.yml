@@ -68,6 +68,22 @@ jobs:
       - name: Per-commit lane gate over the pushed range
         if: github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000'
         run: bash scripts/checks/check_lane_commits.sh "${{ github.event.before }}" "${{ github.sha }}"
+      - name: Conditional-compilation allowlist only shrinks
+        # CS1.7 (Safety P3-3): a change may drop entries from
+        # cfg_boundaries_allowlist.json or lower their counts, never add or
+        # raise them. The base is the pull request's base commit, or the
+        # commit the push replaced. A base without the list passes once, in
+        # the change that creates it; a base commit this clone lacks fails.
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.event.before != '0000000000000000000000000000000000000000')
+        env:
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          git rev-parse --verify "$BASE_SHA^{commit}"
+          base="$RUNNER_TEMP/cfg_boundaries_allowlist.base.json"
+          if git cat-file -e "$BASE_SHA:scripts/checks/cfg_boundaries_allowlist.json" 2>/dev/null; then
+            git show "$BASE_SHA:scripts/checks/cfg_boundaries_allowlist.json" > "$base"
+          fi
+          python scripts/checks/check_cfg_boundaries.py --shrink-from "$base"
       - name: Install Rust toolchain
         run: |
           rustup toolchain install 1.95.0 --profile minimal --component clippy
@@ -77,7 +93,10 @@ jobs:
           python scripts/checks/check_checked_artifact_boundaries.py
           python scripts/checks/check_filesystem_boundary.py
           python scripts/checks/check_process_globals.py
-          python -m unittest scripts/checks/test_check_filesystem_boundary.py scripts/checks/test_run_tests_filesystem_mode.py scripts/checks/test_run_tests_transport_globals.py scripts/checks/test_check_process_globals.py
+          # CS1.7: gwz-cli and gwz-py are not checked out here, so this job
+          # checks gwz-core's conditional-compilation boundaries alone.
+          python scripts/checks/check_cfg_boundaries.py --skip-repo gwz-cli --skip-repo gwz-py
+          python -m unittest scripts/checks/test_check_filesystem_boundary.py scripts/checks/test_run_tests_filesystem_mode.py scripts/checks/test_run_tests_transport_globals.py scripts/checks/test_check_process_globals.py scripts/checks/test_check_cfg_boundaries.py
           python -m unittest scripts/checks/test_release_boundary.py -v
           # The release script's internal-version bump (plan S1.5) and the
           # crates.io publisher the release workflow runs (S2.1). This job

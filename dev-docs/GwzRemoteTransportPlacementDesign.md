@@ -10,6 +10,9 @@ One consolidated correction; all blocking findings closed. Nonblocking Surface
 P3-1 (port direction/tuple labeling) is assigned to batch A's documentation fixture
 before publication. Exact unchanged member pins are in the reports.
 This admits Phase 4 implementation, not production activation or a new carrier.
+Amended 2026-09-28 by
+[`GwzConnectionReuseDesign.md`](../../dev-docs/GwzConnectionReuseDesign.md).
+This document remains authoritative only as amended for §2.
 
 ## Operator scope clarification — 2026-09-22
 
@@ -428,3 +431,18 @@ one committed tuple. Two merged remediation rounds maximum, same reviewers.
 Acceptance admits A/B implementation only; code, carrier and platform proofs are
 not supplied by a design GO. A changed public field/tag, path authority, failure
 meaning, cap, or host delivery assumption requires amendment before implementation.
+
+## Changelog
+
+- 2026-09-28: §2 is amended by the
+  [connection reuse design](../../dev-docs/GwzConnectionReuseDesign.md) §13,
+  accepted at SHA-256 `e8ee63f8…`. The host context's registry creates endpoint
+  instances per endpoint configuration, not a runtime per backend family, and
+  each operation has its own binding. Separate operations and clients have
+  separate binding namespaces; clients whose sessions derive equal configuration
+  share instances through their host context. A replacement binding has a new
+  session ID and inherits no lease, message or exchange. It may attach to an
+  existing instance of equal configuration and use its idle connections after
+  that design's §4 checks. Healthy pooling survives bindings, not an instance's
+  disposal. The embedding guide (`docs/TransportPlacement.md`) changes with the
+  step that builds the registry (that design's C4).

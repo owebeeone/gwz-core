@@ -39,8 +39,10 @@ jobs:
         shell: bash
         # gwz-core alone is checked out, so gwz-transport's process-global
         # check is skipped (SKIPPED GATE); the checked-artifact boundary job
-        # runs it (GwzCoreSessionDesign §5.7).
-        run: python scripts/run_tests.py --skip-transport-globals --no-fail-fast 2>&1 | tee windows-matrix.log || true
+        # runs it (GwzCoreSessionDesign §5.7). The conditional-compilation
+        # check likewise skips gwz-cli and gwz-py, which no gwz-core job
+        # checks out (GwzCoreSessionPlan CS1.7).
+        run: python scripts/run_tests.py --skip-transport-globals --skip-cfg-siblings --no-fail-fast 2>&1 | tee windows-matrix.log || true
       - name: Summarize failures
         shell: bash
         run: |

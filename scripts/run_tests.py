@@ -9,6 +9,11 @@ the checkout that GWZ_TRANSPORT_CHECKOUT names, or else the one beside
 gwz-core; with neither, the run fails. --skip-transport-globals skips that
 check and prints SKIPPED GATE instead; only a CI job that has no gwz-transport
 checkout passes it (GwzCoreSessionDesign §5.7).
+
+The conditional-compilation boundary check covers gwz-core and the gwz-cli and
+gwz-py checkouts beside it; with either missing, the run fails.
+--skip-cfg-siblings checks gwz-core alone and prints SKIPPED GATE for the two
+siblings; only a CI job that has neither checkout passes it (CS1.7).
 """
 from __future__ import annotations
 
@@ -110,6 +115,17 @@ def check_transport_process_globals(skip: bool) -> None:
     )
 
 
+SKIP_CFG_SIBLINGS = "--skip-cfg-siblings"
+CFG_SIBLINGS = ("gwz-cli", "gwz-py")
+
+
+def check_cfg_boundaries(skip_siblings: bool) -> None:
+    # The checker fails when a sibling named in its allowlist is not checked
+    # out; skipping one makes it print SKIPPED GATE instead.
+    skips = [arg for name in CFG_SIBLINGS for arg in ("--skip-repo", name)] if skip_siblings else []
+    subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_cfg_boundaries.py"), *skips], check=True)
+
+
 def main(argv: list[str] | None = None) -> None:
     # No abbreviations: a prefix such as --skip must never turn a gate off.
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
@@ -120,10 +136,17 @@ def main(argv: list[str] | None = None) -> None:
         help="skip gwz-transport's process-global check and print SKIPPED GATE; "
         "only for a CI job that has no gwz-transport checkout",
     )
+    parser.add_argument(
+        SKIP_CFG_SIBLINGS,
+        action="store_true",
+        help="check conditional-compilation boundaries in gwz-core alone and print SKIPPED GATE "
+        "for gwz-cli and gwz-py; only for a CI job that has neither checkout",
+    )
     options, cargo_args = parser.parse_known_args(argv)
     library_args = ["--lib", *[arg for arg in cargo_args if arg != "--lib"]]
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_filesystem_boundary.py")], check=True)
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_process_globals.py")], check=True)
+    check_cfg_boundaries(options.skip_cfg_siblings)
     check_transport_process_globals(options.skip_transport_globals)
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_crate_versions.py")], check=True)
     filesystem_result = run("fake", library_args, list(FILESYSTEM_CONTRACTS), filesystem="fake")

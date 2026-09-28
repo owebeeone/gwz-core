@@ -4,6 +4,8 @@ Date: 2026-09-27. Status: **accepted at SHA-256 `213a164b79b7e46ce3855c699b491dc
 - This status sentence was added after that GO.
 - So were the corrections the reviewers cleared without a further round. [Verdict-1](GwzTransportReleasePlanAmendment-Verdict-1.md) records them.
 - Revision 1 applied the [first remediation plan](GwzTransportReleasePlanAmendment-RemPlan.md) after the [first verdict](GwzTransportReleasePlanAmendment-Verdict.md).
+- On 2026-09-28 the operator decided OD12: yes. §3.11's "If yes" edits apply, as the changelog records.
+- Amended 2026-09-28 by [`GwzCoreServerDesign.md`](../../dev-docs/GwzCoreServerDesign.md). This document remains authoritative only as amended for §3.4's Linux probe, macOS probe and `/net` sentences, and §3.6's macOS rows. The operator signed off the four clauses on 2026-09-28.
 - Acceptance authorizes no implementation, commit, tag, push or publish.
 
 This amendment controls the [transport release plan](GwzTransportReleasePlan.md), and one sentence of the [SSH agent design](GwzRemoteTransportSshAgentDesign.md).
@@ -375,3 +377,17 @@ It gains: one command through the stdio mode's local client form.
 
 - 2026-09-27: revision 0 at SHA-256 `9ef88e44…` reviewed. Both axes reported NO-GO ([Verdict](GwzTransportReleasePlanAmendment-Verdict.md)).
 - 2026-09-27: revision 1 applied the [first remediation plan](GwzTransportReleasePlanAmendment-RemPlan.md), and was accepted at SHA-256 `213a164b…` ([Verdict-1](GwzTransportReleasePlanAmendment-Verdict-1.md)), with the corrections Verdict-1 records. OD11 is adopted. OD12 is open; its answer, and the list applied, will be recorded here.
+- 2026-09-28: OD12: yes, decided by the operator at the GO of TR1.3's [server design](../../dev-docs/GwzCoreServerDesign.md) ([its Verdict-1](../../dev-docs/GwzCoreServerDesign-Verdict-1.md)). §3.11's "If yes" edits apply as written there:
+  - §3.1's replacement for the plan's line 23 reads "`gwz server` and `gwz-py server` from the server design, reached with `--server` and `SocketCoreBridge`, and the server's stdio mode and its SSH remote form (TR1.3);";
+  - the plan's decisions list gains "OD12: yes, 2026-09-28";
+  - in §3.1's replacement of line 7 and §3.11's replacement of line 508, "OD12 is open." becomes "OD12: yes, 2026-09-28.";
+  - the server design's §8 amends the contract's §1 exclusion "remote deployment" to read "remote deployment, other than the SSH remote form of the server's stdio mode";
+  - §3.2's server row and §3.13's first bullet read as §3.11 gives them, and §3.13's line-561 replacement applies as written;
+  - Phase 7's exit gains the rows the server design's §16 question 8 lists;
+  - S7.2's notes cover the form and the risk of forwarding an agent;
+  - S7.3 runs one CLI network operation through the form against a disposable loopback `sshd` on Linux, and Phase 10's post-release check repeats it on one host with a disposable `sshd`.
+- 2026-09-28: amended by the [server design](../../dev-docs/GwzCoreServerDesign.md) §8, accepted at SHA-256 `9fc80261…`, with the operator's sign-off.
+  - §3.4's Linux probe is corrected: `STATX_ATTR_AUTOMOUNT` never marks an autofs trigger, so the file-system type check stays beside it.
+  - §3.4's macOS probe is corrected: an `open`, whatever its flags, mounts a direct-map trigger, so `getattrlistat` probes first.
+  - §3.4's `/net` sentence is corrected: macOS has shipped `/net` disabled since autofs-281.0.3, and the default auto_home map remains.
+  - §3.6's macOS rows use the auto_home map through `/home`, plus a disposable runner with `/net` and a direct map enabled.

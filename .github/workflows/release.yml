@@ -86,8 +86,10 @@ jobs:
       - name: Test
         # This job checks out gwz-core alone, so it skips gwz-transport's
         # process-global check, printing SKIPPED GATE; the checked-artifact
-        # boundary job runs that check (GwzCoreSessionDesign §5.7).
-        run: python scripts/run_tests.py --skip-transport-globals
+        # boundary job runs that check (GwzCoreSessionDesign §5.7). For the
+        # same reason the conditional-compilation check covers gwz-core alone
+        # and prints SKIPPED GATE for gwz-cli and gwz-py (GwzCoreSessionPlan CS1.7).
+        run: python scripts/run_tests.py --skip-transport-globals --skip-cfg-siblings
       - name: Clippy
         run: CLIPPY_CONF_DIR="$PWD" cargo clippy --all-targets --all-features -- -D warnings
 
@@ -138,8 +140,9 @@ jobs:
         run: python -m pip install --upgrade pip "taut-proto==0.9.1"
       - name: Test
         # Single checkout, as in `verify`: gwz-transport's check is skipped
-        # here and runs in the checked-artifact boundary job.
-        run: python scripts/run_tests.py --skip-transport-globals
+        # here and runs in the checked-artifact boundary job, and the
+        # conditional-compilation check skips gwz-cli and gwz-py.
+        run: python scripts/run_tests.py --skip-transport-globals --skip-cfg-siblings
 
   publish:
     # crates.io publication (plan D5 and step S2.1 of
