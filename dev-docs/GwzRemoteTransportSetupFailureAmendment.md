@@ -26,7 +26,7 @@ Add an optional typed `setup_cause` field (key 4) to the transport taut
 `Failure` message in `gwz-transport/protocol/transport.taut.py`. Define a
 `SetupFailureCause` enum with `stall`, `aggregate`, `interaction`,
 `allocation`, `connection_refused`, `not_found`, and
-`address_not_available`. The field is `optional=True, missing_ok=True`.
+`address_not_available`. The field is `optional=MISSING_OK`.
 The immutable wire values are `stall = 1`, `aggregate = 2`,
 `interaction = 3`, `allocation = 4`, `connection_refused = 5`,
 `not_found = 6`, and `address_not_available = 7`. Zero is reserved and invalid;

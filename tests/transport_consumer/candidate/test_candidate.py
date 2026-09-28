@@ -21,6 +21,7 @@ os.environ["GWZ_CORE_SCHEMA"] = str(CORE_SCHEMA)
 os.environ["GWZ_TRANSPORT_SCHEMA"] = str(OWNER_SCHEMA)
 
 from taut.ir.load import load_schema  # noqa: E402
+from taut.ir.model import MISSING_OK  # noqa: E402
 from taut.wire import codec  # noqa: E402
 
 spec = importlib.util.spec_from_file_location("candidate_admission", Path(__file__).with_name("admission.py"))
@@ -85,8 +86,7 @@ def test_overlay_has_exact_additive_tags_and_missing_ok_contract():
         for field_name, tag in fields.items():
             field = actual[field_name]
             assert field.tag == tag
-            assert field.optional is True
-            assert field.missing_ok is True
+            assert field.optional == MISSING_OK
 
 
 def test_old_production_request_and_capability_snapshots_are_stable():

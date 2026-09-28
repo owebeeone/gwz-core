@@ -15,6 +15,7 @@ from pathlib import Path
 
 from taut.ir.load import load_schema, schema_from_json
 from taut.ir.model import (
+    MISSING_OK,
     EnumDef,
     EnumRef,
     FieldDef,
@@ -73,47 +74,43 @@ def compose(core_path: Path, owner_path: Path) -> Schema:
     messages = dict(owner.messages)
     messages.update(core.messages)
 
-    optional = True
-    missing_ok = True
+    optional = MISSING_OK
     messages["TransportOptions"] = _add_fields(
         messages["TransportOptions"],
         (
-            FieldDef(
-                "placement", 4, EnumRef("TransportPlacement"), optional, False, None,
-                missing_ok
-            ),
-            FieldDef("endpoint_path_base", 5, Scalar("str"), optional, False, None, missing_ok),
+            FieldDef("placement", 4, EnumRef("TransportPlacement"), optional, False, None),
+            FieldDef("endpoint_path_base", 5, Scalar("str"), optional, False, None),
         ),
     )
     messages["RequestMeta"] = _add_fields(
         messages["RequestMeta"],
         (
-            FieldDef("transport_message", 10, MsgRef("Envelope"), optional, False, None, missing_ok),
+            FieldDef("transport_message", 10, MsgRef("Envelope"), optional, False, None),
         ),
     )
     messages["ResponseMeta"] = _add_fields(
         messages["ResponseMeta"],
         (
-            FieldDef("transport_message", 9, MsgRef("Envelope"), optional, False, None, missing_ok),
+            FieldDef("transport_message", 9, MsgRef("Envelope"), optional, False, None),
         ),
     )
     messages["TransportCapabilitiesResponse"] = _add_fields(
         messages["TransportCapabilitiesResponse"],
         (
-            FieldDef("message_versions", 3, ListOf(Scalar("int")), optional, False, None, missing_ok),
-            FieldDef("placements", 4, ListOf(EnumRef("TransportPlacement")), optional, False, None, missing_ok),
-            FieldDef("schemes", 5, ListOf(EnumRef("Scheme")), optional, False, None, missing_ok),
-            FieldDef("auth_policies", 6, ListOf(EnumRef("AuthPolicy")), optional, False, None, missing_ok),
-            FieldDef("message_limits", 7, MsgRef("Limits"), optional, False, None, missing_ok),
+            FieldDef("message_versions", 3, ListOf(Scalar("int")), optional, False, None),
+            FieldDef("placements", 4, ListOf(EnumRef("TransportPlacement")), optional, False, None),
+            FieldDef("schemes", 5, ListOf(EnumRef("Scheme")), optional, False, None),
+            FieldDef("auth_policies", 6, ListOf(EnumRef("AuthPolicy")), optional, False, None),
+            FieldDef("message_limits", 7, MsgRef("Limits"), optional, False, None),
         ),
     )
     messages["TransportObservation"] = _add_fields(
         messages["TransportObservation"],
         (
-            FieldDef("endpoint_id", 9, Scalar("str"), optional, False, None, missing_ok),
-            FieldDef("connection_id", 10, Scalar("str"), optional, False, None, missing_ok),
-            FieldDef("stream_id", 11, Scalar("int"), optional, False, None, missing_ok),
-            FieldDef("reused", 12, Scalar("bool"), optional, False, None, missing_ok),
+            FieldDef("endpoint_id", 9, Scalar("str"), optional, False, None),
+            FieldDef("connection_id", 10, Scalar("str"), optional, False, None),
+            FieldDef("stream_id", 11, Scalar("int"), optional, False, None),
+            FieldDef("reused", 12, Scalar("bool"), optional, False, None),
         ),
     )
     return Schema(

@@ -13,7 +13,7 @@ The design acceptance does not imply implementation acceptance.
 
 ## Delivered boundary
 
-- Taut adds opt-in `missing_ok` for newly optional fields. Existing optional
+- Taut adds opt-in `optional=MISSING_OK` for newly optional fields. Existing optional
   slots remain required where they were before; malformed present values fail.
   Generated empty-message decoders now validate the enclosing map. Rust and
   strict Python codecs have executable compatibility tests. Other generator
