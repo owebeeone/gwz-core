@@ -101,10 +101,6 @@ impl Drop for RuntimeState {
 #[derive(Clone)]
 pub struct TransportRuntime(Arc<Mutex<RuntimeState>>);
 impl TransportRuntime {
-    pub fn from_environment() -> ModelResult<Self> {
-        let (ssh, https) = local_command::environment_config()?;
-        Self::with_https(ssh, https)
-    }
     pub fn new(local: SshEndpointConfig) -> ModelResult<Self> {
         Self::build(local, None)
     }
