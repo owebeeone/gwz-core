@@ -8,6 +8,8 @@
 //!   and its cancellation token (O7, O8), the handler's context (§5.2, §16), the
 //!   limits of §1 and `open` (§9), in `context`, `gate` and `limits`;
 //! - CS1.5: the endpoint environment snapshot (§5.6, O9), in `environment`.
+//! - CS1.9: the host context's bounded `shutdown` and its `ShutdownReport`,
+//!   `open`'s `transport_off` and the snapshot's zeroization (§5.6 as amended).
 //!
 //! The channel's frames and queues are CS1.2's. `ClientChannel` is the seam it
 //! fills.
@@ -23,6 +25,6 @@ pub(crate) mod environment;
 pub(crate) mod gate;
 pub(crate) mod limits;
 
-pub use context::{ClientChannel, HostContext, SessionOptions, open};
+pub use context::{ClientChannel, HostContext, SessionOptions, ShutdownReport, open};
 pub use environment::EnvironmentSnapshot;
 pub use limits::{Limits, MAX_FRAME_BYTES, MAX_READ_WAIT};

@@ -16,7 +16,7 @@ operations.
 | `operation` | Operation runtime, events, aggregate/member execution helpers, concurrency helpers, and response envelope helpers. |
 | `protocol` | Generated taut protocol module and conversion helpers. |
 | `runtime` | Clock and id helpers. |
-| `session_host` | The core session host's frozen foundations (see "Session Host" below): `HostContext`, `EnvironmentSnapshot`, `Limits` with `MAX_READ_WAIT` and `MAX_FRAME_BYTES`, `SessionOptions`, `open` and `ClientChannel`. Nothing calls them yet. |
+| `session_host` | The core session host's frozen foundations (see "Session Host" below): `HostContext` with its `ShutdownReport`, `EnvironmentSnapshot`, `Limits` with `MAX_READ_WAIT` and `MAX_FRAME_BYTES`, `SessionOptions`, `open` and `ClientChannel`. Nothing calls them yet. |
 | `status` | `handle_status` and status projections. |
 | `workspace` | Workspace path parsing, discovery, and create preflight. |
 | `workspace_ops` | Synchronous operation handlers. |
@@ -125,9 +125,9 @@ support. They have no `gwz-core` service method and no core handler.
 
 `session_host` holds the first interfaces of the core session host that the
 core session contract specifies (gwz-dev `dev-docs/GwzCoreSessionDesign.md`,
-built by steps CS1.4 and CS1.5 of `dev-docs/GwzCoreSessionPlan.md`). A driver
-opens a session with them. The channel's `send` and `recv` arrive with CS1.2,
-so a session cannot carry calls yet.
+built by steps CS1.4, CS1.5 and CS1.9 of `dev-docs/GwzCoreSessionPlan.md`). A
+driver opens a session with them. The channel's `send` and `recv` arrive with
+CS1.2, so a session cannot carry calls yet.
 
 ```rust
 use gwz_core::session_host::{EnvironmentSnapshot, HostContext, SessionOptions, open};
@@ -137,14 +137,32 @@ let host = HostContext::new(); // one per driver process, shared by its sessions
 let environment = EnvironmentSnapshot::from_os_pairs(std::env::vars_os())?;
 let mut options = SessionOptions::new(host.clone(), environment);
 options.limits.running_operations = 4; // `open` validates the limits
+options.transport_off = false; // the driver's resolved off switch
 let channel = open(options)?; // the client end of the in-process channel
+drop(channel); // the session ends, and its snapshot is zeroized
+let report = host.shutdown(); // at the driver's end: what remains after at most 5 s
 ```
 
 - `HostContext` holds what one driver's sessions share (contract §5.6). A
   clone is another handle to the same context; sessions keep theirs, and core
   keeps none in a static. It starts its supervisor thread only for its first
-  job, and once every handle is gone the thread stops when each job has
-  finished or, having panicked, been set aside. Dropping it does not wait.
+  job. At the driver's end, `shutdown()` disposes what the host context holds
+  within the 5-second cleanup bound (the connection reuse design's §7) and
+  returns a `ShutdownReport` of what remains. It returns within the bound even
+  when a job never finishes; the supervisor then polls that job to its end.
+  Once `shutdown` has begun, `open` refuses the host context with
+  `invalid_request`. A later call, from any handle, returns the same report,
+  and a concurrent one waits for the first. Dropping the host context without
+  `shutdown` disposes the same way, without waiting, and reports nothing: once
+  every handle is gone, the thread stops when each job has finished or, having
+  panicked, been set aside. After `shutdown`, the drop disposes nothing more.
+- `ShutdownReport` carries the two facts of the contract's §13
+  `CleanupReport`, so a driver can add it to its session's close report.
+  `pending_local_work` counts the jobs still running at the bound and the jobs
+  set aside after a panic. `peer_cleanup_confirmed` is false while the host
+  context has no endpoint registry: as a session that ran no network operation
+  reports `(0, false)`, no peer cleanup occurred (contract §8). The type is
+  `non_exhaustive`.
 - `EnvironmentSnapshot` is the session's endpoint environment (§5.6). Core
   never reads the process environment: the driver reads it at its edge and
   passes the pairs in. A Rust driver passes `std::env::vars_os()` to
@@ -157,9 +175,11 @@ let channel = open(options)?; // the client end of the in-process channel
   its first value. Names compare byte for byte on POSIX, and on Windows
   ordinally ignoring case, as the OS and std's `Command` compare them. The
   snapshot is secret-bearing: its `Debug` output is its entry count, and it
-  has no `Display` or serialization. It overwrites its own buffers when it
-  drops with the session; the copies that std's `Command` and the OS make for
-  a child are outside it.
+  has no `Display`, `Clone` or serialization. It is zeroized when its session
+  ends: it drops with the session's context, and each name and value
+  overwrites its whole allocation, spare capacity included, before it is
+  freed. The copies that std's `Command` and the OS make for a child are
+  outside it.
 - `Limits` carries the contract's §1 limits and defaults: 8 running and 64
   queued operations, a 128-entry operation table, 8 direct workers, 4096
   events per operation log, 64 open logs, 1024 outstanding calls, a 64-frame
@@ -173,12 +193,17 @@ let channel = open(options)?; // the client end of the in-process channel
   `read_bytes`, so a reply is at most `read_bytes` plus its envelope, which
   the frame's other half bounds. A close wait of zero detaches every running
   worker at once.
-- `SessionOptions` carries the host context, the snapshot and the limits.
-  Build it with `SessionOptions::new`; the type is `non_exhaustive`, and so is
-  `Limits`.
-- `open(options)` validates the limits, then creates the session's context on
-  the calling thread and returns a `ClientChannel`. Dropping the
-  `ClientChannel` ends the session and drops its context, snapshot included.
+- `SessionOptions` carries the host context, the snapshot, the limits and
+  `transport_off`, the off switch's value as the driver resolved it, false by
+  default (the core server design's §5). The snapshot never carries the
+  switch, and core never derives it from the snapshot or from the process's
+  own environment or configuration. Build it with `SessionOptions::new`; the
+  type is `non_exhaustive`, and so is `Limits`.
+- `open(options)` validates the limits and refuses a host context that has
+  been shut down, each with `invalid_request` before any effect, then creates
+  the session's context on the calling thread and returns a `ClientChannel`.
+  Dropping the `ClientChannel` ends the session and drops its context,
+  snapshot included.
 
 ## Backend Injection
 

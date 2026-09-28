@@ -1,6 +1,6 @@
-//! The endpoint environment snapshot (session plan CS1.5), for the core
-//! session contract (gwz-dev `dev-docs/GwzCoreSessionDesign.md`) §5.6 and O9,
-//! as the server design amends §5.6.
+//! The endpoint environment snapshot (session plan CS1.5, extended by CS1.9),
+//! for the core session contract (gwz-dev `dev-docs/GwzCoreSessionDesign.md`)
+//! §5.6 and O9, as the server design amends §5.6.
 //!
 //! | Behaviour | Clause |
 //! | --- | --- |
@@ -10,7 +10,8 @@
 //! | Names follow the platform's rules: byte for byte on POSIX, and on Windows ordinally ignoring case, as the OS and std's `Command` compare them | plan C7 |
 //! | Secret-bearing: a value has no `Debug` or `Display`, the snapshot formats as its entry count, and nothing serializes it | §5.6 "never serialized", §15.8 |
 //! | A refused entry's error names its index, never its name or value | §15.8 |
-//! | Dropped with the session, which drops the session context; it overwrites its own buffers first, not the copies std's `Command` and the OS make for a child | §5.6 "dropped when the session ends"; the server design's §5.6 amendment "zeroized when the session ends" |
+//! | Zeroized when its session ends: the session context's drop is its only one, since nothing can clone it, and each name and value overwrites its whole allocation, spare capacity included, before it is freed; not the copies std's `Command` and the OS make for a child | §5.6 "dropped when the session ends", as server design §8 amends it: "zeroized when the session ends"; server design §4 "Secrets" |
+//! | On Windows a decoded name or value is built at its final size, so no outgrown buffer that held part of it is freed unwiped | server design §4 "Secrets" |
 //! | A child gets `env_clear()` plus the snapshot and nothing else from the live environment | §5.6 "Child processes", O9 |
 
 use std::ffi::{OsStr, OsString};
@@ -24,10 +25,10 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 /// driver read at its edge, as name and value pairs.
 ///
 /// It is secret-bearing. Its `Debug` output is its entry count, it has no
-/// `Display`, and nothing serializes it. It moves into the session with
-/// `open`'s options and drops with the session context, overwriting its own
-/// buffers as it drops. The copies that std's `Command` and the OS make for a
-/// child are outside it.
+/// `Display` or `Clone`, and nothing serializes it. It moves into the session
+/// with `open`'s options and drops with the session context, overwriting its
+/// own buffers as it drops, so it is zeroized when its session ends. The
+/// copies that std's `Command` and the OS make for a child are outside it.
 pub struct EnvironmentSnapshot {
     entries: Vec<(Wiped, Wiped)>,
 }
@@ -35,9 +36,20 @@ pub struct EnvironmentSnapshot {
 /// A name or value of the snapshot, overwritten when dropped.
 struct Wiped(OsString);
 
+impl Wiped {
+    /// Overwrites the allocation that holds the name or value, spare capacity
+    /// included, and returns it still allocated; `into_encoded_bytes` keeps
+    /// the allocation. Its drop frees what this returns.
+    fn overwritten(&mut self) -> Vec<u8> {
+        let mut bytes = std::mem::take(&mut self.0).into_encoded_bytes();
+        overwrite(&mut bytes);
+        bytes
+    }
+}
+
 impl Drop for Wiped {
     fn drop(&mut self) {
-        wipe(std::mem::take(&mut self.0).into_encoded_bytes());
+        drop(self.overwritten());
     }
 }
 
@@ -193,9 +205,9 @@ fn checked(name: Wiped, value: Wiped) -> Result<(Wiped, Wiped), &'static str> {
     Ok((name, value))
 }
 
-/// Overwrites a buffer's whole allocation, spare capacity included, before
-/// it is freed.
-fn wipe<T: Copy + Default>(mut buffer: Vec<T>) {
+/// Overwrites a buffer's whole allocation, spare capacity included, keeping
+/// its length.
+fn overwrite<T: Copy + Default>(buffer: &mut Vec<T>) {
     let start = buffer.as_mut_ptr();
     for offset in 0..buffer.capacity() {
         // SAFETY: `start` addresses `buffer`'s allocation of `capacity`
@@ -230,16 +242,40 @@ cfg_if::cfg_if! {
             use windows_sys::Win32::Foundation::TRUE;
             use windows_sys::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
 
-            use super::{wide, wipe};
+            use super::{overwrite, wide};
 
-            /// Decodes WTF-8, overwriting the buffers it used.
+            /// Decodes WTF-8, overwriting the buffers it used. The string is
+            /// allocated once, at the input's length, which bounds its
+            /// encoding, so it never grows. std's `from_wide` starts at the
+            /// unit count and grows for any non-ASCII value, freeing each
+            /// outgrown buffer with part of the value still in it.
             pub(super) fn from_bytes(bytes: Vec<u8>) -> Option<OsString> {
                 let mut units = Vec::with_capacity(bytes.len());
                 let decoded = wide::decode_wtf8(&bytes, &mut units);
+                let text = decoded.then(|| {
+                    let mut text = OsString::with_capacity(bytes.len());
+                    for unit in char::decode_utf16(units.iter().copied()) {
+                        match unit {
+                            Ok(ch) => text.push(ch.encode_utf8(&mut [0; 4])),
+                            Err(lone) => {
+                                // `decode_utf16` pairs every lead with a trail that
+                                // follows it, so this push joins nothing.
+                                let lone = OsString::from_wide(&[lone.unpaired_surrogate()]);
+                                text.push(&lone);
+                                wipe(lone.into_encoded_bytes());
+                            }
+                        }
+                    }
+                    text
+                });
                 wipe(bytes);
-                let text = decoded.then(|| OsString::from_wide(&units));
                 wipe(units);
                 text
+            }
+
+            /// Overwrites a buffer's whole allocation before it is freed.
+            fn wipe<T: Copy + Default>(mut buffer: Vec<T>) {
+                overwrite(&mut buffer);
             }
 
             /// Windows names compare as the OS and std's `Command` compare

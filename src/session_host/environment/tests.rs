@@ -1,9 +1,74 @@
-//! Tests of the endpoint environment snapshot (session plan CS1.5).
+//! Tests of the endpoint environment snapshot (session plan CS1.5, extended
+//! by CS1.9).
 
 use super::*;
 use crate::model::ErrorCode;
 use crate::session_host::{HostContext, SessionOptions};
 use std::collections::BTreeSet;
+
+/// A buffer's whole allocation, once `overwrite` has written all of it. The
+/// allocation is still live: no test reads memory after it is freed.
+fn whole<T: Copy>(buffer: &mut Vec<T>) -> &[T] {
+    let capacity = buffer.capacity();
+    // SAFETY: `overwrite` wrote every element up to the capacity, so each
+    // one is initialized.
+    unsafe { buffer.set_len(capacity) };
+    buffer
+}
+
+/// A buffer holding `held`, with `spare` in each element of its spare
+/// capacity, as a buffer that once held a longer value keeps it.
+fn secret_buffer<T: Copy>(held: &[T], spare: T, capacity: usize) -> Vec<T> {
+    let mut buffer = Vec::with_capacity(capacity);
+    buffer.extend_from_slice(held);
+    for slot in buffer.spare_capacity_mut() {
+        slot.write(spare);
+    }
+    buffer
+}
+
+/// Compiles only while `T` has no `Clone`: with one, both impls apply and
+/// `check` is ambiguous.
+trait NotClone<A> {
+    fn check() {}
+}
+
+impl<T> NotClone<()> for T {}
+
+impl<T: Clone> NotClone<u8> for T {}
+
+#[test]
+fn overwriting_covers_a_buffers_whole_allocation_spare_capacity_included() {
+    let mut bytes = secret_buffer(b"s3cr3t", b'#', 64);
+    let mut units = secret_buffer::<u16>(&[0x73, 0xD800], 0x2323, 16);
+    overwrite(&mut bytes);
+    overwrite(&mut units);
+    assert_eq!((bytes.len(), units.len()), (6, 2), "the length is kept");
+    assert!(whole(&mut bytes).iter().all(|&byte| byte == 0));
+    assert!(whole(&mut units).iter().all(|&unit| unit == 0));
+}
+
+#[test]
+fn a_name_or_value_overwrites_the_allocation_that_held_it() {
+    let buffer = secret_buffer(b"s3cr3t-token", b'#', 64);
+    let held = buffer.as_ptr();
+    // SAFETY: the held bytes are ASCII, so valid UTF-8, which every
+    // platform's `OsString` encoding accepts.
+    let mut value = Wiped(unsafe { OsString::from_encoded_bytes_unchecked(buffer) });
+    // What its drop does, stopped before the free.
+    let mut bytes = value.overwritten();
+    assert_eq!(bytes.as_ptr(), held, "the allocation that held the value");
+    assert!(bytes.capacity() >= 64);
+    assert!(whole(&mut bytes).iter().all(|&byte| byte == 0));
+    assert!(value.0.is_empty(), "nothing is left to overwrite again");
+}
+
+#[test]
+fn nothing_can_copy_the_snapshot_past_its_session() {
+    // The session's end is the snapshot's only drop.
+    <EnvironmentSnapshot as NotClone<_>>::check();
+    <Wiped as NotClone<_>>::check();
+}
 
 fn snapshot(entries: &[(&[u8], &[u8])]) -> EnvironmentSnapshot {
     EnvironmentSnapshot::from_byte_pairs(
@@ -411,6 +476,29 @@ cfg_if::cfg_if! {
             assert_eq!(snapshot.len(), 1);
             assert_eq!(value(&snapshot, "PATH"), Some(OsStr::new("first")));
             assert_eq!(value(&snapshot, "path"), Some(OsStr::new("first")));
+        }
+
+        #[test]
+        fn a_decoded_string_is_built_at_its_final_size_and_matches_std() {
+            // Each input's WTF-8 is longer than its UTF-16, which is what made
+            // std's `from_wide` grow, freeing a buffer that held part of it.
+            let inputs: [&[u8]; 7] = [
+                "Grüße, 東京".as_bytes(),
+                "x\u{1F600}y".as_bytes(),
+                b"\xED\xA0\xBD\xED\xB8\x80", // a pair written as two surrogates
+                b"a\xED\xA0\x80b",           // an unpaired lead
+                b"\xED\xB0\x80z",            // an unpaired trail
+                b"\xED\xA0\x80\xED\xA0\x80", // two leads
+                b"\xED\xA0\x80\xF0\x9F\x98\x80", // a lead before a pair
+            ];
+            for bytes in inputs {
+                let mut units = Vec::new();
+                assert!(wide::decode_wtf8(bytes, &mut units));
+                let text = platform::from_bytes(bytes.to_vec()).unwrap();
+                assert!(text == OsString::from_wide(&units), "{bytes:?}");
+                let unchanged = OsString::with_capacity(bytes.len()).capacity();
+                assert_eq!(text.capacity(), unchanged, "it never grew: {bytes:?}");
+            }
         }
     }
 }
