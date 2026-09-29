@@ -7,7 +7,7 @@
   "retained-old-rust-revision": "2514dc19675591f8ea3231f22764cdb5d3d5a146",
   "retained-old-rust-sha256": "5ba6d4ac299e272c3f8ebcd0cd35489870cb6706b1ce3fdf0b1a771cb53ef544",
   "retained-old-schema-sha256": "423cb73b8c17a6779155431aebe40949f90a429ef69625683b449ed7fe072adb",
-  "taut-source-revision": "9d463102b033599c763a3a9e4c7afc6567b740b7",
+  "taut-source-revision": "81ba89420d513ae6dda25a5d816db8d2a85d90cb",
   "rustfmt": "rustfmt 1.9.0-stable (59807616e1 2026-04-14)",
   "rust-module": "gwz_transport::protocol",
   "codec": "fail-closed",

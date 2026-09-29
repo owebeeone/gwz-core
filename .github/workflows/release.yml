@@ -33,6 +33,11 @@ jobs:
           ref: ${{ github.event.release.tag_name || inputs.tag || github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Check out git2-rs beside gwz-core
+        # gwz-core builds against the git2-rs fork by path (`../git2-rs`, package
+        # `gwz-git2`), at the commit .github/git2-rs.commit pins.
+        shell: bash
+        run: bash .github/checkout-git2-rs.sh
       - id: release-tag
         name: Resolve release tag
         shell: bash
@@ -106,6 +111,11 @@ jobs:
           ref: ${{ github.event.release.tag_name || inputs.tag || github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Check out git2-rs beside gwz-core
+        # gwz-core builds against the git2-rs fork by path (`../git2-rs`, package
+        # `gwz-git2`), at the commit .github/git2-rs.commit pins.
+        shell: bash
+        run: bash .github/checkout-git2-rs.sh
       - id: release-tag
         name: Resolve release tag
         shell: bash
@@ -203,6 +213,11 @@ jobs:
           ref: ${{ github.event.release.tag_name || inputs.tag || github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Check out git2-rs beside gwz-core
+        # gwz-core builds against the git2-rs fork by path (`../git2-rs`, package
+        # `gwz-git2`), at the commit .github/git2-rs.commit pins.
+        shell: bash
+        run: bash .github/checkout-git2-rs.sh
       - name: Resolve release tag
         shell: bash
         run: |

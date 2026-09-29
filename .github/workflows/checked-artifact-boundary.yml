@@ -26,6 +26,12 @@ jobs:
           path: gwz-core
           persist-credentials: false
           fetch-depth: 0
+      - name: Check out git2-rs beside gwz-core
+        # gwz-core builds against the git2-rs fork by path (`../git2-rs`, package
+        # `gwz-git2`), at the commit gwz-core's .github/git2-rs.commit pins.
+        shell: bash
+        working-directory: gwz-core
+        run: bash .github/checkout-git2-rs.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -123,6 +129,11 @@ jobs:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
+      - name: Check out git2-rs beside gwz-core
+        # gwz-core builds against the git2-rs fork by path (`../git2-rs`, package
+        # `gwz-git2`), at the commit .github/git2-rs.commit pins.
+        shell: bash
+        run: bash .github/checkout-git2-rs.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"

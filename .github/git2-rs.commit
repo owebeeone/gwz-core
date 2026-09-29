@@ -1,0 +1,7 @@
+# The git2-rs commit CI builds gwz-core against. gwz-core depends on the fork by
+# path (`../git2-rs`, package `gwz-git2`), and its vendored libgit2 (the
+# libgit2-sys/libgit2 submodule) carries GWZ's native fixes. Keep this equal to
+# the gwz-dev root lock's git2-rs revision: a gwz-core commit that moves to newer
+# git2-rs code moves this pin in the same commit, to a git2-rs commit that is
+# already pushed. .github/checkout-git2-rs.sh reads the first 40-hex line.
+d13951f7e0bfb6e0efcee1207ac5b140adefa455
