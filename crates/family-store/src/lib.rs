@@ -31,6 +31,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 mod format;
 mod lock;
@@ -51,17 +52,23 @@ use gwz_family_store_contract::{
     AppliedChange, FamilyLocation, FamilyObservation, FamilySession, FamilySource, FamilyStore,
     MetadataEffect, StoreError, StoreOperation,
 };
+use gwz_ids::IdSource;
 
 use crate::format::{MarkerFile, PointerFile};
 use crate::lock::{Attempt, FamilyLock};
 use crate::publish::FileState;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct YamlFamilyStore;
+/// The store. Its [`IdSource`] names the temporary files its sessions publish
+/// through; core seeds it from the operating system's random source, and
+/// every session of the store draws from the same one.
+#[derive(Clone, Debug)]
+pub struct YamlFamilyStore {
+    ids: Arc<IdSource>,
+}
 
 impl YamlFamilyStore {
-    pub fn new() -> Self {
-        Self
+    pub fn new(ids: IdSource) -> Self {
+        Self { ids: Arc::new(ids) }
     }
 
     /// What `workspace` holds of the family `family_id` registered at
@@ -260,7 +267,11 @@ impl FamilyStore for YamlFamilyStore {
         match FamilyLock::try_acquire(&lock_path)
             .map_err(|error| io_error(StoreOperation::Lock, &lock_path, &error))?
         {
-            Attempt::Acquired(lock) => Ok(LockedFamilySession { root, _lock: lock }),
+            Attempt::Acquired(lock) => Ok(LockedFamilySession {
+                root,
+                _lock: lock,
+                ids: Arc::clone(&self.ids),
+            }),
             Attempt::Busy => Err(StoreError::Busy { lock_path }),
             Attempt::Unsupported(detail) => Err(StoreError::LockingUnsupported { detail }),
         }
@@ -273,6 +284,8 @@ pub struct LockedFamilySession {
     root: PathBuf,
     /// Released with this session; never read.
     _lock: FamilyLock,
+    /// The store's source, for the names of this session's temporary files.
+    ids: Arc<IdSource>,
 }
 
 impl FamilySession for LockedFamilySession {
@@ -392,7 +405,7 @@ impl FamilySession for LockedFamilySession {
             .map_err(|error| io_error(StoreOperation::WriteMarker, &directory, &error))?;
         let marker = format::encode_marker(&view.family_id, &row.allocation_id)
             .map_err(|error| encoding_error(StoreOperation::WriteMarker, &marker_path, &error))?;
-        publish::publish(&marker_path, &marker)
+        publish::publish(&marker_path, &marker, &self.ids)
             .map_err(|error| io_error(StoreOperation::WriteMarker, &marker_path, &error))?;
         let mut effects = vec![MetadataEffect::MarkerWritten {
             workspace: destination.to_path_buf(),
@@ -400,11 +413,13 @@ impl FamilySession for LockedFamilySession {
 
         let pointer_path = destination.join(POINTER_RELATIVE_PATH);
         let pointer = self.encode_pointer(&view.family_id, &pointer_path)?;
-        publish::publish(&pointer_path, &pointer).map_err(|error| StoreError::Partial {
-            operation: StoreOperation::WritePointer,
-            completed: effects.clone(),
-            path: pointer_path.clone(),
-            detail: error.to_string(),
+        publish::publish(&pointer_path, &pointer, &self.ids).map_err(|error| {
+            StoreError::Partial {
+                operation: StoreOperation::WritePointer,
+                completed: effects.clone(),
+                path: pointer_path.clone(),
+                detail: error.to_string(),
+            }
         })?;
         effects.push(MetadataEffect::PointerWritten {
             workspace: destination.to_path_buf(),
@@ -515,7 +530,7 @@ impl LockedFamilySession {
         let directory = metadata_directory(&self.root);
         publish::ensure_metadata_directory(&directory)
             .map_err(|error| io_error(StoreOperation::WriteIndex, &directory, &error))?;
-        publish::publish(&path, &encoded)
+        publish::publish(&path, &encoded, &self.ids)
             .map_err(|error| io_error(StoreOperation::WriteIndex, &path, &error))?;
         Ok(MetadataEffect::IndexWritten)
     }

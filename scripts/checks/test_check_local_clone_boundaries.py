@@ -293,7 +293,11 @@ class LocalCloneBoundaryTest(unittest.TestCase):
             "gwz-history-check": ("H", "integration", ["gwz-repo-contract"]),
             "gwz-family-model": ("F", "pure", []),
             "gwz-family-store-contract": ("C", "contract", ["gwz-family-model"]),
-            "gwz-family-store": ("S", "implementation", ["gwz-family-store-contract", "gwz-family-model"]),
+            "gwz-family-store": (
+                "S",
+                "implementation",
+                ["gwz-family-store-contract", "gwz-family-model", "gwz-ids"],
+            ),
             "gwz-local-import": ("X", "integration", ["gwz-repo-contract", "gwz-family-model"]),
             "gwz-workspace-install": (
                 "N",
@@ -307,6 +311,11 @@ class LocalCloneBoundaryTest(unittest.TestCase):
                 ["gwz-repo-contract", "gwz-family-model", "gwz-family-store-contract", "gwz-work-detector"],
             ),
             "gwz-local-testrepo": ("T", "harness", ["gwz-repo-contract"]),
+            # The core session crate map's ordinary crates (§2), from its §6 steps 2 to 4.
+            "gwz-ids": ("C", "pure", []),
+            "gwz-session-contract": ("CS", "contract", []),
+            "gwz-session-channel": ("CS", "implementation", ["gwz-session-contract"]),
+            "gwz-session-host": ("CS", "integration", ["gwz-ids", "gwz-session-contract"]),
         }
         self.assertEqual(set(inventory["packages"]), set(expected))
         for name, (owner, role, first_party) in expected.items():
@@ -326,6 +335,21 @@ class LocalCloneBoundaryTest(unittest.TestCase):
             "dcc4fbd2b45caf928978a090208951ef14759ef0589e820b94f8475fccf07c10",
         )
 
+    def test_real_inventory_cites_revision_3_and_the_crate_map(self) -> None:
+        # Revision 3 of the library boundaries (2026-09-28) widens §1's scope
+        # from the local clone family to every new gwz-core library, under
+        # the core session crate map's rules (§1) and ordinary crates (§2).
+        inventory = json.loads(INVENTORY.read_text(encoding="utf-8"))
+        policy = inventory["policy"]
+        self.assertEqual(policy["adoption_document"], "gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md")
+        self.assertEqual(policy["adoption_revision"], 3)
+        self.assertEqual(policy["crate_map"], "gwz-dev dev-docs/GwzCoreSessionCrateMap.md §1–§2")
+        for phrase in ("every library crate under crates/", "revision 3", "GwzCoreSessionCrateMap.md §1–§2"):
+            self.assertIn(phrase, inventory["description"])
+        docstring = load_gate().__doc__
+        for phrase in ("every library crate under `crates/`", "revision 3", "GwzCoreSessionCrateMap.md` §1–§2"):
+            self.assertIn(phrase, docstring)
+
     def test_synthetic_tree_passes(self) -> None:
         tree = SyntheticTree()
         self.addCleanup(tree.cleanup)
@@ -340,6 +364,66 @@ class LocalCloneBoundaryTest(unittest.TestCase):
         result = tree.check()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("unclassified crate", result.stderr)
+
+    def test_any_unclassified_crate_fails_not_only_a_local_clone_one(self) -> None:
+        # Revision 3's scope: every directory under crates/ with a manifest
+        # needs an inventory row. Here one of the crate map's ordinary crates
+        # (§2), which its own step classifies, arrives without one; the gate
+        # fails and names the directory.
+        tree = SyntheticTree()
+        self.addCleanup(tree.cleanup)
+        tree.crate("gwz-session-contract", "session-contract", "contract", [], [], classify=False, materialize=True)
+        result = tree.check()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("- crates/session-contract: unclassified crate (LBT-001)", result.stderr)
+
+    def test_a_forked_gwz_package_outside_the_workspace_is_third_party(self) -> None:
+        # First-party means what gwz-core's workspace defines: gwz-core and the
+        # crates under crates/, not every `gwz-` name. The git2 fork, `gwz-git2`,
+        # lives beside gwz-core, so it is a third-party edge that the crate's
+        # `third_party` list must allow, and the test closure does not walk it.
+        tree = SyntheticTree()
+        self.addCleanup(tree.cleanup)
+        fork = tree.core.parent / "git2-rs"
+        (fork / "src").mkdir(parents=True)
+        (fork / "src" / "lib.rs").write_text("", encoding="utf-8")
+        (fork / "Cargo.toml").write_text(
+            '[package]\nname = "gwz-git2"\nversion = "0.21.0"\nedition = "2021"\n', encoding="utf-8"
+        )
+        tree.workflow("boundary.yml", PACKAGE_LOCKED_WORKFLOW)
+        deps = (
+            'gwz-alpha-contract = { path = "../alpha-contract" }\n'
+            'git2 = { package = "gwz-git2", path = "../../../git2-rs" }\n'
+        )
+        tree.crate("gwz-alpha", "alpha", "implementation", ["gwz-alpha-contract"], [], deps=deps)
+        result = tree.check()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(
+            "gwz-alpha: gwz-git2 (as `git2`) [normal]: third-party edge is not in the inventory allowlist",
+            result.stderr,
+        )
+        self.assertNotIn("first-party", result.stderr)
+        self.assertNotIn("unclassified packages", result.stderr)
+
+        tree.crate("gwz-alpha", "alpha", "implementation", ["gwz-alpha-contract"], ["gwz-git2"], deps=deps)
+        result = tree.check()
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+    def test_a_workspace_crate_is_first_party_without_the_prefix(self) -> None:
+        # A crate under crates/ is first-party whatever its name: its edge is
+        # checked against `first_party`, and the test closure walks through it.
+        tree = SyntheticTree()
+        self.addCleanup(tree.cleanup)
+        tree.crate("helper", "helper", "pure", [], [])
+        deps = 'gwz-alpha-contract = { path = "../alpha-contract" }\nhelper = { path = "../helper" }\n'
+        tree.crate("gwz-alpha", "alpha", "implementation", ["gwz-alpha-contract", "helper"], [], deps=deps)
+        result = tree.check()
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+
+        tree.crate("helper", "helper", "pure", [], [], deps='gwz-core = { path = "../.." }\n')
+        result = tree.check()
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("gwz-alpha: test closure reaches forbidden package gwz-core via helper", result.stderr)
 
     def test_reversed_contract_edge_is_rejected(self) -> None:
         tree = SyntheticTree()
@@ -590,8 +674,13 @@ class LocalCloneBoundaryTest(unittest.TestCase):
         self.assertFalse(gate.tier_a_unlocked(ROOT, inventory))
         workflow = ROOT / ".github" / "workflows" / "checked-artifact-boundary.yml"
         commands = gate.tier_a_commands(workflow.read_text(encoding="utf-8"))
-        self.assertEqual(len(commands), 1, commands)
-        self.assertIn('cargo test -p "$name" --lib --locked', commands[0])
+        # Each library's unit tests and its doctests, both locked: the doctests
+        # hold the compile_fail examples that stand in for CS1.4's nesting test
+        # (steps review, Consistency P3-3).
+        self.assertEqual(
+            [command.strip() for command in commands],
+            ['cargo test -p "$name" --lib --locked', 'cargo test -p "$name" --doc --locked'],
+        )
         self.assertIn("--list-present", workflow.read_text(encoding="utf-8"))
 
         listed = subprocess.run(
@@ -608,7 +697,7 @@ class LocalCloneBoundaryTest(unittest.TestCase):
             if (ROOT / "crates" / entry["directory"] / "Cargo.toml").exists()
         ]
         self.assertEqual(names, expected)
-        self.assertEqual(len(names), 14)
+        self.assertEqual(len(names), 18)
         self.assertIn("gwz-local-testrepo", names)
 
     def test_cross_checkable_list_excludes_every_native_build_closure(self) -> None:

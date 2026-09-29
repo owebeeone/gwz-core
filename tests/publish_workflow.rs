@@ -124,16 +124,50 @@ fn checked_artifact_boundary_runs_before_merge_and_on_main_push() {
     ));
 }
 
+/// The text of a top-level `def name(` in a Python source, up to the next
+/// top-level `def`.
+fn python_function<'a>(source: &'a str, name: &str) -> &'a str {
+    let header = format!("\ndef {name}(");
+    let start = source
+        .find(&header)
+        .unwrap_or_else(|| panic!("release.py defines {name}"));
+    let body = &source[start + header.len()..];
+    let end = body.find("\ndef ").unwrap_or(body.len());
+    &body[..end]
+}
+
 #[test]
 fn local_release_runs_checked_artifact_boundary_before_rust_tests() {
     let release = include_str!("../scripts/release.py");
-    let boundary = release
-        .find("[sys.executable, CHECKED_ARTIFACT_BOUNDARY]")
+    // Each gate is a helper, so what orders them is the call sequence in
+    // run_gates and main, not where the helpers are defined: run_test_suite
+    // sits near the top of the file. test_release_boundary.py pins that
+    // run_tests.py runs only through run_test_suite.
+    assert!(
+        python_function(release, "run_checked_boundary_gates")
+            .contains("[sys.executable, CHECKED_ARTIFACT_BOUNDARY]")
+    );
+    assert!(
+        python_function(release, "run_test_suite")
+            .contains("str(cargo_root / \"scripts\" / \"run_tests.py\")")
+    );
+    let gates = python_function(release, "run_gates");
+    let boundary = gates
+        .find("run_checked_boundary_gates(cargo_root=cargo_root)")
         .expect("release gate invokes the boundary checker");
-    let tests = release
-        .find("str(cargo_root / \"scripts\" / \"run_tests.py\")")
+    let tests = gates
+        .find("run_test_suite(cargo_root=cargo_root)")
         .expect("release gate invokes Rust tests");
     assert!(boundary < tests);
+    // The rerun after the version bump follows the gates.
+    let main = python_function(release, "main");
+    let gated = main
+        .find("run_gates(")
+        .expect("main runs the release gates");
+    let rerun = main
+        .find("run_test_suite(cargo_root=cargo_root)")
+        .expect("main reruns the Rust tests after the version bump");
+    assert!(gated < rerun);
     assert!(!release.contains("CHECKED_ARTIFACT_BOUNDARY_TEST"));
     assert!(!release.contains("RELEASE_BOUNDARY_TEST"));
     assert!(release.contains("cargo\", \"clippy\", \"--all-targets\", \"--all-features"));

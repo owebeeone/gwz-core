@@ -528,6 +528,14 @@ V0_PERSISTENCE_SEAM_FLOOR = frozenset(
 # and it names `create_dir_all` twice by grep and ZERO times masked. `fn <name>`
 # definitions are excluded the same way, so the primitive's own definition in
 # the neutral module is not counted as a call to it.
+#
+# Re-pinned 2026-09-29, the core session crate map's §6 step 2 (gwz-ids): the
+# primitive takes the operation's `IdSource` for its temporary names, threaded
+# from `v1_lifecycle/store/rewrite.rs` (which names only
+# `create_merge_store_record`) through that door and its raw arm, and the
+# process-wide `TEMP_SEQUENCE` is gone. Re-measured under the masker, nothing
+# below moves: `v1_lifecycle/` names neither token, `entry.rs` calls the
+# primitive once, and the carved row's `write_atomic_verified: 1` stands.
 NEUTRAL_RAW_WRITE_FLOOR = frozenset({"verified_write", "write_atomic_verified"})
 NEUTRAL_RAW_WRITE_MODULE = "verified_write.rs"
 NEUTRAL_RAW_WRITE_CALLERS = {"checked_artifact/entry.rs": 1}

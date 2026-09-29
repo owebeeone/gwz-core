@@ -24,6 +24,7 @@ use gwz_family_store_contract::{
 };
 
 use crate::{LockedFamilySession, YamlFamilyStore};
+use gwz_ids::IdSource;
 
 struct Family {
     _temp: tempfile::TempDir,
@@ -38,7 +39,7 @@ impl Family {
         let temp = tempfile::tempdir().expect("temporary directory");
         let root = temp.path().join("root");
         fs::create_dir_all(&root).expect("create the root workspace");
-        let store = YamlFamilyStore::new();
+        let store = YamlFamilyStore::new(IdSource::new(1));
         let mut session = store.try_lock(&FamilyLocation::new(&root)).expect("lock");
         session
             .found(
@@ -429,7 +430,7 @@ fn a_pointer_whose_root_holds_no_matching_index_is_pointer_target_invalid() {
 fn reading_and_locking_an_absent_workspace_create_nothing() {
     let temp = tempfile::tempdir().unwrap();
     let absent = temp.path().join("never-allocated");
-    let store = YamlFamilyStore::new();
+    let store = YamlFamilyStore::new(IdSource::new(1));
     let location = FamilyLocation::new(&absent);
     assert_eq!(
         store.read_view(&location).unwrap(),

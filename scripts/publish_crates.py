@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish gwz-core's fourteen crates to crates.io, in order, idempotently.
+"""Publish gwz-core and its published internal crates to crates.io, in order, idempotently.
 
 Authority: gwz-core `dev-docs/GwzCratesIoPlan.md` (ADOPTED 2026-09-13) D5 and
 its step S2.1. This is the script the `publish` job of
@@ -12,7 +12,7 @@ What it does, in one pass over the publish order:
   and stops if it fails, so nothing is uploaded from a tree whose manifests
   disagree with the tag. A publish is permanent; only the version check is
   cheap.
-- Takes the order from the same script's `--print-publish-order` (the thirteen
+- Takes the order from the same script's `--print-publish-order` (the
   published internals in dependency order, then `gwz-core`) and each crate's
   version from that crate's own manifest, so a new crate or a new internal
   edge cannot leave a hand-written list here publishing the wrong set.

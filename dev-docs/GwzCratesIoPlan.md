@@ -85,18 +85,28 @@ The gwz-core repository at 1.0.11:
   Thirteen are runtime dependencies of gwz-core; `gwz-local-testrepo` is a
   path-only dev-dependency, which cargo drops from a published package.
 - Dependency layers, which fix the publish order:
-  1. `gwz-repo-contract`, `gwz-copy-contract`, `gwz-family-model` (no
-     internal dependencies);
+  1. `gwz-repo-contract`, `gwz-copy-contract`, `gwz-family-model`,
+     `gwz-ids`, `gwz-session-contract` (no internal dependencies);
   2. `gwz-family-store-contract` (family-model); `gwz-work-detector`,
      `gwz-history-check`, `gwz-repo-factory`, `gwz-repo-inspect`,
      `gwz-local-testrepo` (repo-contract); `gwz-refcopy` (copy-contract);
-  3. `gwz-family-store` (family-model, family-store-contract);
+     `gwz-session-channel` and `gwz-session-host` (session-contract);
+  3. `gwz-family-store` (family-model, family-store-contract, ids);
      `gwz-local-import` (family-model, repo-contract);
      `gwz-workspace-install` (copy-contract, family-model,
      family-store-contract, repo-contract);
   4. `gwz-local-disposal` (family-model, family-store-contract,
      repo-contract, work-detector);
   5. `gwz-core`; then `gwz`.
+- Since 2026-09-29, four more crates under `crates/`, from the
+  [core session crate map](../../dev-docs/GwzCoreSessionCrateMap.md)'s §6:
+  `gwz-ids` (step 2), a runtime dependency of gwz-core and `gwz-family-store`;
+  `gwz-session-contract` and `gwz-session-channel` (step 3), which gwz-core
+  depends on from step 4; and `gwz-session-host` (step 4), a runtime
+  dependency of gwz-core. Their layers are above. They publish like the other
+  runtime internals, so D1's count becomes nineteen. Their
+  crates.io names are registered with the map's other new names, just before
+  release preparation begins (the map's §8, decision 3).
 - gwz-core depends on `taut-shape` by git revision `7fd171b`, which is an
   ancestor of the published 0.9.1 tag (`70110e2`), not the tag itself.
   taut-shape 0.9.2, released 2026-09-12, differs from 0.9.1 only by

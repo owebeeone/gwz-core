@@ -38,7 +38,7 @@ fn clone_request(name: &str) -> crate::CloneLocalWorkspaceRequest {
 }
 
 fn family_view(root: &Path) -> (PathBuf, gwz_family_model::FamilyView) {
-    match gwz_family_store::YamlFamilyStore::new()
+    match crate::local_clone::family_merge::family_store()
         .read_view(&FamilyLocation::new(root))
         .expect("the family reads")
     {
@@ -117,7 +117,7 @@ fn root_to_a_verbatim_create_is_independent_installed_and_ready() {
     assert_eq!(row.source_path, ROOT_PATH);
     assert_eq!(row.last_error, None);
     // The pointer names the root; reading the family from A reaches it.
-    match gwz_family_store::YamlFamilyStore::new()
+    match crate::local_clone::family_merge::family_store()
         .read_view(&FamilyLocation::new(&dest))
         .unwrap()
     {
@@ -530,7 +530,7 @@ fn a_clone_of_a_clone_registers_on_the_root_and_collisions_refuse() {
         !b.join(".gwz/local-family.yml").exists(),
         "B holds no index: A's pointer was not copied and B got its own"
     );
-    match gwz_family_store::YamlFamilyStore::new()
+    match crate::local_clone::family_merge::family_store()
         .read_view(&FamilyLocation::new(&b))
         .unwrap()
     {

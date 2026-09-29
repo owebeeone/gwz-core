@@ -136,11 +136,11 @@ jobs:
           python -m unittest scripts/checks/test_check_local_clone_boundaries.py -v
       - name: Crate version lockstep and registry metadata gate
         # S1.2 of dev-docs/GwzCratesIoPlan.md (D1/D2/D8, adopted 2026-09-13).
-        # gwz-core carries the product version; the fourteen crates under
+        # gwz-core carries the product version; the crates under
         # crates/ share their own 0.0.N line, every internal dependency edge
         # names that version beside its `path`, every internal dev edge stays
-        # path-only, nothing depends on git, and each of the thirteen published
-        # crates carries repository/readme/license/description while the
+        # path-only, nothing depends on git, and each published crate carries
+        # repository/readme/license/description while the
         # dev-only fixtures crate alone keeps `publish = false`. These are the
         # assertions crates.io makes at publish time, made here on every push
         # instead. Its inputs are gwz-core's own manifests, so unlike the
@@ -184,6 +184,10 @@ jobs:
           test -n "$names"
           for name in $names; do
             cargo test -p "$name" --lib --locked
+            # The doctests too: gwz-session-host's compile_fail examples stand in
+            # for CS1.4's nesting test (steps review, Consistency P3-3). A crate
+            # without doctests passes at once.
+            cargo test -p "$name" --doc --locked
             # LCM1.0c-rem1 optional ride-along: the root job clippies gwz-core
             # only, so lint each library here too.
             cargo clippy -p "$name" --all-targets --locked -- -D warnings

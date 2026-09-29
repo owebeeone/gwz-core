@@ -121,7 +121,7 @@ impl CoreDisposalPorts {
     ) -> Self {
         Self {
             inspector: LocalRepoInspector::new(),
-            store: YamlFamilyStore::new(),
+            store: crate::local_clone::family_merge::family_store(),
             root,
             view,
             name,

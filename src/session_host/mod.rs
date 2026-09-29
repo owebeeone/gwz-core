@@ -4,27 +4,34 @@
 //! (`dev-docs/GwzCoreSessionPlan.md`).
 //!
 //! Phase 1 freezes these interfaces, and nothing calls them yet:
-//! - CS1.4: the host context and the session context (§5.6), the operation gate
-//!   and its cancellation token (O7, O8), the handler's context (§5.2, §16), the
-//!   limits of §1 and `open` (§9), in `context`, `gate` and `limits`;
-//! - CS1.5: the endpoint environment snapshot (§5.6, O9), in `environment`.
+//! - CS1.4: the host context and the session context (§5.6) and `open` (§9),
+//!   in `context`;
+//! - CS1.5: the endpoint environment snapshot (§5.6, O9), in `environment`;
 //! - CS1.9: the host context's bounded `shutdown` and its `ShutdownReport`,
-//!   `open`'s `transport_off` and the snapshot's zeroization (§5.6 as amended).
+//!   `open`'s `transport_off` and the snapshot's zeroization (§5.6 as amended);
+//! - CS1.2's core side: `open` returns the client end of gwz-session-channel's
+//!   in-process pair, which carries gwz-session-contract's frames.
 //!
-//! The channel's frames and queues are CS1.2's. `ClientChannel` is the seam it
-//! fills.
+//! The core session crate map (gwz-dev `dev-docs/GwzCoreSessionCrateMap.md`)
+//! moved the rest into crates, which this module composes and re-exports at
+//! its frozen paths:
+//! - gwz-session-host: CS1.4's operation gate, cancellation token and handler
+//!   context (O7, O8, §5.2), with the map's nesting design in place of a
+//!   thread-local; the limits of §1 and their validation; and the host
+//!   context's supervisor (§6 step 4). Core's `SessionContext` is the gates'
+//!   per-session data, and `errors` maps the crate's errors to core's.
+//! - gwz-session-contract and gwz-session-channel: the frames, lanes and
+//!   channel of §3 (§6 step 3).
 
 pub(crate) mod context;
 pub(crate) mod environment;
-// The gate's callers are CS1.6's dispatch and Phase 2's host (CS2.2, CS2.4,
-// CS2.5, CS2.8, CS2.11, CS2.12); until they land, nothing in production reaches it.
-#[allow(
-    dead_code,
-    reason = "frozen by CS1.4; CS1.6 and Phase 2 are its first callers"
-)]
-pub(crate) mod gate;
-pub(crate) mod limits;
+mod errors;
 
 pub use context::{ClientChannel, HostContext, SessionOptions, ShutdownReport, open};
 pub use environment::EnvironmentSnapshot;
-pub use limits::{Limits, MAX_FRAME_BYTES, MAX_READ_WAIT};
+pub use gwz_session_contract::MAX_FRAME_BYTES;
+// What a `ClientChannel`'s send and recv take and return (CS1.2's core side).
+pub use gwz_session_contract::{
+    Closed, Frame, FrameError, FrameSink, FrameSource, Lane, SendError, Tag,
+};
+pub use gwz_session_host::{Limits, MAX_READ_WAIT};

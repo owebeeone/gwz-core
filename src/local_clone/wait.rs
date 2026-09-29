@@ -71,14 +71,13 @@ pub(crate) fn lock_family<S: FamilyStore>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gwz_family_store::YamlFamilyStore;
 
     #[test]
     fn a_wait_of_none_reports_busy_at_once() {
         let temp = tempfile::tempdir().expect("temporary directory");
         let root = temp.path().join("root");
         std::fs::create_dir_all(root.join(".gwz")).unwrap();
-        let store = YamlFamilyStore::new();
+        let store = crate::local_clone::family_merge::family_store();
         let location = FamilyLocation::new(&root);
         let held = lock_family(&store, &location, None).expect("the first lock");
         let started = Instant::now();
@@ -96,7 +95,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("temporary directory");
         let root = temp.path().join("root");
         std::fs::create_dir_all(root.join(".gwz")).unwrap();
-        let store = YamlFamilyStore::new();
+        let store = crate::local_clone::family_merge::family_store();
         let location = FamilyLocation::new(&root);
         let held = lock_family(&store, &location, None).expect("the first lock");
         let wait = POLL_INTERVAL * 4;
@@ -115,7 +114,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("temporary directory");
         let root = temp.path().join("root");
         std::fs::create_dir_all(root.join(".gwz")).unwrap();
-        let store = YamlFamilyStore::new();
+        let store = crate::local_clone::family_merge::family_store();
         let location = FamilyLocation::new(&root);
         let held = lock_family(&store, &location, None).expect("the first lock");
         std::thread::scope(|scope| {

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests and negative fixtures for the crate-version lockstep gate.
 
-Positive: a synthetic fourteen-crate tree of the real shape passes, and so
+Positive: a synthetic eighteen-crate tree of the real shape passes, and so
 does the real gwz-core checkout this file lives in. Negative fixtures, one per
 rule of `check_crate_versions.py`: a product version that is not `X.Y.Z`, a
 version that disagrees with `--tag`, an internal version off the `0.0.N` line,
@@ -10,13 +10,13 @@ one internal crate off the shared line, a `[dependencies]` edge with no
 `[dev-dependencies]` edge carrying a `version`, one with no `path`, a git
 dependency, a published crate missing each of `repository`/`readme`/`license`/
 `description`, a published crate with `publish = false`, the fixtures crate
-without it, and a crate count that drifts from fourteen. Each fixture is a
+without it, and a crate count that drifts from eighteen. Each fixture is a
 synthetic manifest tree in a temporary directory, so the checker -- not cargo
 -- is the rejector, and each assertion requires the finding to NAME the
 offending crate.
 
 Also here, because the ordering lives in the same script: `--print-publish-order`
-over the real checkout prints fourteen names ending at `gwz-core`, places every
+over the real checkout prints eighteen names ending at `gwz-core`, places every
 crate after its dependencies, and agrees with plan section 1's layers; a
 synthetic cycle has no order at all.
 """
@@ -35,12 +35,14 @@ from pathlib import Path
 SCRIPT = Path(__file__).with_name("check_crate_versions.py")
 REAL_ROOT = SCRIPT.resolve().parents[2]
 
-# The fourteen internal crates of plan section 1, in its publish order. The
+# The eighteen internal crates of plan section 1, in its publish order. The
 # directory of each is its name without the `gwz-` prefix, as in the real tree.
 INTERNAL = (
     "gwz-repo-contract",
     "gwz-copy-contract",
     "gwz-family-model",
+    "gwz-ids",
+    "gwz-session-contract",
     "gwz-family-store-contract",
     "gwz-work-detector",
     "gwz-history-check",
@@ -48,6 +50,8 @@ INTERNAL = (
     "gwz-repo-inspect",
     "gwz-refcopy",
     "gwz-local-testrepo",
+    "gwz-session-channel",
+    "gwz-session-host",
     "gwz-family-store",
     "gwz-local-import",
     "gwz-workspace-install",
@@ -55,19 +59,23 @@ INTERNAL = (
 )
 FIXTURES_CRATE = "gwz-local-testrepo"
 # Plan section 1's dependency layers, which fix the publish order, for the
-# fifteen-crate publish set minus the unpublished fixtures crate. The layer of
+# nineteen-crate publish set minus the unpublished fixtures crate. The layer of
 # a crate must be strictly above every crate it depends on; `gwz-core` is the
 # composition root and publishes last.
 PLAN_LAYERS = {
     "gwz-repo-contract": 1,
     "gwz-copy-contract": 1,
     "gwz-family-model": 1,
+    "gwz-ids": 1,
+    "gwz-session-contract": 1,
     "gwz-family-store-contract": 2,
     "gwz-work-detector": 2,
     "gwz-history-check": 2,
     "gwz-repo-factory": 2,
     "gwz-repo-inspect": 2,
     "gwz-refcopy": 2,
+    "gwz-session-channel": 2,
+    "gwz-session-host": 2,
     "gwz-family-store": 3,
     "gwz-local-import": 3,
     "gwz-workspace-install": 3,
@@ -224,17 +232,17 @@ class CrateVersionGateTests(unittest.TestCase):
         self.assertEqual([], findings)
         self.assertEqual("1.0.12", summary.core_version)
         self.assertEqual("0.0.1", summary.internal_version)
-        self.assertEqual(14, summary.crates)
-        self.assertEqual(13, summary.published)
+        self.assertEqual(18, summary.crates)
+        self.assertEqual(17, summary.published)
         self.assertEqual(1, summary.unpublished)
-        self.assertEqual(14, summary.versioned_edges)  # 13 from core, 1 inside a crate
+        self.assertEqual(18, summary.versioned_edges)  # 17 from core, 1 inside a crate
         self.assertEqual(2, summary.path_only_edges)
 
     def test_the_real_gwz_core_tree_passes(self) -> None:
         findings, summary = self.gate.run(REAL_ROOT, None)
         self.assertEqual([], findings)
         self.assertEqual(self.gate.EXPECTED_CRATES, summary.crates)
-        self.assertEqual(13, summary.published)
+        self.assertEqual(17, summary.published)
 
     def test_an_external_gwz_package_keeps_its_own_version_line(self) -> None:
         # The gwz-git2 fork of git2-rs and its gwz-libgit2-sys are gwz-* packages
@@ -292,9 +300,9 @@ class CrateVersionGateTests(unittest.TestCase):
         requirements[core.name] = published
         return requirements
 
-    def test_the_publish_order_prints_fourteen_names_ending_at_the_core(self) -> None:
+    def test_the_publish_order_prints_eighteen_names_ending_at_the_core(self) -> None:
         order = self.real_order()
-        self.assertEqual(14, len(order), order)
+        self.assertEqual(18, len(order), order)
         self.assertEqual("gwz-core", order[-1])
         self.assertEqual(len(set(order)), len(order), order)
         self.assertNotIn(FIXTURES_CRATE, order)
@@ -326,7 +334,7 @@ class CrateVersionGateTests(unittest.TestCase):
                     f"(layer {PLAN_LAYERS[dependency]}), which plan section 1 does not allow",
                 )
         sizes = Counter(PLAN_LAYERS.values())
-        self.assertEqual({1: 3, 2: 6, 3: 3, 4: 1, 5: 1}, dict(sizes))
+        self.assertEqual({1: 5, 2: 8, 3: 3, 4: 1, 5: 1}, dict(sizes))
         self.assertEqual(set(self.real_order()), set(PLAN_LAYERS))
 
     def test_a_dependency_cycle_has_no_publish_order(self) -> None:
@@ -485,7 +493,7 @@ class CrateVersionGateTests(unittest.TestCase):
         findings = self.findings(
             edit={EDGE_CRATE: ('readme = "README.md"', 'readme = "README.md"\npublish = false')}
         )
-        self.assert_names(findings, EDGE_CRATE, "one of the thirteen published internal crates")
+        self.assert_names(findings, EDGE_CRATE, "one of the published internal crates")
 
     def test_the_fixtures_crate_must_keep_publish_false(self) -> None:
         findings = self.findings(edit={FIXTURES_CRATE: ("publish = false\n", "")})
@@ -500,7 +508,7 @@ class CrateVersionGateTests(unittest.TestCase):
 
     # --- the crate set itself ---
 
-    def test_a_crate_count_off_fourteen_is_rejected(self) -> None:
+    def test_a_crate_count_off_eighteen_is_rejected(self) -> None:
         findings = self.findings(crates=INTERNAL[:-1])
         self.assert_names(findings, "crates/", "but the publish order and")
         self.assertIn(INTERNAL[0], findings[0])

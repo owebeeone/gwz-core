@@ -50,7 +50,7 @@ CORE_VERSION = "1.0.12"
 INTERNAL_VERSION = "0.0.2"
 TAG = f"v{CORE_VERSION}"
 # Two internals and the core: enough to prove the order is walked and that a
-# failure stops the crates behind it, without restating the real fourteen.
+# failure stops the crates behind it, without restating the real list.
 INTERNALS = ("gwz-copy-contract", "gwz-family-model")
 ORDER = (*INTERNALS, "gwz-core")
 RATE_LIMIT_OUTPUT = (
@@ -236,7 +236,7 @@ class PlanTests(PublisherTestCase):
             text=True,
             check=True,
         ).stdout.split()
-        self.assertEqual(14, len(names))
+        self.assertEqual(18, len(names))
         self.assertEqual("gwz-core", names[-1])
         self.assertEqual([], [name for name in names if name not in versions], versions)
         internals = {versions[name] for name in names if name != "gwz-core"}

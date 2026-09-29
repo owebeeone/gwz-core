@@ -16,7 +16,7 @@ operations.
 | `operation` | Operation runtime, events, aggregate/member execution helpers, concurrency helpers, and response envelope helpers. |
 | `protocol` | Generated taut protocol module and conversion helpers. |
 | `runtime` | Clock and id helpers. |
-| `session_host` | The core session host's frozen foundations (see "Session Host" below): `HostContext` with its `ShutdownReport`, `EnvironmentSnapshot`, `Limits` with `MAX_READ_WAIT` and `MAX_FRAME_BYTES`, `SessionOptions`, `open` and `ClientChannel`. Nothing calls them yet. |
+| `session_host` | The core session host's frozen foundations (see "Session Host" below): `HostContext` with its `ShutdownReport`, `EnvironmentSnapshot`, `Limits` with `MAX_READ_WAIT` and `MAX_FRAME_BYTES`, `SessionOptions`, `open` and `ClientChannel`, with the frame types a `ClientChannel` carries: `Frame`, `Tag`, `Lane`, `SendError`, `Closed`, `FrameError`, `FrameSink` and `FrameSource`. `Limits` and `MAX_READ_WAIT` are re-exported from the `gwz-session-host` crate, and the frame types and `MAX_FRAME_BYTES` from `gwz-session-contract`. Nothing calls them yet. |
 | `status` | `handle_status` and status projections. |
 | `workspace` | Workspace path parsing, discovery, and create preflight. |
 | `workspace_ops` | Synchronous operation handlers. |
@@ -125,9 +125,11 @@ support. They have no `gwz-core` service method and no core handler.
 
 `session_host` holds the first interfaces of the core session host that the
 core session contract specifies (gwz-dev `dev-docs/GwzCoreSessionDesign.md`,
-built by steps CS1.4, CS1.5 and CS1.9 of `dev-docs/GwzCoreSessionPlan.md`). A
-driver opens a session with them. The channel's `send` and `recv` arrive with
-CS1.2, so a session cannot carry calls yet.
+built by steps CS1.4, CS1.5 and CS1.9 of `dev-docs/GwzCoreSessionPlan.md`, and
+steps 3 and 4 of `dev-docs/GwzCoreSessionCrateMap.md`). A driver opens a
+session with them. Its `ClientChannel` sends and receives frames, but no
+session host answers them before the plan's Phase 2, so a session cannot carry
+calls yet.
 
 ```rust
 use gwz_core::session_host::{EnvironmentSnapshot, HostContext, SessionOptions, open};
@@ -204,6 +206,19 @@ let report = host.shutdown(); // at the driver's end: what remains after at most
   the session's context on the calling thread and returns a `ClientChannel`.
   Dropping the `ClientChannel` ends the session and drops its context,
   snapshot included.
+- `ClientChannel` is the client end of the session's in-process channel
+  (contract §3). `send(frame, lane)` never waits: on a full lane it refuses
+  with `SendError::Full`, which gives the frame back, and the channel stays
+  open. A control call, `operation.cancel` or `session.close`, goes on
+  `Lane::Control`, whose reserve of `control_reserve` frames the
+  outstanding-call limit never refuses; every other call goes on
+  `Lane::Call`. The caller chooses the lane until CS1.6, whose method
+  registry lets core classify each frame as contract §3 requires. `recv()`
+  waits for the host's next frame or the session's end,
+  which it reports as `Closed`. `close()` ends the session as dropping the
+  `ClientChannel` does. A frame whose tag the in-process channel does not
+  carry (it carries 1 to 3), or larger than `MAX_FRAME_BYTES`, ends the
+  session. `ClientChannel` implements `FrameSink` and `FrameSource`.
 
 ## Backend Injection
 

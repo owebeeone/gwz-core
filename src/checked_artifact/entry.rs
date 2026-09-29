@@ -957,6 +957,7 @@ pub(crate) fn bootstrap_merge_start_parents(
 /// absent rather than degraded here.
 pub(crate) fn create_merge_store_record(
     filesystem: &dyn FileSystem,
+    ids: &gwz_ids::IdSource,
     root: &Path,
     relative: &Path,
     goal: &[u8],
@@ -969,7 +970,7 @@ pub(crate) fn create_merge_store_record(
             ..
         })
     ) {
-        return create_merge_store_record_raw(filesystem, root, relative, goal);
+        return create_merge_store_record_raw(filesystem, ids, root, relative, goal);
     }
     let artifact = CheckedArtifact::acquire_with_escape_in(
         filesystem,
@@ -1010,6 +1011,7 @@ pub(crate) fn create_merge_store_record(
 /// where the record belongs must refuse, not be followed.
 fn create_merge_store_record_raw(
     filesystem: &dyn FileSystem,
+    ids: &gwz_ids::IdSource,
     root: &Path,
     relative: &Path,
     goal: &[u8],
@@ -1021,7 +1023,7 @@ fn create_merge_store_record_raw(
             format!("merge record '{}' already exists", relative.display()),
         ));
     }
-    crate::verified_write::write_atomic_verified(filesystem, &path, goal)
+    crate::verified_write::write_atomic_verified(filesystem, ids, &path, goal)
 }
 
 /// The catalog doors' error rendering, as a named function.

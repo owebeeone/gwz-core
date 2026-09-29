@@ -126,6 +126,134 @@ static K: Mutex<u8> = Mutex::new(0);
         self.assertEqual(occurrence.line, 4)
 
 
+class GlobalState(unittest.TestCase):
+    """GwzCoreSessionCrateMap §1, "No globals": which declarations are global mutable state.
+
+    A `permanent` entry may only be immutable data, a cache of immutable data, or
+    state a named dependency imposes. Global mutable state is any counter, flag,
+    lock-protected or cell-held state, or thread-local, read from the declaration.
+    """
+
+    def states(self, source):
+        return {o.name: o.state for o in checker.analyze(source).occurrences}
+
+    def test_counters_flags_locks_cells_and_thread_locals_are_mutable_state(self):
+        states = self.states('''
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+static FLAG: std::sync::atomic::AtomicBool = AtomicBool::new(false);
+static INIT: Once = Once::new();
+static LOCK: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+static ORPHANS: OnceLock<std::sync::Mutex<Vec<Child>>> = OnceLock::new();
+static SWAP: ArcSwapOption<String> = ArcSwapOption::const_empty();
+static CELL: SyncUnsafeCell<u8> = SyncUnsafeCell::new(0);
+static mut RAW: u8 = 0;
+static PER_THREAD: ThreadLocal<u8> = ThreadLocal::new();
+thread_local! { static SLOT: Cell<bool> = const { Cell::new(false) }; static PLAIN: u8 = 0; }
+fn f() {
+    git2::opts::set_server_timeout_in_milliseconds(1);
+    std::panic::set_hook(hook);
+}
+''')
+        expected = {
+            'COUNTER': 'counter or flag (AtomicU64)',
+            'FLAG': 'counter or flag (AtomicBool)',
+            'INIT': 'counter or flag (Once)',
+            'LOCK': 'lock-protected state (Mutex)',
+            'SLOTS': 'lock-protected state (Semaphore)',
+            'ORPHANS': 'lock-protected state (Mutex)',
+            'SWAP': 'cell-held state (ArcSwapOption)',
+            'CELL': 'cell-held state (SyncUnsafeCell)',
+            'RAW': 'static mut',
+            'PER_THREAD': 'thread-local (ThreadLocal)',
+            # A thread-local counts as global state whatever it holds.
+            'SLOT': 'thread-local',
+            'PLAIN': 'thread-local',
+            'git2::opts::set_server_timeout_in_milliseconds': 'libgit2',
+            'panic::set_hook': 'hook',
+        }
+        self.assertEqual(set(states), set(expected))
+        for name, phrase in expected.items():
+            self.assertIn(phrase, states[name] or '', name)
+
+    def test_a_type_the_scan_cannot_see_into_counts_as_mutable(self):
+        # Fail closed: a lexical scan cannot see inside a named type, and every
+        # such static the three allowlists list today (agent_job's HUB,
+        # gwz-py's REGISTRY and STORE) is in fact a mutable registry.
+        states = self.states('''
+static HUB: OnceLock<Hub> = OnceLock::new();
+static CUSTOM: Registry = Registry::new();
+static HANDLER: LazyLock<Box<dyn Fn() + Send + Sync>> = LazyLock::new(|| Box::new(|| ()));
+''')
+        self.assertIn('Hub', states['HUB'] or '')
+        self.assertIn('Registry', states['CUSTOM'] or '')
+        self.assertIn('Fn', states['HANDLER'] or '')
+
+    def test_lazy_static_statics_are_found_whatever_they_hold(self):
+        # `lazy_static!` declares `static ref NAME: T`, a lazily initialised
+        # global. Every one is listed, even of a primitive or reference type
+        # that a plain static would pass, and its type classifies it as a
+        # static's does: mutable state, an unseen type, or a cache.
+        found = {o.name: (o.kind, o.state) for o in checker.analyze('''
+lazy_static! {
+    static ref CACHE: Mutex<HashMap<String, u8>> = Mutex::new(HashMap::new());
+    #[doc = "the hub"]
+    pub(crate) static ref HUB: Hub = Hub::new();
+    pub static ref LIMIT: u32 = 3;
+    static ref NAME: &'static str = "gwz";
+}
+lazy_static::lazy_static! { pub static ref NEXT: AtomicU64 = AtomicU64::new(0); }
+''').occurrences}
+        self.assertEqual(set(found), {'CACHE', 'HUB', 'LIMIT', 'NAME', 'NEXT'})
+        self.assertEqual({kind for kind, _ in found.values()}, {'lazy_static'})
+        self.assertIn('lock-protected state (Mutex)', found['CACHE'][1] or '')
+        self.assertIn('Hub', found['HUB'][1] or '')
+        self.assertIn('counter or flag (AtomicU64)', found['NEXT'][1] or '')
+        self.assertEqual((found['LIMIT'][1], found['NAME'][1]), (None, None))
+
+    def test_a_static_a_macro_rules_declares_is_listed_unparsed(self):
+        # Safety P3-3 of the steps' review: outside the two known macros too, a
+        # `static` whose declaration the scan cannot read is listed, as global
+        # mutable state. `static` is a keyword; `'static` is a lifetime token.
+        occurrences = checker.analyze('''
+macro_rules! counter { ($name:ident) => { static $name: AtomicU64 = AtomicU64::new(0); }; }
+counter!(D_MACRO);
+fn f(text: &'static str) -> &'static str { text }
+''').occurrences
+        self.assertEqual([(o.kind, o.name) for o in occurrences], [('static', '<unparsed static>')])
+        self.assertTrue(occurrences[0].state)
+
+    def test_a_raw_identifier_named_static_is_not_a_declaration(self):
+        self.assertEqual(found('fn f() { let r#static = 1; let _ = r#static; }\n'), [])
+
+    def test_a_static_those_macros_declare_is_never_skipped(self):
+        # Fail closed: a generated name the scan cannot read is still listed,
+        # as global mutable state, so it fails as NEW until someone looks.
+        occurrences = checker.analyze('''
+macro_rules! registry { ($name:ident) => { lazy_static! { static ref $name: Mutex<u8> = Mutex::new(0); } }; }
+macro_rules! slot { ($name:ident) => { thread_local! { static $name: Cell<u8> = Cell::new(0); } }; }
+''').occurrences
+        self.assertEqual([(o.kind, o.name) for o in occurrences],
+                         [('lazy_static', '<unparsed static>'), ('thread_local', '<unparsed static>')])
+        self.assertTrue(all(o.state for o in occurrences))
+
+    def test_immutable_data_and_caches_of_it_are_not_mutable_state(self):
+        states = self.states('''
+static NAMES: LazyLock<HashMap<&'static str, u32>> = LazyLock::new(HashMap::new);
+static ROOT: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+static GREETING: String = String::new();
+static TABLE: [Option<u8>; LEN] = [None; LEN];
+static PAIRS: once_cell::sync::Lazy<Vec<(String, u64)>> = once_cell::sync::Lazy::new(Vec::new);
+static DOUBLE: fn(u8) -> u8 = double;
+fn f() {
+    let home = std::env::var_os("HOME");
+    let child = std::process::Command::new("git").status();
+}
+''')
+        self.assertEqual(states, dict.fromkeys(
+            ['NAMES', 'ROOT', 'GREETING', 'TABLE', 'PAIRS', 'DOUBLE', 'env::var_os', 'Command::new("git")']))
+
+
 def write(root, files):
     for name, text in files.items():
         path = root / name
@@ -157,6 +285,27 @@ class ModuleTree(unittest.TestCase):
                              ['src/a.rs', 'src/a/nested.rs', 'src/d/e.rs', 'src/orphan.rs', 'src/x/sibling.rs'])
             self.assertEqual(result.unreached, ['src/orphan.rs'])
 
+    def test_follows_a_literal_include_and_lists_one_it_cannot_read(self):
+        # Hardening from the same finding: `include!` splices a file into its
+        # includer, so a literal path is followed like a `mod`, relative to the
+        # including file; any other production include is `<unparsed include>`.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root, {
+                'src/lib.rs': 'include!("../extra/included.rs");\n'
+                              'include!(concat!(env!("OUT_DIR"), "/generated.rs"));\n'
+                              '#[cfg(test)]\nmod tests { include!(concat!(env!("OUT_DIR"), "/t.rs")); '
+                              'include!("../extra/test_only.rs"); }\n',
+                'extra/included.rs': 'static O_INCLUDED: AtomicU64 = AtomicU64::new(0);\n',
+                'extra/test_only.rs': GLOBAL,
+            })
+            result = checker.scan(root, ['src/lib.rs'])
+            self.assertEqual(sorted(result.occurrences), [
+                ('extra/included.rs', 'static', 'O_INCLUDED'),
+                ('src/lib.rs', 'include', '<unparsed include>'),
+            ])
+            self.assertEqual(result.unreached, [])
+
 
 class Ratchet(unittest.TestCase):
     def run_check(self, entries, files):
@@ -168,9 +317,10 @@ class Ratchet(unittest.TestCase):
             return checker.check(root, allowlist)[0]
 
     def entry(self, **overrides):
-        entry = {'path': 'src/lib.rs', 'kind': 'static', 'name': 'G', 'disposition': 'debt', 'reason': 'r'}
+        entry = {'path': 'src/lib.rs', 'kind': 'static', 'name': 'G', 'disposition': 'debt', 'reason': 'r',
+                 'owner': 'o'}
         entry.update(overrides)
-        return entry
+        return {key: value for key, value in entry.items() if value is not None}
 
     def test_listed_state_passes_and_new_state_fails(self):
         self.assertEqual(self.run_check([self.entry()], {'src/lib.rs': GLOBAL}), [])
@@ -207,6 +357,56 @@ class Ratchet(unittest.TestCase):
         before = 'fn f() { let found = git2::Cred::credential_helper(&config, url, None); }\n'
         self.assertEqual(self.run_check([listed], {'src/lib.rs': before}), [])
         self.assertEqual(self.run_check([listed], {'src/lib.rs': injected}), [])
+
+    def test_permanent_global_mutable_state_names_the_dependency_that_imposes_it(self):
+        # GwzCoreSessionCrateMap §1: no counter, flag, lock- or cell-held state
+        # or thread-local is permanent unless a named dependency imposes it.
+        cases = [
+            ('static', 'C', 'static C: AtomicU64 = AtomicU64::new(0);\n'),
+            ('static', 'H', 'static H: OnceLock<Hub> = OnceLock::new();\n'),
+            ('thread_local', 'S', 'thread_local! { static S: Cell<bool> = const { Cell::new(false) }; }\n'),
+            ('libgit2', 'git2::opts::set_server_timeout_in_milliseconds',
+             'fn f() { git2::opts::set_server_timeout_in_milliseconds(1); }\n'),
+            ('hook', 'panic::set_hook', 'fn f() { std::panic::set_hook(hook); }\n'),
+            ('lazy_static', 'L', 'lazy_static! { static ref L: Mutex<u8> = Mutex::new(0); }\n'),
+        ]
+        for kind, name, source in cases:
+            listed = self.entry(kind=kind, name=name, disposition='permanent', owner=None)
+            errors = self.run_check([listed], {'src/lib.rs': source})
+            self.assertEqual(len(errors), 1, (name, errors))
+            self.assertTrue(errors[0].startswith(f'PERM  {kind} {name} in src/lib.rs: '), errors)
+            self.assertIn('imposed_by', errors[0])
+            listed['imposed_by'] = 'libgit2'
+            self.assertEqual(self.run_check([listed], {'src/lib.rs': source}), [], name)
+
+    def test_permanent_immutable_data_spawns_and_env_reads_need_no_dependency(self):
+        source = ('static NAMES: LazyLock<HashMap<&\'static str, u32>> = LazyLock::new(HashMap::new);\n'
+                  'fn f() { std::env::var("X"); Command::new("gh").env_clear(); }\n')
+        entries = [self.entry(kind=kind, name=name, disposition='permanent', owner=None)
+                   for kind, name in (('static', 'NAMES'), ('env', 'env::var'), ('process', 'Command::new("gh")'))]
+        self.assertEqual(self.run_check(entries, {'src/lib.rs': source}), [])
+
+    def test_debt_global_state_names_its_owner(self):
+        slot = 'thread_local! { static S: Cell<u8> = const { Cell::new(0) }; }\n'
+        lazy = 'lazy_static! { static ref L: u32 = 3; }\n'
+        for kind, name, source in (('static', 'G', GLOBAL), ('thread_local', 'S', slot), ('lazy_static', 'L', lazy)):
+            errors = self.run_check([self.entry(kind=kind, name=name, owner=None)], {'src/lib.rs': source})
+            self.assertEqual(len(errors), 1, errors)
+            self.assertIn('owner', errors[0])
+            self.assertIn(f"'{kind}', '{name}'", errors[0])
+            self.assertEqual(self.run_check([self.entry(kind=kind, name=name, owner='unassigned')],
+                                            {'src/lib.rs': source}), [])
+        # Spawns and env reads are not global state and keep their treatment.
+        source = 'fn f() { std::env::var("X"); std::process::Command::new("git").status(); }\n'
+        entries = [self.entry(kind=kind, name=name, owner=None)
+                   for kind, name in (('env', 'env::var'), ('process', 'Command::new("git")'))]
+        self.assertEqual(self.run_check(entries, {'src/lib.rs': source}), [])
+
+    def test_owner_and_imposed_by_are_non_empty_text(self):
+        for field_name, value in (('owner', ''), ('owner', 7), ('imposed_by', '  '), ('imposed_by', ['libgit2'])):
+            errors = self.run_check([self.entry(**{field_name: value})], {'src/lib.rs': GLOBAL})
+            self.assertEqual(len(errors), 1, (field_name, value, errors))
+            self.assertIn(f'{field_name} must be', errors[0])
 
 
 class ReconciledCommit(unittest.TestCase):
@@ -305,6 +505,69 @@ class TransportPin(unittest.TestCase):
         # The allowlist is the only place the commit is written.
         loaded, _ = checker.load_allowlist(TRANSPORT_ALLOWLIST)
         self.assertNotIn(loaded.reconciled_commit, text)
+
+
+def listed(path):
+    data = json.loads(path.read_text(encoding='utf-8'))
+    return {(e['path'], e['kind'], e['name']): e for e in data['entries']}, data['rule']
+
+
+class Dispositions(unittest.TestCase):
+    """GwzCoreSessionCrateMap §6 step 1: the counters and CROSSING become debt, each with its owner;
+    steps 2 and 4 then remove the temp-name counters and CROSSING."""
+
+    def test_the_temp_name_counters_are_gone(self):
+        # Crate map §6 step 2: gwz-ids replaced the four temp-name counters,
+        # so their entries left the list with them.
+        core, _ = listed(checker.DEFAULT_ALLOWLIST)
+        for path, name in (('crates/family-store/src/publish.rs', 'SEQUENCE'),
+                           ('src/artifact/encoding.rs', 'TEMP_SEQ'),
+                           ('src/verified_write.rs', 'TEMP_SEQUENCE'),
+                           ('src/workspace_ops/merge/v1_lifecycle/store/rewrite.rs', 'TEMP_SEQUENCE')):
+            self.assertNotIn((path, 'static', name), core)
+        self.assertEqual(len(core), 26)
+
+    def test_crossing_is_gone(self):
+        # Crate map §6 step 4: the gate moved to gwz-session-host, where
+        # non-Clone controls and a per-gate thread record replace the
+        # thread-local, so its entry left the list with it.
+        core, _ = listed(checker.DEFAULT_ALLOWLIST)
+        self.assertNotIn(('src/session_host/gate.rs', 'thread_local', 'CROSSING'), core)
+        self.assertEqual([key for key in core if key[0].startswith('src/session_host/')], [])
+
+    def test_the_counters_are_debt_with_their_owners(self):
+        core, _ = listed(checker.DEFAULT_ALLOWLIST)
+        transport, _ = listed(TRANSPORT_ALLOWLIST)
+        extraction = "CS7.1, the candidate crates' extraction (IdSource)"
+        expected = [
+            (core, 'src/git/endpoint/https_auth.rs', 'static', 'NEXT_ID', extraction),
+            (core, 'src/git/endpoint/https_local.rs', 'static', 'NEXT_SESSION', extraction),
+            (core, 'src/git/endpoint/ssh_worker.rs', 'static', 'NEXT_WORKER', extraction),
+            (core, 'src/transport_host/session.rs', 'static', 'SERIAL', extraction),
+            (transport, 'src/pool/machine.rs', 'static', 'NEXT_POOL',
+             'CS7.2–CS7.6 (the pool takes its ID from its host)'),
+        ]
+        for entries, path, kind, name, owner in expected:
+            entry = entries[(path, kind, name)]
+            self.assertEqual((entry['disposition'], entry.get('owner')), ('debt', owner), name)
+            self.assertNotIn('imposed_by', entry, name)
+
+    def test_libgit2_timeout_stays_permanent_naming_libgit2(self):
+        core, _ = listed(checker.DEFAULT_ALLOWLIST)
+        for kind, name in (('static', 'TIMEOUT_STATE'),
+                           ('libgit2', 'git2::opts::set_server_connect_timeout_in_milliseconds'),
+                           ('libgit2', 'git2::opts::set_server_timeout_in_milliseconds')):
+            entry = core[('src/git/gitbackend/transport_support.rs', kind, name)]
+            self.assertEqual((entry['disposition'], entry.get('imposed_by')), ('permanent', 'libgit2'), name)
+
+    def test_the_rule_states_the_definition(self):
+        _, rule = listed(checker.DEFAULT_ALLOWLIST)
+        for phrase in ('immutable data', 'a cache of immutable data', 'a named dependency imposes',
+                       'counter, flag, lock-protected or cell-held state, or thread-local',
+                       "'imposed_by'", "'owner'", 'GwzCoreSessionCrateMap §1'):
+            self.assertIn(phrase, rule)
+        # The gwz-transport copy defers to that rule rather than restating it.
+        self.assertIn("gwz-core's scripts/checks/process_globals_allowlist.json", listed(TRANSPORT_ALLOWLIST)[1])
 
 
 class Repository(unittest.TestCase):

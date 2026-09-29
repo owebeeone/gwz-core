@@ -69,6 +69,14 @@ gwz-repo-factory = { path = "crates/repo-factory", version = "0.0.8" }
 gwz-repo-inspect = { path = "crates/repo-inspect", version = "0.0.8" }
 gwz-work-detector = { path = "crates/work-detector", version = "0.0.8" }
 gwz-workspace-install = { path = "crates/workspace-install", version = "0.0.8" }
+# The core session crate map's ordinary crates (gwz-dev dev-docs/GwzCoreSessionCrateMap.md
+# §2), under the same library boundaries and the same gate.
+gwz-ids = { path = "crates/ids", version = "0.0.8" }
+# Steps 3 and 4 (map §6): the channel's contract and its in-process adapter,
+# which `open` wires, and the session host's gates, limits and supervisor.
+gwz-session-channel = { path = "crates/session-channel", version = "0.0.8" }
+gwz-session-contract = { path = "crates/session-contract", version = "0.0.8" }
+gwz-session-host = { path = "crates/session-host", version = "0.0.8" }
 cap-fs-ext = "4"
 cap-std = "4"
 cfg-if = "1"
@@ -101,6 +109,9 @@ serde_json = "1"
 # only -- the boundary gate refuses a normal dependency on a harness package,
 # and nothing in src/ outside cfg(test) may name it.
 gwz-local-testrepo = { path = "crates/local-testrepo" }
+# Step 4 (map §6): the host context's tests watch its supervisor's thread through
+# the crate's test hook, which only this dev edge turns on (map §1).
+gwz-session-host = { path = "crates/session-host", features = ["test-support"] }
 
 [build-dependencies]
 sha2 = "0.10"

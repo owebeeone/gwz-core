@@ -44,16 +44,13 @@ pub fn marker_path(root: &Path, gwz_commit_id: &str) -> PathBuf {
     root.join(MARKER_DIR).join(format!("{gwz_commit_id}.yaml"))
 }
 
-pub(super) fn temp_path(path: &Path) -> ModelResult<PathBuf> {
+pub(super) fn temp_path(ids: &gwz_ids::IdSource, path: &Path) -> ModelResult<PathBuf> {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| invalid("atomic write target must have a file name"))?;
-    // F12: a unique temp name per process + per call so concurrent writers (or a stale
-    // temp left by a crashed prior write) never collide; the rename publishes atomically.
-    let pid = std::process::id();
-    let seq = TEMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(path.with_file_name(format!("{file_name}.{pid}.{seq}.tmp")))
+    // F12: a unique temp name per call, from the caller's source, so concurrent writers
+    // (or a stale temp left by a crashed prior write) never collide; the rename publishes
+    // atomically.
+    Ok(path.with_file_name(format!("{file_name}.{}.tmp", ids.unique())))
 }
-
-pub(super) static TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

@@ -1,0 +1,37 @@
+# Integration crate: the core session host's machinery. Step 4 of the crate
+# map moves CS1.4's operation gate, with the map's §2 nesting design, CS1.4's
+# session limits and the host context's supervisor (CS1.4, CS1.9) out of
+# gwz-core, with crate-local error types. Core's per-session data passes
+# through as a type parameter, so the environment snapshot stays in core;
+# Phase 2's generic machinery lands here next. Allowed first-party
+# dependencies: session-contract, ids (gwz-dev
+# dev-docs/GwzCoreSessionCrateMap.md §2); nothing moved so far needs unique
+# numbers, so ids is not declared yet. std only.
+[package]
+name = "gwz-session-host"
+version = "0.0.8"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-2.0-only"
+description = "An internal component crate of GWZ's core session: the session host's operation gates, session limits and supervisor."
+repository = "https://github.com/owebeeone/gwz-core"
+readme = "README.md"
+keywords = ["gwz", "git", "workspace", "internal"]
+# What the registry package carries (dev-docs/GwzCratesIoPlan.md D4). No
+# `LICENSE` entry: the SPDX `license` field above is what crates.io reads, and
+# the repository's single GPL-2.0-only text is not copied per crate.
+# Anchored with a leading `/`, as gwz-core's own list explains.
+include = ["/Cargo.toml", "/src/**", "/README.md"]
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# A view of the supervisor's thread for gwz-core's tests of its host context
+# (crate map §1: crate internals reached through a `test-support` feature
+# that only core's dev-dependencies enable, so the public API does not grow
+# for tests).
+test-support = []
+
+[dependencies]
+gwz-session-contract = { path = "../session-contract", version = "0.0.8" }

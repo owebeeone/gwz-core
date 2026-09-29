@@ -17,6 +17,7 @@ rust_library(
     deps = all_crate_deps(normal = True) + [
         "//gwz-core/crates/family-model:gwz_family_model",
         "//gwz-core/crates/family-store-contract:gwz_family_store_contract",
+        "//gwz-core/crates/ids:gwz_ids",
     ],
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//gwz-core:__subpackages__"],

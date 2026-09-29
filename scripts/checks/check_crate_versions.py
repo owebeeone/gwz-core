@@ -2,8 +2,8 @@
 """Lockstep gate: the crate versions and dependency edges a crates.io publish needs.
 
 Authority: gwz-core `dev-docs/GwzCratesIoPlan.md` (ADOPTED 2026-09-13) D1, D2
-and D8, implemented by its step S1.2. Fifteen crates publish; the fourteen
-crates under `crates/` share their own `0.0.N` internal line while gwz-core
+and D8, implemented by its step S1.2. The crates under `crates/`
+(`EXPECTED_CRATES` of them) share their own `0.0.N` internal line while gwz-core
 carries the product version, and `gwz-local-testrepo` alone stays
 `publish = false` because it is a path-only dev-dependency that cargo drops
 from the published package. crates.io refuses a published crate that depends
@@ -17,10 +17,10 @@ What the gate checks (pure manifest metadata, read with `tomllib`, no build):
 - gwz-core's `[package].version` is a plain `X.Y.Z` or `X.Y.Z-rc.N` (the shape
   the release script accepts) and, with `--tag vX.Y.Z`, equals the tag's
   version -- the assertion the publish job makes before it uploads anything.
-- All fourteen crates under `crates/` carry one and the same version, on the
+- All the crates under `crates/` carry one and the same version, on the
   internal `^0\\.0\\.[0-9]+$` line (D2). A crate whose version differs is named;
   so is one whose version is off the line entirely.
-- Every entry naming one of the fourteen crates under `crates/` in a
+- Every entry naming one of the crates under `crates/` in a
   `[dependencies]` or `[build-dependencies]` table -- gwz-core's and each
   crate's, target-specific tables included -- has both a
   `path` (so a local build stays local) and a `version` equal to that internal
@@ -37,7 +37,7 @@ A `gwz-*` package maintained outside this repository, such as the `gwz-git2`
 fork of git2-rs and its `gwz-libgit2-sys`, is on its own version line: the
 internal crates are the manifests found under `crates/`, not every name with
 the `gwz-` prefix.
-- Each of the thirteen published crates carries `repository`, `readme`,
+- Each of the published crates carries `repository`, `readme`,
   `license` and `description`, and is not `publish = false`;
   `gwz-local-testrepo` is (D1).
 
@@ -47,7 +47,7 @@ Not checked here, deliberately: gwz-core's own registry metadata and the
 
 Also derived here, because the manifests are the only honest source for it:
 `--print-publish-order` prints the order a publisher must follow -- the
-thirteen published internals in dependency order, then `gwz-core` -- one name
+published internals in dependency order, then `gwz-core` -- one name
 per line. The release script (plan S1.5) and the CI publish job (S2.1) consume
 those lines instead of carrying a hand-written list that a new crate or a new
 edge would silently invalidate.
@@ -77,10 +77,12 @@ CORE_NAME = "gwz-core"
 # The one crate of `crates/` that does not publish (plan D1). It still tracks
 # the internal version line so the release bump stays uniform.
 UNPUBLISHED = ("gwz-local-testrepo",)
-# Section 1 of the plan names the fourteen internal crates. A fifteenth (or a
-# thirteenth) is a publish-order and release-script change, so it is drift this
-# gate reports rather than absorbs.
-EXPECTED_CRATES = 14
+# Section 1 of the plan names the internal crates, and since
+# 2026-09-29 the core session crate map's `gwz-ids`, `gwz-session-contract`,
+# `gwz-session-channel` and `gwz-session-host` (map §6 steps 2 to 4). One more
+# or one fewer is a publish-order and release-script change, so it is drift
+# this gate reports rather than absorbs.
+EXPECTED_CRATES = 18
 REQUIRED_METADATA = ("repository", "readme", "license", "description")
 VERSIONED_KINDS = ("dependencies", "build-dependencies")
 PATH_ONLY_KINDS = ("dev-dependencies",)
@@ -194,12 +196,12 @@ def internal_requirements(crate: Manifest, published: set[str]) -> set[str]:
 
 
 def publish_order(core: Manifest, crates: list[Manifest]) -> list[str]:
-    """The thirteen published internals in dependency order, then `gwz-core`.
+    """The published internals in dependency order, then `gwz-core`.
 
     Kahn's algorithm over the internal edges of the versioned tables, taking
     the alphabetically first ready crate at every step, so the order is a
     function of the manifests alone and not of directory iteration. `gwz-core`
-    is last because it is the composition root that depends on all thirteen;
+    is last because it is the composition root that depends on all of them;
     `gwz-local-testrepo` is absent because it does not publish (plan D1) and
     reaches nothing but dev-dependency tables. A cycle is an error, not a
     finding: there is no order to print.
@@ -250,7 +252,7 @@ def check_core_version(core: Manifest, tag: str | None, findings: list[str]) -> 
 
 
 def check_internal_versions(crates: list[Manifest], findings: list[str]) -> str:
-    """The one internal `0.0.N` version the fourteen crates share (plan D2)."""
+    """The one internal `0.0.N` version the crates under `crates/` share (plan D2)."""
     versions: dict[str, str] = {}
     for crate in crates:
         version = crate.table["package"].get("version")
@@ -262,7 +264,7 @@ def check_internal_versions(crates: list[Manifest], findings: list[str]) -> str:
         return ""
     counts = Counter(versions.values())
     # The modal version is the lockstep line, so a finding names the crate that
-    # left it rather than the thirteen that did not. Ties resolve by value, so
+    # left it rather than the others that did not. Ties resolve by value, so
     # the report is deterministic.
     expected = min(counts, key=lambda version: (-counts[version], version))
     for name in sorted(versions):
@@ -277,7 +279,7 @@ def check_internal_versions(crates: list[Manifest], findings: list[str]) -> str:
             findings.append(
                 f"{name}: version {version!r} differs from the internal lockstep version "
                 f"{expected!r} that the other {counts[expected]} crate(s) carry; the release "
-                "script bumps all fourteen together (plan D2)"
+                "script bumps them all together (plan D2)"
             )
     return expected
 
@@ -353,7 +355,7 @@ def check_publication(crate: Manifest, findings: list[str]) -> bool:
         return False
     if withheld:
         findings.append(
-            f"{crate.name} ({crate.where}): has publish = {publish!r} but is one of the thirteen "
+            f"{crate.name} ({crate.where}): has publish = {publish!r} but is one of the "
             "published internal crates (plan D1)"
         )
     for field in REQUIRED_METADATA:

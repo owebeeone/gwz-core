@@ -1,0 +1,24 @@
+# Pure crate: unique numbers from a source each context owns, never from a
+# static (gwz-dev dev-docs/GwzCoreSessionCrateMap.md §1 "No globals", §2).
+# Allowed first-party dependencies: none. Core draws each context's prefix
+# from the operating system's random source; this crate never does.
+[package]
+name = "gwz-ids"
+version = "0.0.8"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-2.0-only"
+description = "An internal component crate of GWZ: unique numbers from a source each context owns (a prefix and a counter)."
+repository = "https://github.com/owebeeone/gwz-core"
+readme = "README.md"
+keywords = ["gwz", "git", "workspace", "internal"]
+# What the registry package carries (dev-docs/GwzCratesIoPlan.md D4). No
+# `LICENSE` entry: the SPDX `license` field above is what crates.io reads, and
+# the repository's single GPL-2.0-only text is not copied per crate.
+# Anchored with a leading `/`, as gwz-core's own list explains.
+include = ["/Cargo.toml", "/src/**", "/README.md"]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]

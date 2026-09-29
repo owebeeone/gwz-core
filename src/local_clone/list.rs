@@ -315,7 +315,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("root");
         std::fs::create_dir_all(&root).unwrap();
-        let store = gwz_family_store::YamlFamilyStore::new();
+        let store = crate::local_clone::family_merge::family_store();
         let mut session = store.try_lock(&FamilyLocation::new(&root)).unwrap();
         session
             .found(

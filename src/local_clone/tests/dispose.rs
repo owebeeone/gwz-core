@@ -114,7 +114,7 @@ fn printed_waivers(message: &str) -> Vec<&str> {
 }
 
 fn family(root: &Path) -> Option<gwz_family_model::FamilyView> {
-    match gwz_family_store::YamlFamilyStore::new()
+    match crate::local_clone::family_merge::family_store()
         .read_view(&FamilyLocation::new(root))
         .expect("the family reads")
     {
@@ -297,7 +297,7 @@ fn skip_worktree_absent(path: &Path, file: &str) {
 /// Mark `name` `disposing` through the store session, the shape an
 /// interrupted deletion leaves; the lock is released again afterwards.
 fn mark_disposing(root: &Path, name: &str) {
-    let store = gwz_family_store::YamlFamilyStore::new();
+    let store = crate::local_clone::family_merge::family_store();
     let mut session = store.try_lock(&FamilyLocation::new(root)).unwrap();
     let view = session.reread().unwrap().unwrap();
     let name = MemberName::parse(name).unwrap();

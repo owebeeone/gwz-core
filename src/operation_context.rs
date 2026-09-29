@@ -4,6 +4,7 @@ use crate::filesystem::native_filesystem;
 #[cfg(test)]
 use crate::git::Git2Repository;
 use crate::git::GitRepository;
+use gwz_ids::IdSource;
 #[cfg(test)]
 use std::path::Path;
 use std::sync::Arc;
@@ -12,6 +13,24 @@ use std::sync::Arc;
 pub struct OperationServices {
     filesystem: Arc<dyn FileSystem>,
     repository: Arc<dyn GitRepository + Send + Sync>,
+    /// The context's unique numbers, shared by its clones (GwzCoreSessionCrateMap §2).
+    ids: Arc<IdSource>,
+}
+
+/// A new context's [`IdSource`]. Its 64-bit prefix is drawn from the operating
+/// system's random source, so the names it mints are unique across contexts and
+/// processes unless two draws are equal (GwzCoreSessionCrateMap §2).
+///
+/// `getrandom` is core's existing source and cannot fail on a supported host short
+/// of a broken OS. If it does, std's hasher keys, which are also seeded from the OS,
+/// supply the prefix. That is safe because every temporary-name site creates its
+/// file exclusively, so a weaker prefix can only cost a refused create, never a
+/// clobbered file.
+pub(crate) fn new_id_source() -> IdSource {
+    use std::hash::BuildHasher;
+    let prefix = getrandom::u64()
+        .unwrap_or_else(|_| std::hash::RandomState::new().hash_one(std::process::id()));
+    IdSource::new(prefix)
 }
 
 /// Borrow dependencies already supplied by a caller without replacing its Git authority.
@@ -38,6 +57,7 @@ impl OperationServices {
         Self {
             filesystem,
             repository,
+            ids: Arc::new(new_id_source()),
         }
     }
 
@@ -61,6 +81,7 @@ impl OperationServices {
         Self {
             filesystem: repository.filesystem.clone(),
             repository: Arc::new(repository),
+            ids: Arc::new(new_id_source()),
         }
     }
     pub(crate) fn filesystem(&self) -> &dyn FileSystem {
@@ -68,6 +89,10 @@ impl OperationServices {
     }
     pub(crate) fn repository(&self) -> &(dyn GitRepository + Send + Sync) {
         self.repository.as_ref()
+    }
+    /// The source for this operation's unique numbers, such as temporary names.
+    pub(crate) fn ids(&self) -> &IdSource {
+        &self.ids
     }
 }
 
@@ -116,6 +141,7 @@ impl TestWorld {
             context: OperationServices {
                 filesystem,
                 repository: Arc::new(repository.clone()),
+                ids: Arc::new(new_id_source()),
             },
             repository,
         }
@@ -138,6 +164,20 @@ mod tests {
     use crate::filesystem::{FsOpenMode, RenameMode};
     use crate::git::TestRepoSpec;
     use std::io::{Read, Seek, SeekFrom, Write};
+
+    #[test]
+    fn each_context_owns_one_source_that_its_clones_share() {
+        // GwzCoreSessionCrateMap §2: unique numbers come from the context's
+        // own IdSource, whose prefix core draws from the OS random source.
+        let context = TestWorld::memory().context();
+        let clone = context.clone();
+        assert_eq!(context.ids().next(), 0);
+        assert_eq!(clone.ids().next(), 1, "a clone draws from the same source");
+        let other = TestWorld::memory().context();
+        assert_eq!(other.ids().next(), 0, "another context counts on its own");
+        assert_ne!(other.ids().prefix(), context.ids().prefix());
+        assert_ne!(new_id_source().prefix(), new_id_source().prefix());
+    }
 
     #[test]
     fn separate_worlds_isolate_identical_paths_and_retained_handles() {

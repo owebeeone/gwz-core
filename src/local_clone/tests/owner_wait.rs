@@ -48,7 +48,7 @@ fn list_request() -> crate::LocalFamilyRequest {
 }
 
 fn view(root: &Path) -> gwz_family_model::FamilyView {
-    match gwz_family_store::YamlFamilyStore::new()
+    match crate::local_clone::family_merge::family_store()
         .read_view(&FamilyLocation::new(root))
         .expect("the family reads")
     {
@@ -273,7 +273,7 @@ fn two_concurrent_creates_of_one_name_leave_one_lane_and_name_the_holder() {
 fn a_busy_family_lock_still_refuses_at_once_without_wait() {
     let fixture = family_workspace("busy-no-wait");
     create(&fixture, clone_request("A", None, None)).expect("found the family");
-    let store = gwz_family_store::YamlFamilyStore::new();
+    let store = crate::local_clone::family_merge::family_store();
     let held = store
         .try_lock(&FamilyLocation::new(&fixture.root))
         .expect("the test takes the family lock");

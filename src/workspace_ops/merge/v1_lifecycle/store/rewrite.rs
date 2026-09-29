@@ -2,7 +2,6 @@
 use crate::filesystem::{FileSystem, FsFile, FsKind, RenameMode};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
@@ -10,8 +9,6 @@ use super::super::checked::{StoredV1Record, V1MutationLease};
 use super::super::transition::PreparedV1Rewrite;
 use super::{CommitFault, unknown};
 use crate::operation_context::OperationServices;
-
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(super) fn load_open(
     context: &OperationServices,
@@ -82,6 +79,7 @@ pub(super) fn create_open(
         .map_err(encode_error)?;
     crate::checked_artifact::entry::create_merge_store_record(
         context.filesystem(),
+        context.ids(),
         &root,
         &relative,
         &encoded,
@@ -144,7 +142,7 @@ pub(super) fn commit(
     let encoded = serde_yaml::to_string(&raw)
         .map(String::into_bytes)
         .map_err(encode_error)?;
-    let (temporary, file) = create_temporary(context.filesystem(), path)?;
+    let (temporary, file) = create_temporary(context.filesystem(), context.ids(), path)?;
     let filesystem = context.filesystem();
     let staged_write = filesystem
         .write_all(&file, &encoded)
@@ -218,15 +216,17 @@ fn require_expected(
     }
 }
 
-fn create_temporary(filesystem: &dyn FileSystem, path: &Path) -> ModelResult<(PathBuf, FsFile)> {
+fn create_temporary(
+    filesystem: &dyn FileSystem,
+    ids: &gwz_ids::IdSource,
+    path: &Path,
+) -> ModelResult<(PathBuf, FsFile)> {
     let parent = path
         .parent()
         .ok_or_else(|| recovery("open record path has no parent"))?;
     filesystem.create_directories(parent).map_err(io_error)?;
     loop {
-        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let candidate =
-            path.with_extension(format!("yaml.{}.{}.v1.tmp", std::process::id(), sequence));
+        let candidate = path.with_extension(format!("yaml.{}.v1.tmp", ids.unique()));
         match filesystem.create_file(&candidate) {
             Ok(file) => return Ok((candidate, file)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,

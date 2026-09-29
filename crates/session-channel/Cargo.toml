@@ -1,0 +1,30 @@
+# Implementation crate: carries the session channel's frames. The in-process
+# pair of bounded queues and the byte-stream adapter (little-endian u32 length
+# prefix, 64 MiB cap) implement gwz-session-contract's FrameSink and
+# FrameSource, and run its conformance suite. Allowed first-party
+# dependencies: session-contract (gwz-dev dev-docs/GwzCoreSessionCrateMap.md
+# §2). Bytes only, std only.
+[package]
+name = "gwz-session-channel"
+version = "0.0.8"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-2.0-only"
+description = "An internal component crate of GWZ's core session: the channel's in-process and byte-stream adapters."
+repository = "https://github.com/owebeeone/gwz-core"
+readme = "README.md"
+keywords = ["gwz", "git", "workspace", "internal"]
+# What the registry package carries (dev-docs/GwzCratesIoPlan.md D4). No
+# `LICENSE` entry: the SPDX `license` field above is what crates.io reads, and
+# the repository's single GPL-2.0-only text is not copied per crate.
+# Anchored with a leading `/`, as gwz-core's own list explains.
+include = ["/Cargo.toml", "/src/**", "/README.md"]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+gwz-session-contract = { path = "../session-contract", version = "0.0.8" }
+
+[dev-dependencies]
+gwz-session-contract = { path = "../session-contract", features = ["contract-tests"] }

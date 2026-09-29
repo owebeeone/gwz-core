@@ -15,7 +15,7 @@ split to manage. **Release tags are cut directly off `main`.**
 3. Tag that commit `vX.Y.Z` (lightweight; never moves an existing tag).
 
 In the same commit as the product version bump, the script also advances the
-internal `0.0.N` line that the fourteen crates under `crates/` share — their own
+internal `0.0.N` line that the crates under `crates/` share — their own
 `[package].version` and every internal dependency edge in gwz-core's manifest and
 in theirs (see [dev-docs/GwzCratesIoPlan.md](dev-docs/GwzCratesIoPlan.md) D2). On the
 exact commit it is about to tag it then runs the crate-version lockstep gate against
@@ -64,7 +64,8 @@ A full release goes out in this order:
 The `publish` job of `.github/workflows/release.yml` publishes to crates.io; nothing publishes
 from a laptop. The Linux verification job (`verify`) gates it, and the Windows leg does not. It
 runs `scripts/publish_crates.py`, which checks the tag against every manifest version and then
-publishes the thirteen published internal crates and gwz-core, in the dependency order derived
+publishes the published internal crates (every crate under `crates/` but the dev-only
+`gwz-local-testrepo`) and gwz-core, in the dependency order derived
 from the manifests. It skips a version crates.io already holds, and waits until each new version
 is visible before it publishes the next crate. When crates.io refuses a new crate name because
 too many were published in a short period, it waits a little over ten minutes and tries that

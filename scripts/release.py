@@ -8,7 +8,7 @@ automates RELEASE.md steps 1-4 for a given tag:
      check, the structural checked-artifact source boundary scan, tests, and Clippy.
      Compiler-mutation suites are manual-only.
   2. Bump ``version`` in ``Cargo.toml``, advance the internal ``0.0.N`` line across
-     the fourteen crates under ``crates/`` and every internal dependency edge
+     the crates under ``crates/`` and every internal dependency edge
      (dev-docs/GwzCratesIoPlan.md D2), and refresh ``Cargo.lock`` via
      ``cargo generate-lockfile``.
   3. Commit on ``main``: ``chore(release): gwz-core X.Y.Z``.
@@ -390,7 +390,7 @@ def rewrite_internal_edges(text: str, current: str, version: str) -> tuple[str, 
 
 
 def bump_internal_version(current: str, version: str, root: Path = REPO) -> bool:
-    """Advance the internal line in the fourteen crates and on every edge.
+    """Advance the internal line in the crates under `crates/` and on every edge.
 
     Rewrites `[package].version` in each crate manifest and every `gwz-*` edge
     of a `[dependencies]` or `[build-dependencies]` table -- gwz-core's and the
@@ -402,7 +402,8 @@ def bump_internal_version(current: str, version: str, root: Path = REPO) -> bool
     """
     package_version = re.compile(r'^(version\s*=\s*)"' + re.escape(current) + '"', flags=re.M)
     changed = False
-    for manifest in [root / MANIFEST, *crate_manifests(root)]:
+    crates = crate_manifests(root)
+    for manifest in [root / MANIFEST, *crates]:
         text = manifest.read_text(encoding="utf-8")
         expected = internal_edges_at(text, current)
         updated = text
@@ -420,7 +421,10 @@ def bump_internal_version(current: str, version: str, root: Path = REPO) -> bool
         manifest.write_text(updated, encoding="utf-8", newline="\n")
         changed = True
     if changed:
-        log(f"bumped the internal crate line {current} -> {version} (14 crates and their edges)")
+        log(
+            f"bumped the internal crate line {current} -> {version} "
+            f"({len(crates)} crates and their edges)"
+        )
     else:
         log(f"internal crate line already at {version}")
     return changed

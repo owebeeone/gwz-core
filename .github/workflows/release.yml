@@ -97,7 +97,7 @@ jobs:
     # The Windows leg of the same tagged verification. Deliberately not a
     # dependency of `publish`: plan D5 gates publishing on the Linux
     # verification, so a Windows-only failure fails the release run and its
-    # required check without holding fourteen crates back.
+    # required check without holding the crates back.
     name: Verify (windows-2022)
     runs-on: windows-2022
     steps:
@@ -151,7 +151,7 @@ jobs:
     #
     # What it does: `scripts/publish_crates.py` asserts the tag against every
     # manifest version (the S1.2 lockstep gate), then walks the publish order
-    # the same gate derives -- the thirteen published internals in dependency
+    # the same gate derives -- the published internals in dependency
     # order, then gwz-core -- and for each crate skips the version crates.io
     # already holds or publishes it with `cargo publish --locked --no-verify`,
     # polling crates.io until the new version is visible before the next crate

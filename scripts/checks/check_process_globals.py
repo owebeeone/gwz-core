@@ -12,8 +12,39 @@ including the credential helpers git2 spawns. Both spellings of that spawn,
 `Cred::credential_helper` and the `CredentialHelper::new` it wraps, are the
 one occurrence `Cred::credential_helper` (GwzCoreSessionDesign O9, §5.7).
 
-Every production occurrence must be listed in the allowlist with a disposition
-(`debt` = scheduled for removal, `permanent` = justified process-wide state).
+Every production occurrence must be listed in the allowlist with a disposition:
+`debt` is scheduled for removal, and `permanent` may only be immutable data, a
+cache of immutable data, or state that a named dependency imposes
+(GwzCoreSessionCrateMap §1, "No globals"). Global mutable state is any counter,
+flag, lock-protected or cell-held state, or thread-local. The checker reads it
+from the declaration it parses:
+
+- a `thread_local!` slot, whatever it holds, and a `static mut`;
+- a static whose type names an `Atomic*` or `Once` (a counter or flag); a
+  `Mutex`, `RwLock`, `Condvar`, `Barrier`, `Semaphore` or `GILProtected`
+  (lock-protected); a `Cell`, `RefCell`, `UnsafeCell`, `SyncUnsafeCell` or
+  `ArcSwap*` (cell-held); or a `ThreadLocal`;
+- a static whose type names any other type: the scan cannot see inside a named
+  type, so it fails closed (agent_job's `OnceLock<Hub>` holds a supervisor);
+- libgit2's process-wide options and process-wide hooks (`libgit2`, `hook`).
+
+Every static a `lazy_static!` body declares (`static ref NAME: T`) is listed,
+whatever its type, and classified by that type like any static. Any static the
+scan cannot read, such as one a `macro_rules!` declares from `$name`, is listed
+as `<unparsed static>`, under the `thread_local!` or `lazy_static!` kind around
+it if there is one: it fails closed. An `include!` of a string literal is
+followed like a `mod`, relative to the including file; any other `include!` in
+production code is listed as `<unparsed include>`.
+
+A static whose type names only primitives, std's owned containers
+(`IMMUTABLE_TYPES`) and write-once cells (`OnceLock`, `OnceCell`, `LazyLock`,
+`LazyCell`, `Lazy`, `PyOnceLock`, `GILOnceCell`) is immutable data, or a cache
+of it. A `permanent` entry for global mutable state must name the dependency
+that imposes it in `imposed_by`. A `debt` entry of a global-state kind
+(`static`, `thread_local`, `lazy_static`, `libgit2`, `hook`) must name its
+remover in `owner`, or say `unassigned`. Process spawns and environment reads
+(`process`, `env`) are not global state; their entries are unchanged by this.
+
 A new occurrence fails. A listed occurrence that disappears also fails, so the
 list only shrinks. Code compiled only under `cfg(test)` is exempt:
 `#[cfg(test)]` items and modules, `cfg_if!` test branches, and files reached
@@ -24,8 +55,9 @@ commit SHA its entries were last reconciled against. `--reconciled-commit`
 prints it, so CI can check out exactly that commit.
 
 This is a lexical scan, not name resolution. It strips comments and literals,
-follows `mod`/`#[path]` declarations from the crate roots named in the
-allowlist, and inspects every platform branch without compiling any of them.
+follows `mod`/`#[path]` declarations and literal `include!` paths from the crate
+roots named in the allowlist, and inspects every platform branch without
+compiling any of them.
 Files under the scan roots that no `mod` declaration reaches are scanned as
 production and reported.
 """
@@ -58,6 +90,28 @@ HOOKS = {('panic', 'set_hook'), ('panic', 'take_hook'), ('log', 'set_logger'),
          ('log', 'set_boxed_logger'), ('log', 'set_max_level'),
          ('subscriber', 'set_global_default')}
 LIBGIT2_SETTERS = ('set_', 'enable_', 'strict_')
+
+# GwzCoreSessionCrateMap §1, "No globals". The kinds that are global state: a
+# `debt` entry of one of them names its remover in `owner`.
+GLOBAL_STATE_KINDS = frozenset({'static', 'thread_local', 'lazy_static', 'libgit2', 'hook'})
+# Kinds that are global mutable state whatever the declaration holds.
+KIND_STATE = {'thread_local': 'a thread-local', 'libgit2': 'a libgit2 process-wide option',
+              'hook': 'a process-wide hook'}
+# The mutable state a static's type shows; its first such type names the class.
+MUTABLE_STATE = (
+    ('a thread-local', re.compile(r'^ThreadLocal$')),
+    ('lock-protected state', re.compile(r'^(?:Mutex|RwLock|Condvar|Barrier|Semaphore|GILProtected)$')),
+    ('a counter or flag', re.compile(r'^(?:Atomic\w*|Once)$')),
+    ('cell-held state', re.compile(r'^(?:Cell|RefCell|UnsafeCell|SyncUnsafeCell|ArcSwap\w*)$')),
+)
+# Write-once cells: a cache of immutable data when what they hold is immutable.
+WRITE_ONCE = frozenset({'OnceLock', 'OnceCell', 'LazyLock', 'LazyCell', 'Lazy', 'PyOnceLock', 'GILOnceCell'})
+# Types the scan can see are immutable. Any other type fails closed; a type
+# joins this set only through a reviewed change to this checker.
+IMMUTABLE_TYPES = PRIMITIVES | {'String', 'Vec', 'Box', 'Arc', 'Option', 'HashMap', 'HashSet', 'BTreeMap',
+                                'BTreeSet', 'VecDeque', 'PathBuf', 'Path', 'OsString', 'OsStr', 'Cow', 'Duration'}
+# Syntax a declared type can contain that names no type.
+TYPE_KEYWORDS = frozenset({'dyn', 'impl', 'fn', 'unsafe', 'extern', 'mut', 'const', 'for', 'as'})
 
 _LEX = re.compile(r"""
     (?P<ws>\s+)
@@ -184,11 +238,53 @@ class Occurrence:
     name: str
     line: int
     detail: str = ''
+    holds: str | None = None  # a static's global mutable state, from its declared type
+
+    @property
+    def state(self) -> str | None:
+        """The global mutable state this is, or None: immutable data, a cache of
+        it, a process spawn or an environment read."""
+        return KIND_STATE.get(self.kind, self.holds)
+
+
+def type_names(ty: list[Tok]) -> list[str]:
+    """The types a declared type names, in order, without path segments, array
+    lengths or keywords."""
+    names: list[str] = []
+    lengths: list[bool] = []  # per open `[`: whether its `; LEN` has started
+    for k, t in enumerate(ty):
+        if t.text == '[':
+            lengths.append(False)
+        elif t.text == ']' and lengths:
+            lengths.pop()
+        elif t.text == ';' and lengths:
+            lengths[-1] = True
+        elif t.kind == 'id' and not any(lengths) and t.text not in TYPE_KEYWORDS \
+                and not (k + 1 < len(ty) and ty[k + 1].text == '::'):
+            names.append(t.text)
+    return names
+
+
+def static_state(ty: list[Tok], mutable: bool) -> str | None:
+    """The global mutable state a static's declaration shows, or None when it is
+    immutable data or a cache of immutable data (GwzCoreSessionCrateMap §1)."""
+    if mutable:
+        return 'a static mut'
+    names = type_names(ty)
+    for name in names:
+        for state, pattern in MUTABLE_STATE:
+            if pattern.match(name):
+                return f'{state} ({name})'
+    for name in names:
+        if name not in IMMUTABLE_TYPES and name not in WRITE_ONCE:
+            return f'state behind {name}, a type the scan cannot see into'
+    return None
 
 
 @dataclass
 class FileInfo:
     mods: list[ModDecl] = field(default_factory=list)
+    includes: list[tuple[str, bool]] = field(default_factory=list)  # (literal path, test only)
     occurrences: list[Occurrence] = field(default_factory=list)
 
 
@@ -354,6 +450,13 @@ class Analysis:
             if t.text in ('thread_local', 'lazy_static') and self.text(i + 1) == '!' \
                     and self.text(i + 2) in ('{', '(', '[') and (i + 2) in self.match:
                 macro_bodies.append((i + 2, self.match[i + 2], t.text))
+            if t.text == 'include' and self.text(i + 1) == '!' \
+                    and self.text(i + 2) in ('{', '(', '[') and (i + 2) in self.match:
+                inner = [k for k in range(i + 3, self.match[i + 2]) if self.text(k) != ',']
+                if len(inner) == 1 and self.toks[inner[0]].kind == 'str':
+                    info.includes.append((self.toks[inner[0]].text, self.is_test(i)))
+                elif not self.is_test(i):
+                    info.occurrences.append(Occurrence('include', '<unparsed include>', self.line(i)))
         for i in range(self.n - 2):
             if self.toks[i].kind == 'id' and self.toks[i].text == 'mod' \
                     and self.toks[i + 1].kind == 'id' and self.text(i + 2) == ';':
@@ -404,11 +507,19 @@ class Analysis:
         return info
 
     def _static(self, i: int, macro_bodies, info: FileInfo) -> None:
+        if i >= 2 and self.text(i - 1) == '#' and self.text(i - 2) == 'r' \
+                and self.toks[i].offset == self.toks[i - 2].offset + 2:
+            return  # `r#static`, a raw identifier, not the keyword
         j = i + 1
         mutable = self.text(j) == 'mut'
-        if mutable:
+        if mutable or self.text(j) == 'ref':  # `lazy_static!` declares `static ref NAME: T`
             j += 1
+        macro = next((kind for a, b, kind in macro_bodies if a < i < b), None)
         if j >= self.n or self.toks[j].kind != 'id' or self.text(j + 1) != ':':
+            # Fail closed, whatever encloses it: a static the scan cannot read, such as one a
+            # `macro_rules!` declares from `$name`, is listed rather than skipped.
+            info.occurrences.append(Occurrence(macro or 'static', '<unparsed static>', self.line(i), '',
+                                               'a static the scan cannot read'))
             return
         name = self.toks[j].text
         j += 2
@@ -421,9 +532,8 @@ class Analysis:
             ty.append(self.toks[j])
             j += 1
         detail = ' '.join(t.text for t in ty)
-        macro = next((kind for a, b, kind in macro_bodies if a < i < b), None)
         if macro is not None:
-            info.occurrences.append(Occurrence(macro, name, self.line(i), detail))
+            info.occurrences.append(Occurrence(macro, name, self.line(i), detail, static_state(ty, mutable)))
             return
         idents = [t.text for t in ty if t.kind == 'id']
         if not mutable and not any(INTERIOR.match(x) for x in idents):
@@ -431,7 +541,7 @@ class Analysis:
                 return
             if idents and all(x in PRIMITIVES for x in idents):
                 return
-        info.occurrences.append(Occurrence('static', name, self.line(i), detail))
+        info.occurrences.append(Occurrence('static', name, self.line(i), detail, static_state(ty, mutable)))
 
 
 def analyze(source: str, test_features: frozenset[str] = frozenset()) -> FileInfo:
@@ -480,6 +590,12 @@ def scan(repo: Path, roots: list[str], test_features: frozenset[str] = frozenset
                     child_mod_rs = decl.path_attr is not None or candidate.name == 'mod.rs'
                     queue.append((candidate.resolve(), test or decl.test_only, child_mod_rs))
                     break
+        # `include!("path")` splices a file into its includer, relative to the including
+        # file; its own `mod` declarations are resolved from its directory.
+        for literal, test_only in cache[path].includes:
+            candidate = path.parent / literal
+            if candidate.is_file():
+                queue.append((candidate.resolve(), test or test_only, True))
     unreached = []
     for directory in sorted({p.parent for p in root_files}):
         for path in sorted(directory.rglob('*.rs')):
@@ -532,6 +648,13 @@ def load_allowlist(path: Path) -> tuple[Allowlist, list[str]]:
             errors.append(f'{key}: reason is required')
         if not isinstance(entry.get('count', 1), int) or entry.get('count', 1) < 1:
             errors.append(f'{key}: count must be a positive integer')
+        for name in ('owner', 'imposed_by'):
+            value = entry.get(name)
+            if value is not None and not (isinstance(value, str) and value.strip()):
+                errors.append(f'{key}: {name} must be a non-empty string')
+        if entry.get('owner') is None and entry.get('disposition') == 'debt' and key[1] in GLOBAL_STATE_KINDS:
+            errors.append(f'{key}: a debt entry for global state names its remover in owner: the step '
+                          f'that removes it, or "unassigned" (GwzCoreSessionCrateMap §1)')
         entries[key] = entry
     roots = data.get('roots') or []
     if not roots:
@@ -557,10 +680,16 @@ def check(repo: Path, allowlist_path: Path) -> tuple[list[str], Scan, dict]:
         entry = entries.get(key)
         if entry is None:
             errors.append(f'NEW   {kind} {name}{detail} at {where}')
-        elif len(occurrences) != entry.get('count', 1):
+            continue
+        if len(occurrences) != entry.get('count', 1):
             errors.append(f'COUNT {kind} {name} at {where}: found {len(occurrences)}, '
                           f'allowlisted {entry.get("count", 1)}; update the count only if the '
                           f'change removes occurrences')
+        state = next((o.state for o in occurrences if o.state), None)
+        if state and entry.get('disposition') == 'permanent' and entry.get('imposed_by') is None:
+            errors.append(f'PERM  {kind} {name} in {path}: {state} is global mutable state, which is '
+                          f'permanent only when imposed_by names the dependency that imposes it; '
+                          f'otherwise list it as debt with its owner (GwzCoreSessionCrateMap §1)')
     for key in sorted(set(entries) - set(result.occurrences)):
         path, kind, name = key
         errors.append(f'STALE {kind} {name} in {path}: no longer present; delete the allowlist entry')
@@ -608,7 +737,9 @@ def main(argv: list[str] | None = None) -> int:
         print('Pass state through the operation/session context instead of the process, and '
               'spawn child processes with env_clear() plus the session\'s environment snapshot. '
               'A genuinely process-wide item needs an allowlist entry with a disposition '
-              'and reason (GwzCoreSessionDesign O9).', file=sys.stderr)
+              'and reason (GwzCoreSessionDesign O9). Global state listed as debt names its owner; '
+              'it is permanent only as immutable data, a cache of it, or state whose imposed_by '
+              'names the dependency that imposes it (GwzCoreSessionCrateMap §1).', file=sys.stderr)
         return 1
     dispositions = Counter(entry['disposition'] for entry in entries.values())
     print(f'process-global state guard: {result.files} files, {len(entries)} allowlisted items '

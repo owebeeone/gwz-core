@@ -5,6 +5,22 @@ use std::fs;
 use super::*;
 
 #[test]
+fn temporary_names_come_from_the_callers_source_and_keep_the_tmp_marker() {
+    let ids = gwz_ids::IdSource::new(7);
+    let path = std::path::Path::new("/workspace/nested/file.txt");
+    let first = crate::artifact::encoding::temp_path(&ids, path).unwrap();
+    let second = crate::artifact::encoding::temp_path(&ids, path).unwrap();
+    assert_eq!(
+        first,
+        path.with_file_name("file.txt.0000000000000007-0.tmp")
+    );
+    assert_eq!(
+        second,
+        path.with_file_name("file.txt.0000000000000007-1.tmp")
+    );
+}
+
+#[test]
 fn atomic_write_replaces_existing_file_without_leftover_temp() {
     let temp = TempDir::new("atomic");
     let target = temp.path().join("nested/file.txt");

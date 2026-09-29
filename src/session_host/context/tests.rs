@@ -1,11 +1,15 @@
 //! Tests of the host context, the session context and `open` (session plan
-//! CS1.4, extended by CS1.9).
+//! CS1.4, extended by CS1.9). The supervisor's own tests moved with it to
+//! gwz-session-host (crate map §6 step 4); these keep what the host context
+//! composes: its report, its drop and `open`'s refusal after `shutdown`.
 
 use super::*;
 use crate::model::ErrorCode;
+use gwz_session_contract::Tag;
 use std::sync::Barrier;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::thread;
 use std::time::{Duration, Instant};
 
 fn no_environment() -> EnvironmentSnapshot {
@@ -108,44 +112,6 @@ impl SupervisedJob for Latch {
     }
 }
 
-/// A job whose every poll panics. It counts its polls and marks its drop.
-struct AlwaysPanics {
-    polls: Arc<AtomicUsize>,
-    dropped: Arc<AtomicBool>,
-}
-
-impl SupervisedJob for AlwaysPanics {
-    fn poll(&mut self) -> bool {
-        self.polls.fetch_add(1, SeqCst);
-        panic!("a supervised job panicked");
-    }
-}
-
-impl Drop for AlwaysPanics {
-    fn drop(&mut self) {
-        self.dropped.store(true, SeqCst);
-    }
-}
-
-fn always_panics() -> (AlwaysPanics, Arc<AtomicUsize>, Arc<AtomicBool>) {
-    let polls = Arc::new(AtomicUsize::new(0));
-    let dropped = Arc::new(AtomicBool::new(false));
-    let job = AlwaysPanics {
-        polls: polls.clone(),
-        dropped: dropped.clone(),
-    };
-    (job, polls, dropped)
-}
-
-/// Waits, at most ten seconds, until `polls` counts a first poll.
-fn await_first_poll(polls: &AtomicUsize) {
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while polls.load(SeqCst) == 0 {
-        assert!(Instant::now() < deadline, "the job was never polled");
-        thread::sleep(Duration::from_millis(5));
-    }
-}
-
 #[test]
 fn the_public_types_cross_threads() {
     // Drivers share a host context across threads and open sessions from
@@ -178,6 +144,43 @@ fn open_refuses_invalid_limits_with_invalid_request() {
     options.limits.operation_table =
         options.limits.running_operations + options.limits.queued_operations - 1;
     assert_eq!(open(options).unwrap_err().code, ErrorCode::InvalidRequest);
+}
+
+#[test]
+fn each_limits_refusal_keeps_its_text() {
+    // The limits' validation lives in gwz-session-host, with its own error
+    // (crate map §6 step 4); `open` still refuses with `invalid_request`, in
+    // the words it used before the move.
+    type Case = (fn(&mut Limits), &'static str);
+    let cases: [Case; 5] = [
+        (
+            |limits| limits.event_log = 1,
+            "session limit event_log must be at least 2",
+        ),
+        (
+            |limits| limits.operation_table = 1,
+            "session limit operation_table must hold at least running_operations plus queued_operations",
+        ),
+        (
+            |limits| limits.read_bytes = crate::session_host::MAX_FRAME_BYTES,
+            "session limit read_bytes must be at most half the 64 MiB frame size",
+        ),
+        (
+            |limits| limits.outstanding_calls = usize::MAX,
+            "session limits outstanding_calls plus control_reserve overflow a channel queue",
+        ),
+        (
+            |limits| limits.close_wait = Duration::from_secs(60 * 60 + 1),
+            "session limit close_wait must be at most one hour",
+        ),
+    ];
+    for (change, text) in cases {
+        let mut options = SessionOptions::new(HostContext::new(), no_environment());
+        change(&mut options.limits);
+        let error = open(options).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidRequest, "{text}");
+        assert_eq!(error.message, text);
+    }
 }
 
 #[test]
@@ -235,47 +238,6 @@ fn an_open_session_keeps_its_host_context() {
 }
 
 #[test]
-fn a_job_that_panics_is_quarantined_and_never_polled_again() {
-    let host = HostContext::new();
-    let watch = host.supervisor_watch();
-    let (job, polls, dropped) = always_panics();
-    host.supervise(Box::new(job)).unwrap();
-    await_first_poll(&polls);
-    // With only a quarantined job, the supervisor waits as with none.
-    thread::sleep(Duration::from_millis(200));
-    assert_eq!(polls.load(SeqCst), 1, "polled exactly once");
-    assert!(!dropped.load(SeqCst), "kept while the host context lives");
-    drop(host);
-    assert!(
-        watch.wait_ended(Duration::from_secs(1)),
-        "only quarantined jobs remain, so the supervisor ends"
-    );
-    assert!(dropped.load(SeqCst), "the quarantined job drops as it ends");
-}
-
-#[test]
-fn a_quarantined_job_does_not_stop_the_others() {
-    let host = HostContext::new();
-    let watch = host.supervisor_watch();
-    let (job, polls, _dropped) = always_panics();
-    host.supervise(Box::new(job)).unwrap();
-    let finished = Arc::new(AtomicBool::new(false));
-    host.supervise(Box::new(Latch(finished.clone()))).unwrap();
-    await_first_poll(&polls);
-    drop(host);
-    assert!(
-        !watch.wait_ended(Duration::from_millis(100)),
-        "the latch runs"
-    );
-    finished.store(true, SeqCst);
-    assert!(
-        watch.wait_ended(Duration::from_secs(10)),
-        "the latch was polled to its end"
-    );
-    assert_eq!(polls.load(SeqCst), 1);
-}
-
-#[test]
 fn shutdown_returns_at_its_bound_while_a_job_runs_and_a_second_call_returns_the_same_report() {
     assert_eq!(CLEANUP_BOUND, Duration::from_secs(5), "reuse design §7");
     let host = HostContext::new();
@@ -298,32 +260,6 @@ fn shutdown_returns_at_its_bound_while_a_job_runs_and_a_second_call_returns_the_
 }
 
 #[test]
-fn shutdown_returns_once_its_jobs_finish_and_releases_the_supervisor() {
-    let host = HostContext::new();
-    let watch = host.supervisor_watch();
-    let job = Counts::default();
-    host.supervise(job.job()).unwrap();
-    let finish = job.finish.clone();
-    let finisher = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(100));
-        finish.store(true, SeqCst);
-    });
-    let [(report, took)] = shut_down(&host, Duration::from_secs(60), 1)
-        .try_into()
-        .unwrap();
-    finisher.join().unwrap();
-    // The supervisor reported the finish while shutdown waited, so the wait
-    // held no lock the supervisor needs.
-    assert_eq!(report, NOTHING_PENDING);
-    assert!(took < Duration::from_secs(10), "not at its bound: {took:?}");
-    assert_eq!(job.drops(), 1, "the finished job was dropped");
-    assert!(
-        watch.wait_ended(Duration::from_secs(10)),
-        "the supervisor stops without waiting for the host context's drop"
-    );
-}
-
-#[test]
 fn concurrent_shutdowns_wait_for_the_first_and_return_its_report() {
     let host = HostContext::new();
     let job = Counts::default();
@@ -335,53 +271,6 @@ fn concurrent_shutdowns_wait_for_the_first_and_return_its_report() {
     }
     assert_eq!(job.drops(), 0);
     job.finish.store(true, SeqCst);
-}
-
-#[test]
-fn a_quarantined_job_appears_in_the_pending_report() {
-    let host = HostContext::new();
-    let watch = host.supervisor_watch();
-    let (job, polls, dropped) = always_panics();
-    host.supervise(Box::new(job)).unwrap();
-    await_first_poll(&polls);
-    let [(report, took)] = shut_down(&host, Duration::from_secs(60), 1)
-        .try_into()
-        .unwrap();
-    assert_eq!(report, ONE_PENDING, "it never finishes, so it is pending");
-    assert!(
-        took < Duration::from_secs(10),
-        "and not waited for: {took:?}"
-    );
-    assert!(
-        watch.wait_ended(Duration::from_secs(10)),
-        "then the supervisor stops, dropping it"
-    );
-    assert!(dropped.load(SeqCst));
-    assert_eq!(polls.load(SeqCst), 1);
-}
-
-#[test]
-fn a_drop_after_shutdown_disposes_nothing_more() {
-    let host = HostContext::new();
-    let watch = host.supervisor_watch();
-    let finished = Counts::default();
-    finished.finish.store(true, SeqCst);
-    host.supervise(finished.job()).unwrap();
-    let (job, polls, dropped) = always_panics();
-    host.supervise(Box::new(job)).unwrap();
-    await_first_poll(&polls);
-    assert_eq!(host.shutdown_within(Duration::from_secs(60)), ONE_PENDING);
-    assert!(watch.wait_ended(Duration::from_secs(10)));
-    assert_eq!((finished.drops(), dropped.load(SeqCst)), (1, true));
-    // What shutdown disposed is gone, so the drop finds nothing to dispose.
-    let started = Instant::now();
-    drop(host);
-    assert!(
-        started.elapsed() < Duration::from_secs(1),
-        "it does not wait"
-    );
-    assert_eq!((finished.drops(), finished.polls()), (1, 1));
-    assert!(watch.wait_ended(Duration::ZERO) && !watch.running());
 }
 
 #[test]
@@ -449,7 +338,7 @@ fn a_session_drops_its_snapshot_when_it_ends() {
         EnvironmentSnapshot::from_byte_pairs(vec![(b"GH_TOKEN".to_vec(), b"s3cr3t".to_vec())])
             .unwrap();
     let channel = open(SessionOptions::new(host.clone(), environment)).unwrap();
-    let session = Arc::downgrade(channel.session());
+    let session = Arc::downgrade(&channel.session());
     assert!(
         session
             .upgrade()
@@ -461,4 +350,84 @@ fn a_session_drops_its_snapshot_when_it_ends() {
         "the session context and its snapshot dropped as the session ended"
     );
     assert_eq!(host.shutdown_within(BOUND), NOTHING_PENDING);
+}
+
+#[test]
+fn open_returns_the_client_end_of_an_in_process_channel() {
+    // CS1.2's core side: `open` wires gwz-session-channel's pair, whose host
+    // end waits for CS2.2's host. A call reaches the host end, and a reply
+    // comes back, through the methods and through the traits alike.
+    let channel = test_session();
+    let call = Frame::new(Tag::SessionCall, vec![0xa0]);
+    channel.send(call.clone(), Lane::Call).unwrap();
+    assert_eq!(channel.with_host_end(|host| host.recv()), Some(Ok(call)));
+    let reply = Frame::new(Tag::SessionReply, vec![0xa1]);
+    let sent = channel.with_host_end(|host| host.send(reply.clone(), Lane::Call));
+    assert!(matches!(sent, Some(Ok(()))), "{sent:?}");
+    assert_eq!(FrameSource::recv(&channel), Ok(reply));
+    let cancel = Frame::new(Tag::SessionCall, vec![0xa2]);
+    FrameSink::send(&channel, cancel.clone(), Lane::Control).unwrap();
+    assert_eq!(channel.with_host_end(|host| host.recv()), Some(Ok(cancel)));
+}
+
+#[test]
+fn a_full_lane_refuses_at_the_client_end() {
+    // Each queue holds the outstanding calls on the call lane and the
+    // control reserve on the control lane (§3), as `open`'s limits set them.
+    // `Limits` is gwz-session-host's non-exhaustive type, set field by field.
+    let mut options = SessionOptions::new(HostContext::new(), no_environment());
+    options.limits.outstanding_calls = 1;
+    options.limits.control_reserve = 1;
+    let channel = open(options).unwrap();
+    let call = |marker: u8| Frame::new(Tag::SessionCall, vec![marker]);
+    channel.send(call(1), Lane::Call).unwrap();
+    match channel.send(call(2), Lane::Call) {
+        Err(SendError::Full(frame)) => assert_eq!(frame, call(2), "the frame comes back"),
+        result => panic!("expected a full call lane, got {result:?}"),
+    }
+    channel
+        .send(call(3), Lane::Control)
+        .expect("the control reserve takes a control frame");
+    assert!(matches!(
+        channel.send(call(4), Lane::Control),
+        Err(SendError::Full(_))
+    ));
+    assert_eq!(channel.with_host_end(|host| host.recv()), Some(Ok(call(1))));
+    assert_eq!(channel.with_host_end(|host| host.recv()), Some(Ok(call(3))));
+}
+
+#[test]
+fn closing_the_client_channel_ends_the_session_at_both_ends() {
+    let channel = test_session();
+    channel.close();
+    let frame = Frame::new(Tag::SessionCall, vec![0xa0]);
+    match channel.send(frame.clone(), Lane::Call) {
+        Err(SendError::Closed(returned, Closed::Local)) => assert_eq!(returned, frame),
+        result => panic!("expected the closure, got {result:?}"),
+    }
+    assert_eq!(channel.recv(), Err(Closed::Local));
+    // The host's end went with the session: it closed as it dropped.
+    assert!(channel.with_host_end(|_| ()).is_none());
+}
+
+#[test]
+fn closing_the_client_channel_drops_its_snapshot() {
+    // The snapshot is zeroized when its session ends (§5.6 as amended), and
+    // `close()` ends the session as a drop does: with the handle still alive,
+    // the session context, and the snapshot it owns, are gone at the close.
+    let environment =
+        EnvironmentSnapshot::from_byte_pairs(vec![(b"GH_TOKEN".to_vec(), b"s3cr3t".to_vec())])
+            .unwrap();
+    let channel = open(SessionOptions::new(HostContext::new(), environment)).unwrap();
+    let session = Arc::downgrade(&channel.session());
+    assert!(session.upgrade().is_some());
+    channel.close();
+    assert!(
+        session.upgrade().is_none(),
+        "the session context and its snapshot dropped at the close"
+    );
+    // The handle lives on, closed, and closing again changes nothing.
+    assert_eq!(channel.recv(), Err(Closed::Local));
+    FrameSink::close(&channel);
+    assert_eq!(channel.recv(), Err(Closed::Local));
 }

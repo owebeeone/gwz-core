@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Architecture gate for the local clone family libraries under `crates/`.
+"""Architecture gate for every library crate under `crates/`.
 
 Authority: gwz-dev `dev-docs/GwzLocalCloneLibraryBoundaries.md` §2/§6
 (revision 1; §5/§6 revision 2 for the workspace layout and the Tier A
-command form), adopting LBT-001..LBT-012. The inventory beside this script,
-`local_clone_inventory.json`, is the machine-readable classification: every
-package's role, owner, rationale and complete allowed dependency edges.
+command form; revision 3 widens §1's scope from the local clone family to
+every new gwz-core library), adopting LBT-001..LBT-012, and gwz-dev
+`dev-docs/GwzCoreSessionCrateMap.md` §1–§2 (its rules, and its ordinary
+crates with their roles and first-party edges). The inventory beside this
+script, `local_clone_inventory.json`, is the machine-readable classification:
+every package's role, owner, rationale and complete allowed dependency edges.
+The file names keep their local-clone origin.
 
 What the gate checks (all through one `cargo metadata --no-deps` at the
 gwz-core root, no build):
@@ -14,7 +18,7 @@ gwz-core root, no build):
   package that must be present exists, its Cargo name equals its inventory
   key, a `harness` package is `publish = false`, every package carries explicit
   `edition`/`rust-version` (no workspace inheritance) and none is a workspace
-  root of its own. The thirteen published internals are deliberately no longer
+  root of its own. The published internals are deliberately no longer
   `publish = false` (dev-docs/GwzCratesIoPlan.md D1, adopted 2026-09-13); their
   registry metadata and the lockstep version line are gated by S1.2's
   `check_crate_versions.py`, not here.
@@ -30,7 +34,12 @@ gwz-core root, no build):
   `first_party` (dev edges in `dev_first_party`); third-party edges must be in
   `third_party` (`dev_third_party` for dev). Nothing may depend on a
   forbidden package (`gwz-core`, the drivers, generated-protocol or
-  checked-artifact crates) in any dependency kind.
+  checked-artifact crates) in any dependency kind. First-party means what
+  gwz-core's workspace itself defines: gwz-core and the crates under
+  `crates/`, by the package names their manifests declare, as the release
+  bump reads its internal line. A `gwz-` prefix alone does not make a package
+  first-party: the git2 fork's `gwz-git2` and `gwz-libgit2-sys` live beside
+  gwz-core on their own versions, so an edge to one is third-party.
 - Role direction: a package may only depend on roles its role admits
   (`role_edges`); a harness is dev-only everywhere.
 - Test closure: the transitive closure of first-party edges reachable from a
@@ -69,7 +78,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_INVENTORY = Path(__file__).with_name("local_clone_inventory.json")
-FIRST_PARTY_PREFIX = "gwz-"
 ROLES = ("contract", "pure", "implementation", "integration", "harness")
 CORE_LOCK = "Cargo.lock"
 
@@ -208,8 +216,23 @@ def package_from_manifest_only(manifest: Path, manifest_table: dict) -> Package:
     )
 
 
-def is_first_party(name: str) -> bool:
-    return name.startswith(FIRST_PARTY_PREFIX)
+def workspace_packages(core: Path, crates_dir: Path) -> set[str]:
+    """The first-party names: gwz-core and every crate under `crates/`, as their
+    manifests name them. A manifest that cannot be read is reported where it
+    is inspected, not here."""
+    manifests = [core / "Cargo.toml"]
+    if crates_dir.is_dir():
+        manifests.extend(sorted(crates_dir.glob("*/Cargo.toml")))
+    names: set[str] = set()
+    for manifest in manifests:
+        try:
+            package = parse_manifest(manifest).get("package")
+        except GateError:
+            continue
+        name = package.get("name") if isinstance(package, dict) else None
+        if isinstance(name, str) and name:
+            names.add(name)
+    return names
 
 
 def check_package(
@@ -217,6 +240,7 @@ def check_package(
     entry: dict,
     inventory: dict,
     inventory_dirs: dict[Path, str],
+    first_party: set[str],
 ) -> list[str]:
     findings: list[str] = []
     role = entry["role"]
@@ -244,7 +268,7 @@ def check_package(
             findings.append(f"{label}: forbidden dependency")
             continue
         dev = dependency.kind == "dev"
-        if is_first_party(dependency.name):
+        if dependency.name in first_party:
             allowed = set(entry["dev_first_party"] if dev else entry["first_party"])
             if dependency.name not in allowed:
                 findings.append(f"{label}: first-party edge is not in the inventory allowlist")
@@ -276,6 +300,7 @@ def test_closure(
     name: str,
     packages: dict[str, Package],
     inventory: dict,
+    first_party: set[str],
 ) -> tuple[set[str], list[str]]:
     """First-party names reachable from `name`'s `--lib` test build."""
     forbidden = set(inventory.get("forbidden_dependencies", []))
@@ -295,7 +320,7 @@ def test_closure(
                     f"{name}: test closure reaches forbidden package {dependency.name} via {current}"
                 )
                 continue
-            if not is_first_party(dependency.name):
+            if dependency.name not in first_party:
                 continue
             if dependency.name not in reached:
                 reached.add(dependency.name)
@@ -417,8 +442,9 @@ def present_packages(core: Path, inventory: dict) -> list[str]:
 # Declared third-party dependencies that build native code through a build
 # script (`git2` -> `libgit2-sys` compiles libgit2 with the target's C
 # toolchain), which a `cargo clippy --target <foreign>` on a host that has only
-# that target's `rust-std` cannot do.
-NATIVE_BUILD_DEPENDENCIES = frozenset({"git2"})
+# that target's `rust-std` cannot do. The fork's packages, `gwz-git2` and
+# `gwz-libgit2-sys`, build the same C code.
+NATIVE_BUILD_DEPENDENCIES = frozenset({"git2", "gwz-git2", "gwz-libgit2-sys"})
 
 
 def cross_checkable_packages(core: Path, inventory: dict) -> list[str]:
@@ -518,10 +544,11 @@ def run(core: Path, inventory_path: Path) -> tuple[list[str], list[str]]:
         packages[name] = package
 
     findings.extend(core_layout_findings(core, crates_dir, packages))
+    first_party = workspace_packages(core, crates_dir)
     for name, package in packages.items():
-        findings.extend(check_package(package, entries[name], inventory, inventory_dirs))
+        findings.extend(check_package(package, entries[name], inventory, inventory_dirs, first_party))
     for name in packages:
-        reached, closure_findings = test_closure(name, packages, inventory)
+        reached, closure_findings = test_closure(name, packages, inventory, first_party)
         findings.extend(closure_findings)
         unclassified = sorted(dep for dep in reached if dep not in entries)
         if unclassified:
@@ -537,7 +564,7 @@ def run(core: Path, inventory_path: Path) -> tuple[list[str], list[str]]:
         (name, dependency.name)
         for name, package in packages.items()
         for dependency in package.dependencies
-        if not is_first_party(dependency.name) and dependency.name not in forbidden
+        if dependency.name not in first_party and dependency.name not in forbidden
     )
     if declared_third_party and tier_a_unlocked(core, inventory):
         for name, dependency in declared_third_party:

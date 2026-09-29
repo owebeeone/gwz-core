@@ -103,7 +103,7 @@ pub(crate) fn resolve_family_merge(
 
 /// The store implementation core composes for family observations.
 pub(crate) fn family_store() -> gwz_family_store::YamlFamilyStore {
-    gwz_family_store::YamlFamilyStore::new()
+    gwz_family_store::YamlFamilyStore::new(crate::operation_context::new_id_source())
 }
 
 /// The source selector the import library receives, qualified once

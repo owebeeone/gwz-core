@@ -25,26 +25,47 @@ pub(crate) fn write_manifest_and_lock_in(
 ) -> ModelResult<()> {
     let manifest_path = root.join(WORKSPACE_MANIFEST);
     let lock_path = root.join(LOCK_PATH);
-    let manifest_staged =
-        stage_durably(filesystem, &manifest_path, manifest.to_yaml()?.as_bytes())?;
-    let lock_staged = stage_durably(filesystem, &lock_path, lock.to_yaml()?.as_bytes())?;
+    // One source names both temporaries. This entry makes it per call until CS3.1's
+    // per-call context reaches the artifact writers (GwzCoreSessionCrateMap §6 step 2).
+    let ids = crate::operation_context::new_id_source();
+    let manifest_staged = stage_durably_with(
+        filesystem,
+        &ids,
+        &manifest_path,
+        manifest.to_yaml()?.as_bytes(),
+    )?;
+    let lock_staged = stage_durably_with(filesystem, &ids, &lock_path, lock.to_yaml()?.as_bytes())?;
     publish_staged(filesystem, &manifest_staged, &manifest_path)?;
     publish_staged(filesystem, &lock_staged, &lock_path)?;
     // One refresh after both are published: the marker never records a half-written pair.
     conf_integrity::refresh_conf_integrity_marker_in(filesystem, root)
 }
 
-/// Write `contents` to a unique temp beside `path` and fsync it, returning the staged temp
-/// path. On success the bytes are durably on disk, ready for `publish_staged`.
+/// [`stage_durably_with`] over a source made for this one write. The raw atomic writers
+/// reach temporary names through here, so this entry makes one per call until CS3.1's
+/// per-call context passes the operation's source down (GwzCoreSessionCrateMap §6 step 2).
 pub(super) fn stage_durably(
     filesystem: &dyn FileSystem,
+    path: &Path,
+    contents: &[u8],
+) -> ModelResult<PathBuf> {
+    let ids = crate::operation_context::new_id_source();
+    stage_durably_with(filesystem, &ids, path, contents)
+}
+
+/// Write `contents` to a unique temp beside `path`, named from `ids`, and fsync it,
+/// returning the staged temp path. On success the bytes are durably on disk, ready for
+/// `publish_staged`.
+fn stage_durably_with(
+    filesystem: &dyn FileSystem,
+    ids: &gwz_ids::IdSource,
     path: &Path,
     contents: &[u8],
 ) -> ModelResult<PathBuf> {
     if let Some(parent) = path.parent() {
         filesystem.create_directories(parent).map_err(io_error)?;
     }
-    let tmp_path = temp_path(path)?;
+    let tmp_path = temp_path(ids, path)?;
     let write = || -> ModelResult<()> {
         // F12: fsync the bytes to disk before the rename publishes them. Sync the SAME
         // writable handle we wrote through — do NOT reopen read-only, because Windows

@@ -52,9 +52,12 @@ cfg_if::cfg_if! {
     }
 }
 pub mod runtime;
-// CS1.4 and CS1.5 (gwz-dev dev-docs/GwzCoreSessionPlan.md): the core session
-// contract's host and session contexts, operation gates, limits, `open` and
-// endpoint environment snapshot. Frozen interfaces; nothing calls them yet.
+// CS1.4, CS1.5 and CS1.9 (gwz-dev dev-docs/GwzCoreSessionPlan.md): the core
+// session contract's host and session contexts, `open` with its in-process
+// channel, and the endpoint environment snapshot, composed over the
+// gwz-session-host crate's gates, limits and supervisor and the
+// gwz-session-contract and gwz-session-channel crates' frames and channel (the
+// crate map's §6 steps 3 and 4). Frozen interfaces; nothing calls them yet.
 pub mod session_host;
 pub mod stash;
 pub mod status;

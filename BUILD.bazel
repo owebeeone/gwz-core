@@ -31,6 +31,15 @@ _LOCAL_CLONE_LIBRARIES = [
     "//gwz-core/crates/workspace-install:gwz_workspace_install",
 ]
 
+# The core session crate map's ordinary crates (gwz-dev dev-docs/GwzCoreSessionCrateMap.md §2),
+# wired the same way.
+_CRATE_MAP_LIBRARIES = [
+    "//gwz-core/crates/ids:gwz_ids",
+    "//gwz-core/crates/session-channel:gwz_session_channel",
+    "//gwz-core/crates/session-contract:gwz_session_contract",
+    "//gwz-core/crates/session-host:gwz_session_host",
+]
+
 # gwz-core — the GWZ workspace library.
 # Third-party deps -- git2 (native: libgit2-sys/libssh2-sys/libz-sys/openssl-sys), cap-std,
 # cap-fs-ext, serde, serde_yaml, yaml-rust2, url, chrono, regex, ... -- come from
@@ -57,7 +66,7 @@ rust_library(
         allow_empty = True,
     ),
     aliases = aliases(),
-    deps = all_crate_deps(normal = True) + _LOCAL_CLONE_LIBRARIES,
+    deps = all_crate_deps(normal = True) + _LOCAL_CLONE_LIBRARIES + _CRATE_MAP_LIBRARIES,
     proc_macro_deps = all_crate_deps(proc_macro = True),
     visibility = ["//visibility:public"],
 )

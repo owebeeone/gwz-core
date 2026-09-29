@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Unit tests for the release script's internal-version bump (plan S1.5, D2).
 
-The bump advances one lockstep line: `[package].version` in the fourteen
-crates under `crates/`, and every `gwz-*` edge of a `[dependencies]` or
-`[build-dependencies]` table in gwz-core's manifest and in the crates' own.
+The bump advances one lockstep line: `[package].version` in the crates under
+`crates/`, and every edge to one of them in a `[dependencies]` or
+`[build-dependencies]` table of gwz-core's manifest and of the crates' own.
 Dev-dependency edges stay untouched, because cargo drops a path-only dev edge
 from a published manifest and a versioned one would have to exist on
-crates.io.
+crates.io. An edge is internal by the package it names, not by a `gwz-`
+prefix: the forks gwz-core builds on, `gwz-git2` and `gwz-libgit2-sys`, carry
+the prefix but are pinned to their own versions, off the line.
 
 Each test copies the real manifests -- root plus `crates/*/Cargo.toml` -- into
 a temporary directory and runs the helper against that copy, so the rehearsal
@@ -62,11 +64,19 @@ def package_version(manifest: Path) -> str:
     return tomllib.loads(manifest.read_text(encoding="utf-8"))["package"]["version"]
 
 
-def edge_versions(manifest: Path, kinds: tuple[str, ...]) -> list[str]:
-    """Every version a `gwz-*` edge of the given table kinds requires."""
+def internal_names(tree: Path) -> set[str]:
+    """The package names of the crates under `crates/`: the lockstep line."""
+    return {
+        tomllib.loads(manifest.read_text(encoding="utf-8"))["package"]["name"]
+        for manifest in (tree / "crates").glob("*/Cargo.toml")
+    }
+
+
+def edges(manifest: Path, kinds: tuple[str, ...]) -> list[tuple[str, dict]]:
+    """Every (package, spec) edge of the given table kinds, target tables included."""
     tables = tomllib.loads(manifest.read_text(encoding="utf-8"))
     candidates = [tables, *(value for value in tables.get("target", {}).values())]
-    found: list[str] = []
+    found: list[tuple[str, dict]] = []
     for table in candidates:
         for kind in kinds:
             entries = table.get(kind)
@@ -74,10 +84,27 @@ def edge_versions(manifest: Path, kinds: tuple[str, ...]) -> list[str]:
                 continue
             for key, value in entries.items():
                 spec = value if isinstance(value, dict) else {"version": value}
-                package = str(spec.get("package", key))
-                if package.startswith("gwz-") and "version" in spec:
-                    found.append(str(spec["version"]))
+                found.append((str(spec.get("package", key)), spec))
     return found
+
+
+def edge_versions(manifest: Path, kinds: tuple[str, ...], internal: set[str]) -> list[str]:
+    """Every version an edge to an internal crate requires, in the given table kinds."""
+    return [
+        str(spec["version"])
+        for package, spec in edges(manifest, kinds)
+        if package in internal and "version" in spec
+    ]
+
+
+def other_gwz_edges(manifest: Path, internal: set[str]) -> list[tuple[str, str]]:
+    """The `gwz-*` edges, of any table kind, to a package off the internal line."""
+    kinds = ("dependencies", "build-dependencies", "dev-dependencies")
+    return sorted(
+        (package, str(spec.get("version")))
+        for package, spec in edges(manifest, kinds)
+        if package.startswith("gwz-") and package not in internal
+    )
 
 
 class InternalBumpTests(unittest.TestCase):
@@ -88,6 +115,7 @@ class InternalBumpTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.tree = copy_manifests(Path(self.temporary.name) / "gwz-core")
         self.manifests = [self.tree / "Cargo.toml", *sorted((self.tree / "crates").glob("*/Cargo.toml"))]
+        self.internal = internal_names(self.tree)
 
     def bump_once(self) -> tuple[str, str, bool]:
         current = release.read_internal_version(self.tree)
@@ -98,7 +126,8 @@ class InternalBumpTests(unittest.TestCase):
     def test_the_real_tree_is_on_one_internal_line(self) -> None:
         current = release.read_internal_version(self.tree)
         self.assertRegex(current, r"^0\.0\.[0-9]+$")
-        self.assertEqual(14, len(self.manifests) - 1)
+        self.assertEqual(18, len(self.manifests) - 1)
+        self.assertEqual(18, len(self.internal))
 
     def test_one_bump_advances_every_crate_and_every_publishable_edge(self) -> None:
         current, following, changed = self.bump_once()
@@ -109,14 +138,14 @@ class InternalBumpTests(unittest.TestCase):
         self.assertEqual(following, release.read_internal_version(self.tree))
         edges = 0
         for manifest in self.manifests:
-            required = edge_versions(manifest, release.VERSIONED_KINDS)
+            required = edge_versions(manifest, release.VERSIONED_KINDS, self.internal)
             self.assertEqual([following] * len(required), required, manifest)
             edges += len(required)
-        self.assertEqual(32, edges)
+        self.assertEqual(39, edges)
 
     def test_the_bump_leaves_dev_dependency_edges_alone(self) -> None:
         before = {
-            manifest: edge_versions(manifest, ("dev-dependencies",))
+            manifest: edge_versions(manifest, ("dev-dependencies",), self.internal)
             for manifest in self.manifests
         }
         # The internals' dev edges are path-only today, so "untouched" means
@@ -125,10 +154,21 @@ class InternalBumpTests(unittest.TestCase):
         self.bump_once()
         for manifest in self.manifests:
             self.assertEqual(
-                before[manifest], edge_versions(manifest, ("dev-dependencies",)), manifest
+                before[manifest],
+                edge_versions(manifest, ("dev-dependencies",), self.internal),
+                manifest,
             )
             text = manifest.read_text(encoding="utf-8")
             self.assertNotRegex(text, r"\[dev-dependencies\][^\[]*version\s*=\s*\"0\.0\.")
+
+    def test_the_bump_leaves_the_forked_crates_alone(self) -> None:
+        # gwz-git2 and gwz-libgit2-sys share the prefix, not the line: each
+        # keeps its own pinned version through a bump.
+        before = {manifest: other_gwz_edges(manifest, self.internal) for manifest in self.manifests}
+        self.assertTrue(any(before.values()), "the fixture has no forked-crate edge to check")
+        self.bump_once()
+        for manifest in self.manifests:
+            self.assertEqual(before[manifest], other_gwz_edges(manifest, self.internal), manifest)
 
     def test_the_bump_preserves_comments_and_formatting(self) -> None:
         before = {manifest: manifest.read_text(encoding="utf-8") for manifest in self.manifests}
@@ -206,7 +246,7 @@ class PublishOrderTests(unittest.TestCase):
 
     def test_the_release_script_consumes_the_gate_s_publish_order(self) -> None:
         order = release.read_publish_order(cargo_root=ROOT)
-        self.assertEqual(14, len(order))
+        self.assertEqual(18, len(order))
         self.assertEqual("gwz-core", order[-1])
         self.assertNotIn("gwz-local-testrepo", order)
         printed = subprocess.run(
@@ -245,7 +285,7 @@ class WorktreeSyncTests(unittest.TestCase):
             for manifest in [ROOT / "Cargo.toml", *release.crate_manifests()]
         )
         self.assertEqual(expected, copied)
-        self.assertEqual(15, len(copied))
+        self.assertEqual(19, len(copied))
 
 
 if __name__ == "__main__":

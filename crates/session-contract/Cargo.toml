@@ -1,0 +1,32 @@
+# Contract crate: the session channel's frames, tag registry and frame
+# errors, lanes, channel limits, and the FrameSink / FrameSource traits with
+# their shared conformance suite. Allowed first-party dependencies: none
+# (gwz-dev dev-docs/GwzCoreSessionCrateMap.md §2, under the library
+# boundaries policy that its §1 widens to every new gwz-core library,
+# GwzLocalCloneLibraryBoundaries.md). Bytes only: no GWZ or Taut protocol
+# type and no CBOR, whose codecs stay in gwz-core (map §1, §3). std only.
+[package]
+name = "gwz-session-contract"
+version = "0.0.8"
+edition = "2024"
+rust-version = "1.95"
+license = "GPL-2.0-only"
+description = "An internal component crate of GWZ's core session: the channel contract (frames, tag registry, lanes, limits, FrameSink and FrameSource)."
+repository = "https://github.com/owebeeone/gwz-core"
+readme = "README.md"
+keywords = ["gwz", "git", "workspace", "internal"]
+# What the registry package carries (dev-docs/GwzCratesIoPlan.md D4). No
+# `LICENSE` entry: the SPDX `license` field above is what crates.io reads, and
+# the repository's single GPL-2.0-only text is not copied per crate.
+# Anchored with a leading `/`, as gwz-core's own list explains.
+include = ["/Cargo.toml", "/src/**", "/README.md"]
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+# The shared conformance suite that every channel adapter runs against itself
+# (LBT-009); enabled only by dev-dependencies.
+contract-tests = []
+
+[dependencies]

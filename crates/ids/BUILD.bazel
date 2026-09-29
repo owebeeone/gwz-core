@@ -1,0 +1,19 @@
+load("@rules_rust//rust:defs.bzl", "rust_library")
+load("@gwz_core_crates//:defs.bzl", "aliases", "all_crate_deps")
+
+exports_files(["Cargo.toml"])  # crate_universe (the @gwz_core_crates hub) reads this
+
+# gwz-ids — GWZ: unique numbers from a source each context owns (core session crate map §2).
+# A member of gwz-core's own Cargo workspace (see //gwz-core:BUILD.bazel). It has no
+# dependencies, first-party or third-party (the allowed edges are owned by
+# gwz-core/scripts/checks/check_local_clone_boundaries.py).
+rust_library(
+    name = "gwz_ids",
+    srcs = glob(["src/**/*.rs"]),
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    aliases = aliases(),
+    deps = all_crate_deps(normal = True),
+    proc_macro_deps = all_crate_deps(proc_macro = True),
+    visibility = ["//gwz-core:__subpackages__"],
+)

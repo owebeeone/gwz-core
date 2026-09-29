@@ -5,8 +5,7 @@
 //! | Behaviour | Clause |
 //! | --- | --- |
 //! | The driver creates a `HostContext` and passes it to every session it opens; they share it, and no static holds one | §2, §5.6 |
-//! | Its supervisor thread starts with its first job, and stops once the host context has been shut down or dropped and its jobs have finished | §5.6; reuse design §7 |
-//! | A job whose poll panics is quarantined: kept, so its finish is never assumed, but never polled again, and dropped when the supervisor stops | §5.6; reuse design §7 |
+//! | It holds one supervisor, gwz-session-host's: its thread starts with its first job and stops once the host context has been shut down or dropped and its jobs have finished, and a job whose poll panics is quarantined, never polled again and dropped when the thread stops | §5.6; reuse design §7; crate map §2, §6 step 4 |
 //! | `shutdown` disposes what the members hold within one cleanup bound, 5 s, and reports what remains: the jobs still running at the bound, which the supervisor polls to their end, and the quarantined jobs | reuse design §7 "Host context and server shutdown", and §13's §5.6 bullet (CS:308) |
 //! | The report's `peer_cleanup_confirmed` is false: no member has a peer before CS3.7's endpoint registry, so no peer cleanup occurred | §8's `(0, false)` |
 //! | A later `shutdown`, from any handle, returns the first one's report and disposes nothing again; a concurrent one waits for the first, so it too returns within the bound | reuse design §7; §8's repeated close |
@@ -15,7 +14,7 @@
 //! | `open` validates the limits, refusing with `invalid_request` before any effect, then creates the session context on the calling thread | §1, §5.6, §9 |
 //! | The session context holds the endpoint environment, the limits, the off switch's value and the host context; a worker reaches it only through its gate | §5.6, O8, O9 |
 //! | `transport_off` comes only from `open`'s options: nothing derives it from the snapshot or from the process's own environment or configuration | §5.6 as server design §8 amends it; server design §5 "The off switch's value" |
-//! | `open` returns the client end of the session's in-process channel | §9; the channel itself is CS1.2's |
+//! | `open` returns the client end of the session's in-process channel: gwz-session-channel's pair, with the limits' outstanding calls on the call lane and their control reserve on the control lane; the host's end waits in it for CS2.2's host | §3, §9; session plan CS1.2; crate map §6 step 3 |
 //!
 //! Later steps add members without changing these signatures. The host
 //! context gains the SSH setup supervisor's jobs and budgets (CS3.5), the
@@ -28,14 +27,15 @@
 
 use std::fmt;
 use std::io;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
+
+use gwz_session_channel::{InProcessEnd, pair};
+use gwz_session_contract::{Closed, Frame, FrameSink, FrameSource, Lane, SendError};
+use gwz_session_host::{Limits, SuperviseError, SupervisedJob, Supervisor, validate_limits};
 
 use super::environment::EnvironmentSnapshot;
-use super::limits::Limits;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 /// What the sessions of one driver share (§5.6): the driver creates it and
@@ -53,20 +53,14 @@ pub struct HostContext {
 }
 
 struct HostShared {
-    supervisor: Arc<Supervisor>,
+    /// Its drop is the host context's disposal without `shutdown`: no new
+    /// job, and the thread stops once its jobs have finished, without a wait.
+    supervisor: Supervisor,
     /// Set as `shutdown` begins; `open` then refuses the host context.
     shut_down: AtomicBool,
     /// The first `shutdown`'s report, which later calls return. That call
     /// holds the lock while it disposes, so a concurrent call waits for it.
     report: Mutex<Option<ShutdownReport>>,
-}
-
-impl Drop for HostShared {
-    fn drop(&mut self) {
-        // The disposal `shutdown` makes, without its wait or its report.
-        // After a `shutdown` the supervisor is released already.
-        self.supervisor.release();
-    }
 }
 
 /// The cleanup bound within which `shutdown` disposes the host context's
@@ -94,153 +88,12 @@ pub struct ShutdownReport {
     pub peer_cleanup_confirmed: bool,
 }
 
-/// A job the host context's supervisor owns until the job reports it has
-/// finished (§5.6).
-///
-/// A job whose `poll` panics is quarantined, as the SSH reaper quarantines a
-/// poisoned entry: it is kept, so its finish is never assumed, but it is never
-/// polled again. It drops when the supervisor stops, after the host context's
-/// shutdown or drop, which quarantined jobs alone do not delay.
-pub(crate) trait SupervisedJob: Send {
-    /// Advances the job without blocking. Returns true once it has finished
-    /// and released what it owns.
-    fn poll(&mut self) -> bool;
-}
-
-/// How often the supervisor polls while it has jobs.
-const SUPERVISOR_POLL: Duration = Duration::from_millis(20);
-
-#[derive(Default)]
-struct Supervisor {
-    state: Mutex<SupervisorState>,
-    changed: Condvar,
-}
-
-#[derive(Default)]
-struct SupervisorState {
-    /// The jobs waiting for their next poll.
-    jobs: Vec<Box<dyn SupervisedJob>>,
-    /// The jobs the thread has taken out of `jobs` to poll outside the lock.
-    polling: usize,
-    /// Jobs whose poll panicked: kept, never polled again.
-    quarantined: Vec<Box<dyn SupervisedJob>>,
-    /// The thread runs from the first job until it has been released and no
-    /// job is left to poll.
-    running: bool,
-    /// No job is taken: the host context has been shut down or dropped.
-    closed: bool,
-    /// The thread may stop once no job is left to poll: the host context has
-    /// been dropped, or its shutdown has reported.
-    released: bool,
-}
-
-impl SupervisorState {
-    /// The jobs still to finish, apart from the quarantined ones.
-    fn active(&self) -> usize {
-        self.jobs.len() + self.polling
-    }
-}
-
-impl Supervisor {
-    fn lock(&self) -> MutexGuard<'_, SupervisorState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// The disposal when the host context drops: no new job, and the thread
-    /// polls the rest to their end, then drops the quarantined ones and
-    /// stops. It does not wait.
-    fn release(&self) {
-        let mut state = self.lock();
-        state.closed = true;
-        state.released = true;
-        drop(state);
-        self.changed.notify_all();
-    }
-
-    /// The supervisor's part of `shutdown`: the same disposal, after waiting
-    /// until `deadline` for its jobs to finish. The wait frees the lock the
-    /// thread needs. Returns the jobs that remain, still running or
-    /// quarantined, counted before the release lets the thread drop any.
-    fn dispose(&self, deadline: Instant) -> usize {
-        let mut state = self.lock();
-        state.closed = true;
-        let wait = deadline.saturating_duration_since(Instant::now());
-        let (mut state, _) = self
-            .changed
-            .wait_timeout_while(state, wait, |state| state.active() > 0)
-            .unwrap_or_else(PoisonError::into_inner);
-        let remaining = state.active() + state.quarantined.len();
-        state.released = true;
-        drop(state);
-        self.changed.notify_all();
-        remaining
-    }
-
-    /// The supervisor thread: polls its jobs, quarantining any whose poll
-    /// panics, and stops once it has been released and none is left to poll.
-    /// The jobs are polled, and dropped, outside the lock.
-    fn run(&self) {
-        let mut state = self.lock();
-        loop {
-            let jobs = std::mem::take(&mut state.jobs);
-            state.polling = jobs.len();
-            drop(state);
-            let (mut active, mut quarantined) = (Vec::new(), Vec::new());
-            for mut job in jobs {
-                match catch_unwind(AssertUnwindSafe(|| job.poll())) {
-                    Ok(true) => discard(job),
-                    Ok(false) => active.push(job),
-                    Err(_) => quarantined.push(job),
-                }
-            }
-            state = self.lock();
-            let settled = state.polling > active.len();
-            state.polling = 0;
-            state.jobs.append(&mut active);
-            state.quarantined.append(&mut quarantined);
-            if settled {
-                // A shutdown waiting for the jobs to finish counts them again.
-                self.changed.notify_all();
-            }
-            if !state.jobs.is_empty() {
-                state = self
-                    .changed
-                    .wait_timeout(state, SUPERVISOR_POLL)
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .0;
-            } else if !state.released {
-                // Nothing to poll, only quarantined jobs if any: wait for a
-                // new job or the release, without a timeout.
-                state = self
-                    .changed
-                    .wait(state)
-                    .unwrap_or_else(PoisonError::into_inner);
-            } else {
-                // Released, and so closed: no job can be added while the
-                // quarantined ones drop.
-                let quarantined = std::mem::take(&mut state.quarantined);
-                drop(state);
-                quarantined.into_iter().for_each(discard);
-                self.lock().running = false;
-                self.changed.notify_all();
-                return;
-            }
-        }
-    }
-}
-
-/// Drops a job the supervisor has done with. A panic in the job's `Drop` is
-/// contained, so it cannot stop the supervisor.
-fn discard(job: Box<dyn SupervisedJob>) {
-    let _ = catch_unwind(AssertUnwindSafe(move || drop(job)));
-}
-
 impl HostContext {
     /// Creates a host context. It starts no thread until it has a job.
     pub fn new() -> Self {
         Self {
             shared: Arc::new(HostShared {
-                supervisor: Arc::default(),
+                supervisor: Supervisor::new(),
                 shut_down: AtomicBool::new(false),
                 report: Mutex::new(None),
             }),
@@ -269,21 +122,13 @@ impl HostContext {
     /// starting the work it owns, and no work starts that nothing cleans up.
     #[allow(dead_code, reason = "CS3.5 moves the SSH setup jobs onto it")]
     pub(crate) fn supervise(&self, job: Box<dyn SupervisedJob>) -> io::Result<()> {
-        let supervisor = &self.shared.supervisor;
-        let mut state = supervisor.lock();
-        if state.closed {
-            return Err(io::Error::other("the host context has been shut down"));
-        }
-        if !state.running {
-            let thread_supervisor = Arc::clone(supervisor);
-            thread::Builder::new()
-                .name("gwz-host-supervisor".into())
-                .spawn(move || thread_supervisor.run())?;
-            state.running = true;
-        }
-        state.jobs.push(job);
-        supervisor.changed.notify_all();
-        Ok(())
+        self.shared
+            .supervisor
+            .supervise(job)
+            .map_err(|error| match error {
+                SuperviseError::ShutDown => io::Error::other("the host context has been shut down"),
+                SuperviseError::Spawn(error) => error,
+            })
     }
 }
 
@@ -295,10 +140,11 @@ impl HostShared {
             return done.clone();
         }
         self.shut_down.store(true, Ordering::Release);
-        // Every member disposes within the one deadline. CS3.7 adds the
-        // endpoint registry's disposal before the supervisor's, whose jobs
-        // then hold what a disposal leaves unfinished, and adds what remains.
-        let remaining = self.supervisor.dispose(Instant::now() + bound);
+        // Every member disposes within the one bound. CS3.7 adds the endpoint
+        // registry's disposal before the supervisor's, whose jobs then hold
+        // what a disposal leaves unfinished, passes the supervisor what
+        // remains of the bound, and adds what remains of the registry.
+        let remaining = self.supervisor.shutdown(bound);
         let disposed = ShutdownReport {
             pending_local_work: u32::try_from(remaining).unwrap_or(u32::MAX),
             peer_cleanup_confirmed: false,
@@ -395,7 +241,7 @@ impl SessionOptions {
 /// any effect. It then creates the session context on the calling thread
 /// (§5.6), and returns the client end of the session's in-process channel.
 pub fn open(options: SessionOptions) -> ModelResult<ClientChannel> {
-    options.limits.validate()?;
+    let channel_limits = validate_limits(&options.limits)?;
     if options.host.shared.shut_down.load(Ordering::Acquire) {
         return Err(ModelError::new(
             ErrorCode::InvalidRequest,
@@ -414,23 +260,110 @@ pub fn open(options: SessionOptions) -> ModelResult<ClientChannel> {
         limits,
         transport_off,
     });
-    Ok(ClientChannel { session })
+    let (end, host_end) = pair(channel_limits);
+    Ok(ClientChannel {
+        end,
+        held: Mutex::new(Some(Held { host_end, session })),
+    })
 }
 
-/// The client end of a session's in-process channel (§3, §9).
+/// The client end of a session's in-process channel (§3, §9): an end of
+/// gwz-session-channel's `pair`, whose two bounded queues each hold the
+/// outstanding-call limit on the call lane plus the control reserve on the
+/// control lane.
 ///
-/// This is the seam CS1.2 fills. TODO(CS1.2): the channel contract and the
-/// in-process adapter give it `send(frame)`, which never blocks and fails with
-/// `transport_session_full` on a full queue, `recv()`, which blocks until a
-/// frame arrives or the session has ended, and `close()`, over two bounded
-/// queues of the outstanding calls plus the control reserve (§3). CS2.2's
-/// session host then owns the session context. Until then this end owns the
-/// session: dropping it ends the session, and the session context and its
-/// snapshot drop with it, the snapshot overwriting its buffers as it drops
-/// (§8's channel closure, before any worker exists).
+/// - `send(frame, lane)` never waits. A full lane refuses the frame with
+///   `SendError::Full`, which gives it back, and the channel stays open; a
+///   driver reports that as `transport_session_full`. A control call,
+///   `operation.cancel` or `session.close`, goes on `Lane::Control`, which
+///   the outstanding-call limit never refuses, and every other call on
+///   `Lane::Call` (crate map §7).
+/// - `recv()` waits for the host's next frame, or the session's end, which it
+///   reports as `Closed`.
+/// - `close()`, like dropping the `ClientChannel`, ends the session, and the
+///   session's context drops then, not when the handle does.
+/// - A frame whose tag the in-process channel does not carry (it carries 1 to
+///   3), or larger than `MAX_FRAME_BYTES`, ends the session.
+///
+/// The host's end waits here until the session host serves it (session plan
+/// CS2.2, in gwz-session-host's `serve`), so until then no host answers, and
+/// a `recv` waits for a frame that does not come; no driver calls one before
+/// the plan's Phase 4 or 6. This end owns the session: closing it or dropping
+/// it ends the session, and the session context and its snapshot drop then,
+/// the snapshot overwriting its buffers as it drops (§5.6; §8's channel
+/// closure, before any worker exists).
 pub struct ClientChannel {
-    #[allow(dead_code, reason = "held for its drop until CS1.2 and CS2.2")]
+    end: InProcessEnd,
+    /// What the session holds until it ends here. `close()` takes it, so the
+    /// context drops, and its snapshot is wiped, at the close, as at a drop.
+    held: Mutex<Option<Held>>,
+}
+
+/// What a session holds beside its client end, while it lasts.
+struct Held {
+    /// The host's end, until CS2.2's host takes it. It never goes into the
+    /// session context: that is the gates' per-session data, and a crossing's
+    /// closure must not reach a channel end (O6).
+    #[allow(dead_code, reason = "held for its drop until CS2.2's host serves it")]
+    host_end: InProcessEnd,
+    #[allow(dead_code, reason = "held for its drop until CS2.2")]
     session: Arc<SessionContext>,
+}
+
+impl ClientChannel {
+    /// Sends `frame` on `lane` (§3). It never waits.
+    ///
+    /// # Errors
+    ///
+    /// `SendError::Full` when the lane is full, leaving the channel open, and
+    /// `SendError::Closed` once the session has ended; the frame comes back
+    /// either way.
+    pub fn send(&self, frame: Frame, lane: Lane) -> Result<(), SendError> {
+        self.end.send(frame, lane)
+    }
+
+    /// Takes the host's next frame, waiting until one arrives or the session
+    /// has ended (§3).
+    ///
+    /// # Errors
+    ///
+    /// Why the session ended; every later call returns the same reason.
+    pub fn recv(&self) -> Result<Frame, Closed> {
+        self.end.recv()
+    }
+
+    /// Ends the session at this end, as dropping it does (§8's channel
+    /// closure): the channel closes, then the host's end and the session
+    /// context drop, and with the context its snapshot, which is wiped as it
+    /// drops (§5.6). Closing again changes nothing.
+    pub fn close(&self) {
+        self.end.close();
+        let held = self.held().take();
+        drop(held);
+    }
+
+    fn held(&self) -> MutexGuard<'_, Option<Held>> {
+        // Only `close` and the tests' accessors take this lock. Nothing done
+        // under it leaves the `Option` half-changed, even if a test's closure
+        // panics, so a poisoned lock is recovered.
+        self.held.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+impl FrameSink for ClientChannel {
+    fn send(&self, frame: Frame, lane: Lane) -> Result<(), SendError> {
+        self.end.send(frame, lane)
+    }
+
+    fn close(&self) {
+        ClientChannel::close(self);
+    }
+}
+
+impl FrameSource for ClientChannel {
+    fn recv(&self) -> Result<Frame, Closed> {
+        self.end.recv()
+    }
 }
 
 impl fmt::Debug for ClientChannel {
@@ -442,8 +375,18 @@ impl fmt::Debug for ClientChannel {
 cfg_if::cfg_if! {
     if #[cfg(test)] {
         impl ClientChannel {
-            pub(crate) fn session(&self) -> &Arc<SessionContext> {
-                &self.session
+            /// The session context, while the session lasts.
+            pub(crate) fn session(&self) -> Arc<SessionContext> {
+                // The lock is released at the end of the statement, before
+                // the `expect`.
+                let session = self.held().as_ref().map(|held| Arc::clone(&held.session));
+                session.expect("the session has not ended")
+            }
+
+            /// Runs `f` on the host's end, which CS2.2's host will serve,
+            /// while the session lasts; `None` once it has ended here.
+            pub(crate) fn with_host_end<R>(&self, f: impl FnOnce(&InProcessEnd) -> R) -> Option<R> {
+                self.held().as_ref().map(|held| f(&held.host_end))
             }
         }
 
@@ -452,36 +395,17 @@ cfg_if::cfg_if! {
                 Arc::ptr_eq(&self.shared, &other.shared)
             }
 
-            pub(crate) fn supervisor_watch(&self) -> SupervisorWatch {
-                SupervisorWatch(Arc::clone(&self.shared.supervisor))
+            /// A view of the host context's supervisor thread, through
+            /// gwz-session-host's `test-support` feature.
+            pub(crate) fn supervisor_watch(
+                &self,
+            ) -> gwz_session_host::test_support::SupervisorWatch {
+                gwz_session_host::test_support::watch(&self.shared.supervisor)
             }
 
             /// `shutdown` within a short bound, so no test waits 5 seconds.
             pub(crate) fn shutdown_within(&self, bound: Duration) -> ShutdownReport {
                 self.shared.shutdown(bound)
-            }
-        }
-
-        /// A test's view of a supervisor that can outlive its host context.
-        pub(crate) struct SupervisorWatch(Arc<Supervisor>);
-
-        impl SupervisorWatch {
-            pub(crate) fn running(&self) -> bool {
-                self.0.lock().running
-            }
-
-            /// Waits until the supervisor has been released, by the host
-            /// context's drop or its shutdown, and its thread, if it ever
-            /// started, has stopped.
-            pub(crate) fn wait_ended(&self, timeout: Duration) -> bool {
-                let ended = |state: &SupervisorState| state.released && !state.running;
-                let state = self.0.lock();
-                let (state, _) = self
-                    .0
-                    .changed
-                    .wait_timeout_while(state, timeout, |state| !ended(state))
-                    .unwrap_or_else(PoisonError::into_inner);
-                ended(&state)
             }
         }
 

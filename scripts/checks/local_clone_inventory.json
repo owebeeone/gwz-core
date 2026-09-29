@@ -1,9 +1,10 @@
 {
   "inventory_version": 1,
-  "description": "Package classification and complete allowed dependency edges for the local clone family libraries under crates/. Authority: gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md revision 1 (\u00a72 packages/roles/edges, \u00a74 owners, \u00a76 gate), adopting LBT-001..LBT-012 of the canonical Library Boundary and Testing Policy. Changing a role, an edge or an allowlist is a policy change that goes through lane C with the affected lane's review, never a routine way to make the gate green (LBT-012).",
+  "description": "Package classification and complete allowed dependency edges for every library crate under crates/: the local clone family, and since 2026-09-28 every other new gwz-core library. A directory under crates/ with a manifest and no entry here fails the gate (LBT-001). Authority: gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md revision 3 (\u00a71 scope, \u00a72 packages/roles/edges, \u00a74 owners, \u00a76 gate), adopting LBT-001..LBT-012 of the canonical Library Boundary and Testing Policy, and gwz-dev dev-docs/GwzCoreSessionCrateMap.md \u00a71\u2013\u00a72 (its rules, and its ordinary crates with their roles and first-party edges). Changing a role, an edge or an allowlist is a policy change that goes through lane C with the affected lane's review, never a routine way to make the gate green (LBT-012).",
   "policy": {
     "adoption_document": "gwz-dev dev-docs/GwzLocalCloneLibraryBoundaries.md",
-    "adoption_revision": 1,
+    "adoption_revision": 3,
+    "crate_map": "gwz-dev dev-docs/GwzCoreSessionCrateMap.md \u00a71\u2013\u00a72",
     "canonical_policy_sha256": "dcc4fbd2b45caf928978a090208951ef14759ef0589e820b94f8475fccf07c10"
   },
   "crates_dir": "crates",
@@ -97,7 +98,7 @@
         "gwz-repo-contract"
       ],
       "third_party": [
-        "git2"
+        "gwz-git2"
       ],
       "dev_first_party": [
         "gwz-repo-contract",
@@ -171,7 +172,8 @@
       "rationale": "YAML index, ordinary publication and OS advisory locking implement the store contract.",
       "first_party": [
         "gwz-family-store-contract",
-        "gwz-family-model"
+        "gwz-family-model",
+        "gwz-ids"
       ],
       "third_party": [
         "serde",
@@ -269,12 +271,63 @@
         "gwz-repo-contract"
       ],
       "third_party": [
-        "git2",
+        "gwz-git2",
         "tempfile"
       ],
       "dev_first_party": [
         "gwz-repo-contract"
       ],
+      "dev_third_party": [],
+      "expected": "present"
+    },
+    "gwz-ids": {
+      "directory": "ids",
+      "role": "pure",
+      "owner": "C",
+      "rationale": "Unique numbers from a source each context owns: IdSource::new(prefix), next() and unique(). Pure: the counter lives in the instance, never in a static, and core draws each context's prefix from the OS random source (GwzCoreSessionCrateMap \u00a71\u2013\u00a72).",
+      "first_party": [],
+      "third_party": [],
+      "dev_first_party": [],
+      "dev_third_party": [],
+      "expected": "present"
+    },
+    "gwz-session-contract": {
+      "directory": "session-contract",
+      "role": "contract",
+      "owner": "CS",
+      "rationale": "The session channel's contract: frames and the tag registry, frame errors, lanes, limits, and the FrameSink and FrameSource traits, with the conformance suite every adapter runs behind the contract-tests feature. Bytes only: no GWZ or Taut protocol type (GwzCoreSessionCrateMap \u00a71\u2013\u00a72).",
+      "first_party": [],
+      "third_party": [],
+      "dev_first_party": [],
+      "dev_third_party": [],
+      "expected": "present"
+    },
+    "gwz-session-channel": {
+      "directory": "session-channel",
+      "role": "implementation",
+      "owner": "CS",
+      "rationale": "Carries frames: the in-process pair of bounded queues and the byte-stream adapter implement the contract's FrameSink and FrameSource; its dev edge to the contract enables contract-tests, the suite both adapters run (GwzCoreSessionCrateMap \u00a72).",
+      "first_party": [
+        "gwz-session-contract"
+      ],
+      "third_party": [],
+      "dev_first_party": [
+        "gwz-session-contract"
+      ],
+      "dev_third_party": [],
+      "expected": "present"
+    },
+    "gwz-session-host": {
+      "directory": "session-host",
+      "role": "integration",
+      "owner": "CS",
+      "rationale": "The session host's machinery: operation gates with the crate map's capability design, the session limits and the host context's supervisor, generic over core's per-session data, which passes through opaquely, so the environment snapshot stays in core; Phase 2's serve and HostPorts land here. gwz-ids is allowed by the map's row and not yet declared (GwzCoreSessionCrateMap §2, §6 step 4).",
+      "first_party": [
+        "gwz-ids",
+        "gwz-session-contract"
+      ],
+      "third_party": [],
+      "dev_first_party": [],
       "dev_third_party": [],
       "expected": "present"
     }

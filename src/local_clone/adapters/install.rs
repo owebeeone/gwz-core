@@ -197,7 +197,7 @@ impl<'a, B: GitBackend> CoreInstallPorts<'a, B> {
         Self {
             backend,
             inspector: LocalRepoInspector::new(),
-            store: YamlFamilyStore::new(),
+            store: crate::local_clone::family_merge::family_store(),
             root: request.root.clone(),
             family_id,
             allocation: request.allocation.clone(),

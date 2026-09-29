@@ -35,12 +35,11 @@
 
 use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+
+use gwz_ids::IdSource;
 
 use crate::filesystem::{FileSystem, RenameMode};
 use crate::model::{ErrorCode, ModelError, ModelResult};
-
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 /// Publish `bytes` at `path` durably, then prove it by reading them back.
 ///
@@ -49,9 +48,11 @@ static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 /// target, `sync_dir` on the parent, then a re-read byte compare. Every early
 /// exit removes the temporary. `rename_durable`'s `replace = true` is
 /// harmless on the one path that reaches this function: `create_open` refuses
-/// an existing record before it is called, so the target is absent.
+/// an existing record before it is called, so the target is absent. The
+/// temporary's name comes from `ids`, the operation's source.
 pub(crate) fn write_atomic_verified(
     filesystem: &dyn FileSystem,
+    ids: &IdSource,
     path: &Path,
     bytes: &[u8],
 ) -> ModelResult<()> {
@@ -60,9 +61,7 @@ pub(crate) fn write_atomic_verified(
         .ok_or_else(|| recovery_error("record path has no parent"))?;
     filesystem.create_directories(parent).map_err(io_error)?;
     let (temporary, file) = loop {
-        let sequence = TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let candidate =
-            path.with_extension(format!("yaml.{}.{}.tmp", std::process::id(), sequence));
+        let candidate = path.with_extension(format!("yaml.{}.tmp", ids.unique()));
         match filesystem.create_file(&candidate) {
             Ok(file) => break (candidate, file),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -109,8 +108,26 @@ mod tests {
         let workspace = filesystem.test_workspace().unwrap();
         let path = workspace.path().join("nested/record.yaml");
 
-        write_atomic_verified(&filesystem, &path, b"checked record").unwrap();
+        write_atomic_verified(&filesystem, &IdSource::new(7), &path, b"checked record").unwrap();
 
         assert_eq!(filesystem.read(&path).unwrap(), b"checked record");
+    }
+
+    #[test]
+    fn a_taken_temporary_name_is_skipped_and_left_as_it_was() {
+        // The operation's source names the temporary; the first name it draws
+        // is taken, so the exclusive create skips it and never touches it.
+        let filesystem = make_filesystem();
+        let workspace = filesystem.test_workspace().unwrap();
+        let path = workspace.path().join("record.yaml");
+        let taken = path.with_extension("yaml.0000000000000007-0.tmp");
+        let file = filesystem.create_file(&taken).unwrap();
+        filesystem.write_all(&file, b"not ours").unwrap();
+        drop(file);
+
+        write_atomic_verified(&filesystem, &IdSource::new(7), &path, b"checked record").unwrap();
+
+        assert_eq!(filesystem.read(&path).unwrap(), b"checked record");
+        assert_eq!(filesystem.read(&taken).unwrap(), b"not ours");
     }
 }

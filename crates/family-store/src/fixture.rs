@@ -41,6 +41,7 @@ use gwz_family_store_contract::{
 };
 
 use crate::{LockedFamilySession, YamlFamilyStore};
+use gwz_ids::IdSource;
 
 /// Paths whose next operation the fixture obstructs, keyed by the family
 /// root the suite named.
@@ -72,10 +73,20 @@ fn canonical(path: &Path) -> PathBuf {
 }
 
 /// [`YamlFamilyStore`] plus the fixture's one-call obstruction bracket.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub(crate) struct BracketedStore {
     inner: YamlFamilyStore,
     armed: Rc<RefCell<Armed>>,
+}
+
+impl Default for BracketedStore {
+    /// A store over a fixed prefix, as tests pass one.
+    fn default() -> Self {
+        Self {
+            inner: YamlFamilyStore::new(IdSource::new(0xb)),
+            armed: Rc::default(),
+        }
+    }
 }
 
 impl FamilyStore for BracketedStore {

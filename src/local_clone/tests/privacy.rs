@@ -184,7 +184,7 @@ fn assert_conf_free_of_family_data(workspace: &Path, markers: &[&str], label: &s
 }
 
 fn family_id(root: &Path) -> String {
-    match gwz_family_store::YamlFamilyStore::new()
+    match crate::local_clone::family_merge::family_store()
         .read_view(&FamilyLocation::new(root))
         .unwrap()
     {
