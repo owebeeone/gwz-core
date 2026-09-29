@@ -5,6 +5,9 @@ records every place gwz-core product code runs the `git` executable, why each
 one exists, and what it would take to remove it. No decision is taken here on
 which route to use for any case.
 
+2026-09-29: case 2.1 is closed. The libgit2 fork's native correction replaced
+the fallback, which was then removed; see 2.1. Cases 2.2 to 2.4 remain.
+
 Facts read on gwz-core `main` at 1.0.17: `git2` 0.21.0 over `libgit2-sys`
 0.18.8 (libgit2 1.9.7, pinned exactly in `Cargo.toml`).
 
@@ -16,9 +19,9 @@ executable on `PATH`.
 Why it matters:
 
 - `git` on `PATH` is today a hard runtime requirement for `gwz commit`,
-  `gwz tag` and path-filtered `gwz log`, and a soft one for `gwz merge
-  --remote <lane>`. Nothing checks for it at start-up; the first use fails
-  with `GitCommandFailed`.
+  `gwz tag` and path-filtered `gwz log`, and was a soft one for `gwz merge
+  --remote <lane>` until 2026-09-29 (2.1). Nothing checks for it at start-up;
+  the first use fails with `GitCommandFailed`.
 - The spawned `git` reads the user's whole configuration and runs with the
   user's environment, so its behaviour is not pinned by the gwz release. The
   libgit2 path is.
@@ -38,6 +41,15 @@ modules (`local_clone/adapters/object_census.rs`, `diff/output.rs`,
 `workspace_ops/historical_identity.rs`) and are out of scope.
 
 ### 2.1 Lane import falls back to `git fetch` (conditional)
+
+**Closed 2026-09-29: removed.** Route B was taken. Since gwz-core `26b30ca6`
+(2026-09-23), production `git2` is the fork `gwz-git2`, whose candidate
+`4c1caab` pins the native local-fetch correction
+([NativeFix](GwzNoFallbackNativeFix.md)). `fetch_anonymous` now runs libgit2
+alone: the error-text trigger and `fetch_anonymous_with_git` are gone. The
+removal record, with the check that Git is not needed, is in
+[the no-fallback plan](GwzNoFallbackPlan.md) §4. The rest of 2.1 records the
+case as it stood on 2026-09-19.
 
 - **Where.** `src/git/gitbackend/transport.rs`, `fetch_anonymous` and
   `fetch_anonymous_with_git`. Reached by `gwz merge --remote <lane>` and every
@@ -173,11 +185,23 @@ shippable alone. Steps inside a phase are independent unless stated.
   in 2.1 with a check made before the fetch: does the repository whose refs
   libgit2 walks (first establish which, with a test on each side) hold a ref
   whose target is not a commit or a tag that peels to one? Then the choice of
-  path no longer depends on libgit2's wording.
+  path no longer depends on libgit2's wording. *Moot since 2026-09-29: the
+  test left with the fallback (2.1).*
 - **S1.3.** Document the `git` requirement and the section 3 asymmetry in
   gwz-cli `docs/Install.md` and `docs/commands/merge.md`.
 
 ### Phase 2: remove the conditional fallback (case 2.1)
+
+**Done 2026-09-29, by route B rather than A.** The libgit2 fix is carried in the
+`gwz-git2` fork ([NativeFix](GwzNoFallbackNativeFix.md)), behind the unchanged
+`fetch_anonymous` port. The fix reached production with that fork in
+`26b30ca6`, and the fallback was removed afterwards. S2.3's matrix is
+`src/local_clone/tests/transport_noncommit.rs`. S2.3's "`git` absent from
+`PATH`" condition was met by the `git` stub run that
+[the no-fallback plan](GwzNoFallbackPlan.md) §4 records, which failed the
+fallback's own call, not by removing Git: fixtures still use it.
+The `FETCH_HEAD` truncation that route A would also have removed remains; it
+is outside the port contract.
 
 - **S2.1.** Decide route A or B from section 2.1. A is recommended: it removes
   the transport, the fallback and the `FETCH_HEAD` side effect together, and
@@ -220,6 +244,9 @@ only if embedding without `git` becomes a real requirement.
   libgit2's error text and no quadratic log" enough? Phases 1 to 3 deliver the
   second without Phase 4.
 - For 2.1, is a carried libgit2 patch acceptable at all, given the exact
-  `libgit2-sys` pin and the release train's crates.io publication?
+  `libgit2-sys` pin and the release train's crates.io publication? *Answered
+  by the operator's 2026-09-20 direction ([plan](GwzNoFallbackPlan.md)): yes,
+  small upstream-suitable changes in the forks, with patched libgit2 1.9.7 as
+  the baseline.*
 - Should hooks run for merge commits once section 3 is closed? Git runs
   `pre-merge-commit` and `commit-msg` there, not `pre-commit`.

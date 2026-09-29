@@ -175,7 +175,7 @@
       "path": "gwz-cli/docs/CLI.md",
       "required": [
         {"id": "generated_cli_local_clone_section", "value": "### `gwz local clone`"},
-        {"id": "generated_cli_local_clone_usage", "value": "Usage: gwz local clone <name> [dest] [--clean | --bare] [-b <branch>] [--from <name|path>]", "comment": "Generated from the clap definitions in gwz-cli; regenerate with `python scripts/generate_cli_reference.py --write` rather than editing CLI.md."},
+        {"id": "generated_cli_local_clone_usage", "value": "Usage: gwz local clone <name> [dest] [--owner <token>] [--wait <secs>]", "comment": "Generated from the clap definitions in gwz-cli (`override_usage` in src/clirequest/local.rs); regenerate with `python scripts/generate_cli_reference.py --write` rather than editing CLI.md. gwz-cli ef865de (2026-09-18, Surface F7) dropped the flags this build refuses from the synopsis; docs/commands/local.md still lists them, marked refused."},
         {"id": "generated_cli_clone_usage", "value": "Usage: gwz clone <url> [directory]"},
         {"id": "generated_cli_dispose_force_usage", "value": "gwz local dispose <name> --force <hazard,...>"},
         {"id": "generated_cli_hazard_names", "value": "Known names: open-merge, dirty, unpreserved-history"}
@@ -244,7 +244,7 @@
       "id": "releases",
       "path": "gwz-cli/docs/Releases.md",
       "required": [
-        {"id": "releases_local_clone_note", "value": "are parsed but refused by this build"},
+        {"id": "releases_local_clone_note", "value": "`--clean`, `--bare`, `--from`, and their branch option remain refused, as do family pull/push.", "comment": "The 1.0.0 section's statement. gwz-cli ad095e9 (2026-09-18) dropped the unreleased local-clone note this row pinned (`are parsed but refused by this build`) once the family had shipped in the 1.0 line."},
         {"id": "releases_links_the_guide", "value": "[Local Clones](LocalClones.md)"}
       ],
       "forbidden": []

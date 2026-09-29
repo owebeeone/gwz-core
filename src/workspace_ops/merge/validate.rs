@@ -138,12 +138,12 @@ pub(crate) fn validate_merge_start_shape(request: &crate::MergeRequest) -> Model
 
 impl crate::MergeRequest {
     /// Crate-visible handle on [`validate_merge_start_shape`] for the
-    /// local-family wrapper (`crate::local_clone::request`). `merge`'s module
-    /// tree is a pinned compiler root (`scripts/checks/
-    /// check_checked_artifact_boundaries.py`, `PROTECTED_COMPILER_ROOT_DIGESTS`)
-    /// and `validate` is private to it, so the engine's rule is exported as
-    /// an inherent method on the request type -- reachable wherever the type
-    /// is, with no re-export in `merge/mod.rs`.
+    /// local-family wrapper (`crate::local_clone::request`). `validate` is
+    /// private to `merge`, so the engine's rule is exported as an inherent
+    /// method on the request type -- reachable wherever the type is, with no
+    /// re-export in `merge/mod.rs`. That file was a byte-pinned compiler root
+    /// of `scripts/checks/check_checked_artifact_boundaries.py` when this was
+    /// written; gwz-core 107aca7a (2026-09-08) removed that pin.
     pub(crate) fn validate_merge_start_shape(&self) -> ModelResult<()> {
         validate_merge_start_shape(self)
     }

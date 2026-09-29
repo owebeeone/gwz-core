@@ -46,7 +46,9 @@ pub fn invocation_start(start: &Path, meta: &crate::RequestMeta) -> ModelResult<
 /// without an invocation context is refused.
 pub fn caller_directory(meta: &crate::RequestMeta) -> ModelResult<PathBuf> {
     let Some(context) = meta.invocation.as_ref() else {
-        return Err(invalid("request carries no invocation context (caller_cwd)"));
+        return Err(invalid(
+            "request carries no invocation context (caller_cwd)",
+        ));
     };
     normalize_absolute_path(Path::new(&context.caller_cwd), "invocation caller_cwd")
 }
@@ -172,14 +174,21 @@ mod tests {
         } else {
             ("/work/a/../b", "/work/b")
         };
-        assert_eq!(caller_directory(&meta(Some(given))).unwrap(), PathBuf::from(expected));
+        assert_eq!(
+            caller_directory(&meta(Some(given))).unwrap(),
+            PathBuf::from(expected)
+        );
         assert!(caller_directory(&meta(None)).is_err());
         assert!(caller_directory(&meta(Some("relative/dir"))).is_err());
     }
 
     #[test]
     fn path_text_is_exact_or_refused() {
-        let valid = if cfg!(windows) { r"C:\work\b" } else { "/work/b" };
+        let valid = if cfg!(windows) {
+            r"C:\work\b"
+        } else {
+            "/work/b"
+        };
         assert_eq!(path_text(Path::new(valid), "root").unwrap(), valid);
         cfg_if::cfg_if! {
             if #[cfg(unix)] {

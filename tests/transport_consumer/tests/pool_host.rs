@@ -31,11 +31,13 @@ fn host_clock_keeps_large_nonzero_origin_for_connect_budget() {
     else {
         panic!("expected connect action");
     };
-    assert_eq!(network_deadline, Some(4_010_000));
-    driver.advance(4_009_999);
+    // The default connect-network budget is 30 seconds (gwz-transport 14f0d09;
+    // its own pool tests moved with it in 36ae2b1).
+    assert_eq!(network_deadline, Some(4_030_000));
+    driver.advance(4_029_999);
     assert!(pin!(&mut checkout).poll(&mut context).is_pending());
     assert!(pin!(driver.next_action()).poll(&mut context).is_pending());
-    driver.advance(4_010_000);
+    driver.advance(4_030_000);
     assert!(matches!(
         pin!(&mut checkout).poll(&mut context),
         Poll::Ready(Err(gwz_transport::pool::Error::ConnectTimeout))
@@ -47,6 +49,7 @@ fn host_clock_keeps_large_nonzero_origin_for_connect_budget() {
                 code: ErrorCode::Io,
                 effect: Effect::None,
                 facts: None,
+                setup_cause: None,
             }),
         )
         .unwrap();

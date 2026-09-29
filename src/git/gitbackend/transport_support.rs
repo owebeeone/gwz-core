@@ -3,6 +3,10 @@ use super::*;
 
 pub(crate) mod identity;
 
+/// The native transport's server timeout, in milliseconds, when none is
+/// configured before the first backend: libgit2's connect and I/O timeouts.
+pub(crate) const DEFAULT_SERVER_TIMEOUT_MS: i32 = 9000;
+
 #[derive(Default)]
 struct TimeoutState {
     milliseconds: Option<i32>,
@@ -18,8 +22,9 @@ pub(super) fn ensure_server_timeout() {
         .lock()
         .unwrap_or_else(|error| error.into_inner());
     if state.milliseconds.is_none() {
-        apply_server_timeout(9000).expect("native transport timeout initialization failed");
-        state.milliseconds = Some(9000);
+        apply_server_timeout(DEFAULT_SERVER_TIMEOUT_MS)
+            .expect("native transport timeout initialization failed");
+        state.milliseconds = Some(DEFAULT_SERVER_TIMEOUT_MS);
     }
     state.frozen = true;
 }
@@ -277,7 +282,11 @@ pub(crate) fn remote_credential(
 cfg_if::cfg_if! {
     if #[cfg(all(unix, gwz_transport_candidate))] {
         pub(crate) fn server_timeout_ms() -> u64 {
-            TIMEOUT_STATE.lock().unwrap_or_else(|e| e.into_inner()).milliseconds.unwrap_or(9000) as u64
+            TIMEOUT_STATE
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .milliseconds
+                .unwrap_or(DEFAULT_SERVER_TIMEOUT_MS) as u64
         }
     }
 }

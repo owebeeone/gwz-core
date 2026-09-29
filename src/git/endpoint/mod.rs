@@ -4,6 +4,7 @@ pub(crate) mod agent_auth;
 pub(crate) mod agent_client;
 pub(crate) mod agent_job;
 pub(crate) mod agent_socket;
+pub(crate) mod git_turns;
 pub(crate) mod placement_endpoint;
 pub(crate) mod ssh_admission;
 pub(crate) mod ssh_channel;
@@ -26,13 +27,21 @@ pub(crate) mod stream_io;
 pub(crate) mod https_auth;
 pub(crate) mod https_connection;
 pub(crate) mod https_destination;
+pub(crate) mod https_local;
 pub(crate) mod https_policy;
 pub(crate) mod https_pool;
+pub(crate) mod https_progress;
 pub(crate) mod https_remote;
 pub(crate) mod https_worker;
 pub(crate) mod shared_reservation;
-pub(crate) mod https_local;
-pub(crate) mod https_progress;
 
-pub(crate) mod https_operation;
 pub(crate) mod https_opening;
+pub(crate) mod https_operation;
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        mod git_turns_tests;
+        pub(crate) mod helper_script;
+        mod ssh_pump_clock_tests;
+    }
+}

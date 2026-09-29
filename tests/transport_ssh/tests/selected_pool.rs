@@ -10,6 +10,7 @@ cfg_if::cfg_if! {
         #[path="../../../src/git/endpoint/ssh_network.rs"] mod ssh_network;
         #[path="../../../src/git/endpoint/ssh_admission.rs"] mod ssh_admission;
         #[path="../../../src/git/endpoint/ssh_pool.rs"] mod ssh_pool;
+        #[path="../../../src/git/endpoint/git_turns.rs"] mod git_turns;
         #[path="../../../src/git/endpoint/ssh_pump.rs"] mod ssh_pump;
         #[path="../../../src/git/endpoint/ssh_setup.rs"] mod ssh_setup;
         #[path="../../../src/git/endpoint/ssh_shutdown.rs"] mod ssh_shutdown;

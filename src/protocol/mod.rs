@@ -6,7 +6,7 @@ cfg_if::cfg_if! {
         #[allow(clippy::redundant_closure)]
         #[allow(clippy::needless_question_mark)]
         #[rustfmt::skip]
-        #[path = "../../tests/transport_consumer/candidate/candidate_generated.rs"]
+        #[path = "candidate_generated.rs"]
         pub mod generated;
     } else {
         #[allow(clippy::redundant_closure)]

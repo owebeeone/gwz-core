@@ -15,6 +15,8 @@ mod ssh_destination;
 mod ssh_endpoint;
 #[path = "../../../src/git/endpoint/ssh_pool.rs"]
 mod ssh_pool;
+#[path = "../../../src/git/endpoint/git_turns.rs"]
+mod git_turns;
 #[path = "../../../src/git/endpoint/ssh_pump.rs"]
 mod ssh_pump;
 #[path = "../../../src/git/endpoint/ssh_remote.rs"]

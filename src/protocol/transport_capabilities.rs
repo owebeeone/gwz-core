@@ -2,6 +2,10 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::{TransportCapabilitiesRequest, TransportCapabilitiesResponse};
 
 /// Capabilities of the native backend shipped with this core, without opening a repository.
+#[allow(
+    clippy::needless_update,
+    reason = "gwz_transport_candidate adds fields"
+)]
 pub fn handle(request: TransportCapabilitiesRequest) -> ModelResult<TransportCapabilitiesResponse> {
     if request.schema_version != "gwz.protocol/v0" {
         return Err(ModelError::new(
@@ -61,16 +65,21 @@ mod tests {
     #[test]
     fn runtime_timeout_refuses_changes_after_backend_creation() {
         let _backend = crate::git::Git2Backend::without_credential_helpers();
+        // Creating a backend fixed the process-wide timeout at the default:
+        // no test in this binary chooses one before its first backend.
+        let default = i64::from(crate::git::DEFAULT_SERVER_TIMEOUT_MS);
         let request = |milliseconds| crate::TransportRuntimeRequest {
             server_timeout_ms: milliseconds,
             schema_version: "gwz.protocol/v0".into(),
         };
         assert_eq!(
-            configure_runtime(request(3000)).unwrap().server_timeout_ms,
-            3000
+            configure_runtime(request(default))
+                .unwrap()
+                .server_timeout_ms,
+            default
         );
         assert_eq!(
-            configure_runtime(request(3001)).unwrap_err().code,
+            configure_runtime(request(default + 1)).unwrap_err().code,
             ErrorCode::UnsupportedOperation
         );
         assert_eq!(

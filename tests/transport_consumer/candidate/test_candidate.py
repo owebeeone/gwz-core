@@ -15,7 +15,7 @@ sys.path.insert(0, str(TAUT_SOURCE))
 ROOT = Path(__file__).resolve().parents[1]
 CORE_SCHEMA = ROOT.parents[1] / "protocol" / "gwz.taut.py"
 OWNER_SCHEMA = ROOT.parents[2] / "gwz-transport" / "protocol" / "transport.ir.json"
-CANDIDATE_SCHEMA = ROOT / "protocol" / "candidate.taut.py"
+CANDIDATE_SCHEMA = ROOT.parents[1] / "protocol" / "candidate" / "candidate.taut.py"
 
 os.environ["GWZ_CORE_SCHEMA"] = str(CORE_SCHEMA)
 os.environ["GWZ_TRANSPORT_SCHEMA"] = str(OWNER_SCHEMA)

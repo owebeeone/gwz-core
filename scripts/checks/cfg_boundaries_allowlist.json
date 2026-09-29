@@ -355,7 +355,6 @@
     {"repo": "gwz-core", "path": "src/git/tests/g15/root_preservation/faults.rs", "attrs": "#[cfg(unix)]", "item": "cases.extend([(FaultBoundary::BeforeUnixParentSync, GitRootPreservationStepObservation::AfterNeedsDurability), (FaultBoundary::AfterUnixParentSync, GitRootPreservationStepObservation::AfterNeedsDurability)])", "count": 2},
     {"repo": "gwz-core", "path": "src/git/tests/g15/root_preservation/faults.rs", "attrs": "#[cfg_attr(not(unix), allow(unused_mut))]", "item": "let mut cases", "count": 2},
     {"repo": "gwz-core", "path": "src/git/tests/g15/root_preservation/stash.rs", "attrs": "#[cfg(all(unix, not(target_os = \"macos\")))]", "item": "let cases"},
-    {"repo": "gwz-core", "path": "src/lib.rs", "attrs": "#[cfg(test)]", "item": "mod protocol_corpus"},
     {"repo": "gwz-core", "path": "src/lib.rs", "attrs": "#[cfg(test)]", "item": "mod test_backend"},
     {"repo": "gwz-core", "path": "src/local_clone/mod.rs", "attrs": "#[cfg(test)]", "item": "mod tests"},
     {"repo": "gwz-core", "path": "src/model/mod.rs", "attrs": "#[cfg(test)]", "item": "mod tests"},

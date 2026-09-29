@@ -103,7 +103,10 @@ fn stage(path: &Path, backend: &Git2Backend, text: &[u8]) {
     backend.stage_paths(path, &["tracked.txt"]).unwrap();
 }
 
-fn signature_fields(signature: &git2::Signature<'_>) -> (Vec<u8>, Vec<u8>, i64, i32) {
+/// A signature's name, email, time in seconds and offset in minutes.
+type SignatureFields = (Vec<u8>, Vec<u8>, i64, i32);
+
+fn signature_fields(signature: &git2::Signature<'_>) -> SignatureFields {
     (
         signature.name_bytes().to_vec(),
         signature.email_bytes().to_vec(),
@@ -112,10 +115,7 @@ fn signature_fields(signature: &git2::Signature<'_>) -> (Vec<u8>, Vec<u8>, i64, 
     )
 }
 
-fn commit_signatures(
-    path: &Path,
-    oid: &str,
-) -> ((Vec<u8>, Vec<u8>, i64, i32), (Vec<u8>, Vec<u8>, i64, i32)) {
+fn commit_signatures(path: &Path, oid: &str) -> (SignatureFields, SignatureFields) {
     let repo = git2::Repository::open(path).unwrap();
     let commit = repo.find_commit(git2::Oid::from_str(oid).unwrap()).unwrap();
     (
@@ -149,7 +149,7 @@ fn index_entries(path: &Path) -> Vec<(Vec<u8>, u32, git2::Oid)> {
         .collect()
 }
 
-fn tagger_fields(path: &Path, name: &str) -> (Vec<u8>, Vec<u8>, i64, i32) {
+fn tagger_fields(path: &Path, name: &str) -> SignatureFields {
     let repo = git2::Repository::open(path).unwrap();
     let oid = repo
         .find_reference(&format!("refs/tags/{name}"))

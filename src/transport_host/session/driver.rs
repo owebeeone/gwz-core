@@ -267,7 +267,11 @@ impl Session {
         }
         if !state.closed {
             if let Some(owner) = state.owner.clone() {
+                let held = self.test_hooks.should_hold_pump();
                 for _ in 0..64 {
+                    if held {
+                        break;
+                    }
                     let item = if let Some(item) = state.incoming.take() {
                         item
                     } else {
@@ -428,8 +432,15 @@ impl Session {
                         }
                     }
                 }
+                let sealed: BTreeSet<String> = state
+                    .registrations
+                    .iter()
+                    .filter(|(_, r)| r.sealed.is_some())
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                let session = state.session.clone();
                 let mut failed = false;
-                for entry in state.streams.values_mut() {
+                for entry in state.streams.values_mut().filter(|_| !held) {
                     entry.peer.advance(now);
                     if !entry.opened {
                         if entry.deadline.is_some_and(|at| Instant::now() >= at) {
@@ -449,9 +460,32 @@ impl Session {
                         }
                     }
                     if let Some(message) = entry.pending.take() {
+                        // As above: the seal made the mux own this request's
+                        // cancellation, so a late client message for one of its
+                        // streams is stale. The mux may already have retired
+                        // the route; forwarding it would fail the whole session.
+                        if sealed.contains(&entry.request) {
+                            continue;
+                        }
                         match owner.send(&entry.request, &message) {
                             Ok(()) => {}
                             Err(mux::Error::WouldBlock) => entry.pending = Some(message),
+                            Err(mux::Error::InvalidRequest)
+                                if session.as_deref() == Some(&message.session_id)
+                                    && message.version == 2 =>
+                            {
+                                // The mux retires a stream's route the moment it
+                                // admits that stream's terminal (the endpoint's
+                                // Closed or Failed, or its own deadline's) and
+                                // queues the terminal for this pump, which hands it
+                                // to the stream only after this pass. A client
+                                // message taken meanwhile is stale: drop it. `send`
+                                // answers InvalidRequest for a missing route, or for
+                                // a route, session or version that doesn't match;
+                                // the guard rules out the last two, and the route
+                                // the mux gave this stream belongs to this entry's
+                                // request, so here it means the route is gone.
+                            }
                             Err(_) => {
                                 failed = true;
                                 break;
@@ -462,9 +496,12 @@ impl Session {
                 if failed {
                     Self::close_state(&mut state);
                 }
-                state
-                    .streams
-                    .retain(|_, entry| !entry.peer.stats().terminal || entry.pending.is_some());
+                state.streams.retain(|_, entry| {
+                    held || !entry.peer.stats().terminal || entry.pending.is_some()
+                });
+                if !held {
+                    self.test_hooks.pumped();
+                }
             }
         }
         let sealed: Vec<_> = state

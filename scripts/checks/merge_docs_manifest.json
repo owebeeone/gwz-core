@@ -397,7 +397,8 @@
       "required": [
         {
           "id": "releases_unreleased_compatibility",
-          "value": "## Unreleased Compatibility Notes"
+          "value": "## Compatibility Notes",
+          "comment": "gwz-cli ad095e9 (2026-09-18) renamed `## Unreleased Compatibility Notes`: every note in the section describes released behaviour, and unreleased work is described in the version section it will ship in."
         },
         {
           "id": "releases_merge_surface",

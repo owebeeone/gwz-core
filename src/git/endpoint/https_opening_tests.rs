@@ -138,7 +138,6 @@ cfg_if::cfg_if! {
     if #[cfg(unix)] {
         #[test]
         fn automatic_gh_open_keeps_the_challenge_socket_across_mux_receipts() {
-            use std::os::unix::fs::PermissionsExt;
             runtime().block_on(async {
                 let seen = Arc::new(Mutex::new(Vec::new()));
                 let records = seen.clone();
@@ -153,8 +152,7 @@ cfg_if::cfg_if! {
                 })).await;
                 let helper = tempfile::tempdir().unwrap();
                 let executable = helper.path().join("gh");
-                std::fs::write(&executable, "#!/bin/sh\ncat >/dev/null\nprintf 'username=fixture\\npassword=token\\n\\n'\n").unwrap();
-                std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+                crate::git::endpoint::helper_script::write_helper_script(&executable, "cat >/dev/null\nprintf 'username=fixture\\npassword=token\\n\\n'\n");
                 let auth = crate::git::endpoint::https_auth::Config { executable, environment: Vec::new() };
                 let mut endpoint = Endpoint::new(server.config(), Some(auth), gwz_transport::pool::Config::default()).unwrap();
                 let (outcome, session) = opening(
@@ -292,12 +290,10 @@ fn trust_and_exhausted_network_budget_are_open_failed() {
 cfg_if::cfg_if! { if #[cfg(unix)] {
 mod unix {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
-    use crate::git::endpoint::https_auth;
+    use crate::git::endpoint::{helper_script::write_helper_script, https_auth};
     fn helper(body: &str, environment: Vec<(std::ffi::OsString,std::ffi::OsString)>) -> (tempfile::TempDir, https_auth::Config) {
         let dir=tempfile::tempdir().unwrap(); let path=dir.path().join("gh");
-        std::fs::write(&path,format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o700)).unwrap();
+        write_helper_script(&path,&format!("{body}\n"));
         (dir,https_auth::Config{executable:path,environment})
     }
     #[test]
@@ -324,10 +320,15 @@ mod unix {
     }
     #[test]
     fn anonymous_auth_transition_does_not_refill_the_network_allowance() {
+        // The allowance fits exactly one round trip and never two.
+        // Each request's headers take at least 400 ms, so only a refill would
+        // let the authenticated one finish. The anonymous request has 390 ms of
+        // scheduling slack; at 40 ms against 65 ms it had 25 ms, which the
+        // parallel suite's load overran (16 of 100 runs beside 200 busy processes).
         runtime().block_on(async {
-            let server=Server::start(Arc::new(|request|Box::pin(async move {tokio::time::sleep(Duration::from_millis(40)).await;response(if request.headers().contains_key("Authorization"){200}else{401},GitService::UploadPackAdvertisement,"ok")}))).await;
+            let server=Server::start(Arc::new(|request|Box::pin(async move {tokio::time::sleep(Duration::from_millis(400)).await;response(if request.headers().contains_key("Authorization"){200}else{401},GitService::UploadPackAdvertisement,"ok")}))).await;
             let (_dir,auth)=helper("/bin/cat >/dev/null\nprintf 'username=fixture\\npassword=token\\n\\n'",vec![]);
-            let mut endpoint=Endpoint::new_with_io_timeout(server.config(),Some(auth),gwz_transport::pool::Config::default(),65).unwrap();
+            let mut endpoint=Endpoint::new_with_io_timeout(server.config(),Some(auth),gwz_transport::pool::Config::default(),790).unwrap();
             let (outcome,session)=opening(&endpoint.client,input(&server,GitService::UploadPackAdvertisement),true).await;
             failed(outcome,ErrorCode::Timeout);
             assert_eq!(session.receipts().len(),2);assert_eq!(session.receipts()[0].open_failed.as_ref().unwrap().facts.as_ref().unwrap().http_status,Some(401));

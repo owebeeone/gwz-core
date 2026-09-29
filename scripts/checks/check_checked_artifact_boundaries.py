@@ -13,66 +13,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# Trust anchor for the compiler route into the protected v1 tree. Cargo's lib
-# target is checked semantically below; each exact parent then selects the next
-# canonical module. Hashing only the descendant tree would prove resident
-# bytes without proving that rustc actually loads them.
-# Debt recovery (2026-09-07): measured against HEAD before advancing these
-# four pins. The complete diff adds only BUILD_PROVENANCE; publication and
-# target_listing registrations plus resolve_forall_targets; the crate-private
-# canonical marker renderer re-export; and read-only ls_remote_url delegation.
-# No protected v1 subtree, compiler route, or write-capability export changed.
-# See gwz-dev/dev-docs/GwzDebtRecoveryContracts.md and the recovery ledger.
-# DR-4/5 2026-09-07: reviewed handler registration and native transport composition.
-# Added RemoteIdentity handler, scoped identity/observation exports, startup timeout,
-# named clone/read-preview and captured push delegates. No protected v1 leaf or
-# preservation/write authority export changed. Only the two measured roots advance.
-# Filesystem migration 2026-09-08: add the private filesystem module and test
-# selector; route journal and preservation observation I/O through the factory.
-# Publication entry/ordering and authority interfaces remain unchanged.
-PROTECTED_COMPILER_ROOT_DIGESTS = {
-    # M5d step (3) (2026-09-03): one added line, `mod verified_write;` -- the
-    # NEUTRAL home of the merge record's raw publication primitive on a
-    # handle-fail volume (GwzM5-8M5d-Charter.md §3/§4). This root is what
-    # proves rustc actually LOADS that module, which is the anti-vacuity
-    # anchor under F-3's redefined floor below. Verified a re-measure and not
-    # a cover-up: the 69ee990 file hashed to the pinned value exactly.
-    #   was: e035f8a53ddb589362972c85593cc0dff4b590129de38fe0fdb72ca1880f544e
-    # LCM1.0c (2026-09-05, gwz-dev dev-docs/GwzLocalClonePlan.md §3 "1.0c",
-    # GwzLocalCloneLibraryBoundaries.md §4 lane C row): the ONE coordinated
-    # skeleton registration. `src/lib.rs` gains exactly one loaded module,
-    # `pub mod local_clone;` (with its comment) -- the local clone family's
-    # thin composition adapters; nothing under the protected v1 tree moves.
-    # `src/workspace_ops/mod.rs` gains `mod handle_local;` and
-    # `pub use handle_local::*;` -- the clone_local_workspace / local_family
-    # dispatch slots and the family-merge wrapper that calls the existing
-    # public `handle_merge_with_events`; `merge/mod.rs` is untouched. Every
-    # other flat and tree digest was recomputed in the same pass and is
-    # unchanged. Later lanes own package directories under crates/ only; a
-    # further protected edit still comes through lane C with its own reason.
-    #   was: 6928a62dfe4ab90eb8f7e69b60544b7be9942afb184233f8277af73c7896e423
-    "src/lib.rs": "3e4ea01827972104736758164f770efab01577cdc5f523d86c40e10755af2f22",
-    #   was: 663b228d1f3fddc74853d3e26f9623a0d7d2009f172f53640697de35042a8124
-    "src/workspace_ops/mod.rs": "67317ec671dea907ccc94cc1e855b835b5e195641c1e60aa1e720e23f869637b",
-    # M5d close (2026-09-03): the v0 lifecycle re-exports left; open-record
-    # occupancy and the retained archive/GC store are what remain.
-    # M5d(10): one added row, `#[cfg(test)] pub(crate) use
-    # preserve::v1_write_preservation_bundle_for_test`, alongside the
-    # `discover_open_v1_record` / `read_archived_record` rows that already carry
-    # merge-private fixture surface out to the g23 suites.
-    # M5d lint sweep (2026-09-04): no row is added. `cargo fmt` sorts the `mod`
-    # and `use` blocks; the two re-export rows whose targets are DELETED as v0
-    # orphans leave with them (`acceptance::{finalization_next_action_for_i2,
-    # finalization_next_action_for_v1}` and `runtime::handle_merge_with_dependencies`);
-    # and the `open_record` row gains `#[allow(unused_imports)]` so
-    # `OpenMergeRecord` keeps its existing crate visibility rather than being
-    # narrowed to `cfg(test)`. Nothing new is LOADED. Verified a re-measure and
-    # not a cover-up: the 505c26b file was materialised with `git archive` and
-    # hashed to the pinned value exactly.
-    #   was: f419bc0c4e846300ec59e34c87e9e072b954a97060b942a386bdb2e74a78d986
-    "src/workspace_ops/merge/mod.rs": "9700b61ed1da9ee2b919a8179444c46bf40f898647a07ac30957a164c56dd2df",
-}
-
+# Each module here must keep `#![forbid(clippy::disallowed_methods)]`, so CI's
+# clippy run (-D warnings, with the disallowed-methods lists) rejects a direct
+# raw writer in it, and no local allow can switch that off. Nothing pins these
+# modules', their compiler roots' or their trees' bytes: gwz-core 107aca7a
+# (2026-09-08) removed digest enforcement, and 2026-09-29 removed its dead tables.
 PROTECTED_COMPILER_MODULES = {
     "checked_artifact/entry.rs",
     "git/gitbackend/authority_backend.rs",
@@ -81,114 +26,6 @@ PROTECTED_COMPILER_MODULES = {
     "workspace_ops/merge/preserve/plan.rs",
     "workspace_ops/merge/root/artifact_facts.rs",
     "workspace_ops/merge/v1_lifecycle/authority/observe.rs",
-}
-
-# Complete positive allowlist for the small production boundary. Any executable
-# or non-executable source change requires deliberate review and a digest
-# update; this closes aliases and new wrappers without guessing writer names.
-# R2-E E4.7 (2026-09-02) re-pins THREE flat entries, for the allowance-class
-# close-out -- comments, `reason` strings and expired allows only, no production
-# semantics: `checked_artifact/entry.rs` (the stale "E4.2-E4.6 convert the
-# consumers that will read it" at the activation door re-pointed);
-# `checked_artifact/mod.rs` (six subtree allows RE-REASONED PERMANENT and the
-# `pub(crate) mod entry` allow EXPIRED -- measured, it suppressed nothing);
-# `operation/workspace_mutator_lock.rs` (E4.1 [P3-5]'s stale allow EXPIRED --
-# `catalog_mutation_lease` has four production callers, so it suppressed
-# nothing). Every other flat and tree digest was recomputed in the same pass and
-# is unchanged.
-#
-# DR-1 ship (1) W3 (2026-09-03, `GwzM5-8DR1-WarnOrRefuse-Charter.md`
-# §2/§3.1/§3.6/§3.8) re-pins FIVE flat entries and THREE trees, each for one
-# named reason:
-#   entry.rs                   -- the decision point (§2), the catalog-free
-#                                 parent door (§3.1) and the six visible names
-#                                 the four ENTRY_* inventories move with.
-#   capability.rs              -- PERSISTENT_FILESYSTEM_IDENTITY_REMEDY rewritten
-#                                 identity-based (§3.6); the "ext4 only" clause
-#                                 W2 dated STALE is gone.
-#   bootstrap.rs,
-#   bootstrap/runtime/mod.rs,
-#   .../catalog_lease.rs (tree) -- the re-export chain for the READ-ONLY
-#                                 admission probe `probe_workspace_admission`
-#                                 (§2): it creates, recovers and leases nothing.
-#   capability/pre_catalog.rs (tree)
-#                              -- the §3.8 `cfg(test)` seam on `platform.rs` and
-#                                 its re-export; production code is untouched.
-#   mod.rs                     -- the seam's crate-visible `cfg(test)` re-export,
-#                                 beside `fail_next_checked_artifact_at`.
-#   v1_lifecycle/mod.rs (tree) -- start/service/checked plumbing (§3.1).
-# 2026-09-08: register the cfg-separated repository factory.
-# 2026-09-07: GitRepository consolidation routes stash evidence through the
-# existing sealed backend; physical reads still terminate in the same native leaf.
-# Factory migration: native repository paths and index facts now cross
-# GitRepository; the same root-preservation algorithm serves both backends.
-# Fixture-only methods and the test authority implementation remain cfg(test).
-PROTECTED_SOURCE_DIGESTS = {
-    # R2-E E4.4-6-B (2026-09-02) pins the `write_atomic` family's own implementation:
-    # the capability-free inventory counts its CALLERS, so converting THIS file would
-    # convert every carved `:277`/`:278`/`:279` writer while moving no count there
-    # (round 1 [P3-5]). Not a boundary module -- pinned solely as that backstop.
-    "artifact/mod.rs": "63020e2cb16f269b694c257f7012d2e5522a8a407af03b685e377516a8e4c29e",
-    "checked_artifact/bootstrap.rs": "f098ff7a655f7506d47b7e9088c21354f6b918e3bd96e75b301e205189e618f5",
-    "checked_artifact/bootstrap/runtime/mod.rs": "7fd727db2ff621f525e232e3e43ad15a020c07fcf6be8f8ab6048a882cc05c92",
-    # R2-E E4.1 commit (b) re-pins this entry for precondition 1: the SUBSTRATE
-    # that answers a durable-identity probe gains its own `PlatformCapability`
-    # value, distinct from the identity VALUE contract that keeps
-    # `DurableObjectIdentity`, and it is the one capability carrying an
-    # actionable remedy sentence.
-    # M5d step (3): HANDLE_FAIL_REVERSE_DOOR_ESCAPE -- the reverse doors' own
-    # refusal on a handle-fail volume, which may not be the substrate remedy
-    # above it (charter §3(b): that remedy advertises `gwz merge --abort`,
-    # the very door refusing) -- plus the seam re-export chain's handle half.
-    # The 69ee990 file hashed to the pinned value exactly.
-    #   was: d06967fe3480b77b550b98f7e7533bb7f059b88e03d2dd1ece86b32235e650ed
-    "checked_artifact/capability.rs": "1d1f1c7579c451464704bfbff742a15e042db2fc251bc69c812a5f0901813f87",
-    # R2-E E4.1 commit (b) re-pins this entry for O2: the boundary module gains
-    # `activate_workspace_catalog`, the first production catalog activation,
-    # and the four ENTRY_* inventories below move with it.
-    # R2-E E4.2 re-pins it again for §10 rows `:273`/`:280`:
-    # `bootstrap_merge_start_parents` and `create_merge_store_record` join the
-    # door above, and [P3-2]'s renderer is extracted to a named `pub(super)` fn
-    # so its three arms take an in-suite guard.
-    # M5d step (3) re-pins it for charter §3: `CrashRecoveryDecision` gains
-    # `handles_ok` and the decision runs the create door's own probe on the
-    # workspace root; the one diagnostic gains REVERSE_DOOR_LIMIT; the create
-    # door gains its RAW arm (`create_merge_store_record_raw`, the entering
-    # capability-free row and F-3's single permitted caller); and the four
-    # REVERSE doors acquire with IdentityGapEscape::ReverseMergeDoor. All four
-    # ENTRY_* inventories move with it. The 69ee990 file hashed to the pinned
-    # value exactly.
-    #   was: 94041be3c0d48148262438b77c6f521749923eabe68212b3388288d27834e002
-    "checked_artifact/authority.rs": "fd300c5b8fb9dfacd41a4f0c6c39923fc8decbb07a6933af2eaa471c4ebdf1ed",
-    # M5d step (3): the crate-visible `cfg(test)` re-export of the seam's
-    # handle-probe half, beside `with_identity_unavailable`. Production code
-    # is untouched. The 69ee990 file hashed to the pinned value exactly.
-    #   was: b10313ec4b809b597873dda15adaf8b281c60d3858f27d5ba865d5083c5f4ed9
-    "checked_artifact/mod.rs": "f59f5ec60a91a9213222c3ace7bd53762a99ea4e617983b764fb7ebe364fb61d",
-    # R2-E E4.1 commit (a) re-pins this entry for the E7 dual's Code [P3 F3]:
-    # `inspect_family`'s 1 MiB budget now charges `DirEntry::metadata().len()`
-    # in the enumeration loop, before any leaf is read, and the post-read
-    # accumulation it replaces is gone.
-    "checked_artifact/residue.rs": "8894be425ddd6755aa053a4e42aca540611ba45c688b42c4757343be5142349a",
-    "checked_artifact/transition.rs": "13b483bc0dc3099082727a5d499b97f627ba7d41a65b929ec557416ac59b37ca",
-    "git/gitbackend/authority_backend.rs": "b8f171a8953c179d925c0ce9db4b2bd85c91433ffca6e77672f71aea0d5dd415",
-    # LCM1.0c (2026-09-05, GwzLocalCloneLibraryBoundaries.md §3 "Writes,
-    # locks and transport"; F51 P2-3): two added `delegate!` rows,
-    # `fetch_anonymous` and `push_anonymous`, the local clone family's
-    # anonymous local transport ports, delegating to `transport.rs` bodies
-    # that take an existing local path and explicit refspecs, create an
-    # anonymous remote, attach no credential or network helper and persist
-    # nothing. No observer, preservation or authority row moves; the
-    # concrete preservation observer still terminates in its protected leaf.
-    #   was: b85dfd3f32671886a34d2bee5c79200dc6da74a9f99fd5cfa0fe1d801667b3fb
-    "git/gitbackend/preservation_image.rs": "2b62d74018d7609e4f2bcdd944f9eb5bd7609f689472db4eb174f282cf4e5aaf",
-    # M5d close: v0 preserve arms left; the v1 owner plan and its artifacts
-    # half remain. plan.rs keeps the compiler-resolved forbid.
-    "workspace_ops/merge/preserve/artifacts.rs": "a46c09473debdd62a1a57c419d8661651a9556ff7688ac42cf9afaa84c623595",
-    "workspace_ops/merge/preserve/checked_bundle.rs": "89de4886ca43c4c02eeff6772edbffdac25fe7a30c5f92c826e9ea9ff79ed854",
-    "workspace_ops/merge/preserve/plan.rs": "95894a2aabc838454920837e40b3849788ea39d6f65c3a548313c64b7b64a2dc",
-    "workspace_ops/merge/root/artifact_facts.rs": "d4bb3d895070c4bafbb6ee8fed2664768b6e4d6be43fe764f877add4f4c42f19",
-    "operation/workspace_mutator_lock.rs": "c390191ea03c64d635ae80de0405cd213a6f067d9648c4735801062330019b0b",
 }
 
 # The GitRepository implementation is the sole caller of the native leaf.
@@ -207,8 +44,16 @@ APPROVED_RUST_PATH_EDGES = {
     ("checked_artifact/tests.rs", "tests/recovery_protocol.rs"),
     ("checked_artifact/tests.rs", "tests/removal_recovery.rs"),
     ("checked_artifact/tests.rs", "tests/staging_recovery.rs"),
+    # 2026-09-29: the candidate build's conformance corpus, the `cfg_if!` sibling
+    # of the edge below. The candidate regenerator writes and pins it beside its
+    # schema, and the candidate build's `corpus_byte_parity` runs it.
+    ("lib.rs", "../protocol/candidate/corpus/rust/vectors.rs"),
     ("lib.rs", "../protocol/corpus/rust/vectors.rs"),
     ("lib.rs", "cbor.rs"),
+    # 2026-09-29: the candidate build's `protocol::generated`, the `cfg_if!` sibling
+    # of the edge below. It moved here from `tests/transport_consumer/candidate/`
+    # because tests/ holds no production code (`check_process_globals.py` enforces it).
+    ("protocol/mod.rs", "candidate_generated.rs"),
     ("protocol/mod.rs", "generated.rs"),
     (
         "workspace_ops/merge/participant_semantics/continue_eligibility.rs",
@@ -253,146 +98,44 @@ APPROVED_RUST_PATH_EDGES = {
         "tests/service_sequence.rs",
     ),
     ("workspace_ops/merge/v1_lifecycle/status.rs", "tests/status.rs"),
-}
-
-# Module-tree roots are protected as one path-and-byte manifest. This includes
-# the root module, every current descendant, and the descendant file set, so a
-# nested helper, a new source file, or a changed module edge fails closed.
-#
-# R2-E Phase E2 re-pins deliberately (GwzM5-8R2E-SemanticsAmendment-E02b-DRAFT
-# §6.2(b), §6.3's amended §3.6 duty list). Two of the three moves were
-# forecast there: `.../pre_catalog.rs`, whose descendant root gains the new
-# `provider/barrier_mutation.rs` (DECISION B-1), and `.../platform.rs`, which
-# gains the third `DirentBarrierClass` variant (DECISION B-3). The third,
-# `checked_artifact/catalog.rs`, was NOT in that inventory and is recorded here
-# rather than absorbed: O6's witness reaches the barrier owner through
-# `OpaqueRetainedCatalogV1`, whose forwarder lives in `catalog/bootstrap.rs`
-# under this tree.
-#
-# R2-E Phase E6.2b re-pins ONE entry, `checked_artifact/platform.rs`, for the
-# executed anchor nit (E0.2b §7.2 / `GwzM5-8R2DSettledTuple.md:659-662`,
-# authorized by the lane owner 2026-08-28): `platform/anchor.rs`'s `survey`
-# admits a retired ordinal only if `retired_name` would have produced that
-# exact name, and `platform/anchor/tests.rs` gains the row that drives it. The
-# other six digests were recomputed in the same pass and are unchanged, which
-# is the evidence that the edit stayed inside the anchor protocol.
-#
-# The R2-E E6 landing reconcile re-pins the SAME entry once more, for the
-# review's three fold-in cures (GwzM5-8R2E-E6-Review.md F-1/F-2/F-3,
-# authorized by the lane owner 2026-08-28): the module doc's closed-grammar
-# table row corrected to `.ca1-anchor-retired-<ordinal>` (F-1, the name the
-# survey actually adopts), the refusal test strengthened to assert the whole
-# directory listing unchanged across the refusal (F-2), and the survey
-# comment gaining the F-3 trade sentence (slot-wastage exchanged for a
-# recoverable fail-closed refusal on the foreign shape). Comments and one
-# test assertion only -- no production semantics move; the other six digests
-# were recomputed in the same pass and are unchanged.
-#
-# R2-E E4.1 commit (a) re-pins the SAME entry once more, for [R2-P3-3]'s
-# one-word cost-claim fix (`GwzM5-8R2E-E7-Acceptance.md` §5 record act 2): the
-# roaming survey's cost sentence said "two `symlink_metadata` calls" while
-# `leaf_is_resident` is a full bounded leaf observation. Comment only -- no
-# production semantics move; the other six digests were recomputed in the same
-# pass and are unchanged.
-# R2-E E4.1 commit (b), the activation package (O2), re-pins THREE tree
-# entries: `capability/pre_catalog.rs` (the four platform providers' substrate
-# refusals move to `PersistentFilesystemIdentity`, and the unsupported stub's
-# Linux-profile claim is swept to a named unreachable placeholder),
-# `catalog.rs` (the owner is activated: the blanket `dead_code` allow retires to
-# the two admitted-action capabilities that stay dead, and the restart-arm row
-# lands in its own suite), and `v1_lifecycle/mod.rs` (the checked prologue calls
-# the activation door, and its ordering row lands beside it). The other four
-# digests were recomputed in the same pass and are unchanged.
-#
-# R2-E E4.1 commit (c) re-pins ONE of them, `v1_lifecycle/mod.rs`: activation
-# moves off the shared prologue onto `acquire_activated`, so the reverse (abort)
-# arms stay capability-free. The other six were recomputed and are unchanged.
-#
-# R2-E E4.2 re-pins TWO: `capability/pre_catalog.rs`, for §11.3 item 2(a)'s
-# dated disposition at `retain_managed_parent_at_for_test` (comment only); and
-# `v1_lifecycle/mod.rs`, whose creation lease gains `acquire_for_merge_start`,
-# bootstrapping §10 row `:273`'s two managed parents before `create_open`, with
-# the creation path publishing through the checked boundary rather than its own
-# raw durable writers. The other five were recomputed and are unchanged.
-#
-# R2-E E4.3-B (2026-09-02) re-pins ONE, `v1_lifecycle/mod.rs`: the exception's
-# dated `///` at `store/rewrite.rs::commit` (doc only) and P-2's tripwire module
-# with its `mod` declaration. The other six were recomputed unchanged;
-# `bootstrap/managed.rs`, re-dated by this package, is under NO entry -- measured.
-#
-# R2-E E4.7 (2026-09-02) re-pins THREE tree entries, all comment/`reason`-only:
-# `catalog.rs` (its four allows re-reasoned PERMANENT pending DR-1);
-# `capability/pre_catalog.rs` (`provider.rs`'s `authority_record_binding` and
-# `barrier_mutation` allows re-reasoned, `leaf_observation`'s EXPIRED --
-# measured, nothing in that module is dead even with the `mod capability`
-# blanket lifted); and `v1_lifecycle/mod.rs`, for the three [R2-P3-1] dated
-# residual sentences at `finalization/execute.rs:79,:88,:98` (`:45,:48,:51` at
-# the ruling's base sha `f563446`; DR-1 S1 re-points them) with the operator's
-# ruling (a) quoted in that file's header, and the `gc_archived` allowance
-# re-reasoned PERMANENT PENDING DR-1 rather than deleted. NO count in any row of
-# `V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES` or of
-# `CAPABILITY_FREE_RAW_WRITER_INVENTORY` moves: this step edits only masked-out
-# comments and string contents. The other four tree digests were recomputed in
-# the same pass and are unchanged.
-#
-# DR-1 Phase R1 Step S1 (2026-09-03) re-pins ONE tree entry, `v1_lifecycle/mod.rs`,
-# and it is comment-only: the marker's [R2-P3-1] residual sentence at
-# `finalization/execute.rs:71-78` had its MECHANISM CITE corrected -- the refusal
-# is `inspect_family`'s `foreign` flag (`residue.rs:179-181`, `:205-206`) returned
-# at `classification.rs:141-143`, one frame BEFORE the `:175-177` authority-current
-# check the sentence used to name -- plus the file-foot [DR-1 S1] footnote and the
-# header's re-pointed drift note. The sentence keeps its eight lines and the
-# footnote sits BELOW all three arms, so `:79`/`:88`/`:98` do NOT move. NO count in
-# any row of `V1_LIFECYCLE_RAW_DURABLE_WRITER_FILES` or of
-# `CAPABILITY_FREE_RAW_WRITER_INVENTORY` moves. The other six tree digests and every
-# flat digest were recomputed in the same pass and are unchanged.
-PROTECTED_SOURCE_TREE_DIGESTS = {
-    "checked_artifact/bootstrap/runtime/catalog_lease.rs": "992edeb31fbf28aaa7bc8c9ba434097f3b8bf6b0e35e4bd9fb1c80f291425c48",
-    "checked_artifact/capability/path.rs": "23e46dbde50a0530c331c34dd68a9d40096394c6817075d3f66ad3f0e27a91c6",
-    # M5d step (3): the `cfg(test)` seam on `provider/platform.rs` gains its
-    # HANDLE-PROBE half (charter §3) and the re-export chain carries it out;
-    # production code in this tree is untouched. The 69ee990 tree digested to
-    # the pinned value exactly.
-    #   was: 89c236e8ed79fee74d9db317fb114086abdb58eab908dc0ffded59fa0d602098
-    "checked_artifact/capability/pre_catalog.rs": "163110e0a6ceacb15f4d65eaff1d95fd9e173d216963102b509104ae863e25f2",
-    "checked_artifact/catalog.rs": "71e1b8de7e4e14cc33b5387155d2029e20086f57fcd8bbf62b6b286a8c2cf95d",
-    "checked_artifact/platform.rs": "7cc428ded002a0ce549c306d0d4ea70e443e297f215d9ae64190f7b18b06025f",
-    # M5d close: parity events + the observe-tree re-homes from deleted
-    # abort files. Re-measured on the erasure tree, then again for M5d(5)/(7):
-    # the whole-set continue preflight and the `executed_here` discriminator
-    # that stops a reconciled pending conflict fabricating its original
-    # snapshot both land inside these two trees. Re-measured again for M5d(9),
-    # which restores the `RootCandidateMetadataInvalid` writer and clearer --
-    # the acceptance observer's rejection arm, the `DriftRejection` fact, the
-    # resolver's record-and-reject and self-heal, the service arm and the
-    # pre-acceptance reverse handoff all land inside both trees. Verified a
-    # re-measure and not a cover-up: the 2022cdf tree was materialised from git
-    # and digested with the checker's own `source_tree_digest`, and BOTH pins
-    # matched it exactly.
-    # M5d lint sweep (2026-09-04): re-pinned for `cargo fmt` ONLY. The single
-    # file that moves in this tree is
-    # `observe/reverse/preservation/entry.rs`, and its whole diff is rustfmt
-    # line-wrapping -- no item is added, removed, re-exported or re-signed.
-    # Verified a re-measure and not a cover-up: the 505c26b tree was
-    # materialised with `git archive` and digested with the checker's own
-    # `source_tree_digest`, and the pin matched it exactly.
-    #   was: 68397e5f088e30be069cccc523d2b5411892c00ada39cb5d7f3abfee72bf471c
-    "workspace_ops/merge/v1_lifecycle/authority/observe.rs": "532199f706d3af95c2344ac85416f505890c4aecc88eadc1d96fed2fa7ac9779",
-    # M5d step (3) re-pins the v1_lifecycle tree: `start.rs` threads its
-    # decision to the create door, `store/mod.rs` and `store/rewrite.rs` pass
-    # it through (naming no raw primitive -- F-3 half (1)), and
-    # `tests/capability_free_exception.rs` gains the entering carved row's
-    # negative scan. The 69ee990 tree digested to the pinned value exactly.
-    # M5d lint sweep (2026-09-04): re-pinned for `cargo fmt` ONLY. Ten files in
-    # this tree move (`authority.rs`, `events.rs`, `forward.rs`, `service.rs`,
-    # `authority/observe/reverse/preservation/entry.rs` and five `tests/` files)
-    # and every hunk is rustfmt line-wrapping or import-list ordering; no
-    # production item is added, removed or re-signed, and no v0 persistence call
-    # enters (the derived seam scan below states that property independently).
-    # Verified a re-measure and not a cover-up: the 505c26b tree was
-    # materialised with `git archive` and digested with the checker's own
-    # `source_tree_digest`, and the pin matched it exactly.
-    #   was: f5bb201e6221f83d906d4cfaf016eab64d69121a6ed3c9ac1ed7983666a5b9e0
+    # 2026-09-29, "fix other lanes": twenty-two test-only edges that two lanes added
+    # without approving them here. Each target is a regular in-crate `.rs` file that
+    # the crate reaches only as test code (`#[cfg(test)]` or a `cfg_if!` test branch,
+    # traced from `lib.rs` with `check_process_globals.py`'s own analysis). No-fallback
+    # lane: 21961474 (2026-09-20). Remote-transport lane: 073395b5 (2026-09-21); 280f970a,
+    # afd3b8f5, 4f063843, 1d3a759a, 2f12bbd6, 6b9be8a2, 7a5195ec, c5dd3071 and c92abc41
+    # (2026-09-22).
+    ("git/endpoint/https_budget_tests.rs", "https_fixture.rs"),
+    ("git/endpoint/https_opening.rs", "https_opening_tests.rs"),
+    ("git/endpoint/https_opening_tests.rs", "https_fixture.rs"),
+    ("git/endpoint/https_policy.rs", "https_policy_tests.rs"),
+    ("git/endpoint/https_remote.rs", "https_remote_tests.rs"),
+    ("git/endpoint/https_worker.rs", "https_budget_tests.rs"),
+    ("git/endpoint/https_worker.rs", "https_worker_tests.rs"),
+    ("git/endpoint/https_worker_tests.rs", "https_auth_integration_tests.rs"),
+    ("git/endpoint/https_worker_tests.rs", "https_fixture.rs"),
+    ("git/endpoint/https_worker_tests.rs", "https_lifecycle_tests.rs"),
+    (
+        "git/endpoint/placement_endpoint.rs",
+        "../../../tests/transport_ssh/support/placement_checks.rs",
+    ),
+    ("git/endpoint/ssh_worker.rs", "../../../tests/transport_ssh/support/worker_queue.rs"),
+    ("git/gitbackend/transport_binding.rs", "https_transport_binding_tests.rs"),
+    (
+        "git/gitbackend/transport_candidate_tests.rs",
+        "../../../tests/transport_ssh/tests/common/mod.rs",
+    ),
+    ("operation/commit_log/tests.rs", "path_characterization.rs"),
+    ("transport_host/driver_tests.rs", "../../tests/transport_ssh/tests/common/mod.rs"),
+    ("transport_host/https_endpoint.rs", "cancellation_tests.rs"),
+    ("transport_host/https_endpoint.rs", "https_cancel_mux_tests.rs"),
+    ("transport_host/https_tests.rs", "../git/endpoint/https_fixture.rs"),
+    (
+        "transport_host/message_embedding_tests.rs",
+        "../../tests/transport_backend/python_embedding.rs",
+    ),
+    ("transport_host/request.rs", "https_budget_gate_tests.rs"),
+    ("transport_host/session.rs", "cleanup_tests.rs"),
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,
@@ -454,11 +197,9 @@ RAW_RENAME_TOKENS = ("open_rename_source", "rename_open_source", "rename_relativ
 # covered the day it is added; `V0_PERSISTENCE_SEAM_FLOOR` fails the derivation
 # closed if that re-export shape is restructured away.
 #
-# This is NOT subsumed by the `PROTECTED_SOURCE_TREE_DIGESTS` pin on
-# `v1_lifecycle/mod.rs`. That digest says only "this tree changed, go look",
-# and the lane refreshes it every time the tree legitimately moves; it states
-# no property, so a refresh can carry a new v0 persistence call through
-# unremarked. This scan states the property, and survives every refresh.
+# Nothing else guards this property. A tree digest on `v1_lifecycle/mod.rs` once
+# flagged every change there for review, but it stated no property, and gwz-core
+# 107aca7a (2026-09-08) removed digest enforcement. This scan states the property.
 #
 # Bare-identifier counting on MASKED source is what makes this exact: ten
 # `"enter_finalizing"` occurrences inside `v1_lifecycle/` are action-name
@@ -585,8 +326,9 @@ CAPABILITY_FREE_EXCEPTION = "the capability-free exception, dev-docs/GwzM5-8R2E-
 # to the non-v1 carved files is the pins package's, LANDED BELOW as
 # `CAPABILITY_FREE_RAW_WRITER_INVENTORY` (amendment §3 (i)-(iii)). The two
 # ARCHIVE rows keep their retire-on-conversion marker until E4.4 (§6); class
-# scope is `durable_fs` only, a std::fs writer here being backstopped by
-# `PROTECTED_SOURCE_TREE_DIGESTS` and stated as a property by P-2.
+# scope is `durable_fs` only. A `std::fs` writer here is stated as a property by
+# P-2 and denied by CI's clippy disallowed-methods lint; the `v1_lifecycle` tree
+# digest that also backstopped it went with digest enforcement in 107aca7a.
 #
 # R2-E E4.4-6-B (2026-09-02) makes the two ARCHIVE rows permanent as well, under
 # `dev-docs/GwzM5-8R2E-CapabilityFreeAmendment.md` §3: the terminal archive runs
@@ -654,16 +396,13 @@ for _key in sorted(V1_LIFECYCLE_PERMANENT_WRITER_EXCEPTIONS.keys() - V1_LIFECYCL
 # `store/rewrite.rs` is NOT here: the record root is RR's carve, pinned by O13 and
 # `tests/store/record_root_exception.rs`.
 #
-# Digest coverage, MEASURED with `source_tree_digest`'s own semantics (a `mod.rs`
-# tree root digests its WHOLE parent subtree), because the amendment's §3 and Code
-# axis [P2-5] state it wrongly: THREE of the twenty are pinned -- flat for
+# Digest coverage: NONE since gwz-core 107aca7a (2026-09-08) removed digest
+# enforcement. Three of the twenty were pinned before it -- flat for
 # `preserve/artifacts.rs`, and by the `v1_lifecycle/mod.rs` TREE root for both v1
-# archive files, a root that also covers `store/rewrite.rs`, so RR §3 P-1's
-# backstop and the `:366` note above are TRUE. Seventeen are unpinned. The CHOICE
-# stands regardless: a digest only says "this tree changed, go look" and is
-# refreshed on every legitimate edit, so the classes go into THIS map, which
-# states the property and survives every refresh. THREE corrections to the
-# amendment's §1 table, measured here: `store/archive.rs` has THREE raw `std::fs`
+# archive files, a root that also covered `store/rewrite.rs` -- and RR §3 P-1's
+# digest backstop rested on that; it no longer holds. The classes went into THIS
+# map because it states the property, which a digest never did. THREE corrections
+# to the amendment's §1 table, measured here: `store/archive.rs` has THREE raw `std::fs`
 # mutations, not "four"; `handle_stash/commands.rs` is a second carved `:276` home
 # it omits, under the StashMutate guard; and the v0 terminal archive
 # `store/archived.rs::archive` -- reached from ordinary v0 merge finalization
@@ -703,8 +442,9 @@ CAPABILITY_FREE_WRITER_TOKENS = (
 # `write_atomic` family's NAMES at their CALL sites, so converting the family's own
 # implementation in `artifact/mod.rs` would convert every carved `:277`/`:278`/`:279`
 # caller at a stroke while moving no count here and naming no door in any scanned
-# file. That cheapest defeat is closed by the flat `PROTECTED_SOURCE_DIGESTS` row on
-# `artifact/mod.rs`, which this package adds for exactly this reason.
+# file. A flat digest pin on `artifact/mod.rs`, added for exactly this reason, closed
+# that cheapest defeat until 107aca7a (2026-09-08) removed digest enforcement; it is
+# OPEN now.
 CAPABILITY_FREE_RAW_WRITER_INVENTORY: dict[str, tuple[str, dict[str, int]]] = {
     # M5d step (3) ENTERS one row (GwzM5-8M5d-Charter.md §3/§7, drafted at S1 in
     # GwzM5-8M5d-GateRevisions.md Part A.4 as its recommended shape (B)). The
@@ -879,157 +619,6 @@ ENTRY_REFERENCES = {
         "git/gitbackend/preservation_root/files.rs"
     },
     "replace_merge_root_artifact": {"workspace_ops/merge/root/artifact_facts.rs"},
-}
-
-ENTRY_ITEMS = {
-    "activate_workspace_catalog",
-    # DR-1 ship (1) W3's eight: the decision type and its three renderings, the
-    # decision function, the catalog-free parent door, and the two privates the
-    # last two share (the record prefix and the gap sentence both renderings
-    # word, spelled once so warning and refusal cannot drift).
-    "CrashRecoveryDecision",
-    "MERGE_RECORD_PARENT",
-    # M5d step (3)'s two (GwzM5-8M5d-Charter.md §3): the clause the ONE
-    # diagnostic gains on a handle-fail volume, and the raw-create arm that the
-    # capability-free inventory row and its negative twin both name.
-    "REVERSE_DOOR_LIMIT",
-    "create_merge_store_record_raw",
-    "crash_recovery_decision",
-    "crash_recovery_protocol",
-    "crash_recovery_strict_refusal",
-    "crash_recovery_warning",
-    "gap_sentence",
-    "prepare_merge_start_parents_uncatalogued",
-    # E4.2's four: rows `:273`/`:280`'s doors and [P3-2]'s renderer and label.
-    "CATALOG_LABEL",
-    "bootstrap_merge_start_parents",
-    "create_merge_store_record",
-    "render_catalog_refusal",
-    "MergeArtifactFact",
-    "MergeArtifactTransition",
-    "classify_expected",
-    "classify_merge_preservation_bundle",
-    "classify_merge_preservation_workspace",
-    "classify_remove_merge_root_artifact",
-    "classify_replace_merge_root_artifact",
-    "fact",
-    "map_fact",
-    "map_transition",
-    "matches_expected",
-    "observe_expected",
-    "observe_expected_durable",
-    "observe_merge_preservation_bundle",
-    "observe_merge_preservation_git_directory",
-    "observe_merge_preservation_workspace",
-    "observe_merge_root_artifact",
-    "preservation_bundle",
-    "preservation_git_directory",
-    "preservation_workspace",
-    "remove_merge_root_artifact",
-    "replace_expected",
-    "replace_merge_preservation_bundle",
-    "replace_merge_preservation_workspace",
-    "replace_merge_root_artifact",
-    "require_canonical_bundle_parent",
-    "root_artifact",
-}
-
-ENTRY_USES = {
-    "crate::filesystem::{FileSystem, make_filesystem}",
-    "crate::model::{ErrorCode, ModelError, ModelResult}",
-    "std::path::Path",
-    # E4.1's three: the lease the door takes, the subsystem error it renders,
-    # and the sealed catalog entry point it calls.
-    # W3 widens E4.1's lease import with the read-only admission probe the
-    # decision point runs (charter §2): the same `dir_identity` calls
-    # `catalog_lease/target.rs::finish` makes, creating and leasing nothing.
-    "super::bootstrap::{CatalogMutationLeaseV1, probe_workspace_admission}",
-    "super::capability::CheckedFsError",
-    "super::catalog::recover_or_create",
-    # E4.2's one: the coordinator's two merge-start bootstrap sessions.
-    "super::coordinator::execution::{ admit_merge_start_managed_parents, execute_merge_start_managed_parents, }",
-    # M5d step (3)'s one: the decision's handle probe (the create door's own,
-    # applied to the workspace root) and the escape selector the four REVERSE
-    # doors acquire with. Both live in `observation.rs`, beside the door they
-    # describe, so neither can drift from it.
-    "super::observation::{IdentityGapEscape, directory_handles_ok}",
-    "super::{ CheckedArtifact, CheckedArtifactFact, CheckedArtifactPolicy, CheckedArtifactTransition, }",
-}
-
-ENTRY_CALLS = {
-    "Bytes",
-    # M5d step (3)'s seven (GwzM5-8M5d-Charter.md §3): the REVERSE doors'
-    # escape-carrying acquire, the decision's handle probe, the neutral raw
-    # primitive -- this is the ONE production call to it in the crate, and the
-    # F-3 floor below pins that it stays one -- and the four std combinators
-    # the raw arm's no-replace guard and the decision's `matches!` use.
-    "CheckedArtifact::acquire_with_escape",
-    "crate::verified_write::write_atomic_verified",
-    "create_merge_store_record_raw",
-    "directory_handles_ok",
-    "is_ok",
-    "join",
-    "matches!",
-    "make_filesystem",
-    "metadata",
-    # DR-1 ship (1) W3's seven: the probe the decision calls, the shared gap
-    # sentence, the parent door's reuse of its v0 sibling, and the four
-    # combinators the three renderings use.
-    "as_deref",
-    "clone",
-    "gap_sentence",
-    "let",
-    "probe_workspace_admission",
-    "unwrap_or",
-    "CheckedArtifact::acquire",
-    "CheckedArtifact::prepare_parent",
-    "CheckedArtifactFact::Bytes",
-    "CheckedArtifactPolicy::git_directory",
-    "CheckedArtifactPolicy::workspace",
-    "Err",
-    "MergeArtifactFact::Bytes",
-    "ModelError::new",
-    "Ok",
-    "Path::new",
-    "Some",
-    # E4.2's three: row `:273`'s two sessions and the shared named renderer.
-    "admit_merge_start_managed_parents",
-    "execute_merge_start_managed_parents",
-    "render_catalog_refusal",
-    "classify_expected",
-    "classify_remove",
-    "classify_replace",
-    "display",
-    "fact",
-    "format!",
-    "is_some",
-    # E4.1's first two: the combinators the activation door's error rendering
-    # uses.
-    "map",
-    "map_err",
-    "map_fact",
-    "map_or",
-    "map_transition",
-    "match",
-    "matches_expected",
-    "observe",
-    "observe_durable",
-    "observe_expected",
-    "observe_expected_durable",
-    "parent_is_canonical",
-    "preservation_bundle",
-    "preservation_git_directory",
-    "preservation_workspace",
-    # E4.1's fourth: the sealed catalog entry point the activation door calls.
-    "recover_or_create",
-    # E4.1's third: the capability's actionable-remedy lookup.
-    "remedy",
-    "remove_exact",
-    "replace_exact",
-    "replace_expected",
-    "require_canonical_bundle_parent",
-    "root_artifact",
-    "to_vec",
 }
 
 CHECKED_LEAF_ADAPTER_CALLS = {
@@ -1509,25 +1098,6 @@ def mask_non_code(text: str) -> str:
     return "".join(output)
 
 
-def source_tree_digest(source: Path, root_relative: str) -> str:
-    root_file = source / root_relative
-    descendant_root = (
-        root_file.parent if root_file.name == "mod.rs" else root_file.with_suffix("")
-    )
-    paths = {root_file}
-    if descendant_root.is_dir():
-        paths.update(path for path in descendant_root.rglob("*") if path.is_file())
-    digest = hashlib.sha256()
-    for path in sorted(paths, key=lambda value: value.relative_to(source).as_posix()):
-        relative = path.relative_to(source).as_posix().encode("utf-8")
-        content = path.read_bytes()
-        digest.update(len(relative).to_bytes(8, "big"))
-        digest.update(relative)
-        digest.update(len(content).to_bytes(8, "big"))
-        digest.update(content)
-    return digest.hexdigest()
-
-
 def calls(text: str) -> set[str]:
     result = set()
     for match in CALL.finditer(text):
@@ -1893,11 +1463,14 @@ def check(source: Path) -> list[str]:
         # `entry.rs`: E4.1's `use super::bootstrap::CatalogMutationLeaseV1`
         # moved no lease-reference row even though that name IS a key in the
         # set, and a reintroduced provisional spelling here would not fire
-        # either. The skip exists so the four `ENTRY_*` equality inventories
-        # above do not also count entry.rs as a consumer of itself. A RECORD,
-        # not a repair: the hole stays P3 because entry.rs is byte-pinned in
-        # `PROTECTED_SOURCE_DIGESTS`, listed in `PROTECTED_COMPILER_MODULES`,
-        # and equality-checked four ways -- no edit passes unreviewed.
+        # either. The skip exists so the `ENTRY_REFERENCES` sets above do not
+        # count entry.rs as a consumer of itself. A RECORD, not a repair. What
+        # holds at entry.rs now: its visible items and every reference to them
+        # are equality-checked against `ENTRY_REFERENCES`, and it is in
+        # `PROTECTED_COMPILER_MODULES`. It is not byte-pinned, and its complete
+        # item, import and call inventories are not checked (removed in
+        # 107aca7a, 2026-09-08), so an edit that adds no visible item, reference
+        # or disallowed method passes this gate unreviewed.
         if relative == "checked_artifact/entry.rs":
             continue
         text = mask_non_code(path.read_text(encoding="utf-8"))

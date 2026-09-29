@@ -5,14 +5,15 @@ use crate::git::endpoint::{https_auth, https_remote::RpcIo};
 use gwz_transport::protocol::{AuthMethod, ErrorCode as TransportError, Facts, GitService, Opened};
 use std::{
     io::Read,
-    os::unix::fs::PermissionsExt,
     sync::atomic::{AtomicUsize, Ordering},
 };
 
 fn auth(root: &std::path::Path) -> https_auth::Config {
     let executable = root.join("fake-gh");
-    std::fs::write(&executable,b"#!/bin/sh\nwhile IFS= read -r line; do [ -z \"$line\" ] && break; done\nprintf 'username=fixture\\npassword=sentinel-h2-token\\n\\n'\n").unwrap();
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    crate::git::endpoint::helper_script::write_helper_script(
+        &executable,
+        "while IFS= read -r line; do [ -z \"$line\" ] && break; done\nprintf 'username=fixture\\npassword=sentinel-h2-token\\n\\n'\n",
+    );
     https_auth::Config {
         executable,
         environment: Vec::new(),
@@ -66,6 +67,7 @@ fn automatic_discovery_crosses_real_failure_then_gh_open_and_keeps_receipts_priv
                 tls: server.config(),
                 auth: Some(auth(root.path())),
             },
+            HelperSlots::new(),
         )
         .unwrap();
         let request = runtime
@@ -156,6 +158,7 @@ fn explicit_anonymous_refusal_does_not_hold_capacity_for_the_request_lifetime() 
                 tls: server.config(),
                 auth: Some(auth(root.path())),
             },
+            HelperSlots::new(),
         )
         .unwrap();
         let first = runtime
@@ -277,6 +280,7 @@ fn no_helper_after_anonymous_refusal_preserves_first_receipt_without_suppression
                 tls: server.config(),
                 auth: None,
             },
+            HelperSlots::new(),
         )
         .unwrap();
         let request = runtime
@@ -344,6 +348,7 @@ fn only_final_https_repository_refusal_enters_private_member_suppression() {
                 tls: server.config(),
                 auth: None,
             },
+            HelperSlots::new(),
         )
         .unwrap();
         for (name, status) in [
@@ -387,6 +392,7 @@ fn cancellation_wakes_pending_https_open_and_retires_its_owner() {
                 tls: server.config(),
                 auth: None,
             },
+            HelperSlots::new(),
         )
         .unwrap();
         let request = runtime
@@ -455,6 +461,7 @@ fn more_than_one_admission_window_of_abandoned_rpcs_retires_before_request_finis
                 tls: server.config(),
                 auth: None,
             },
+            HelperSlots::new(),
         )
         .unwrap();
         let request = runtime
@@ -529,6 +536,7 @@ fn concurrent_same_route_auth_transitions_do_not_interleave() {
                 tls: server.config(),
                 auth: Some(auth(root.path())),
             },
+            HelperSlots::new(),
         )
         .unwrap();
         let request = runtime
@@ -597,6 +605,7 @@ fn explicit_anonymous_cannot_switch_policy_and_lend_its_budget_to_gh() {
                 tls: server.config(),
                 auth: Some(auth(root.path())),
             },
+            HelperSlots::new(),
         )
         .unwrap();
         let request = runtime
@@ -698,8 +707,10 @@ fn cancelling_receive_pack_preparation_has_no_publication_effect() {
         let executable = root.path().join("gh-gated");
         let counter = root.path().join("first");
         let blocked = root.path().join("blocked");
-        std::fs::write(&executable, b"#!/bin/sh\nwhile IFS= read -r line; do [ -z \"$line\" ] && break; done\nif [ -e \"$COUNTER\" ]; then touch \"$BLOCKED\"; exec sleep 10; fi\ntouch \"$COUNTER\"\nprintf 'username=fixture\\npassword=fixture-token\\n\\n'\n").unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        crate::git::endpoint::helper_script::write_helper_script(
+            &executable,
+            "while IFS= read -r line; do [ -z \"$line\" ] && break; done\nif [ -e \"$COUNTER\" ]; then touch \"$BLOCKED\"; exec sleep 10; fi\ntouch \"$COUNTER\"\nprintf 'username=fixture\\npassword=fixture-token\\n\\n'\n",
+        );
         let runtime = TransportRuntime::with_https(
             SshEndpointConfig::fixture(endpoint_home(root.path()), None),
             HttpsEndpointConfig {
@@ -712,6 +723,7 @@ fn cancelling_receive_pack_preparation_has_no_publication_effect() {
                     ],
                 }),
             },
+            HelperSlots::new(),
         )
         .unwrap();
         let request = runtime

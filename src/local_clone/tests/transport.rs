@@ -166,17 +166,22 @@ fn fetch_anonymous_imports_a_workspace_root_commit_with_unavailable_gitlinks() {
 }
 
 #[test]
-fn fetch_anonymous_imports_when_receiver_has_a_tree_checkpoint_ref() {
+fn fetch_anonymous_imports_natively_when_receiver_has_a_tree_checkpoint_ref() {
     let temp = TempDir::new("fetch-anon-tree-ref");
     let source = temp.path().join("source");
     let receiver = temp.path().join("receiver");
     let source_commit = init_repo_with_commit(&source, false, "source");
     init_repo_with_commit(&receiver, false, "receiver");
 
-    // Codex checkpoint refs are direct refs to trees. libgit2's local
-    // transport wrongly feeds every receiver ref to a commit revwalk. Seed
-    // the same tree in both repositories so that its local-transport bug is
-    // exercised instead of being hidden by a missing-object error.
+    // Codex checkpoint refs are direct refs to trees. Stock libgit2's local
+    // transport fed every receiver ref to a commit revwalk and failed the
+    // import with `object is not a committish` once the source held the
+    // same tree, so the tree is seeded in both repositories rather than
+    // hidden behind a missing-object error. This test drove the Git
+    // fallback that rescued that failure. The fallback is gone (2026-09-29),
+    // so it is now the regression test for the libgit2 fork's native
+    // correction (dev-docs/GwzNoFallbackNativeFix.md): the import succeeds
+    // on libgit2 alone.
     let source_repository = git2::Repository::open(&source).unwrap();
     let tree = source_repository
         .treebuilder(None)
@@ -208,10 +213,17 @@ fn fetch_anonymous_imports_when_receiver_has_a_tree_checkpoint_ref() {
             &source.to_string_lossy(),
             &[&format!("+HEAD:{IMPORT_REF}")],
         )
-        .expect("anonymous local import falls back for tree checkpoint refs");
+        .expect("the native import skips a receiver's tree checkpoint ref");
     assert_eq!(
         backend.read_ref(&receiver, IMPORT_REF).unwrap().as_deref(),
         Some(source_commit.as_str())
+    );
+    assert_eq!(
+        receiver_repository
+            .refname_to_id("refs/codex/checkpoints/tree")
+            .unwrap(),
+        tree,
+        "the checkpoint ref is left as it was"
     );
 }
 

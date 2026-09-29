@@ -167,13 +167,19 @@ def main() -> int:
             consumer_dir,
             ignore=shutil.ignore_patterns("target", "__pycache__"),
         )
-        # Preserve the core-relative source path used by the preactivation bridge
-        # fixture; no source is taken from the transport owner's checkout.
+        # Preserve the core-relative source paths used by the preactivation bridge
+        # fixture and the candidate protocol; no source is taken from the
+        # transport owner's checkout.
         bridge = ROOT.parents[1] / "src/git/endpoint/stream_io.rs"
         bridge_copy = isolated / "core/src/git/endpoint/stream_io.rs"
         bridge_copy.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(bridge, bridge_copy)
         print(f"core_bridge_sha256={digest(bridge_copy)}")
+        protocol = ROOT.parents[1] / "src/protocol/candidate_generated.rs"
+        protocol_copy = isolated / "core/src/protocol/candidate_generated.rs"
+        protocol_copy.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(protocol, protocol_copy)
+        print(f"core_candidate_protocol_sha256={digest(protocol_copy)}")
         cargo_dir = consumer_dir / ".cargo"
         cargo_dir.mkdir()
         (cargo_dir / "config.toml").write_text(

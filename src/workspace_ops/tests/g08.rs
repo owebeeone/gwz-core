@@ -5,6 +5,7 @@ use crate::git::{Git2Backend, GitBackend};
 use super::*;
 
 mod last_known_refs;
+mod missing_remote;
 mod push_url;
 
 #[test]
@@ -21,6 +22,10 @@ fn unknown_identity_override_refuses_before_root_publication() {
     commit_file(temp.path(), "root.txt", "work", "work", &[]).unwrap();
     let key = temp.path().join("unused-key");
     std::fs::write(&key, "fixture: this unused key must never be offered").unwrap();
+    #[allow(
+        clippy::needless_update,
+        reason = "gwz_transport_candidate adds fields"
+    )]
     let result = handle_push(
         &backend,
         temp.path(),
@@ -884,6 +889,10 @@ fn a_remote_identity_for_an_https_read_url_refuses_before_any_transfer() {
         backend.commit(temp.path(), "lock", false).unwrap();
         let key = temp.path().join("key");
         std::fs::write(&key, "fixture: this key must never be offered").unwrap();
+        #[allow(
+            clippy::needless_update,
+            reason = "gwz_transport_candidate adds fields"
+        )]
         let response = handle_push(
             &backend,
             temp.path(),

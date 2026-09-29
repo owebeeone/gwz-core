@@ -193,6 +193,8 @@ fn no_ff_mode_mentions_stay_inside_the_pinned_surface() {
     assert_eq!(
         files_containing(&variant),
         [
+            // JOINED 2026-09-29: the candidate build's protocol enum, moved here from tests/.
+            "protocol/candidate_generated.rs",
             // Protocol enum declaration (accepted wire vocabulary).
             "protocol/generated.rs",
             // Model enum declaration.

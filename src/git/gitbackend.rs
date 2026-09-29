@@ -59,6 +59,11 @@ cfg_if::cfg_if! {
         pub(crate) use transport_support::server_timeout_ms as transport_timeout_ms;
     }
 }
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        pub(crate) use transport_support::DEFAULT_SERVER_TIMEOUT_MS;
+    }
+}
 pub use types::*;
 
 pub(crate) use repository_support::open_repo;
@@ -263,7 +268,8 @@ impl GitBackend for Git2Backend {
     }
     fn validate_remote_identity(&self, path: &Path, remote: &str, push: bool) -> ModelResult<()> {
         let repo = open_repo(path)?;
-        let handle = repo.find_remote(remote).map_err(git_error)?;
+        // An absent remote is `MissingRemote`, as every other lookup answers.
+        let handle = find_remote(&repo, remote)?;
         let url = if push {
             handle
                 .pushurl()

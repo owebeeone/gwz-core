@@ -760,6 +760,28 @@ streams; mixed-direction pressure; independent batching/close deadlines; async
 wakeups; prefix/error ordering and discard-before-capacity-release. The same
 message scenarios run through typed handoff and bounded payload encoding.
 
+Implementation note, 2026-09-29: the candidate SSH pump
+(`src/git/endpoint/ssh_pump.rs`) used to report `Network` whenever it was not
+backpressured, so the client's think time ran the stall clock. It now reads
+whose turn it is from the pkt-line framing it carries
+(`src/git/endpoint/git_turns.rs`) and reports `Idle` only when the server has
+positively finished its turn and the client has sent nothing since. That
+covers after the advertisement's flush, after a want section that asked for
+no deepen, after the shallow list a deepen is owed, and after the NAK that
+ends each flushed have round. Bytes pending toward the server or not yet
+delivered to the client keep it `Network`. So do the advertisement, every
+round the server still owes, and everything from `done` to the end of the
+pack. The fallback is conservative: protocol v2, a line out of place, a
+malformed or oversized length, a line over 1 KiB, `no-done`, a bare ACK before
+`done`, stderr while the client should be thinking, or the client's half-close
+ends the tracking, and the exchange stays `Network` to its end. On a push only
+the wait before the client's first byte is `Idle`, since its commands are
+followed by a raw pack. Covered: protocol v0 and v1 upload-pack and
+receive-pack, which is all libgit2 speaks over SSH (it never asks for v2). The
+HTTPS endpoint charges no think time: each RPC is its own exchange, and its
+request producer waits for the client's bytes in `Backpressure`, which
+preserves the network budget.
+
 ### 10.2 Native timeout representation
 
 Native GWZ accepts `--ssh-timeout 0` and core `configure_server_timeout_ms(0)`

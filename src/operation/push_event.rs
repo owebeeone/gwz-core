@@ -232,6 +232,10 @@ impl OperationContext {
 pub struct ResponseBuilder;
 
 impl ResponseBuilder {
+    #[allow(
+        clippy::needless_update,
+        reason = "gwz_transport_candidate adds fields"
+    )]
     pub fn accepted(context: &OperationContext, members: &[MemberPlan]) -> crate::ResponseEnvelope {
         crate::ResponseEnvelope {
             meta: crate::ResponseMeta {
@@ -692,6 +696,10 @@ pub(crate) fn member_plan_to_protocol(member: &MemberPlan) -> crate::MemberRespo
 /// Build a standard `ResponseEnvelope` from request meta + an action. For **CLI-local** ops
 /// (e.g. `gwz forall`) that stamp their own envelope without a gwz-core handler — `gwz-core`
 /// itself never executes those, this just mints a consistent envelope.
+#[allow(
+    clippy::needless_update,
+    reason = "gwz_transport_candidate adds fields"
+)]
 pub fn response_envelope_for(
     meta: &crate::RequestMeta,
     action: ActionKind,

@@ -39,18 +39,25 @@ calls are bounded.
 
 ## Endpoint placement candidate
 
-The same prepared manifest also selects the shared generated schema and the
-`transport_host` facade. Run the complete host/CLI-endpoint integration suite:
+The same prepared manifest also selects the shared generated schema
+(`src/protocol/candidate_generated.rs`) and the `transport_host` facade, and adds
+the `transport_placement_guide` test target. Run the complete host/CLI-endpoint
+integration suite and compile the guide's example:
 
 ```sh
 RUSTFLAGS='--cfg gwz_transport_candidate' cargo +1.95.0 test \
   --manifest-path /tmp/gwz-backend-new/Cargo.toml --locked --offline \
   --target-dir /tmp/gwz-backend-new-target --lib transport_host -- --test-threads=1
+RUSTFLAGS='--cfg gwz_transport_candidate' cargo +1.95.0 test \
+  --manifest-path /tmp/gwz-backend-new/Cargo.toml --locked --offline \
+  --target-dir /tmp/gwz-backend-new-target --test transport_placement_guide
 python3 -B -m pytest -q gwz-core/tests/transport_backend/test_prepare.py
 ```
 
-This compiles the exact example from `docs/TransportPlacement.md` and tests
-in-memory host message delivery, separate credential homes, real SSH streams,
+`test_prepare.py` needs Python 3.11 or newer. The guide target
+(`guide_test.rs`) compiles the exact example from `docs/TransportPlacement.md`
+with `gwz_core` as an extern crate, so the example reaches only public API. The
+suite tests in-memory host message delivery, separate credential homes, real SSH streams,
 shared pools, endpoint preflight, authentication/refusal facts, cancellation,
 concurrent streams, and ordinary workspace command drivers. It does not add a
 physical CLI/core carrier or qualify a split-process deployment. The local SSH

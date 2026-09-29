@@ -70,8 +70,10 @@ impl Endpoint {
         config: pool::Config,
         io_timeout_ms: u64,
     ) -> Result<Self, Failure> {
+        // A standalone endpoint is its own host: its own authority and slots.
         let authority = Authority::new(config.total, config.per_host);
-        Self::with_authority(tls, auth, config, io_timeout_ms, authority)
+        let helper_slots = https_auth::HelperSlots::new();
+        Self::with_authority(tls, auth, config, io_timeout_ms, authority, helper_slots)
     }
     pub(crate) fn with_authority(
         tls: https_connection::Config,
@@ -79,6 +81,7 @@ impl Endpoint {
         config: pool::Config,
         io_timeout_ms: u64,
         authority: Authority,
+        helper_slots: https_auth::HelperSlots,
     ) -> Result<Self, Failure> {
         if io_timeout_ms > i32::MAX as u64 {
             return Err(failure(ErrorCode::InvalidRequest));
@@ -93,7 +96,7 @@ impl Endpoint {
             helpers: Arc::new(Semaphore::new(8)),
             routes,
             operations,
-            auth_owner: https_auth::AuthOwner::new(),
+            auth_owner: https_auth::AuthOwner::new(helper_slots),
             config,
             io_timeout_ms,
         };

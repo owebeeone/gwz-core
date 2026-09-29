@@ -1,19 +1,23 @@
 """Preparation tests for the isolated full-core placement candidate."""
 
+import glob
 import hashlib
 import json
+import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE = ROOT.parent
 PREPARE = Path(__file__).with_name("prepare.py")
-CANDIDATE = ROOT / "tests" / "transport_consumer" / "candidate" / "candidate_generated.rs"
+CANDIDATE = ROOT / "src" / "protocol" / "candidate_generated.rs"
 PRODUCTION = ROOT / "src" / "protocol" / "generated.rs"
 PROTOCOL_MOD = ROOT / "src" / "protocol" / "mod.rs"
 GUIDE = ROOT / "tests" / "transport_backend" / "guide_example.rs"
+DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
 
 
 def prepare(destination: Path) -> Path:
@@ -26,6 +30,30 @@ def prepare(destination: Path) -> Path:
     return destination
 
 
+def _manifest(directory: Path) -> dict:
+    return tomllib.loads((directory / "Cargo.toml").read_text())
+
+
+def _cargo_path(directory: Path, value: str) -> Path:
+    # Cargo joins a dependency path to the directory of the manifest that names
+    # it and normalizes the result lexically, without resolving symlinks first.
+    return Path(os.path.normpath(directory / value))
+
+
+def _dependency_paths(manifest: dict, *, dev: bool) -> list[str]:
+    # Cargo reads dev-dependencies only for the workspace's own packages.
+    names = DEPENDENCY_TABLES if dev else ("dependencies", "build-dependencies")
+    tables = [manifest.get(name, {}) for name in names]
+    for target in manifest.get("target", {}).values():
+        tables.extend(target.get(name, {}) for name in names)
+    return [
+        spec["path"]
+        for table in tables
+        for spec in table.values()
+        if isinstance(spec, dict) and "path" in spec
+    ]
+
+
 def test_prepare_selects_candidate_overlay_without_touching_production(tmp_path):
     before = hashlib.sha256(PROTOCOL_MOD.read_bytes()).hexdigest()
     destination = prepare(tmp_path / "backend")
@@ -35,6 +63,8 @@ def test_prepare_selects_candidate_overlay_without_touching_production(tmp_path)
     assert metadata["candidate_source"] == str(CANDIDATE.resolve())
     assert metadata["candidate_sha256"] == hashlib.sha256(CANDIDATE.read_bytes()).hexdigest()
     assert metadata["production_source"] == str(PRODUCTION.resolve())
+    # A prepared tree lives outside the workspace; tests/protocol.rs finds taut here.
+    assert metadata["taut_source"] == str(WORKSPACE / "taut" / "src")
     assert hashlib.sha256(PROTOCOL_MOD.read_bytes()).hexdigest() == before
 
 
@@ -44,7 +74,13 @@ def test_prepare_manifest_keeps_candidate_dependency_outside_production(tmp_path
 
     assert f'gwz-transport = {{ path = "{WORKSPACE / "gwz-transport"}" }}' in manifest
     assert "gwz_transport_candidate" not in manifest
-    assert "[patch.crates-io]" in manifest
+    # The candidate builds against the workspace's git2-rs fork with the fork's
+    # vendored libgit2, exactly as production declares it; only the path is anchored.
+    git2 = tomllib.loads(manifest)["dependencies"]["git2"]
+    production = tomllib.loads((ROOT / "Cargo.toml").read_text())["dependencies"]["git2"]
+    assert git2 == {**production, "path": str(WORKSPACE / "git2-rs")}
+    assert git2["package"] == "gwz-git2"
+    assert "vendored-libgit2" in git2["features"]
 
 
 def test_protocol_module_has_explicit_candidate_boundary():
@@ -68,3 +104,48 @@ def test_in_process_python_dependency_is_candidate_only(tmp_path):
     manifest = (destination / "Cargo.toml").read_text()
     assert 'pyo3 = { version = "=0.28.3", features = ["auto-initialize"] }' in manifest
     assert 'pyo3' not in (ROOT / "Cargo.toml").read_text()
+
+
+def test_prepared_path_dependencies_resolve_from_a_fresh_destination(tmp_path):
+    destination = prepare(tmp_path / "backend")
+    workspace = {destination}
+    for pattern in _manifest(destination).get("workspace", {}).get("members", []):
+        workspace.update(Path(member) for member in glob.glob(str(destination / pattern)))
+    pending = sorted(workspace)
+    seen = set()
+    missing = []
+    while pending:
+        directory = pending.pop()
+        if directory in seen:
+            continue
+        seen.add(directory)
+        for value in _dependency_paths(_manifest(directory), dev=directory in workspace):
+            target = _cargo_path(directory, value)
+            if (target / "Cargo.toml").is_file():
+                pending.append(target)
+            else:
+                missing.append(f"{directory / 'Cargo.toml'}: {value} -> {target}")
+    assert missing == []
+
+
+def test_prepared_patches_name_the_packages_their_paths_hold(tmp_path):
+    destination = prepare(tmp_path / "backend")
+    stale = []
+    for source, entries in _manifest(destination).get("patch", {}).items():
+        for name, spec in entries.items():
+            held = _manifest(_cargo_path(destination, spec["path"]))["package"]["name"]
+            if held != spec.get("package", name):
+                stale.append(f"[patch.{source}] {name} -> {held}")
+    assert stale == []
+
+
+def test_prepared_manifest_compiles_guide_as_external_consumer(tmp_path):
+    destination = prepare(tmp_path / "backend")
+    targets = {target["name"]: target for target in _manifest(destination).get("test", [])}
+    wrapper = destination / targets["transport_placement_guide"]["path"]
+
+    assert wrapper.resolve() == (ROOT / "tests" / "transport_backend" / "guide_test.rs")
+    assert '#[path = "guide_example.rs"]' in wrapper.read_text()
+    assert "include!" not in wrapper.read_text()
+    assert "guide_test.rs" not in (ROOT / "Cargo.toml").read_text()
+    assert not [path for path in (ROOT / "src").rglob("*.rs") if "guide_example" in path.read_text()]

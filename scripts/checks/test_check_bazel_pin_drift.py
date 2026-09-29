@@ -200,8 +200,10 @@ class BazelPinDriftTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertIn("bazel pin drift: ok", result.stdout)
-        self.assertIn("3 pin(s) in hub `crates`", result.stdout)
-        for name in ("clap", "console", "serde_json"):
+        # gwz-cli's four direct registry dependencies: `cfg-if` joined at b2b24ed
+        # (2026-09-22) and was pinned here on 2026-09-29.
+        self.assertIn("4 pin(s) in hub `crates`", result.stdout)
+        for name in ("cfg-if", "clap", "console", "serde_json"):
             self.assertIn(f"{name} =", result.stdout)
 
     def test_synthetic_tree_passes(self) -> None:

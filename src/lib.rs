@@ -81,10 +81,20 @@ pub fn version() -> &'static str {
     VERSION
 }
 
-#[cfg(test)]
-#[rustfmt::skip]
-#[path = "../protocol/corpus/rust/vectors.rs"]
-mod protocol_corpus;
+cfg_if::cfg_if! {
+    if #[cfg(all(test, gwz_transport_candidate))] {
+        // The candidate schema's own corpus. Its added fields carry sample
+        // values, and taut's encoder writes every key (an absent one as null),
+        // so production's vectors cannot round-trip through candidate types.
+        #[rustfmt::skip]
+        #[path = "../protocol/candidate/corpus/rust/vectors.rs"]
+        mod protocol_corpus;
+    } else if #[cfg(test)] {
+        #[rustfmt::skip]
+        #[path = "../protocol/corpus/rust/vectors.rs"]
+        mod protocol_corpus;
+    }
+}
 
 #[cfg(test)]
 mod tests {

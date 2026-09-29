@@ -216,15 +216,6 @@ fn unregistered_bind_cannot_create_endpoint_authority() {
     assert!(endpoint.register_request("later").is_err());
 }
 
-#[allow(dead_code)]
-mod guide_fixture {
-    use crate as gwz_core;
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/transport_backend/guide_example.rs"
-    ));
-}
-
 fn wait<F: Future>(future: F) -> F::Output {
     let mut future = pin!(future);
     let deadline = std::time::Instant::now() + Duration::from_secs(10);

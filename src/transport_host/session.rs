@@ -212,13 +212,23 @@ cfg_if::cfg_if! {
         struct TestHooks {
             hold_retirement: AtomicBool,
             waiting_retirement: AtomicBool,
+            hold_pump: AtomicBool,
+            pumps: std::sync::atomic::AtomicUsize,
         }
         impl TestHooks {
             fn new() -> Self {
                 Self {
                     hold_retirement: AtomicBool::new(false),
                     waiting_retirement: AtomicBool::new(false),
+                    hold_pump: AtomicBool::new(false),
+                    pumps: std::sync::atomic::AtomicUsize::new(0),
                 }
+            }
+            fn should_hold_pump(&self) -> bool {
+                self.hold_pump.load(Ordering::Acquire)
+            }
+            fn pumped(&self) {
+                self.pumps.fetch_add(1, Ordering::AcqRel);
             }
             fn should_hold_retirement(&self) -> bool {
                 if self.hold_retirement.load(Ordering::Acquire) {
@@ -234,6 +244,8 @@ cfg_if::cfg_if! {
         impl TestHooks {
             fn new() -> Self { Self }
             fn should_hold_retirement(&self) -> bool { false }
+            fn should_hold_pump(&self) -> bool { false }
+            fn pumped(&self) {}
         }
     }
 }
@@ -293,6 +305,15 @@ impl Session {
         pub(super) fn release_capacity_for_test(&self) {
             assert!(self.capacity_gate.swap(false, Ordering::AcqRel));
             self.event.signal();
+        }
+        pub(super) fn hold_pump_for_test(&self, hold: bool) {
+            self.test_hooks.hold_pump.store(hold, Ordering::Release);
+            // A pass already under way holds the state lock; waiting for it
+            // puts the hold in force before this returns.
+            drop(self.state.lock().unwrap_or_else(|error| error.into_inner()));
+        }
+        pub(super) fn pumps_for_test(&self) -> usize {
+            self.test_hooks.pumps.load(Ordering::Acquire)
         }
         pub(super) fn hold_retirement_for_test(&self) {
             self.test_hooks.hold_retirement.store(true, Ordering::Release);
@@ -373,9 +394,10 @@ impl Session {
     pub(super) fn endpoint(config: SshEndpointConfig) -> ModelResult<(Arc<Self>, TransportPort)> {
         Self::endpoint_with_https(config, None)
     }
+    /// An HTTPS endpoint takes the helper slots of the host that opens it.
     pub(super) fn endpoint_with_https(
         config: SshEndpointConfig,
-        https: Option<HttpsEndpointConfig>,
+        https: Option<(HttpsEndpointConfig, HelperSlots)>,
     ) -> ModelResult<(Arc<Self>, TransportPort)> {
         let mut state = Self::empty();
         let id = unique()?;
@@ -393,13 +415,14 @@ impl Session {
             authority.clone(),
         )
         .map_err(|_| unavailable("SSH endpoint construction failed"))?;
-        if let Some(https) = https {
+        if let Some((https, helper_slots)) = https {
             state.https = Some(super::https_endpoint::HttpsEndpoint::new(
                 https,
                 config.pool.clone(),
                 config.io_timeout_ms,
                 authority.clone(),
                 id.clone(),
+                helper_slots,
             )?);
         }
         let https_enabled = state.https.is_some();

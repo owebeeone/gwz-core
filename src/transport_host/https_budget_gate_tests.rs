@@ -96,6 +96,7 @@ fn route_wait_reduces_first_open_allocation_budget_and_second_stage_times_out() 
                 tls: server.config(),
                 auth: None,
             },
+            HelperSlots::new(),
         )
         .unwrap();
         let request = runtime
@@ -203,6 +204,7 @@ fn exhausted_route_budget_sends_no_second_open() {
                 tls: server.config(),
                 auth: None,
             },
+            HelperSlots::new(),
         )
         .unwrap();
         let request = runtime

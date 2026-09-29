@@ -250,10 +250,11 @@ and the root `cargo test -p gwz`.
   after the split round plus the refcopy test fix `3aa81ce8`), after the
   dispatched Windows matrix passed on the split tree.
 - **Follow-ups, not done:** `crates/workspace-install/src/tests.rs` (1258) and
-  `src/test_support.rs` (545); `PROTECTED_SOURCE_DIGESTS` in the boundary check
-  is defined but never compared against anything; the line-number citation at
+  `src/test_support.rs` (545); the line-number citation at
   `workspace_ops/sync_workspace_boundary.rs:110` is stale; the Phase 1, 3 and 4
-  procedure splits (§4b) remain.
+  procedure splits (§4b) remain. (Done 2026-09-29: the boundary check's
+  `PROTECTED_SOURCE_DIGESTS`, defined but never compared since 107aca7a, was
+  removed with the other dead digest and entry tables.)
 
 ## 7. Risks
 

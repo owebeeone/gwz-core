@@ -36,6 +36,7 @@ fn cancel_after_opened_is_queued_replaces_opened_with_cancelled_terminal() {
                 3_000,
                 authority,
                 "endpoint".into(),
+                HelperSlots::new(),
             )
             .unwrap();
             let open = Open {

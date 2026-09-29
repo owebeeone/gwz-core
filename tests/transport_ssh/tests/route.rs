@@ -9,6 +9,8 @@ mod ssh_destination;
 mod ssh_endpoint;
 #[path = "../../../src/git/endpoint/ssh_pool.rs"]
 mod ssh_pool;
+#[path = "../../../src/git/endpoint/git_turns.rs"]
+mod git_turns;
 #[path = "../../../src/git/endpoint/ssh_pump.rs"]
 mod ssh_pump;
 #[path = "../../../src/git/endpoint/ssh_remote.rs"]
@@ -74,6 +76,7 @@ impl Connector for Factory {
         );
         self.0.starts.fetch_add(1, Ordering::SeqCst);
         Err(Failure {
+            setup_cause: None,
             facts: None,
             code: ErrorCode::Authentication,
             effect: Effect::None,

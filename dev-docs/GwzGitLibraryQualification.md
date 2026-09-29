@@ -136,7 +136,8 @@ not a cross-compilation pass or another OS result, closes a platform row.
 
 L1 additionally retains tag declared/actual type consistency, missing targets,
 ref/FETCH_HEAD/cancellation/partial-outcome characterization before fallback
-removal. C1/H1 add limited evidence, not complete commit/tag/history parity.
+removal. (2026-09-29: the fallback was removed by operator decision without
+these, which remain open. See [the no-fallback plan](GwzNoFallbackPlan.md) §4.) C1/H1 add limited evidence, not complete commit/tag/history parity.
 No all-platform CI dispatch or source publication was performed in Q1. No
 all-consumer acceptance is possible while any table row is pending or divergent.
 

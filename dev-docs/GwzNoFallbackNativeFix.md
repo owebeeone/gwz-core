@@ -16,6 +16,14 @@ Authority: [plan](GwzNoFallbackPlan.md), [first checkpoint](GwzNoFallbackCheckpo
 [binding port](GwzNoFallbackBindingPort.md). This is the separately budgeted
 successor to L1-A/L2-A. It does not authorize production activation.
 
+2026-09-29 status:
+- gwz-core `26b30ca6` (2026-09-23) made this correction production: `git2` is
+  now the `gwz-git2` fork.
+- The local-fetch fallback was removed by operator decision. The record is in
+  the [plan](GwzNoFallbackPlan.md) §4.
+- The type-consistency hardening named below as a prerequisite to that decision
+  was not done first. It remains open.
+
 ## Intended behavior
 
 A receiver ref naming a tree/blob or a tag ultimately naming a tree/blob is not

@@ -5,6 +5,15 @@ Accepted **L1-A route-selection evidence only**, reviewed at core
 [State GO](../../dev-docs/GwzNoFallbackCharacterization-ReviewState.md).
 Replacement design/implementation and activation remain separate gates.
 
+2026-09-29: this records stock libgit2 and the backend's Git compatibility path
+at the time.
+- Production has run the fork's native correction since gwz-core `26b30ca6`
+  ([NativeFix](GwzNoFallbackNativeFix.md)).
+- The compatibility path is removed; see [the plan](GwzNoFallbackPlan.md) §4.
+- `src/local_clone/tests/transport_noncommit.rs` now asserts the native
+  success. Its shared-object test is
+  `native_same_tree_receiver_ref_does_not_block_the_fetch`.
+
 ## Status and scope
 
 This is the L1-A characterization package for the accepted no-fallback plan.

@@ -3,6 +3,8 @@
 import importlib.util
 import io
 import json
+import re
+import sys
 import tarfile
 from pathlib import Path
 
@@ -96,3 +98,37 @@ def test_path_traversal_and_windows_names_are_rejected_before_extraction(
     _archive(archive, unsafe_name=unsafe_name)
     with pytest.raises(SystemExit, match="unsafe or duplicate|escapes"):
         PROOF.package_identity(archive, REVISION)
+
+
+def test_isolated_tree_carries_every_core_source_the_consumer_loads(tmp_path, monkeypatch):
+    # The consumer loads some core sources by `#[path]`; the isolated tree must
+    # hold each one at the same core-relative place, or the offline proof
+    # cannot compile.
+    archive = tmp_path / "valid.crate"
+    _archive(archive)
+    loaded = []
+
+    def fake_cargo(command, cwd, check):
+        consumer = Path(cwd)
+        for source in [consumer / "src" / "lib.rs", *sorted((consumer / "tests").glob("*.rs"))]:
+            for target in re.findall(r'#\[path = "([^"]+)"\]', source.read_text()):
+                loaded.append(target)
+                assert (source.parent / target).is_file(), f"{source.name} loads missing {target}"
+
+    monkeypatch.setattr(PROOF.subprocess, "run", fake_cargo)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "package_proof.py",
+            "--archive",
+            str(archive),
+            "--archive-sha256",
+            PROOF.digest(archive),
+            "--source-revision",
+            REVISION,
+        ],
+    )
+    assert PROOF.main() == 0
+    assert "../../../src/git/endpoint/stream_io.rs" in loaded
+    assert "../../../src/protocol/candidate_generated.rs" in loaded

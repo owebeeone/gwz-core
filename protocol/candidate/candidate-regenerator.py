@@ -2,8 +2,12 @@
 """Regenerate the isolated placement schema projection.
 
 The candidate generator composes the checked-in core schema with the explicitly
-supplied owner export.  It writes only under this consumer harness; production
-protocol artifacts and manifests are deliberately outside its output set.
+supplied owner export.  It writes only the candidate artifacts:
+src/protocol/candidate_generated.rs, protocol/candidate/candidate_generated.py,
+and the candidate's conformance corpus under protocol/candidate/corpus/ (the
+`tautc corpus` golden vectors and their Rust parity harness, which the candidate
+build's `corpus_byte_parity` runs). Production protocol artifacts and manifests
+are deliberately outside its output set.
 """
 
 from __future__ import annotations
@@ -12,18 +16,30 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-CANDIDATE_SCHEMA = ROOT / "protocol" / "candidate.taut.py"
-PIN = ROOT / "protocol" / "candidate-generator.json"
-RUST_OUT = ROOT / "candidate" / "candidate_generated.rs"
-PYTHON_OUT = ROOT / "candidate" / "candidate_generated.py"
-OLD_RUST_OUT = ROOT / "candidate" / "retained_old_generated.rs"
+ROOT = Path(__file__).resolve().parents[2]
+CANDIDATE_SCHEMA = ROOT / "protocol" / "candidate" / "candidate.taut.py"
+PIN = ROOT / "protocol" / "candidate" / "candidate-generator.json"
+RUST_OUT = ROOT / "src" / "protocol" / "candidate_generated.rs"
+PYTHON_OUT = ROOT / "protocol" / "candidate" / "candidate_generated.py"
+CORPUS_GOLDEN = ROOT / "protocol" / "candidate" / "corpus" / "golden.json"
+CORPUS_VECTORS = ROOT / "protocol" / "candidate" / "corpus" / "rust" / "vectors.rs"
+OLD_RUST_OUT = ROOT / "tests" / "transport_consumer" / "candidate" / "retained_old_generated.rs"
+TOOLCHAIN_FILE = ROOT / "rust-toolchain.toml"
+
+
+def _toolchain_channel() -> str:
+    """The Rust channel gwz-core pins in its rust-toolchain.toml."""
+    found = re.search(r'^channel\s*=\s*"([^"]+)"\s*$', TOOLCHAIN_FILE.read_text(), re.MULTILINE)
+    if found is None:
+        raise SystemExit(f"no toolchain channel in {TOOLCHAIN_FILE}")
+    return found.group(1)
 
 
 def _verify_pin(owner_path: Path, taut_source: Path) -> dict:
@@ -83,11 +99,20 @@ def _load_taut(source: Path):
     if cached:
         raise SystemExit("taut modules are already loaded; run candidate regeneration in a fresh interpreter")
     sys.path.insert(0, str(source))
+    from taut.corpus import kit, synth
     from taut.gen.scaffold import emit
     from taut.ir.load import load_schema, schema_from_json
+    from taut.ir.validate import validate_or_raise
 
     _check_taut_origins(source)
-    return emit, load_schema, schema_from_json
+
+    def corpus(schema) -> tuple[str, str]:
+        """What `tautc corpus -l rust` writes for `schema`: golden.json, rust/vectors.rs."""
+        validate_or_raise(schema)
+        vectors = kit.build_corpus(schema, synth.synth_values(schema))
+        return kit.golden_json(vectors), kit.rust_vectors(schema, vectors)
+
+    return emit, load_schema, schema_from_json, corpus
 
 
 def _check_taut_origins(source: Path) -> None:
@@ -104,7 +129,7 @@ def _load_candidate(core_path: Path, owner_path: Path, load_schema):
     return load_schema(CANDIDATE_SCHEMA)
 
 
-def _generate(args: argparse.Namespace) -> tuple[str, str, str]:
+def _generate(args: argparse.Namespace) -> dict[Path, str]:
     pin = _verify_pin(args.owner_schema, args.taut_source)
     core_digest = hashlib.sha256(args.core_schema.read_bytes()).hexdigest()
     if core_digest != pin["retained-old-schema-sha256"]:
@@ -112,9 +137,10 @@ def _generate(args: argparse.Namespace) -> tuple[str, str, str]:
             "retained old schema digest mismatch: "
             f"expected {pin['retained-old-schema-sha256']}, got {core_digest}"
         )
-    emit, load_schema, schema_from_json = _load_taut(args.taut_source)
+    emit, load_schema, schema_from_json, corpus = _load_taut(args.taut_source)
     candidate = _load_candidate(args.core_schema, args.owner_schema, load_schema)
     _check_taut_origins(args.taut_source.resolve())
+    golden, vectors = corpus(candidate)
     owner = schema_from_json(json.loads(args.owner_schema.read_text()))
     external = {
         name: f"gwz_transport::protocol::{name}"
@@ -123,8 +149,15 @@ def _generate(args: argparse.Namespace) -> tuple[str, str, str]:
     rustfmt = shutil.which("rustfmt")
     if rustfmt is None:
         raise SystemExit("rustfmt is required for candidate regeneration")
+    # rustup's proxy picks the toolchain from the working directory or an
+    # inherited RUSTUP_TOOLCHAIN; the pin names gwz-core's own toolchain, so the
+    # proof runs that rustfmt wherever it is started.
     version = subprocess.run(
-        [rustfmt, "--version"], check=True, capture_output=True, text=True
+        [rustfmt, "--version"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "RUSTUP_TOOLCHAIN": _toolchain_channel()},
     ).stdout.strip()
     if version != pin["rustfmt"]:
         raise SystemExit(f"rustfmt pin mismatch: expected {pin['rustfmt']!r}, got {version!r}")
@@ -142,14 +175,18 @@ def _generate(args: argparse.Namespace) -> tuple[str, str, str]:
         candidate_python = (out / "python" / "api.py").read_text()
     if not OLD_RUST_OUT.is_file():
         raise SystemExit(f"checked-in retained reader source does not exist: {OLD_RUST_OUT}")
-    old_rust = OLD_RUST_OUT.read_text()
-    old_digest = hashlib.sha256(old_rust.encode()).hexdigest()
+    old_digest = hashlib.sha256(OLD_RUST_OUT.read_text().encode()).hexdigest()
     if old_digest != pin["retained-old-rust-sha256"]:
         raise SystemExit(
             "retained old Rust reader digest mismatch: "
             f"expected {pin['retained-old-rust-sha256']}, got {old_digest}"
         )
-    return candidate_rust, candidate_python, old_rust
+    return {
+        RUST_OUT: candidate_rust,
+        PYTHON_OUT: candidate_python,
+        CORPUS_GOLDEN: golden,
+        CORPUS_VECTORS: vectors,
+    }
 
 
 def main() -> int:
@@ -162,8 +199,7 @@ def main() -> int:
     for path in (args.core_schema, args.owner_schema):
         if not path.is_file():
             raise SystemExit(f"schema does not exist: {path}")
-    candidate_rust, candidate_python, old_rust = _generate(args)
-    outputs = {RUST_OUT: candidate_rust, PYTHON_OUT: candidate_python}
+    outputs = _generate(args)
     if args.check:
         stale = [str(path) for path, content in outputs.items() if not path.exists() or path.read_text() != content]
         if stale:

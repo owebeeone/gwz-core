@@ -580,9 +580,8 @@ fn discovery_failures_preserve_status_without_git_bytes_and_hops_are_bounded() {
 
 cfg_if::cfg_if! { if #[cfg(unix)] {
     fn fake_gh(token:&std::path::Path)->(tempfile::TempDir,https_auth::Config) {
-        use std::os::unix::fs::PermissionsExt;
         let dir=tempfile::tempdir().unwrap();let path=dir.path().join("gh");
-        std::fs::write(&path,"#!/bin/sh\n[ \"$1 $2 $3\" = 'auth git-credential get' ] || exit 4\n/bin/cat >/dev/null\nprintf 'username=fixture\\npassword='\n/bin/cat \"$TOKEN_FILE\"\nprintf '\\n\\n'\n").unwrap();std::fs::set_permissions(&path,std::fs::Permissions::from_mode(0o700)).unwrap();
+        crate::git::endpoint::helper_script::write_helper_script(&path,"[ \"$1 $2 $3\" = 'auth git-credential get' ] || exit 4\n/bin/cat >/dev/null\nprintf 'username=fixture\\npassword='\n/bin/cat \"$TOKEN_FILE\"\nprintf '\\n\\n'\n");
         (dir,https_auth::Config{executable:path,environment:vec![("TOKEN_FILE".into(),token.as_os_str().into())]})
     }
     #[test]

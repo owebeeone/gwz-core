@@ -135,6 +135,24 @@ pub enum Cbor {
 }
 
 impl Cbor {
+    pub fn is_map(&self) -> bool {
+        matches!(self, Cbor::Map(_))
+    }
+
+    /// Value for an integer map key, or `None` when the key is absent.
+    pub fn get_opt(&self, key: i64) -> Option<&Cbor> {
+        if let Cbor::Map(m) = self {
+            for (k, v) in m {
+                if *k == key {
+                    return Some(v);
+                }
+            }
+        } else {
+            return None;
+        }
+        None
+    }
+
     // --- infallible accessors (retained; panic on misuse, exactly as the
     // default runtime) ------------------------------------------------------
 
@@ -216,6 +234,21 @@ impl Cbor {
                 }
             }
             Err(DecodeError::MissingKey(key))
+        } else {
+            Err(DecodeError::WrongType { expected: "map" })
+        }
+    }
+
+    /// Value for an integer map key, accepting an absent key while still
+    /// rejecting a non-map input.
+    pub fn try_get_opt(&self, key: i64) -> Result<Option<&Cbor>, DecodeError> {
+        if let Cbor::Map(m) = self {
+            for (k, v) in m {
+                if *k == key {
+                    return Ok(Some(v));
+                }
+            }
+            Ok(None)
         } else {
             Err(DecodeError::WrongType { expected: "map" })
         }

@@ -510,10 +510,11 @@ fn host_scoped_workspace_drivers_keep_request_identity_across_init_and_fetch() {
 #[test]
 fn cli_endpoint_preserves_repository_refusal_and_reuses_binding_after_failure() {
     let harness = CliHarness::new();
-    use std::os::unix::fs::PermissionsExt;
     let script = harness.fixture.temp.path().join("refuse-missing.sh");
-    std::fs::write(&script, "#!/bin/sh\ncase \"$SSH_ORIGINAL_COMMAND\" in\n *-missing*) echo 'ERROR: Repository not found.' >&2; exit 1 ;;\n *) eval \"$SSH_ORIGINAL_COMMAND\" ;;\nesac\n").unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    crate::git::endpoint::helper_script::write_helper_script(
+        &script,
+        "case \"$SSH_ORIGINAL_COMMAND\" in\n *-missing*) echo 'ERROR: Repository not found.' >&2; exit 1 ;;\n *) eval \"$SSH_ORIGINAL_COMMAND\" ;;\nesac\n",
+    );
     let public =
         std::fs::read_to_string(harness.fixture.temp.path().join("client_ed25519.pub")).unwrap();
     std::fs::write(
@@ -651,6 +652,107 @@ fn cli_one_request_supports_concurrent_git_streams() {
     block_on(harness.endpoint.shutdown());
 }
 
+/// A raw upload-pack stream through the CLI endpoint, read past the server's
+/// advertisement: the request, the client's registration, the stream, and the
+/// commit the server advertised.
+fn upload_pack_past_advertisement(
+    harness: &CliHarness,
+    id: &str,
+) -> (
+    TransportRequest,
+    ClientRequest,
+    crate::git::endpoint::stream_io::BlockingStream,
+    String,
+) {
+    let server = git2::Repository::open_bare(&harness.fixture.repository).unwrap();
+    let head = commit(&server, "advertised").to_string();
+    let meta = harness.meta(id);
+    let client = harness.endpoint.register_request(&meta.request_id).unwrap();
+    let request = block_on(harness.runtime.request(meta, "fetch".into())).unwrap();
+    request.context.check_identity("client_ed25519").unwrap();
+    let mut stream = request
+        .context
+        .open(
+            &fixture_url(&harness.fixture),
+            crate::git::endpoint::ssh_channel::GitService::UploadPack,
+            Some("client_ed25519".into()),
+            std::sync::Arc::new(|_, _| {}),
+            std::sync::Arc::new(|_| {}),
+        )
+        .unwrap();
+    let mut advertisement = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    while !advertisement.ends_with(b"0000") {
+        let read = std::io::Read::read(&mut stream, &mut buffer).unwrap();
+        assert_ne!(read, 0, "the advertisement ended early");
+        advertisement.extend_from_slice(&buffer[..read]);
+    }
+    assert!(
+        advertisement
+            .windows(head.len())
+            .any(|window| window == head.as_bytes())
+    );
+    (request, client, stream, head)
+}
+
+/// A clone's whole request: one want, its flush, and done.
+fn clone_request(head: &str) -> Vec<u8> {
+    let want = format!("want {head}\n");
+    format!("{:04x}{want}00000009done\n", want.len() + 4).into_bytes()
+}
+
+#[test]
+fn cli_client_think_time_after_the_advertisement_never_times_out() {
+    // GwzRemoteTransportDesign §10.1: application think time does not start
+    // the endpoint's stall clock. Think past the fixture's 3 s, then fetch.
+    let harness = CliHarness::new();
+    let (request, client, mut stream, head) = upload_pack_past_advertisement(&harness, "thinking");
+    let (done, outcome) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        thread::sleep(Duration::from_secs(4));
+        let fetched = std::io::Write::write_all(&mut stream, &clone_request(&head))
+            .and_then(|()| std::io::Write::flush(&mut stream))
+            .and_then(|()| {
+                let mut response = Vec::new();
+                std::io::Read::read_to_end(&mut stream, &mut response).map(|_| response)
+            });
+        let _ = done.send(fetched.map_err(|error| error.kind()));
+    });
+    let response = outcome
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the fetch never finished")
+        .expect("thinking ended the exchange");
+    assert!(response.starts_with(b"0008NAK\nPACK"));
+    block_on(request.finish());
+    block_on(client.finish());
+    block_on(harness.endpoint.shutdown());
+}
+
+#[test]
+fn cli_a_server_stall_after_done_reaches_the_client_as_a_timeout() {
+    // After done the server owes the pack, so its stall runs the endpoint's
+    // 3 s clock. The client's reads have no deadline of their own: the
+    // endpoint's Timeout must reach them, or they wait forever.
+    let harness = CliHarness::new();
+    let (request, client, mut stream, head) = upload_pack_past_advertisement(&harness, "stalled");
+    let mut paused = common::pause_process_tree(harness.fixture.child.id());
+    let (done, outcome) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        let read = std::io::Write::write_all(&mut stream, &clone_request(&head))
+            .and_then(|()| std::io::Write::flush(&mut stream))
+            .and_then(|()| std::io::Read::read(&mut stream, &mut [0_u8; 1]));
+        let _ = done.send(read.map_err(|error| error.kind()));
+    });
+    let outcome = outcome
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the endpoint's timeout never reached the client");
+    paused.resume();
+    assert_eq!(outcome, Err(std::io::ErrorKind::TimedOut));
+    block_on(request.finish());
+    block_on(client.finish());
+    block_on(harness.endpoint.shutdown());
+}
+
 #[test]
 fn cli_open_rechecks_a_selected_file_after_successful_preflight() {
     let harness = CliHarness::new();
@@ -673,14 +775,16 @@ fn cli_open_rechecks_a_selected_file_after_successful_preflight() {
         Ok(_) => panic!("changed key incorrectly admitted"),
         Err(error) => error,
     };
+    // An open failure carries the endpoint's whole Failure as SshOpenFailure
+    // (1ac248ca), not a stream error.
     assert!(matches!(
         error
             .get_ref()
-            .and_then(|cause| cause.downcast_ref::<gwz_transport::stream::Error>()),
-        Some(gwz_transport::stream::Error::PeerFailed {
+            .and_then(|cause| cause.downcast_ref::<SshOpenFailure>()),
+        Some(SshOpenFailure(gwz_transport::protocol::Failure {
             code: gwz_transport::protocol::ErrorCode::Unavailable,
             ..
-        })
+        }))
     ));
     assert!(!harness.fixture.marker.exists());
     block_on(request.finish());

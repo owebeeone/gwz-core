@@ -93,8 +93,8 @@ fn the_record_root_rewrite_publishes_by_atomic_rename_and_creates_no_parent() {
         assert!(
             !commit.contains(bypass),
             "`commit` publishes through a raw std::fs writer ({bypass}); the exception carves out \
-             `FileSystem::rename` + `sync_directory` and nothing else in this denylist \
-             (the `v1_lifecycle/mod.rs` tree digest sees every byte)"
+             `FileSystem::rename` + `sync_directory` and nothing else in this denylist (no tree \
+             digest backs it since gwz-core 107aca7a)"
         );
     }
     assert!(

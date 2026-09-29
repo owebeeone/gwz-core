@@ -279,13 +279,14 @@ fn member_meta(harness: &CliHarness, id: &str) -> RequestMeta {
 
 #[test]
 fn cli_repository_refusal_is_quiet_only_for_private_members() {
-    use std::os::unix::fs::PermissionsExt;
     let harness = CliHarness::new();
     let server = git2::Repository::open_bare(&harness.fixture.repository).unwrap();
     commit(&server, "private fixture");
     let script = harness.fixture.temp.path().join("service.sh");
-    std::fs::write(&script, "#!/bin/sh\ncase \"$SSH_ORIGINAL_COMMAND\" in\n *inaccessible.git*) echo 'ERROR: Repository not found.' >&2; exit 1 ;;\n *) eval \"$SSH_ORIGINAL_COMMAND\" ;;\nesac\n").unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    crate::git::endpoint::helper_script::write_helper_script(
+        &script,
+        "case \"$SSH_ORIGINAL_COMMAND\" in\n *inaccessible.git*) echo 'ERROR: Repository not found.' >&2; exit 1 ;;\n *) eval \"$SSH_ORIGINAL_COMMAND\" ;;\nesac\n",
+    );
     let public =
         std::fs::read_to_string(harness.fixture.temp.path().join("client_ed25519.pub")).unwrap();
     std::fs::write(

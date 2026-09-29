@@ -4,8 +4,20 @@ mod local_command;
 pub use local_command::with_local_transport;
 mod request;
 mod session;
-cfg_if::cfg_if! { if #[cfg(test)] { mod tests; mod driver_tests; mod fault_tests; mod command_tests; mod fetch_preflight_tests; mod message_embedding_tests; mod https_tests; mod https_policy_tests; mod https_compat_tests; } }
-use crate::git::endpoint::ssh_local;
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        mod tests;
+        mod driver_tests;
+        mod fault_tests;
+        mod command_tests;
+        mod fetch_preflight_tests;
+        mod message_embedding_tests;
+        mod https_tests;
+        mod https_policy_tests;
+        mod https_compat_tests;
+    }
+}
+use crate::git::endpoint::{https_auth::HelperSlots, ssh_local};
 use crate::{
     RequestMeta, TransportCapabilitiesRequest, TransportCapabilitiesResponse, TransportPlacement,
     git::Git2Backend,
@@ -62,11 +74,18 @@ impl SshEndpointConfig {
             io_timeout_ms: timeout,
         })
     }
-    cfg_if::cfg_if! { if #[cfg(test)] {
-        pub(crate) fn fixture(home: PathBuf, agent: Option<PathBuf>) -> Self {
-            Self {home, agent, pool: pool::Config::default(), io_timeout_ms: 3000}
+    cfg_if::cfg_if! {
+        if #[cfg(test)] {
+            pub(crate) fn fixture(home: PathBuf, agent: Option<PathBuf>) -> Self {
+                Self {
+                    home,
+                    agent,
+                    pool: pool::Config::default(),
+                    io_timeout_ms: 3000,
+                }
+            }
         }
-    } }
+    }
 }
 // Candidate-only injection; public SSH constructors remain unchanged.
 #[derive(Clone)]
@@ -104,13 +123,19 @@ impl TransportRuntime {
     pub fn new(local: SshEndpointConfig) -> ModelResult<Self> {
         Self::build(local, None)
     }
+    /// `helper_slots` are the HTTPS helper slots of the host whose driver
+    /// builds this runtime; its sessions' endpoints share them.
     pub(crate) fn with_https(
         local: SshEndpointConfig,
         https: HttpsEndpointConfig,
+        helper_slots: HelperSlots,
     ) -> ModelResult<Self> {
-        Self::build(local, Some(https))
+        Self::build(local, Some((https, helper_slots)))
     }
-    fn build(local: SshEndpointConfig, https: Option<HttpsEndpointConfig>) -> ModelResult<Self> {
+    fn build(
+        local: SshEndpointConfig,
+        https: Option<(HttpsEndpointConfig, HelperSlots)>,
+    ) -> ModelResult<Self> {
         let enabled = https.is_some();
         let io_timeout_ms = local.io_timeout_ms;
         let connect_timeout_ms = local.pool.connect_timeout_ms;
@@ -209,15 +234,19 @@ impl TransportRuntime {
             let per_host = crate::operation::resolve_per_host(
                 policy.and_then(|value| value.max_connections_per_host),
             );
-            Some(endpoint.admit_client_request(
-                    &meta.request_id,
-                    pool::Capacity {
-                        per_user_host: per_host,
-                        per_host,
-                        total: jobs.max(256),
-                        max_requests: jobs.max(1024),
-                    },
-                ).await?)
+            Some(
+                endpoint
+                    .admit_client_request(
+                        &meta.request_id,
+                        pool::Capacity {
+                            per_user_host: per_host,
+                            per_host,
+                            total: jobs.max(256),
+                            max_requests: jobs.max(1024),
+                        },
+                    )
+                    .await?,
+            )
         } else {
             None
         };
@@ -273,8 +302,9 @@ impl CliEndpoint {
     pub(crate) fn with_https(
         config: SshEndpointConfig,
         https: HttpsEndpointConfig,
+        helper_slots: HelperSlots,
     ) -> ModelResult<(Self, TransportPort)> {
-        let (session, port) = Session::endpoint_with_https(config, Some(https))?;
+        let (session, port) = Session::endpoint_with_https(config, Some((https, helper_slots)))?;
         Ok((Self(session), port))
     }
     pub fn register_request(&self, request_id: &str) -> ModelResult<ClientRequest> {

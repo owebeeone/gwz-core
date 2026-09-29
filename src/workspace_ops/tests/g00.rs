@@ -221,6 +221,10 @@ pub(crate) fn materialize_lock_clones_missing_member_and_checks_out_recorded_com
 }
 
 #[test]
+#[allow(
+    clippy::needless_update,
+    reason = "gwz_transport_candidate adds fields"
+)]
 fn materialize_uses_the_named_fetch_remote_for_clone_identity() {
     let temp = TempDir::new("materialize-named-identity");
     let backend = Git2Backend::without_credential_helpers();
@@ -315,6 +319,10 @@ pub(crate) fn clone_workspace_clones_root_and_materializes_missing_members() {
     let invalid_target = temp.path().join("invalid-clone");
     let key = temp.path().join("unused-key");
     fs::write(&key, "unused fixture").unwrap();
+    #[allow(
+        clippy::needless_update,
+        reason = "gwz_transport_candidate adds fields"
+    )]
     let invalid_meta = crate::RequestMeta {
         transport: Some(crate::TransportOptions {
             url_scheme: None,

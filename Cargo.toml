@@ -80,7 +80,13 @@ gwz-session-host = { path = "crates/session-host", version = "0.0.8" }
 cap-fs-ext = "4"
 cap-std = "4"
 cfg-if = "1"
-git2 = { package = "gwz-git2", path = "../git2-rs", version = "=0.21.0", features = ["https", "ssh", "unstable-sha256"] }
+# `vendored-libgit2` links the fork's own libgit2, which carries the local-fetch
+# correction the family import now relies on alone (no `git fetch` fallback).
+# Without it, the fork's build script links a system `libgit2-experimental`
+# (a SHA-256 build, since `unstable-sha256` is on) in [1.9.7, 1.10.0) whenever
+# pkg-config finds one; `LIBGIT2_NO_VENDOR=1` stays the explicit opt-out
+# (tests/native_libgit2.rs).
+git2 = { package = "gwz-git2", path = "../git2-rs", version = "=0.21.0", features = ["https", "ssh", "unstable-sha256", "vendored-libgit2"] }
 taut-shape = "0.9.2"
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"

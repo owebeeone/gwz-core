@@ -260,4 +260,54 @@ mod tests {
                 .is_err()
         );
     }
+
+    #[test]
+    fn a_remote_the_target_lacks_is_missing_remote_for_get_set_and_unset() {
+        // `gwz auth identity <name>` for a name that is not a Git remote of
+        // the selected repository answers the existing `missing_remote`, and
+        // writes nothing.
+        let temp = TempDir::new("remote-identity-missing");
+        let backend = Git2Backend::without_credential_helpers();
+        handle_create_workspace(create_workspace_request(temp.path()), "create").unwrap();
+        backend
+            .add_remote(temp.path(), "origin", "ssh://git@example.invalid/root")
+            .unwrap();
+        std::fs::write(temp.path().join("key"), "fixture key path only").unwrap();
+        for (op, key) in [
+            (crate::RemoteIdentityOp::Get, None),
+            (crate::RemoteIdentityOp::Set, Some("key")),
+            (crate::RemoteIdentityOp::Unset, None),
+        ] {
+            let request = crate::RemoteIdentityRequest {
+                meta: crate::RequestMeta {
+                    selection: Some(crate::Selection {
+                        targets: vec!["@root".into()],
+                        ..Default::default()
+                    }),
+                    ..request_meta_with_workspace()
+                },
+                remote: "absent".into(),
+                op,
+                private_key_path: key.map(Into::into),
+            };
+            let error = super::handle_remote_identity(&backend, temp.path(), request, "identity")
+                .unwrap_err();
+            assert_eq!(
+                (error.code, error.message.as_str()),
+                (
+                    crate::model::ErrorCode::MissingRemote,
+                    "workspace root '@root' at '.': missing remote 'absent'"
+                ),
+                "{op:?}"
+            );
+        }
+        assert!(
+            git2::Repository::open(temp.path())
+                .unwrap()
+                .config()
+                .unwrap()
+                .get_string("remote.absent.gwzSshIdentity")
+                .is_err()
+        );
+    }
 }

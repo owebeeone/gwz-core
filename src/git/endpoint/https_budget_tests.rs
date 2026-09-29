@@ -1,5 +1,5 @@
 use super::*;
-use std::{fs, process::Command, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
@@ -16,7 +16,7 @@ fn runtime() -> tokio::runtime::Runtime {
 
 cfg_if::cfg_if! { if #[cfg(unix)] {
 #[test]
-fn delayed_helper_is_not_capped_by_one_millisecond_allocation() {
+fn delayed_helper_is_charged_to_interaction_not_allocation() {
     runtime().block_on(async {
         let server = Server::start(Arc::new(|_| {
             Box::pin(async { response(200, GitService::UploadPackAdvertisement, "ok") })
@@ -24,23 +24,20 @@ fn delayed_helper_is_not_capped_by_one_millisecond_allocation() {
         .await;
         let dir = tempfile::tempdir().unwrap();
         let helper = dir.path().join("gh");
-        fs::write(
+        // The helper outlasts the whole allocation allowance: charged to
+        // allocation it would exhaust it, charged to interaction it fits. The
+        // allowance still covers admission before the helper on a loaded host.
+        crate::git::endpoint::helper_script::write_helper_script(
             &helper,
-            "#!/bin/sh\n/bin/cat >/dev/null\n/bin/sleep 0.02\nprintf 'username=fixture\\npassword=token\\n\\n'\n",
-        )
-        .unwrap();
-        let status = Command::new("chmod")
-            .args(["+x", helper.to_str().unwrap()])
-            .status()
-            .unwrap();
-        assert!(status.success());
+            "/bin/cat >/dev/null\n/bin/sleep 0.5\nprintf 'username=fixture\\npassword=token\\n\\n'\n",
+        );
         let auth = https_auth::Config {
             executable: helper,
             environment: Vec::new(),
         };
         let mut pool = gwz_transport::pool::Config::default();
-        pool.allocation_timeout_ms = 1;
-        pool.interaction_timeout_ms = 1_000;
+        pool.allocation_timeout_ms = 250;
+        pool.interaction_timeout_ms = 5_000;
         let mut endpoint = Endpoint::new(server.config(), Some(auth), pool).unwrap();
         let mut request = input(&server, GitService::UploadPackAdvertisement);
         request.policy = AuthPolicy::Gh;
@@ -50,6 +47,37 @@ fn delayed_helper_is_not_capped_by_one_millisecond_allocation() {
             .await
             .expect("helper work must use interaction budget");
         drop(prepared);
+        assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
+    });
+}
+
+#[test]
+fn a_stale_supervisor_tick_never_expires_a_fresh_one_millisecond_allowance() {
+    runtime().block_on(async {
+        let server = Server::start(Arc::new(|_| {
+            Box::pin(async { response(200, GitService::UploadPackAdvertisement, "ok") })
+        }))
+        .await;
+        let mut pool = gwz_transport::pool::Config::default();
+        pool.allocation_timeout_ms = 1;
+        let mut endpoint = Endpoint::new(server.config(), None, pool).unwrap();
+        // The supervisor shares this current-thread runtime, so it cannot step
+        // the pool clock while the thread sleeps: its last tick is 30 ms stale.
+        std::thread::sleep(Duration::from_millis(30));
+        let destination = Destination::parse(&server.url).unwrap();
+        let lease = endpoint
+            .client
+            .pool
+            .checkout(
+                Key::https(destination.host(), destination.port()),
+                Owner::new("session", "operation"),
+                1,
+                30_000,
+                &CancellationToken::new(),
+            )
+            .await
+            .expect("admission must see the current clock, not the last tick");
+        lease.finish(Disposition::Discarded).unwrap();
         assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
     });
 }
@@ -166,13 +194,21 @@ fn physical_capacity_wait_uses_allocation_deadline() {
 
 #[test]
 fn redirects_do_not_refill_network_budget() {
+    // The allowance fits exactly one round trip and never two.
+    // Each hop's headers take at least HOP, so only a refill would let the
+    // second hop finish. The first hop and the second request's arrival share
+    // the remaining 390 ms as scheduling slack; at 40 ms against 65 ms that
+    // slack was 25 ms, which the parallel suite's load overran (35 of 100 runs
+    // beside 200 busy processes).
+    const HOP: Duration = Duration::from_millis(400);
+    const ALLOWANCE_MS: u64 = 790;
     runtime().block_on(async {
         let attempt = Arc::new(AtomicUsize::new(0));
         let count = attempt.clone();
         let server = Server::start(Arc::new(move |_| {
             let first = count.fetch_add(1, Ordering::SeqCst) == 0;
             Box::pin(async move {
-                sleep(Duration::from_millis(40)).await;
+                sleep(HOP).await;
                 if first {
                     let mut reply = response(302, GitService::UploadPackAdvertisement, "");
                     reply
@@ -189,7 +225,7 @@ fn redirects_do_not_refill_network_budget() {
             server.config(),
             None,
             gwz_transport::pool::Config::default(),
-            65,
+            ALLOWANCE_MS,
         )
         .unwrap();
         let failed = endpoint

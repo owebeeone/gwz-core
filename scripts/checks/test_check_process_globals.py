@@ -285,10 +285,11 @@ class ModuleTree(unittest.TestCase):
                              ['src/a.rs', 'src/a/nested.rs', 'src/d/e.rs', 'src/orphan.rs', 'src/x/sibling.rs'])
             self.assertEqual(result.unreached, ['src/orphan.rs'])
 
-    def test_follows_a_literal_include_and_lists_one_it_cannot_read(self):
+    def test_follows_a_literal_include_and_records_one_it_cannot_read(self):
         # Hardening from the same finding: `include!` splices a file into its
         # includer, so a literal path is followed like a `mod`, relative to the
-        # including file; any other production include is `<unparsed include>`.
+        # including file. Any other production include is recorded with its
+        # literal fragments, and fails the check closed (S-3, below).
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             write(root, {
@@ -300,10 +301,201 @@ class ModuleTree(unittest.TestCase):
                 'extra/test_only.rs': GLOBAL,
             })
             result = checker.scan(root, ['src/lib.rs'])
-            self.assertEqual(sorted(result.occurrences), [
-                ('extra/included.rs', 'static', 'O_INCLUDED'),
-                ('src/lib.rs', 'include', '<unparsed include>'),
+            self.assertEqual(sorted(result.occurrences), [('extra/included.rs', 'static', 'O_INCLUDED')])
+            self.assertEqual(result.unreadable_includes, [('src/lib.rs', 2, ('OUT_DIR', '/generated.rs'))])
+            self.assertEqual(result.unreached, [])
+
+
+class TestsDirectory(unittest.TestCase):
+    """Standing rule (operator, 2026-09-29): a crate's `tests/` directory holds no
+    production code. Any build that compiles a file outside `cfg(test)`, such as
+    the `gwz_transport_candidate` build, makes it production."""
+
+    def test_production_code_reached_under_a_crate_tests_directory_is_listed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root, {
+                'Cargo.toml': '[package]\nname = "fixture"\n',
+                'src/lib.rs': 'cfg_if::cfg_if! {\n'
+                              '    if #[cfg(gwz_transport_candidate)] {\n'
+                              '        #[path = "../tests/candidate/generated.rs"]\n'
+                              '        pub mod generated;\n'
+                              '    } else {\n'
+                              '        #[path = "generated.rs"]\n'
+                              '        pub mod generated;\n'
+                              '    }\n'
+                              '}\n'
+                              '#[cfg(unix)]\n#[path = "../tests/support/platform.rs"]\nmod platform;\n'
+                              'include!("../tests/spliced.rs");\n',
+                'src/generated.rs': '',
+                'tests/candidate/generated.rs': '',
+                'tests/support/platform.rs': '',
+                'tests/spliced.rs': '',
+            })
+            result = checker.scan(root, ['src/lib.rs'])
+            self.assertEqual(result.in_tests, [
+                ('tests/candidate/generated.rs', ('src/lib.rs',)),
+                ('tests/spliced.rs', ('src/lib.rs',)),
+                ('tests/support/platform.rs', ('src/lib.rs',)),
             ])
+
+    def test_test_only_code_may_live_under_tests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root, {
+                'Cargo.toml': '[package]\nname = "fixture"\n',
+                'src/lib.rs': '#[cfg(test)]\n#[path = "../tests/support/a.rs"]\nmod a;\n'
+                              'cfg_if::cfg_if! {\n'
+                              '    if #[cfg(all(test, unix))] {\n'
+                              '        #[path = "../tests/support/b.rs"]\n'
+                              '        mod b;\n'
+                              '    }\n'
+                              '}\n'
+                              '#[cfg(test)]\nmod tests { include!("../tests/support/c.rs"); }\n'
+                              'mod checks;\n'
+                              '#[cfg(feature = "contract-tests")]\n#[path = "../tests/support/f.rs"]\nmod f;\n',
+                'src/checks.rs': '#![cfg(test)]\n#[path = "../tests/support/d.rs"]\nmod d;\n',
+                'tests/support/a.rs': '',
+                'tests/support/b.rs': '',
+                'tests/support/c.rs': '',
+                'tests/support/d.rs': '',
+                'tests/support/f.rs': '',
+            })
+            self.assertEqual(checker.scan(root, ['src/lib.rs'], frozenset({'contract-tests'})).in_tests, [])
+            # A feature is a test build only when the allowlist names it one.
+            self.assertEqual(checker.scan(root, ['src/lib.rs']).in_tests,
+                             [('tests/support/f.rs', ('src/lib.rs',))])
+
+    def test_a_file_that_production_also_reaches_is_production(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root, {
+                'Cargo.toml': '[package]\nname = "fixture"\n',
+                'src/lib.rs': '#[cfg(test)]\nmod checks;\nmod shared;\n',
+                'src/checks.rs': '#[path = "../tests/shared.rs"]\nmod shared;\n',
+                'src/shared.rs': '#[path = "../tests/shared.rs"]\nmod inner;\n',
+                'tests/shared.rs': '',
+            })
+            self.assertEqual(checker.scan(root, ['src/lib.rs']).in_tests,
+                             [('tests/shared.rs', ('src/shared.rs',))])
+
+    def test_a_crate_tests_directory_is_the_one_beside_its_cargo_toml(self):
+        # A member crate's own `tests/` counts, whoever reaches into it. A
+        # module directory named `tests` inside `src/` is not a crate's.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root, {
+                'Cargo.toml': '[workspace]\nmembers = ["crates/*"]\n',
+                'crates/family/Cargo.toml': '[package]\nname = "family"\n',
+                'crates/family/src/lib.rs': '#[path = "../tests/fixture.rs"]\nmod fixture;\nmod view;\n',
+                'crates/family/src/view.rs': '#[path = "tests/rows.rs"]\nmod rows;\n',
+                'crates/family/src/tests/rows.rs': '',
+                'crates/family/tests/fixture.rs': '',
+                'src/lib.rs': '#[path = "../crates/family/tests/fixture.rs"]\nmod borrowed;\n',
+            })
+            result = checker.scan(root, ['src/lib.rs', 'crates/*/src/lib.rs'])
+            self.assertEqual(result.in_tests,
+                             [('crates/family/tests/fixture.rs', ('crates/family/src/lib.rs', 'src/lib.rs'))])
+
+    def test_check_fails_on_production_code_under_tests_and_no_entry_waives_it(self):
+        files = {
+            'Cargo.toml': '[package]\nname = "fixture"\n',
+            'src/lib.rs': '#[cfg(gwz_transport_candidate)]\n#[path = "../tests/generated.rs"]\nmod generated;\n',
+            'tests/generated.rs': '',
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root, files)
+            allowlist = root / 'allowlist.json'
+            allowlist.write_text(json.dumps({'roots': ['src/lib.rs'], 'entries': []}), encoding='utf-8')
+            errors, _, _ = checker.check(root, allowlist)
+            self.assertEqual(len(errors), 1, errors)
+            self.assertTrue(errors[0].startswith("TESTS tests/generated.rs: production code in a crate's "
+                                                 'tests/ directory, loaded by src/lib.rs;'), errors)
+            stderr = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+                self.assertEqual(checker.main(['--repo', str(root), '--allowlist', str(allowlist)]), 1)
+            self.assertIn('TESTS tests/generated.rs', stderr.getvalue())
+
+    # S-3 of the cross-lane cleanup's Safety review (2026-09-29): the rule failed
+    # open on an `include!` the scan cannot read and on a `cfg_attr` path.
+    # Fixtures A and B are the reviewer's.
+
+    def check_fixture(self, files, entries=()):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root, files)
+            allowlist = root / 'allowlist.json'
+            allowlist.write_text(json.dumps({'roots': ['src/lib.rs'], 'entries': list(entries)}), encoding='utf-8')
+            return checker.check(root, allowlist)[0]
+
+    def test_fixture_a_an_unreadable_include_naming_tests_fails_and_no_entry_waives_it(self):
+        files = {
+            'Cargo.toml': '[package]\nname = "f"\n',
+            'src/lib.rs': 'include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/spliced.rs"));\n',
+            'tests/spliced.rs': 'static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);\n',
+        }
+        waiver = {'path': 'src/lib.rs', 'kind': 'include', 'name': '<unparsed include>', 'disposition': 'permanent',
+                  'reason': 'probe: does a permanent include entry waive the tests/ rule?'}
+        tests_error = ("TESTS src/lib.rs:1: an include! the scan cannot read names a tests/ directory "
+                       "('CARGO_MANIFEST_DIR', '/tests/spliced.rs'); no entry waives it")
+        self.assertEqual(self.check_fixture(files), [tests_error])
+        # The entry waives nothing, and is refused itself.
+        errors = self.check_fixture(files, [waiver])
+        self.assertEqual(len(errors), 2, errors)
+        self.assertIn(tests_error, errors)
+        self.assertTrue(any(error.startswith('INCL  include <unparsed include> in src/lib.rs: an include! the '
+                                             'scan cannot read is never allowlisted') for error in errors), errors)
+
+    def test_an_unreadable_include_anywhere_in_production_fails_closed(self):
+        # The scan cannot see what it splices in, globals included, so it fails
+        # whatever the path; a literal path is followed instead.
+        errors = self.check_fixture({
+            'src/lib.rs': 'include!(concat!(env!("OUT_DIR"), "/generated.rs"));\n'
+                          '#[cfg(test)]\nmod tests { include!(concat!(env!("OUT_DIR"), "/t.rs")); }\n',
+        })
+        self.assertEqual(errors, ["INCL  src/lib.rs:1: an include! the scan cannot read ('OUT_DIR', "
+                                  "'/generated.rs'); spell its path as a literal, which the scan follows"])
+
+    def test_fixture_b_a_cfg_attr_path_into_tests_is_followed_and_fails(self):
+        errors = self.check_fixture({
+            'Cargo.toml': '[package]\nname = "f"\n',
+            'src/lib.rs': '#[cfg_attr(not(test), path = "../tests/prod.rs")]\nmod prod;\n',
+            'tests/prod.rs': 'static COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);\n',
+        })
+        self.assertIn("TESTS tests/prod.rs: production code in a crate's tests/ directory, loaded by src/lib.rs; "
+                      'move it under src/', errors)
+        # The file is scanned as production as well: its static is new.
+        self.assertTrue(any(error.startswith('NEW   static COUNTER') for error in errors), errors)
+
+    def test_a_cfg_attr_path_is_production_unless_its_predicate_implies_test(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            write(root, {
+                'Cargo.toml': '[package]\nname = "fixture"\n',
+                'src/lib.rs': '#[cfg_attr(test, path = "../tests/support/probe.rs")]\nmod probe;\n'
+                              '#[cfg_attr(unix, path = "../tests/support/unix.rs")]\nmod platform;\n'
+                              '#[cfg_attr(not(test), allow(dead_code), path = "../tests/support/two.rs")]\nmod two;\n'
+                              '#[cfg_attr(unix, cfg_attr(not(test), path = "../tests/support/nested.rs"))]\n'
+                              'mod nested;\n'
+                              '#[cfg_attr(not(test), path = "live.rs")]\nmod swapped;\n',
+                # Default files: `probe.rs` loads whenever `test` does not hold,
+                # `swapped.rs` only when `not(test)` does not, in test builds.
+                'src/probe.rs': 'static PROBE: Mutex<u8> = Mutex::new(0);\n',
+                'src/swapped.rs': 'static SWAPPED: Mutex<u8> = Mutex::new(0);\n',
+                'src/live.rs': '',
+                'tests/support/probe.rs': '',
+                'tests/support/unix.rs': '',
+                'tests/support/two.rs': '',
+                'tests/support/nested.rs': '',
+            })
+            result = checker.scan(root, ['src/lib.rs'])
+            self.assertEqual(result.in_tests, [
+                ('tests/support/nested.rs', ('src/lib.rs',)),
+                ('tests/support/two.rs', ('src/lib.rs',)),
+                ('tests/support/unix.rs', ('src/lib.rs',)),
+            ])
+            self.assertEqual(sorted(result.occurrences), [('src/probe.rs', 'static', 'PROBE')])
             self.assertEqual(result.unreached, [])
 
 
@@ -525,7 +717,16 @@ class Dispositions(unittest.TestCase):
                            ('src/verified_write.rs', 'TEMP_SEQUENCE'),
                            ('src/workspace_ops/merge/v1_lifecycle/store/rewrite.rs', 'TEMP_SEQUENCE')):
             self.assertNotIn((path, 'static', name), core)
-        self.assertEqual(len(core), 26)
+        # 26 -> 25 (2026-09-29): the local-import Git fallback's spawn left, below.
+        # 25 -> 24 (2026-09-29): the HTTPS helper `SLOTS` semaphore left; its budget
+        # is the host's now (CS6.5, pulled forward).
+        self.assertEqual(len(core), 24)
+
+    def test_the_local_import_git_fallback_spawn_is_gone(self):
+        # GwzNoFallbackPlan.md §4: `fetch_anonymous` runs on the libgit2 fork
+        # alone, so its `git fetch` fallback and that spawn's entry are gone.
+        core, _ = listed(checker.DEFAULT_ALLOWLIST)
+        self.assertNotIn(('src/git/gitbackend/transport.rs', 'process', 'Command::new("git")'), core)
 
     def test_crossing_is_gone(self):
         # Crate map §6 step 4: the gate moved to gwz-session-host, where

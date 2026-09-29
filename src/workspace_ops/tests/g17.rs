@@ -3,6 +3,10 @@ use crate::git::{Git2Backend, GitBackend};
 use super::*;
 
 #[test]
+#[allow(
+    clippy::needless_update,
+    reason = "gwz_transport_candidate adds fields"
+)]
 fn remote_tag_operations_refuse_unused_identity_overrides() {
     let temp = TempDir::new("tag-unused-identity");
     let backend = Git2Backend::without_credential_helpers();

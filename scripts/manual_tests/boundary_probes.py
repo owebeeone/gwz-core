@@ -769,6 +769,8 @@ class CheckedArtifactBoundaryTest(unittest.TestCase):
         target = Path(temporary.name) / "src"
         shutil.copytree(SOURCE, target)
         copy_probe_dir(ROOT / "protocol", target.parent / "protocol")
+        # The gate follows the approved test-only `#[path]` edges into tests/.
+        copy_probe_dir(ROOT / "tests", target.parent / "tests")
         shutil.copy2(ROOT / "Cargo.toml", target.parent / "Cargo.toml")
         return temporary, target
 

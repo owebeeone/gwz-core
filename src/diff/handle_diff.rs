@@ -599,6 +599,10 @@ impl super::MaterializationOracle for FsMaterializationOracle {
 }
 
 /// Build the response envelope. Diff is read-only, so aggregate status is `Ok`.
+#[allow(
+    clippy::needless_update,
+    reason = "gwz_transport_candidate adds fields"
+)]
 fn envelope(request: &DiffRequest) -> ResponseEnvelope {
     ResponseEnvelope {
         meta: ResponseMeta {

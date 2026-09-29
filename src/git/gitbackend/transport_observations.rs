@@ -64,6 +64,10 @@ impl TransportObservations {
             None => crate::TransportSelectionSource::Ambient,
         };
         #[allow(unused_mut)]
+        #[allow(
+            clippy::needless_update,
+            reason = "gwz_transport_candidate adds fields"
+        )]
         let row = crate::TransportObservation {
             repository_path: path.to_string_lossy().into_owned(),
             remote: remote.into(),

@@ -51,8 +51,8 @@ def _candidate_codec(manifest_dir: str | None):
     core = workspace / "gwz-core"
     py_src = workspace / "gwz-py" / "src"
     taut_src = workspace / "taut" / "src"
-    candidate_schema = core / "tests" / "transport_consumer" / "protocol" / "candidate.taut.py"
-    candidate_generated = core / "tests" / "transport_consumer" / "candidate" / "candidate_generated.py"
+    candidate_schema = core / "protocol" / "candidate" / "candidate.taut.py"
+    candidate_generated = core / "protocol" / "candidate" / "candidate_generated.py"
     core_schema = core / "protocol" / "gwz.taut.py"
     owner_schema = workspace / "gwz-transport" / "protocol" / "transport.ir.json"
     for path in (py_src, taut_src, candidate_schema, candidate_generated, core_schema, owner_schema):

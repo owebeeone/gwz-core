@@ -119,6 +119,7 @@ fn cancelled_opened_waiting_for_mux_capacity_is_replaced_before_handoff() {
                 3_000,
                 authority,
                 "endpoint".into(),
+                HelperSlots::new(),
             )
             .unwrap();
             let (mut mux_endpoint, mut initiator, limits) = mux_pair();

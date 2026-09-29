@@ -65,6 +65,51 @@ pub(crate) fn pull_head_dirty_member_blocks_all_selected_members_before_mutation
 }
 
 #[test]
+pub(crate) fn pull_head_from_a_remote_no_target_has_answers_missing_remote_before_any_fetch() {
+    // A `--remote` name that is a Git remote of neither the root nor the
+    // member is the existing `missing_remote` (gwz-dev
+    // `dev-docs/GwzLocalCloneDesign.md` §6, "Neither → existing
+    // `missing_remote`"). The SSH identity check that runs before any fetch
+    // looks the remote up first, and must give that answer rather than a Git
+    // failure.
+    let temp = TempDir::new("pull-missing-remote");
+    let backend = Git2Backend::new();
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    let fixture = RemoteFixture::new("pull-missing-remote-member");
+    let first = fixture.commit_and_push("README.md", "one", "initial", &backend);
+    let app = temp.path().join("repos/app");
+    backend.clone_repo(fixture.remote_url(), &app).unwrap();
+    fixture.commit_and_push("README.md", "two", "second", &backend);
+    write_pull_fixture(
+        temp.path(),
+        vec![("mem_app", "repos/app", fixture.remote_url(), &first)],
+    );
+    let lock_before = read_lock(temp.path()).unwrap();
+    let request = crate::PullHeadRequest {
+        meta: crate::RequestMeta {
+            policy: Some(crate::OperationPolicy {
+                remote: Some("A".to_owned()),
+                ..Default::default()
+            }),
+            ..request_meta_with_workspace()
+        },
+    };
+
+    let error = handle_pull_head(&backend, temp.path(), request, "op_pull").unwrap_err();
+
+    assert_eq!(
+        (error.code, error.message.as_str()),
+        (ErrorCode::MissingRemote, "missing remote 'A'")
+    );
+    assert_eq!(
+        backend.read_ref(&app, "refs/remotes/origin/main").unwrap(),
+        Some(first.clone())
+    );
+    assert_eq!(backend.head(&app).unwrap().commit, Some(first));
+    assert_eq!(read_lock(temp.path()).unwrap(), lock_before);
+}
+
+#[test]
 pub(crate) fn pull_head_unreachable_remote_blocks_fetch_of_all_members() {
     // Q1: a member whose remote is unreachable fails the ls_remote validation pass
     // BEFORE any fetch, so a sibling with a good remote is never fetched.

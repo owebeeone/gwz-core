@@ -3,6 +3,9 @@
 Date: 2026-09-21. Status: **instrumented macOS qualification accepted; activation pending**.
 Authority: [Q1 gates](GwzGitLibraryQualification.md),
 [accepted Q2 composition](GwzGitLibraryCandidate.md), operator continuation.
+2026-09-29: of the separate gates this report leaves open, the local-fetch
+fallback removal is done, by operator decision. The record is in
+[the no-fallback plan](GwzNoFallbackPlan.md) §4. The other gates stay open.
 
 ## Scope
 

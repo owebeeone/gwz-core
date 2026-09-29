@@ -4,6 +4,8 @@
 mod ssh_channel;
 #[path = "../../../src/git/endpoint/ssh_connection.rs"]
 mod ssh_connection;
+#[path = "../../../src/git/endpoint/git_turns.rs"]
+mod git_turns;
 #[path = "../../../src/git/endpoint/ssh_pump.rs"]
 mod ssh_pump;
 

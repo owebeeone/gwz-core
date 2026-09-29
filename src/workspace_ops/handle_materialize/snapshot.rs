@@ -242,6 +242,10 @@ pub(crate) fn created_by(context: &crate::operation::OperationContext) -> Create
     }
 }
 
+#[allow(
+    clippy::needless_update,
+    reason = "gwz_transport_candidate adds fields"
+)]
 pub fn handle_pull_snapshot<B>(
     backend: &B,
     start: &Path,

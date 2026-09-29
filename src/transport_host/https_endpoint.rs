@@ -2,6 +2,7 @@
 //! only admits messages and polls completion; an owned runtime drives HTTP.
 use super::{Arc, Duration, HttpsEndpointConfig, ModelResult, pool, unavailable};
 use crate::git::endpoint::{
+    https_auth::HelperSlots,
     https_policy,
     https_worker::{Budget, ChallengeLease, Client, Endpoint as HttpEndpoint, Input, Prepared},
     placement_endpoint::{EndpointError, Outbound},
@@ -66,6 +67,7 @@ impl HttpsEndpoint {
         io_ms: u64,
         authority: Authority,
         endpoint: String,
+        helper_slots: HelperSlots,
     ) -> ModelResult<Self> {
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let (shutdown, stop) = oneshot::channel();
@@ -77,7 +79,7 @@ impl HttpsEndpoint {
                 Err(_) => { let _ = ready_tx.send(Err(())); return; }
             };
             runtime.block_on(async move {
-                let mut endpoint = match HttpEndpoint::with_authority(config.tls, config.auth, pool, io_ms, authority) {
+                let mut endpoint = match HttpEndpoint::with_authority(config.tls, config.auth, pool, io_ms, authority, helper_slots) {
                     Ok(endpoint) => endpoint,
                     Err(_) => { let _ = ready_tx.send(Err(())); return; }
                 };

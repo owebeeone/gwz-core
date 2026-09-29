@@ -1,8 +1,10 @@
-//! Lane 1-A characterization of stock libgit2 local fetches.
+//! Lane 1-A characterization of libgit2 local fetches, now the fork's libgit2
+//! 1.9.7 with the native local-fetch correction.
 //!
 //! These tests call libgit2 directly before calling the current backend.  The
-//! direct call records the native result; the backend call records whether its
-//! existing compatibility path still completes the same requested transfer.
+//! direct call records the native result; the backend call records that the
+//! backend's route, now that same native fetch with no Git fallback
+//! (2026-09-29), completes the same requested transfer.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -317,7 +319,7 @@ fn native_and_backend_matrix_covers_requested_and_receiver_noncommit_refs() {
             let report = native_report(source_kind, receiver_kind, &native, &receiver);
             assert!(
                 native.is_ok(),
-                "stock libgit2 completed the matrix row: {report}"
+                "the native route completed the matrix row: {report}"
             );
             if native.is_ok() {
                 assert_eq!(
@@ -418,7 +420,16 @@ fn native_multi_refspec_errors_record_partial_refs_and_fetch_head_effects() {
 }
 
 #[test]
-fn native_same_tree_receiver_ref_reproduces_noncommittish_error() {
+fn native_same_tree_receiver_ref_does_not_block_the_fetch() {
+    // The receiver holds a direct ref to the tree it shares with the source,
+    // and the source's new commit has that same tree. Stock libgit2 fed the
+    // ref to its commit negotiation and failed the fetch with `object is not
+    // a committish` (InvalidSpec, Invalid). The fork's libgit2 1.9.7 carries
+    // the native local-fetch correction (GwzNoFallbackNativeFix.md), which
+    // skips such a ref, so the native route now publishes the requested
+    // commit and leaves the ref as it was. The backend's route, that same
+    // native fetch since its Git fallback was removed, completes it too.
+    assert_eq!(git2::Version::get().libgit2_version(), (1, 9, 7));
     let temp = TempDir::new("noncommit-shared-tree");
     let source = temp.path().join("source");
     let native_receiver = temp.path().join("receiver-native");
@@ -456,10 +467,23 @@ fn native_same_tree_receiver_ref_reproduces_noncommittish_error() {
     let spec = format!("+refs/heads/main:{IMPORT_REF}");
     let native = native_fetch(&native_receiver, &source, std::slice::from_ref(&spec));
     eprintln!("shared-tree native={native:?} expected={advanced}");
-    let native_error = native.expect_err("shared receiver tree must trigger native error");
-    assert_eq!(native_error.code, "InvalidSpec");
-    assert_eq!(native_error.class, "Invalid");
-    assert_eq!(native_error.message, "object is not a committish");
+    native.unwrap_or_else(|error| panic!("the native route completes the fetch: {error:?}"));
+    let receiver = git2::Repository::open(&native_receiver).expect("native receiver");
+    assert_eq!(
+        receiver
+            .refname_to_id(IMPORT_REF)
+            .ok()
+            .map(|oid| oid.to_string()),
+        Some(advanced.clone()),
+        "the native route published the requested commit"
+    );
+    assert_eq!(
+        receiver
+            .refname_to_id("refs/codex/checkpoints/tree")
+            .expect("tree checkpoint"),
+        shared_tree,
+        "the receiver's tree ref is left as it was"
+    );
 
     let backend = Git2Backend::without_credential_helpers();
     backend
@@ -468,7 +492,7 @@ fn native_same_tree_receiver_ref_reproduces_noncommittish_error() {
             &source.to_string_lossy(),
             &[spec.as_str()],
         )
-        .expect("backend fallback for shared receiver tree");
+        .expect("backend route for shared receiver tree");
     assert_eq!(
         backend.read_ref(&backend_receiver, IMPORT_REF).unwrap(),
         Some(advanced)

@@ -339,11 +339,14 @@ fn h_bare_attributes_and_info_override_match_native() {
     assert_eq!(baseline_info_bytes, None);
 }
 
-fn assert_bare_current_rows(
-    current: &[(String, Result<Vec<Oid>, String>)],
-    native: &[(String, Vec<Oid>)],
-    label: &str,
-) {
+/// A pathspec and the commit ids native Git lists for it.
+type NativeRow = (String, Vec<Oid>);
+
+/// A pathspec and the commit ids the current engine lists for it, or its
+/// refusal.
+type CurrentRow = (String, Result<Vec<Oid>, String>);
+
+fn assert_bare_current_rows(current: &[CurrentRow], native: &[NativeRow], label: &str) {
     assert_eq!(current.len(), native.len(), "{label} row count");
     for ((current_spec, current_ids), (native_spec, native_ids)) in current.iter().zip(native) {
         assert_eq!(current_spec, native_spec, "{label} pathspec");
@@ -354,13 +357,7 @@ fn assert_bare_current_rows(
     }
 }
 
-fn bare_attribute_rows(
-    workspace: &Path,
-    bare: &Path,
-) -> (
-    Vec<(String, Vec<Oid>)>,
-    Vec<(String, Result<Vec<Oid>, String>)>,
-) {
+fn bare_attribute_rows(workspace: &Path, bare: &Path) -> (Vec<NativeRow>, Vec<CurrentRow>) {
     let mut native_rows = Vec::new();
     let mut current_rows = Vec::new();
     [":(attr:gwz-path)bare/src", ":(attr:!gwz-path)bare/src"]

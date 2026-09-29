@@ -12,7 +12,7 @@ use gwz_transport::{
 };
 use std::{
     future::Future,
-    io::{self, Read},
+    io::{self, Read, Write},
     pin::pin,
     sync::{
         Arc,
@@ -232,14 +232,16 @@ fn carrier_drop_wakes_blocking_open() {
         Err(error) => error,
     };
     assert_eq!(error.kind(), io::ErrorKind::Other);
+    // An open failure carries the endpoint's whole Failure as SshOpenFailure
+    // (1ac248ca), not a stream error.
     assert!(matches!(
         error
             .get_ref()
-            .and_then(|cause| cause.downcast_ref::<gwz_transport::stream::Error>()),
-        Some(gwz_transport::stream::Error::PeerFailed {
+            .and_then(|cause| cause.downcast_ref::<SshOpenFailure>()),
+        Some(SshOpenFailure(gwz_transport::protocol::Failure {
             code: gwz_transport::protocol::ErrorCode::CarrierLost,
             ..
-        })
+        }))
     ));
 }
 
@@ -360,14 +362,16 @@ fn cancellation_wakes_open_and_late_terminals_cannot_close_sibling_binding() {
         Err(error) => error,
     };
     assert_eq!(error.kind(), io::ErrorKind::Other);
+    // An open failure carries the endpoint's whole Failure as SshOpenFailure
+    // (1ac248ca), not a stream error.
     assert!(matches!(
         error
             .get_ref()
-            .and_then(|cause| cause.downcast_ref::<gwz_transport::stream::Error>()),
-        Some(gwz_transport::stream::Error::PeerFailed {
+            .and_then(|cause| cause.downcast_ref::<SshOpenFailure>()),
+        Some(SshOpenFailure(gwz_transport::protocol::Failure {
             code: gwz_transport::protocol::ErrorCode::Cancelled,
             ..
-        })
+        }))
     ));
 
     // Deliver stale endpoint terminals directly at the host port.  The mux
@@ -393,6 +397,84 @@ fn cancellation_wakes_open_and_late_terminals_cannot_close_sibling_binding() {
         .join()
         .expect("sibling worker")
         .expect("sibling stream");
+}
+
+#[test]
+fn a_stale_client_cancel_after_the_seal_never_closes_the_session() {
+    let harness = Harness::new(&[("first", "operation-1")]);
+    let pending = harness.open("first", "operation-1", Arc::new(|_| {}));
+    let open = next_host(&harness);
+    wait_future(harness.peer.deliver(open.clone())).expect("peer open delivery");
+    harness
+        .peer_owner
+        .send("first", &harness.opened(&open).1)
+        .expect("peer opened");
+    let opened = wait_future(harness.peer.next_message())
+        .expect("peer opened result")
+        .expect("peer opened message");
+    wait_future(harness.host.deliver(opened)).expect("host opened delivery");
+    let stream = pending.join().expect("open worker").expect("opened stream");
+
+    // The placement thread runs late: the client's own cancel is still queued
+    // when the seal hands cancellation to the mux and the endpoint's terminal
+    // retires the stream. Forwarding it then must not fail the whole session.
+    harness.session.hold_pump_for_test(true);
+    stream.cancel();
+    harness.session.seal("first");
+    let cancel = next_host(&harness);
+    assert_eq!(cancel.1.kind, MessageKind::Cancel);
+    wait_future(harness.peer.deliver(cancel)).expect("peer cancellation");
+    wait_future(harness.host.deliver(harness.late_closed(&open))).expect("endpoint terminal");
+    let pumps = harness.session.pumps_for_test();
+    harness.session.hold_pump_for_test(false);
+    let deadline = Instant::now() + WAIT;
+    while harness.session.pumps_for_test() == pumps {
+        assert!(Instant::now() < deadline, "placement thread stalled");
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        !harness.session.is_closed(),
+        "a stale client cancel closed the session"
+    );
+}
+
+#[test]
+fn a_client_message_queued_before_the_endpoints_terminal_never_closes_the_session() {
+    let harness = Harness::new(&[("first", "operation-1")]);
+    let pending = harness.open("first", "operation-1", Arc::new(|_| {}));
+    let open = next_host(&harness);
+    wait_future(harness.peer.deliver(open.clone())).expect("peer open delivery");
+    harness
+        .peer_owner
+        .send("first", &harness.opened(&open).1)
+        .expect("peer opened");
+    let opened = wait_future(harness.peer.next_message())
+        .expect("peer opened result")
+        .expect("peer opened message");
+    wait_future(harness.host.deliver(opened)).expect("host opened delivery");
+    let mut stream = pending.join().expect("open worker").expect("opened stream");
+
+    // The mux retires the stream's route as soon as it admits the endpoint's
+    // terminal, but the pump hands that terminal to the stream only after the
+    // same pass has forwarded the stream's queued client messages. One such
+    // message is stale; forwarding it must not fail the whole session. The
+    // wait outlasts the stream's 100 ms write coalescing, so the pump's next
+    // pass emits the client's data.
+    harness.session.hold_pump_for_test(true);
+    stream.write_all(b"0000").expect("client write");
+    wait_future(harness.host.deliver(harness.failed(&open, None))).expect("endpoint terminal");
+    thread::sleep(Duration::from_millis(250));
+    let pumps = harness.session.pumps_for_test();
+    harness.session.hold_pump_for_test(false);
+    let deadline = Instant::now() + WAIT;
+    while harness.session.pumps_for_test() == pumps {
+        assert!(Instant::now() < deadline, "placement thread stalled");
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        !harness.session.is_closed(),
+        "a client message queued before the endpoint's terminal closed the session"
+    );
 }
 
 #[test]

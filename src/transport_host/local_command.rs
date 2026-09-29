@@ -1,7 +1,7 @@
 //! Candidate-only synchronous command embedding for the local alpha.
 use super::{
-    CleanupReport, HttpsEndpointConfig, SshEndpointConfig, TransportRequest, TransportRuntime,
-    invalid, unavailable,
+    CleanupReport, HelperSlots, HttpsEndpointConfig, SshEndpointConfig, TransportRequest,
+    TransportRuntime, invalid, unavailable,
 };
 use crate::git::endpoint::{https_auth, https_connection};
 use crate::{RequestMeta, git::Git2Backend, model::ModelResult};
@@ -19,7 +19,9 @@ pub fn with_local_transport<T>(
         .build()
         .map_err(|_| unavailable("local transport executor unavailable"))?;
     let (ssh, https) = environment_config()?;
-    let runtime = TransportRuntime::with_https(ssh, https)?;
+    // The command is the driver: its host's HTTPS helper slots are created
+    // once here and shared by the endpoints of the sessions it opens.
+    let runtime = TransportRuntime::with_https(ssh, https, HelperSlots::new())?;
     let request = executor.block_on(runtime.request(meta, operation))?;
     let mut command = Command {
         executor,

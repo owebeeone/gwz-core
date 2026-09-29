@@ -287,6 +287,7 @@ impl ChannelResource for NativeResource {
                 } = authenticated;
                 let channel = SshChannel::new(connection, service, path)?;
                 let mut pump = SshPump::new(stream, endpoint, channel, 65_536, 65_536);
+                pump.track_turns(service);
                 let exchange_facts = if self.exchanges == 0 {
                     facts.clone()
                 } else {

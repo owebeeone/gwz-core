@@ -12,6 +12,9 @@ The two initial P2 findings were closed in one merged documentation remediation.
 No interface freeze, member provisioning, dependency switch or publication is
 claimed. This acceptance annotation does not change the reviewed plan body.
 
+**2026-09-29: lane 1's fallback is removed**, by operator decision. §4 ends with
+the removal record. Lanes 3 and 4 still launch Git.
+
 ## Operator direction — separate Rust Git library (2026-09-20)
 
 Design follow-up: [GwzGitLibraryDesign](GwzGitLibraryDesign.md) proposes the
@@ -219,10 +222,60 @@ to incomplete objects. Cover empty receivers, unrelated histories, repeated
 imports and relevant family preservation cases. Measure representative large
 imports if selecting a different pack algorithm. Remove the error-text trigger
 and `fetch_anonymous_with_git` after the replacement passes with Git unavailable.
+(Removed 2026-09-29; see the removal record below.)
 
 Deliverable: investigation/route decision, regression tests, implemented route,
 and an explicit result for `FETCH_HEAD` preservation. If choosing C changes,
 coordinate their distributable source pin with lane 2.
+
+### Removal record (2026-09-29)
+
+The operator decided on 2026-09-29 to remove the dead Git CLI fallback now
+rather than defer it. `fetch_anonymous` in `src/git/gitbackend/transport.rs` now
+returns libgit2's anonymous local fetch alone and maps any failure to
+`GitCommandFailed`. The `object is not a committish` trigger and
+`fetch_anonymous_with_git` are gone, and so is the fallback spawn's entry in
+`scripts/checks/process_globals_allowlist.json`.
+
+- **Basis.** gwz-core `26b30ca6` (2026-09-23) made production `git2` the fork
+  `gwz-git2` (`../git2-rs`, libgit2 1.9.7). The fork's Rust candidate `4c1caab`
+  pins the native local-fetch correction, C backport `b172e3d`
+  ([NativeFix](GwzNoFallbackNativeFix.md)). With it, the native fetch completes
+  every row of `src/local_clone/tests/transport_noncommit.rs`. That includes the
+  shared-tree receiver hint that fails stock libgit2 with
+  `object is not a committish`. No test path reached the fallback any more;
+  that bounds the tested paths, not every user input.
+- **Git unavailable to the fallback.** The gate above was checked with a `git`
+  stub first on `PATH`.
+  - The stub logged every call. On the fallback's exact arguments,
+    `fetch --no-write-fetch-head --no-tags`, it failed loudly with exit 97.
+    Every other call went to Git 2.52.0, because fixtures use Git.
+  - The suites: `local_clone::`, `git::`, `workspace_ops::`, and gwz-cli's
+    `tests/local_family_workflows.rs`, whose binary runs `gwz merge --remote`.
+    `workspace_ops::` ran without the fake-Git groups that `scripts/run_tests.py`
+    runs on their own. All ran with `GWZ_TEST_GIT=real`, before the removal and
+    after it.
+  - Before: 145, 190, 911 and 10 tests passed. One `workspace_ops::` scan test
+    failed for an unrelated reason: it did not yet list the candidate protocol
+    file that had just moved into `src/protocol/`. The stub logged 2,833 calls.
+    Among them were the product's own `git commit` spawns, which find `git` on
+    `PATH` exactly as the fallback did. None was a `fetch`, and none was the
+    fallback's.
+  - After: 145, 190, 912 and 10 tests passed, the scan test's list corrected.
+    The stub again logged 2,833 calls, none a `fetch` or the fallback's.
+- **Not claimed.** Two earlier gates named prerequisites to this removal:
+  - [NativeFix](GwzNoFallbackNativeFix.md) named type-consistency hardening.
+  - [Qualification](GwzGitLibraryQualification.md) L1 kept tag type,
+    missing-target, ref/`FETCH_HEAD`, cancellation and partial-outcome
+    characterization.
+
+  Neither was done first; the operator's decision takes the removal without
+  them, and they remain open as hardening. A native failure that still reads
+  `object is not a committish` now fails the import rather than rerunning
+  through Git. The stub logs are not archived: `gwz-core-evidence` was outside
+  this change.
+- **Still open.** Git is still launched for `commit`, `tag`, `tag -d` and
+  path-filtered `log` (lanes 3 and 4).
 
 ## 5. Lane 2 — Finish the safe per-remote Rust API
 

@@ -1,4 +1,7 @@
-use super::ssh_channel::SshChannel;
+use super::{
+    git_turns::GitTurns,
+    ssh_channel::{GitService, SshChannel},
+};
 use gwz_transport::{
     protocol::{Disposition, Effect, Envelope, ErrorCode, Facts, Failure, MessageKind},
     stream::{Error as StreamError, IoState, MessageEndpoint, Snapshot, Stream},
@@ -96,6 +99,8 @@ pub(crate) struct SshPump<C: ChannelIo> {
     opened: bool,
     invalidated: bool,
     facts: Facts,
+    /// Whose turn the Git exchange is in, when the host asked to know.
+    turns: GitTurns,
 }
 impl<C: ChannelIo> SshPump<C> {
     pub(crate) fn new(
@@ -131,7 +136,14 @@ impl<C: ChannelIo> SshPump<C> {
             opened: false,
             invalidated: false,
             facts: Facts::default(),
+            turns: GitTurns::untracked(),
         }
+    }
+    /// Read the exchange's pkt-line framing, so that the stall clock pauses
+    /// while the server waits for the client (GwzRemoteTransportDesign §10.1).
+    /// Without it every live moment is `Network`.
+    pub(crate) fn track_turns(&mut self, service: GitService) {
+        self.turns = GitTurns::new(service);
     }
     pub(crate) fn set_facts(&mut self, facts: Facts) {
         self.facts = facts;
@@ -159,7 +171,11 @@ impl<C: ChannelIo> SshPump<C> {
             return Err(PumpError::Stream(error));
         }
         if let Some(payload) = payload {
+            self.turns.client_bytes(&payload);
             self.forward.extend(payload);
+        }
+        if kind == MessageKind::EndWrite {
+            self.turns.client_end();
         }
         if kind == MessageKind::Close {
             self.close_received = true;
@@ -288,8 +304,10 @@ impl<C: ChannelIo> SshPump<C> {
                 self.stdout_eof = true;
             }
             Ok(count) => {
+                self.report_network()?;
                 self.record_progress(count)?;
                 self.saw_stdout = true;
+                self.turns.server_bytes(&bytes[..count]);
                 self.reverse.extend(&bytes[..count]);
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
@@ -361,7 +379,9 @@ impl<C: ChannelIo> SshPump<C> {
                     return Ok(());
                 }
                 Ok(count) => {
+                    self.report_network()?;
                     self.record_progress(count)?;
+                    self.turns.server_stderr();
                     let remaining = self.stderr_cap.saturating_sub(self.stderr.len());
                     self.stderr_truncated |= count > remaining;
                     self.stderr
@@ -420,6 +440,10 @@ impl<C: ChannelIo> SshPump<C> {
             && self.stderr_eof
         {
             IoState::Backpressure
+        } else if self.forward.is_empty() && self.reverse.is_empty() && self.turns.clients_turn() {
+            // The server has finished its turn and the client has it: think
+            // time does not start the stall clock.
+            IoState::Idle
         } else {
             IoState::Network
         };
@@ -428,19 +452,36 @@ impl<C: ChannelIo> SshPump<C> {
             .map_err(PumpError::Stream)?;
         Ok(())
     }
-    fn invalidate_after_error(&mut self) {
+    /// Backend output is the server's turn: it may end an `Idle` the tick
+    /// began with, and its progress is only accepted in `Network`.
+    fn report_network(&self) -> Result<(), PumpError> {
+        if self.close_received {
+            return Ok(());
+        }
+        self.endpoint
+            .set_io_state(IoState::Network)
+            .map_err(PumpError::Stream)
+    }
+    /// Abandon the physical channel. A stream that ended on its own keeps its
+    /// terminal message (the I/O clock's Timeout, say) for the peer: a bridged
+    /// exchange completes only once that message is delivered, and the peer's
+    /// reads have no deadline of their own.
+    fn retire_channel(&mut self) {
         self.forward.clear();
         self.reverse.clear();
         self.invalidated = true;
-        self.endpoint.disconnect();
         self.channel.abort();
         let _ = self.channel.force_dispose();
+    }
+    fn invalidate_after_error(&mut self) {
+        self.retire_channel();
+        self.endpoint.disconnect();
     }
     fn tick_inner(&mut self, cx: &mut Context<'_>) -> Result<(), PumpError> {
         let snapshot = self.endpoint.stats();
         if snapshot.terminal {
             if !self.close_completed {
-                self.invalidate_after_error();
+                self.retire_channel();
             }
             return Ok(());
         }

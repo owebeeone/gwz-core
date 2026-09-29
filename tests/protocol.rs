@@ -459,10 +459,18 @@ fn merge_request_and_response_round_trip_reserved_lifecycle_shape() {
     // aa and a trailing `0a f6` (slot 10 = null) is appended. MEASURED
     // additive: every pre-existing slot is byte-identical.
     //   was: a901a901697265715f6d65726765026667777a2e763003f604f605f606f607f608f609f602000369666561747572652f7804f6050006f607f608f609f6
-    assert_eq!(
-        hex,
-        "aa01a901697265715f6d65726765026667777a2e763003f604f605f606f607f608f609f602000369666561747572652f7804f6050006f607f608f609f60af6"
-    );
+    cfg_if::cfg_if! {
+        if #[cfg(gwz_transport_candidate)] {
+            // The transport candidate's RequestMeta adds `transport_message`
+            // (tag 10). taut's encoder always writes a declared key, so absent
+            // it is `0a f6` (taut ir/model.py): RequestMeta's header grows from
+            // a9 to aa and every other byte is production's.
+            const EXPECTED: &str = "aa01aa01697265715f6d65726765026667777a2e763003f604f605f606f607f608f609f60af602000369666561747572652f7804f6050006f607f608f609f60af6";
+        } else {
+            const EXPECTED: &str = "aa01a901697265715f6d65726765026667777a2e763003f604f605f606f607f608f609f602000369666561747572652f7804f6050006f607f608f609f60af6";
+        }
+    }
+    assert_eq!(hex, EXPECTED);
     let response = gwz_core::MergeResponse {
         response: response_envelope("req-merge", ActionKind::Merge),
         merge_id: Some("merge_0001".to_owned()),
@@ -1853,10 +1861,7 @@ fn taut_command_for_python(root: &Path, python: &str) -> Command {
 
 fn taut_python_command_for_python(root: &Path, python: &str) -> Command {
     let mut command = Command::new(python);
-    let taut_src = root
-        .parent()
-        .expect("gwz-core should have a parent")
-        .join("taut/src");
+    let taut_src = taut_source(root);
     command
         .current_dir(root)
         .env("PYTHONUTF8", "1")
@@ -1864,6 +1869,27 @@ fn taut_python_command_for_python(root: &Path, python: &str) -> Command {
         .env("SETUPTOOLS_SCM_PRETEND_VERSION", "0.6.0")
         .env("PYTHONPATH", taut_src);
     command
+}
+
+/// The taut checkout beside gwz-core. A prepared transport candidate lives
+/// outside the workspace, with nothing beside it, so it reads the checkout that
+/// `tests/transport_backend/prepare.py` recorded in `placement-candidate.json`.
+fn taut_source(root: &Path) -> PathBuf {
+    match fs::read_to_string(root.join("placement-candidate.json")) {
+        Ok(text) => {
+            let metadata: serde_json::Value =
+                serde_json::from_str(&text).expect("placement-candidate.json is JSON");
+            PathBuf::from(
+                metadata["taut_source"]
+                    .as_str()
+                    .expect("placement-candidate.json names taut_source"),
+            )
+        }
+        Err(_) => root
+            .parent()
+            .expect("gwz-core should have a parent")
+            .join("taut/src"),
+    }
 }
 
 fn assert_command_env(command: &Command, key: &str, expected: &str) {

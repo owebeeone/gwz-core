@@ -7,6 +7,10 @@ use crate::operation::{ActionKind, OperationRequest};
 
 use super::*;
 
+#[allow(
+    clippy::needless_update,
+    reason = "gwz_transport_candidate adds fields"
+)]
 pub fn handle_status<B>(
     backend: &B,
     start: &Path,

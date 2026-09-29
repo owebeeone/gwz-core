@@ -175,18 +175,26 @@ impl EndpointOpenFailure {
             .get_ref()
             .and_then(|cause| cause.downcast_ref::<PoolError>())
         {
-            Some(PoolError::ConnectFailed { code, effect, setup_cause }) => {
-                (*code, *effect, *setup_cause)
-            }
-            Some(PoolError::AllocationTimeout) => {
-                (ErrorCode::Timeout, Effect::None, Some(SetupFailureCause::Allocation))
-            }
-            Some(PoolError::ConnectTimeout) => {
-                (ErrorCode::Timeout, Effect::None, Some(SetupFailureCause::Aggregate))
-            }
-            Some(PoolError::InteractionTimeout) => {
-                (ErrorCode::Timeout, Effect::None, Some(SetupFailureCause::Interaction))
-            }
+            Some(PoolError::ConnectFailed {
+                code,
+                effect,
+                setup_cause,
+            }) => (*code, *effect, *setup_cause),
+            Some(PoolError::AllocationTimeout) => (
+                ErrorCode::Timeout,
+                Effect::None,
+                Some(SetupFailureCause::Allocation),
+            ),
+            Some(PoolError::ConnectTimeout) => (
+                ErrorCode::Timeout,
+                Effect::None,
+                Some(SetupFailureCause::Aggregate),
+            ),
+            Some(PoolError::InteractionTimeout) => (
+                ErrorCode::Timeout,
+                Effect::None,
+                Some(SetupFailureCause::Interaction),
+            ),
             Some(PoolError::Capacity | PoolError::WouldBlock) => {
                 (ErrorCode::Capacity, Effect::None, None)
             }

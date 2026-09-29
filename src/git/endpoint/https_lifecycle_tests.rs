@@ -140,13 +140,11 @@ fn dropping_one_remote_preserves_the_other_remotes_pinned_route() {
 cfg_if::cfg_if! { if #[cfg(unix)] {
 mod unix {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
     fn helper() -> (tempfile::TempDir, https_auth::Config, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("started");
         let executable = dir.path().join("gh");
-        std::fs::write(&executable, "#!/bin/sh\n/bin/cat >/dev/null\nprintf 'started\\n' >> \"$MARKER\"\nexec /bin/sleep 30\n").unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        crate::git::endpoint::helper_script::write_helper_script(&executable, "/bin/cat >/dev/null\nprintf 'started\\n' >> \"$MARKER\"\nexec /bin/sleep 30\n");
         let config = https_auth::Config { executable, environment: vec![("MARKER".into(), marker.clone().into())] };
         (dir, config, marker)
     }

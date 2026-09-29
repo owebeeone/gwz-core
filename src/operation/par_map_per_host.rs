@@ -77,25 +77,34 @@ where
 {
     map_with_control(
         items,
-        global_limit,
-        per_host_limit,
+        Limits {
+            global_limit,
+            per_host_limit,
+            spawn_limit: usize::MAX,
+        },
         host_of,
         f,
         cancelled,
         on_cancel,
-        usize::MAX,
     )
+}
+
+/// The scheduler's limits: live workers, active member operations per host,
+/// and the number of workers it starts before a start fails, which only a test
+/// lowers from `usize::MAX`.
+struct Limits {
+    global_limit: usize,
+    per_host_limit: usize,
+    spawn_limit: usize,
 }
 
 fn map_with_control<T, R, K, F, C, D>(
     items: Vec<T>,
-    global_limit: usize,
-    per_host_limit: usize,
+    limits: Limits,
     host_of: K,
     f: F,
     cancelled: C,
     on_cancel: D,
-    spawn_limit: usize,
 ) -> ModelResult<Vec<R>>
 where
     T: Send,
@@ -105,6 +114,11 @@ where
     C: Fn() -> bool + Sync,
     D: Fn(T) -> R + Sync,
 {
+    let Limits {
+        global_limit,
+        per_host_limit,
+        spawn_limit,
+    } = limits;
     let count = items.len();
     if count == 0 {
         return Ok(Vec::new());
@@ -246,10 +260,11 @@ mod tests {
     #[test]
     fn failed_worker_spawn_never_enters_a_handler() {
         let entered = AtomicUsize::new(0);
+        let limits = Limits { global_limit: 4, per_host_limit: 4, spawn_limit: 2 };
         let result = map_with_control(
-            (0..16).collect(), 4, 4, |_| Some("host".into()),
+            (0..16).collect(), limits, |_| Some("host".into()),
             |item| { entered.fetch_add(1, Ordering::SeqCst); item },
-            || false, |item| item, 2,
+            || false, |item| item,
         );
         assert!(matches!(result, Err(ModelError { code: ErrorCode::IoError, .. })));
         assert_eq!(entered.load(Ordering::SeqCst), 0);

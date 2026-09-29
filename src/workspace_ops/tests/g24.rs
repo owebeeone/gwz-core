@@ -202,6 +202,10 @@ fn default_merge_pull_does_not_fast_forward_root_before_member_prediction_reject
 }
 
 #[test]
+#[allow(
+    clippy::needless_update,
+    reason = "gwz_transport_candidate adds fields"
+)]
 fn default_merge_pull_applies_a_planned_root_fast_forward_after_member_preflight() {
     let temp = TempDir::new("pull-root-fast-forward");
     let backend = Git2Backend::new();

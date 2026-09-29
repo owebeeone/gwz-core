@@ -24,6 +24,20 @@ use tokio_util::sync::CancellationToken;
 
 const OUTPUT_LIMIT: usize = 16 * 1024;
 const CLEANUP_GRACE: Duration = Duration::from_millis(500);
+/// Live helper processes one host admits, retained unreaped children included.
+const HELPER_SLOTS: usize = 8;
+
+/// One host context's HTTPS helper slots, shared by every endpoint its driver
+/// opens (GwzCoreSessionDesign §5.6): the driver creates them once and hands
+/// them to each endpoint's `AuthOwner`. A standalone endpoint is its own host.
+#[derive(Clone)]
+pub(crate) struct HelperSlots(Arc<Semaphore>);
+
+impl HelperSlots {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(Semaphore::new(HELPER_SLOTS)))
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct Config {
@@ -52,6 +66,7 @@ struct AuthOwnerInner {
     active: Arc<AtomicUsize>,
     reaping: AtomicUsize,
     pending: Mutex<Vec<PendingChild>>,
+    helper_slots: HelperSlots,
 }
 
 impl Drop for AuthOwnerInner {
@@ -77,7 +92,9 @@ impl Drop for AuthOwnerInner {
 
 /// Endpoint-scoped ownership for credential helper processes.
 ///
-/// Retained children and their admission permits live in this owner only. A
+/// Helper admission comes from the host's `HelperSlots`, so another host's
+/// live or retained helpers never exhaust it. Retained children and their
+/// admission permits live in this owner only. A
 /// dropped owner transfers them to an owner-ID-tagged fallback queue, so
 /// `kill_on_drop` is not used to release a still-reserved permit and cleanup
 /// cannot be accidentally attributed to another endpoint.
@@ -87,7 +104,7 @@ pub(crate) struct AuthOwner {
 }
 
 impl AuthOwner {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(helper_slots: HelperSlots) -> Self {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
         Self {
             inner: Arc::new(AuthOwnerInner {
@@ -96,6 +113,7 @@ impl AuthOwner {
                 active: Arc::new(AtomicUsize::new(0)),
                 reaping: AtomicUsize::new(0),
                 pending: Mutex::new(Vec::new()),
+                helper_slots,
             }),
         }
     }
@@ -287,9 +305,10 @@ pub(crate) async fn lookup(
     cancelled: &CancellationToken,
 ) -> Result<Secret, AuthError> {
     // Compatibility wrapper for callers that have not yet adopted endpoint
-    // ownership. The temporary owner ensures a retained child cannot enter a
-    // process-wide cleanup pool; endpoint callers should use `lookup_owned`.
-    let owner = AuthOwner::new();
+    // ownership. The temporary owner, its own host, ensures a retained child
+    // cannot enter a process-wide cleanup pool; endpoint callers should use
+    // `lookup_owned`.
+    let owner = AuthOwner::new(HelperSlots::new());
     lookup_owned(&owner, config, destination, deadline, cancelled).await
 }
 
@@ -310,7 +329,11 @@ pub(crate) async fn lookup_owned(
         return Err(AuthError::Timeout);
     }
     owner.reap_ready();
-    let helper_slot = helper_slots()
+    let helper_slot = owner
+        .inner
+        .helper_slots
+        .0
+        .clone()
         .try_acquire_owned()
         .map_err(|_| AuthError::Capacity)?;
 
@@ -516,11 +539,6 @@ impl Drop for HelperJob {
     }
 }
 
-fn helper_slots() -> Arc<Semaphore> {
-    static SLOTS: OnceLock<Arc<Semaphore>> = OnceLock::new();
-    SLOTS.get_or_init(|| Arc::new(Semaphore::new(8))).clone()
-}
-
 /// Compatibility shim for callers that have not yet supplied an
 /// `AuthOwner`. New endpoint code must call `AuthOwner::reap_pending` so
 /// cleanup remains endpoint-scoped.
@@ -623,19 +641,14 @@ cfg_if::cfg_if! {
     if #[cfg(test)] {
         mod tests {
             use super::*;
-            use std::{
-                fs,
-                os::unix::fs::PermissionsExt,
-            };
+            use crate::git::endpoint::helper_script::write_helper_script;
+            use std::fs;
             use tempfile::tempdir;
 
             fn helper(script: &str) -> (tempfile::TempDir, Config) {
                 let directory = tempdir().unwrap();
                 let path = directory.path().join("gh-helper");
-                fs::write(&path, format!("#!/bin/sh\n{script}\n")).unwrap();
-                let mut permissions = fs::metadata(&path).unwrap().permissions();
-                permissions.set_mode(0o700);
-                fs::set_permissions(&path, permissions).unwrap();
+                write_helper_script(&path, &format!("{script}\n"));
                 (
                     directory,
                     Config {
@@ -725,17 +738,17 @@ cfg_if::cfg_if! {
 
             #[tokio::test]
             async fn aborting_reap_preserves_child_and_permit_ownership() {
-                let owner = AuthOwner::new();
-                let slots = helper_slots();
+                let owner = AuthOwner::new(HelperSlots::new());
+                let slots = owner.inner.helper_slots.0.clone();
                 let before = slots.available_permits();
                 let child = Command::new("/bin/sleep").arg("5").kill_on_drop(true).spawn().unwrap();
-                owner.retain_pending(PendingChild { child, helper_slot: slots.try_acquire_owned().unwrap() });
+                owner.retain_pending(PendingChild { child, helper_slot: slots.clone().try_acquire_owned().unwrap() });
                 let reaper = owner.clone();
                 let task = tokio::spawn(async move { reaper.reap_pending(Instant::now()+Duration::from_secs(5)).await });
                 while !owner.inner.pending.lock().unwrap().is_empty() { tokio::task::yield_now().await; }
                 task.abort(); let _ = task.await;
                 let retained = owner.pending_cleanup_count();
-                let permits = helper_slots().available_permits();
+                let permits = slots.available_permits();
                 let _ = owner.reap_pending(Instant::now()+Duration::from_secs(1)).await;
                 assert_eq!(retained, 1, "aborting reap lost its owned child");
                 assert_eq!(permits, before-1, "permit released before actual reap");
@@ -744,14 +757,14 @@ cfg_if::cfg_if! {
 
             #[tokio::test]
             async fn reap_reports_children_arriving_while_it_waits() {
-                let owner = AuthOwner::new();
+                let owner = AuthOwner::new(HelperSlots::new());
                 let child = Command::new("/bin/sleep").arg("0.1").kill_on_drop(true).spawn().unwrap();
-                owner.retain_pending(PendingChild { child, helper_slot: helper_slots().try_acquire_owned().unwrap() });
+                owner.retain_pending(PendingChild { child, helper_slot: owner.inner.helper_slots.0.clone().try_acquire_owned().unwrap() });
                 let reaper = owner.clone();
                 let task = tokio::spawn(async move { reaper.reap_pending(Instant::now()+Duration::from_secs(1)).await });
                 while !owner.inner.pending.lock().unwrap().is_empty() { tokio::task::yield_now().await; }
                 let child = Command::new("/bin/sleep").arg("5").kill_on_drop(true).spawn().unwrap();
-                owner.retain_pending(PendingChild { child, helper_slot: helper_slots().try_acquire_owned().unwrap() });
+                owner.retain_pending(PendingChild { child, helper_slot: owner.inner.helper_slots.0.clone().try_acquire_owned().unwrap() });
                 let reported = task.await.unwrap();
                 let actual = owner.pending_cleanup_count();
                 for pending in owner.inner.pending.lock().unwrap().iter_mut() { let _ = pending.child.start_kill(); }
@@ -762,56 +775,9 @@ cfg_if::cfg_if! {
 
             #[tokio::test]
             async fn owner_cancellation_after_start_reclaims_helper_admission() {
-                let directory = tempdir().unwrap();
-                let started = directory.path().join("started");
-                let executable = directory.path().join("started-helper");
-                fs::write(
-                    &executable,
-                    "#!/bin/sh\nprintf '%s\\n' \"$$\" >> \"$GWZ_HELPER_STARTED\"\nexec /bin/sleep 5\n",
-                )
-                .unwrap();
-                let mut permissions = fs::metadata(&executable).unwrap().permissions();
-                permissions.set_mode(0o700);
-                fs::set_permissions(&executable, permissions).unwrap();
-                let config = Config {
-                    executable,
-                    environment: vec![(
-                        "GWZ_HELPER_STARTED".into(),
-                        started.as_os_str().into(),
-                    )],
-                };
-                let owner = AuthOwner::new();
-                let destination = Destination::parse("https://example.com/owner/repo").unwrap();
-                let cancelled = CancellationToken::new();
-                let mut tasks = Vec::new();
-                for _ in 0..8 {
-                    let owner = owner.clone();
-                    let config = config.clone();
-                    let destination = destination.clone();
-                    let cancelled = cancelled.clone();
-                    tasks.push(tokio::spawn(async move {
-                        lookup_owned(
-                            &owner,
-                            &config,
-                            &destination,
-                            Instant::now() + Duration::from_secs(5),
-                            &cancelled,
-                        )
-                        .await
-                    }));
-                }
-                let barrier = Instant::now() + Duration::from_secs(2);
-                loop {
-                    let count = fs::read_to_string(&started)
-                        .ok()
-                        .map(|contents| contents.lines().count())
-                        .unwrap_or(0);
-                    if count == 8 {
-                        break;
-                    }
-                    assert!(Instant::now() < barrier, "helper start barrier timed out");
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
+                let host = HelperSlots::new();
+                let owner = AuthOwner::new(host.clone());
+                let (directory, tasks) = occupy_eight_slots(&owner).await;
                 assert_eq!(owner.active_count(), 8);
                 owner.cancel();
                 for task in tasks {
@@ -827,32 +793,100 @@ cfg_if::cfg_if! {
                     .await;
                 assert_eq!(retained, 0);
                 assert_eq!(owner.pending_cleanup_count(), 0);
+                // The host's eight slots are back: another of its owners is admitted.
+                assert_eq!(
+                    quick_lookup(&AuthOwner::new(host)).await,
+                    Ok("Basic YWxpY2U6c2VjcmV0".to_owned())
+                );
+                drop(directory);
+            }
 
-                let quick_directory = tempdir().unwrap();
-                let quick_executable = quick_directory.path().join("quick-helper");
-                fs::write(
-                    &quick_executable,
-                    "#!/bin/sh\nprintf 'username=alice\\npassword=secret\\n\\n'\n",
-                )
-                .unwrap();
-                let mut quick_permissions = fs::metadata(&quick_executable).unwrap().permissions();
-                quick_permissions.set_mode(0o700);
-                fs::set_permissions(&quick_executable, quick_permissions).unwrap();
-                let quick_config = Config {
-                    executable: quick_executable,
-                    environment: Vec::new(),
+            /// Starts eight helpers on `owner` that stay live until cancelled.
+            async fn occupy_eight_slots(
+                owner: &AuthOwner,
+            ) -> (tempfile::TempDir, Vec<tokio::task::JoinHandle<Result<Secret, AuthError>>>) {
+                let directory = tempdir().unwrap();
+                let started = directory.path().join("started");
+                let executable = directory.path().join("busy-helper");
+                write_helper_script(
+                    &executable,
+                    "printf '%s\\n' \"$$\" >> \"$GWZ_HELPER_STARTED\"\nexec /bin/sleep 5\n",
+                );
+                let config = Config {
+                    executable,
+                    environment: vec![("GWZ_HELPER_STARTED".into(), started.as_os_str().into())],
                 };
-                let quick_owner = AuthOwner::new();
-                let secret = lookup_owned(
-                    &quick_owner,
-                    &quick_config,
+                let destination = Destination::parse("https://example.com/owner/repo").unwrap();
+                let mut tasks = Vec::new();
+                for _ in 0..8 {
+                    let owner = owner.clone();
+                    let config = config.clone();
+                    let destination = destination.clone();
+                    tasks.push(tokio::spawn(async move {
+                        lookup_owned(
+                            &owner,
+                            &config,
+                            &destination,
+                            Instant::now() + Duration::from_secs(5),
+                            &CancellationToken::new(),
+                        )
+                        .await
+                    }));
+                }
+                let barrier = Instant::now() + Duration::from_secs(2);
+                while fs::read_to_string(&started).map_or(0, |started| started.lines().count()) < 8 {
+                    assert!(Instant::now() < barrier, "helper start barrier timed out");
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                (directory, tasks)
+            }
+
+            async fn release(owner: &AuthOwner, tasks: Vec<tokio::task::JoinHandle<Result<Secret, AuthError>>>) {
+                owner.cancel();
+                for task in tasks {
+                    let _ = task.await.unwrap();
+                }
+                assert_eq!(owner.reap_pending(Instant::now() + Duration::from_secs(2)).await, 0);
+            }
+
+            async fn quick_lookup(owner: &AuthOwner) -> Result<String, AuthError> {
+                let (directory, config) = helper("printf 'username=alice\\npassword=secret\\n\\n'");
+                let destination = Destination::parse("https://example.com/owner/repo").unwrap();
+                let result = lookup_owned(
+                    owner,
+                    &config,
                     &destination,
                     Instant::now() + Duration::from_secs(2),
                     &CancellationToken::new(),
                 )
                 .await
-                .unwrap();
-                assert_eq!(secret.header(), "Basic YWxpY2U6c2VjcmV0");
+                .map(|secret| secret.header());
+                drop(directory);
+                result
+            }
+
+            #[tokio::test]
+            async fn one_hosts_live_helpers_never_exhaust_another_hosts_admission() {
+                let busy = AuthOwner::new(HelperSlots::new());
+                let (directory, tasks) = occupy_eight_slots(&busy).await;
+                let other = quick_lookup(&AuthOwner::new(HelperSlots::new())).await;
+                release(&busy, tasks).await;
+                assert_eq!(other, Ok("Basic YWxpY2U6c2VjcmV0".to_owned()));
+                drop(directory);
+            }
+
+            #[tokio::test]
+            async fn endpoints_of_one_host_share_its_eight_helper_slots() {
+                let host = HelperSlots::new();
+                let busy = AuthOwner::new(host.clone());
+                let sibling = AuthOwner::new(host);
+                let (directory, tasks) = occupy_eight_slots(&busy).await;
+                let ninth = quick_lookup(&sibling).await;
+                release(&busy, tasks).await;
+                let after = quick_lookup(&sibling).await;
+                assert_eq!(ninth, Err(AuthError::Capacity), "a ninth live helper on one host");
+                assert_eq!(after, Ok("Basic YWxpY2U6c2VjcmV0".to_owned()));
+                drop(directory);
             }
 
             #[tokio::test]
@@ -860,14 +894,10 @@ cfg_if::cfg_if! {
                 let directory = tempdir().unwrap();
                 let started = directory.path().join("started");
                 let executable = directory.path().join("abort-helper");
-                fs::write(
+                write_helper_script(
                     &executable,
-                    "#!/bin/sh\nprintf started > \"$GWZ_HELPER_STARTED\"\nexec /bin/sleep 5\n",
-                )
-                .unwrap();
-                let mut permissions = fs::metadata(&executable).unwrap().permissions();
-                permissions.set_mode(0o700);
-                fs::set_permissions(&executable, permissions).unwrap();
+                    "printf started > \"$GWZ_HELPER_STARTED\"\nexec /bin/sleep 5\n",
+                );
                 let config = Config {
                     executable,
                     environment: vec![(
@@ -875,9 +905,9 @@ cfg_if::cfg_if! {
                         started.as_os_str().into(),
                     )],
                 };
-                let owner = AuthOwner::new();
+                let owner = AuthOwner::new(HelperSlots::new());
                 let destination = Destination::parse("https://example.com/owner/repo").unwrap();
-                let available_before = helper_slots().available_permits();
+                let available_before = owner.inner.helper_slots.0.available_permits();
                 assert!(available_before > 0, "helper admission unexpectedly exhausted");
                 let task_owner = owner.clone();
                 let task_config = config.clone();
@@ -901,7 +931,7 @@ cfg_if::cfg_if! {
                 assert!(task.await.unwrap_err().is_cancelled());
                 assert_eq!(owner.active_count(), 0);
                 assert_eq!(owner.pending_cleanup_count(), 1);
-                assert_eq!(helper_slots().available_permits(), available_before - 1);
+                assert_eq!(owner.inner.helper_slots.0.available_permits(), available_before - 1);
 
                 assert_eq!(
                     owner.reap_pending(Instant::now()).await,
@@ -909,10 +939,10 @@ cfg_if::cfg_if! {
                     "zero-time reap must retain a live aborted child"
                 );
                 assert_eq!(owner.pending_cleanup_count(), 1);
-                assert_eq!(helper_slots().available_permits(), available_before - 1);
+                assert_eq!(owner.inner.helper_slots.0.available_permits(), available_before - 1);
                 assert_eq!(owner.reap_pending(Instant::now() + Duration::from_secs(2)).await, 0);
                 assert_eq!(owner.pending_cleanup_count(), 0);
-                assert_eq!(helper_slots().available_permits(), available_before);
+                assert_eq!(owner.inner.helper_slots.0.available_permits(), available_before);
             }
 
             #[tokio::test]

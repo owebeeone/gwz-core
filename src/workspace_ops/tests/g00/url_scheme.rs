@@ -11,6 +11,10 @@ use crate::workspace_ops::url_scheme_state::{
     resolve_root_url, url_scheme_refusal_error,
 };
 
+#[allow(
+    clippy::needless_update,
+    reason = "gwz_transport_candidate adds fields"
+)]
 fn https_request() -> crate::RequestMeta {
     crate::RequestMeta {
         transport: Some(crate::TransportOptions {
@@ -23,6 +27,10 @@ fn https_request() -> crate::RequestMeta {
     }
 }
 
+#[allow(
+    clippy::needless_update,
+    reason = "gwz_transport_candidate adds fields"
+)]
 fn manifest_request() -> crate::RequestMeta {
     crate::RequestMeta {
         transport: Some(crate::TransportOptions {
@@ -293,6 +301,10 @@ fn clone_under_https_keeps_a_private_refusal_quiet_and_records_the_preference() 
 }
 
 #[test]
+#[allow(
+    clippy::needless_update,
+    reason = "gwz_transport_candidate adds fields"
+)]
 fn a_remote_identity_override_conflicts_with_https_before_any_network() {
     let temp = TempDir::new("url-scheme-identity-conflict");
     handle_create_workspace(create_workspace_request(temp.path()), "create").unwrap();

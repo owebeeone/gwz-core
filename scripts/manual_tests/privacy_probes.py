@@ -44,8 +44,9 @@ the root binding and compiles. The review demonstrated exactly that. The three
 not bound at the `v1_lifecycle` module root either, so the re-export channel is
 closed for all three. Residual, stated rather than hidden: name resolution is
 by name, so a re-export renamed with `as` binds a name no probe can predict --
-that channel is held by `PROTECTED_SOURCE_TREE_DIGESTS`, which pins
-`v1_lifecycle/mod.rs` where any such re-export must be written.
+and nothing holds that channel now. The tree digest on `v1_lifecycle/mod.rs`,
+where any such re-export must be written, held it until gwz-core 107aca7a
+(2026-09-08) removed digest enforcement from the checked-artifact gate.
 """
 
 from __future__ import annotations

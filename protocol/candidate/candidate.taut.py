@@ -2,8 +2,8 @@
 
 This module is intentionally only a composition layer.  The production GWZ
 schema and the transport-owner schema remain the only authored wire schemas;
-the candidate adds the frozen placement projection in this isolated consumer
-harness until activation is approved.
+the candidate adds the frozen placement projection for the isolated candidate
+build until activation is approved.
 """
 
 from __future__ import annotations

@@ -78,14 +78,11 @@ pub(super) fn repository(root: &Path) -> (PathBuf, git2::Oid) {
 }
 
 fn fake_gh(root: &Path) -> https_auth::Config {
-    use std::os::unix::fs::PermissionsExt;
     let executable = root.join("gh");
-    std::fs::write(
+    crate::git::endpoint::helper_script::write_helper_script(
         &executable,
-        "#!/bin/sh\ncat >/dev/null\nprintf 'username=fixture\\npassword=fixture-token\\n\\n'\n",
-    )
-    .unwrap();
-    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        "cat >/dev/null\nprintf 'username=fixture\\npassword=fixture-token\\n\\n'\n",
+    );
     https_auth::Config {
         executable,
         environment: Vec::new(),
@@ -274,7 +271,7 @@ fn local_https_advertisement_and_clone_use_scoped_host_runtime() {
             tls: server.config(),
             auth: None,
         };
-        let transport = TransportRuntime::with_https(local, https).unwrap();
+        let transport = TransportRuntime::with_https(local, https, HelperSlots::new()).unwrap();
         let capabilities = transport
             .capabilities(TransportCapabilitiesRequest {
                 schema_version: "gwz.protocol/v0".into(),
@@ -331,6 +328,7 @@ fn unchanged_fetch_reuses_the_advertisement_connection_across_requests() {
                 tls: server.config(),
                 auth: None,
             },
+            HelperSlots::new(),
         )
         .unwrap();
         let target = root.path().join("clone");
@@ -402,6 +400,7 @@ fn local_https_workspace_commands_keep_the_same_host_scope() {
                 tls: server.config(),
                 auth: Some(fake_gh(root.path())),
             },
+            HelperSlots::new(),
         )
         .unwrap();
         let workspace = root.path().join("workspace");
@@ -663,12 +662,17 @@ fn embedded_https_init(consumer: super::message_embedding_tests::Consumer) {
         let transport = TransportRuntime::with_https(
             SshEndpointConfig::fixture(core_home, None),
             https.clone(),
+            HelperSlots::new(),
         )
         .unwrap();
         let core_port = transport.install_cli().unwrap();
-        let (endpoint, endpoint_port) =
-            CliEndpoint::with_https(SshEndpointConfig::fixture(endpoint_home, None), https)
-                .unwrap();
+        // Core and the client endpoint are separate hosts with their own slots.
+        let (endpoint, endpoint_port) = CliEndpoint::with_https(
+            SshEndpointConfig::fixture(endpoint_home, None),
+            https,
+            HelperSlots::new(),
+        )
+        .unwrap();
         let workspace = root.path().join("workspace");
         std::fs::create_dir(&workspace).unwrap();
         let consumer_id = match consumer {

@@ -190,6 +190,11 @@ The gwz-core repository at 1.0.11:
   present. Tests, dev-docs, docs, scripts, corpus and evidence stay in git.
   The provenance digest of a registry build therefore differs from a git
   build of the same commit; that is expected and documented.
+  *Status, 2026-09-29:* the candidate protocol moved out of `tests/`, since
+  tests/ holds no production code. `src/protocol/candidate_generated.rs` now
+  ships in the gwz-core package through `/src/**`. It is inert there: only
+  the `gwz_transport_candidate` cfg compiles it. `protocol/candidate/`, the
+  candidate's schema and regenerator, is not packaged.
 - D5. **Publishing runs in CI, never from a laptop.** A `publish` job in
   gwz-core's `release.yml`, after the Linux verification job succeeds, gated
   by the `crates-io` environment, checks that the tag and every manifest

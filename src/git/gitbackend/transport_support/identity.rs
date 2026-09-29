@@ -324,7 +324,7 @@ fn unavailable() -> ModelError {
 
 pub(crate) fn configured_identity(path: &Path, remote: &str) -> ModelResult<Option<String>> {
     let repo = super::super::open_repo(path)?;
-    repo.find_remote(remote).map_err(crate::git::git_error)?;
+    crate::git::find_remote(&repo, remote)?;
     let local = repo
         .config()
         .map_err(crate::git::git_error)?
@@ -343,7 +343,7 @@ pub(crate) fn set_configured_identity(
     value: Option<&str>,
 ) -> ModelResult<()> {
     let repo = super::super::open_repo(path)?;
-    repo.find_remote(remote).map_err(crate::git::git_error)?;
+    crate::git::find_remote(&repo, remote)?;
     let mut local = repo
         .config()
         .map_err(crate::git::git_error)?
@@ -431,6 +431,7 @@ mod tests {
             "fixture: only local selection is tested",
         )
         .unwrap();
+        #[allow(clippy::needless_update, reason = "gwz_transport_candidate adds fields")]
         let backend = Git2Backend::without_credential_helpers()
             .with_transport(
                 temp.path(),
@@ -510,6 +511,7 @@ mod tests {
     #[test]
     fn explicit_precedence_and_equals_in_paths_are_preserved() {
         let temp = tempfile::tempdir().unwrap();
+        #[allow(clippy::needless_update, reason = "gwz_transport_candidate adds fields")]
         let options = crate::TransportOptions {
             url_scheme: None,
             default_identity: Some("default=key".into()),
@@ -552,6 +554,7 @@ mod tests {
             remote: "origin".into(),
             private_key_path: "key".into(),
         };
+        #[allow(clippy::needless_update, reason = "gwz_transport_candidate adds fields")]
         let mut options = crate::TransportOptions {
             url_scheme: None,
             default_identity: None,

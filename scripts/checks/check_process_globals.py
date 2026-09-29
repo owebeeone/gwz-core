@@ -33,8 +33,11 @@ whatever its type, and classified by that type like any static. Any static the
 scan cannot read, such as one a `macro_rules!` declares from `$name`, is listed
 as `<unparsed static>`, under the `thread_local!` or `lazy_static!` kind around
 it if there is one: it fails closed. An `include!` of a string literal is
-followed like a `mod`, relative to the including file; any other `include!` in
-production code is listed as `<unparsed include>`.
+followed like a `mod`, relative to the including file. Any other `include!` in
+production code fails closed, because the scan cannot see what it splices in: as
+`TESTS` when a literal fragment of its path names a `tests/` directory, and as
+`INCL` otherwise. No allowlist entry waives either, and an `include` entry is
+itself refused (S-3 of the 2026-09-29 cleanup's Safety review).
 
 A static whose type names only primitives, std's owned containers
 (`IMMUTABLE_TYPES`) and write-once cells (`OnceLock`, `OnceCell`, `LazyLock`,
@@ -48,16 +51,27 @@ remover in `owner`, or say `unassigned`. Process spawns and environment reads
 A new occurrence fails. A listed occurrence that disappears also fails, so the
 list only shrinks. Code compiled only under `cfg(test)` is exempt:
 `#[cfg(test)]` items and modules, `cfg_if!` test branches, and files reached
-only through test-only `mod` declarations.
+only through test-only `mod` declarations or `cfg_attr` paths.
+
+A second rule rides on the same classification (operator, 2026-09-29): a
+crate's `tests/` directory, a `tests` directory beside a `Cargo.toml`, holds no
+production code. A file there that production code reaches through `mod`,
+`#[path]`, `#[cfg_attr(<predicate>, path = ...)]` or a literal `include!` fails
+as `TESTS`, and no allowlist entry waives it: move the file under `src/`. A
+`cfg_attr` path is production unless its predicate implies `test`, and the
+default file stays a route for the builds in which the predicate does not hold.
+Production means any build outside `cfg(test)`, the `gwz_transport_candidate`
+build included; a feature counts as a test build only when the allowlist names
+it in `test_features`, as for the globals rule.
 
 An allowlist for another repository may record `reconciled_commit`: the full
 commit SHA its entries were last reconciled against. `--reconciled-commit`
 prints it, so CI can check out exactly that commit.
 
 This is a lexical scan, not name resolution. It strips comments and literals,
-follows `mod`/`#[path]` declarations and literal `include!` paths from the crate
-roots named in the allowlist, and inspects every platform branch without
-compiling any of them.
+follows `mod` declarations, their `#[path]` and `cfg_attr` paths and literal
+`include!` paths from the crate roots named in the allowlist, and inspects every
+platform branch without compiling any of them.
 Files under the scan roots that no `mod` declaration reaches are scanned as
 production and reported.
 """
@@ -73,6 +87,8 @@ ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ALLOWLIST = Path(__file__).resolve().with_name('process_globals_allowlist.json')
 DISPOSITIONS = {'debt', 'permanent'}
 RECONCILED_COMMIT = re.compile(r'[0-9a-f]{40}')
+# A literal fragment of an unreadable `include!` that names a `tests/` directory.
+TESTS_FRAGMENT = re.compile(r'(?:^|[/\\])tests[/\\]')
 
 # Types whose statics are shared mutable (or lazily initialised) process state.
 INTERIOR = re.compile(
@@ -230,6 +246,10 @@ class ModDecl:
     path_attr: str | None
     inline: tuple[str, ...]
     test_only: bool
+    # Each `cfg_attr(<predicate>, path = "...")`: the path, and whether only test
+    # builds load it. With any, the default file loads only where none holds.
+    cfg_paths: tuple[tuple[str, bool], ...] = ()
+    default_test_only: bool = False
 
 
 @dataclass
@@ -285,6 +305,8 @@ def static_state(ty: list[Tok], mutable: bool) -> str | None:
 class FileInfo:
     mods: list[ModDecl] = field(default_factory=list)
     includes: list[tuple[str, bool]] = field(default_factory=list)  # (literal path, test only)
+    # Production `include!`s the scan cannot read: (line, the literal fragments).
+    unreadable_includes: list[tuple[int, tuple[str, ...]]] = field(default_factory=list)
     occurrences: list[Occurrence] = field(default_factory=list)
 
 
@@ -422,19 +444,48 @@ class Analysis:
                         self.test_ranges.append((j, self.match[j]))
                     break
 
-    def _path_attribute(self, mod_index: int) -> str | None:
+    def _path_attributes(self, mod_index: int):
+        """The `mod` declaration's `#[path = "..."]`, and each path that a
+        `#[cfg_attr(<predicate>, path = "...")]` names, with its predicate."""
         k = mod_index
         if self.text(k - 1) == ')' and (k - 1) in self.match and self.text(self.match[k - 1] - 1) == 'pub':
             k = self.match[k - 1] - 1
         elif self.text(k - 1) == 'pub':
             k -= 1
+        path, conditional = None, []
         while self.text(k - 1) == ']' and (k - 1) in self.match and self.text(self.match[k - 1] - 1) == '#':
             open_index = self.match[k - 1]
             if self.text(open_index + 1) == 'path' and self.text(open_index + 2) == '=' \
                     and self.toks[open_index + 3].kind == 'str':
-                return self.toks[open_index + 3].text
+                path = path or self.toks[open_index + 3].text
+            elif self.text(open_index + 1) == 'cfg_attr' and self.text(open_index + 2) == '(' \
+                    and (open_index + 2) in self.match:
+                conditional.extend(self._cfg_attr_paths(open_index + 2, None))
             k = open_index - 1
-        return None
+        return path, conditional
+
+    def _cfg_attr_paths(self, paren: int, outer):
+        """The paths the `cfg_attr(...)` whose `(` is at `paren` names, each with the
+        predicate under which it applies; a nested `cfg_attr` adds its own."""
+        close = self.match[paren]
+        try:
+            j, pred = parse_pred(self.toks, paren + 1)
+        except IndexError:
+            # Fail closed: a predicate the scan cannot read leaves its paths production.
+            return [(self.toks[k + 2].text, ('atom', '?')) for k in range(paren + 1, close - 2)
+                    if self.text(k) == 'path' and self.text(k + 1) == '=' and self.toks[k + 2].kind == 'str']
+        if outer is not None:
+            pred = ('all', [outer, pred])
+        found = []
+        while j < close and self.text(j) == ',':
+            j += 1
+            if self.text(j) == 'path' and self.text(j + 1) == '=' and self.toks[j + 2].kind == 'str':
+                found.append((self.toks[j + 2].text, pred))
+            elif self.text(j) == 'cfg_attr' and self.text(j + 1) == '(' and (j + 1) in self.match:
+                found.extend(self._cfg_attr_paths(j + 1, pred))
+            while j < close and self.text(j) != ',':
+                j = self.match[j] + 1 if self.text(j) in ('(', '[', '{') and j in self.match else j + 1
+        return found
 
     def info(self) -> FileInfo:
         info = FileInfo()
@@ -456,13 +507,20 @@ class Analysis:
                 if len(inner) == 1 and self.toks[inner[0]].kind == 'str':
                     info.includes.append((self.toks[inner[0]].text, self.is_test(i)))
                 elif not self.is_test(i):
-                    info.occurrences.append(Occurrence('include', '<unparsed include>', self.line(i)))
+                    fragments = tuple(self.toks[k].text for k in range(i + 3, self.match[i + 2])
+                                      if self.toks[k].kind == 'str')
+                    info.unreadable_includes.append((self.line(i), fragments))
         for i in range(self.n - 2):
             if self.toks[i].kind == 'id' and self.toks[i].text == 'mod' \
                     and self.toks[i + 1].kind == 'id' and self.text(i + 2) == ';':
                 inline = tuple(name for name, a, b in inline_mods if a < i < b)
-                info.mods.append(ModDecl(self.toks[i + 1].text, self._path_attribute(i),
-                                         inline, self.is_test(i)))
+                path_attr, conditional = self._path_attributes(i)
+                predicates = [pred for _, pred in conditional]
+                info.mods.append(ModDecl(
+                    self.toks[i + 1].text, path_attr, inline, self.is_test(i),
+                    tuple((literal, implies_test(pred, self.test_features)) for literal, pred in conditional),
+                    bool(predicates) and implies_test(('all', [('not', [p]) for p in predicates]),
+                                                      self.test_features)))
         for i, t in enumerate(self.toks):
             if t.kind != 'id' or self.is_test(i):
                 continue
@@ -548,15 +606,26 @@ def analyze(source: str, test_features: frozenset[str] = frozenset()) -> FileInf
     return Analysis(source, test_features).info()
 
 
-def module_candidates(path: Path, decl: ModDecl, is_mod_rs: bool) -> list[Path]:
-    """Files a `mod` declaration may load, per the Rust reference's lookup rules."""
+def module_routes(path: Path, decl: ModDecl, is_mod_rs: bool) -> list[tuple[list[Path], bool, bool]]:
+    """The files a `mod` declaration may load, per the Rust reference's lookup rules:
+    per route, its candidates in order, whether only test builds take it, and whether
+    a path attribute names it. Each `cfg_attr` path is a route of its own; the path
+    attribute, or else the default files, is another."""
     base = path.parent if is_mod_rs else path.parent / path.stem
-    if decl.path_attr is not None:
+
+    def named(literal: str) -> list[Path]:
         if decl.inline:
-            return [base.joinpath(*decl.inline, decl.path_attr)]
-        return [path.parent / decl.path_attr]
-    directory = base.joinpath(*decl.inline)
-    return [directory / f'{decl.name}.rs', directory / decl.name / 'mod.rs']
+            return [base.joinpath(*decl.inline, literal)]
+        return [path.parent / literal]
+
+    routes = [(named(literal), decl.test_only or test_only, True) for literal, test_only in decl.cfg_paths]
+    if decl.path_attr is not None:
+        routes.append((named(decl.path_attr), decl.test_only, True))
+    else:
+        directory = base.joinpath(*decl.inline)
+        routes.append(([directory / f'{decl.name}.rs', directory / decl.name / 'mod.rs'],
+                       decl.test_only or decl.default_test_only, False))
+    return routes
 
 
 @dataclass
@@ -564,20 +633,48 @@ class Scan:
     occurrences: dict[tuple[str, str, str], list[Occurrence]]
     unreached: list[str]
     files: int
+    # Production files in a crate's `tests/` directory, each with the files whose
+    # production declarations load it.
+    in_tests: list[tuple[str, tuple[str, ...]]] = field(default_factory=list)
+    # Production `include!`s the scan cannot read: (file, line, literal fragments).
+    unreadable_includes: list[tuple[str, int, tuple[str, ...]]] = field(default_factory=list)
+
+
+def crate_tests_directory(path: Path, repo: Path) -> Path | None:
+    """The crate `tests/` directory that `path` lies in: a `tests` directory beside a
+    `Cargo.toml`, where Cargo keeps a crate's integration tests. Directories above the
+    repository are not considered."""
+    for directory in path.parents:
+        if directory == repo:
+            return None
+        if directory.name == 'tests' and (directory.parent / 'Cargo.toml').is_file():
+            return directory
+    return None
 
 
 def scan(repo: Path, roots: list[str], test_features: frozenset[str] = frozenset()) -> Scan:
     root_files = sorted({p.resolve() for pattern in roots for p in repo.glob(pattern)})
     if not root_files:
         raise SystemExit(f'no crate roots match {roots} under {repo}')
+    base = repo.resolve()
+
+    def name(path: Path) -> str:
+        try:
+            return path.relative_to(base).as_posix()
+        except ValueError:
+            return path.as_posix()
+
     cache: dict[Path, FileInfo] = {}
     status: dict[Path, str] = {}
+    loaders: dict[Path, set[Path]] = {}
     # Crate roots, mod.rs files and every `#[path]`-loaded file resolve their
     # own `mod` declarations relative to their directory (rustc treats all
     # `#[path]` files as mod.rs files).
-    queue = [(p, False, True) for p in root_files]
+    queue: list[tuple[Path, bool, bool, Path | None]] = [(p, False, True, None) for p in root_files]
     while queue:
-        path, test, is_mod_rs = queue.pop()
+        path, test, is_mod_rs, loader = queue.pop()
+        if loader is not None and not test:
+            loaders.setdefault(path, set()).add(loader)
         old = status.get(path)
         if old == 'production' or (old == 'test' and test):
             continue
@@ -585,17 +682,22 @@ def scan(repo: Path, roots: list[str], test_features: frozenset[str] = frozenset
         if path not in cache:
             cache[path] = analyze(path.read_text(encoding='utf-8'), test_features)
         for decl in cache[path].mods:
-            for candidate in module_candidates(path, decl, is_mod_rs):
-                if candidate.is_file():
-                    child_mod_rs = decl.path_attr is not None or candidate.name == 'mod.rs'
-                    queue.append((candidate.resolve(), test or decl.test_only, child_mod_rs))
-                    break
+            for candidates, route_test, via_path in module_routes(path, decl, is_mod_rs):
+                for candidate in candidates:
+                    if candidate.is_file():
+                        child_mod_rs = via_path or candidate.name == 'mod.rs'
+                        queue.append((candidate.resolve(), test or route_test, child_mod_rs, path))
+                        break
         # `include!("path")` splices a file into its includer, relative to the including
         # file; its own `mod` declarations are resolved from its directory.
         for literal, test_only in cache[path].includes:
             candidate = path.parent / literal
             if candidate.is_file():
-                queue.append((candidate.resolve(), test or test_only, True))
+                queue.append((candidate.resolve(), test or test_only, True, path))
+    in_tests = sorted(
+        (name(path), tuple(sorted(name(loader) for loader in loaders.get(path, ()))))
+        for path, state in status.items()
+        if state == 'production' and crate_tests_directory(path, base) is not None)
     unreached = []
     for directory in sorted({p.parent for p in root_files}):
         for path in sorted(directory.rglob('*.rs')):
@@ -605,22 +707,14 @@ def scan(repo: Path, roots: list[str], test_features: frozenset[str] = frozenset
                 unreached.append(resolved)
                 cache[resolved] = analyze(path.read_text(encoding='utf-8'), test_features)
     found: dict[tuple[str, str, str], list[Occurrence]] = {}
+    unreadable = []
     for path, state in status.items():
         if state != 'production':
             continue
-        try:
-            relative = path.relative_to(repo.resolve()).as_posix()
-        except ValueError:
-            relative = path.as_posix()
         for occurrence in cache[path].occurrences:
-            found.setdefault((relative, occurrence.kind, occurrence.name), []).append(occurrence)
-    unreached_names = []
-    for path in unreached:
-        try:
-            unreached_names.append(path.relative_to(repo.resolve()).as_posix())
-        except ValueError:
-            unreached_names.append(path.as_posix())
-    return Scan(found, unreached_names, len(status))
+            found.setdefault((name(path), occurrence.kind, occurrence.name), []).append(occurrence)
+        unreadable.extend((name(path), line, fragments) for line, fragments in cache[path].unreadable_includes)
+    return Scan(found, [name(path) for path in unreached], len(status), in_tests, sorted(unreadable))
 
 
 @dataclass
@@ -692,7 +786,22 @@ def check(repo: Path, allowlist_path: Path) -> tuple[list[str], Scan, dict]:
                           f'otherwise list it as debt with its owner (GwzCoreSessionCrateMap §1)')
     for key in sorted(set(entries) - set(result.occurrences)):
         path, kind, name = key
+        if kind == 'include':
+            errors.append(f'INCL  include {name} in {path}: an include! the scan cannot read is never '
+                          f'allowlisted; delete the entry')
+            continue
         errors.append(f'STALE {kind} {name} in {path}: no longer present; delete the allowlist entry')
+    for path, loaders in result.in_tests:
+        errors.append(f"TESTS {path}: production code in a crate's tests/ directory, loaded by "
+                      f"{', '.join(loaders)}; move it under src/")
+    for path, line, fragments in result.unreadable_includes:
+        shown = '(' + ', '.join(repr(fragment) for fragment in fragments) + ')'
+        if any(TESTS_FRAGMENT.search(fragment) for fragment in fragments):
+            errors.append(f'TESTS {path}:{line}: an include! the scan cannot read names a tests/ directory '
+                          f'{shown}; no entry waives it')
+        else:
+            errors.append(f'INCL  {path}:{line}: an include! the scan cannot read {shown}; spell its path '
+                          f'as a literal, which the scan follows')
     return errors, result, entries
 
 
@@ -726,6 +835,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f'{path}:{lines}\t{kind}\t{name}\t{occurrences[0].detail}')
         for path in result.unreached:
             print(f'{path}\tunreached')
+        for path, loaders in result.in_tests:
+            print(f"{path}\tproduction code in a crate's tests/ directory, loaded by {', '.join(loaders)}")
+        for path, line, fragments in result.unreadable_includes:
+            print(f'{path}:{line}\tan include! the scan cannot read\t{fragments}')
         return 0
     errors, result, entries = check(repo, allowlist)
     for path in result.unreached:
@@ -739,7 +852,8 @@ def main(argv: list[str] | None = None) -> int:
               'A genuinely process-wide item needs an allowlist entry with a disposition '
               'and reason (GwzCoreSessionDesign O9). Global state listed as debt names its owner; '
               'it is permanent only as immutable data, a cache of it, or state whose imposed_by '
-              'names the dependency that imposes it (GwzCoreSessionCrateMap §1).', file=sys.stderr)
+              'names the dependency that imposes it (GwzCoreSessionCrateMap §1). Production code '
+              "in a crate's tests/ directory moves under src/; no entry waives it.", file=sys.stderr)
         return 1
     dispositions = Counter(entry['disposition'] for entry in entries.values())
     print(f'process-global state guard: {result.files} files, {len(entries)} allowlisted items '

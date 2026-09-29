@@ -31,12 +31,11 @@ cfg_if::cfg_if! {
                 host_b: &str,
                 token_b: &str,
             ) -> (TempDir, https_auth::Config) {
-                use std::os::unix::fs::PermissionsExt;
                 let directory = tempfile::tempdir().unwrap();
                 let executable = directory.path().join("gh");
-                fs::write(
+                crate::git::endpoint::helper_script::write_helper_script(
                     &executable,
-                    "#!/bin/sh\n\
+                    "\
 if [ \"$1 $2 $3\" != 'auth git-credential get' ]; then exit 4; fi\n\
 input=$(/bin/cat)\n\
 printf '%s\\n' \"$input\" >> \"$GH_LOG\"\n\
@@ -46,9 +45,7 @@ case \"$input\" in\n\
   *) exit 5 ;;\n\
 esac\n\
 printf 'username=fixture\\npassword=%s\\n\\n' \"$token\"\n",
-                )
-                .unwrap();
-                fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+                );
                 (
                     directory,
                     https_auth::Config {
