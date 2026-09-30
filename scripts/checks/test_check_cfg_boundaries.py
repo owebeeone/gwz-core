@@ -669,6 +669,17 @@ class Runner(unittest.TestCase):
         self.assertEqual(self.cfg_arguments(['--skip-cfg-siblings']),
                          [['--skip-repo', 'gwz-cli', '--skip-repo', 'gwz-py']])
 
+    def test_a_named_sibling_is_skipped_alone(self):
+        # A job with one sibling checked out skips only the other.
+        self.assertEqual(self.cfg_arguments(['--skip-cfg-sibling', 'gwz-cli']), [['--skip-repo', 'gwz-cli']])
+
+    def test_only_a_sibling_can_be_named(self):
+        with patch.object(runner.subprocess, 'run') as run, contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as refused:
+                runner.main(['--skip-transport-globals', '--skip-cfg-sibling', 'gwz-core'])
+        self.assertEqual(refused.exception.code, 2)
+        run.assert_not_called()
+
     def test_an_abbreviated_flag_does_not_skip(self):
         self.assertEqual(self.cfg_arguments(['--skip-cfg']), [[]])
 

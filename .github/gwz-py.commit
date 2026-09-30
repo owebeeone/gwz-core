@@ -1,0 +1,8 @@
+# The gwz-py commit the transport candidate job checks out beside gwz-core
+# (.github/workflows/transport-candidate.yml). The candidate build's in-process
+# embedding tests run gwz-py's Python codec from its source
+# (tests/transport_backend/python_embedding.py); nothing is built from it.
+# Bump rule: a gwz-core commit whose candidate tests need a newer gwz-py moves
+# this pin in the same commit, to a gwz-py commit already on its main. The job
+# reads the first 40-hex line.
+950064d287bbe439dc6de663ab6b706805f37ef5

@@ -77,9 +77,10 @@ directories, so the `.github/bootstrap-crate` stubs are unscanned, and the
 repository that is not checked out fails the check, and so does an
 unreadable file. --skip-repo NAME skips a sibling and prints SKIPPED GATE, for
 a CI job without that checkout only; the check's own repository cannot be
-skipped, and a run that scans no file fails. gwz-core's CI checks gwz-core
-alone, so the coverage of gwz-cli and gwz-py is local-only (run_tests.py in a
-workspace) until their own CI runs the check, a follow-up once this check is
+skipped, and a run that scans no file fails. gwz-core's CI checks gwz-core,
+and its transport candidate job checks gwz-py at the commit .github/gwz-py.commit
+pins; otherwise the coverage of gwz-cli and gwz-py is local-only (run_tests.py in
+a workspace) until their own CI runs the check, a follow-up once this check is
 on gwz-core's main.
 """
 import argparse

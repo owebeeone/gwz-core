@@ -1,0 +1,12 @@
+# The gwz-transport commit the transport candidate job builds against
+# (.github/workflows/transport-candidate.yml). gwz-core's candidate and consumer
+# generators pin gwz-transport's IR export by digest (owner-schema-sha256 in
+# protocol/candidate/candidate-generator.json and
+# tests/transport_consumer/protocol/generator.json), so this commit's
+# protocol/transport.ir.json must have that digest; the job's --check fails
+# otherwise. Bump rule: a gwz-core commit that moves those pins to a newer
+# gwz-transport moves this pin in the same commit, to a gwz-transport commit
+# already on its main. This is not the process-global allowlist's
+# reconciled_commit, which records the commit that list was last reconciled
+# against. The job reads the first 40-hex line.
+a24e70a8342417e03f96f674edd8495c1cfc5b6a

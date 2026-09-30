@@ -1,0 +1,169 @@
+name: Transport candidate
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Until activation the transport builds only under `--cfg gwz_transport_candidate`
+# (dev-docs GwzCoreSessionPlan §2.4): tests/transport_backend/prepare.py makes a
+# manifest copy of gwz-core that adds gwz-transport and the transport's
+# third-party crates, and the suites run against it. This job runs that build's
+# suites, the candidate and consumer generators' checks, the candidate's Python
+# tests and the consumer's archive proof on every change, against the
+# gwz-transport and gwz-py commits .github/gwz-transport.commit and
+# .github/gwz-py.commit pin, and the taut-proto release the candidate generator
+# pins (installed, and checked out at its tag).
+jobs:
+  candidate:
+    name: Candidate build suites
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        # gwz-core, gwz-transport, gwz-py, taut and git2-rs are checked out
+        # side by side, as a workspace has them; every command runs in gwz-core.
+        working-directory: gwz-core
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: gwz-core
+          persist-credentials: false
+      - name: Check out git2-rs beside gwz-core
+        # gwz-core builds against the git2-rs fork by path (`../git2-rs`, package
+        # `gwz-git2`), at the commit gwz-core's .github/git2-rs.commit pins.
+        run: bash .github/checkout-git2-rs.sh
+      - id: pins
+        name: Read the gwz-transport and gwz-py commits and the taut release the candidate builds against
+        run: |
+          echo "gwz-transport=$(grep -m1 -E '^[0-9a-f]{40}$' .github/gwz-transport.commit)" >> "$GITHUB_OUTPUT"
+          echo "gwz-py=$(grep -m1 -E '^[0-9a-f]{40}$' .github/gwz-py.commit)" >> "$GITHUB_OUTPUT"
+          release="$(jq -r '."taut-proto"' protocol/candidate/candidate-generator.json)"
+          echo "taut-proto=$release" >> "$GITHUB_OUTPUT"
+          echo "taut=v$release" >> "$GITHUB_OUTPUT"
+      - name: Check out gwz-transport at its pin, beside gwz-core
+        uses: actions/checkout@v6
+        with:
+          repository: owebeeone/gwz-transport
+          ref: ${{ steps.pins.outputs.gwz-transport }}
+          path: gwz-transport
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check out gwz-py at its pin, beside gwz-core
+        # The embedding tests run gwz-py's Python codec from this source; the
+        # job builds nothing from it.
+        uses: actions/checkout@v6
+        with:
+          repository: owebeeone/gwz-py
+          ref: ${{ steps.pins.outputs.gwz-py }}
+          path: gwz-py
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check out taut at the release tag, beside gwz-core
+        # The candidate's tests read taut's source from the workspace's taut
+        # checkout, which a workspace keeps at the tag of the pinned release
+        # (tests/protocol.rs, tests/transport_backend/python_embedding.py).
+        # The generators take the installed release instead.
+        uses: actions/checkout@v6
+        with:
+          repository: owebeeone/taut
+          ref: ${{ steps.pins.outputs.taut }}
+          path: taut
+          persist-credentials: false
+      - name: The pinned commits are on their repositories' main
+        env:
+          TRANSPORT_PIN: ${{ steps.pins.outputs.gwz-transport }}
+          PY_PIN: ${{ steps.pins.outputs.gwz-py }}
+        run: |
+          status=0
+          for pinned in "gwz-transport $TRANSPORT_PIN" "gwz-py $PY_PIN"; do
+            set -- $pinned
+            if ! git -C "../$1" merge-base --is-ancestor "$2" origin/main; then
+              echo "::error::.github/$1.commit $2 is not on $1's main; push $1 first"
+              status=1
+            fi
+          done
+          exit $status
+      - name: Install Rust toolchains
+        # gwz-core's own (rust-toolchain.toml), and 1.96.0 for the rustfmt build
+        # the consumer generator's pin names.
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+          rustup toolchain install 1.96.0 --profile minimal --component rustfmt
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install taut-proto and pytest
+        # The generators accept only the pinned release, from this interpreter's
+        # site-packages.
+        env:
+          RELEASE: ${{ steps.pins.outputs.taut-proto }}
+        run: python -m pip install --upgrade pip "taut-proto==$RELEASE" pytest
+      - name: Candidate and consumer generators match their checked-in artifacts
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python protocol/candidate/candidate-regenerator.py --core-schema protocol/gwz.taut.py --owner-schema ../gwz-transport/protocol/transport.ir.json --check
+          python -m pytest -q -p no:cacheprovider protocol/candidate/test_candidate_regen.py
+          cd ..
+          RUSTUP_TOOLCHAIN=1.96.0 python gwz-core/tests/transport_consumer/protocol/regen.py --owner-schema gwz-transport/protocol/transport.ir.json --check
+          RUSTUP_TOOLCHAIN=1.96.0 python -m pytest -q -p no:cacheprovider gwz-core/tests/transport_consumer/protocol/test_regen.py
+      - name: Candidate Python tests
+        # The preparation script, and the consumer's candidate compatibility
+        # fixtures and archive proof.
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python -m pytest -q -p no:cacheprovider \
+            tests/transport_backend/test_prepare.py \
+            tests/transport_consumer/candidate/test_candidate.py \
+            tests/transport_consumer/test_package_proof.py
+      - name: Prepare the candidate build
+        # prepare.py copies only the manifest and Cargo.lock; resolving the copy
+        # adds the transport's third-party crates to its lock, which the
+        # --locked test runs below then use as is.
+        run: |
+          python tests/transport_backend/prepare.py "$RUNNER_TEMP/candidate"
+          cargo metadata --format-version 1 --manifest-path "$RUNNER_TEMP/candidate/Cargo.toml" > /dev/null
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gwz-core -> ../candidate-target
+          cache-on-failure: true
+      - name: Run the candidate build's suites
+        # gwz-cli is not checked out, so the conditional-compilation check
+        # covers gwz-core and gwz-py and prints SKIPPED GATE for gwz-cli.
+        # gwz-transport's process-global check runs over the checkout beside
+        # gwz-core.
+        env:
+          RUSTFLAGS: --cfg gwz_transport_candidate
+        run: |
+          set -o pipefail
+          python scripts/run_tests.py --skip-cfg-sibling gwz-cli --no-fail-fast \
+            --manifest-path="$RUNNER_TEMP/candidate/Cargo.toml" \
+            --target-dir="$GITHUB_WORKSPACE/candidate-target" 2>&1 | tee "$RUNNER_TEMP/candidate.log"
+      - name: Summarize failures
+        if: always()
+        run: |
+          echo '== failure names =='
+          grep -E '^test .* \.\.\. FAILED' "$RUNNER_TEMP/candidate.log" | sort || true
+          echo '== results =='
+          grep -E '^test result' "$RUNNER_TEMP/candidate.log" || true
+      - name: Consumer archive proof
+        # The test-only consumer crate builds against gwz-transport's packaged
+        # archive, with the core bridge and candidate protocol copied in
+        # (tests/transport_consumer/README.md).
+        env:
+          RUSTUP_TOOLCHAIN: "1.95.0"
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          cargo package --locked --manifest-path ../gwz-transport/Cargo.toml --target-dir "$RUNNER_TEMP/transport-package"
+          archive="$RUNNER_TEMP/transport-package/package/gwz-transport-0.1.0.crate"
+          python tests/transport_consumer/package_proof.py \
+            --archive "$archive" \
+            --archive-sha256 "$(sha256sum "$archive" | cut -d' ' -f1)" \
+            --source-revision "$(git -C ../gwz-transport rev-parse HEAD)"

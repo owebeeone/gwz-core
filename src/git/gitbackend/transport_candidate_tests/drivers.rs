@@ -252,17 +252,23 @@ fn candidate_service_refusal_skips_only_private_members_and_forgets_observations
     .unwrap();
     let denied = format!("ssh://{}@127.0.0.1:{}/inaccessible.git", f.user, f.port);
     let broken = format!("ssh://{}@127.0.0.1:{}/broken.git", f.user, f.port);
+    // The whole error goes in the failure message: a CI failure here must say
+    // whether the refusal was lost or the clone failed another way.
+    let refused = b
+        .clone_repo(&denied, &f.temp.path().join("refused"))
+        .unwrap_err();
     assert_eq!(
-        b.clone_repo(&denied, &f.temp.path().join("refused"))
-            .unwrap_err()
-            .code,
-        crate::model::ErrorCode::RemoteRejected
+        refused.code,
+        crate::model::ErrorCode::RemoteRejected,
+        "{refused:?}"
     );
+    let failed = b
+        .clone_repo(&broken, &f.temp.path().join("broken"))
+        .unwrap_err();
     assert_eq!(
-        b.clone_repo(&broken, &f.temp.path().join("broken"))
-            .unwrap_err()
-            .code,
-        crate::model::ErrorCode::GitCommandFailed
+        failed.code,
+        crate::model::ErrorCode::GitCommandFailed,
+        "{failed:?}"
     );
     let root = f.temp.path().join("private-workspace");
     std::fs::create_dir(&root).unwrap();
