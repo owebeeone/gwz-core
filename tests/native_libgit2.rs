@@ -21,8 +21,7 @@ fn production_links_the_forks_vendored_libgit2() {
 
 #[test]
 fn the_manifest_requests_the_forks_vendored_libgit2_on_every_host() {
-    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml");
-    let manifest = std::fs::read_to_string(path).expect("gwz-core's manifest");
+    let manifest = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"));
     let git2 = manifest
         .lines()
         .find(|line| line.starts_with("git2 = "))
