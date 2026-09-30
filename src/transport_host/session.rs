@@ -25,7 +25,12 @@ use std::{
     time::Instant,
 };
 mod driver;
-pub(crate) use driver::SshOpenFailure;
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        // The transport host's tests downcast SSH open errors to it.
+        pub(super) use driver::SshOpenFailure;
+    }
+}
 pub type Attachment = (String, Envelope);
 const CLEANUP: Duration = Duration::from_secs(5);
 const CHECK_MS: u64 = 120_000;

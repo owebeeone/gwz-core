@@ -71,23 +71,6 @@ impl RequestContext {
             facts,
         )
     }
-    pub(crate) fn open_https(
-        &self,
-        url: &str,
-        service: gwz_transport::protocol::GitService,
-        policy: Option<gwz_transport::protocol::AuthPolicy>,
-        opened: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
-        facts: Arc<dyn Fn(&Facts) + Send + Sync>,
-    ) -> io::Result<BlockingStream> {
-        self.open_https_recording(
-            url,
-            service,
-            policy,
-            opened,
-            facts,
-            Arc::new(Mutex::new(None)),
-        )
-    }
     pub(crate) fn open_https_recording(
         &self,
         url: &str,
@@ -129,8 +112,6 @@ impl RequestContext {
                     effect: Effect::None,
                     facts: None,
                 },
-                stream_id: None,
-                policy: policy.unwrap_or(AuthPolicy::Anonymous),
                 anonymous: None,
             })
         };
@@ -205,7 +186,7 @@ impl RequestContext {
             && first == AuthPolicy::Anonymous
             && crate::git::endpoint::https_policy::advertisement(service)
         {
-            if let Err((stream_id, failure)) = &result {
+            if let Err(failure) = &result {
                 if matches!(
                     failure.code,
                     ErrorCode::Authentication | ErrorCode::RepositoryRefused
@@ -215,22 +196,17 @@ impl RequestContext {
                     .is_some_and(|f| matches!(f.http_status, Some(401 | 404)))
                 {
                     anonymous = Some(HttpsAttemptReceipt {
-                        stream_id: *stream_id,
-                        policy: first,
                         failure: failure.clone(),
                     });
                     *first_receipt.lock().unwrap_or_else(|e| e.into_inner()) = anonymous.clone();
                     selected = AuthPolicy::Gh;
                     result = if self.validate(&self.meta, &self.operation).is_err() {
-                        Err((
-                            None,
-                            Failure {
-                                setup_cause: None,
-                                code: ErrorCode::Cancelled,
-                                effect: Effect::None,
-                                facts: None,
-                            },
-                        ))
+                        Err(Failure {
+                            setup_cause: None,
+                            code: ErrorCode::Cancelled,
+                            effect: Effect::None,
+                            facts: None,
+                        })
                     } else {
                         self.session.open_https(
                             &self.meta.request_id,
@@ -255,16 +231,11 @@ impl RequestContext {
                 route.resolved = selected;
                 Ok(stream)
             }
-            Err((stream_id, failure)) => {
+            Err(failure) => {
                 if let Some(value) = &failure.facts {
                     facts(value);
                 }
-                Err(io::Error::other(HttpsOpenFailure {
-                    failure,
-                    stream_id,
-                    policy: selected,
-                    anonymous,
-                }))
+                Err(io::Error::other(HttpsOpenFailure { failure, anonymous }))
             }
         }
     }
@@ -405,15 +376,11 @@ impl Default for HttpsRouteState {
 }
 #[derive(Clone, Debug)]
 pub(crate) struct HttpsAttemptReceipt {
-    pub(crate) stream_id: Option<i64>,
-    pub(crate) policy: gwz_transport::protocol::AuthPolicy,
     pub(crate) failure: gwz_transport::protocol::Failure,
 }
 #[derive(Debug)]
 pub(crate) struct HttpsOpenFailure {
     pub(crate) failure: gwz_transport::protocol::Failure,
-    pub(crate) stream_id: Option<i64>,
-    pub(crate) policy: gwz_transport::protocol::AuthPolicy,
     pub(crate) anonymous: Option<HttpsAttemptReceipt>,
 }
 impl std::fmt::Display for HttpsOpenFailure {

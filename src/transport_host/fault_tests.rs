@@ -3,6 +3,7 @@
 //! These tests deliberately stop at the mux boundary.  The peer is an
 //! in-memory endpoint owner, so a failure here identifies host admission or
 //! wake-up ordering without involving SSH, a repository, or a wire carrier.
+use super::session::SshOpenFailure;
 use super::*;
 use crate::git::endpoint::{ssh_channel::GitService, stream_io::BlockingStream};
 use gwz_transport::{

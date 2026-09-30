@@ -110,8 +110,6 @@ fn automatic_discovery_crosses_real_failure_then_gh_open_and_keeps_receipts_priv
             .unwrap()
             .clone()
             .expect("first receipt survives later cached RPC");
-        assert!(first.stream_id.is_some());
-        assert_eq!(first.policy, gwz_transport::protocol::AuthPolicy::Anonymous);
         assert_eq!(first.failure.facts.as_ref().unwrap().http_status, Some(401));
         let rows = opened.lock().unwrap();
         assert_eq!(rows.len(), 2);
@@ -169,12 +167,13 @@ fn explicit_anonymous_refusal_does_not_hold_capacity_for_the_request_lifetime() 
         let url = server.url.clone();
         let failure = tokio::task::spawn_blocking(move || {
             context
-                .open_https(
+                .open_https_recording(
                     &url,
                     GitService::UploadPackAdvertisement,
                     Some(gwz_transport::protocol::AuthPolicy::Anonymous),
                     Arc::new(|_, _| {}),
                     Arc::new(|_| {}),
+                    Arc::new(Mutex::new(None)),
                 )
                 .err()
                 .unwrap()
@@ -236,12 +235,13 @@ fn ssh_only_bound_peer_rejects_https_without_opening_a_socket() {
         let url = server.url.clone();
         let failure = tokio::task::spawn_blocking(move || {
             context
-                .open_https(
+                .open_https_recording(
                     &url,
                     GitService::UploadPackAdvertisement,
                     None,
                     Arc::new(|_, _| {}),
                     Arc::new(|_| {}),
+                    Arc::new(Mutex::new(None)),
                 )
                 .err()
                 .unwrap()
@@ -291,12 +291,13 @@ fn no_helper_after_anonymous_refusal_preserves_first_receipt_without_suppression
         let url = server.url.clone();
         let failure = tokio::task::spawn_blocking(move || {
             context
-                .open_https(
+                .open_https_recording(
                     &url,
                     GitService::UploadPackAdvertisement,
                     None,
                     Arc::new(|_, _| {}),
                     Arc::new(|_| {}),
+                    Arc::new(Mutex::new(None)),
                 )
                 .err()
                 .unwrap()
@@ -310,11 +311,11 @@ fn no_helper_after_anonymous_refusal_preserves_first_receipt_without_suppression
             .unwrap();
         let first = receipt.anonymous.as_ref().expect("complete first receipt");
         assert_eq!(first.failure.facts.as_ref().unwrap().http_status, Some(404));
-        assert!(first.stream_id.is_some());
-        assert_eq!(first.policy, gwz_transport::protocol::AuthPolicy::Anonymous);
-        assert!(receipt.stream_id.is_some());
-        assert_ne!(receipt.stream_id, first.stream_id);
-        assert_eq!(receipt.policy, gwz_transport::protocol::AuthPolicy::Gh);
+        // The failure is the gh attempt's, which followed the anonymous 404.
+        assert_eq!(
+            receipt.failure.facts.as_ref().map(|facts| facts.method),
+            Some(AuthMethod::Gh)
+        );
         assert_ne!(receipt.failure.code, TransportError::RepositoryRefused);
         assert!(!failure.to_string().contains("private body sentinel"));
         assert_eq!(request.finish().await.pending_local_work, 0);
@@ -402,12 +403,13 @@ fn cancellation_wakes_pending_https_open_and_retires_its_owner() {
         let context = request.context.clone();
         let url = server.url.clone();
         let pending = tokio::task::spawn_blocking(move || {
-            context.open_https(
+            context.open_https_recording(
                 &url,
                 GitService::UploadPackAdvertisement,
                 None,
                 Arc::new(|_, _| {}),
                 Arc::new(|_| {}),
+                Arc::new(Mutex::new(None)),
             )
         });
         tokio::time::timeout(Duration::from_secs(3), async {
@@ -475,12 +477,13 @@ fn more_than_one_admission_window_of_abandoned_rpcs_retires_before_request_finis
             tokio::task::spawn_blocking(move || {
                 for _ in 0..70 {
                     let mut stream = context
-                        .open_https(
+                        .open_https_recording(
                             &url,
                             GitService::UploadPackAdvertisement,
                             Some(AuthPolicy::Anonymous),
                             Arc::new(|_, _| {}),
                             Arc::new(|_| {}),
+                            Arc::new(Mutex::new(None)),
                         )
                         .unwrap();
                     assert_eq!(stream.read(&mut [0u8; 1]).unwrap(), 1);
@@ -547,12 +550,13 @@ fn concurrent_same_route_auth_transitions_do_not_interleave() {
         let url = server.url.clone();
         let open = move || {
             context
-                .open_https(
+                .open_https_recording(
                     &url,
                     GitService::UploadPackAdvertisement,
                     None,
                     Arc::new(|_, _| {}),
                     Arc::new(|_| {}),
+                    Arc::new(Mutex::new(None)),
                 )
                 .err()
                 .unwrap()
@@ -616,12 +620,13 @@ fn explicit_anonymous_cannot_switch_policy_and_lend_its_budget_to_gh() {
         let url = server.url.clone();
         tokio::task::spawn_blocking(move || {
             let error = context
-                .open_https(
+                .open_https_recording(
                     &url,
                     GitService::UploadPackAdvertisement,
                     Some(AuthPolicy::Anonymous),
                     Arc::new(|_, _| {}),
                     Arc::new(|_| {}),
+                    Arc::new(Mutex::new(None)),
                 )
                 .err()
                 .unwrap();
@@ -636,12 +641,13 @@ fn explicit_anonymous_cannot_switch_policy_and_lend_its_budget_to_gh() {
                 TransportError::RepositoryRefused
             );
             let error = context
-                .open_https(
+                .open_https_recording(
                     &url,
                     GitService::UploadPackAdvertisement,
                     Some(AuthPolicy::Gh),
                     Arc::new(|_, _| {}),
                     Arc::new(|_| {}),
+                    Arc::new(Mutex::new(None)),
                 )
                 .err()
                 .unwrap();
@@ -651,7 +657,6 @@ fn explicit_anonymous_cannot_switch_policy_and_lend_its_budget_to_gh() {
                 .downcast_ref::<HttpsOpenFailure>()
                 .unwrap();
             assert_eq!(receipt.failure.code, TransportError::InvalidRequest);
-            assert!(receipt.stream_id.is_none());
         })
         .await
         .unwrap();
@@ -666,12 +671,13 @@ fn explicit_anonymous_cannot_switch_policy_and_lend_its_budget_to_gh() {
         tokio::task::spawn_blocking(move || {
             for _ in 0..2 {
                 let stream = context
-                    .open_https(
+                    .open_https_recording(
                         &url,
                         GitService::UploadPackAdvertisement,
                         Some(AuthPolicy::Gh),
                         Arc::new(|_, _| {}),
                         Arc::new(|_| {}),
+                        Arc::new(Mutex::new(None)),
                     )
                     .unwrap();
                 let mut rpc = RpcIo::new(stream, true);
@@ -734,12 +740,13 @@ fn cancelling_receive_pack_preparation_has_no_publication_effect() {
         let url = server.url.clone();
         tokio::task::spawn_blocking(move || {
             let stream = context
-                .open_https(
+                .open_https_recording(
                     &url,
                     GitService::ReceivePackAdvertisement,
                     None,
                     Arc::new(|_, _| {}),
                     Arc::new(|_| {}),
+                    Arc::new(Mutex::new(None)),
                 )
                 .unwrap();
             RpcIo::new(stream, true)
@@ -751,12 +758,13 @@ fn cancelling_receive_pack_preparation_has_no_publication_effect() {
         let context = request.context.clone();
         let url = server.url.clone();
         let pending = tokio::task::spawn_blocking(move || {
-            context.open_https(
+            context.open_https_recording(
                 &url,
                 GitService::ReceivePackExchange,
                 None,
                 Arc::new(|_, _| {}),
                 Arc::new(|_| {}),
+                Arc::new(Mutex::new(None)),
             )
         });
         tokio::time::timeout(Duration::from_secs(2), async {

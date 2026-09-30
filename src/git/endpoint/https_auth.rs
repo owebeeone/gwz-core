@@ -366,7 +366,7 @@ pub(crate) async fn lookup_owned(
         active: owner.inner.active.clone(),
     };
     let mut job = HelperJob::new(child, helper_slot, owner.clone());
-    let mut stdin = job.child_mut().stdin.take().ok_or(AuthError::SpawnFailed)?;
+    let stdin = job.child_mut().stdin.take().ok_or(AuthError::SpawnFailed)?;
     let stdout = job
         .child_mut()
         .stdout

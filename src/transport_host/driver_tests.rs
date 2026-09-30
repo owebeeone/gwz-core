@@ -4,6 +4,7 @@
 //! run.  That is the boundary which catches a driver accidentally rebuilding
 //! native transport state instead of using the request's host session.
 
+use super::session::SshOpenFailure;
 use super::*;
 use crate::git::GitBackend;
 use crate::operation::NullSink;

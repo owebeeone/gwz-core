@@ -35,7 +35,6 @@ pub fn validate_request_context(meta: &RequestMeta, operation_id: &str) -> Model
 }
 pub(crate) use request::{HttpsAttemptReceipt, HttpsOpenFailure, RequestContext};
 use session::Session;
-pub(crate) use session::SshOpenFailure;
 pub use session::{Attachment, TransportPort};
 use std::{
     path::PathBuf,
@@ -297,14 +296,6 @@ pub struct CliEndpoint(Arc<Session>);
 impl CliEndpoint {
     pub fn new(config: SshEndpointConfig) -> ModelResult<(Self, TransportPort)> {
         let (session, port) = Session::endpoint(config)?;
-        Ok((Self(session), port))
-    }
-    pub(crate) fn with_https(
-        config: SshEndpointConfig,
-        https: HttpsEndpointConfig,
-        helper_slots: HelperSlots,
-    ) -> ModelResult<(Self, TransportPort)> {
-        let (session, port) = Session::endpoint_with_https(config, Some((https, helper_slots)))?;
         Ok((Self(session), port))
     }
     pub fn register_request(&self, request_id: &str) -> ModelResult<ClientRequest> {

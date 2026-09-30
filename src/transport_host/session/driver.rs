@@ -37,7 +37,7 @@ impl Session {
             observe,
             facts,
         )
-        .map_err(|(_, failure)| failure_io(failure))
+        .map_err(failure_io)
     }
     pub(in crate::transport_host) fn open_https(
         &self,
@@ -50,9 +50,9 @@ impl Session {
         allocation_observer: Option<Arc<dyn Fn(i64) + Send + Sync>>,
         observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
         facts: Arc<dyn Fn(&Facts) + Send + Sync>,
-    ) -> Result<BlockingStream, (Option<i64>, Failure)> {
+    ) -> Result<BlockingStream, Failure> {
         let destination = crate::git::endpoint::https_destination::Destination::parse(url)
-            .map_err(|failure| (None, protocol_failure(failure)))?;
+            .map_err(protocol_failure)?;
         self.open_stream(
             request,
             operation,
@@ -91,29 +91,22 @@ impl Session {
         allocation_observer: Option<Arc<dyn Fn(i64) + Send + Sync>>,
         observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
         facts: Arc<dyn Fn(&Facts) + Send + Sync>,
-    ) -> Result<BlockingStream, (Option<i64>, Failure)> {
+    ) -> Result<BlockingStream, Failure> {
         let reply = Wait::new();
-        let stream_id;
         {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.closed {
-                return Err((
-                    None,
-                    protocol_failure(gwz_transport::protocol::ErrorCode::CarrierLost),
+                return Err(protocol_failure(
+                    gwz_transport::protocol::ErrorCode::CarrierLost,
                 ));
             }
-            let owner = state.owner.as_ref().ok_or_else(|| {
-                (
-                    None,
-                    protocol_failure(gwz_transport::protocol::ErrorCode::Unavailable),
-                )
-            })?;
-            let binding = owner.binding().ok_or_else(|| {
-                (
-                    None,
-                    protocol_failure(gwz_transport::protocol::ErrorCode::Unavailable),
-                )
-            })?;
+            let owner = state
+                .owner
+                .as_ref()
+                .ok_or_else(|| protocol_failure(gwz_transport::protocol::ErrorCode::Unavailable))?;
+            let binding = owner
+                .binding()
+                .ok_or_else(|| protocol_failure(gwz_transport::protocol::ErrorCode::Unavailable))?;
             let report_open_failure = destination.scheme == Scheme::Ssh;
             // Check after taking the session mutex: contention here is part of
             // admission too. Truncate sub-millisecond remainders and fail;
@@ -122,9 +115,8 @@ impl Session {
                 Some(until) => {
                     let remaining = until.saturating_duration_since(Instant::now()).as_millis();
                     if remaining == 0 {
-                        return Err((
-                            None,
-                            protocol_failure(gwz_transport::protocol::ErrorCode::Timeout),
+                        return Err(protocol_failure(
+                            gwz_transport::protocol::ErrorCode::Timeout,
                         ));
                     }
                     remaining.min(i64::MAX as u128) as i64
@@ -146,15 +138,11 @@ impl Session {
                 receive_limits: binding.limits().clone(),
             };
             let id = owner.open(request, open).map_err(|_| {
-                (
-                    None,
-                    protocol_failure(gwz_transport::protocol::ErrorCode::UnsupportedOperation),
-                )
+                protocol_failure(gwz_transport::protocol::ErrorCode::UnsupportedOperation)
             })?;
             if let Some(observer) = &allocation_observer {
                 observer(allocation_ms);
             }
-            stream_id = Some(id);
             let mut config = stream::Config::new(binding.session_id(), id, stream::Side::Initiator);
             config.profile_version = 2;
             config.receive_limits = binding.limits().clone();
@@ -164,12 +152,8 @@ impl Session {
             config.max_payload = config
                 .max_payload
                 .min(binding.limits().data_payload as usize);
-            let (stream, peer) = Stream::new(config).map_err(|_| {
-                (
-                    Some(id),
-                    protocol_failure(gwz_transport::protocol::ErrorCode::Protocol),
-                )
-            })?;
+            let (stream, peer) = Stream::new(config)
+                .map_err(|_| protocol_failure(gwz_transport::protocol::ErrorCode::Protocol))?;
             let deadline = (state.io_timeout_ms != 0)
                 .then(|| Instant::now() + Duration::from_millis(150_000 + state.io_timeout_ms));
             state.streams.insert(
@@ -195,7 +179,7 @@ impl Session {
         }
         match reply.get() {
             Ok((stream, _)) => Ok(stream),
-            Err(failure) => Err((stream_id, failure)),
+            Err(failure) => Err(failure),
         }
     }
     pub(in crate::transport_host) fn check(
