@@ -21,7 +21,9 @@ fn fixture() -> (
         },
         f.known_hosts.clone(),
         None,
-        3000,
+        // Production's per-step SSH budget. At 3 s, a clone under the full
+        // suite's load stalled past it and failed as a Timeout.
+        super::transport_support::DEFAULT_SERVER_TIMEOUT_MS as u64,
     )
     .unwrap();
     let mut backend = Git2Backend::new();
