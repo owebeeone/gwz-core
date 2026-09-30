@@ -16,7 +16,7 @@ use std::{
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     process::{Child, Command},
     time::{Instant, sleep_until, timeout},
 };
@@ -384,10 +384,7 @@ pub(crate) async fn lookup_owned(
     )
     .into_bytes();
     let overflow = CancellationToken::new();
-    let write = async move {
-        stdin.write_all(&request).await.map_err(|_| AuthError::Io)?;
-        stdin.shutdown().await.map_err(|_| AuthError::Io)
-    };
+    let write = async move { write_request(stdin, &request).await };
     let read_stdout = read_limited(stdout, overflow.clone());
     let read_stderr = read_limited(stderr, overflow.clone());
     let mut work = Box::pin(async {
@@ -441,6 +438,25 @@ pub(crate) async fn lookup_owned(
                 Err(error) => Err(error),
             }
         }
+    }
+}
+
+/// Writes the lookup request to the helper's input and closes it.
+///
+/// A helper may exit without reading its input. Git ignores SIGPIPE while it
+/// writes to a credential helper, so a broken pipe here is not a failure: the
+/// helper's exit status and output decide the lookup. Any other write error is.
+async fn write_request<W>(mut input: W, request: &[u8]) -> Result<(), AuthError>
+where
+    W: AsyncWrite + Unpin,
+{
+    let written = match input.write_all(request).await {
+        Ok(()) => input.shutdown().await,
+        Err(error) => Err(error),
+    };
+    match written {
+        Err(error) if error.kind() != io::ErrorKind::BrokenPipe => Err(AuthError::Io),
+        _ => Ok(()),
     }
 }
 
@@ -717,6 +733,49 @@ cfg_if::cfg_if! {
                 .unwrap();
                 assert_eq!(secret.header(), "Basic YWxpY2U6c2VjcmV0");
                 drop(directory);
+            }
+
+            #[tokio::test]
+            async fn a_helper_that_exits_without_reading_the_request_does_not_fail_the_write() {
+                // Git ignores SIGPIPE while it writes to a credential helper, so a
+                // helper may answer without reading its input. The helper's exit
+                // status and output decide the lookup, not the closed input.
+                let (input, helper) = tokio::io::duplex(64);
+                drop(helper);
+                assert!(matches!(write_request(input, b"protocol=https\n\n").await, Ok(())));
+            }
+
+            #[tokio::test]
+            async fn any_other_request_write_failure_is_an_io_failure() {
+                let input = FailingInput(io::ErrorKind::PermissionDenied);
+                assert!(matches!(write_request(input, b"protocol=https\n\n").await, Err(AuthError::Io)));
+            }
+
+            /// Input whose every write fails with one error kind.
+            struct FailingInput(io::ErrorKind);
+
+            impl AsyncWrite for FailingInput {
+                fn poll_write(
+                    self: std::pin::Pin<&mut Self>,
+                    _: &mut std::task::Context<'_>,
+                    _: &[u8],
+                ) -> std::task::Poll<io::Result<usize>> {
+                    std::task::Poll::Ready(Err(self.0.into()))
+                }
+
+                fn poll_flush(
+                    self: std::pin::Pin<&mut Self>,
+                    _: &mut std::task::Context<'_>,
+                ) -> std::task::Poll<io::Result<()>> {
+                    std::task::Poll::Ready(Ok(()))
+                }
+
+                fn poll_shutdown(
+                    self: std::pin::Pin<&mut Self>,
+                    _: &mut std::task::Context<'_>,
+                ) -> std::task::Poll<io::Result<()>> {
+                    std::task::Poll::Ready(Ok(()))
+                }
             }
 
             #[tokio::test]

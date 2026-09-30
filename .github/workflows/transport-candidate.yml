@@ -134,7 +134,8 @@ jobs:
         with:
           workspaces: gwz-core -> ../candidate-target
           cache-on-failure: true
-      - name: Run the candidate build's suites
+      - id: suites
+        name: Run the candidate build's suites
         # gwz-cli is not checked out, so the conditional-compilation check
         # covers gwz-core and gwz-py and prints SKIPPED GATE for gwz-cli.
         # gwz-transport's process-global check runs over the checkout beside
@@ -156,7 +157,9 @@ jobs:
       - name: Consumer archive proof
         # The test-only consumer crate builds against gwz-transport's packaged
         # archive, with the core bridge and candidate protocol copied in
-        # (tests/transport_consumer/README.md).
+        # (tests/transport_consumer/README.md). It does not depend on the
+        # suites, so it runs whenever they ran, pass or fail.
+        if: ${{ !cancelled() && steps.suites.outcome != 'skipped' }}
         env:
           RUSTUP_TOOLCHAIN: "1.95.0"
           PYTHONDONTWRITEBYTECODE: "1"
