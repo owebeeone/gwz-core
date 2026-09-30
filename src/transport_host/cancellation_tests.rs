@@ -2,7 +2,7 @@ use super::*;
 use crate::git::endpoint::{
     https_destination::Destination as HttpsDestination, shared_reservation::Authority,
 };
-use gwz_transport::{pool, protocol::*};
+use gwz_transport::pool;
 use std::{
     sync::Arc,
     task::{Context, Waker},

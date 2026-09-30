@@ -229,11 +229,27 @@ interface.
 
 ## CBOR
 
-The crate exposes `gwz_core::encode`, `gwz_core::decode`, and `gwz_core::Cbor`
-from the generated taut runtime. Use generated `to_cbor`/`from_cbor` methods on
-protocol structs when building a custom transport.
+The crate exposes `gwz_core::encode`, `gwz_core::try_decode`, and
+`gwz_core::Cbor` from the generated taut runtime (taut-proto 0.10.0), and the
+module `gwz_core::cbor` with its `DecodeError`. Use generated
+`to_cbor`/`from_cbor` methods on protocol structs when building a custom
+transport, or a message's generated `decode`, which applies the message's decode
+bounds.
+
+The bounds are the generated constants: every message carries `MAX_DEPTH` and
+`MAX_ENCODED_LEN`, and the crate root re-exports the file-level
+`gwz_core::MAX_DEPTH` (32) and `gwz_core::MAX_ENCODED_LEN` (`None`). Input
+nested deeper than 32 is `DecodeError::TooDeep`. gwz declares no length bound,
+so neither a message's `decode` nor `try_decode` (the default depth bound and no
+length bound) returns `TooLarge`; only a caller-supplied bound, through
+`gwz_core::cbor::try_decode_max` or `try_decode_with`, can.
+
+taut 0.10.0 removed the runtime's panicking `decode` and its panicking accessors
+(`get`, `int`, `float`, `text`, `bytes`, `boolean`, `array`, `get_opt`), so
+`gwz_core::decode` is gone: use `try_decode` or a message's `decode`.
+`DecodeError` gained `TooDeep` and `TooLarge`, and `DuplicateMapKey` carries a
+`MapKey` instead of an `i64`.
 
 ## Version
 
-`gwz_core::version()` returns the crate package version. The current crate
-version is v0.3.0.
+`gwz_core::version()` returns the crate package version.

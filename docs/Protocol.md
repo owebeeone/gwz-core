@@ -160,7 +160,7 @@ generated types in-process, or place a bridge between the client and a
 long as it has access to the workspace being operated on.
 
 Generated messages have deterministic CBOR encoding through
-`gwz_core::Cbor`, `gwz_core::encode`, and `gwz_core::decode`. Taut's IR-driven
+`gwz_core::Cbor`, `gwz_core::encode`, and `gwz_core::try_decode`. Taut's IR-driven
 JSON codec provides a language-neutral JSON representation of the same
 messages. A JSON bridge can therefore accept a service method plus its request
 message, dispatch it to core, and return response, event, and operation-result

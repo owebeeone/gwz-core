@@ -32,17 +32,16 @@ impl Consumer {
         }
     }
     pub(super) fn request(self, value: &InitFromSourcesRequest) -> InitFromSourcesRequest {
-        let result = InitFromSourcesRequest::from_cbor(&crate::decode(
-            &self.bytes("InitFromSourcesRequest", &value.to_cbor()),
-        ))
-        .unwrap();
+        let result =
+            InitFromSourcesRequest::decode(&self.bytes("InitFromSourcesRequest", &value.to_cbor()))
+                .unwrap();
         assert_eq!(&result, value);
         result
     }
     pub(super) fn response(self, value: &InitFromSourcesResponse) -> InitFromSourcesResponse {
-        let result = InitFromSourcesResponse::from_cbor(&crate::decode(
+        let result = InitFromSourcesResponse::decode(
             &self.bytes("InitFromSourcesResponse", &value.to_cbor()),
-        ))
+        )
         .unwrap();
         assert_eq!(&result, value);
         result

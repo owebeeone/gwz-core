@@ -1,6 +1,6 @@
 // GENERATED conformance vectors + byte-parity test (tautc corpus) — do not edit.
-// Requires the crate root to re-export its taut types + `Cbor`/`encode`/`decode`,
-// e.g. `pub use generated::*; pub use cbor::{Cbor, encode, decode};`.
+// Requires the crate root to re-export its taut types + `Cbor`/`encode`/`try_decode`,
+// e.g. `pub use generated::*; pub use cbor::{Cbor, encode, try_decode};`.
 #![allow(dead_code)]
 
 #[rustfmt::skip]
@@ -380,7 +380,8 @@ mod conformance {
     fn corpus_byte_parity() {
         assert!(!super::VECTORS.is_empty(), "empty corpus");
         for (name, message, golden) in super::VECTORS {
-            let out = hexof(&crate::encode(&reencode(message, &crate::decode(&unhex(golden)))));
+            let c = crate::try_decode(&unhex(golden)).unwrap_or_else(|e| panic!("decode {name}: {e}"));
+            let out = hexof(&crate::encode(&reencode(message, &c)));
             assert_eq!(&out, golden, "byte mismatch for {name} ({message})");
         }
     }

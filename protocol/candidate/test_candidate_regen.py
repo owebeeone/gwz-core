@@ -3,13 +3,13 @@
 import importlib.util
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parent
 REGEN_PATH = ROOT / "candidate-regenerator.py"
-TAUT_SOURCE = ROOT.parents[2] / "taut" / "src"
 CORE = ROOT.parents[1]
 CORE_SCHEMA = CORE / "protocol" / "gwz.taut.py"
 OWNER_SCHEMA = ROOT.parents[2] / "gwz-transport" / "protocol" / "transport.ir.json"
@@ -32,14 +32,12 @@ def test_candidate_regeneration_matches_checked_artifacts(cwd, inherited_toolcha
         env["RUSTUP_TOOLCHAIN"] = inherited_toolchain
     subprocess.run(
         [
-            "python3",
+            sys.executable,
             str(REGEN_PATH),
             "--core-schema",
             str(CORE_SCHEMA),
             "--owner-schema",
             str(OWNER_SCHEMA),
-            "--taut-source",
-            str(TAUT_SOURCE),
             "--check",
         ],
         check=True,
@@ -48,17 +46,66 @@ def test_candidate_regeneration_matches_checked_artifacts(cwd, inherited_toolcha
     )
 
 
-def test_dirty_canonical_taut_source_is_rejected(monkeypatch):
-    original = REGEN.subprocess.run
+def test_a_different_taut_proto_release_is_refused():
+    with pytest.raises(SystemExit, match="taut-proto pin mismatch"):
+        REGEN._released_taut({"taut-proto": "0.0.0"})
 
-    def fake_run(command, **kwargs):
-        if "status" in command:
-            return type("Result", (), {"stdout": " M src/taut/wire/codec.py\n"})()
-        return original(command, **kwargs)
 
-    monkeypatch.setattr(REGEN.subprocess, "run", fake_run)
-    with pytest.raises(SystemExit, match="checkout is dirty"):
-        REGEN._verify_pin(OWNER_SCHEMA, TAUT_SOURCE)
+def test_a_taut_that_shadows_the_release_is_refused(tmp_path):
+    # A checkout on PYTHONPATH can carry the pinned version string; only the
+    # installed release's own files count.
+    shadow = tmp_path / "taut"
+    shadow.mkdir()
+    (shadow / "__init__.py").write_text("__version__ = '0.10.0'\n")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REGEN_PATH),
+            "--core-schema",
+            str(CORE_SCHEMA),
+            "--owner-schema",
+            str(OWNER_SCHEMA),
+            "--check",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=CORE,
+        env={**os.environ, "PYTHONPATH": str(tmp_path)},
+    )
+    assert result.returncode != 0
+    assert "is not the installed taut-proto release" in result.stderr
+
+
+def test_a_taut_carrying_its_own_release_metadata_is_refused(tmp_path):
+    # Metadata that claims the pinned release does not make a copy on
+    # PYTHONPATH the installed release; only this interpreter's site
+    # directories hold that.
+    version = REGEN.json.loads(REGEN.PIN.read_text())["taut-proto"]
+    metadata = tmp_path / f"taut_proto-{version}.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: taut-proto\nVersion: {version}\n"
+    )
+    shadow = tmp_path / "taut"
+    shadow.mkdir()
+    (shadow / "__init__.py").write_text(f"__version__ = '{version}'\n")
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REGEN_PATH),
+            "--core-schema",
+            str(CORE_SCHEMA),
+            "--owner-schema",
+            str(OWNER_SCHEMA),
+            "--check",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=CORE,
+        env={**os.environ, "PYTHONPATH": str(tmp_path)},
+    )
+    assert result.returncode != 0
+    assert "is not the installed taut-proto release" in result.stderr
 
 
 def test_retained_reader_is_pinned_checked_in_baseline():
@@ -87,12 +134,12 @@ def test_a_stale_candidate_corpus_fails_the_check(artifact, tmp_path):
             "spec.loader.exec_module(regen)",
             f"regen.{artifact} = pathlib.Path({str(stale)!r})",
             "sys.argv = ['regen', '--core-schema', sys.argv[1], '--owner-schema', sys.argv[2],"
-            " '--taut-source', sys.argv[3], '--check']",
+            " '--check']",
             "regen.main()",
         ]
     )
     result = subprocess.run(
-        ["python3", "-c", script, str(CORE_SCHEMA), str(OWNER_SCHEMA), str(TAUT_SOURCE)],
+        [sys.executable, "-c", script, str(CORE_SCHEMA), str(OWNER_SCHEMA)],
         capture_output=True,
         text=True,
         cwd=CORE,

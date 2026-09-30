@@ -1058,9 +1058,9 @@ dependencies = [
 
 [[package]]
 name = "taut-shape"
-version = "0.9.2"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "949405182f907bfd541b34550040e2e80dd87881bfdb88d5ed96ae09c8927d79"
+checksum = "08da33565c5ae19b335089d8e4e9bf6cbc9836611b1cee1271f07f44a6124187"
 
 [[package]]
 name = "tempfile"

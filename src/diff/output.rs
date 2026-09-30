@@ -253,7 +253,7 @@ fn boundary_record(
 }
 
 /// Taut-encode a record (D17: the log payload is the append-type message already
-/// taut-encoded). The reader decodes with `DiffOutputRecord::from_cbor(decode(&p))`.
+/// taut-encoded). The reader decodes with `DiffOutputRecord::decode(&p)` ([`decode_record`]).
 pub fn encode_record(record: &DiffOutputRecord) -> Vec<u8> {
     crate::cbor::encode(&record.to_cbor())
 }
@@ -265,8 +265,7 @@ pub fn encode_record(record: &DiffOutputRecord) -> Vec<u8> {
 /// corruption. (Matches the pre-0.8.0 generated codec, which panicked inside
 /// `from_cbor` on malformed wire data.)
 pub fn decode_record(payload: &[u8]) -> DiffOutputRecord {
-    DiffOutputRecord::from_cbor(&crate::cbor::decode(payload))
-        .expect("diff log record failed to decode; log is corrupt")
+    DiffOutputRecord::decode(payload).expect("diff log record failed to decode; log is corrupt")
 }
 
 #[cfg(test)]

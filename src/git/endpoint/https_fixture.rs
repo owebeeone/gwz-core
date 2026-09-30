@@ -1,7 +1,7 @@
 //! Local TLS fixtures. Git subprocesses here are remote server implementations only.
 use super::*;
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::Full;
 use hyper::{Request, Response, body::Incoming, service::service_fn};
 use hyper_util::rt::TokioIo;
 use std::{

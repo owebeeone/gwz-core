@@ -70,7 +70,7 @@ mod verified_write;
 pub mod workspace;
 pub mod workspace_ops;
 
-pub use cbor::{Cbor, decode, encode};
+pub use cbor::{Cbor, encode, try_decode};
 pub use protocol::generated::*;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

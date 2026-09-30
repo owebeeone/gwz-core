@@ -33,11 +33,18 @@ pub use gwz_transport::protocol::Scheme;
 pub use gwz_transport::protocol::SetupFailureCause;
 pub use gwz_transport::protocol::Window;
 
+// The file's bounds, for a decode rooted at a type that is not a message:
+// `cbor::try_decode_with(bytes, MAX_DEPTH, MAX_ENCODED_LEN)`.
+pub const MAX_DEPTH: usize = 32;
+pub const MAX_ENCODED_LEN: Option<usize> = None;
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct GwzTransportDelivery {
     pub message: Envelope,
 }
 impl GwzTransportDelivery {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![(1, self.message.to_cbor())])
     }
@@ -45,5 +52,12 @@ impl GwzTransportDelivery {
         Ok(Self {
             message: Envelope::from_cbor(c.try_get(1)?)?,
         })
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(
+            bytes,
+            Self::MAX_DEPTH,
+            Self::MAX_ENCODED_LEN,
+        )?)
     }
 }

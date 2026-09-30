@@ -3,7 +3,7 @@ use crate::git::endpoint::{
     https_destination::Destination as HttpsDestination, shared_reservation::Authority,
 };
 use crate::transport_host::https_tests::fixture;
-use gwz_transport::{binding, mux, pool, protocol::*};
+use gwz_transport::{binding, mux, pool};
 use std::{
     sync::Arc,
     task::{Context, Waker},

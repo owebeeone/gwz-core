@@ -2,15 +2,13 @@
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import types
 from pathlib import Path
 
 import pytest
-
-TAUT_SOURCE = Path(__file__).resolve().parents[4] / "taut" / "src"
-sys.path.insert(0, str(TAUT_SOURCE))
 
 ROOT = Path(__file__).resolve().parent.parent
 OWNER = ROOT.parents[2] / "gwz-transport" / "protocol" / "transport.ir.json"
@@ -27,8 +25,7 @@ def pin():
 
 def test_positive_regeneration_matches_checked_artifact():
     subprocess.run(
-        [sys.executable, str(REGEN_PATH), "--owner-schema", str(OWNER),
-         "--taut-source", str(TAUT_SOURCE), "--check"],
+        [sys.executable, str(REGEN_PATH), "--owner-schema", str(OWNER), "--check"],
         check=True,
     )
 
@@ -51,29 +48,50 @@ def test_manifest_identity_reads_explicit_package_table(tmp_path):
     assert REGEN._package_identity(manifest) == ("wrong-owner", "9.9.9")
 
 
-def test_wrong_taut_source_pin_refuses_before_generation():
+def test_a_different_taut_proto_release_refuses_before_generation():
     invalid = pin()
-    invalid["taut-source-revision"] = "0" * 40
-    with pytest.raises(SystemExit, match="taut source revision mismatch"):
-        REGEN._verify_taut_source(TAUT_SOURCE, invalid)
+    invalid["taut-proto"] = "0.0.0"
+    with pytest.raises(SystemExit, match="taut-proto pin mismatch"):
+        REGEN._released_taut(invalid)
 
 
-def test_dirty_taut_source_refuses_generation(monkeypatch):
-    original = REGEN.subprocess.run
+def test_a_taut_that_shadows_the_release_refuses_generation(tmp_path):
+    # A checkout on PYTHONPATH can carry the pinned version string; only the
+    # installed release's own files count.
+    shadow = tmp_path / "taut"
+    shadow.mkdir()
+    (shadow / "__init__.py").write_text("__version__ = '0.10.0'\n")
+    result = subprocess.run(
+        [sys.executable, str(REGEN_PATH), "--owner-schema", str(OWNER), "--check"],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(tmp_path)},
+    )
+    assert result.returncode != 0
+    assert "is not the installed taut-proto release" in result.stderr
 
-    def fake_run(command, **kwargs):
-        if command[3] == "status":
-            return type("Result", (), {"stdout": " M src/taut/gen/scaffold.py\n"})()
-        return original(command, **kwargs)
 
-    monkeypatch.setattr(REGEN.subprocess, "run", fake_run)
-    with pytest.raises(SystemExit, match="checkout is dirty"):
-        REGEN._verify_taut_source(TAUT_SOURCE, pin())
-
-
-def test_noncanonical_taut_subdirectory_refuses_generation():
-    with pytest.raises(SystemExit, match="canonical.*src"):
-        REGEN._verify_taut_source(TAUT_SOURCE.parent / "docs", pin())
+def test_a_taut_carrying_its_own_release_metadata_refuses_generation(tmp_path):
+    # Metadata that claims the pinned release does not make a copy on
+    # PYTHONPATH the installed release; only this interpreter's site
+    # directories hold that.
+    version = pin()["taut-proto"]
+    metadata = tmp_path / f"taut_proto-{version}.dist-info"
+    metadata.mkdir()
+    (metadata / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: taut-proto\nVersion: {version}\n"
+    )
+    shadow = tmp_path / "taut"
+    shadow.mkdir()
+    (shadow / "__init__.py").write_text(f"__version__ = '{version}'\n")
+    result = subprocess.run(
+        [sys.executable, str(REGEN_PATH), "--owner-schema", str(OWNER), "--check"],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PYTHONPATH": str(tmp_path)},
+    )
+    assert result.returncode != 0
+    assert "is not the installed taut-proto release" in result.stderr
 
 
 def test_foreign_cached_same_version_modules_refuse_generation(monkeypatch, tmp_path):
@@ -83,17 +101,15 @@ def test_foreign_cached_same_version_modules_refuse_generation(monkeypatch, tmp_
         module = types.ModuleType(module_name)
         module.__file__ = str(foreign / (module_name.replace(".", "_") + ".py"))
         if module_name == "taut":
-            module.__version__ = "0.9.1"
+            module.__version__ = "0.10.0"
         monkeypatch.setitem(sys.modules, module_name, module)
-    monkeypatch.setattr(REGEN, "_verify_taut_source", lambda *_args: None)
-    with pytest.raises(SystemExit, match="outside canonical taut source"):
-        REGEN._generate(OWNER, TAUT_SOURCE)
+    with pytest.raises(SystemExit, match="is not the installed taut-proto release"):
+        REGEN._generate(OWNER)
 
 
-def test_cached_canonical_module_also_requires_fresh_interpreter(monkeypatch):
+def test_cached_release_module_also_requires_fresh_interpreter(monkeypatch):
     module = types.ModuleType("taut")
-    module.__file__ = str(TAUT_SOURCE / "taut" / "__init__.py")
+    module.__file__ = str(REGEN._released_taut(pin()) / "__init__.py")
     monkeypatch.setitem(sys.modules, "taut", module)
-    monkeypatch.setattr(REGEN, "_verify_taut_source", lambda *_args: None)
     with pytest.raises(SystemExit, match="fresh interpreter"):
-        REGEN._generate(OWNER, TAUT_SOURCE)
+        REGEN._generate(OWNER)

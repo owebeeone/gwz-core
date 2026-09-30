@@ -13,14 +13,15 @@ Run these commands from the workspace root. Install Python 3.10 or newer with
 venv/pip, Git, and Rust through rustup. The consumer's own regeneration uses Rust
 1.96.0's rustfmt, and the placement candidate's uses gwz-core's pinned 1.95.0
 (each exact formatter version is pinned in its generator manifest); the Rust
-package supports 1.95.0 or newer. Keep the canonical `taut` checkout at
-the revision recorded in `protocol/generator.json` within this consumer.
+package supports 1.95.0 or newer. Both generators use the taut-proto release
+their generator manifests pin: `protocol/generator.json` within this consumer,
+and `gwz-core/protocol/candidate/candidate-generator.json` for the candidate.
 
 Create the interpreter used by the commands below once:
 
 ```sh
 python3 -m venv gwz-core/protocol/.regen-venv
-gwz-core/protocol/.regen-venv/bin/python -m pip install taut-proto==0.9.1
+gwz-core/protocol/.regen-venv/bin/python -m pip install taut-proto==0.10.0
 rustup toolchain install 1.96.0 --component rustfmt
 rustup component add rustfmt --toolchain 1.95.0
 export RUSTUP_TOOLCHAIN=1.96.0
@@ -28,27 +29,25 @@ export RUSTUP_TOOLCHAIN=1.96.0
 
 An existing environment is usable only with the same pinned package version.
 Alternatively create a fresh environment elsewhere and replace the interpreter
-path in both command blocks with its Python executable. The installed package
-supplies version metadata; consumer generation loads and verifies the exact
-canonical checkout passed through `--taut-source`, rather than trusting installed
-generator code. Cargo's dependency cache must contain this consumer's locked
+path in both command blocks with its Python executable. Generation imports taut
+only from the taut-proto release installed in that interpreter's site
+directories: a `taut` package or `taut-proto` metadata anywhere else on
+`sys.path` or `PYTHONPATH`, such as the workspace's `taut/src`, is refused.
+Cargo's dependency cache must contain this consumer's locked
 dependencies before the offline archive proof; packaging performs the owner
 build first. No private environment or credentials are required.
 
 ## Regeneration and archive proof
 
-Regeneration is explicit and checks the owner package/version, exported-schema
-digest, taut source revision, and external-type generator file hashes:
-
-Supply the verified checkout's canonical `src` directory. Run the command in a
+Regeneration is explicit and checks the owner package/version, the
+exported-schema digest and the pinned taut-proto release. Run the command in a
 fresh interpreter; cached taut modules are refused, and imported module paths
-must resolve inside that exact source directory.
+must resolve inside the installed release.
 
 ```sh
 gwz-core/protocol/.regen-venv/bin/python \
   gwz-core/tests/transport_consumer/protocol/regen.py \
-  --owner-schema gwz-transport/protocol/transport.ir.json \
-  --taut-source taut/src --check
+  --owner-schema gwz-transport/protocol/transport.ir.json --check
 ```
 
 The placement candidate uses a separate composition and output path. It loads
@@ -66,11 +65,10 @@ whatever the working directory or `RUSTUP_TOOLCHAIN`. This command never writes
 production protocol artifacts or Cargo manifests:
 
 ```sh
-PYTHONPATH=taut/src .venv/bin/python \
+gwz-core/protocol/.regen-venv/bin/python \
   gwz-core/protocol/candidate/candidate-regenerator.py \
   --core-schema gwz-core/protocol/gwz.taut.py \
-  --owner-schema gwz-transport/protocol/transport.ir.json \
-  --taut-source taut/src --check
+  --owner-schema gwz-transport/protocol/transport.ir.json --check
 ```
 
 Candidate fixtures cover old/new Rust and Python readers, absent versus null

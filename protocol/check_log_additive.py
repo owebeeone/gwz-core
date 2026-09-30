@@ -281,6 +281,43 @@ def pre_log_projection(schema_ir: dict[str, Any]) -> dict[str, Any]:
     return projected
 
 
+def ir_version_1(schema_ir: dict[str, Any]) -> dict[str, Any]:
+    """The IR version 1 document of an IR version 2 export that declares no option.
+
+    taut v0.10.0 exports IR version 2, which adds option maps (`options` at every
+    level, `member_options` on enums) and their effective values (`effective` on the
+    file and on each message). They carry no wire shape, and every pin above was
+    taken over version 1, so the projection starts from version 1. A schema that
+    declares an option is refused, not stripped: adopting taut options is a
+    deliberate change to this check.
+    """
+    if schema_ir.get("version") != 2:
+        raise ValueError(f"expected taut IR version 2, got {schema_ir.get('version')!r}")
+    document = deepcopy(schema_ir)
+    document["version"] = 1
+    nodes = [("the file", document)]
+    nodes += [(f"enum {enum['name']}", enum) for enum in document["enums"]]
+    nodes += [(f"message {message['name']}", message) for message in document["messages"]]
+    nodes += [
+        (f"field {message['name']}.{field['name']}", field)
+        for message in document["messages"]
+        for field in message["fields"]
+    ]
+    nodes += [(f"service {service['name']}", service) for service in document["services"]]
+    nodes += [
+        (f"method {service['name']}.{method['name']}", method)
+        for service in document["services"]
+        for method in service["methods"]
+    ]
+    for where, node in nodes:
+        options = node.pop("options", {})
+        member_options = node.pop("member_options", {})
+        node.pop("effective", None)
+        if options or any(member_options.values()):
+            raise ValueError(f"{where} declares taut options, which this check predates")
+    return document
+
+
 def fingerprint(value: dict[str, Any]) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -288,7 +325,8 @@ def fingerprint(value: dict[str, Any]) -> str:
 
 def main() -> int:
     schema_path = Path(sys.argv[1] if len(sys.argv) > 1 else "protocol/gwz.taut.py")
-    actual = fingerprint(pre_log_projection(schema_json(load_schema(schema_path))))
+    schema_ir = ir_version_1(schema_json(load_schema(schema_path)))
+    actual = fingerprint(pre_log_projection(schema_ir))
     if actual != PRE_LOG_WIRE_SHA256:
         print(
             "check_log_additive: pre-existing protocol wire projection changed\n"

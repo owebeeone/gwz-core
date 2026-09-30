@@ -1,30 +1,12 @@
 {
-  "taut-proto": "0.9.1",
+  "taut-proto": "0.10.0",
   "owner-package": "gwz-transport",
   "owner-version": "0.1.0",
-  "owner-schema-sha256": "2776ae5181c3dd0f7ea3251970c8a0bbb053afcdebdd27520b01a34ee71ef460",
+  "owner-schema-sha256": "205c19ab8c9ae538f7707b7734ad13278485b877bb177544c412ad275edbc939",
   "retained-old-rust-source": "gwz-core/src/protocol/generated.rs",
   "retained-old-rust-revision": "2514dc19675591f8ea3231f22764cdb5d3d5a146",
   "retained-old-rust-sha256": "5ba6d4ac299e272c3f8ebcd0cd35489870cb6706b1ce3fdf0b1a771cb53ef544",
   "retained-old-schema-sha256": "423cb73b8c17a6779155431aebe40949f90a429ef69625683b449ed7fe072adb",
-  "taut-source-revision": "81ba89420d513ae6dda25a5d816db8d2a85d90cb",
   "rustfmt": "rustfmt 1.9.0-stable (59807616e1 2026-04-14)",
-  "rust-module": "gwz_transport::protocol",
-  "codec": "fail-closed",
-  "taut-source-sha256": {
-    "src/taut/corpus/kit.py": "9cc82765c4c0368344a095bce003d9fef71bb2ed95729182210ef6e4d82efea9",
-    "src/taut/corpus/synth.py": "0e3e1aac63c4eb41c918557117f5363385e94a46deac7902f7a0170b3cf60960",
-    "src/taut/gen/runtime/cbor.rs": "f6b96fb0fc038df2344bfd4c3f63c5fc7ddb8d24979ae9eb5d7b898184663d55",
-    "src/taut/gen/runtime/cbor_fail_closed.rs": "c276f0845efa48030a31cce8137516c5010c377781065cc353db186223275744",
-    "src/taut/gen/rust.py": "84880726fc219ccc40c6e528728f80ac2000febf17345691fff6773eefb9cf4a",
-    "src/taut/gen/scaffold.py": "ae1c8b14970f01d75cad2be1b2ea1d583c50b24860367c792502e88da856daed",
-    "src/taut/ir/compat.py": "0ef44c9f2133cc25f87191b36ee240a3cf591d224cd298ed9219701340a59128",
-    "src/taut/ir/dsl.py": "a5a714a310438183f33851589f3e50b236064f95a1f5ef8d48d8848d59ddfad3",
-    "src/taut/ir/export.py": "3648ff0d5ae4a42cbae722b8a2bd0b046226012be22ae4c9b2b01194c248f42b",
-    "src/taut/ir/load.py": "07499a0ac9213d5630f0bc22b0460359f558ae12f0a3c4760034d5b0c7c14dc0",
-    "src/taut/ir/model.py": "20671f8478d1f74470e70fa57ff6d67c669e2e72e87b3bdea7f9e6bf0be4834b",
-    "src/taut/ir/validate.py": "3926633d55dff6eb60498541ae4452f49b1972b4ac23b295270d78e2adbb8c17",
-    "src/taut/wire/codec.py": "f5ba442518102a6ffbb98b6adcf8be74dcbd487414d878b7fee14411ed79f252",
-    "src/taut/wire/jsoncodec.py": "2f025606322fe0023306e7ddd3eed3015e9620f0da1357f35a689a209cc9074a"
-  }
+  "rust-module": "gwz_transport::protocol"
 }

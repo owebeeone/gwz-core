@@ -1,37 +1,90 @@
-//! Minimal deterministic CBOR — **fail-closed** Rust binding of the frozen wire
-//! substrate (opt-in, emitted by `tautc gen -l rust --with-runtime --fail-closed`).
+//! Minimal deterministic CBOR — the **fail-closed** Rust binding of the frozen
+//! wire substrate, and taut's only Rust runtime (vendored as `cbor.rs` by
+//! `tautc gen -l rust --with-runtime`).
 //!
-//! Byte-for-byte identical ENCODE to `taut/src/taut/gen/runtime/cbor.rs`,
-//! `taut/src/taut/wire/cbor.py`, and the TypeScript runtime: the same tiny
-//! subset (int, bytes, text, array, int-keyed map, bool, null, float) in core
-//! deterministic encoding. Hand-rolled, zero dependencies.
+//! Byte-for-byte identical ENCODE to `taut/src/taut/wire/cbor.py` and the
+//! TypeScript runtime: the same tiny subset (int, bytes, text, array, int-keyed
+//! map, bool, null, float) in core deterministic encoding. Hand-rolled, zero
+//! dependencies.
 //!
-//! What differs from the default `cbor.rs` (all decode-side, none of it changes
-//! the bytes any value encodes to):
+//! Decode is fail-closed (none of it changes the bytes any value encodes to):
 //!   1. `Cbor::Int` carries `i64` (the frozen wire int subset, `[-2^63, 2^63-1]`),
-//!      exactly like the default runtime — but a CBOR integer OUTSIDE that subset
-//!      (a major-0 argument above `i64::MAX`, or a major-1 value below `i64::MIN`,
-//!      i.e. anything in the wire-representable `[-2^64, 2^64-1]` beyond `i64`) is
-//!      a typed [`DecodeError::IntOverflow`], never the default runtime's silent
-//!      `n as i64` wrap and never a wider (128-bit) carry. Map KEYS are `i64` too
-//!      (CBOR field tags are small; keeps `ext.rs` / `wire_residual`
-//!      source-compatible).
+//!      and a CBOR integer OUTSIDE that subset (a major-0 argument above
+//!      `i64::MAX`, or a major-1 value below `i64::MIN`, i.e. anything in the
+//!      wire-representable `[-2^64, 2^64-1]` beyond `i64`) is a typed
+//!      [`DecodeError::IntOverflow`], never a silent `n as i64` wrap and never a
+//!      wider (128-bit) carry. Map KEYS are `i64` too (CBOR field tags are small;
+//!      keeps `ext.rs` / `wire_residual` source-compatible).
 //!   2. A typed [`DecodeError`] plus fallible [`try_decode`] and `try_*`
 //!      accessors: **decode never panics on any byte input** (malformed,
 //!      truncated, unknown enum arm, wrong type, trailing bytes, out-of-subset
-//!      integer). This is the substrate the generated fail-closed
+//!      integer). This is the substrate the generated
 //!      `from_cbor -> Result<_, DecodeError>` builds on, so a caller behind an
-//!      untrusted wire boundary (a socket) no longer needs a `catch_unwind`
-//!      guard around decode.
-//!
-//! The infallible `decode`/`encode`/`get`/`int`/… surface is retained (so
-//! `ext.rs` and any code sharing this runtime still links); `int()` returns the
-//! `i64` carrier directly. New untrusted-boundary code uses `try_int() ->
-//! Result<i64, _>` and the fallible `try_decode`, which reject an out-of-subset
-//! integer instead of admitting it.
+//!      untrusted wire boundary (a socket) needs no `catch_unwind` guard around
+//!      decode. The legacy runtime's panicking `decode` and accessors were
+//!      removed at taut v0.10.0.
+//!   3. Decode is bounded (TautCheckedDecode.md §3). An array or map has depth
+//!      one more than the arrays and maps around it, and one deeper than the
+//!      call's depth bound is [`DecodeError::TooDeep`] once its head is read;
+//!      recursion goes no deeper than the bound, so no input can exhaust the
+//!      stack. With a length bound, longer input is [`DecodeError::TooLarge`]
+//!      before a byte is read. [`try_decode`] applies [`DEFAULT_MAX_DEPTH`];
+//!      [`try_decode_max`] adds a length bound, and [`try_decode_with`] takes
+//!      both, its depth capped at [`MAX_DEPTH_CEILING`]. A generated message's
+//!      `decode` passes its root's bounds (TautOptions.md OPT-D4).
 
+use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec::Vec;
+
+/// The depth bound where the caller gives none: 32 nested arrays and maps
+/// decode, and the 33rd is [`DecodeError::TooDeep`] (CD-B1). taut's
+/// `DEFAULT_MAX_DEPTH`, the `max_depth` option's default.
+pub const DEFAULT_MAX_DEPTH: usize = 32;
+
+/// The deepest bound any decode applies: [`try_decode_with`] applies it in
+/// place of a larger `max_depth` (CD-B3). taut's `MAX_DEPTH_CEILING`.
+pub const MAX_DEPTH_CEILING: usize = 128;
+
+/// A repeated map key, as [`DecodeError::DuplicateMapKey`] reports it: the int
+/// key of a raw CBOR map or of a `map<int,V>` field, or the key of a `map<str,V>`
+/// or `map<bool,V>` field. Its text (`Display`) is the one every taut language
+/// reports (TautCheckedDecode.md question 9): an int in decimal, a str as
+/// itself, a bool as `true` or `false`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MapKey {
+    Int(i64),
+    Text(String),
+    Bool(bool),
+}
+
+impl core::fmt::Display for MapKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            MapKey::Int(n) => write!(f, "{n}"),
+            MapKey::Text(s) => f.write_str(s),
+            MapKey::Bool(b) => write!(f, "{b}"),
+        }
+    }
+}
+
+impl From<i64> for MapKey {
+    fn from(key: i64) -> Self {
+        MapKey::Int(key)
+    }
+}
+
+impl From<String> for MapKey {
+    fn from(key: String) -> Self {
+        MapKey::Text(key)
+    }
+}
+
+impl From<bool> for MapKey {
+    fn from(key: bool) -> Self {
+        MapKey::Bool(key)
+    }
+}
 
 /// A typed decode failure. Every variant is reachable only from *input* bytes;
 /// the fallible decode path returns these instead of panicking, so an untrusted
@@ -51,8 +104,9 @@ pub enum DecodeError {
     UnsupportedMajor(u8),
     /// A map key that was not a (frozen-subset) integer.
     NonIntegerMapKey,
-    /// The same integer key appeared twice in one CBOR map.
-    DuplicateMapKey(i64),
+    /// The same key appeared twice in one CBOR map, or in two entries of a
+    /// generated `map<K,V>` field: the key itself (see [`MapKey`]).
+    DuplicateMapKey(MapKey),
     /// A CBOR integer on the wire outside the frozen `i64` subset — a major-0
     /// value above `i64::MAX`, a major-1 value below `i64::MIN`, or a map key
     /// wider than `i64`. Rejected here rather than silently wrapped or widened.
@@ -79,6 +133,45 @@ pub enum DecodeError {
         /// The offending wire value.
         value: i64,
     },
+    /// An array or map nested deeper than the call's depth bound, refused once
+    /// its head is read and before its first item (CD-B1, CD-B2).
+    TooDeep {
+        /// The depth bound the call applied.
+        limit: usize,
+    },
+    /// Input longer than the call's length bound, refused before any byte of it
+    /// is read (CD-B4).
+    TooLarge {
+        /// The input's length in bytes.
+        len: usize,
+        /// The length bound the call applied.
+        limit: usize,
+    },
+}
+
+impl DecodeError {
+    /// The failure's canonical tag, the variant's name: the tag every taut
+    /// language reports for it, which the parity gate compares along with the
+    /// payload (TautCheckedDecode.md CD-E2).
+    pub fn tag(&self) -> &'static str {
+        match self {
+            DecodeError::Truncated => "Truncated",
+            DecodeError::TrailingBytes => "TrailingBytes",
+            DecodeError::InvalidUtf8 => "InvalidUtf8",
+            DecodeError::UnsupportedInfo(_) => "UnsupportedInfo",
+            DecodeError::UnsupportedMajor(_) => "UnsupportedMajor",
+            DecodeError::NonIntegerMapKey => "NonIntegerMapKey",
+            DecodeError::DuplicateMapKey(_) => "DuplicateMapKey",
+            DecodeError::IntOverflow => "IntOverflow",
+            DecodeError::NonCanonicalInt(_) => "NonCanonicalInt",
+            DecodeError::NegativeMapKey(_) => "NegativeMapKey",
+            DecodeError::MissingKey(_) => "MissingKey",
+            DecodeError::WrongType { .. } => "WrongType",
+            DecodeError::UnknownEnum { .. } => "UnknownEnum",
+            DecodeError::TooDeep { .. } => "TooDeep",
+            DecodeError::TooLarge { .. } => "TooLarge",
+        }
+    }
 }
 
 impl core::fmt::Display for DecodeError {
@@ -99,12 +192,15 @@ impl core::fmt::Display for DecodeError {
             DecodeError::UnknownEnum { enum_name, value } => {
                 write!(f, "unknown {enum_name} wire value {value}")
             }
+            DecodeError::TooDeep { limit } => write!(f, "CBOR nested deeper than {limit}"),
+            DecodeError::TooLarge { len, limit } => {
+                write!(f, "CBOR input of {len} bytes is longer than {limit}")
+            }
         }
     }
 }
 
 /// Exact `2.0f64.powi(exp)` for an integer exponent, `core`-only (no libm).
-/// (Identical to the default runtime — see its header for the derivation.)
 fn pow2(exp: i32) -> f64 {
     if (-1022..=1023).contains(&exp) {
         let biased = (exp + 1023) as u64;
@@ -137,77 +233,6 @@ pub enum Cbor {
 impl Cbor {
     pub fn is_map(&self) -> bool {
         matches!(self, Cbor::Map(_))
-    }
-
-    /// Value for an integer map key, or `None` when the key is absent.
-    pub fn get_opt(&self, key: i64) -> Option<&Cbor> {
-        if let Cbor::Map(m) = self {
-            for (k, v) in m {
-                if *k == key {
-                    return Some(v);
-                }
-            }
-        } else {
-            return None;
-        }
-        None
-    }
-
-    // --- infallible accessors (retained; panic on misuse, exactly as the
-    // default runtime) ------------------------------------------------------
-
-    /// Value for an integer map key (panics if absent / not a map).
-    pub fn get(&self, key: i64) -> &Cbor {
-        if let Cbor::Map(m) = self {
-            for (k, v) in m {
-                if *k == key {
-                    return v;
-                }
-            }
-        }
-        panic!("no map key {}", key);
-    }
-    pub fn int(&self) -> i64 {
-        if let Cbor::Int(n) = self {
-            *n
-        } else {
-            panic!("not an int")
-        }
-    }
-    pub fn float(&self) -> f64 {
-        if let Cbor::Float(x) = self {
-            *x
-        } else {
-            panic!("not a float")
-        }
-    }
-    pub fn text(&self) -> String {
-        if let Cbor::Text(s) = self {
-            s.clone()
-        } else {
-            panic!("not text")
-        }
-    }
-    pub fn bytes(&self) -> Vec<u8> {
-        if let Cbor::Bytes(b) = self {
-            b.clone()
-        } else {
-            panic!("not bytes")
-        }
-    }
-    pub fn boolean(&self) -> bool {
-        if let Cbor::Bool(b) = self {
-            *b
-        } else {
-            panic!("not a bool")
-        }
-    }
-    pub fn array(&self) -> &[Cbor] {
-        if let Cbor::Array(a) = self {
-            a
-        } else {
-            panic!("not an array")
-        }
     }
     pub fn is_null(&self) -> bool {
         matches!(self, Cbor::Null)
@@ -447,7 +472,7 @@ fn enc(v: &Cbor, out: &mut Vec<u8>) {
         // reject and both casts are total — a non-negative `n` fits `u64`, and
         // `-1 - *n` for `*n` in `[i64::MIN, -1]` lands in `[0, i64::MAX]`.
         // Neither can wrap (unlike the reverted i128 carrier, where `*n as u64`
-        // could wrap for `|n| > 2^64`). Byte-identical to the default runtime.
+        // could wrap for `|n| > 2^64`). Byte-identical to the Python runtime.
         Cbor::Int(n) => {
             if *n >= 0 {
                 head(out, 0, *n as u64);
@@ -485,19 +510,42 @@ fn enc(v: &Cbor, out: &mut Vec<u8>) {
     }
 }
 
-/// Infallible decode (retained for parity with the default runtime; **panics**
-/// on malformed input). New untrusted-boundary code should call [`try_decode`].
-pub fn decode(data: &[u8]) -> Cbor {
-    match try_decode(data) {
-        Ok(v) => v,
-        Err(e) => panic!("cbor decode: {}", e),
-    }
+/// Fail-closed decode at the default depth bound, [`DEFAULT_MAX_DEPTH`], with no
+/// length bound: returns [`DecodeError`] — never panics — on any byte input
+/// (malformed, truncated, too deep, unknown value, wrong shape, trailing bytes).
+pub fn try_decode(data: &[u8]) -> Result<Cbor, DecodeError> {
+    try_decode_with(data, DEFAULT_MAX_DEPTH, None)
 }
 
-/// Fail-closed decode: returns [`DecodeError`] — never panics — on any byte
-/// input (malformed, truncated, unknown value, wrong shape, trailing bytes).
-pub fn try_decode(data: &[u8]) -> Result<Cbor, DecodeError> {
-    let (v, off) = dec(data, 0)?;
+/// [`try_decode`] with a length bound: input longer than `max_encoded_len` is
+/// [`DecodeError::TooLarge`] before any byte is read (CD-B4).
+pub fn try_decode_max(data: &[u8], max_encoded_len: usize) -> Result<Cbor, DecodeError> {
+    try_decode_with(data, DEFAULT_MAX_DEPTH, Some(max_encoded_len))
+}
+
+/// Fail-closed decode under the caller's bounds (CD-B3). An array or map at
+/// depth `max_depth` + 1 is [`DecodeError::TooDeep`] (a top-level one has depth
+/// 1); a `max_depth` above [`MAX_DEPTH_CEILING`] applies the ceiling, and
+/// `TooDeep`'s `limit` names the bound applied. With `max_encoded_len`, longer
+/// input is [`DecodeError::TooLarge`], checked first (CD-E5).
+///
+/// # Panics
+///
+/// If `max_depth` is 0, the caller's error, not the input's: it panics before
+/// it reads the input.
+pub fn try_decode_with(
+    data: &[u8],
+    max_depth: usize,
+    max_encoded_len: Option<usize>,
+) -> Result<Cbor, DecodeError> {
+    assert!(max_depth >= 1, "max_depth must be at least 1, not {max_depth}");
+    let limit = max_depth.min(MAX_DEPTH_CEILING);
+    if let Some(bound) = max_encoded_len {
+        if data.len() > bound {
+            return Err(DecodeError::TooLarge { len: data.len(), limit: bound });
+        }
+    }
+    let (v, off) = dec(data, 0, 0, limit)?;
     if off != data.len() {
         return Err(DecodeError::TrailingBytes);
     }
@@ -549,7 +597,18 @@ fn read_arg(data: &[u8], off: usize, info: u8) -> Result<(u64, usize), DecodeErr
     Ok((value, next))
 }
 
-fn dec(data: &[u8], off: usize) -> Result<(Cbor, usize), DecodeError> {
+/// A container whose head is read, inside `depth` others: [`DecodeError::TooDeep`]
+/// if it would sit deeper than `limit`, before its first item is read (CD-B2).
+/// Checked before `dec` recurses, it bounds the recursion by `limit`.
+fn enter(depth: usize, limit: usize) -> Result<(), DecodeError> {
+    if depth >= limit {
+        return Err(DecodeError::TooDeep { limit });
+    }
+    Ok(())
+}
+
+/// The item at `off`, inside `depth` arrays and maps, under depth bound `limit`.
+fn dec(data: &[u8], off: usize, depth: usize, limit: usize) -> Result<(Cbor, usize), DecodeError> {
     let initial = *data.get(off).ok_or(DecodeError::Truncated)?;
     let major = initial >> 5;
     let info = initial & 0x1f;
@@ -573,22 +632,25 @@ fn dec(data: &[u8], off: usize) -> Result<(Cbor, usize), DecodeError> {
         }
         2 => {
             let (n, o) = read_arg(data, off, info)?;
-            let n = n as usize;
+            // A length beyond `usize` (2^32 or more on a 32-bit target) is beyond
+            // the input too: `Truncated`, never cut to its low bits.
+            let n = usize::try_from(n).map_err(|_| DecodeError::Truncated)?;
             let b = take(data, o, n)?;
             Ok((Cbor::Bytes(b.to_vec()), o + n))
         }
         3 => {
             let (n, o) = read_arg(data, off, info)?;
-            let n = n as usize;
+            let n = usize::try_from(n).map_err(|_| DecodeError::Truncated)?;
             let b = take(data, o, n)?;
             let s = core::str::from_utf8(b).map_err(|_| DecodeError::InvalidUtf8)?;
             Ok((Cbor::Text(String::from(s)), o + n))
         }
         4 => {
             let (n, mut o) = read_arg(data, off, info)?;
+            enter(depth, limit)?;
             let mut a = Vec::new();
             for _ in 0..n {
-                let (v, o2) = dec(data, o)?;
+                let (v, o2) = dec(data, o, depth + 1, limit)?;
                 a.push(v);
                 o = o2;
             }
@@ -596,10 +658,15 @@ fn dec(data: &[u8], off: usize) -> Result<(Cbor, usize), DecodeError> {
         }
         5 => {
             let (n, mut o) = read_arg(data, off, info)?;
+            enter(depth, limit)?;
             let mut m = Vec::new();
+            // The keys read so far: a repeated key costs a lookup, not a scan.
+            let mut seen = BTreeSet::new();
             for _ in 0..n {
-                let (k, o2) = dec(data, o)?;
-                let (v, o3) = dec(data, o2)?;
+                // An entry's key is read and checked before its value is read
+                // (CD-E5), so a bad key is reported even when the value is
+                // missing or malformed.
+                let (k, o2) = dec(data, o, depth + 1, limit)?;
                 let ki = match k {
                     // Map keys are i64 (CBOR field tags). An out-of-i64 key was
                     // already rejected as IntOverflow when `dec` read it above,
@@ -608,9 +675,10 @@ fn dec(data: &[u8], off: usize) -> Result<(Cbor, usize), DecodeError> {
                     Cbor::Int(i) => i,
                     _ => return Err(DecodeError::NonIntegerMapKey),
                 };
-                if m.iter().any(|(existing, _)| *existing == ki) {
-                    return Err(DecodeError::DuplicateMapKey(ki));
+                if !seen.insert(ki) {
+                    return Err(DecodeError::DuplicateMapKey(MapKey::Int(ki)));
                 }
+                let (v, o3) = dec(data, o2, depth + 1, limit)?;
                 m.push((ki, v));
                 o = o3;
             }

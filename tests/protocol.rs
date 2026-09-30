@@ -22,7 +22,7 @@ use gwz_core::{
     StashBundleMember, StashDirtySummary, StashDrift, StashErrorDetail, StashOp,
     StashParticipation, StashPushLifecycle, StashRequest, StashResponse, StashRestoreState,
     StashWarning, StatusMode, StatusPathStyle, StatusRequest, StatusResponse, WorkspaceGitStatus,
-    WorkspaceRootFileChange, WorkspaceRootGitStatus, decode, encode,
+    WorkspaceRootFileChange, WorkspaceRootGitStatus, encode, try_decode,
 };
 
 #[test]
@@ -41,7 +41,8 @@ fn round_trip<T>(
     to_cbor: impl Fn(&T) -> gwz_core::Cbor,
     from_cbor: impl Fn(&gwz_core::Cbor) -> Result<T, gwz_core::cbor::DecodeError>,
 ) -> T {
-    from_cbor(&decode(&encode(&to_cbor(value)))).expect("round-trip decode")
+    let cbor = try_decode(&encode(&to_cbor(value))).expect("round-trip decode");
+    from_cbor(&cbor).expect("round-trip decode")
 }
 
 #[test]
@@ -204,6 +205,36 @@ fn log_addition_preserves_the_complete_pre_log_wire_projection() {
     assert!(
         status.success(),
         "log protocol changed a pre-existing wire shape"
+    );
+}
+
+#[test]
+fn log_addition_check_refuses_a_schema_that_declares_a_taut_option() {
+    // The check fingerprints IR version 1 of taut's version 2 export. Declaring
+    // a taut option (a decode bound, say) must reach the check as a deliberate
+    // change, never be dropped by the projection.
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let script = r#"
+import sys
+sys.path.insert(0, "protocol")
+import check_log_additive
+from taut.ir.export import schema_json
+from taut.ir.load import load_schema
+document = schema_json(load_schema("protocol/gwz.taut.py"))
+document["messages"][0]["fields"][0]["options"] = {"max_depth": 8}
+try:
+    check_log_additive.ir_version_1(document)
+except ValueError as error:
+    sys.exit(0 if "declares taut options" in str(error) else 2)
+sys.exit(1)
+"#;
+    let status = taut_python_command(&root)
+        .args(["-c", script])
+        .status()
+        .expect("failed to run the version 1 projection");
+    assert!(
+        status.success(),
+        "the version 1 projection must refuse a declared taut option"
     );
 }
 
@@ -1398,9 +1429,8 @@ fn local_clone_follow_up_2_allocations_are_pinned() {
         owner: None,
         wait_seconds: None,
     };
-    let decoded =
-        gwz_core::CloneLocalWorkspaceRequest::from_cbor(&decode(&encode(&request.to_cbor())))
-            .expect("round trip");
+    let decoded = gwz_core::CloneLocalWorkspaceRequest::decode(&encode(&request.to_cbor()))
+        .expect("round trip");
     assert_eq!(decoded, request);
 
     let entry = gwz_core::LocalFamilyMemberEntry {
@@ -1428,7 +1458,7 @@ fn local_clone_follow_up_2_allocations_are_pinned() {
     //   was: "a601614102000301040405672e2e2f77732d4106f6"
     assert_eq!(hex, "a701614102000301040405672e2e2f77732d4106f607f6");
     assert_eq!(
-        gwz_core::LocalFamilyMemberEntry::from_cbor(&decode(&bytes)).expect("round trip"),
+        gwz_core::LocalFamilyMemberEntry::decode(&bytes).expect("round trip"),
         entry
     );
 }

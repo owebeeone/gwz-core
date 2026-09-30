@@ -2,6 +2,11 @@
 #![allow(dead_code)]
 use crate::cbor::{Cbor, DecodeError};
 
+// The file's bounds, for a decode rooted at a type that is not a message:
+// `cbor::try_decode_with(bytes, MAX_DEPTH, MAX_ENCODED_LEN)`.
+pub const MAX_DEPTH: usize = 32;
+pub const MAX_ENCODED_LEN: Option<usize> = None;
+
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum CheckedPathComponentMode {
     #[default] Sensitive,
@@ -164,6 +169,8 @@ pub struct CheckedDurablePathComponentV1 {
     pub parent_durable_identity: CheckedDurableObjectIdentityV1,
 }
 impl CheckedDurablePathComponentV1 {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, Cbor::Bytes(self.original_ascii.clone())),
@@ -180,6 +187,9 @@ impl CheckedDurablePathComponentV1 {
             parent_durable_identity: CheckedDurableObjectIdentityV1::from_cbor(c.try_get(4)?)?,
         })
     }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -187,6 +197,8 @@ pub struct CheckedDurablePathV1 {
     pub components: Vec<CheckedDurablePathComponentV1>,
 }
 impl CheckedDurablePathV1 {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, Cbor::Array(self.components.iter().map(|x| x.to_cbor()).collect())),
@@ -196,6 +208,9 @@ impl CheckedDurablePathV1 {
         Ok(Self {
             components: c.try_get(1)?.try_array()?.iter().map(|x| CheckedDurablePathComponentV1::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
         })
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
     }
 }
 
@@ -211,6 +226,8 @@ pub struct CheckedDurableObjectIdentityV1 {
     pub windows_file_id_128: Option<Vec<u8>>,
 }
 impl CheckedDurableObjectIdentityV1 {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, Cbor::Int(self.kind.wire())),
@@ -235,6 +252,9 @@ impl CheckedDurableObjectIdentityV1 {
             windows_file_id_128: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_bytes()?) } },
         })
     }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -243,6 +263,8 @@ pub struct CheckedManagedBootstrapInputV1 {
     pub component_count: i64,
 }
 impl CheckedManagedBootstrapInputV1 {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, Cbor::Bytes(self.spec_digest.clone())),
@@ -255,6 +277,9 @@ impl CheckedManagedBootstrapInputV1 {
             component_count: c.try_get(2)?.try_int()?,
         })
     }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -266,6 +291,8 @@ pub struct CheckedActionScheduleV1 {
     pub managed_plan_digest: Vec<u8>,
 }
 impl CheckedActionScheduleV1 {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, Cbor::Int(self.barrier_count)),
@@ -284,6 +311,9 @@ impl CheckedActionScheduleV1 {
             managed_plan_digest: c.try_get(5)?.try_bytes()?,
         })
     }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -294,6 +324,8 @@ pub struct CheckedActionCapacityReservationV1 {
     pub record_digest: Vec<u8>,
 }
 impl CheckedActionCapacityReservationV1 {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, Cbor::Bytes(self.action_digest.clone())),
@@ -310,6 +342,9 @@ impl CheckedActionCapacityReservationV1 {
             record_digest: c.try_get(4)?.try_bytes()?,
         })
     }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -324,6 +359,8 @@ pub struct CheckedActionDirectoryAdmissionV1 {
     pub record_digest: Vec<u8>,
 }
 impl CheckedActionDirectoryAdmissionV1 {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, Cbor::Int(self.state.wire())),
@@ -348,6 +385,9 @@ impl CheckedActionDirectoryAdmissionV1 {
             record_digest: c.try_get(8)?.try_bytes()?,
         })
     }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -364,6 +404,8 @@ pub struct CheckedAuthorityV1 {
     pub record_id: Vec<u8>,
 }
 impl CheckedAuthorityV1 {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, Cbor::Bytes(self.action_digest.clone())),
@@ -392,6 +434,9 @@ impl CheckedAuthorityV1 {
             record_id: c.try_get(10)?.try_bytes()?,
         })
     }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -410,6 +455,8 @@ pub struct CheckedCatalogBootstrapV1 {
     pub bootstrap_ownership_token: Vec<u8>,
 }
 impl CheckedCatalogBootstrapV1 {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, Cbor::Int(self.root_kind.wire())),
@@ -442,6 +489,9 @@ impl CheckedCatalogBootstrapV1 {
             bootstrap_ownership_token: c.try_get(12)?.try_bytes()?,
         })
     }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -460,6 +510,8 @@ pub struct CheckedInfrastructureV1 {
     pub staging_directory_identity: CheckedDurableObjectIdentityV1,
 }
 impl CheckedInfrastructureV1 {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, Cbor::Int(self.catalog_format)),
@@ -492,6 +544,9 @@ impl CheckedInfrastructureV1 {
             staging_directory_identity: CheckedDurableObjectIdentityV1::from_cbor(c.try_get(12)?)?,
         })
     }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -510,6 +565,8 @@ pub struct CheckedBarrierIntentV1 {
     pub reservation_digest: Vec<u8>,
 }
 impl CheckedBarrierIntentV1 {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, Cbor::Bytes(self.action_digest.clone())),
@@ -542,6 +599,9 @@ impl CheckedBarrierIntentV1 {
             reservation_digest: c.try_get(12)?.try_bytes()?,
         })
     }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -559,6 +619,8 @@ pub struct CheckedManagedBootstrapComponentV1 {
     pub ownership_marker_object_identity: Option<CheckedDurableObjectIdentityV1>,
 }
 impl CheckedManagedBootstrapComponentV1 {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, Cbor::Bytes(self.component_ascii.clone())),
@@ -589,6 +651,9 @@ impl CheckedManagedBootstrapComponentV1 {
             ownership_marker_object_identity: { let v = c.try_get(11)?; if v.is_null() { None } else { Some(CheckedDurableObjectIdentityV1::from_cbor(v)?) } },
         })
     }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -615,6 +680,8 @@ pub struct CheckedManagedParentBootstrapIntentV1 {
     pub managed_plan_digest: Vec<u8>,
 }
 impl CheckedManagedParentBootstrapIntentV1 {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, Cbor::Bytes(self.action_digest.clone())),
@@ -663,6 +730,9 @@ impl CheckedManagedParentBootstrapIntentV1 {
             managed_plan_digest: c.try_get(20)?.try_bytes()?,
         })
     }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -681,6 +751,8 @@ pub struct CheckedOwnershipMarkerV1 {
     pub marker_id: Vec<u8>,
 }
 impl CheckedOwnershipMarkerV1 {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, Cbor::Bytes(self.action_digest.clone())),
@@ -713,6 +785,9 @@ impl CheckedOwnershipMarkerV1 {
             marker_id: c.try_get(12)?.try_bytes()?,
         })
     }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -722,6 +797,8 @@ pub struct CheckedDurableLeafFingerprintV1 {
     pub sha256: Vec<u8>,
 }
 impl CheckedDurableLeafFingerprintV1 {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, self.identity.to_cbor()),
@@ -736,6 +813,9 @@ impl CheckedDurableLeafFingerprintV1 {
             sha256: c.try_get(3)?.try_bytes()?,
         })
     }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -744,6 +824,8 @@ pub struct CheckedCleanupRowV1 {
     pub expected: CheckedDurableLeafFingerprintV1,
 }
 impl CheckedCleanupRowV1 {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, Cbor::Int(self.alias.wire())),
@@ -756,6 +838,9 @@ impl CheckedCleanupRowV1 {
             expected: CheckedDurableLeafFingerprintV1::from_cbor(c.try_get(2)?)?,
         })
     }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -767,6 +852,8 @@ pub struct CheckedCleanupWorklistV1 {
     pub reservation_digest: Vec<u8>,
 }
 impl CheckedCleanupWorklistV1 {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
     pub fn to_cbor(&self) -> Cbor {
         Cbor::Map(vec![
             (1, Cbor::Bytes(self.action_digest.clone())),
@@ -784,5 +871,8 @@ impl CheckedCleanupWorklistV1 {
             rows: c.try_get(4)?.try_array()?.iter().map(|x| CheckedCleanupRowV1::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
             reservation_digest: c.try_get(5)?.try_bytes()?,
         })
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
     }
 }

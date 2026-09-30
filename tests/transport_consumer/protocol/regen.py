@@ -3,8 +3,11 @@
 
 This is an explicit developer/CI check. Cargo never runs it, and the normal
 consumer build uses only the checked-in generated module plus the pinned
-registry dependency. Both the owner schema and taut source are supplied explicitly;
-their content/revision pins prevent silent sibling discovery or network fetches.
+registry dependency. The owner schema is supplied explicitly and pinned by
+content. taut is the taut-proto release installed in this interpreter's site
+directories at the version the generator pin names; a `taut` package or
+`taut-proto` metadata anywhere else on sys.path or PYTHONPATH is refused, so
+nothing is discovered from a sibling checkout or fetched.
 """
 
 from __future__ import annotations
@@ -12,10 +15,14 @@ from __future__ import annotations
 import argparse
 import ast
 import hashlib
+import importlib.metadata
 import json
 import os
 import shutil
+import site
 import subprocess
+import sys
+import sysconfig
 import tempfile
 from pathlib import Path
 
@@ -79,94 +86,69 @@ def _load_owner(path: Path, pin: dict, schema_from_json):
     return owner
 
 
-def _verify_taut_source(path: Path, pin: dict) -> None:
-    supplied = path.resolve()
-    repo = Path(
-        subprocess.run(
-            ["git", "-C", str(supplied), "rev-parse", "--show-toplevel"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    ).resolve()
-    expected_source = (repo / "src").resolve()
-    if supplied != expected_source:
-        raise SystemExit(
-            "taut source must be the canonical Git checkout src directory: "
-            f"expected {expected_source}, got {supplied}"
-        )
-    revision = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    if revision != pin["taut-source-revision"]:
-        raise SystemExit(
-            f"taut source revision mismatch: expected {pin['taut-source-revision']}, "
-            f"got {revision}"
-        )
-    dirty = subprocess.run(
-        ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all", "--", "src"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    if dirty:
-        raise SystemExit(f"taut source checkout is dirty under src/: {dirty}")
-    for relative, expected in pin["taut-extension-sha256"].items():
-        file_path = repo / relative
-        digest = hashlib.sha256(file_path.read_bytes()).hexdigest()
-        if digest != expected:
-            raise SystemExit(
-                f"taut extension digest mismatch for {relative}: "
-                f"expected {expected}, got {digest}"
-            )
+def _site_directories() -> set[Path]:
+    """This interpreter's site directories, the only places an installed release lives."""
+    directories = {Path(sysconfig.get_paths()[key]).resolve() for key in ("purelib", "platlib")}
+    directories.update(Path(path).resolve() for path in site.getsitepackages())
+    directories.add(Path(site.getusersitepackages()).resolve())
+    return directories
 
 
-def _check_taut_module_origin(name: str, module: object, source: Path) -> None:
+def _released_taut(pin: dict) -> Path:
+    """The package directory of the installed taut-proto release the pin names."""
+    try:
+        distribution = importlib.metadata.distribution("taut-proto")
+    except importlib.metadata.PackageNotFoundError:
+        raise SystemExit(f"taut-proto {pin['taut-proto']} is not installed") from None
+    location = Path(distribution.locate_file("")).resolve()
+    if location not in _site_directories():
+        raise SystemExit(
+            f"taut-proto metadata at {location} is not the installed taut-proto release: "
+            "it lies outside this interpreter's site directories"
+        )
+    if distribution.version != pin["taut-proto"]:
+        raise SystemExit(
+            f"taut-proto pin mismatch: expected {pin['taut-proto']}, "
+            f"got {distribution.version}"
+        )
+    return Path(distribution.locate_file("taut")).resolve()
+
+
+def _check_taut_module_origin(name: str, module: object, package: Path) -> None:
     raw_origin = getattr(module, "__file__", None)
     if not isinstance(raw_origin, str):
         raise SystemExit(f"imported {name} has no file origin")
     origin = Path(raw_origin).resolve()
-    if source != origin and source not in origin.parents:
+    if package not in origin.parents:
         raise SystemExit(
-            f"imported {name} is outside canonical taut source: {origin}"
+            f"imported {name} is not the installed taut-proto release: {origin}"
         )
 
 
-def _generate(owner_path: Path, taut_source: Path) -> str:
-    pin = json.loads(PIN.read_text())
-    _verify_taut_source(taut_source, pin)
-    import sys
+def _check_loaded_taut(package: Path) -> None:
+    for name, module in list(sys.modules.items()):
+        if name == "taut" or name.startswith("taut."):
+            _check_taut_module_origin(name, module, package)
 
-    source = taut_source.resolve()
+
+def _generate(owner_path: Path) -> str:
+    pin = json.loads(PIN.read_text())
+    package = _released_taut(pin)
     module_names = sorted(name for name in sys.modules if name == "taut" or name.startswith("taut."))
     for name in module_names:
         module = sys.modules.get(name)
         if module is not None:
-            _check_taut_module_origin(name, module, source)
+            _check_taut_module_origin(name, module, package)
             raise SystemExit(
                 "taut modules are already loaded; run regeneration in a fresh interpreter"
             )
-    sys.path.insert(0, str(source))
-    import taut
+    import taut  # noqa: F401 -- checked before anything imports from it
+
+    _check_loaded_taut(package)
     from taut.gen.scaffold import emit
-    from taut.gen import rust_external
     from taut.ir.load import load_schema, schema_from_json
 
-    for name, module in (
-        ("taut", taut),
-        ("taut.gen.scaffold", sys.modules["taut.gen.scaffold"]),
-        ("taut.gen.rust_external", rust_external),
-    ):
-        _check_taut_module_origin(name, module, source)
-
-    if taut.__version__ != pin["taut-proto"]:
-        raise SystemExit(
-            f"taut-proto pin mismatch: expected {pin['taut-proto']}, "
-            f"got {taut.__version__}"
-        )
+    _check_loaded_taut(package)
     owner = _load_owner(owner_path, pin, schema_from_json)
     previous = os.environ.get("GWZ_TRANSPORT_SCHEMA")
     os.environ["GWZ_TRANSPORT_SCHEMA"] = str(owner_path)
@@ -181,9 +163,6 @@ def _generate(owner_path: Path, taut_source: Path) -> str:
         name: f"{pin['rust-module']}::{name}"
         for name in [*owner.enums, *owner.messages]
     }
-    codec = pin["codec"]
-    if codec != "fail-closed":
-        raise SystemExit(f"unsupported consumer codec pin: {codec!r}")
     with tempfile.TemporaryDirectory(prefix="gwz-transport-consumer-gen-") as raw:
         out = Path(raw)
         emit(
@@ -192,8 +171,8 @@ def _generate(owner_path: Path, taut_source: Path) -> str:
             langs=["rust"],
             services=[],
             rust_external_types=external,
-            fail_closed=codec == "fail-closed",
         )
+        _check_loaded_taut(package)
         generated = out / "rust" / "api.rs"
         rustfmt = shutil.which("rustfmt")
         if rustfmt is None:
@@ -213,16 +192,12 @@ def _generate(owner_path: Path, taut_source: Path) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--owner-schema", required=True, type=Path)
-    parser.add_argument("--taut-source", required=True, type=Path)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
     owner_path = args.owner_schema.resolve()
-    taut_source = args.taut_source.resolve()
     if not owner_path.is_file():
         raise SystemExit(f"owner schema does not exist: {owner_path}")
-    if not taut_source.is_dir():
-        raise SystemExit(f"taut source directory does not exist: {taut_source}")
-    generated = _generate(owner_path, taut_source)
+    generated = _generate(owner_path)
     if args.check:
         if not OUTPUT.exists() or OUTPUT.read_text() != generated:
             raise SystemExit(f"stale generated artifact: {OUTPUT}")
