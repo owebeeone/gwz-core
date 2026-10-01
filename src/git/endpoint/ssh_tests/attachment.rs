@@ -161,6 +161,12 @@ fn carry(attachment: EndpointAttachment, peer: Arc<MessageEndpoint>) {
                     Box::pin(async move { peer.next_message().await })
                 });
                 match future.as_mut().poll(&mut cx) {
+                    Poll::Ready(Ok(Some(message))) if message.kind == MessageKind::Cancel => {
+                        // As the placement endpoint does, the initiator's
+                        // Cancel abandons the exchange; the worker never sees it.
+                        attachment.cancel();
+                        return;
+                    }
                     Poll::Ready(Ok(Some(message))) => {
                         next = None;
                         pending = Some(message);

@@ -163,7 +163,10 @@ impl<C: ChannelIo> SshPump<C> {
         if kind == MessageKind::Close {
             self.close_received = true;
         }
-        if matches!(kind, MessageKind::Cancel | MessageKind::Failed) {
+        // An initiator's Cancel never arrives here: the placement endpoint
+        // answers it and cancels the attachment, so the worker discards the
+        // connection instead.
+        if kind == MessageKind::Failed {
             self.invalidate_after_error();
         }
         Ok(())
