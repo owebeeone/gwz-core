@@ -260,24 +260,25 @@ impl ResponseBuilder {
         started_at_ms: TimestampMs,
         finished_at_ms: TimestampMs,
     ) -> crate::OperationResult {
+        let status = aggregate_status(report);
+        let members: Vec<_> = report
+            .members
+            .iter()
+            .map(member_execution_to_protocol)
+            .collect();
+        // A Partial result's member failures come first, then the operation's own.
+        let mut errors = partial_member_errors(status, &members);
+        errors.extend(report.errors.iter().map(operation_error_to_protocol));
         crate::OperationResult {
             transport: None,
             operation_id: context.operation_id.clone(),
             request_id: context.request_id.clone(),
             action: context.action.into(),
-            aggregate_status: aggregate_status(report),
+            aggregate_status: status,
             started_at_ms: started_at_ms.0,
             finished_at_ms: finished_at_ms.0,
-            members: report
-                .members
-                .iter()
-                .map(member_execution_to_protocol)
-                .collect(),
-            errors: report
-                .errors
-                .iter()
-                .map(operation_error_to_protocol)
-                .collect(),
+            members,
+            errors,
             attribution: context.attribution.as_ref().map(Into::into),
         }
     }
