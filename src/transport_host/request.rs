@@ -1,5 +1,6 @@
 use super::*;
 use crate::git::endpoint::{ssh_channel::GitService, stream_io::BlockingStream};
+use gwz_session_host::{CancelRegistration, CancellationToken};
 use gwz_transport::protocol::{Facts, Opened};
 use std::{
     io,
@@ -271,6 +272,10 @@ pub struct TransportRequest {
     pub(super) context: RequestContext,
     pub(super) backend: Option<Git2Backend>,
     local_registration: Option<ClientRequest>,
+    /// The caller's token's hold on the request (1.1.0 S6.1). Dropping it
+    /// detaches the request's cancellation, so it lives as long as the
+    /// request.
+    token: Option<CancelRegistration>,
 }
 impl TransportRequest {
     pub(super) fn pending(
@@ -281,7 +286,17 @@ impl TransportRequest {
             context,
             backend: None,
             local_registration,
+            token: None,
         }
+    }
+    /// Attaches the request's cancellation to the caller's token as the
+    /// request registers (1.1.0 S6.1): cancelling the token then cancels the
+    /// request, on the cancelling thread. Refused with `Cancelled` once the
+    /// token is cancelled.
+    pub(super) fn attach(&mut self, token: &CancellationToken) -> ModelResult<()> {
+        let request = self.cancellation_handle();
+        self.token = Some(token.on_cancel(move || request.cancel())?);
+        Ok(())
     }
     pub fn backend(&self) -> &Git2Backend {
         self.backend.as_ref().expect("admitted transport scope")
