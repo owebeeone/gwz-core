@@ -1,6 +1,9 @@
 //! Candidate embedding ownership for endpoint placement. The host supplies message delivery.
+mod cancellable;
+mod endpoint_environment;
 mod https_endpoint;
 mod local_command;
+pub use cancellable::with_cancellable_local_transport;
 pub use local_command::with_local_transport;
 mod request;
 mod session;
@@ -17,6 +20,8 @@ cfg_if::cfg_if! {
         mod https_tests;
         mod https_policy_tests;
         mod https_compat_tests;
+        mod cancellable_tests;
+        mod endpoint_environment_tests;
     }
 }
 use crate::git::endpoint::{https_auth::HelperSlots, ssh_local};
@@ -25,6 +30,10 @@ use crate::{
     git::Git2Backend,
     model::{ErrorCode, ModelError, ModelResult},
 };
+/// The caller's cancellation token that the cancellable entry takes, and the
+/// controls that create and cancel it: gwz-session-host's, as the core session
+/// contract's §5.2 transport entry takes them (1.1.0 S6.1).
+pub use gwz_session_host::{CallControls, CancellationToken};
 use gwz_transport::{
     binding, pool,
     protocol::{AuthPolicy, Scheme},
@@ -213,6 +222,26 @@ impl TransportRuntime {
         meta: RequestMeta,
         operation_id: String,
     ) -> ModelResult<TransportRequest> {
+        self.open_request(meta, operation_id, None).await
+    }
+    /// The cancellable entry's request constructor (1.1.0 S6.1; the core
+    /// session contract's §5.2): `request`, with the request's cancellation
+    /// attached to the caller's token as the request registers, before it
+    /// binds. A token already cancelled refuses it with `Cancelled`.
+    async fn request_with_token(
+        &self,
+        meta: RequestMeta,
+        operation_id: String,
+        token: &CancellationToken,
+    ) -> ModelResult<TransportRequest> {
+        self.open_request(meta, operation_id, Some(token)).await
+    }
+    async fn open_request(
+        &self,
+        meta: RequestMeta,
+        operation_id: String,
+        token: Option<&CancellationToken>,
+    ) -> ModelResult<TransportRequest> {
         request::validate_meta(&meta, &operation_id)?;
         let cli = request::is_cli(&meta);
         let (session, local_endpoint) = {
@@ -257,6 +286,9 @@ impl TransportRuntime {
         };
         let context = RequestContext::new(session, meta, operation_id)?;
         let mut guard = TransportRequest::pending(context, client_guard);
+        if let Some(token) = token {
+            guard.attach(token)?;
+        }
         guard
             .context
             .session

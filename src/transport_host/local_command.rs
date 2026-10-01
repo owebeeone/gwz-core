@@ -1,11 +1,10 @@
 //! Candidate-only synchronous command embedding for the local alpha.
 use super::{
     CleanupReport, HelperSlots, HttpsEndpointConfig, SshEndpointConfig, TransportRequest,
-    TransportRuntime, invalid, unavailable,
+    TransportRuntime, endpoint_environment, unavailable,
 };
-use crate::git::endpoint::{https_auth, https_connection};
+use crate::session_host::EnvironmentSnapshot;
 use crate::{RequestMeta, git::Git2Backend, model::ModelResult};
-use std::{ffi::OsString, path::PathBuf};
 
 /// Own one command's shared SSH/HTTPS endpoint, including bounded cleanup on error.
 /// Credentials and environment are captured on this local endpoint only.
@@ -32,19 +31,11 @@ pub fn with_local_transport<T>(
     let cleanup = command.finish();
     Ok((result, cleanup))
 }
-pub(super) fn environment_config() -> ModelResult<(SshEndpointConfig, HttpsEndpointConfig)> {
-    let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
-    let tls = tls_config(&environment)?;
-    Ok((
-        SshEndpointConfig::from_environment()?,
-        HttpsEndpointConfig {
-            tls,
-            auth: Some(https_auth::Config {
-                executable: PathBuf::from("gh"),
-                environment,
-            }),
-        },
-    ))
+/// The command's endpoint configuration, from the process environment as it
+/// stands at the command's start: the command's environment snapshot.
+fn environment_config() -> ModelResult<(SshEndpointConfig, HttpsEndpointConfig)> {
+    let environment = EnvironmentSnapshot::from_os_pairs(std::env::vars_os())?;
+    endpoint_environment::endpoint_config(&environment)
 }
 struct Command {
     executor: tokio::runtime::Runtime,
@@ -73,75 +64,4 @@ impl Drop for Command {
     fn drop(&mut self) {
         let _ = self.finish();
     }
-}
-fn value(environment: &[(OsString, OsString)], names: &[&str]) -> Option<OsString> {
-    names.iter().find_map(|name| {
-        environment
-            .iter()
-            .find(|(k, v)| k == name && !v.is_empty())
-            .map(|(_, v)| v.clone())
-    })
-}
-fn tls_config(environment: &[(OsString, OsString)]) -> ModelResult<https_connection::Config> {
-    let mut config = https_connection::Config::default();
-    if let Some(path) = value(environment, &["GIT_SSL_CAINFO", "SSL_CERT_FILE"]) {
-        use std::io::Read;
-        let file =
-            std::fs::File::open(path).map_err(|_| invalid("cannot read endpoint CA file"))?;
-        let mut bytes = Vec::new();
-        file.take(1024 * 1024 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| invalid("cannot read endpoint CA file"))?;
-        if bytes.len() > 1024 * 1024 {
-            return Err(invalid("endpoint CA file exceeds 1 MiB"));
-        }
-        config.ca_pem = Some(bytes);
-    }
-    if let Some(raw) = value(
-        environment,
-        &["https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"],
-    ) {
-        let raw = raw
-            .to_str()
-            .ok_or_else(|| invalid("invalid endpoint proxy"))?;
-        let proxy = url::Url::parse(raw).map_err(|_| invalid("invalid endpoint proxy"))?;
-        if !matches!(proxy.scheme(), "http" | "https")
-            || !proxy.username().is_empty()
-            || proxy.password().is_some()
-            || proxy.query().is_some()
-            || proxy.fragment().is_some()
-            || proxy.path() != "/"
-        {
-            return Err(invalid(
-                "alpha supports HTTP(S) proxies without URL credentials or paths",
-            ));
-        }
-        config.proxy = Some(https_connection::Proxy {
-            host: proxy
-                .host_str()
-                .ok_or_else(|| invalid("proxy host required"))?
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .into(),
-            port: proxy
-                .port_or_known_default()
-                .ok_or_else(|| invalid("proxy port required"))?,
-            tls: proxy.scheme() == "https",
-            authorization: None,
-        });
-    }
-    if let Some(raw) = value(environment, &["no_proxy", "NO_PROXY"]) {
-        config.no_proxy = raw
-            .to_str()
-            .ok_or_else(|| invalid("invalid endpoint no_proxy"))?
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-            .collect();
-    }
-    config
-        .validate()
-        .map_err(|_| invalid("unsupported endpoint TLS/proxy configuration"))?;
-    Ok(config)
 }

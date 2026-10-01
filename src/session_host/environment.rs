@@ -55,10 +55,16 @@ impl Drop for Wiped {
 
 /// One value of the snapshot. It has no `Debug`, `Display` or serialization,
 /// so formatting a value takes an explicit `as_os_str` (§15.8).
-#[allow(dead_code, reason = "CS3.2 derives the endpoint configuration from it")]
+#[allow(
+    dead_code,
+    reason = "only the transport build derives its endpoint configuration from it: 1.1.0 S6.1's, and CS3.2's"
+)]
 pub(crate) struct EnvValue<'a>(&'a OsStr);
 
-#[allow(dead_code, reason = "CS3.2 derives the endpoint configuration from it")]
+#[allow(
+    dead_code,
+    reason = "only the transport build derives its endpoint configuration from it: 1.1.0 S6.1's, and CS3.2's"
+)]
 impl<'a> EnvValue<'a> {
     pub(crate) fn as_os_str(&self) -> &'a OsStr {
         self.0
@@ -144,7 +150,10 @@ impl EnvironmentSnapshot {
     }
 
     /// The value of `name`, under the platform's name rules (C7).
-    #[allow(dead_code, reason = "CS3.2 derives the endpoint configuration from it")]
+    #[allow(
+        dead_code,
+        reason = "only the transport build derives its endpoint configuration from it: 1.1.0 S6.1's, and CS3.2's"
+    )]
     pub(crate) fn get(&self, name: impl AsRef<OsStr>) -> Option<EnvValue<'_>> {
         self.find(name.as_ref())
             .map(|(_, value)| EnvValue(&value.0))
@@ -164,6 +173,16 @@ impl EnvironmentSnapshot {
             command.env(&name.0, &value.0);
         }
         command
+    }
+
+    /// Every entry, name and value, in capture order: what `apply_to` gives a
+    /// child. The transport build's runtime copies them into the `gh`
+    /// helper's environment, which it spawns with `env_clear()` (1.1.0 S6.1).
+    #[allow(dead_code, reason = "only the transport build's runtime reads them")]
+    pub(crate) fn entries(&self) -> impl Iterator<Item = (&OsStr, &OsStr)> {
+        self.entries
+            .iter()
+            .map(|(name, value)| (name.0.as_os_str(), value.0.as_os_str()))
     }
 }
 
