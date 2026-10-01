@@ -85,7 +85,9 @@ impl From<model::ErrorCode> for generated::GwzErrorCode {
             model::ErrorCode::TransportCapacityConflict => Self::IoError,
             model::ErrorCode::TransportSessionFull => Self::IoError,
             model::ErrorCode::OperationExpired => Self::IoError,
-            model::ErrorCode::Cancelled => Self::IoError,
+            // A network operation cancelled through its token does: gwz-py's
+            // submitted operations record it (1.1.0 S6.2).
+            model::ErrorCode::Cancelled => Self::Cancelled,
         }
     }
 }

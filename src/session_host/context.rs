@@ -64,8 +64,11 @@ struct HostShared {
 }
 
 /// The cleanup bound within which `shutdown` disposes the host context's
-/// members (reuse design §7: "within the 5 s cleanup bound").
-const CLEANUP_BOUND: Duration = Duration::from_secs(5);
+/// members (reuse design §7: "within the 5 s cleanup bound"). A host process
+/// bounds its own waits for its operations with it too: gwz-py's close,
+/// cancel and exit (gwz-py `dev-docs/GwzPyPerOperationTransportDesign.md`
+/// §2.6).
+pub const CLEANUP_BOUND: Duration = Duration::from_secs(5);
 
 /// What a host context's `shutdown` leaves behind (reuse design §7). It
 /// carries the two facts of the contract's §13 `CleanupReport`, so a driver
