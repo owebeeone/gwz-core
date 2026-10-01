@@ -426,6 +426,8 @@ mod tests {
         let error = failed.error.as_ref().expect("member error present");
         assert_eq!(error.member_id.as_deref(), Some("mem_02"));
         assert_eq!(error.member_path.as_deref(), Some("repos/bad"));
+        // TR2.3: a Partial result also lists that error at the top level.
+        assert_eq!(result.errors, std::slice::from_ref(error));
     }
 
     #[test]

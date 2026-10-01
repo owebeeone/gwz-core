@@ -42,6 +42,7 @@ pub(crate) fn response_envelope(
     aggregate_status: crate::AggregateStatus,
     members: Vec<crate::MemberResponse>,
 ) -> crate::ResponseEnvelope {
+    let errors = crate::operation::partial_member_errors(aggregate_status, &members);
     crate::ResponseEnvelope {
         meta: crate::ResponseMeta {
             transport: None,
@@ -55,7 +56,7 @@ pub(crate) fn response_envelope(
             ..Default::default()
         },
         members,
-        errors: Vec::new(),
+        errors,
     }
 }
 
