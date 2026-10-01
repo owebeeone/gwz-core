@@ -68,6 +68,10 @@ pub mod runtime;
 pub mod session_host;
 pub mod stash;
 pub mod status;
+// gwz-py dev-docs/GwzPyPerOperationTransportDesign.md §2.1: the one predicate
+// that gwz-cli's dispatch and gwz-py's native entry call to decide whether a
+// request runs inside a transport runtime.
+pub mod transport_scope;
 // M5d step (3) (dev-docs/GwzM5-8M5d-Charter.md §3/§4): the NEUTRAL home of the
 // merge record's raw publication primitive on a handle-fail volume. Private to
 // the crate and named by exactly one production caller,

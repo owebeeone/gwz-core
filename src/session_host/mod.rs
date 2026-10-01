@@ -27,7 +27,9 @@ pub(crate) mod context;
 pub(crate) mod environment;
 mod errors;
 
-pub use context::{ClientChannel, HostContext, SessionOptions, ShutdownReport, open};
+pub use context::{
+    CLEANUP_BOUND, ClientChannel, HostContext, SessionOptions, ShutdownReport, open,
+};
 pub use environment::EnvironmentSnapshot;
 pub use gwz_session_contract::MAX_FRAME_BYTES;
 // What a `ClientChannel`'s send and recv take and return (CS1.2's core side).
