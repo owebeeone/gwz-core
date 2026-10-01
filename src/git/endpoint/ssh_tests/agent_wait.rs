@@ -16,6 +16,12 @@ cfg_if::cfg_if! {
                     let _ = self.0.wait();
                 }
             }
+            /// The full name of `agent_child` in this test binary.
+            fn child_test() -> String {
+                let module = module_path!();
+                let module = module.split_once("::").map_or(module, |(_, path)| path);
+                format!("{module}::agent_child")
+            }
             #[test]
             #[ignore = "child only; parent supplies an isolated fake agent"]
             fn agent_child() {
@@ -35,7 +41,7 @@ cfg_if::cfg_if! {
                 let listener = UnixListener::bind(&path).unwrap();
                 listener.set_nonblocking(true).unwrap();
                 let mut child = Reap(Command::new(std::env::current_exe().unwrap())
-                    .args(["--exact", "unix::agent_child", "--ignored", "--nocapture"])
+                    .args(["--exact", &child_test(), "--ignored", "--nocapture"])
                     .env("GWZ_TEST_AGENT_WAIT_SOCKET", &path)
                     .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
                 let deadline = Instant::now() + Duration::from_secs(5);

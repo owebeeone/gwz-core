@@ -1,6 +1,13 @@
 //! Local TLS fixtures. Git subprocesses here are remote server implementations only.
-use super::*;
+use super::{
+    https_connection, https_policy,
+    https_worker::{Input, Prepared},
+};
 use bytes::Bytes;
+use gwz_transport::{
+    protocol::{AuthPolicy, GitService, MessageKind},
+    stream::Stream,
+};
 use http_body_util::Full;
 use hyper::{Request, Response, body::Incoming, service::service_fn};
 use hyper_util::rt::TokioIo;
@@ -9,14 +16,17 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        Arc, OnceLock,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 use tokio::{
     net::TcpListener,
     task::{JoinHandle, JoinSet},
+    time::Instant,
 };
+use tokio_util::sync::CancellationToken;
 pub(crate) type Handler = Arc<
     dyn Fn(Request<Incoming>) -> Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
         + Send
@@ -102,7 +112,7 @@ pub(crate) fn response(
         .body(Full::new(body.into()))
         .unwrap()
 }
-pub(super) fn input(server: &Server, service: GitService) -> Input {
+pub(crate) fn input(server: &Server, service: GitService) -> Input {
     Input {
         destination: server.url.clone(),
         service,
@@ -112,7 +122,7 @@ pub(super) fn input(server: &Server, service: GitService) -> Input {
     }
 }
 /// Exchange discrete transport messages in memory; no framing/wire emulation.
-pub(super) fn attach(prepared: Prepared) -> (Stream, JoinHandle<()>) {
+pub(crate) fn attach(prepared: Prepared) -> (Stream, JoinHandle<()>) {
     let mut a =
         gwz_transport::stream::Config::new("session", 1, gwz_transport::stream::Side::Initiator);
     a.profile_version = 2;
@@ -182,7 +192,7 @@ impl Server {
         }
     }
 }
-pub(super) struct Tunnel {
+pub(crate) struct Tunnel {
     pub config: https_connection::Proxy,
     pub seen: Arc<Mutex<Vec<String>>>,
     task: JoinHandle<()>,

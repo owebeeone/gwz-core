@@ -37,15 +37,7 @@ cfg_if::cfg_if! {
             /// Takes sole ownership of a handshaken session created by SshConnection.
             /// `trusted_key` is endpoint policy's independently approved host key.
             /// `open` must use owned bounded agent I/O (normally agent_socket::connect).
-            pub(crate) fn authenticate<C: Channel>(
-                connection: SshConnection,
-                user: &str,
-                trusted_key: &[u8],
-                control: Arc<Control>,
-                open: impl FnOnce() -> io::Result<Agent<C>>,
-            ) -> io::Result<SshConnection> {
-                authenticate_inner(connection, user, trusted_key, control, open, |_, _| {}, || {})
-            }
+            /// `offered` runs as each key is offered, `rejected` as the server refuses one.
             pub(crate) fn authenticate_reporting<C: Channel>(
                 connection: SshConnection, user: &str, trusted_key: &[u8], control: Arc<Control>,
                 open: impl FnOnce() -> io::Result<Agent<C>>, offered: impl FnMut(),
@@ -284,7 +276,7 @@ cfg_if::cfg_if! {
                 Ok(method)
             }
         }
-        pub(crate) use unix::{authenticate, authenticate_reporting};
+        pub(crate) use unix::authenticate_reporting;
         cfg_if::cfg_if! {
             if #[cfg(test)] {
                 pub(crate) use unix::wait_eagain;

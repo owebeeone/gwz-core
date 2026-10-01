@@ -34,10 +34,6 @@ pub(crate) struct RunningPool {
     failed_shutdown: bool,
 }
 impl RunningPool {
-    pub(crate) fn new(config: pool::Config, tls: Config) -> Result<Self, Failure> {
-        let authority = Authority::new(config.total, config.per_host);
-        Self::with_authority(config, tls, authority)
-    }
     pub(crate) fn with_authority(
         config: pool::Config,
         tls: Config,

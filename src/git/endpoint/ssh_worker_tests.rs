@@ -47,7 +47,7 @@ impl ChannelResource for Unused {
 fn queued_expiry_releases_admission_without_stopping_worker() {
     let config = PoolConfig::default();
     let calls = Arc::new(AtomicUsize::new(0));
-    let (pool, mut host) = PoolHost::new(config, Refuse(calls.clone()), 0).unwrap();
+    let (pool, mut host) = PoolHost::new(config.clone(), Refuse(calls.clone()), 0).unwrap();
     let (sender, receiver) = mpsc::sync_channel(1);
     let permits = Arc::new(AtomicUsize::new(0));
     let stop = Arc::new(AtomicBool::new(false));
@@ -65,17 +65,23 @@ fn queued_expiry_releases_admission_without_stopping_worker() {
                 deadline,
                 cancelled: Arc::new(AtomicBool::new(cancelled)),
                 reply: Some(reply),
-                bridge_reply: None,
                 selected: None,
                 authority: None,
                 permit: Permit(permits.clone()),
-                bridge: false,
-                bridge_session: None,
-                bridge_stream_id: 0,
-                bridge_version: 1,
-                bridge_limits: None,
-                bridge_deadlines: None,
-                bridge_waker: None,
+                context: BridgeContext {
+                    session_id: "session".into(),
+                    stream_id: 1,
+                    version: 2,
+                    limits: gwz_transport::binding::default_limits(),
+                    deadlines: Deadlines {
+                        allocation_ms: config.allocation_timeout_ms as i64,
+                        connect_ms: config.connect_timeout_ms as i64,
+                        io_ms: 100,
+                        interaction_ms: config.interaction_timeout_ms as i64,
+                        cleanup_ms: config.cleanup_timeout_ms as i64,
+                    },
+                    waker: None,
+                },
             })
             .unwrap();
         result
@@ -104,7 +110,7 @@ fn queued_expiry_releases_admission_without_stopping_worker() {
             &Status::default(),
         )
     });
-    let check_expired = |result: Receiver<io::Result<(BlockingStream, Opened)>>| {
+    let check_expired = |result: Receiver<OpenOutcome>| {
         let error = result
             .recv_timeout(Duration::from_secs(5))
             .unwrap()

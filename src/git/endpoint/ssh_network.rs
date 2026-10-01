@@ -379,10 +379,10 @@ cfg_if! {
                 clean(io::Error::from(error))
             }
         }
-        pub(crate) use unix::{establish, wait_step};
+        pub(crate) use unix::establish;
         cfg_if! {
             if #[cfg(test)] {
-                pub(crate) use unix::{connect_addresses, establish_inner as establish_with, read_regular, timed_resolution};
+                pub(crate) use unix::{connect_addresses, establish_inner as establish_with, read_regular, timed_resolution, wait_step};
             }
         }
     }

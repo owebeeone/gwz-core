@@ -119,12 +119,6 @@ struct Remote {
     endpoint: Arc<dyn OpenRpc>,
     active: Mutex<Weak<AtomicBool>>,
 }
-pub(crate) fn callbacks(endpoint: Arc<dyn OpenRpc>) -> RemoteCallbacks<'static> {
-    let mut callbacks = RemoteCallbacks::new();
-    install(&mut callbacks, endpoint);
-    callbacks
-}
-
 pub(crate) fn install<'a>(callbacks: &mut RemoteCallbacks<'a>, endpoint: Arc<dyn OpenRpc>) {
     callbacks.smart_transport(true, move |_| {
         Ok(Remote {

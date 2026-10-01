@@ -49,8 +49,6 @@ pub(crate) trait Resource {
     fn poll_dispose(&mut self, cx: &mut Context<'_>, force: bool) -> Poll<io::Result<()>>;
     /// True only for an idle authenticated session after complete channel cleanup.
     fn reusable(&self) -> bool;
-    fn begin_interaction(&mut self) {}
-    fn end_interaction(&mut self) {}
 }
 
 enum Phase {
@@ -96,22 +94,6 @@ impl<C: Connector> PoolHost<C> {
 
     pub(crate) fn stall_slot(&self) -> Arc<AtomicU64> {
         self.stall_ms.clone()
-    }
-
-    pub(crate) fn begin_interaction(&mut self, id: ConnectionId) -> Result<(), Error> {
-        self.driver.begin_interaction(id)?;
-        if let Some(entry) = self.entries.get_mut(&id) {
-            entry.resource.begin_interaction();
-        }
-        Ok(())
-    }
-
-    pub(crate) fn end_interaction(&mut self, id: ConnectionId) -> Result<(), Error> {
-        self.driver.end_interaction(id)?;
-        if let Some(entry) = self.entries.get_mut(&id) {
-            entry.resource.end_interaction();
-        }
-        Ok(())
     }
 
     /// The borrow cannot outlive the worker; callers must never move/clone native

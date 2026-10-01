@@ -1,6 +1,4 @@
-#![allow(dead_code)]
-#[path = "../../../src/git/endpoint/agent_job.rs"]
-mod agent_job;
+use crate::git::endpoint::agent_job;
 use agent_job::Job;
 use std::{
     io,
@@ -16,8 +14,18 @@ impl Drop for Owned {
         self.0.fetch_add(1, Ordering::SeqCst);
     }
 }
+/// Starts the process-wide supervisor and fills the job budget, so it runs in
+/// a child of its own.
 #[test]
 fn global_capacity_counts_abandoned_helpers_until_join_and_disposal() {
+    super::in_child(
+        module_path!(),
+        "global_capacity_counts_abandoned_helpers_until_join_and_disposal_in_child",
+    );
+}
+#[test]
+#[ignore = "runs in a child process of its own; see ssh_tests::in_child"]
+fn global_capacity_counts_abandoned_helpers_until_join_and_disposal_in_child() {
     // The first supervisor creation fails; concurrent retries publish exactly one hub.
     let failed = Job::start_with(
         None,

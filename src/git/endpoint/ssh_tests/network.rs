@@ -1,42 +1,15 @@
-#![allow(dead_code, unused_imports)]
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
-        mod common;
-        use common::{SshConnection, ssh_channel, ssh_connection};
-        #[path = "../../../src/git/endpoint/agent_auth.rs"]
-        mod agent_auth;
-        #[path = "../../../src/git/endpoint/agent_client.rs"]
-        mod agent_client;
-        #[path = "../../../src/git/endpoint/agent_job.rs"]
-        mod agent_job;
-        #[path = "../../../src/git/endpoint/agent_socket.rs"]
-        mod agent_socket;
-        #[path = "../../../src/git/endpoint/ssh_network.rs"]
-        mod ssh_network;
-        #[path = "../../../src/git/endpoint/ssh_key_auth.rs"]
-        mod ssh_key_auth;
-        #[path = "../../../src/git/endpoint/ssh_key_container.rs"]
-        mod ssh_key_container;
-        #[path = "../../../src/git/endpoint/ssh_key_snapshot.rs"]
-        mod ssh_key_snapshot;
-        #[path = "../../../src/git/endpoint/ssh_admission.rs"]
-        mod ssh_admission;
-        #[path = "../../../src/git/endpoint/ssh_pool.rs"]
-        mod ssh_pool;
-        #[path = "../../../src/git/endpoint/git_turns.rs"]
-        mod git_turns;
-        #[path = "../../../src/git/endpoint/ssh_pump.rs"]
-        mod ssh_pump;
-        #[path = "../../../src/git/endpoint/ssh_setup.rs"]
-        mod ssh_setup;
-        #[path = "../../../src/git/endpoint/ssh_shutdown.rs"]
-        mod ssh_shutdown;
-        #[path = "../../../src/git/endpoint/ssh_worker.rs"]
-        mod ssh_worker;
-        #[path = "../../../src/git/endpoint/stream_io.rs"]
-        mod stream_io;
-        #[path = "../support/agent_auth.rs"]
-        mod support;
+        use crate::git::endpoint::ssh_fixture as common;
+        use common::{SshConnection, ssh_channel};
+        use crate::git::endpoint::agent_auth;
+        use crate::git::endpoint::agent_job;
+        use crate::git::endpoint::agent_socket;
+        use crate::git::endpoint::ssh_network;
+        use crate::git::endpoint::ssh_key_snapshot;
+        use crate::git::endpoint::ssh_setup;
+        use crate::git::endpoint::ssh_worker;
+        use super::agent_fixture as support;
         use agent_job::Job;
         use gwz_transport::{
             pool::{Config, Identity, Key},
@@ -46,7 +19,7 @@ cfg_if::cfg_if! {
             fs,
             io::{self, Read, Write},
             net::{TcpListener, TcpStream},
-            path::{Path, PathBuf},
+            path::PathBuf,
             process::{Command, Stdio},
             sync::{
                 Arc,
@@ -190,25 +163,29 @@ cfg_if::cfg_if! {
                 per_user_host: 1,
                 ..Config::default()
             };
-            let endpoint = ssh_worker::Endpoint::with_connector(
+            let deadlines = super::attachment::deadlines(&config, 1000);
+            let endpoint = ssh_worker::Endpoint::with_registry(
                 config,
-                move |origin| {
-                    ssh_setup::SetupConnector::new(
+                ssh_key_snapshot::Registry::new(),
+                move |origin, _| {
+                    ssh_setup::SetupConnector::reported(
                         origin,
                         Duration::from_secs(1),
-                        move |key: &Key, identity: &Identity| -> io::Result<ssh_setup::Setup> {
+                        move |key: &Key, identity: &Identity, _| -> io::Result<ssh_setup::Setup> {
                             assert_eq!(*identity, Identity::Ambient);
                             let key = key.clone();
                             let known = known.clone();
                             let path = path.clone();
                             Ok(Box::new(move |control| {
                                 let (connection, host) = ssh_network::establish(&key, &known, &control)?;
-                                let connection = agent_auth::authenticate(
+                                let connection = agent_auth::authenticate_reporting(
                                     connection,
                                     key.username.as_deref().unwrap(),
                                     &host,
                                     control.clone(),
                                     || agent_socket::connect(&path, control),
+                                    || {},
+                                    || {},
                                 )?;
                                 ssh_setup::Authenticated::new(
                                     connection,
@@ -228,14 +205,15 @@ cfg_if::cfg_if! {
             )
             .unwrap();
             for reused in [false, true] {
-                let (mut stream, opened) = endpoint
-                    .open_observed(
-                        key(&fixture.ssh),
-                        Identity::Ambient,
-                        ssh_channel::GitService::UploadPack,
-                        fixture.ssh.repository.to_str().unwrap(),
-                    )
-                    .unwrap();
+                let (mut stream, opened) = super::attachment::open(
+                    &endpoint,
+                    key(&fixture.ssh),
+                    None,
+                    ssh_channel::GitService::UploadPack,
+                    fixture.ssh.repository.to_str().unwrap(),
+                    deadlines.clone(),
+                )
+                .unwrap();
                 assert_eq!(opened.reused, reused);
                 assert_eq!(opened.facts.credential_offered, !reused);
                 stream.write_all(b"0000").unwrap();
@@ -819,12 +797,14 @@ cfg_if::cfg_if! {
                         move |_, _| Ok(text),
                         move |_, _, _| Ok(vec![first, other]),
                     )?;
-                    agent_auth::authenticate(
+                    agent_auth::authenticate_reporting(
                         connection,
                         key.username.as_deref().unwrap(),
                         &host,
                         c.clone(),
                         || agent_socket::connect(&path, c),
+                        || {},
+                        || {},
                     )
                 },
             )

@@ -1,5 +1,4 @@
-#[path = "../../../src/git/endpoint/ssh_pool.rs"]
-mod ssh_pool;
+use crate::git::endpoint::ssh_pool;
 
 use gwz_transport::{
     pool::{Config, Identity, Key, Owner, Pool, Request},

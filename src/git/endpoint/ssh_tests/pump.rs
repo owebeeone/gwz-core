@@ -1,13 +1,4 @@
-#![allow(dead_code)]
-
-#[path = "../../../src/git/endpoint/ssh_channel.rs"]
-mod ssh_channel;
-#[path = "../../../src/git/endpoint/ssh_connection.rs"]
-mod ssh_connection;
-#[path = "../../../src/git/endpoint/git_turns.rs"]
-mod git_turns;
-#[path = "../../../src/git/endpoint/ssh_pump.rs"]
-mod ssh_pump;
+use crate::git::endpoint::ssh_pump;
 
 use gwz_transport::{
     protocol::{Data, EndWrite, Envelope, MessageKind},
@@ -141,10 +132,6 @@ impl ChannelIo for FakeChannel {
         Ok(())
     }
 
-    fn is_disposed(&self) -> bool {
-        self.disposed
-    }
-
     fn into_owner(self) -> Result<Self::Owner, Self> {
         if self.finished {
             Ok(self.writes.len())
@@ -208,9 +195,9 @@ fn data_is_validated_before_mirror_and_consumed_after_partial_backend_writes() {
     let mut pump = SshPump::new(stream, endpoint, FakeChannel::active(), 4, 8);
     let mut bad = data(b"bad", 0);
     bad.session_id = "wrong".into();
-    assert!(matches!(pump.deliver(bad), Err(PumpError::Stream(_))));
+    assert!(matches!(pump.deliver(bad), Err(PumpError::Stream)));
     assert_eq!(pump.forward_len(), 0);
-    assert_eq!(pump.channel().writes, []);
+    assert_eq!(pump.channel().writes, b"");
 
     let (stream, endpoint) = pair(4);
     let mut pump = SshPump::new(stream, endpoint, FakeChannel::active(), 4, 8);
@@ -284,7 +271,7 @@ fn backend_would_block_keeps_reverse_and_stderr_progress_independent() {
     let mut context = cx();
     pump.tick(&mut context, 0)
         .expect("would block is retryable");
-    assert_eq!(pump.channel().writes, []);
+    assert_eq!(pump.channel().writes, b"");
     assert!(pump.stream_stats().send_buffer > 0);
     assert!(pump.stderr_len() > 0);
     pump.tick(&mut context, 1).expect("retry writes");
@@ -401,12 +388,11 @@ fn advancing_before_ingress_prevents_close_from_hiding_an_expired_network_clock(
     assert!(pump.channel().disposed);
 }
 
+/// The worker's pumps run the version 2 stream profile and report a refusal
+/// as a typed terminal in place of the end of output, and only for a
+/// complete, bounded and otherwise empty response.
 #[test]
-fn refusal_receipt_precedes_eof_and_requires_complete_bounded_empty_response() {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
+fn refusal_replaces_eof_with_a_typed_terminal_only_for_a_complete_bounded_empty_response() {
     let canonical = b"ERROR: Repository not found.\n";
     for (stderr, stdout, cap, expected) in [
         (canonical.as_slice(), &b""[..], 64, true),
@@ -426,7 +412,13 @@ fn refusal_receipt_precedes_eof_and_requires_complete_bounded_empty_response() {
             false,
         ),
     ] {
-        let (stream, endpoint) = pair(4);
+        let mut config = Config::new("pump-session", 1, Side::Endpoint);
+        config.profile_version = 2;
+        config.receive_window = 4;
+        config.send_buffer = 4;
+        config.peer_receive_window = 4;
+        config.max_payload = 4;
+        let (stream, endpoint) = Stream::new(config).expect("valid pump config");
         let mut channel = FakeChannel::active();
         channel.output.extend(stdout);
         channel.output_eof = true;
@@ -434,20 +426,28 @@ fn refusal_receipt_precedes_eof_and_requires_complete_bounded_empty_response() {
         channel.stderr_eof = true;
         channel.finish_status = 1;
         let mut pump = SshPump::new(stream, endpoint, channel, 4, cap);
-        let refused = Arc::new(AtomicBool::new(false));
-        pump.track_repository_refusal(refused.clone());
-        let mut saw_eof = false;
+        let (mut saw_eof, mut refused) = (false, false);
         for now in 0..8 {
             pump.tick(&mut cx(), now).unwrap();
             while let std::task::Poll::Ready(Ok(Some(message))) = pump.poll_next_message(&mut cx())
             {
-                if message.kind == MessageKind::EndWrite {
-                    assert_eq!(refused.load(Ordering::Acquire), expected);
-                    saw_eof = true;
+                match message.kind {
+                    MessageKind::EndWrite => saw_eof = true,
+                    MessageKind::Failed => {
+                        refused = message.failed.as_ref().is_some_and(|failure| {
+                            failure.code == gwz_transport::protocol::ErrorCode::RepositoryRefused
+                        });
+                    }
+                    _ => {}
                 }
             }
+            // The worker hands a terminal over in the pass that queued it.
+            if saw_eof || refused {
+                break;
+            }
         }
-        assert!(saw_eof);
+        assert_eq!(refused, expected);
+        assert_eq!(saw_eof, !expected);
         assert!(pump.stderr_len() <= cap);
     }
 }

@@ -1,19 +1,12 @@
-#![allow(dead_code)]
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
-        #[path = "../../../src/git/endpoint/agent_auth.rs"]
-        mod agent_auth;
-        #[path = "../../../src/git/endpoint/agent_client.rs"]
-        mod agent_client;
-        #[path = "../../../src/git/endpoint/agent_job.rs"]
-        mod agent_job;
-        #[path = "../../../src/git/endpoint/agent_socket.rs"]
-        mod agent_socket;
-        mod common;
-        #[path = "../support/agent_auth.rs"]
-        mod support;
+        use crate::git::endpoint::agent_auth;
+        use crate::git::endpoint::agent_client;
+        use crate::git::endpoint::agent_job;
+        use crate::git::endpoint::agent_socket;
+        use crate::git::endpoint::ssh_fixture as common;
+        use super::agent_fixture as support;
         use agent_job::Job;
-        use common::ssh_connection;
         use std::{
             io,
             sync::Arc,
@@ -41,9 +34,9 @@ cfg_if::cfg_if! {
                     Some(Instant::now() + Duration::from_secs(3)),
                     Duration::from_secs(1),
                     move |control| {
-                        agent_auth::authenticate(connection, &user, &host, control.clone(), || {
+                        agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || {
                             agent_socket::connect(&path, control)
-                        })
+                        }, || {}, || {})
                     },
                 )
                 .unwrap();
@@ -71,9 +64,9 @@ cfg_if::cfg_if! {
             let path = fixture.path.clone();
             let user = fixture.ssh.user.clone();
             let mut job = Job::start(None, Duration::from_secs(1), move |control| {
-                agent_auth::authenticate(connection, &user, &host, control.clone(), || {
+                agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || {
                     agent_socket::connect(&path, control)
-                })
+                }, || {}, || {})
             })
             .unwrap();
             assert_eq!(
@@ -92,9 +85,9 @@ cfg_if::cfg_if! {
                 let user = fixture.ssh.user.clone();
                 let deadline = timed.then(|| Instant::now() + Duration::from_millis(800));
                 let mut job = Job::start(deadline, Duration::from_secs(1), move |control| {
-                    agent_auth::authenticate(connection, &user, &host, control.clone(), || {
+                    agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || {
                         agent_socket::connect(&path, control)
-                    })
+                    }, || {}, || {})
                 })
                 .unwrap();
                 fixture
@@ -146,9 +139,9 @@ cfg_if::cfg_if! {
                 Some(Instant::now() + Duration::from_secs(3)),
                 Duration::from_secs(1),
                 move |control| {
-                    agent_auth::authenticate(connection, &user, &host, control.clone(), || {
+                    agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || {
                         agent_socket::connect(&path, control)
-                    })
+                    }, || {}, || {})
                 },
             )
             .unwrap();
@@ -199,12 +192,12 @@ cfg_if::cfg_if! {
                 Some(Instant::now() + Duration::from_secs(3)),
                 Duration::from_secs(1),
                 move |control| {
-                    agent_auth::authenticate(connection, &user, &host, control.clone(), || {
+                    agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || {
                         Ok(agent_client::Agent::new(
                             Panics { socket, writes: 0 },
                             control,
                         ))
-                    })
+                    }, || {}, || {})
                 },
             )
             .unwrap();
@@ -228,9 +221,9 @@ cfg_if::cfg_if! {
                     Some(Instant::now() + Duration::from_secs(3)),
                     Duration::from_secs(1),
                     move |control| {
-                        agent_auth::authenticate(connection, &user, &host, control.clone(), || {
+                        agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || {
                             agent_socket::connect(&path, control)
-                        })
+                        }, || {}, || {})
                     },
                 )
                 .unwrap();
@@ -252,9 +245,9 @@ cfg_if::cfg_if! {
                 let path = fixture.path.clone();
                 let user = fixture.ssh.user.clone();
                 let mut job = Job::start(None, Duration::from_secs(1), move |control| {
-                    agent_auth::authenticate(connection, &user, &host, control.clone(), || {
+                    agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || {
                         agent_socket::connect(&path, control)
-                    })
+                    }, || {}, || {})
                 })
                 .unwrap();
                 fixture.listed.recv_timeout(Duration::from_secs(3)).unwrap();

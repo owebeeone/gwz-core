@@ -1,11 +1,7 @@
-#![allow(dead_code)]
-
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
-        #[path = "../../../src/git/endpoint/agent_job.rs"]
-        mod agent_job;
-        #[path = "../../../src/git/endpoint/ssh_key_container.rs"]
-        mod ssh_key_container;
+        use crate::git::endpoint::agent_job;
+        use crate::git::endpoint::ssh_key_container;
 
         use agent_job::Job;
         use base64::{Engine as _, engine::general_purpose::STANDARD};

@@ -1,6 +1,4 @@
-#![allow(dead_code)]
-#[path = "../../../src/git/endpoint/agent_job.rs"]
-mod agent_job;
+use crate::git::endpoint::agent_job;
 use std::{
     sync::{
         Arc,
@@ -8,8 +6,17 @@ use std::{
     },
     time::{Duration, Instant},
 };
+/// Fills the process-wide cleanup budget, so it runs in a child of its own.
 #[test]
 fn retained_cleanup_slots_are_bounded_and_progress_without_live_helpers() {
+    super::in_child(
+        module_path!(),
+        "retained_cleanup_slots_are_bounded_and_progress_without_live_helpers_in_child",
+    );
+}
+#[test]
+#[ignore = "runs in a child process of its own; see ssh_tests::in_child"]
+fn retained_cleanup_slots_are_bounded_and_progress_without_live_helpers_in_child() {
     let ready = Arc::new(AtomicBool::new(false));
     let complete = Arc::new(AtomicUsize::new(0));
     let slots: Vec<_> = (0..64)

@@ -2,7 +2,7 @@
 //! and the independent message/SSH worker belong to the injected endpoint.
 use super::{ssh_channel::GitService, stream_io::BlockingStream};
 use git2::{
-    Error, ErrorClass, ErrorCode, RemoteCallbacks,
+    Error, ErrorClass, ErrorCode,
     transport::{Service, SmartSubtransport, SmartSubtransportStream},
 };
 use std::{
@@ -36,17 +36,6 @@ impl RemoteTransport {
             active: Mutex::new(None),
         }
     }
-}
-
-/// Each factory gets owned per-remote state; the endpoint/pool may be shared
-/// across operations. Stateful mode keeps discovery and negotiation on one
-/// stream through git2-rs's UploadPackLs/UploadPack and ReceivePack equivalents.
-pub(crate) fn callbacks(endpoint: Arc<dyn OpenStream>) -> RemoteCallbacks<'static> {
-    let mut callbacks = RemoteCallbacks::new();
-    callbacks.smart_transport(false, move |_remote| {
-        Ok(RemoteTransport::new(endpoint.clone()))
-    });
-    callbacks
 }
 
 fn network_error(error: impl std::fmt::Display) -> Error {

@@ -18,8 +18,13 @@ fn fixture() -> PlacementEndpoint {
         }
     }
     PlacementEndpoint::new(
-        Endpoint::with_connector(gwz_transport::pool::Config::default(), |_| NoConnect, 100)
-            .unwrap(),
+        Endpoint::with_registry(
+            gwz_transport::pool::Config::default(),
+            super::super::ssh_key_snapshot::Registry::new(),
+            |_, _| NoConnect,
+            100,
+        )
+        .unwrap(),
         PathBuf::from("/tmp"),
         "endpoint".into(),
         "owner".into(),
@@ -61,7 +66,7 @@ fn blocked_check_times_out_before_physical_disposal() {
     let key = ("request".into(), 1);
     endpoint
         .requests
-        .insert(key.clone(), request_state(&envelope, "check".into()));
+        .insert(key.clone(), request_state(&envelope));
     endpoint.checks.push(CheckJob {
         key,
         job,
@@ -270,8 +275,13 @@ fn slow_endpoint(
         setup,
     };
     let endpoint = PlacementEndpoint::new(
-        Endpoint::with_connector(gwz_transport::pool::Config::default(), |_| connector, 9_000)
-            .unwrap(),
+        Endpoint::with_registry(
+            gwz_transport::pool::Config::default(),
+            super::super::ssh_key_snapshot::Registry::new(),
+            |_, _| connector,
+            9_000,
+        )
+        .unwrap(),
         PathBuf::from("/tmp"),
         "endpoint".into(),
         "owner".into(),

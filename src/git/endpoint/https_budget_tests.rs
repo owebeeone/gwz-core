@@ -3,8 +3,7 @@ use std::{sync::Arc, time::Duration};
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 
-#[path = "https_fixture.rs"]
-mod fixture;
+use crate::git::endpoint::https_fixture as fixture;
 use fixture::{Server, input, response};
 
 fn runtime() -> tokio::runtime::Runtime {

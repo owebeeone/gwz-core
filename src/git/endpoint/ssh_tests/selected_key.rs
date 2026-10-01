@@ -1,36 +1,13 @@
-#![allow(dead_code, unused_imports)]
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
-        mod common;
-        use common::ssh_connection;
-        #[path = "../../../src/git/endpoint/agent_job.rs"]
-        mod agent_job;
-        #[path = "../../../src/git/endpoint/ssh_key_auth.rs"]
-        mod ssh_key_auth;
-        #[path = "../../../src/git/endpoint/ssh_key_container.rs"]
-        mod ssh_key_container;
-        #[path = "../../../src/git/endpoint/ssh_key_snapshot.rs"]
-        mod ssh_key_snapshot;
-        #[path = "../../../src/git/endpoint/ssh_admission.rs"]
-        mod ssh_admission;
-        #[path = "../../../src/git/endpoint/ssh_network.rs"]
-        mod ssh_network;
-        #[path = "../../../src/git/endpoint/ssh_pool.rs"]
-        mod ssh_pool;
-        #[path = "../../../src/git/endpoint/git_turns.rs"]
-        mod git_turns;
-        #[path = "../../../src/git/endpoint/ssh_pump.rs"]
-        mod ssh_pump;
-        #[path = "../../../src/git/endpoint/ssh_setup.rs"]
-        mod ssh_setup;
-        #[path = "../../../src/git/endpoint/ssh_shutdown.rs"]
-        mod ssh_shutdown;
-        #[path = "../../../src/git/endpoint/ssh_worker.rs"]
-        mod ssh_worker;
-        #[path = "../../../src/git/endpoint/stream_io.rs"]
-        mod stream_io;
+        use crate::git::endpoint::ssh_fixture as common;
+        use crate::git::endpoint::agent_job;
+        use crate::git::endpoint::ssh_key_auth;
+        use crate::git::endpoint::ssh_key_snapshot;
+        use crate::git::endpoint::ssh_network;
+        use crate::git::endpoint::ssh_pool;
+        use crate::git::endpoint::ssh_setup;
         use agent_job::Job;
-        use common::ssh_channel;
         use gwz_transport::pool::Key;
         use ssh_key_snapshot::Registry;
         use std::{
@@ -65,7 +42,6 @@ cfg_if::cfg_if! {
             let a = load(&r, key.clone(), &path).unwrap();
             let b = load(&r, key.clone(), &path).unwrap();
             assert!(Arc::ptr_eq(&a, &b));
-            assert!(!a.proven());
             assert_eq!(r.usage().0, 1);
             let other = load(&r, Key::ssh("u", "h", 23), &path).unwrap();
             assert_ne!(a.identity(), other.identity());
@@ -165,8 +141,8 @@ cfg_if::cfg_if! {
             assert_eq!(r.usage(), (0, 0));
         }
         #[test]
-        fn native_auth_uses_snapshot_after_path_replacement_and_promotes_only_live_handoff() {
-            for cancel in [false, true] {
+        fn native_auth_uses_snapshot_after_path_replacement_and_releases_its_pin() {
+            for handoff in [true, false] {
                 let f = common::SshdFixture::new();
                 let key = Key::ssh(&f.user, "127.0.0.1", f.port);
                 let r = Registry::new();
@@ -180,25 +156,16 @@ cfg_if::cfg_if! {
                     Duration::from_secs(1),
                     move |c| {
                         let (conn, host) = ssh_network::establish(&key, &known, &c)?;
-                        ssh_key_auth::authenticate(conn, &host, pin, c)
+                        ssh_key_auth::authenticate_reporting(conn, &host, pin, c, || {}, || {})
                     },
                 )
                 .unwrap();
                 let verified = finish(&mut job).unwrap();
-                assert!(!entry.proven());
-                if cancel {
-                    assert_eq!(
-                        verified
-                            .publish(|| Err(io::ErrorKind::ConnectionAborted.into()))
-                            .err()
-                            .unwrap()
-                            .kind(),
-                        io::ErrorKind::ConnectionAborted
-                    );
-                    assert!(!entry.proven());
+                if !handoff {
+                    // A setup that ends before its handoff drops the connection, then its pin.
+                    drop(verified);
                 } else {
-                    let (conn, pin) = verified.publish(|| Ok(())).unwrap();
-                    assert!(entry.proven());
+                    let (conn, pin) = verified.into_parts();
                     assert!(Arc::ptr_eq(&pin, &entry));
                     let mut channel = common::SshChannel::new(
                         conn,
@@ -231,18 +198,17 @@ cfg_if::cfg_if! {
                 Duration::from_secs(1),
                 move |c| {
                     let (conn, host) = ssh_network::establish(&key, &known, &c)?;
-                    ssh_key_auth::authenticate(conn, &host, pin, c)
+                    ssh_key_auth::authenticate_reporting(conn, &host, pin, c, || {}, || {})
                 },
             )
             .unwrap();
             assert!(finish(&mut job).is_err());
-            assert!(!entry.proven());
             drop(entry);
             assert_eq!(r.usage(), (0, 0));
         }
 
         #[test]
-        fn parallel_same_material_interns_one_unproven_candidate() {
+        fn parallel_same_material_interns_one_candidate() {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("key");
             fs::write(&path, PEM).unwrap();
@@ -266,7 +232,7 @@ cfg_if::cfg_if! {
                 })
                 .collect();
             let pins: Vec<_> = threads.into_iter().map(|t| t.join().unwrap()).collect();
-            assert!(pins.iter().all(|p| Arc::ptr_eq(p, &pins[0]) && !p.proven()));
+            assert!(pins.iter().all(|p| Arc::ptr_eq(p, &pins[0])));
             assert_eq!(r.usage().0, 1);
             drop(pins);
             assert_eq!(r.usage(), (0, 0));
@@ -339,19 +305,18 @@ cfg_if::cfg_if! {
                     Duration::from_secs(1),
                     move |c| {
                         let (conn, host) = ssh_network::establish(&key, &known, &c)?;
-                        ssh_key_auth::authenticate(conn, &host, entry, c)
+                        ssh_key_auth::authenticate_reporting(conn, &host, entry, c, || {}, || {})
                     },
                 )
                 .unwrap();
-                let (conn, pin) = finish(&mut job).unwrap().publish(|| Ok(())).unwrap();
-                assert!(pin.proven());
+                let (conn, pin) = finish(&mut job).unwrap().into_parts();
                 drop(conn);
                 drop(pin);
                 assert_eq!(r.usage(), (0, 0));
             }
         }
         #[test]
-        fn wrong_host_and_rejected_selected_key_do_not_promote_or_fallback() {
+        fn wrong_host_and_rejected_selected_key_do_not_fall_back() {
             for wrong_host in [false, true] {
                 let f = common::SshdFixture::new();
                 let key = Key::ssh(&f.user, "127.0.0.1", f.port);
@@ -370,7 +335,7 @@ cfg_if::cfg_if! {
                         if wrong_host {
                             host[0] ^= 1;
                         }
-                        ssh_key_auth::authenticate(conn, &host, pin, c)
+                        ssh_key_auth::authenticate_reporting(conn, &host, pin, c, || {}, || {})
                     },
                 )
                 .unwrap();
@@ -378,7 +343,6 @@ cfg_if::cfg_if! {
                     finish(&mut job).err().unwrap().kind(),
                     io::ErrorKind::PermissionDenied
                 );
-                assert!(!entry.proven());
                 drop(entry);
                 assert_eq!(r.usage(), (0, 0));
             }
@@ -403,7 +367,7 @@ cfg_if::cfg_if! {
                 let mut job = Job::start(
                     timed.then(|| Instant::now() + Duration::from_millis(150)),
                     Duration::from_secs(1),
-                    move |c| ssh_key_auth::authenticate(conn, &host, pin, c),
+                    move |c| ssh_key_auth::authenticate_reporting(conn, &host, pin, c, || {}, || {}),
                 )
                 .unwrap();
                 std::thread::sleep(Duration::from_millis(50));
@@ -423,7 +387,6 @@ cfg_if::cfg_if! {
                         io::ErrorKind::ConnectionAborted
                     }
                 );
-                assert!(!entry.proven());
                 drop(entry);
                 assert_eq!(r.usage(), (0, 0));
                 paused.resume();
@@ -460,14 +423,14 @@ cfg_if::cfg_if! {
             let calls = Arc::new(AtomicUsize::new(0));
             let count = calls.clone();
             let mut owner = Some((conn, host, entry.clone()));
-            let mut connector = ssh_setup::SetupConnector::new(
+            let mut connector = ssh_setup::SetupConnector::reported(
                 Instant::now(),
                 Duration::from_secs(1),
-                move |_: &Key, _: &gwz_transport::pool::Identity| {
+                move |_: &Key, _: &gwz_transport::pool::Identity, _| {
                     count.fetch_add(1, Ordering::SeqCst);
                     let (conn, host, pin) = owner.take().unwrap();
                     Ok(Box::new(move |c| {
-                        ssh_key_auth::authenticate(conn, &host, pin, c)
+                        ssh_key_auth::authenticate_reporting(conn, &host, pin, c, || {}, || {})
                             .map(|_| -> ssh_setup::Authenticated { panic!("unexpected auth success") })
                     }) as ssh_setup::Setup)
                 },
@@ -487,7 +450,6 @@ cfg_if::cfg_if! {
             };
             assert_eq!(failure.code, gwz_transport::protocol::ErrorCode::Io);
             assert_eq!(calls.load(Ordering::SeqCst), 1);
-            assert!(!entry.proven());
             drop(resource);
             drop(entry);
             assert_eq!(r.usage(), (0, 0));
@@ -507,7 +469,7 @@ cfg_if::cfg_if! {
             if veto {
                 return Err(io::ErrorKind::Other.into());
             }
-            ssh_key_auth::authenticate(conn, host, entry, c)
+            ssh_key_auth::authenticate_reporting(conn, host, entry, c, || {}, || {})
         }
         #[test]
         fn valid_extreme_encrypted_containers_never_dispatch_native_auth() {

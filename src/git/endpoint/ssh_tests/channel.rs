@@ -1,4 +1,4 @@
-mod common;
+use crate::git::endpoint::ssh_fixture as common;
 
 use common::*;
 use std::io::{self, Read};

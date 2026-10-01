@@ -1,12 +1,12 @@
 # Full-core SSH candidate integration
 
 This harness compiles the actual backend and workspace command drivers against
-the local `git2-rs` fork and `gwz-transport` member. It covers ownership and
-callback/report integration that the isolated `transport_ssh` fixture cannot
-exercise. It does not change production manifests or enable a released route.
+the local `git2-rs` fork and `gwz-transport` member, with the SSH endpoint's own
+suites (`src/git/endpoint/ssh_tests`, formerly the separate `tests/transport_ssh`
+crate). It does not change production manifests or enable a released route.
 
-From the GWZ workspace root, using Rust 1.95.0 and the prerequisites in
-`tests/transport_ssh/README.md`:
+From the GWZ workspace root, using Rust 1.95.0, Git, OpenSSH's `/usr/sbin/sshd`,
+`ssh-keygen`, `ssh-agent` and `ssh-add`, `openssl`, `ps` and `kill`:
 
 ```sh
 python3 -B gwz-core/tests/transport_backend/prepare.py /tmp/gwz-backend-new
