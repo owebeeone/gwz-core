@@ -16,18 +16,35 @@ pub(crate) struct TempDir {
     pub(crate) path: PathBuf,
 }
 
+/// Names a `TempDir` may try before giving up; a taken name is rare, since it
+/// needs another `TempDir` with the same prefix in the same clock tick.
+const NAME_ATTEMPTS: u32 = 1000;
+
 impl TempDir {
+    /// A directory this call created. `create_dir` refuses a name that already
+    /// exists, so two `TempDir`s never share one even when their names are
+    /// drawn in the same clock tick, which macOS reads to the microsecond. A
+    /// taken name is retried with the next suffix.
     pub(crate) fn new(prefix: &str) -> Self {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "gwz-core-diff-{prefix}-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).unwrap();
-        Self { path }
+        let base = format!("gwz-core-diff-{prefix}-{}-{unique}", std::process::id());
+        let temp = std::env::temp_dir();
+        for attempt in 0..NAME_ATTEMPTS {
+            let path = temp.join(format!("{base}-{attempt}"));
+            match fs::create_dir(&path) {
+                Ok(()) => {
+                    return Self { path };
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(error) => {
+                    panic!("create temp dir {}: {error}", path.display());
+                }
+            }
+        }
+        panic!("no free temp dir name for {base} in {NAME_ATTEMPTS} attempts");
     }
 
     pub(crate) fn path(&self) -> &Path {
