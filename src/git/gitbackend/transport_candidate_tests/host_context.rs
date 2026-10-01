@@ -10,29 +10,28 @@
 //! host key, and this process's environment is never changed.
 use super::*;
 
-const CHILD: &str = "GWZ_TR2_11_ROUTE_CHILD";
+pub(super) const CHILD: &str = "GWZ_TR2_11_ROUTE_CHILD";
 
 #[test]
 fn candidate_ssh_takes_the_transport_only_inside_a_host_context() {
     if std::env::var_os(CHILD).is_none() {
-        run_in_child("candidate_ssh_takes_the_transport_only_inside_a_host_context");
+        run_in_child(
+            module_path!(),
+            "candidate_ssh_takes_the_transport_only_inside_a_host_context",
+        );
         return;
     }
     let f = common::SshdFixture::new();
     let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("the parent sets HOME"));
     std::fs::create_dir_all(home.join(".ssh")).unwrap();
     std::fs::copy(&f.known_hosts, home.join(".ssh/known_hosts")).unwrap();
-    // The fixture's own repository path needs percent escapes in a URL, which
-    // the transport decodes and libgit2's native SSH passes on as written. A
-    // plain path reads the same on both routes.
-    let repository = f.temp.path().join("plain.git");
-    commit(&git2::Repository::init_bare(&repository).unwrap(), "first");
-    let url = format!(
-        "ssh://{}@127.0.0.1:{}{}",
-        f.user,
-        f.port,
-        repository.display()
+    // Both routes read a URL's path as written (TR2.16), so the fixture's own
+    // repository, whose path holds a space and shell characters, serves both.
+    commit(
+        &git2::Repository::open_bare(&f.repository).unwrap(),
+        "first",
     );
+    let url = url(&f);
     let meta = crate::RequestMeta {
         request_id: "route".into(),
         schema_version: "gwz.protocol/v0".into(),
@@ -112,14 +111,13 @@ fn clone_then_fetch(
     scoped.transport_observations().unwrap().snapshot()
 }
 
-/// Runs this module's test `name` in a child of this test binary, with a
-/// clean environment whose `HOME` is a new temporary directory, and asserts
-/// that the child ran exactly that test and passed.
-fn run_in_child(name: &str) {
+/// Runs the test `name` of `module`, a `module_path!()`, in a child of this
+/// test binary, with a clean environment whose `HOME` is a new temporary
+/// directory and which sets `CHILD`, and asserts that the child ran exactly
+/// that test and passed.
+pub(super) fn run_in_child(module: &str, name: &str) {
     let home = tempfile::TempDir::new().unwrap();
-    let module = module_path!()
-        .split_once("::")
-        .map_or(module_path!(), |(_, path)| path);
+    let module = module.split_once("::").map_or(module, |(_, path)| path);
     let test = format!("{module}::{name}");
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command

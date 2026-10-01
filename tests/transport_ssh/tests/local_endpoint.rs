@@ -88,13 +88,9 @@ cfg_if::cfg_if! {
                 Arc::new(move |o| observed.lock().unwrap().push(o.clone())),
             ))
         }
+        /// The path passes as written, as in libgit2.
         fn url(f: &common::SshdFixture, path: &Path) -> String {
-            let path = path
-                .to_str()
-                .unwrap()
-                .replace('%', "%25")
-                .replace(' ', "%20");
-            format!("ssh://{}@127.0.0.1:{}{}", f.user, f.port, path)
+            format!("ssh://{}@127.0.0.1:{}{}", f.user, f.port, path.display())
         }
         fn exchange(route: &dyn OpenStream, url: &str) -> io::Result<()> {
             let mut stream = route.open(url, ssh_channel::GitService::UploadPack)?;

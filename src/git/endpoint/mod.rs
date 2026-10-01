@@ -42,6 +42,7 @@ cfg_if::cfg_if! {
     if #[cfg(test)] {
         mod git_turns_tests;
         pub(crate) mod helper_script;
+        mod ssh_destination_tests;
         mod ssh_pump_clock_tests;
     }
 }
