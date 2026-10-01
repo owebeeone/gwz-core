@@ -2,7 +2,7 @@
 
 Date: 2026-10-01. Status: **accepted at SHA-256 `c5850e52227e9f27e7c989c417ea262d6f749e312593af3cbbc7baeeda468509` after [Consistency-2](GwzTransportReleasePlanAmendment-2-ReviewConsistency-2.md) and [Safety-2](GwzTransportReleasePlanAmendment-2-ReviewSafety-2.md) reported GO; this accepts the amendment text only**.
 - It authorizes no implementation, commit, tag, push or publish.
-- OD13, OD14 and OD15 were decided by the operator on 2026-10-01: OD14 is applied in revision 3, and OD15 in revision 4, with OD16's shape following it. OD17 is taken only if TR8.1 (1.1.0) misses.
+- OD13, OD14 and OD15 were decided by the operator on 2026-10-01, and OD16 on 2026-10-02, with OD10 and OD11 reversed. Revision 3 applies OD14, revision 4 OD15, and revision 5 the decisions of 2026-10-02. OD17 is taken only if TR8.1 (1.1.0) misses.
 
 ## Rounds
 
@@ -95,6 +95,23 @@ Still to come:
   - All eight are applied without a further round. The same reviewer's [re-check](GwzTransportReleasePlanAmendment-2-ReviewSkim-3.md) reported **GO**, with all eight closed. Its one new P3 is applied: TR1.8's Safety finding list names the default-credential exchange with the machine proxy, should TR1.8 design one.
   - The amendment then hashes `ee130a1d0250648d39548a1ef95fd5435c7376286eee1c8000bed4faef74fb16`, the server design `9fe1738b5aefac1316de4dc98f2fe0cc45abf4ec042c4f281d82122de00d9327`, and the session plan `43952950938d88a91e9ee7291ea0709e681531f405469fb13ce56e11e941274f`. Revision 4 carries a skim-review GO, not a dual-review GO.
 
+## Revision 5: OD16, and OD10 and OD11 on the transport
+
+- **The decisions,** on 2026-10-02, after revision 4 was committed (root `1292b0c`, gwz-core `fde46265`, gwz-py `b24204e`):
+  - "lift that": OD16's zone bound goes. The transport offers the logon session's default credentials to any host that asks, as 1.0.17 does, and the migration notes state the forced-authentication hazard;
+  - "yes": OD10 and OD11 move onto the transport. The transport runs the user's configured credential helpers (TR1.6), and signs with every agent key type and signature algorithm 1.0.17 uses (TR2.8).
+- **The result.** No configuration that 1.0.17 serves takes a native route in 1.1.0. Only the off switch, a caller without a host context, and `git://`, `http://` and `file://` remotes use libgit2's own transports.
+- **The SHA-1 fallback.** The lane owner put `ssh-rsa` (SHA-1) in TR2.8's list under the operator's parity rule, and the operator confirmed it ("keep sha-1 fallback"). Amendment 1 had recorded such servers as failing on the transport with no route.
+- **The changes.** §3.19 carries the decisions into TR1.6, TR2.8, the plan's and amendment 1's OD10 and OD11 texts, the agent design, the server design's routed native operations, the session plan's CS8.3, and the reuse design's key-type sentences. Those documents' status lines and changelogs record it.
+- **Its review:** one skim review, as for revisions 3 and 4.
+  - [Skim review 4](GwzTransportReleasePlanAmendment-2-ReviewSkim-4.md) reported NO-GO on revision 5 (`f41737af…`), with five P2 and three P3 text defects, and no P0 or P1:
+    - TR1.6 had designed a second helper runner beside the session plan's CS3.4, which it now adopts;
+    - the URL a helper is asked about after a redirect was unstated;
+    - a helper's password against an `NTLM`, `Negotiate` or `Digest` challenge on Windows had no defined behaviour, where 1.0.17 answers it;
+    - the `ssh-rsa` rule was not libssh2's;
+    - the release definition still said "gh-only HTTPS".
+  - All eight are applied without a further round. The same reviewer's [re-check](GwzTransportReleasePlanAmendment-2-ReviewSkim-5.md) closed all eight, and found one new P2, introduced by the P2-3 fix, and three new P3s. The P2: on 1.0.17 a challenge that offers only `Negotiate` never reaches a credential helper, and the logon session answers it, so a helper must not answer it first; a stale stored password there would fail the login, or lock the account. All four are applied. The [second re-check](GwzTransportReleasePlanAmendment-2-ReviewSkim-6.md) reported **GO**, with all four closed and nothing new. The amendment then hashes `807dda1e88b40203d2b5d8adb7efeeb5fd8dfb44c2d279359a4c1a854be63449`. Revision 5 carries a skim-review GO, not a dual-review GO.
+
 ## Next action
 
-OD13–OD15 are decided, and OD16's shape is applied. On the operator's go, the documents are committed, and the lanes in the amendment's §3.13 under "What can start now" can begin. TR2.9 is first: it covers the serialized closes, the measured blocker for 1.1.0.
+OD13–OD16 are decided, with OD10 and OD11 reversed. Revision 4 is committed (root `1292b0c`, gwz-core `fde46265`, gwz-py `b24204e`), and revision 5 is committed on its second re-check's GO, under the operator's go to commit. TR2.9 and TR2.10 are running, and the other lanes in the amendment's §3.13 under "What can start now" follow. TR2.9 is first: it covers the serialized closes, the measured blocker for 1.1.0.

@@ -6,7 +6,7 @@ Date: 2026-09-27. Status: **accepted at SHA-256 `213a164b79b7e46ce3855c699b491dc
 - Revision 1 applied the [first remediation plan](GwzTransportReleasePlanAmendment-RemPlan.md) after the [first verdict](GwzTransportReleasePlanAmendment-Verdict.md).
 - On 2026-09-28 the operator decided OD12: yes. §3.11's "If yes" edits apply, as the changelog records.
 - Amended 2026-09-28 by [`GwzCoreServerDesign.md`](../../dev-docs/GwzCoreServerDesign.md). This document remains authoritative only as amended for §3.4's Linux probe, macOS probe and `/net` sentences, and §3.6's macOS rows. The operator signed off the four clauses on 2026-09-28.
-- Amended 2026-10-01 by [`GwzTransportReleasePlanAmendment-2.md`](GwzTransportReleasePlanAmendment-2.md). This document remains authoritative only as amended for the release each of its sections belongs to.
+- Amended 2026-10-01 by [`GwzTransportReleasePlanAmendment-2.md`](GwzTransportReleasePlanAmendment-2.md). This document remains authoritative only as amended for the release each of its sections belongs to, and, from that amendment's revision 5, for its OD11 texts (its §3.19).
 - Acceptance authorizes no implementation, commit, tag, push or publish.
 
 This amendment controls the [transport release plan](GwzTransportReleasePlan.md), and one sentence of the [SSH agent design](GwzRemoteTransportSshAgentDesign.md).
@@ -393,3 +393,4 @@ It gains: one command through the stdio mode's local client form.
   - §3.4's `/net` sentence is corrected: macOS has shipped `/net` disabled since autofs-281.0.3, and the default auto_home map remains.
   - §3.6's macOS rows use the auto_home map through `/home`, plus a disposable runner with `/net` and a direct map enabled.
 - 2026-10-01: amended by [`GwzTransportReleasePlanAmendment-2.md`](GwzTransportReleasePlanAmendment-2.md), accepted at SHA-256 `c5850e52…` ([its verdict](GwzTransportReleasePlanAmendment-2-Verdict.md)). Its §3.3 assigns each of this document's sections to 1.1.0 or 1.2.0. No sentence of this document changes.
+- 2026-10-02: amendment 2's revision 5 records the operator's reversal of OD11: the transport signs with every agent key type and signature algorithm 1.0.17 uses, so no remote takes a native route for its keys. Under its §3.19, §3.2's key-type row, §3.4's routed operations, TR2.8, §3.6's routed exit rows, §3.7's cell, §3.8's notes, §3.11's OD11, §3.12's risk, §3.13's bullet, §3.14's RSA sentence and §4's key-type rows read as that section states. Revision 5 was skim-reviewed only.

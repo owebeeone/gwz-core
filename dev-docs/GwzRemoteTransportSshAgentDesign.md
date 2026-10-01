@@ -8,6 +8,9 @@ Amended 2026-09-28 by
 [`GwzConnectionReuseDesign.md`](../../dev-docs/GwzConnectionReuseDesign.md).
 This document remains authoritative only as amended for §2's list of agent
 operations.
+Amended 2026-10-02 by [`GwzTransportReleasePlanAmendment-2.md`](GwzTransportReleasePlanAmendment-2.md).
+This document remains authoritative only as amended for its §5 fixture sentence
+(that amendment's §3.19).
 
 ## 1. Decision and authority
 
@@ -304,3 +307,8 @@ separate implementation gates. Platform/source checks remain the later batch.
   accepted at SHA-256 `e8ee63f8…`. At a lease across operations, the agent
   signs a fresh random nonce with the connection's key under a fixed gwz SSHSIG
   namespace, which cannot stand in for an authentication signature.
+- 2026-10-02: amended by `GwzTransportReleasePlanAmendment-2.md`'s revision 5, which
+  records the operator's reversal of OD11. §5's fixture sentence, as amendment 1 left
+  it, reads: "Fixtures for every key type and signature algorithm the transport plan's
+  TR2.8 lists are required. A key of any other type is skipped, and a later key is
+  tried." Revision 5 was skim-reviewed only.

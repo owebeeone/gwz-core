@@ -7,12 +7,13 @@ Date: 2026-10-01; revision 4, 2026-10-02. Status: **accepted at SHA-256 `c5850e5
 - Revision 2 applied [remediation plan 2](GwzTransportReleasePlanAmendment-2-RemPlan-2.md) after revision 1's re-verdicts: [Consistency-1](GwzTransportReleasePlanAmendment-2-ReviewConsistency-1.md) GO, and [Safety-1](GwzTransportReleasePlanAmendment-2-ReviewSafety-1.md) NO-GO on one new P2.
 - On 2026-10-01 the operator decided OD14: its alternative, gwz-py's network operations on the per-operation transport entry in 1.1.0. Revision 3 applies it, with the 1.1.0 amendment's S6.1–S6.3 restored (§3.17) and the Python [design](../../gwz-py/dev-docs/GwzPyPerOperationTransportDesign.md) they point to. On the operator's instruction it skips the review loop, and one skim review checks it ([skim review](GwzTransportReleasePlanAmendment-2-ReviewSkim.md)).
 - On 2026-10-01 the operator decided OD15 under OD13's parity: the transport itself does what 1.0.17's native path does on Windows, and no native route stands in for it. Revision 4 applies it, with OD16's shape following it (§3.14), three Windows steps (TR4.8–TR4.10), and the server design's and session plan's sentences it changes (§3.18). It is skim-reviewed only, as revision 3 was ([skim review 2](GwzTransportReleasePlanAmendment-2-ReviewSkim-2.md) and its [re-check](GwzTransportReleasePlanAmendment-2-ReviewSkim-3.md)), because TR1.8's and TR4.10's own dual reviews carry the Windows designs.
+- On 2026-10-02 the operator decided three more: OD16's unbounded alternative, so the transport offers the logon session's default credentials to any host that asks, as 1.0.17 does; and OD10 and OD11 reversed, so the transport itself runs the user's configured credential helpers and signs with every agent key type 1.0.17 uses. Revision 5 applies them (§3.19). It is skim-reviewed only, as revisions 3 and 4 were.
 - OD17 is taken only if TR8.1 (1.1.0) misses.
 - Acceptance authorizes no implementation, commit, tag, push or publish.
 
 This amendment controls the [transport release plan](GwzTransportReleasePlan.md), as [amendment 1](GwzTransportReleasePlanAmendment.md), the [reuse design](../../dev-docs/GwzConnectionReuseDesign.md) and the [server design](../../dev-docs/GwzCoreServerDesign.md) left it, and named sections of the [session plan](../../dev-docs/GwzCoreSessionPlan.md) and the [crate map](../../dev-docs/GwzCoreSessionCrateMap.md).
 - It records the operator's decision of 2026-10-01, OD13: the release ships as two minor releases, **1.1.0, the transport**, and **1.2.0, the session release**, and 1.1.0 has **Windows parity**.
-- It records OD14, decided by the operator on 2026-10-01: gwz-py's network operations take the per-operation transport entry in 1.1.0 (§3.17). It records OD15, decided by the operator on 2026-10-01: Windows parity is built into the transport, not reached by native routes. OD16, how the transport answers a challenge for the logon session's default credentials, follows it. It names a fourth, OD17, to be taken if 1.1.0 misses its speed target.
+- It records OD14, decided by the operator on 2026-10-01: gwz-py's network operations take the per-operation transport entry in 1.1.0 (§3.17). It records OD15, decided by the operator on 2026-10-01: Windows parity is built into the transport, not reached by native routes. OD16, how the transport answers a challenge for the logon session's default credentials, was decided on 2026-10-02, with OD10 and OD11 reversed onto the transport (§3.19). It names a fourth, OD17, to be taken if 1.1.0 misses its speed target.
 - It adds thirteen steps: TR1.8, TR2.9 to TR2.12, TR3.3, TR3.4, TR4.6 to TR4.10, and TR8.4. It restores the 1.1.0 amendment's S6.1–S6.3 for 1.1.0 (§3.17).
 - It retires no accepted design and no step. It assigns each phase, or part of a phase, to one of the two releases.
 
@@ -20,13 +21,15 @@ This amendment controls the [transport release plan](GwzTransportReleasePlan.md)
 
 - `gwz-core/dev-docs/GwzTransportReleasePlan.md`, at SHA-256 `4e05b8e8a1fdffb7ff36fddcf7402c5662c95f441582a84ff65661ac993fbaac` (gwz-core `3f99e49c`). Line numbers below are that file's.
   - That file carries its earlier amendments only as status lines 8–11. Where amendment 1 replaced a clause, this amendment cites the clause as amendment 1 left it.
-- `gwz-core/dev-docs/GwzTransportReleasePlanAmendment.md`: §3.3 assigns each of its sections to a release. No sentence of it changes.
+  - §3.19 changes its OD10 texts: line 52's row, TR1.6, TR2.2's route sentence (line 293), line 423's ledger item and OD10 (lines 533–534).
+- `gwz-core/dev-docs/GwzTransportReleasePlanAmendment.md`: §3.3 assigns each of its sections to a release. §3.19 changes its OD11 texts: §3.2's key-type row, §3.4's routed operations, TR2.8, §3.6's routed exit rows, §3.7's cell, §3.8's notes, §3.11's OD11, §3.12's risk, §3.13's out-of-scope bullet, §3.14's RSA sentence and §4's key-type rows.
+- `gwz-core/dev-docs/GwzRemoteTransportSshAgentDesign.md`: its §5 fixture sentence, as amendment 1 left it (§3.19).
 - `gwz-core/dev-docs/GwzV110PlanAmendment.md`, adopted through the plan's §4: in 1.1.0's run, its §3.4 (Phase 6, S6.1–S6.3) applies as §3.17 restores it, and its §3.5 and §3.6 sentences on gwz-py apply as written (§3.11, §3.12).
 - `gwz-py/dev-docs/GwzPyPerOperationTransportDesign.md`: the Python design that the 1.1.0 amendment's S6.2 and S6.3 call "S1.1's revision" (§3.17).
-- `dev-docs/GwzCoreSessionPlan.md`: §1.1, §2.3's G2, §2.4's candidate-build sentence, §3.0's definition of an **Ordinary path** step, §5.3's row for S6.2's release pins, CS5.3's files, CS6.5's two sentences on the lazy endpoint's read, CS7.24, §5.4's `transport_binding.rs` row, Phase 6's preamble sentence on the lazy endpoint's debt entry, and its mentions of gwz-py's `native/src/transport_session.rs` (§3.15); CS8.1's, CS8.3's and CS8.18's sentences on the logon session, CS8.18's logon-session test row, and CS8.19's Pageant clause (§3.18).
+- `dev-docs/GwzCoreSessionPlan.md`: §1.1, §2.3's G2, §2.4's candidate-build sentence, §3.0's definition of an **Ordinary path** step, §5.3's row for S6.2's release pins, CS5.3's files, CS6.5's two sentences on the lazy endpoint's read, CS7.24, §5.4's `transport_binding.rs` row, Phase 6's preamble sentence on the lazy endpoint's debt entry, and its mentions of gwz-py's `native/src/transport_session.rs` (§3.15); CS8.1's and CS8.18's sentences on the logon session, CS8.18's logon-session test row, and CS8.19's Pageant clause (§3.18); CS8.3's routing rule, its test rows and dependencies, and the sketch's two CS8.3 edges (§3.19); CS3.4's transport half (§3.15, §3.19).
 - `dev-docs/GwzCoreSessionCrateMap.md`: its sentence on when candidate crates are published (line 25), and the ruling on the thirteen crates.io names (lines 156 and 199), which TR3.3 applies (§3.16).
-- `dev-docs/GwzConnectionReuseDesign.md`: its open item on network operations without a binding (line 377) is decided for 1.1.0 by TR2.11; its supersessions of the retry plan, the HTTPS design and `SshEndpointConfig::from_environment` take effect with its steps in 1.2.0 (§3.1). No sentence of it changes.
-- `dev-docs/GwzCoreServerDesign.md`: its rule "One agent source per session" says "This rule governs the transport", so it governs 1.1.0's in-process transport, whose release now precedes the server's (§3.9). Under OD15, that rule's Pageant bullet changes, and on Windows the logon session joins every session's must-match rows (§3.18).
+- `dev-docs/GwzConnectionReuseDesign.md`: its open item on network operations without a binding (line 377) is decided for 1.1.0 by TR2.11; its supersessions of the retry plan, the HTTPS design and `SshEndpointConfig::from_environment` take effect with its steps in 1.2.0 (§3.1). §3.19 changes its two key-type sentences (lines 120 and 385).
+- `dev-docs/GwzCoreServerDesign.md`: its rule "One agent source per session" says "This rule governs the transport", so it governs 1.1.0's in-process transport, whose release now precedes the server's (§3.9). Under OD15, that rule's Pageant bullet changes, and on Windows the logon session joins every session's must-match rows (§3.18). Under OD10's and OD11's reversal, its routed native operations go (§3.19).
 
 Only the clauses in §3 change. The rest of each document stays authoritative as written.
 
@@ -70,15 +73,15 @@ Only the clauses in §3 change. The rest of each document stays authoritative as
 
 ### 3.1 The status block and §1 (lines 11, 18, 24–28, 30–32, 40 and 42)
 
-- After line 11: "On 2026-10-01 the operator decided OD13: the release ships as 1.1.0 and 1.2.0, and 1.1.0 has Windows parity ([amendment 2](GwzTransportReleasePlanAmendment-2.md)). OD14 and OD15 were decided the same day (§3.17, §3.14), and OD16 follows OD15."
+- After line 11: "On 2026-10-01 the operator decided OD13: the release ships as 1.1.0 and 1.2.0, and 1.1.0 has Windows parity ([amendment 2](GwzTransportReleasePlanAmendment-2.md)). OD14 and OD15 were decided the same day (§3.17, §3.14); OD16, and the reversal of OD10 and OD11, on 2026-10-02 (§3.19)."
 - Line 18 becomes: "**Name and versions.** This is the **transport release**. It ships as two minor releases of gwz-core, the `gwz` CLI and gwz-py: **1.1.0, the transport**, and **1.2.0, the session release**. Each version is fixed when its run of Phase 10 starts. In adopted text, "1.1.0" and "v1.1.0" mean the version of the release that runs the text, including in pins such as `gwz-core = "=1.1.0"` and in tags: in text this plan assigns to 1.2.0 they read 1.2.0 and v1.2.0. A step ID keeps its source's prefix: "1.1.0 S7.1" names the 1.1.0 plan's step, whichever release runs it. A step that runs for both releases is written with the release after it, as "S7.1 (1.1.0)". The published line today is 1.0.17."
 - Lines 24–28 become:
   - "**Outcome of 1.1.0.** The normal builds of gwz, gwz-core and gwz-py, on macOS ARM64, Linux x86-64 and Windows x86-64, ship:
-    - the endpoint-owned SSH and gh-only HTTPS transport in the `local` placement, with connection pooling within one command and connection-setup retry, used in process by the `gwz` CLI's network commands and by gwz-py's network operations, each inside its own per-operation runtime (OD14). A gwz-core caller that opens no runtime takes the native route (TR2.11);
+    - the endpoint-owned SSH and HTTPS transport, with HTTPS authenticated through the user's configured credential helpers (TR1.6), in the `local` placement, with connection pooling within one command and connection-setup retry, used in process by the `gwz` CLI's network commands and by gwz-py's network operations, each inside its own per-operation runtime (OD14). A gwz-core caller that opens no runtime takes the native route (TR2.11);
     - Windows parity, as OD13 defines it;
     - gwz-py with its public API unchanged. Its network operations run on the transport, one runtime per operation, at most 8 at once per `Client`, cancellable, and joined by `close()` and at interpreter exit (OD14, §3.17)."
   - "**Outcome of 1.2.0.** The normal builds on the same platforms also ship:" followed by lines 26–28 as written, with line 27 as amendment 1's §3.1 and its changelog's OD12 entry left it.
-- After line 32, the decisions list gains: "2026-10-01, by amendment 2: OD13, two minor releases, and Windows parity in 1.1.0; OD14, gwz-py's network operations on the per-operation transport entry in 1.1.0; OD15, Windows parity built into the transport, with OD16's shape following it."
+- After line 32, the decisions list gains: "2026-10-01, by amendment 2: OD13, two minor releases, and Windows parity in 1.1.0; OD14, gwz-py's network operations on the per-operation transport entry in 1.1.0; OD15, Windows parity built into the transport; 2026-10-02: OD16, the default-credential offer to any host, and OD10 and OD11 reversed onto the transport."
 - Line 40, for 1.1.0: the retry plan, including its §3 item 7, §6 and S1.4, and the HTTPS design's §4 snapshot apply as written. TR1.2's amendments to them, and the reuse design's other supersessions, take effect with the reuse steps in 1.2.0.
 - Line 42's session contract, server design and session plan govern 1.2.0. The server design's rule "One agent source per session" also governs 1.1.0 (§3.9).
 
@@ -87,14 +90,14 @@ Only the clauses in §3 change. The rest of each document stays authoritative as
 - The table gains a first column, **Release**:
   - **1.1.0** for the rows at lines 50, 52, 55 and 57, and for amendment 1's §3.2 row on agent keys;
   - **1.2.0** for the rows at lines 53, 54 (as amendment 1's §3.2 left it) and 56.
-- The row at line 51 reads, for 1.1.0, "SSH and gh-only HTTPS in the `local` placement, with connections pooled within one CLI command or one gwz-py operation"; and for 1.2.0, as written.
+- The row at line 51 reads, for 1.1.0, "SSH and HTTPS, authenticated through the user's configured credential helpers (TR1.6), in the `local` placement, with connections pooled within one CLI command or one gwz-py operation"; and for 1.2.0, "SSH and HTTPS, authenticated through the user's configured credential helpers (TR1.6), in the `local` placement, with connections pooled in the host context".
 - The row at line 57 gains, in its first column: "and the internal crates `gwz-ids`, `gwz-session-channel`, `gwz-session-contract` and `gwz-session-host` (TR3.3)".
 - Two rows are added for 1.1.0:
 
   | Release | In this release | Recorded as unsupported in this release |
   |---|---|---|
   | 1.1.0 | gwz-py's network operations on the transport, one runtime per operation, with its public API unchanged (OD14, §3.17) | Reuse across a Python process's operations, which 1.2.0 ships |
-  | 1.1.0 | On Windows, the transport does what 1.0.17's native path does: Pageant, the WinHTTP machine proxy, the logon session's default credentials under OD16, and libgit2's SSH home order (OD15, TR1.8, TR4.8–TR4.10) | The logon session's default credentials for a host outside the Local Machine, Intranet and Trusted zones (OD16) |
+  | 1.1.0 | On Windows, the transport does what 1.0.17's native path does: Pageant, the WinHTTP machine proxy, the logon session's default credentials under OD16, and libgit2's SSH home order (OD15, TR1.8, TR4.8–TR4.10) | — |
 
 - Line 64's dabeest rules apply to every Windows row of both releases.
 
@@ -115,20 +118,20 @@ Amendment 1's sections are assigned as follows:
 | §3.2: the agent-key row, and the redaction of agent key comments and fingerprints | 1.1.0, and 1.2.0 |
 | §3.2: the server row | 1.2.0 |
 | §3.3 (TR1.2) and §3.4 (TR1.3) | 1.2.0 |
-| §3.5 (TR2.7, TR2.8, and TR2.6's scope) | 1.1.0. TR2.8's "Through a server" bullet is 1.2.0's |
+| §3.5 (TR2.7, TR2.8, and TR2.6's scope) | 1.1.0, with TR2.8 as §3.19 rewrites it. TR2.8's "Through a server" bullet is removed (§3.19) |
 | §3.6 (Phase 7's exit) | 1.2.0 |
 | §3.7 (the agent key types cell) | 1.1.0, and 1.2.0 |
-| §3.8: the route-ledger row, and the notes on key types, RSA, agent confirmation and CA roots | 1.1.0, and 1.2.0 |
+| §3.8: the notes on key types, RSA, agent confirmation and CA roots, as §3.19 rewrites the first two. Its route-ledger row is removed (§3.19) | 1.1.0, and 1.2.0 |
 | §3.8: the stdio items, the address grammar and the SSH remote form | 1.2.0 |
 | §3.9 (the stdio post-release row) | 1.2.0 |
 | §3.10: the TR2.7 and TR2.8 sketch edges and line 484's list | 1.1.0 |
 | §3.10: line 493's server text | 1.2.0 |
 | §3.11 (OD11 and OD12) | OD11: 1.1.0. OD12: 1.2.0 |
-| §3.12: the risk on keys the transport cannot sign with | 1.1.0 |
+| §3.12: the risk on keys the transport cannot sign with | Removed (§3.19) |
 | §3.12: the server risks | 1.2.0 |
-| §3.13 (out of scope) | Both, as written |
+| §3.13 (out of scope) | Both, as written, less its bullet on admitting security keys or certificates (§3.19) |
 | §3.14 (unchanged on purpose) | 1.1.0, and 1.2.0 |
-| §4: Phase 2's tests, S5.6's cell, S7.2's ledger row and notes, and the manual security-key row | 1.1.0 |
+| §4: Phase 2's tests, S5.6's cell, S7.2's notes, and the manual security-key row, run on the transport (§3.19) | 1.1.0 |
 | §4: Phase 7's exit, S7.3's fifth route check, and the stdio post-release row | 1.2.0 |
 | §5 | Done: amendment 1 was accepted and applied |
 
@@ -155,13 +158,13 @@ Phase 5's milestone (line 344), Phase 6's (line 352) and Phase 7's (line 367) ar
     - the inverse case, a proxy in the environment, which 1.0.17 ignores on Windows: which of the two wins when both are set, and whether the transport uses an environment proxy on Windows at all. The migration notes state the outcome against 1.0.17;
     - what the transport does when the machine proxy itself challenges, with a 407. libgit2 cannot answer it in 1.0.17: it passes the proxy options' URL and credentials, both unset, since gwz sets no proxy options (`winhttp.c:1257-1262`). TR1.8 records with 1.0.17 whether WinHTTP's own automatic logon answers the proxy. Unless that row authenticates, the transport refuses a 407 before sending any credential, naming the setting and the off switch.
   - **The logon session's default credentials (OD16), on Windows only.** This covers HTTPS that 1.0.17 authenticates with the logon session's default credentials. The transport answers the challenge itself, through SSPI, on its own connection, so no route changes after an open.
-    - **The trigger.** The transport's first request carries no credential and asks only for the ref advertisement. The answer is a 401 whose `WWW-Authenticate` offers `Negotiate` or `NTLM`. And the URL of the request that the 401 answers, after the transport's one validated discovery redirect, maps to the Local Machine, Intranet or Trusted zone (`IInternetSecurityManager::MapUrlToZone`). That is the bound libgit2's own fallback applies (`winhttp.c:230-282`), except that libgit2 maps the configured URL (`winhttp.c:1243-1246`), while the transport maps the URL it would send the credentials to. A failed zone lookup does not satisfy the bound. A redirect that arrives during the exchange ends it, with no further credential sent.
+    - **The trigger.** The transport's first request carries no credential and asks only for the ref advertisement. The answer is a 401 whose `WWW-Authenticate` offers `Negotiate` or `NTLM`, from whatever host the request reached, after the transport's one validated discovery redirect. There is no zone bound (OD16): libgit2's own fallback has one (`winhttp.c:230-282`), but 1.0.17 never reaches it. A redirect that arrives during the exchange ends it, with no further credential sent.
     - **Its effect.** On the connection that received the challenge, the transport acquires the logon session's default credentials (`AcquireCredentialsHandleW`), runs the exchange (`InitializeSecurityContextW` for each round), and sends the request again with its token. 1.0.17 offers the same credentials to that host: gwz's credential callback answers a default-credential request (`transport_support.rs:272-274`) before libgit2's zone check would run.
-    - **Precedence over the gh route.** When the challenge also offers a scheme that the transport's gh route answers for that host, the gh route is used, and no SSPI exchange starts. TR1.8 states the precedence, and S7.2 (1.1.0)'s notes record it.
-    - **Outside the bound,** any other `Negotiate` or `NTLM` challenge is refused before any credential is offered. The message names two remedies: first, adding the server to the Trusted zone; then the off switch. The migration notes list the refusal as OD16's one parity exception. They also state that the off switch restores 1.0.17's default-credential offer for every host, not only that server.
+    - **Precedence of the credential helpers.** When the challenge offers `NTLM`, `Basic` or `Digest`, a configured credential helper (TR1.6), `gh` among them, with a credential for the URL the credential will be sent to answers first. On Windows it goes over the scheme WinHTTP picks for a user and password: `Negotiate`, then `NTLM`, then `Digest`, then `Basic` (`winhttp.c:139-147`), through SSPI with the helper's identity (`SEC_WINNT_AUTH_IDENTITY_W`) for the first two. A challenge that offers only `Negotiate` takes the logon session's default credentials, and no helper is asked (`winhttp.c:624-627`). 1.0.17's credential callback orders them so: its helper branch runs only when a user and password are allowed (`transport_support.rs:265-274`). TR1.8 states the precedence and how `Digest` is answered, and S7.2 (1.1.0)'s notes record both.
+    - **The hazard (OD16).** Any host that answers with `NTLM` receives the logon session's NetNTLMv2 response, as on 1.0.17. The migration notes state it.
     - **The exchange's parameters.** TR1.8 states the target name (`HTTP/<host>`), the context flags, and the TLS channel-binding token, which WinHTTP supplies and a server that requires Extended Protection demands.
     - **The connection.** An NTLM exchange belongs to one connection. TR1.8 states that the connection stays with its operation until the exchange completes, how an authenticated connection is pooled, and what the retry plan's per-key machine does with a failed exchange.
-    - TR1.8 states the trigger exactly, and that no credential has been offered and the server's state has not changed when the transport refuses.
+    - TR1.8 states the trigger exactly.
   - **The same challenge on macOS and Linux.** OD16 does not apply there. TR1.8 records, with 1.0.17 against the loopback `Negotiate` fixture, whether 1.0.17 authenticates on each. If it does, the migration notes list the case as unsupported on the transport, refused with a message naming the off switch.
   - **The SSH home.** The transport resolves it on Windows as libgit2 does: `HOME`, then `HOMEDRIVE` plus `HOMEPATH`, then `USERPROFILE`. `known_hosts` is read under it. 1.1.0 S4.4's Windows arm implements it.
   - **Also:** the agent forms 1.1.0 S4.3 admits, with the server design's local-pipe rule; how `gh` and credential helpers are found and started on Windows, including TR2.2's two helper forms and paths with spaces; and the off switch's three forms on Windows.
@@ -169,9 +172,9 @@ Phase 5's milestone (line 344), Phase 6's (line 352) and Phase 7's (line 367) ar
   - **Fixtures,** under line 64's rules:
     - for Pageant: Pageant from one pinned PuTTY release, holding a disposable key, with rows for Pageant alone, Pageant and the OpenSSH agent both running, and neither;
     - for the WinHTTP proxy: a loopback CONNECT proxy, the administrator step that sets it, and a restore step that ends every row (`netsh winhttp reset proxy`);
-    - for OD16: a loopback HTTPS server that answers `WWW-Authenticate: Negotiate` or `NTLM`, and on Windows completes the exchange through SSPI's server side for the logged-on user. On Windows it is reached under a name that maps to the Intranet zone and under one that maps to the Internet zone; TR1.8 names both. In the Internet-zone row, 1.1.0 refuses: the transport records one anonymous request, the fixture records no second connection and no authentication exchange, and the message names the Trusted zone and the off switch. In the Intranet-zone row, the operation authenticates on the transport, and so it does with the Internet-zone name added to the Trusted zone. A row whose challenge offers `Negotiate, Basic`, with the fake `gh` able to answer, authenticates through the gh route in both zones, with no SSPI exchange and no refusal. A row in which the Intranet-zone name redirects discovery to the Internet-zone name is refused, with no authentication exchange at either. A row whose server requires channel binding authenticates in the Intranet zone;
+    - for OD16: a loopback HTTPS server that answers `WWW-Authenticate: Negotiate` or `NTLM`, and on Windows completes the exchange through SSPI's server side for the logged-on user. On Windows it is reached under a name that maps to the Intranet zone and under one that maps to the Internet zone; TR1.8 names both. Under either name the operation authenticates on the transport, as on 1.0.17 (OD16). A row whose challenge offers `Negotiate, Basic`, with a configured helper able to answer, the fake `gh` and then a non-gh helper, authenticates with the helper's identity over `Negotiate`, as WinHTTP picks it, with no default-credential offer. An `NTLM`-only row and a `Digest` row, each with a helper able to answer, authenticate with the helper's identity. A `Negotiate`-only row with a helper credential present asserts that the helper is not asked and the logon session authenticates. A row in which one name redirects discovery to the other authenticates at the second. A row whose server requires channel binding authenticates;
     - for the machine proxy's own challenge: the loopback CONNECT proxy answering 407 with `Negotiate`, recorded with 1.0.17 first, then asserting TR1.8's choice.
-  - **Review:** dual Consistency and Safety, plus Surface, since each behaviour changes what a Windows user sees. Its Safety finding list names the forced-authentication hazard and the zone bound, Pageant's window and shared memory, the machine proxy's bypass rule, and, if the 1.0.17 row authenticates to the proxy, the default-credential exchange with the machine proxy.
+  - **Review:** dual Consistency and Safety, plus Surface, since each behaviour changes what a Windows user sees. Its Safety finding list names the forced-authentication hazard the operator accepted (OD16), Pageant's window and shared memory, the machine proxy's bypass rule, and, if the 1.0.17 row authenticates to the proxy, the default-credential exchange with the machine proxy.
   - **Timing:** after 1.1.0 S4.1, and before S4.3's agent forms freeze. TR4.8–TR4.10 wait on its GO.
 - **TR2.9: concurrent stream closes** *(under 300 lines)*.
   - **Test first,** against the disposable SSH fixture, with the fixture delaying each channel's close by D: for N = 8 and N = 32 exchanges on as many connections, closing concurrently, the closes complete within the same bound, 2D plus a fixed margin, not N × D. The test fails before the fix.
@@ -216,19 +219,19 @@ Phase 5's milestone (line 344), Phase 6's (line 352) and Phase 7's (line 367) ar
   - On Windows the transport reads WinHTTP's default proxy configuration where TR1.8 says, and uses it as it uses an environment proxy, with its bypass list. A form it does not support is refused before any open, naming the setting.
   - **Test first,** against TR1.8's loopback CONNECT proxy on dabeest: with the machine proxy set, an HTTPS fetch on the transport tunnels through it, and the proxy records the CONNECT; a host on its bypass list connects directly; TR1.8's choice for an environment proxy set beside it holds; a proxy that answers 407 gets TR1.8's behaviour, with no credential sent unless TR1.8 found that 1.0.17 authenticates; the restore step ends every row.
 - **TR4.10: the logon session's default credentials (OD16)** *(under 500 lines)*.
-  - The transport answers a 401 offering `Negotiate` or `NTLM` through SSPI, on the connection that received it, for a URL in the Local Machine, Intranet or Trusted zone, as OD16 states and TR1.8 designs. Outside that bound it refuses, naming the Trusted zone and then the off switch.
-  - **Test first,** TR1.8's `Negotiate` fixture rows on dabeest: the Intranet-zone name authenticates on the transport; the Internet-zone name is refused after one anonymous request, with no authentication exchange; with that name added to the Trusted zone it authenticates; a `Negotiate, Basic` challenge with the fake `gh` able to answer takes the gh route, with no SSPI exchange; the Intranet-zone name redirecting to the Internet-zone name is refused, with no exchange at either; a server that requires channel binding authenticates.
+  - The transport answers a 401 offering `Negotiate` or `NTLM` through SSPI, on the connection that received it, for any host, as 1.0.17 does (OD16) and TR1.8 designs.
+  - **Test first,** TR1.8's `Negotiate` fixture rows on dabeest: both names authenticate on the transport; a `Negotiate, Basic` challenge with a configured helper able to answer authenticates with the helper's identity over `Negotiate`, with no default-credential offer; an `NTLM`-only challenge and a `Digest` challenge, each with a helper able to answer, authenticate with the helper's identity; a `Negotiate`-only challenge with a helper credential present takes the logon session, and the helper is not asked; a discovery redirect from one name to the other authenticates at the second; a server that requires channel binding authenticates.
   - **Review:** its own dual Code and State review, since it handles the logon session's credentials. TR4.7 then reviews Phase 4 as a whole.
 - **TR8.4: Windows parity rows** *(evidence)*.
   - On dabeest, beside TR8.1 (1.1.0) and before S5.4 (1.1.0): TR8.1's three targets, measured against 1.0.17's Windows build. The live fetch needs the operator's go (§2).
   - A native-route row at the default settings, with the off switch on: 16 and 32 members, three rounds, no partial result.
-  - One row per behaviour TR1.8 designs, Pageant, the machine proxy, and default credentials in the Intranet zone: the operation runs on the transport, and succeeds as it does on 1.0.17.
+  - One row per behaviour TR1.8 designs, Pageant, the machine proxy, and default credentials: the operation runs on the transport, and succeeds as it does on 1.0.17.
   - At least one row with `HOME` unset.
   - S5.5 (1.1.0) repeats the speed targets after S5.4 (1.1.0).
 
 ### 3.6 Phase 1 (lines 165–281)
 
-- Line 167's second sentence becomes: "Phases 2, 3 and 4 do not wait on it, except: TR2.5 waits on TR1.5; TR2.2's route waits on TR1.6; and 1.1.0 S4.3's agent forms and TR4.8–TR4.10 wait on TR1.8."
+- Line 167's second sentence becomes: "Phases 2, 3 and 4 do not wait on it, except: TR2.5 waits on TR1.5; TR2.2's helper handling waits on TR1.6; and 1.1.0 S4.3's agent forms and TR4.8–TR4.10 wait on TR1.8."
 - TR1.5 and TR1.6 are 1.1.0's, as written, except TR1.5's **Servers** bullet and its timing sentence on TR1.3's server rule, which are 1.2.0's.
 - TR1.8 joins the phase (§3.5).
 
@@ -259,7 +262,7 @@ Phase 5's milestone (line 344), Phase 6's (line 352) and Phase 7's (line 367) ar
   - **On a 1.1.0 miss,** S5.4 retunes first and the rows are measured again. A remaining gap goes to the operator as OD17: ship with the measured gap stated in the notes, hold 1.1.0, or bring in OD8's channels, whose re-run list for 1.1.0 is TR2.6's tests, TR8.1, TR8.4 and S7.4 (1.1.0). S7.1 (1.1.0) waits on TR8.1 being met or on OD17's answer. Lines 392–397 apply to 1.2.0's run.
   - **TR8.4** runs beside TR8.1 (1.1.0), before S5.4 (§3.5).
   - **Line 405's defaults** wait, for 1.1.0, on TR8.1, TR8.4 and S5.3. **S5.5 (1.1.0)** then repeats TR8.1's and TR8.4's speed targets on the chosen defaults.
-  - **Line 406's sign-off,** for 1.1.0, covers amendment 1's agent key types and a cell for each behaviour TR1.8 designs. The server and reuse cells are 1.2.0's.
+  - **Line 406's sign-off,** for 1.1.0, covers TR2.8's agent key types and signature algorithms, TR1.6's credential helpers, and a cell for each behaviour TR1.8 designs. The server and reuse cells are 1.2.0's.
 - **1.2.0's run:** lines 382–406 as written, including TR8.2 and TR8.3. It repeats TR8.1 with reuse.
 
 ### 3.11 Phase 9 (lines 408–444)
@@ -276,8 +279,8 @@ Phase 5's milestone (line 344), Phase 6's (line 352) and Phase 7's (line 367) ar
     - The completeness check stands, for `gwz_transport_candidate`.
   - **S7.2 (1.1.0)** (lines 416–426):
     - Line 417's adoption of the 1.1.0 amendment's S7.2 addition applies for 1.1.0, with S6.3's and S7.3 (1.1.0)'s route assertions as its evidence. Its sentence on gwz-py's notes applies as written: one runtime per network operation, the environment captured at each operation's start, no reuse across operations, and at most 8 operations at once per `Client`.
-    - The route ledger has rows for the CLI in process, gwz-py on the per-operation entry, a gwz-core caller without a host context on the native route (TR2.11), the off switch, the non-gh credential route, and amendment 1's key-type route. On Windows, Pageant, the machine proxy and default credentials are the transport route's own, not routes of their own.
-    - Help, docs pages and migration notes cover `--max-retries`, the off switch, pooling within one command, Windows parity on the transport (Pageant, the machine proxy and the logon session's default credentials), OD16's parity exception, its precedence over the gh route, and that the off switch restores 1.0.17's default-credential offer for every host, and, where TR1.8 records it, the `Negotiate` case on macOS and Linux, the transport's proxy policy against 1.0.17's on every platform, and amendment 1's §3.8 items.
+    - The route ledger has rows for the CLI in process, gwz-py on the per-operation entry, a gwz-core caller without a host context on the native route (TR2.11), and the off switch. OD10's and OD11's routes are gone (§3.19). On Windows, Pageant, the machine proxy and default credentials are the transport route's own, not routes of their own.
+    - Help, docs pages and migration notes cover `--max-retries`, the off switch, pooling within one command, Windows parity on the transport (Pageant, the machine proxy and the logon session's default credentials), the hazard of the default-credential offer to any host (OD16) and the credential helpers' precedence over it, the credential helpers the transport runs (TR1.6), the key types and signature algorithms it signs with (TR2.8), and, where TR1.8 records it, the `Negotiate` case on macOS and Linux, the transport's proxy policy against 1.0.17's on every platform, and amendment 1's §3.8 items.
     - The notes state gwz-py's per-operation transport, as the 1.1.0 amendment's S7.2 sentence gives it, and its cancellation, `close()` and interpreter-exit behaviour (the [design](../../gwz-py/dev-docs/GwzPyPerOperationTransportDesign.md)).
     - Lines 419–421, the server, Python and reuse items of line 424, and line 425 are 1.2.0's.
   - **S7.3 (1.1.0)** (lines 427–433), on each platform's consumer build:
@@ -285,11 +288,12 @@ Phase 5's milestone (line 344), Phase 6's (line 352) and Phase 7's (line 367) ar
     - one gwz-py SSH operation and one HTTPS operation, and two overlapping gwz-py operations, each asserting the transport route through its observations, as the 1.1.0 amendment's §3.5 S7.3 Python sentence states;
     - one Rust caller of gwz-core that opens no runtime, asserting the native route: no transport endpoint is constructed (TR2.11);
     - the absence of the 1.2.0 surfaces: `gwz server` is an unknown command; `--server` and `--no-server` are unknown options; `GWZ_SERVER` has no effect, since the `--verbose` row shows the in-process route; gwz-py exposes no `SocketCoreBridge` and no `server` entry; and `transport_capabilities` reports no session route;
-    - on Windows, one operation per behaviour TR1.8 designs asserting the transport route, one Internet-zone `NTLM` challenge asserting OD16's refusal, and one SSH operation with `HOME` unset.
+    - on Windows, one operation per behaviour TR1.8 designs asserting the transport route, one Internet-zone `NTLM` challenge asserting that the transport authenticates, as 1.0.17 does (OD16), and one SSH operation with `HOME` unset;
+    - on each platform, one HTTPS operation through a non-gh credential helper and one SSH operation through an agent certificate key, each asserting the transport route (§3.19).
 
     Lines 429–431, and line 433's sentences on the server and reuse, are 1.2.0's.
   - **S7.4 (1.1.0)** rechecks attribution without reuse. Line 434's reuse recheck is 1.2.0's.
-  - **S7.5 (1.1.0)** (lines 435–441): Surface covers `--max-retries`, the off switch, the `--verbose` transport-row fields, TR2.3's `errors` contract, TR1.8's Windows messages for Pageant and the machine proxy, OD16's refusal message and its notes, gwz-py's per-operation semantics (cancellation, `close()`, interpreter exit and the per-`Client` limit), any ordinary-protocol field S7.1 (1.1.0) names, every ordinary-path change admitted under rule (e) that §6(c) names, and the absence of the 1.2.0 surfaces. Lines 436 and 439 are 1.2.0's.
+  - **S7.5 (1.1.0)** (lines 435–441): Surface covers `--max-retries`, the off switch, the `--verbose` transport-row fields, TR2.3's `errors` contract, TR1.8's Windows messages for Pageant and the machine proxy, OD16's notes on the hazard, TR1.6's helper messages, gwz-py's per-operation semantics (cancellation, `close()`, interpreter exit and the per-`Client` limit), any ordinary-protocol field S7.1 (1.1.0) names, every ordinary-path change admitted under rule (e) that §6(c) names, and the absence of the 1.2.0 surfaces. Lines 436 and 439 are 1.2.0's.
   - **Exit rows (lines 442–444):** "Network-entry ledger" maps, for 1.1.0, to S7.2 (1.1.0) and S7.3 (1.1.0).
 - **1.2.0's run:** lines 408–444 as written, after 1.1.0's tag. Its S7.1 removes `gwz_session_candidate`, with the same completeness check for that name.
 
@@ -342,30 +346,24 @@ Phase 5's milestone (line 344), Phase 6's (line 352) and Phase 7's (line 367) ar
 
 ### 3.14 §7, §8 and §9
 
-- **§7 (line 512)** gains: "OD13, OD14 and OD15 were decided on 2026-10-01 (amendment 2), and OD16 follows OD15. OD17 is taken if TR8.1 (1.1.0) misses." These entries follow line 535:
+- **§7 (line 512)** gains: "OD13, OD14 and OD15 were decided on 2026-10-01 (amendment 2), and OD16 on 2026-10-02, when the operator also reversed OD10 and OD11 (§3.19). OD17 is taken if TR8.1 (1.1.0) misses." These entries follow line 535:
   - **OD13. Two minor releases, with Windows parity in 1.1.0.** Decided by the operator on 2026-10-01.
     - **1.1.0** ships the transport to the `gwz` CLI, in process, on macOS ARM64, Linux x86-64 and Windows x86-64.
     - **1.2.0** ships the session host, reuse, the server, and gwz-py through the session host, replacing 1.1.0's per-operation stage (OD14).
     - **Windows parity:**
       - every transport behaviour that 1.1.0 ships on macOS and Linux ships on Windows x86-64, with the same tests, and with its exit evidence from dabeest;
-      - a Windows configuration that works on 1.0.17 keeps working on 1.1.0, on the transport, except OD16's one parity exception (OD15). A credential helper other than `gh` (OD10) and an agent key the transport cannot sign with (OD11) keep their native routes, as on every platform.
+      - a Windows configuration that works on 1.0.17 keeps working on 1.1.0, on the transport (OD15). With OD10 and OD11 reversed (§3.19), the same holds on every platform for credential helpers and agent keys.
   - **OD14. gwz-py in 1.1.0.** Decided by the operator on 2026-10-01: the alternative. In 1.1.0, gwz-py's network operations take the transport, each inside its own per-operation runtime, through 1.1.0 S6.1's variant of `with_local_transport`. The 1.1.0 amendment's S6.1–S6.3 are restored for this (§3.17), and the Python [design](../../gwz-py/dev-docs/GwzPyPerOperationTransportDesign.md) states the per-operation meanings. 1.2.0's session host replaces the stage.
     - Line 550's statement holds: the per-operation Python stage returns, at the cost OD1 named. The recommendation, gwz-py on the native path until 1.2.0, was not taken.
     - The operator directed that the decision be applied without the review loop, with one skim review at the end. TR2.11 still removes the hidden lazy endpoint: gwz-py opens its runtime deliberately.
   - **OD15. How Windows parity is reached.** Decided by the operator on 2026-10-01, under OD13: the transport itself does what 1.0.17's native path does on Windows. TR1.8 designs Pageant, the WinHTTP machine proxy and the logon session's default credentials in the transport, and adopts libgit2's SSH home resolution. TR4.8–TR4.10 implement them.
     - The recommendation, a native route for each such behaviour, was not taken. A native route runs libgit2 inside the core's process, so it gets no pooling, and no reuse once 1.2.0 ships. It cannot serve the SSH remote form (OD12), whose core runs on another machine, nor client placement if that is scheduled: only behaviours the transport implements can be served from the client's side.
     - Its cost is TR1.8's larger design and the three steps, which 1.1.0 waits on.
-  - **OD16. HTTPS that relies on the logon session's default credentials, on Windows.** Its only signal is the server's 401 challenge. Under OD15 the transport answers that challenge itself, through SSPI, on its own connection, as TR1.8 states it:
-    - when an anonymous first request for the ref advertisement is answered with a 401 offering `Negotiate` or `NTLM`, and the URL of the request it answers, after any discovery redirect, maps to the Local Machine, Intranet or Trusted zone, the transport offers the logon session's default credentials to that host, as 1.0.17 does;
-    - **its bound:** outside those zones, the challenge is refused before any credential is offered, with a message naming the Trusted zone and then the off switch. A hostile Internet host that answers with `NTLM` therefore receives no NetNTLMv2 response, where 1.0.17 would send one. The bound is libgit2's own (`winhttp.c:230-282`); 1.0.17 skips it only because gwz's credential callback answers first (`transport_support.rs:272-274`). The migration notes list the refusal as OD16's one parity exception;
-    - **precedence:** a challenge that also offers a scheme the transport's gh route answers for that host takes the gh route, and no SSPI exchange starts.
-    - Revision 4 applies the shape revision 2 recommended, moved from a native route into the transport. Alternative (a), refusing every such challenge, does not meet OD13's parity. The unbounded alternative, the offer to every host as 1.0.17 makes it, would drop the zone condition and the refusal and keep the forced-authentication hazard; the operator can still choose it. **If unbounded:**
-      - TR1.8's trigger drops the zone condition and its "Outside the bound" bullet;
-      - TR1.8's, TR4.10's and S7.3 (1.1.0)'s Internet-zone rows assert that the transport authenticates, and the redirect row authenticates at the Internet-zone name;
-      - §3.2's second new row has "—" in its third column;
-      - OD13's parity bullet drops its exception;
-      - S7.2 (1.1.0)'s notes item "OD16's parity exception" reads "the hazard of the default-credential offer to any host";
-      - the migration notes state the hazard.
+  - **OD16. HTTPS that relies on the logon session's default credentials, on Windows.** Decided by the operator on 2026-10-02: the unbounded alternative. Its only signal is the server's 401 challenge. Under OD15 the transport answers that challenge itself, through SSPI, on its own connection, as TR1.8 states it:
+    - when an anonymous first request for the ref advertisement is answered with a 401 offering `Negotiate` or `NTLM`, the transport offers the logon session's default credentials to that host, whatever its zone, as 1.0.17 does;
+    - **precedence:** when the challenge offers `NTLM`, `Basic` or `Digest`, a configured credential helper, `gh` among them, with a credential for the URL the credential goes to answers first, with its own identity, as TR1.8 states. A challenge that offers only `Negotiate` takes the logon session's default credentials, and no helper is asked, as on 1.0.17;
+    - **the hazard, accepted for parity:** a host that answers with `NTLM` receives the logon session's NetNTLMv2 response, which can be cracked offline or relayed, as on 1.0.17. The migration notes state it. The off switch does not lessen it, since the native path makes the same offer.
+    - The recommendation, revision 2's bound to the Local Machine, Intranet and Trusted zones with a refusal elsewhere, was not taken. Alternative (a), refusing every such challenge, does not meet OD13's parity.
   - **OD17. A TR8.1 (1.1.0) miss.** Taken when the measurement is in: ship with the measured gap stated in the notes, hold 1.1.0, or bring in OD8's channels.
 - **§8:**
   - Line 539 becomes: "**Schedule.** 1.1.0 waits on Phases 2–4 and its measurements; 1.2.0 on the session program. Every Windows transport row that needs a fixture runs on dabeest, so dabeest's availability bounds 1.1.0." Lines 540–549 are 1.2.0's.
@@ -387,6 +385,7 @@ Phase 5's milestone (line 344), Phase 6's (line 352) and Phase 7's (line 367) ar
 - **S6.2's release pins:** §5.3's row for them, and CS5.3's files and implementation sentence for them, move to the transport plan's TR3.4. CS5.3 keeps the rest of its step.
 - **gwz-py's `TransportSession`:** the plan's mentions of `native/src/transport_session.rs`, in §1.1, G2, CS1.1's files, CS4.8, §5.3 and §5.4, describe code removed at gwz-py `a342b95` on 2026-09-28. They read as done.
 - **CS7.24** loses the lazy endpoint's retirement to TR2.11, and keeps the rest of its step. §5.4's `transport_binding.rs` row, Phase 6's preamble sentence on the lazy endpoint's debt entry, and CS6.5's two sentences on the lazy endpoint's read, read as TR2.11's.
+- **CS3.4's transport half,** the `git credential fill` spawn for the transport's HTTPS, is TR1.6's in 1.1.0 (§3.19). CS3.4 keeps its native-callback change, its §15.8 rows and its tests, under rule (e).
 - **§3.0's marker.** "a build without `gwz_transport_candidate`" reads "a build without the candidate switch rule (a) names at the time".
 - **§2.4's candidate-build sentence** reads "the candidate switch rule (a) names at the time" in place of `gwz_transport_candidate`.
 
@@ -425,13 +424,12 @@ The transport now uses the Windows logon session: Pageant's window belongs to it
 - **Server design §5, "One agent source per session":**
   - Line 497's "It is derived from the session's snapshot, never from the server's environment" reads "It is derived from the session's snapshot, or on Windows from the Pageant window visible to the host's logon session, never from the server's environment".
   - Line 502, the Pageant bullet, becomes: "**Pageant.** On Windows, a visible Pageant window is the session's agent source, as libssh2 chooses it (agent.c:436-439); otherwise the snapshot's `SSH_AUTH_SOCK`, or the default pipe. The transport speaks Pageant's window protocol (amendment 2's TR1.8 and TR4.8). The source is chosen once, before any connection opens, and a session never falls back from one source to another. Through a server, the window is the one visible to the host's logon session, which every Windows session must share (below). A Pageant pipe that `SSH_AUTH_SOCK` names is a pipe like any other."
-  - Line 512's "the Pageant window visible to its logon session, which the native row compares" reads "the Pageant window visible to its logon session, which every Windows session's rows compare".
-  - Line 513 becomes: "TR2.8's route decision lists the keys of the session's own agent source, which on Windows is Pageant whenever libssh2 would take it. The native path can still sign from another source if a Pageant window appears or disappears between the session's choice and libssh2's authentication, in-process as through a server."
+  - Line 512 becomes: "Through a server, with the switch on, the native path uses the server's view: its `SSH_AUTH_SOCK`, which must match, and the Pageant window visible to its logon session, which every Windows session's rows compare."
+  - Line 513 is removed: no route decision lists the agent's keys any more (§3.19).
 - **Server design §5, the must-match set.** On Windows the logon session leaves the native row and joins every session's rows, checked at `SessionOpen`, because the transport now uses it too:
   - The table gains a row after line 364: "| Every session, Windows: the logon session | the logon session, which the host reads from the client's token at the peer check | at `SessionOpen` | the transport's Pageant window and SSPI default credentials belong to it (amendment 2's TR4.8 and TR4.10), as do the native path's (agent.c:436-439; winhttp.c:184-212) |".
   - Line 365's values cell reads "`SSH_AUTH_SOCK`".
   - A client in another logon session is refused at open with `server_environment_mismatch`, by §17's existing "runs in a different Windows logon session" message. The `auto` key already covers it (§4), so no `auto` client meets the refusal.
-  - At routing the logon session can no longer differ, so line 478's "the variable or the logon session but never a value" reads "the variable but never its value", and line 1435's "`<kind>` is `value of <VAR>` or `Windows logon session`" reads "`<kind>` is `value of <VAR>`".
   - Line 470's "The native row compares the logon session" reads "Every Windows session's rows compare the logon session", and line 812's Windows cell lists the logon session among every session's values.
 - **Server design §11, §12, §14 and §17:**
   - Line 813's Windows cell, "SSH agent, transport build", reads "A visible Pageant window first, through the transport's own Pageant protocol (amendment 2's TR4.8); otherwise `SSH_AUTH_SOCK` from the snapshot, else the Windows OpenSSH agent's pipe, `\\.\pipe\openssh-ssh-agent`."
@@ -439,21 +437,77 @@ The transport now uses the Windows logon session: Pageant's window belongs to it
   - Line 987 reads "the transport build's SSH tests against the Windows OpenSSH agent, and against Pageant through TR1.8's fixture (amendment 2's TR4.8);".
   - Line 996 drops "except Pageant's" and its sentence "Pageant is not in the release's scope until a fixture proves it (plan TR1.3).".
   - Line 1007's row reads "| Pageant, a visible window first | dabeest: TR1.8's Pageant fixture (amendment 2's TR4.8) |".
-  - Line 1044's risk reads "a client whose agent differs from the server's is refused for routed operations, and on Windows a client whose logon session differs is refused at open" in place of "a client whose agent, or on Windows whose logon session, differs from the server's is refused for routed operations".
-  - Line 1048's risk reads "on Windows" for "on Windows' native path", since the transport now uses the window too, and its last sentence as line 513's new text.
+  - Line 1044's risk reads "with the switch on, a client whose agent differs from the server's is refused at open, and on Windows a client whose logon session differs is refused at open" in place of "a client whose agent, or on Windows whose logon session, differs from the server's is refused for routed operations".
+  - Line 1048's risk reads "on Windows" for "on Windows' native path", since the transport now uses the window too, and its last sentence, on OD11's route, is removed (§3.19).
   - Line 1348's "and Pageant is used only when `SSH_AUTH_SOCK` names its pipe" reads "and on Windows a visible Pageant window is the agent source first, as §5's Pageant bullet says".
   - Line 1499's closure row reads "| Plan TR1.3 | One agent source per session; on Windows a visible Pageant window first (amendment 2 §3.18) | §5 "One agent source per session"; §11; §12 cells; §17 |".
 - **Session plan:**
   - CS8.1's "the libgit2 network timeout, and the native row, `SSH_AUTH_SOCK` and on Windows the logon session" reads "the libgit2 network timeout, on Windows the logon session as an every-session row, and the native row, `SSH_AUTH_SOCK`".
-  - CS8.3's "naming the route's cause and the variable or the logon session, never a value" reads "naming the route's cause and the variable, never a value".
   - CS8.18's "the logon session read from the client's token at the peer check, for the native row" reads "the logon session read from the client's token at the peer check, for every session's rows".
   - CS8.18's test row "a client in another logon session has its transport operations run and a routed operation refused before any connection opens, naming the logon session" reads "a client in another logon session refused at `SessionOpen`, naming the logon session".
   - CS8.19's "Pageant only when `SSH_AUTH_SOCK` names its pipe" reads "a visible Pageant window first, then the snapshot's `SSH_AUTH_SOCK` or the default pipe, as server §5's Pageant bullet now says". The Pageant window protocol itself is TR4.8's, in 1.1.0.
 - **Reuse design:** no sentence changes. Its agent-source field already holds "on Windows the session's one agent source, as kind and address", and a Pageant window is one kind. An HTTPS connection authenticated with the logon session's credentials serves only that logon session's sessions, which the must-match row above ensures within one server.
 
+### 3.19 The operator's decisions of 2026-10-02: OD16, and OD10 and OD11 on the transport
+
+The operator's words: "lift that", for OD16's zone bound; and "yes", for moving OD10's and OD11's cases onto the transport. With OD15, no configuration that 1.0.17 serves takes a native route in 1.1.0. Only the off switch, a caller without a host context (TR2.11), and `git://`, `http://` and `file://` remotes use libgit2's own transports.
+
+- **OD16: no zone bound.** OD16 records the decision, and TR1.8, TR4.10, §3.2, OD13, S7.2 (1.1.0), S7.3 (1.1.0) and S7.5 (1.1.0) carry it.
+- **OD10 reversed: credential helpers on the transport.** TR1.6 no longer chooses between a native route and a refusal. It designs how the transport answers HTTPS authentication through the user's configured credential helpers. `gh`'s route becomes one helper among them.
+  - **The mechanism is the session plan's CS3.4,** brought into 1.1.0 for the transport, as TR3.4 brought S6.2's pins. It is one `git credential fill` spawn, which needs `git` on `PATH`:
+    - its environment is `env_clear()` plus the environment the transport's runtime was built from (under 1.1.0 S6.1's variant, the snapshot), less `GIT_ASKPASS`, `SSH_ASKPASS`, `GIT_DIR`, `GIT_COMMON_DIR` and `GIT_WORK_TREE`, with `GIT_TERMINAL_PROMPT=0` and `-c credential.interactive=false`;
+    - its working directory is explicit, `/` on POSIX and the system drive's root on Windows, so it reads no repository's local configuration;
+    - it is bounded in time, and killed at the bound, on drop and on cancellation;
+    - its output is secret, and only `username` and `password` are read.
+
+    These are CS3.4's rules, with its addendum C10 and its working rule C11. CS3.4's change to the native path's own callback stays 1.2.0's, under rule (e).
+  - **The parity reference** is 1.0.17's callback through git2's `Cred::credential_helper` (`transport_support.rs:265-271`). It reads `credential.helper`, `credential.<url>.helper`, the username keys and `useHttpPath`, and runs `get` only. TR1.6 records each difference between git's own helper matching and git2's, and S7.2's notes list them.
+  - **The URL a helper is asked for** is the URL the credential will be sent to, after the transport's one validated discovery redirect. A redirect after the challenge ends the operation, with no credential sent. A fixture row redirects discovery from one host to another, and asserts that the helper is asked for the second.
+  - **The policy** that turns configured helpers off (`CredentialHelperPolicy`) applies as 1.0.17 has it.
+  - **Schemes.** A helper's credential answers `Basic`. On Windows it also answers `Negotiate`, `NTLM` and `Digest`, as 1.0.17's WinHTTP does with a helper's user and password (`winhttp.c:139-151`, `:618-640`). TR1.8 designs that part. On macOS and Linux, 1.0.17 serves neither `NTLM` nor `Negotiate`, since libgit2-sys defines no `GIT_NTLM` or `GIT_GSSAPI`, so the transport need not.
+
+  TR1.6's review stands: dual Consistency and Safety, plus Surface. Its "amendment to three texts" now runs in this direction: the HTTPS design's §4; the transport design's §11 HTTPS cell, whose "other helpers rejected" reads "configured helpers, through `git credential fill` (TR1.6)"; and 1.1.0 S7.1's "gh-only authenticated HTTPS". In the plan:
+  - line 52's row reads, in this release, "Private HTTPS authenticated through the user's configured credential helpers, `gh` among them (TR1.6)", and as unsupported "—";
+  - OD10 (lines 533–534) gains: "Reversed by the operator on 2026-10-02: the transport runs the configured helpers itself (TR1.6)";
+  - TR2.2's "The route for non-gh credentials follows TR1.6" (line 293) reads "Non-gh credentials follow TR1.6's design, on the transport";
+  - line 423's "the non-gh credential route" leaves 1.2.0's ledger list.
+- **OD11 reversed: every key type and signature 1.0.17 uses.** TR2.8 (amendment 1's §3.5) becomes **TR2.8: SSH keys and signatures as 1.0.17 uses them (OD11)** *(under 500 lines; a second step if its list needs one)*:
+  - **The list.** The transport authenticates with every agent key type and signature algorithm that 1.0.17's agent authentication, through libssh2 1.11.1, uses. TR2.8 lists them from libssh2's source (`userauth.c`, `agent.c`) before writing code, per platform: libssh2's WinCNG build on Windows lacks Ed25519 and, without `LIBSSH2_ECDSA_WINCNG`, ECDSA (`wincng.h:74, 88-91`), so 1.0.17's list there is shorter, and the transport's list is at least 1.0.17's on each platform. At least:
+    - Ed25519;
+    - RSA with `rsa-sha2-512` and `rsa-sha2-256`, and with `ssh-rsa` (SHA-1) exactly where libssh2 uses it, which the operator confirmed on 2026-10-02 ("keep sha-1 fallback"): when the server sent no `server-sig-algs`; when `server-sig-algs` lists `ssh-rsa` and no `rsa-sha2-*`; and, once per key, when the agent answers a `rsa-sha2-*` request with an `ssh-rsa` signature. When `server-sig-algs` lists none of the three, the key fails, as libssh2's does (`userauth.c:1380-1383`, `:1503-1506`, `:1754-1763`; `openssl.c:5213-5218`; `agent.c:560-563`);
+    - ECDSA P-256, P-384 and P-521;
+    - security keys (`sk-ssh-ed25519@openssh.com`, `sk-ecdsa-sha2-nistp256@openssh.com`), whose touch the agent asks for;
+    - OpenSSH certificates of those types;
+    - DSA, if libssh2 1.11.1 offers it.
+  - A key of a type neither supports is skipped, as libssh2 skips it, and a later key is tried. No remote takes a native route for its keys, so the route check before any open goes.
+  - TR2.8 also records whether the transport's key files for `--identity` and `--remote-identity` cover the formats libssh2 reads, and closes any gap the same way.
+  - **Tests,** against the disposable SSH fixture and a disposable `sshd`: each listed type authenticates on the transport; a security key through a software authenticator the fixture provides, which TR2.8 names; a certificate against an `sshd` that trusts a test user CA; and, for `ssh-rsa`, one row for each of the three cases above, with `rsa-sha2-*` used whenever `server-sig-algs` lists it. TR2.8's Safety review names the SHA-1 cases, and that `server-sig-algs` travels after the key exchange, so an attacker on the path cannot strip it. Amendment 1's §4 manual security-key row runs on the transport, with a hardware key, and needs the operator's go.
+  - **Amendment 1's texts:**
+    - §3.8's "S7.2's route ledger gains a row for OD11's route" (line 264) is removed;
+    - §3.2's row reads, in this release, "SSH through an agent with any key type 1.0.17 uses (TR2.8)", and as unsupported "—";
+    - §3.11's OD11 gains: "Reversed by the operator on 2026-10-02: the transport signs with every key type and signature 1.0.17 uses (TR2.8)";
+    - §3.12's risk "Security-key users lose the transport" and §3.13's bullet "Admitting security keys or certificates to the transport's own signing" are removed;
+    - §3.14's bullet "RSA with SHA-1" is replaced by TR2.8's rule above;
+    - §3.7's cell covers every type and algorithm TR2.8 admits;
+    - §3.8's notes item "the key types that take the native route, and whether the native path authenticates with each" reads "the key types and signature algorithms the transport uses (TR2.8)", and "that the transport signs RSA only with SHA-2 (§3.14)" reads "that the transport signs RSA with SHA-1 exactly where libssh2 does, in TR2.8's three cases, as 1.0.17 does";
+    - §4's rows on the native path's key types record the transport's instead.
+  - **The agent design's** §5 sentence, as amendment 1 left it, reads: "Fixtures for every key type and signature algorithm the transport plan's TR2.8 lists are required. A key of any other type is skipped, and a later key is tried."
+- **Routed native operations go (1.2.0).** Amendment 1's §3.4 sentence on TR1.6's and OD11's routes through a server, and its §3.6 Phase 7 exit rows for them, are removed. In the server design:
+  - lines 476–478 become: "**With the switch off,** only remotes libgit2 always handles take the native path (below)." The route decision, its agent listing and helper check, and its refusal at routing go;
+  - line 484's alternative for the `auto` key no longer refuses anything with the switch off, so the cost argument against it is gone. The server design's next revision chooses between the two before 1.2.0's Phase 7; until then line 482's recommendation stands;
+  - lines 916–917, the Phase 7 exit rows, become: "With the switch on, at an explicit address: a server and a client with different `SSH_AUTH_SOCK` values, the session refused at `SessionOpen`; on Linux, different `SSL_CERT_FILE` values, refused at `SessionOpen`, as every session's row";
+  - line 1435's routing message is removed. The timeout message (line 1436) stays, for `git://` and `http://` remotes;
+  - line 1005's "the `SSH_AUTH_SOCK` rows with the switch on and off" reads "the `SSH_AUTH_SOCK` row with the switch on", and §18's row at line 1495, "switch off, the route-time check and its message", reads "switch off, only libgit2's own remotes".
+
+  §3.18 already gives lines 512, 513, 1044 and 1048 their final text. In the session plan, CS8.3 implements only the timeout row's check for `git://` and `http://` remotes:
+  - its routing rule drops TR1.6's and OD11's routes;
+  - its test rows for them give way to the Phase 7 rows above;
+  - its "TR2.8 row" and "TR1.6 row" dependencies go, with the sketch's edges "TR2.8 ── CS8.3's TR2.8 row" and "TR1.6 + TR2.2 ── CS8.3's TR1.6 row".
+- **Reuse design.** Line 120's and line 385's sentences on presence keys and certificates read: "TR2.8 admits them, so they reach transport connections." A reused connection authenticated with a security key serves later operations without a new touch, as an SSH control master does. The reuse design's next revision decides, before 1.2.0's Phase 6, whether a presence key is revalidated once per operation, as its §15.2(b) does for a confirm-required key.
+
 ## 4. Affected tests and evidence
 
-- **Phase 2:** TR2.9's to TR2.12's tests, including TR2.12's two CI legs and each repository's inventory test; 1.1.0 S6.1's and S6.3's tests, with the design's §3 rows (§3.17); and TR2.6's review of them.
+- **Phase 2:** TR2.9's to TR2.12's tests, including TR2.12's two CI legs and each repository's inventory test; 1.1.0 S6.1's and S6.3's tests, with the design's §3 rows (§3.17); TR2.8's key-type and signature tests, and TR2.2's tests under TR1.6's helper design (§3.19); and TR2.6's review of them.
 - **Phase 3:** TR3.4's tests; TR3.3's registry record.
 - **Phase 4:** TR4.6's job, 1.1.0 S4.2–S4.5's tests on dabeest, TR4.8–TR4.10's tests against TR1.8's Pageant, proxy and `Negotiate` fixtures, TR1.8's `HOME`-unset rows and its macOS and Linux 1.0.17 rows, TR4.10's review, and TR4.7's review.
 - **Phase 8:** TR8.1 (1.1.0) on macOS and Linux, and TR8.4 on dabeest, both against 1.0.17, with their off-switch rows, and S5.5 (1.1.0)'s repeat; S5.6's cells for the behaviours TR1.8 designs.
@@ -463,15 +517,16 @@ The transport now uses the Windows logon session: Pageant's window belongs to it
 
 ## 5. Review and application
 
-- **Review.** Dual peer-blind Consistency and Safety review of this draft's text, identified by its SHA-256. There is no Surface review of this amendment, because it freezes no command, option or API. TR1.8 and S7.5 (1.1.0) carry Surface. Revision 3 was skim-reviewed only, on the operator's instruction ([skim review](GwzTransportReleasePlanAmendment-2-ReviewSkim.md)); S7.5 (1.1.0)'s Surface covers gwz-py's per-operation semantics. Revision 4, which applies OD15, was skim-reviewed in the same way ([skim review 2](GwzTransportReleasePlanAmendment-2-ReviewSkim-2.md), [re-check](GwzTransportReleasePlanAmendment-2-ReviewSkim-3.md)). The Windows designs themselves get TR1.8's dual and Surface review, and TR4.10 its own dual review.
+- **Review.** Dual peer-blind Consistency and Safety review of this draft's text, identified by its SHA-256. There is no Surface review of this amendment, because it freezes no command, option or API. TR1.8 and S7.5 (1.1.0) carry Surface. Revision 3 was skim-reviewed only, on the operator's instruction ([skim review](GwzTransportReleasePlanAmendment-2-ReviewSkim.md)); S7.5 (1.1.0)'s Surface covers gwz-py's per-operation semantics. Revisions 4 and 5, which apply OD15 and then OD16 with OD10's and OD11's reversal, were skim-reviewed in the same way ([skim review 2](GwzTransportReleasePlanAmendment-2-ReviewSkim-2.md), [re-check](GwzTransportReleasePlanAmendment-2-ReviewSkim-3.md)). The Windows designs themselves get TR1.8's dual and Surface review, and TR4.10 its own dual review.
 - **On GO,** these edits follow under AgentProcessRules §7.2, each with a changelog entry:
   - **`GwzTransportReleasePlan.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for its status block's decision record, §1's name, outcome, decisions and authorities, §2's table, §4's adopted table and closing condition, each phase's release, Phases 1–4 and 8–10 as that amendment restricts them, §6, §7, §8 and §9."
-  - **`GwzTransportReleasePlanAmendment.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for the release each of its sections belongs to."
+  - **`GwzTransportReleasePlanAmendment.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for the release each of its sections belongs to, and, from revision 5, for its OD11 texts (§3.19)."
   - **`GwzV110PlanAmendment.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for its §3.4 (Phase 6) and its §3.5 and §3.6 sentences on gwz-py, in 1.1.0's run."
-  - **`GwzCoreSessionPlan.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for §1.1, §2.3's G2, §2.4's candidate-build sentence, §3.0's marker, S6.2's release pins in §5.3 and CS5.3, its mentions of gwz-py's `TransportSession`, and the lazy endpoint's retirement in CS6.5, CS7.24, §5.4 and Phase 6's preamble, and, from revision 4, CS8.1's, CS8.3's and CS8.18's sentences on the logon session, CS8.18's logon-session test row, and CS8.19's Pageant clause."
+  - **`GwzCoreSessionPlan.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for §1.1, §2.3's G2, §2.4's candidate-build sentence, §3.0's marker, S6.2's release pins in §5.3 and CS5.3, its mentions of gwz-py's `TransportSession`, and the lazy endpoint's retirement in CS6.5, CS7.24, §5.4 and Phase 6's preamble, and, from revision 4, CS8.1's and CS8.18's sentences on the logon session, CS8.18's logon-session test row, and CS8.19's Pageant clause, and, from revision 5, CS8.3's routing rule and CS3.4's transport half (§3.15, §3.19)."
   - **`GwzCoreSessionCrateMap.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for the release its candidate crates are published in."
-  - **`GwzConnectionReuseDesign.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for its open item on network operations without a binding, in 1.1.0, and the release its supersessions take effect in."
-  - **`GwzCoreServerDesign.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for the release from which its rule "One agent source per session" governs the in-process transport, and, from revision 4, every sentence on Pageant and on the Windows logon session that §3.18 lists."
+  - **`GwzConnectionReuseDesign.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for its open item on network operations without a binding, in 1.1.0, the release its supersessions take effect in, and, from revision 5, its key-type sentences (§3.19)."
+  - **`GwzCoreServerDesign.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for the release from which its rule "One agent source per session" governs the in-process transport, and, from revision 4, every sentence on Pageant and on the Windows logon session that §3.18 lists, and, from revision 5, the routed native operations §3.19 removes."
+  - **`GwzRemoteTransportSshAgentDesign.md`'s status** gains, from revision 5: "Amended 2026-10-02 by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for its §5 fixture sentence (that amendment's §3.19)."
   - **The program checkpoint** records the acceptance, OD14's and OD15's answers and OD16's applied shape, TR3.1's closure, and, once TR2.12 creates them, the digests of the switches' inventory files.
 - **No authorization.** This amendment authorizes no implementation, commit, tag, push or publish.
 
@@ -499,3 +554,19 @@ The transport now uses the Windows logon session: Pageant's window belongs to it
   - OD10's and OD11's native routes in OD13's parity bullet (P3-3);
   - the machine proxy's own 407, and SSPI's target name, flags and channel binding, with fixture rows (P3-4).
 - 2026-10-02: the [skim re-check](GwzTransportReleasePlanAmendment-2-ReviewSkim-3.md) reported GO: all eight findings of skim review 2 are closed. Its one new P3 is applied as it specified: TR1.8's Safety finding list names the default-credential exchange with the machine proxy, if the 1.0.17 row authenticates to the proxy (P3-5).
+- 2026-10-02: revision 5. The operator decided OD16's unbounded alternative and reversed OD10 and OD11 onto the transport (§3.19): the transport offers the logon session's default credentials to any host, runs the user's configured credential helpers (TR1.6), and signs with every agent key type and signature algorithm 1.0.17 uses, `ssh-rsa` included for a server that offers no SHA-2 RSA algorithm (TR2.8). No configuration that 1.0.17 serves takes a native route. The status block, §1, §3.1, §3.2, TR1.8, TR4.10, the Phase 8 sign-off, S7.2, S7.3 and S7.5 (1.1.0), OD13, OD16, §3.14's §7 sentence, §3.18, §4 and §5 follow. It is skim-reviewed only.
+- 2026-10-02: [skim review 4](GwzTransportReleasePlanAmendment-2-ReviewSkim-4.md) of revision 5 reported NO-GO, with five P2 and three P3 text defects. All eight are applied without a further round:
+  - TR1.6 adopts the session plan's CS3.4 `git credential fill` spawn as its mechanism, with git2's semantics as the parity reference (P2-1);
+  - a helper is asked for the URL the credential goes to, after the discovery redirect (P2-2);
+  - on Windows a helper's credential answers `Negotiate`, `NTLM` and `Digest`, as 1.0.17 does (P2-3);
+  - the `ssh-rsa` rule is libssh2's exact one, which the operator confirmed, and TR2.8 lists per platform (P2-4);
+  - the release definition drops "gh-only HTTPS" (P2-5);
+  - the plan's line numbers are the pinned file's (P3-1);
+  - the leftovers in §3.3, §3.6, TR8.4, amendment 1's line 264 and the server design's lines 1005 and 1495 are listed (P3-2);
+  - the checkpoint's and the verdict's stale sentences are fixed (P3-3).
+- 2026-10-02: the [skim re-check](GwzTransportReleasePlanAmendment-2-ReviewSkim-5.md) of revision 5 closed all eight findings, and found one new P2 and three new P3s, all applied as it specified:
+  - a helper answers first only when the challenge offers `NTLM`, `Basic` or `Digest`, over WinHTTP's scheme order, and a `Negotiate`-only challenge takes the logon session with no helper asked, as on 1.0.17 (P2-6);
+  - the transport design's HTTPS cell names `git credential fill` (P3-4);
+  - amendment 1's §3.8 notes item states TR2.8's three SHA-1 cases (P3-5);
+  - CS3.4's transport half is TR1.6's in 1.1.0 (§3.15) (P3-6).
+- 2026-10-02: the [second re-check](GwzTransportReleasePlanAmendment-2-ReviewSkim-6.md) reported **GO**: P2-6, P3-4, P3-5 and P3-6 are closed, with no new issue. Revision 5 carries a skim-review GO, not a dual-review GO.
