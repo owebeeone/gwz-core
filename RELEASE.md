@@ -56,8 +56,8 @@ A full release goes out in this order:
 4. **gwz-cli**: `python scripts/release.py vX.Y.Z --push` in gwz-cli, then its GitHub release,
    which builds the binaries and publishes the `gwz` crate (see
    [gwz-cli/RELEASE.md](../gwz-cli/RELEASE.md)).
-5. **gwz-py** at the same tag (see [gwz-py/RELEASE.md](../gwz-py/RELEASE.md)). Its `release`
-   branch still pins gwz-core by git tag.
+5. **gwz-py** at the same tag (see [gwz-py/RELEASE.md](../gwz-py/RELEASE.md)). From 1.1.0 its
+   `release` branch pins `gwz-core = "=X.Y.Z"` from crates.io too, so it also waits for step 3.
 
 ## The crates.io publish job
 
@@ -98,8 +98,9 @@ If you prefer not to use the script, the steps are the same:
 
 **gwz-cli** pins the gwz-core release published on crates.io, `gwz-core = "=X.Y.Z"`, on its
 `release` branch, and its release script waits for that version on crates.io before it
-reconciles the branch; see [gwz-cli/RELEASE.md](../gwz-cli/RELEASE.md). **gwz-py** still pins
-gwz-core by git tag on its `release` branch; see [gwz-py/RELEASE.md](../gwz-py/RELEASE.md).
+reconciles the branch; see [gwz-cli/RELEASE.md](../gwz-cli/RELEASE.md). **gwz-py** pins it the
+same way from 1.1.0, in place of the git tag of 1.0.17 and earlier; see
+[gwz-py/RELEASE.md](../gwz-py/RELEASE.md).
 
 ## Slow compiler probes are manual-only
 
