@@ -240,6 +240,15 @@ impl Control {
 struct Cell<T> {
     control: Arc<Control>,
     result: Mutex<Option<io::Result<T>>>,
+    /// The job's place in the budget. Its thread has been joined once its
+    /// result is taken or disposed of, so either frees the permit at once.
+    permit: Mutex<Option<Permit>>,
+}
+impl<T> Cell<T> {
+    fn release(&self) {
+        let permit = self.permit.lock().unwrap_or_else(|e| e.into_inner()).take();
+        drop(permit);
+    }
 }
 trait Reap: Send {
     fn reap(&mut self) -> bool;
@@ -247,7 +256,6 @@ trait Reap: Send {
 struct Entry<T> {
     cell: Arc<Cell<T>>,
     join: Option<JoinHandle<()>>,
-    _permit: Permit,
 }
 impl<T: Send + 'static> Reap for Entry<T> {
     fn reap(&mut self) -> bool {
@@ -293,6 +301,9 @@ impl<T: Send + 'static> Reap for Entry<T> {
         let wake = state.waker.take();
         let done = state.consumed;
         drop(state);
+        if done {
+            self.cell.release();
+        }
         if let Some(wake) = wake {
             wake.wake();
         }
@@ -392,6 +403,7 @@ impl<T: Send + 'static> Job<T> {
         let cell = Arc::new(Cell {
             control: control.clone(),
             result: Mutex::new(None),
+            permit: Mutex::new(Some(permit)),
         });
         let target = cell.clone();
         let wake = hub.worker.clone();
@@ -413,7 +425,6 @@ impl<T: Send + 'static> Job<T> {
             .push(Box::new(Entry {
                 cell: cell.clone(),
                 join: Some(join),
-                _permit: permit,
             }));
         hub.worker.unpark();
         Ok(Self { cell, hub })
@@ -443,6 +454,7 @@ impl<T: Send + 'static> Job<T> {
             .unwrap_or_else(|| Err(io::ErrorKind::BrokenPipe.into()));
         state.consumed = true;
         drop(state);
+        self.cell.release();
         self.hub.worker.unpark();
         Poll::Ready(result)
     }
@@ -537,6 +549,8 @@ impl Cleanup {
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
+        mod permit_tests;
+
         /// A clock that moves only when a test advances it.
         #[derive(Clone)]
         pub(crate) struct ManualClock {

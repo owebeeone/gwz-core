@@ -5,7 +5,7 @@
 //! succeeding.
 
 use super::cancellable::{Step, run};
-use super::driver_tests::{commit, common, endpoint_home, fixture_url, local_meta};
+use super::driver_tests::{block_on, commit, common, endpoint_home, fixture_url, local_meta};
 use super::*;
 use crate::git::GitBackend;
 use crate::git::endpoint::ssh_channel::GitService;
@@ -18,7 +18,7 @@ use std::{
     process::Command,
     sync::mpsc,
     thread,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 /// A token and the controls that cancel it, as the entry's caller keeps them.
@@ -97,29 +97,46 @@ fn a_cancel_before_the_start_refuses_and_returns_its_cleanup_report() {
     }
 }
 
-/// How long a cancelled operation's I/O may take to fail. The I/O itself
-/// would wait out the transport's 9 s stall first.
-const PROMPT: std::time::Duration = std::time::Duration::from_secs(3);
+/// How long after a cancel while running the entry may take to return. The
+/// cancel fails the operation's I/O at once, and finish and shutdown then
+/// wait only for in-process hand-offs: the endpoint's answer to the cancel,
+/// and the disposal of a connection whose channel the client has aborted.
+/// Those take milliseconds. 500 ms leaves ten times that for a loaded run,
+/// and is a tenth of the cleanup bound, so a request left to that bound
+/// fails.
+const RETIRED: Duration = Duration::from_millis(500);
 
 /// The transport host's bound on a cleanup wait (`session.rs`'s `CLEANUP`).
-const CLEANUP: std::time::Duration = std::time::Duration::from_secs(5);
+const CLEANUP: Duration = Duration::from_secs(5);
 
-/// A cancel while running: the token's callback cancels the request, so the
-/// operation's blocked read fails at once, not at its timeout, and the entry
-/// returns the action's own failure with the operation's cleanup report.
-#[test]
-fn a_cancel_while_running_fails_its_io_and_returns_its_cleanup_report() {
-    let fixture = stalling_fixture();
-    let home = endpoint_home(&fixture);
-    let (url, target) = (fixture_url(&fixture), fixture.temp.path().join("clone"));
-    let started = fixture.temp.path().join("stalled");
-    let environment = environment(&home);
-    let meta = local_meta("cancel-while-running", &home);
+/// What one cancel while running observed, each time from the cancel.
+pub(super) struct Cancelled<T> {
+    /// The action's value.
+    pub(super) value: T,
+    cleanup: CleanupReport,
+    /// When the action's I/O failed.
+    failed: Duration,
+    finish: Option<Duration>,
+    shutdown: Option<Duration>,
+    returned: Duration,
+}
+
+/// Runs `action` through the entry on a thread of its own, and cancels the
+/// token once `held` finds the exchange held by its server. Should the cancel
+/// not reach the I/O, `release` ends the server's hold 20 s later, so that
+/// the action fails, and the assertions with it, instead of the test waiting
+/// out the I/O's own deadline.
+pub(super) fn cancel_while_running<T: Send>(
+    meta: &RequestMeta,
+    environment: &EnvironmentSnapshot,
+    held: impl Fn() -> bool,
+    release: impl FnOnce(),
+    action: impl FnOnce(&Git2Backend) -> T + Send,
+) -> Cancelled<T> {
     let (controls, token) = caller_token();
     let (sender, receiver) = mpsc::channel();
     thread::scope(|scope| {
-        let (home, url, target, environment, meta, token) =
-            (&home, &url, &target, &environment, &meta, &token);
+        let token = &token;
         scope.spawn(move || {
             let steps = RefCell::new(Vec::new());
             let outcome = run(
@@ -127,72 +144,171 @@ fn a_cancel_while_running_fails_its_io_and_returns_its_cleanup_report() {
                 "clone".into(),
                 environment,
                 token,
-                |backend| {
-                    let backend = backend
-                        .with_transport(home, meta.transport.as_ref())
-                        .unwrap()
-                        .unwrap();
-                    let result = backend.clone_repo(url, target);
-                    (result, Instant::now())
-                },
+                |backend| (action(backend), Instant::now()),
                 &|step| steps.borrow_mut().push((step, Instant::now())),
             );
             sender
                 .send((outcome, steps.into_inner(), Instant::now()))
                 .unwrap();
         });
-        let deadline = Instant::now() + std::time::Duration::from_secs(10);
-        let stalled = loop {
-            let pid = std::fs::read_to_string(&started).unwrap_or_default();
-            if pid.ends_with('\n') {
-                break pid.trim().to_owned();
-            }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !held() {
             assert!(
                 Instant::now() < deadline,
-                "the clone never reached the fixture"
+                "the exchange never reached its server"
             );
-            thread::sleep(std::time::Duration::from_millis(5));
-        };
-        // The fixture's command now holds the clone's read of the advertisement.
+            thread::sleep(Duration::from_millis(5));
+        }
         let cancelled = Instant::now();
         controls.cancel();
-        let received = receiver.recv_timeout(std::time::Duration::from_secs(20));
-        let ((result, cleanup), steps, returned) = received.unwrap_or_else(|_| {
-            // The cancel did not reach the read. End the stalled command, so
-            // the clone fails now, and the assertions below with it, instead
-            // of waiting out the read's own deadline.
-            common::run(Command::new("kill").args(["-9", &stalled]));
-            receiver
-                .recv()
-                .expect("the entry returns once its read ends")
-        });
-        let (clone, failed) = result.expect("the action ran");
+        let ((result, cleanup), steps, returned) = receiver
+            .recv_timeout(Duration::from_secs(20))
+            .unwrap_or_else(|_| {
+                release();
+                receiver
+                    .recv()
+                    .expect("the entry returns once its server lets go")
+            });
+        let (value, failed) = result.expect("the action ran");
         let since = |step| {
             steps
                 .iter()
                 .find(|(seen, _)| *seen == step)
                 .map(|(_, at)| at.duration_since(cancelled))
         };
-        eprintln!(
-            "from the cancel: the read failed after {:?}; finish began after {:?} and \
-             shutdown after {:?}; the entry returned after {:?}",
-            failed.duration_since(cancelled),
-            since(Step::Finish),
-            since(Step::Shutdown),
-            returned.duration_since(cancelled)
-        );
-        assert!(clone.is_err(), "the cancelled clone fails");
+        Cancelled {
+            value,
+            cleanup,
+            failed: failed.duration_since(cancelled),
+            finish: since(Step::Finish),
+            shutdown: since(Step::Shutdown),
+            returned: returned.duration_since(cancelled),
+        }
+    })
+}
+
+/// The cancel failed the I/O at once, and the entry returned within
+/// `RETIRED` of it, with no local work left.
+pub(super) fn assert_prompt<T>(scheme: &str, cancelled: &Cancelled<T>) {
+    eprintln!(
+        "{scheme}, from the cancel: the read failed after {:?}; finish began after {:?} \
+         and shutdown after {:?}; the entry returned after {:?}",
+        cancelled.failed, cancelled.finish, cancelled.shutdown, cancelled.returned
+    );
+    assert!(
+        cancelled.failed < RETIRED,
+        "{scheme}: the cancelled read failed only after {:?}",
+        cancelled.failed
+    );
+    assert!(
+        cancelled.returned < RETIRED,
+        "{scheme}: the entry returned {:?} after the cancel; finish began after {:?} \
+         and shutdown after {:?}",
+        cancelled.returned,
+        cancelled.finish,
+        cancelled.shutdown
+    );
+    assert_eq!(cancelled.cleanup.pending_local_work, 0);
+    assert!(!cancelled.cleanup.peer_cleanup_confirmed);
+}
+
+/// A cancel while running: the token's callback cancels the request, so the
+/// operation's blocked read fails at once, not at its timeout, and the entry
+/// returns the action's own failure with the operation's cleanup report. The
+/// endpoint answers the cancel, so finish and shutdown wait on nothing
+/// remote, and the entry returns within `RETIRED` as well.
+#[test]
+fn a_cancel_while_running_fails_its_io_and_returns_its_cleanup_report() {
+    let fixture = stalling_fixture();
+    let home = endpoint_home(&fixture);
+    let (url, target) = (fixture_url(&fixture), fixture.temp.path().join("clone"));
+    let started = fixture.temp.path().join("stalled");
+    // The fixture's command writes its PID once it holds the clone's read of
+    // the advertisement.
+    let stalled = || {
+        std::fs::read_to_string(&started)
+            .ok()
+            .filter(|pid| pid.ends_with('\n'))
+    };
+    let meta = local_meta("cancel-while-running", &home);
+    let cancelled = cancel_while_running(
+        &meta,
+        &environment(&home),
+        || stalled().is_some(),
+        || {
+            if let Some(pid) = stalled() {
+                common::run(Command::new("kill").args(["-9", pid.trim()]));
+            }
+        },
+        |backend| {
+            backend
+                .with_transport(&home, meta.transport.as_ref())
+                .unwrap()
+                .unwrap()
+                .clone_repo(&url, &target)
+        },
+    );
+    assert!(cancelled.value.is_err(), "the cancelled clone fails");
+    assert_prompt("SSH", &cancelled);
+}
+
+/// A cancel the peer never answers: the endpoint session stops taking the
+/// driver's messages, as a peer that has stopped answering does, and its
+/// exchange's I/O timeout outlasts the cleanup bound, so no terminal retires
+/// the cancelled stream. Finish waits for the peer only up to the host's
+/// cleanup bound, then returns with cleanup unconfirmed.
+#[test]
+fn a_cancel_the_peer_never_answers_waits_out_the_cleanup_bound() {
+    let fixture = stalling_fixture();
+    let home = endpoint_home(&fixture);
+    let started = fixture.temp.path().join("stalled");
+    let config = SshEndpointConfig::fixture(home.clone(), None).with_io_timeout_ms(60_000);
+    let runtime = TransportRuntime::new(config).unwrap();
+    let meta = local_meta("unanswered-cancel", &home);
+    let request = block_on(runtime.request(meta, "fetch".into())).unwrap();
+    let identity = home.join("client_ed25519").to_string_lossy().into_owned();
+    let stream = request
+        .context
+        .open(
+            &fixture_url(&fixture),
+            GitService::UploadPack,
+            Some(identity),
+            Arc::new(|_, _| {}),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !std::fs::read_to_string(&started).is_ok_and(|pid| pid.ends_with('\n')) {
         assert!(
-            failed.duration_since(cancelled) < PROMPT,
-            "the cancelled read failed only after {:?}",
-            failed.duration_since(cancelled)
+            Instant::now() < deadline,
+            "the open never reached the fixture"
         );
-        // Finish and shutdown each wait for the cancelled work within the
-        // host's cleanup bound.
-        assert!(returned.duration_since(failed) < 2 * CLEANUP + PROMPT);
-        assert_eq!(cleanup.pending_local_work, 0);
-        assert!(!cleanup.peer_cleanup_confirmed);
-    });
+        thread::sleep(Duration::from_millis(5));
+    }
+    let endpoint = runtime
+        .0
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .local_endpoint
+        .clone();
+    endpoint.hold_pump_for_test(true);
+    let cancelled = Instant::now();
+    let cleanup = block_on(request.finish());
+    let returned = cancelled.elapsed();
+    endpoint.hold_pump_for_test(false);
+    eprintln!("a cancel the peer never answers: finish returned after {returned:?}");
+    // The bound runs from the cancel, on the mux's millisecond clock.
+    assert!(
+        returned > CLEANUP - Duration::from_millis(250),
+        "finish gave up on the peer after only {returned:?}"
+    );
+    assert!(
+        returned < CLEANUP + RETIRED,
+        "finish waited {returned:?} for the peer, past the cleanup bound"
+    );
+    assert!(!cleanup.peer_cleanup_confirmed);
+    drop(stream);
+    block_on(runtime.shutdown());
 }
 
 /// An SSH fixture whose every exec writes its PID to `stalled` and then holds

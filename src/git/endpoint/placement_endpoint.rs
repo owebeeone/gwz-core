@@ -232,6 +232,14 @@ impl PlacementEndpoint {
                 return Ok(());
             }
         }
+        if envelope.kind == MessageKind::Cancel && state.attachment.is_some() {
+            // The worker's stream ends on the initiator's Cancel without a
+            // terminal of its own, so the endpoint answers it, as it answers
+            // a cancelled request. Both muxes then retire the route now, not
+            // at the initiator's cleanup deadline.
+            self.cancel_stream(&key);
+            return Ok(());
+        }
         if state.attachment.is_none() {
             if state.queued_input.len() >= MAX_QUEUED_INPUT {
                 return Err(EndpointError::Capacity);
@@ -832,40 +840,7 @@ impl PlacementEndpoint {
             .cloned()
             .collect();
         for key in keys {
-            let is_check = self.checks.iter().any(|check| check.key == key);
-            let message = if let Some(state) = self.requests.get_mut(&key) {
-                let message = if !state.terminal {
-                    state.terminal = true;
-                    Some(envelope_for(
-                        state,
-                        if is_check {
-                            MessageKind::IdentityCheckFailed
-                        } else if state.attachment.is_none() {
-                            MessageKind::OpenFailed
-                        } else {
-                            MessageKind::Failed
-                        },
-                        Some(Failure {
-                            setup_cause: None,
-                            code: ErrorCode::Cancelled,
-                            effect: Effect::None,
-                            facts: None,
-                        }),
-                        None,
-                    ))
-                } else {
-                    None
-                };
-                if let Some(attachment) = &state.attachment {
-                    attachment.cancel();
-                }
-                message
-            } else {
-                None
-            };
-            if let Some(message) = message {
-                self.push_outbound(key.0, message);
-            }
+            self.cancel_stream(&key);
         }
         self.queued_opens.retain(|queued| queued.key.0 != request);
         for check in &mut self.checks {
@@ -879,6 +854,42 @@ impl PlacementEndpoint {
                 open.cancelled
                     .store(true, std::sync::atomic::Ordering::Release);
             }
+        }
+    }
+    /// Ends one cancelled stream: queues its `Cancelled` terminal, unless it
+    /// has one already, and abandons its attached exchange.
+    fn cancel_stream(&mut self, key: &RequestKey) {
+        let is_check = self.checks.iter().any(|check| check.key == *key);
+        let Some(state) = self.requests.get_mut(key) else {
+            return;
+        };
+        let message = if !state.terminal {
+            state.terminal = true;
+            Some(envelope_for(
+                state,
+                if is_check {
+                    MessageKind::IdentityCheckFailed
+                } else if state.attachment.is_none() {
+                    MessageKind::OpenFailed
+                } else {
+                    MessageKind::Failed
+                },
+                Some(Failure {
+                    setup_cause: None,
+                    code: ErrorCode::Cancelled,
+                    effect: Effect::None,
+                    facts: None,
+                }),
+                None,
+            ))
+        } else {
+            None
+        };
+        if let Some(attachment) = &state.attachment {
+            attachment.cancel();
+        }
+        if let Some(message) = message {
+            self.push_outbound(key.0.clone(), message);
         }
     }
     pub(crate) fn shutdown(&mut self) {

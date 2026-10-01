@@ -21,6 +21,7 @@ cfg_if::cfg_if! {
         mod https_policy_tests;
         mod https_compat_tests;
         mod cancellable_tests;
+        mod cancellable_https_tests;
         mod endpoint_environment_tests;
     }
 }
