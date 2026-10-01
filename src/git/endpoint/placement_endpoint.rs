@@ -336,7 +336,7 @@ impl PlacementEndpoint {
             },
         );
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let service = native_service(open.service)?;
+        let service = native_service(open.service);
         let context = BridgeContext {
             session_id: envelope.session_id.clone(),
             stream_id: envelope.stream_id,
@@ -1016,13 +1016,13 @@ fn selected_path(home: &Path, identity: &Identity) -> Result<Option<PathBuf>, En
         Ok(Some(base.join(path)))
     }
 }
-fn native_service(service: GitService) -> Result<NativeService, EndpointError> {
+fn native_service(service: GitService) -> NativeService {
     match service {
         GitService::UploadPackAdvertisement | GitService::UploadPackExchange => {
-            Ok(NativeService::UploadPack)
+            NativeService::UploadPack
         }
         GitService::ReceivePackAdvertisement | GitService::ReceivePackExchange => {
-            Ok(NativeService::ReceivePack)
+            NativeService::ReceivePack
         }
     }
 }
