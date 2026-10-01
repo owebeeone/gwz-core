@@ -323,14 +323,15 @@ fn pending_request_holds_admission_until_completion() {
             "repo",
             attachment::deadlines(&config, 100),
         )
-        .unwrap()
     };
-    let mut first = open();
+    let first = open().unwrap();
     await_started(&started);
-    let second = attachment::finish(&mut open());
+    // The worker refuses the second open as it is submitted, while the first
+    // holds the endpoint's only admission.
+    let second = open();
     assert!(matches!(second, Err(error) if error.kind() == io::ErrorKind::WouldBlock));
     ready.store(true, std::sync::atomic::Ordering::Release);
-    assert!(attachment::finish(&mut first).is_err());
+    assert!(attachment::finish(&first).is_err());
 }
 
 #[test]
@@ -356,7 +357,7 @@ fn shutdown_wakes_an_unbounded_connect_request_when_network_timeout_is_disabled(
         },
         100,
     );
-    let mut first = attachment::start(
+    let first = attachment::start(
         &endpoint,
         Key::ssh("git", "127.0.0.1", 22),
         None,
@@ -368,13 +369,11 @@ fn shutdown_wakes_an_unbounded_connect_request_when_network_timeout_is_disabled(
     await_started(&started);
     std::thread::sleep(Duration::from_millis(250));
     assert!(
-        first
-            .poll_result(&mut Context::from_waker(std::task::Waker::noop()))
-            .is_pending(),
+        first.poll().is_pending(),
         "disabled connect timeout must remain pending"
     );
     endpoint.shutdown();
-    assert!(attachment::finish(&mut first).is_err());
+    assert!(attachment::finish(&first).is_err());
 }
 
 fn await_started(started: &std::sync::atomic::AtomicBool) {

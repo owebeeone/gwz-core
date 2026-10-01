@@ -4,7 +4,7 @@
 //!
 //! They drive the endpoint's own layers: the channel, pump and pool host; the
 //! worker and the placement endpoint through the attachment path production
-//! takes (`start_endpoint_*_job`); and native setup, trust, agent and selected
+//! takes (`start_endpoint_open`); and native setup, trust, agent and selected
 //! key authentication against [`super::ssh_fixture`]'s loopback `sshd` and
 //! [`agent_fixture`]'s proxy agent. Running them needs Git, `/usr/sbin/sshd`,
 //! `ssh-keygen`, `ssh-agent`, `ssh-add`, `ps` and `kill`; none of them reads
@@ -17,7 +17,6 @@ mod agent_wait;
 mod attachment;
 mod channel;
 mod cleanup_capacity;
-mod destination;
 mod key_container;
 mod local_endpoint;
 mod network;

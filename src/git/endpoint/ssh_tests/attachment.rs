@@ -1,11 +1,10 @@
 //! Opens streams through the worker the way the placement endpoint does, with
-//! `start_open_job`, and plays the driver's part for each attachment: an
+//! `start_endpoint_open`, and plays the driver's part for each attachment: an
 //! initiator stream whose messages a thread carries to and from the worker,
 //! read and written through a [`BlockingStream`] as Git does.
 use crate::git::endpoint::{
-    agent_job::Job,
     ssh_channel::GitService,
-    ssh_worker::{BridgeContext, Endpoint, EndpointAttachment, ThreadWake},
+    ssh_worker::{BridgeContext, Endpoint, EndpointAttachment, PendingOpen, ThreadWake},
     stream_io::BlockingStream,
 };
 use gwz_transport::{
@@ -23,8 +22,6 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-
-pub(super) type OpenJob = Job<(EndpointAttachment, Opened)>;
 
 /// The deadlines of an open that asks for the endpoint's whole policy: its
 /// pool's configured allocation, connect, interaction and cleanup budgets
@@ -51,8 +48,9 @@ pub(super) fn context(deadlines: Deadlines) -> BridgeContext {
     }
 }
 
-/// Starts an open, with the identity file `selected` or else ambient
-/// authority, and returns its job without waiting for it.
+/// Submits an open, with the identity file `selected` or else ambient
+/// authority, and returns it without waiting for the worker's reply. The
+/// worker refuses it here if it is stopped or its admission is full.
 pub(super) fn start(
     endpoint: &Endpoint,
     key: Key,
@@ -60,25 +58,28 @@ pub(super) fn start(
     service: GitService,
     path: &str,
     deadlines: Deadlines,
-) -> io::Result<OpenJob> {
-    endpoint.start_open_job(
+) -> io::Result<PendingOpen> {
+    endpoint.start_endpoint_open(
         key,
         selected,
         service,
-        path.into(),
+        path,
         context(deadlines),
         Arc::new(AtomicBool::new(false)),
     )
 }
 
-/// Waits for an open's job, which ends when the worker replies.
-pub(super) fn finish(job: &mut OpenJob) -> io::Result<(EndpointAttachment, Opened)> {
+/// Waits for the worker's reply to an open.
+pub(super) fn finish(open: &PendingOpen) -> io::Result<(EndpointAttachment, Opened)> {
     let until = Instant::now() + Duration::from_secs(60);
     loop {
-        if let Poll::Ready(result) = job.poll_result(&mut Context::from_waker(Waker::noop())) {
+        if let Poll::Ready(result) = open.poll() {
             return result;
         }
-        assert!(Instant::now() < until, "the open's job never finished");
+        assert!(
+            Instant::now() < until,
+            "the worker never replied to the open"
+        );
         thread::sleep(Duration::from_millis(1));
     }
 }
@@ -93,8 +94,8 @@ pub(super) fn open(
     deadlines: Deadlines,
 ) -> io::Result<(BlockingStream, Opened)> {
     let context = context(deadlines.clone());
-    let mut job = start(endpoint, key, selected, service, path, deadlines)?;
-    let (attachment, opened) = finish(&mut job)?;
+    let pending = start(endpoint, key, selected, service, path, deadlines)?;
+    let (attachment, opened) = finish(&pending)?;
     Ok((drive(attachment, &context), opened))
 }
 

@@ -203,7 +203,8 @@ fn check(path: String, stream_id: i64) -> Envelope {
 
 #[test]
 fn check_identity_reads_regular_file_without_parsing_and_reports_missing_file() {
-    let path = std::env::temp_dir().join(format!("gwz-placement-{}", std::process::id()));
+    let temp = crate::test_support::TempDir::new("placement-identity");
+    let path = temp.path().join("identity");
     fs::write(&path, b"not an ssh key").unwrap();
     let mut regular_endpoint = PlacementEndpoint::new(
         endpoint(),

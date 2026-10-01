@@ -123,7 +123,7 @@ cfg_if::cfg_if! {
             let endpoint = connect(config.clone(), known_hosts, None, 100);
             let started = Instant::now();
             let error = attachment::finish(
-                &mut attachment::start(
+                &attachment::start(
                     &endpoint,
                     Key::ssh("git", "127.0.0.1", port),
                     None,

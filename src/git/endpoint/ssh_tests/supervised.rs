@@ -7,7 +7,7 @@ use crate::git::endpoint::{
     ssh_key_snapshot::Registry,
     ssh_pool,
     ssh_setup::{Authenticated, Setup, SetupConnector},
-    ssh_worker::{self, Endpoint},
+    ssh_worker::{self, Endpoint, PendingOpen},
 };
 use gwz_transport::{
     pool::{Config, Identity, Key},
@@ -59,7 +59,7 @@ fn endpoint(
     .unwrap()
 }
 /// Starts an ambient open of `repo` on `host`.
-fn start(endpoint: &Endpoint, host: &str, deadlines: Deadlines) -> io::Result<attachment::OpenJob> {
+fn start(endpoint: &Endpoint, host: &str, deadlines: Deadlines) -> io::Result<PendingOpen> {
     attachment::start(
         endpoint,
         Key::ssh("git", host, 22),
@@ -70,7 +70,7 @@ fn start(endpoint: &Endpoint, host: &str, deadlines: Deadlines) -> io::Result<at
     )
 }
 fn open(endpoint: &Endpoint, host: &str, deadlines: Deadlines) -> io::Result<()> {
-    attachment::finish(&mut start(endpoint, host, deadlines)?).map(|_| ())
+    attachment::finish(&start(endpoint, host, deadlines)?).map(|_| ())
 }
 #[test]
 fn healthy_empty_worker_shutdown_reports_complete() {
@@ -130,10 +130,10 @@ fn overrun_retains_physical_charge_after_worker_and_endpoint_exit() {
         move |_: &Key, _: &Identity| setup.take().ok_or_else(|| io::ErrorKind::Other.into()),
         100,
     );
-    let mut caller = start(&endpoint, "host", deadlines.clone()).unwrap();
+    let caller = start(&endpoint, "host", deadlines.clone()).unwrap();
     entered.recv_timeout(Duration::from_secs(3)).unwrap();
     endpoint.shutdown();
-    assert!(attachment::finish(&mut caller).is_err());
+    assert!(attachment::finish(&caller).is_err());
     let deadline = Instant::now() + Duration::from_secs(2);
     while endpoint.shutdown_status().failure.is_none() {
         assert!(Instant::now() < deadline);
@@ -215,8 +215,8 @@ cfg_if::cfg_if! {
             let deadlines = attachment::deadlines(&c, 1000);
             let endpoint = endpoint(c, Duration::from_secs(1), move |_: &Key, _: &Identity| setup.take().ok_or_else(|| io::ErrorKind::Other.into()), 1000);
             let key = Key::ssh(&fixture.ssh.user, "127.0.0.1", fixture.ssh.port); let repo = fixture.ssh.repository.to_str().unwrap().to_owned();
-            let mut caller = attachment::start(&endpoint, key, None, GitService::UploadPack, &repo, deadlines).unwrap();
-            fixture.signing.recv_timeout(Duration::from_secs(3)).unwrap(); endpoint.shutdown(); assert!(attachment::finish(&mut caller).is_err());
+            let caller = attachment::start(&endpoint, key, None, GitService::UploadPack, &repo, deadlines).unwrap();
+            fixture.signing.recv_timeout(Duration::from_secs(3)).unwrap(); endpoint.shutdown(); assert!(attachment::finish(&caller).is_err());
             assert_eq!(done(&endpoint).failure, None); fixture.assert_tcp_closed(); fixture.wait_closed();
         }
     }
@@ -267,9 +267,9 @@ fn cleanup_overrun_stops_admission_without_explicit_shutdown() {
         move |_: &Key, _: &Identity| setup.take().ok_or_else(|| io::ErrorKind::Other.into()),
         1000,
     );
-    let mut caller = start(&endpoint, "host", deadlines.clone()).unwrap();
+    let caller = start(&endpoint, "host", deadlines.clone()).unwrap();
     entered.recv_timeout(Duration::from_secs(3)).unwrap();
-    assert!(attachment::finish(&mut caller).is_err());
+    assert!(attachment::finish(&caller).is_err());
     let deadline = Instant::now() + Duration::from_secs(3);
     while endpoint.shutdown_status().failure.is_none() {
         assert!(Instant::now() < deadline);
@@ -305,10 +305,10 @@ fn worker_panic_retains_existing_setup_until_joined_disposal() {
         },
         1000,
     );
-    let mut caller = start(&endpoint, "first", deadlines.clone()).unwrap();
+    let caller = start(&endpoint, "first", deadlines.clone()).unwrap();
     entered.recv_timeout(Duration::from_secs(3)).unwrap();
     assert!(open(&endpoint, "second", deadlines).is_err());
-    assert!(attachment::finish(&mut caller).is_err());
+    assert!(attachment::finish(&caller).is_err());
     let deadline = Instant::now() + Duration::from_secs(3);
     while endpoint.shutdown_status().failure.is_none() {
         assert!(Instant::now() < deadline);
