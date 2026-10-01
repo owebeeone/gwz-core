@@ -22,6 +22,18 @@ jobs:
   candidate:
     name: Candidate build suites
     runs-on: ubuntu-24.04
+    strategy:
+      # Rule (a) of dev-docs/GwzTransportReleasePlanAmendment-2.md §3.13 (TR2.12):
+      # until S7.1 (1.1.0) removes gwz_transport_candidate, two candidate shapes
+      # stay green, the transport switch alone and both switches, one leg each.
+      # scripts/checks/test_check_candidate_switches.py holds the job to both.
+      fail-fast: false
+      matrix:
+        include:
+          - leg: transport
+            rustflags: --cfg gwz_transport_candidate
+          - leg: transport-and-session
+            rustflags: --cfg gwz_transport_candidate --cfg gwz_session_candidate
     defaults:
       run:
         # gwz-core, gwz-transport, gwz-py, taut and git2-rs are checked out
@@ -134,6 +146,8 @@ jobs:
         with:
           workspaces: gwz-core -> ../candidate-target
           cache-on-failure: true
+          # Each leg's flags build different artifacts; its own key keeps the legs from evicting each other.
+          key: ${{ matrix.leg }}
       - id: suites
         name: Run the candidate build's suites
         # gwz-cli is not checked out, so the conditional-compilation check
@@ -141,7 +155,7 @@ jobs:
         # gwz-transport's process-global check runs over the checkout beside
         # gwz-core.
         env:
-          RUSTFLAGS: --cfg gwz_transport_candidate
+          RUSTFLAGS: ${{ matrix.rustflags }}
         run: |
           set -o pipefail
           python scripts/run_tests.py --skip-cfg-sibling gwz-cli --no-fail-fast \

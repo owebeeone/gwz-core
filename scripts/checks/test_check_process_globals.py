@@ -536,6 +536,19 @@ class Ratchet(unittest.TestCase):
         errors = self.run_check([self.entry(disposition='later', reason='')], {'src/lib.rs': GLOBAL})
         self.assertEqual(len(errors), 2)
 
+    def test_debt_planted_under_either_candidate_switch_is_listed(self):
+        # TR2.12: each candidate switch's build is production, so state under either is listed and its debt entry
+        # matches, and the module's definition of production names both switches.
+        for switch in ('gwz_transport_candidate', 'gwz_session_candidate'):
+            source = f'cfg_if::cfg_if! {{\n    if #[cfg(all(unix, {switch}))] {{\n        {GLOBAL}    }}\n}}\n'
+            errors = self.run_check([], {'src/lib.rs': source})
+            self.assertEqual(len(errors), 1, (switch, errors))
+            self.assertRegex(errors[0], r'^NEW   static G \(Mutex < u8 >\) at src/lib\.rs:3')
+            self.assertEqual(self.run_check([self.entry()], {'src/lib.rs': source}), [], switch)
+        definition = ('Production means any build outside `cfg(test)`, the `gwz_transport_candidate` and '
+                      '`gwz_session_candidate` builds included;')
+        self.assertTrue(definition in ' '.join(checker.__doc__.split()), f'the docstring lacks: {definition}')
+
     def test_injected_credential_helper_struct_is_the_listed_spawn(self):
         # Safety P3-31's closure test: the fault injected into the fixture is
         # CredentialHelper::new(url).execute(). Unlisted, it is NEW as

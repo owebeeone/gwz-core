@@ -16,6 +16,9 @@ gwz-py checkouts beside it; with either missing, the run fails.
 siblings; only a CI job that has neither checkout passes it (CS1.7).
 --skip-cfg-sibling NAME skips one sibling the same way, for a CI job that has
 the other checked out.
+
+The candidate switch inventory check covers gwz-core alone: gwz-cli and gwz-py
+run it over themselves in their own tests (TR2.12).
 """
 from __future__ import annotations
 
@@ -161,6 +164,7 @@ def main(argv: list[str] | None = None) -> None:
     check_cfg_boundaries(
         [name for name in CFG_SIBLINGS if options.skip_cfg_siblings or name in options.skip_cfg_sibling]
     )
+    subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_candidate_switches.py")], check=True)
     check_transport_process_globals(options.skip_transport_globals)
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_crate_versions.py")], check=True)
     filesystem_result = run("fake", library_args, list(FILESYSTEM_CONTRACTS), filesystem="fake")
