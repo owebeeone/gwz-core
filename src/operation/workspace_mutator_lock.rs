@@ -84,12 +84,12 @@ pub fn lock_path(root: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::process::Command;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
     use crate::operation_context::{OperationServices, TestWorld};
+    use crate::test_support::TempDir;
 
     const CHILD_ENV: &str = "GWZ_WORKSPACE_MUTATOR_LOCK_CHILD_ROOT";
     const BOOTSTRAP_GUARD_NAME: &str = "gwz-runtime-bootstrap-v1.lock";
@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn non_git_root_is_rejected_without_creating_runtime_state() {
-        let temp = TempDir::new_plain("mutator-lock-non-git");
+        let temp = TempDir::new("mutator-lock-non-git");
 
         assert!(WorkspaceMutatorLock::try_acquire_in(&physical_context(), temp.path()).is_err());
         assert!(!temp.path().join(crate::workspace::RUNTIME_DIR).exists());
@@ -109,7 +109,7 @@ mod tests {
 
     #[test]
     fn bootstrap_creates_only_the_fixed_runtime_grammar() {
-        let temp = TempDir::new("mutator-lock-grammar");
+        let temp = repo_dir("mutator-lock-grammar");
         let git_dir = git2::Repository::open(temp.path())
             .unwrap()
             .path()
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn wrong_kind_runtime_root_is_rejected() {
-        let temp = TempDir::new("mutator-lock-wrong-kind-runtime");
+        let temp = repo_dir("mutator-lock-wrong-kind-runtime");
         fs::write(temp.path().join(crate::workspace::RUNTIME_DIR), b"foreign").unwrap();
 
         assert!(WorkspaceMutatorLock::try_acquire_in(&physical_context(), temp.path()).is_err());
@@ -148,8 +148,8 @@ mod tests {
     fn symlink_runtime_root_is_rejected_without_mutating_its_target() {
         use std::os::unix::fs::symlink;
 
-        let temp = TempDir::new("mutator-lock-symlink-runtime");
-        let outside = TempDir::new_plain("mutator-lock-symlink-runtime-target");
+        let temp = repo_dir("mutator-lock-symlink-runtime");
+        let outside = TempDir::new("mutator-lock-symlink-runtime-target");
         symlink(
             outside.path(),
             temp.path().join(crate::workspace::RUNTIME_DIR),
@@ -165,7 +165,7 @@ mod tests {
     fn symlink_bootstrap_guard_is_rejected() {
         use std::os::unix::fs::symlink;
 
-        let temp = TempDir::new("mutator-lock-symlink-guard");
+        let temp = repo_dir("mutator-lock-symlink-guard");
         let outside = temp.path().join("foreign-guard");
         fs::write(&outside, b"foreign").unwrap();
         let git_dir = git2::Repository::open(temp.path())
@@ -184,10 +184,10 @@ mod tests {
     fn symlink_locks_directory_is_rejected_without_mutating_its_target() {
         use std::os::unix::fs::symlink;
 
-        let temp = TempDir::new("mutator-lock-symlink-locks");
+        let temp = repo_dir("mutator-lock-symlink-locks");
         let runtime = temp.path().join(crate::workspace::RUNTIME_DIR);
         fs::create_dir(&runtime).unwrap();
-        let outside = TempDir::new_plain("mutator-lock-symlink-locks-target");
+        let outside = TempDir::new("mutator-lock-symlink-locks-target");
         symlink(outside.path(), runtime.join("locks")).unwrap();
 
         assert!(WorkspaceMutatorLock::try_acquire_in(&physical_context(), temp.path()).is_err());
@@ -199,7 +199,7 @@ mod tests {
     fn symlink_final_lease_is_rejected() {
         use std::os::unix::fs::symlink;
 
-        let temp = TempDir::new("mutator-lock-symlink-lease");
+        let temp = repo_dir("mutator-lock-symlink-lease");
         let lock_dir = temp
             .path()
             .join(crate::workspace::RUNTIME_DIR)
@@ -215,8 +215,8 @@ mod tests {
 
     #[test]
     fn linked_worktree_uses_its_actual_git_directory_for_the_guard() {
-        let main = TempDir::new("mutator-lock-main-worktree");
-        let linked_parent = TempDir::new_plain("mutator-lock-linked-parent");
+        let main = repo_dir("mutator-lock-main-worktree");
+        let linked_parent = TempDir::new("mutator-lock-linked-parent");
         let linked_root = linked_parent.path().join("linked");
         let main_repo = git2::Repository::open(main.path()).unwrap();
         main_repo.worktree("linked", &linked_root, None).unwrap();
@@ -238,7 +238,7 @@ mod tests {
 
         const CONTENDERS: usize = 8;
 
-        let temp = TempDir::new("mutator-lock-first-race");
+        let temp = repo_dir("mutator-lock-first-race");
         let root = Arc::new(temp.path().to_path_buf());
         let context = physical_context();
         let start = Arc::new(Barrier::new(CONTENDERS));
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn lock_file_may_remain_and_be_reacquired_after_release() {
-        let temp = TempDir::new("mutator-lock-reacquire");
+        let temp = repo_dir("mutator-lock-reacquire");
         let context = physical_context();
         let first = WorkspaceMutatorLock::try_acquire_in(&context, temp.path())
             .unwrap()
@@ -290,7 +290,7 @@ mod tests {
 
     #[test]
     fn separate_process_cannot_acquire_held_workspace_mutator_lock() {
-        let temp = TempDir::new("mutator-lock-process");
+        let temp = repo_dir("mutator-lock-process");
         let _held = WorkspaceMutatorLock::try_acquire_in(&physical_context(), temp.path())
             .unwrap()
             .expect("parent lock acquired");
@@ -319,31 +319,11 @@ mod tests {
         );
     }
 
-    struct TempDir {
-        path: PathBuf,
-    }
-
-    impl TempDir {
-        fn new(name: &str) -> Self {
-            let temp = Self::new_plain(name);
-            init_repo(temp.path());
-            temp
-        }
-
-        fn new_plain(name: &str) -> Self {
-            let unique = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let path = std::env::temp_dir()
-                .join(format!("gwz-core-{name}-{}-{unique}", std::process::id()));
-            fs::create_dir_all(&path).unwrap();
-            Self { path }
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
+    /// A temp dir holding a repository with one empty commit.
+    fn repo_dir(name: &str) -> TempDir {
+        let temp = TempDir::new(name);
+        init_repo(temp.path());
+        temp
     }
 
     fn init_repo(path: &Path) {
@@ -354,11 +334,5 @@ mod tests {
         let signature = git2::Signature::now("GWZ Test", "gwz@example.invalid").unwrap();
         repo.commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
             .unwrap();
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
     }
 }

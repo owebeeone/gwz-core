@@ -20,7 +20,6 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::filesystem::FsDirectory as Dir;
 use sha2::{Digest, Sha256};
@@ -43,8 +42,6 @@ use crate::checked_artifact::namespace::{
     test_support::{durable_namespace, retained_directory},
 };
 use crate::checked_artifact::protocol::ProtocolRecordKindV1;
-
-static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 /// The retained parent shape the production observer is written against.
 pub(super) type RetainedParentV1 =
@@ -172,12 +169,11 @@ pub(super) struct LeafFixture {
 
 impl LeafFixture {
     pub(super) fn new(label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "gwz-r2d-leaf-{label}-{}-{}",
-            std::process::id(),
-            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&root).unwrap();
+        let root = crate::test_support::unique_dir(
+            &std::env::temp_dir(),
+            &format!("gwz-r2d-leaf-{label}"),
+        )
+        .unwrap();
         fs::create_dir(root.join("parent")).unwrap();
         Self { root }
     }

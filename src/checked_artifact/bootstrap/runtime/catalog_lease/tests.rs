@@ -1,14 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::super::fault::{RuntimeBootstrapFault, run_next_at};
 use super::super::try_acquire_workspace_runtime_in;
 use super::*;
 use crate::checked_artifact::capability::PreCatalogRootKindV1;
 use crate::operation_context::TestWorld;
-
-static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 mod association;
 mod bounds;
@@ -382,12 +379,11 @@ struct TempRepo(PathBuf);
 
 impl TempRepo {
     fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "gwz-catalog-lease-{name}-{}-{}",
-            std::process::id(),
-            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&path).unwrap();
+        let path = crate::test_support::unique_dir(
+            &std::env::temp_dir(),
+            &format!("gwz-catalog-lease-{name}"),
+        )
+        .unwrap();
         let repository = git2::Repository::init(&path).unwrap();
         let mut index = repository.index().unwrap();
         let tree_id = index.write_tree().unwrap();

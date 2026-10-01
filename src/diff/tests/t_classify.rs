@@ -9,7 +9,6 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::artifact::{ManifestArtifact, WorkspaceHeader};
 use crate::diff::{ClassifiedOperands, RevContext, classify_operands};
@@ -29,15 +28,9 @@ impl Drop for Sandbox {
 
 impl Sandbox {
     fn new(tag: &str) -> Self {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "gwz-classify-{tag}-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&root).unwrap();
+        let root =
+            crate::test_support::unique_dir(&std::env::temp_dir(), &format!("gwz-classify-{tag}"))
+                .unwrap();
         Sandbox { root }
     }
 

@@ -111,15 +111,15 @@ pub(crate) fn verify_historical_identity<B: GitBackend>(
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
     use std::process::Command;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::artifact::{
         ArtifactSourceKind, CreatedByArtifact, MarkerArtifact, MarkerRootArtifact,
         ResolvedMemberArtifact, SnapshotArtifact,
     };
     use crate::git::{Git2Backend, GitBackend};
+    use crate::test_support::TempDir;
 
     use super::*;
 
@@ -245,32 +245,5 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
-    }
-
-    struct TempDir {
-        path: PathBuf,
-    }
-
-    impl TempDir {
-        fn new(name: &str) -> Self {
-            let unique = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let path = std::env::temp_dir()
-                .join(format!("gwz-core-{name}-{}-{unique}", std::process::id()));
-            fs::create_dir_all(&path).unwrap();
-            Self { path }
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
     }
 }

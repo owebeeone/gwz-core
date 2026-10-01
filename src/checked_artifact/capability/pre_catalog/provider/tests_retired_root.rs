@@ -17,7 +17,6 @@
 use crate::filesystem::FileSystem;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::checked_artifact::admission::ActionAdmissionOwnerV1;
 use crate::checked_artifact::bootstrap::{
@@ -32,8 +31,6 @@ use crate::checked_artifact::protocol::{
     InfrastructureSlotV1, MAX_RETIRED_ACTION_DIRS, ManagedBootstrapInputV1, RequestOwnerBindingV1,
     RootEntryNameV1,
 };
-
-static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 /// The two frozen target variants. Added at the E3 remediation so the nested
 /// retired-root chain's refusal is proved on both, per the F1 ruling.
@@ -70,12 +67,11 @@ impl Fixture {
     }
 
     fn on(variant: TargetVariantV1, label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "gwz-r2e-retired-root-{label}-{}-{}",
-            std::process::id(),
-            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&root).unwrap();
+        let root = crate::test_support::unique_dir(
+            &std::env::temp_dir(),
+            &format!("gwz-r2e-retired-root-{label}"),
+        )
+        .unwrap();
         git2::Repository::init(&root).unwrap();
         Self { root, variant }
     }

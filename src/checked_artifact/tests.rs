@@ -1,8 +1,6 @@
-use super::transition::TEMP_SEQUENCE;
 use super::*;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 
 #[path = "tests/durability.rs"]
 mod durability;
@@ -21,12 +19,11 @@ struct TempRoot(PathBuf);
 
 impl TempRoot {
     fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "gwz-checked-artifact-{name}-{}-{}",
-            std::process::id(),
-            TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&path).unwrap();
+        let path = crate::test_support::unique_dir(
+            &std::env::temp_dir(),
+            &format!("gwz-checked-artifact-{name}"),
+        )
+        .unwrap();
         git2::Repository::init(&path).unwrap();
         Self(path)
     }

@@ -160,10 +160,10 @@ fn path_escape(message: &str) -> ModelError {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::path::Path;
 
     use crate::model::ErrorCode;
+    use crate::test_support::TempDir;
 
     use super::*;
 
@@ -267,32 +267,5 @@ mod tests {
     fn touch_workspace_manifest(root: &Path) {
         fs::create_dir_all(root.join(WORKSPACE_DIR)).unwrap();
         fs::write(root.join(WORKSPACE_MANIFEST), "schema: gwz.workspace/v0\n").unwrap();
-    }
-
-    struct TempDir {
-        path: PathBuf,
-    }
-
-    impl TempDir {
-        fn new(name: &str) -> Self {
-            let unique = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let path = std::env::temp_dir()
-                .join(format!("gwz-core-{name}-{}-{unique}", std::process::id()));
-            fs::create_dir_all(&path).unwrap();
-            Self { path }
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
     }
 }

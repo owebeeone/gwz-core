@@ -22,7 +22,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::provider::{RetainedManagedParentProviderV1, RetainedManagedParentsV1};
 use super::{
@@ -46,8 +45,6 @@ use crate::checked_artifact::protocol::{
     CleanupAliasSetV1, RecordObservationV1, RequestOwnerBindingV1, RootEntryNameV1,
     admit_observed_action, managed_staging_name,
 };
-
-static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 /// The action every row of this suite bootstraps under. One action per fixture
 /// keeps the durable state minimal while still crossing both purposes.
@@ -76,12 +73,11 @@ pub(in crate::checked_artifact) struct Fixture {
 
 impl Fixture {
     pub(in crate::checked_artifact) fn new(label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "gwz-r2d-managed-provider-{label}-{}-{}",
-            std::process::id(),
-            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&root).unwrap();
+        let root = crate::test_support::unique_dir(
+            &std::env::temp_dir(),
+            &format!("gwz-r2d-managed-provider-{label}"),
+        )
+        .unwrap();
         git2::Repository::init(&root).unwrap();
         Self { root }
     }

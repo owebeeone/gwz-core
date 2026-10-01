@@ -3,14 +3,12 @@ use super::*;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
 pub(super) const MARKER: &str = "gwz.conf/markers/merge_1.yaml";
 pub(super) const BOUNDARY: &[u8] = b"ignored/\n";
-static FIXTURE_ID: AtomicU64 = AtomicU64::new(0);
 
 pub(super) struct RootFixture {
     pub _temp: TempDir,
@@ -70,8 +68,7 @@ pub(super) fn fixture_configured(
     longpaths: bool,
     minimum_root_length: usize,
 ) -> RootFixture {
-    let id = FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
-    let temp = TempDir::new(&format!("root-preservation-{format}-{id}"));
+    let temp = TempDir::new(&format!("root-preservation-{format}"));
     let backend = Git2Backend::new();
     let mut root_parent = temp.path().to_path_buf();
     let current = root_parent.as_os_str().len() + "repo".len() + 1;

@@ -16,14 +16,39 @@ use std::cell::RefCell;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::{
     CancelFlag, Cancellation, CopyError, CopyErrorCategory, CopyMode, CopyReport, CopyRequest,
     Exclusion, TreeCopier,
 };
 
-static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+/// Names one `TempTree` may try before giving up. A taken name needs another
+/// tree with the same label in the same clock tick, so a few are plenty.
+const NAME_ATTEMPTS: u32 = 1000;
+
+/// The first of `{base}`, `{base}-1`, `{base}-2`, ... under `parent` that this
+/// call creates; a name that already exists is skipped and left as it is.
+fn create_fresh(parent: &Path, base: &str) -> PathBuf {
+    for attempt in 0..NAME_ATTEMPTS {
+        let path = if attempt == 0 {
+            parent.join(base)
+        } else {
+            parent.join(format!("{base}-{attempt}"))
+        };
+        match fs::create_dir(&path) {
+            Ok(()) => {
+                return path;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                panic!("create temp tree {}: {error}", path.display());
+            }
+        }
+    }
+    panic!("no free temp tree name for {base} in {NAME_ATTEMPTS} attempts");
+}
 
 /// A unique temporary directory removed on drop.
 pub struct TempTree {
@@ -31,14 +56,19 @@ pub struct TempTree {
 }
 
 impl TempTree {
+    /// A directory this call created. `create_dir` refuses a name that
+    /// exists, so two trees never share one, even when the process id and the
+    /// clock, which macOS reads to the microsecond, give them one name; a taken
+    /// name is retried with a suffix. No counter or other state is kept
+    /// between calls.
     pub fn new(label: &str) -> Self {
-        let counter = TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let path = std::env::temp_dir().join(format!(
-            "gwz-copy-contract-{label}-{}-{counter}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).expect("create temp tree");
-        Self { path }
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_nanos());
+        let base = format!("gwz-copy-contract-{label}-{}-{nanos}", std::process::id());
+        Self {
+            path: create_fresh(&std::env::temp_dir(), &base),
+        }
     }
 
     pub fn path(&self) -> &Path {
@@ -733,6 +763,21 @@ mod tests {
             panicked,
             "the suite must reject a copier whose partial report is inaccurate"
         );
+    }
+
+    /// Two trees that draw one name, as two tests in one clock tick do: the
+    /// second gets a directory of its own and leaves the first one's as it was.
+    #[test]
+    fn a_name_already_taken_is_skipped_and_left_alone() {
+        let parent = TempTree::new("taken-name");
+        let first = create_fresh(parent.path(), "same-tick");
+        fs::write(first.join("owner"), b"first").unwrap();
+
+        let second = create_fresh(parent.path(), "same-tick");
+
+        assert_ne!(first, second);
+        assert_eq!(fs::read_dir(&second).unwrap().count(), 0);
+        assert_eq!(fs::read(first.join("owner")).unwrap(), b"first");
     }
 
     #[test]

@@ -1,6 +1,3 @@
-#[cfg(test)]
-use std::sync::atomic::AtomicU64;
-
 use super::authority::{ArtifactOperation, CheckedArtifactAuthority, RetainedSource};
 use super::classification::ExactTransition;
 use super::fault::{CheckedArtifactFault, fault};
@@ -8,9 +5,6 @@ use super::observation::{io_op_error, observe_leaf_exact};
 use super::{CheckedArtifact, CheckedArtifactFact, CheckedArtifactTransition, ParentState, error};
 use crate::filesystem::FsDirectory;
 use crate::model::ModelResult;
-
-#[cfg(test)]
-pub(super) static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 impl CheckedArtifact {
     pub(super) fn observe_durable(&self) -> ModelResult<CheckedArtifactFact> {

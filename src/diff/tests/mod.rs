@@ -9,7 +9,6 @@ mod fixture;
 mod t_binary;
 mod t_cached;
 mod t_classify;
-mod t_fixture;
 mod t_handle;
 mod t_log;
 mod t_mode;

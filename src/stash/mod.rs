@@ -387,12 +387,11 @@ fn io_error(err: io::Error) -> ModelError {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use crate::artifact::{ArtifactSourceKind, LockArtifact, ManifestArtifact, WorkspaceHeader};
     use crate::git::{Git2Backend, GitBackend};
     use crate::model::ErrorCode;
+    use crate::test_support::TempDir;
     use crate::workspace_ops::ensure_workspace_exclude;
 
     use super::*;
@@ -710,33 +709,6 @@ mod tests {
                 id: "ws_01".to_owned(),
             },
             members: Vec::new(),
-        }
-    }
-
-    struct TempDir {
-        path: PathBuf,
-    }
-
-    impl TempDir {
-        fn new(name: &str) -> Self {
-            let unique = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let path = std::env::temp_dir()
-                .join(format!("gwz-core-{name}-{}-{unique}", std::process::id()));
-            fs::create_dir_all(&path).unwrap();
-            Self { path }
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
         }
     }
 }

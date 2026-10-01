@@ -6,8 +6,6 @@ mod g02;
 mod g03;
 mod g04;
 mod g05;
-mod g06;
-mod g07;
 mod g08;
 mod g09;
 mod g10;
@@ -20,4 +18,5 @@ mod g16;
 mod g17;
 mod g18;
 
+pub(crate) use crate::test_support::TempDir;
 pub(crate) use g01::*;

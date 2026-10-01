@@ -22,7 +22,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::leaf_observation::HostLeafObserverV1;
 use super::platform::HostPlatform;
@@ -48,8 +47,6 @@ use crate::checked_artifact::protocol::{
     BaseActionSlotV1, CleanupAliasSetV1, ManagedBootstrapInputV1, RequestOwnerBindingV1,
     RootEntryNameV1,
 };
-
-static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 /// Which side of the two-sided proof a row interrupts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -128,12 +125,11 @@ struct MatrixFixture {
 
 impl MatrixFixture {
     fn new(label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "gwz-r2d-leaf-matrix-{label}-{}-{}",
-            std::process::id(),
-            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&root).unwrap();
+        let root = crate::test_support::unique_dir(
+            &std::env::temp_dir(),
+            &format!("gwz-r2d-leaf-matrix-{label}"),
+        )
+        .unwrap();
         git2::Repository::init(&root).unwrap();
         Self { root }
     }

@@ -37,6 +37,13 @@ pub mod git;
 pub mod operation_context;
 #[cfg(test)]
 mod test_backend;
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        // Support the crate's test fixtures have in common: temporary
+        // directories that two parallel tests never share.
+        mod test_support;
+    }
+}
 // LCM1.0c (gwz-dev dev-docs/GwzLocalClonePlan.md §3 "1.0c",
 // GwzLocalCloneLibraryBoundaries.md §4): the local clone family's thin
 // composition adapters. Library logic lives in the crates under `crates/`;

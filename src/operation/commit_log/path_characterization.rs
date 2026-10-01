@@ -12,20 +12,14 @@ fn run_in_clean_child(test_name: &str) -> bool {
         return false;
     }
 
-    let suffix = format!(
-        "{}-{}-{}",
-        std::process::id(),
-        test_name.replace("::", "-"),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    );
-    let root = if cfg!(windows) {
-        PathBuf::from("D:/gwz-tests").join(suffix)
+    let label = test_name.replace("::", "-");
+    let (parent, stem) = if cfg!(windows) {
+        (PathBuf::from("D:/gwz-tests"), label)
     } else {
-        std::env::temp_dir().join(format!("gwz-history-tests-{suffix}"))
+        (std::env::temp_dir(), format!("gwz-history-tests-{label}"))
     };
+    fs::create_dir_all(&parent).unwrap();
+    let root = crate::test_support::unique_dir(&parent, &stem).unwrap();
     let home = root.join("home");
     let xdg = root.join("xdg");
     fs::create_dir_all(&home).unwrap();

@@ -435,13 +435,10 @@ const fn ior(kind: u32, number: u32, size: u32) -> u32 {
 mod tests {
     use std::os::fd::{AsRawFd, BorrowedFd, RawFd};
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use cap_std::fs::Dir;
 
     use super::*;
-
-    static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
     struct Scratch {
         root: PathBuf,
@@ -450,12 +447,11 @@ mod tests {
 
     impl Scratch {
         fn new(label: &str) -> Self {
-            let root = std::env::temp_dir().join(format!(
-                "gwz-linux-descriptor-{label}-{}-{}",
-                std::process::id(),
-                NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-            ));
-            std::fs::create_dir(&root).unwrap();
+            let root = crate::test_support::unique_dir(
+                &std::env::temp_dir(),
+                &format!("gwz-linux-descriptor-{label}"),
+            )
+            .unwrap();
             let dir = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
             Self { root, dir }
         }

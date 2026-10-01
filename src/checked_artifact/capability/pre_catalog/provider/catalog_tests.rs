@@ -23,13 +23,9 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let root = std::env::temp_dir().join(format!(
-            "gwz-r2c1-catalog-provider-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        fs::create_dir(&root).unwrap();
+        let root =
+            crate::test_support::unique_dir(&std::env::temp_dir(), "gwz-r2c1-catalog-provider")
+                .unwrap();
         git2::Repository::init(&root).unwrap();
         fs::create_dir(root.join(".gwz")).unwrap();
         Self { root }
