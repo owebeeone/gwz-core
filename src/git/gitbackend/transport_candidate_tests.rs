@@ -8,6 +8,7 @@ use crate::transport_host::{SshEndpointConfig, TransportRequest, TransportRuntim
 mod common;
 mod drivers;
 mod host_context;
+mod url_parity;
 
 /// One transport runtime for a test, as `with_local_transport` builds one per
 /// command. Its endpoint trusts the fixture's host key.
@@ -87,16 +88,13 @@ fn fixture() -> (common::SshdFixture, Host, TransportRequest, Git2Backend) {
         .unwrap();
     (f, host, request, backend)
 }
+/// The fixture repository's URL. Its path passes as written, as in libgit2.
 fn url(f: &common::SshdFixture) -> String {
     format!(
         "ssh://{}@127.0.0.1:{}{}",
         f.user,
         f.port,
-        f.repository
-            .to_str()
-            .unwrap()
-            .replace('%', "%25")
-            .replace(' ', "%20")
+        f.repository.display()
     )
 }
 fn commit(repo: &git2::Repository, text: &str) -> git2::Oid {

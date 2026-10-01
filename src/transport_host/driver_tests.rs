@@ -55,16 +55,13 @@ pub(super) fn endpoint_home(fixture: &common::SshdFixture) -> PathBuf {
     home
 }
 
+/// The fixture repository's URL. Its path passes as written, as in libgit2.
 pub(super) fn fixture_url(fixture: &common::SshdFixture) -> String {
     format!(
         "ssh://{}@127.0.0.1:{}{}",
         fixture.user,
         fixture.port,
-        fixture
-            .repository
-            .to_string_lossy()
-            .replace('%', "%25")
-            .replace(' ', "%20")
+        fixture.repository.display()
     )
 }
 

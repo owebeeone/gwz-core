@@ -1,4 +1,6 @@
 //! Side-effect-free SSH admission. Paths are operands, never shell commands.
+//! The grammar is libgit2's (1.9.7 `util/net.c` and `transports/ssh_libssh2.c`),
+//! 1.0.17's network path: a URL's path passes as written, never decoded.
 use gwz_transport::pool::Key;
 use std::{io, net::Ipv6Addr};
 
@@ -7,79 +9,80 @@ pub(crate) struct Destination {
     pub(crate) key: Key,
     pub(crate) path: String,
 }
+/// libgit2's parse: user, host, port ("" for the default) and path.
+type Parts<'a> = (Option<&'a str>, &'a str, &'a str, &'a str);
 impl Destination {
     /// None leaves a non-SSH URL on its existing native/local route. Once an SSH
     /// spelling is recognized, malformed input is an error, never a fallback.
     pub(crate) fn parse(input: &str) -> io::Result<Option<Self>> {
-        let (authority, path, escaped) = if let Some((scheme, rest)) = input.split_once("://") {
-            if !["ssh", "git+ssh", "ssh+git"]
-                .iter()
-                .any(|s| scheme.eq_ignore_ascii_case(s))
-            {
+        let ((user, host, port, path), escaped) =
+            if let Some((scheme, rest)) = input.split_once("://") {
+                if !["ssh", "git+ssh", "ssh+git"]
+                    .iter()
+                    .any(|s| scheme.eq_ignore_ascii_case(s))
+                {
+                    return Ok(None);
+                }
+                (url(rest)?, true)
+            } else if local(input) {
                 return Ok(None);
-            }
-            if rest.contains(['?', '#']) {
-                return Err(invalid());
-            }
-            let slash = rest.find('/').ok_or_else(invalid)?;
-            (&rest[..slash], &rest[slash..], true)
-        } else {
-            // A colon after a slash or a Windows drive designates a local path.
-            let Some(colon) = scp_colon(input)? else {
-                return Ok(None);
+            } else {
+                (scp(input)?, false)
             };
-            let authority = &input[..colon];
-            if authority.contains(['/', '\\'])
-                || (colon == 1 && input.as_bytes()[0].is_ascii_alphabetic())
-            {
-                return Ok(None);
-            }
-            (authority, &input[colon + 1..], false)
-        };
         if input.len() > 18_000 || input.chars().any(char::is_control) {
             return Err(invalid());
         }
-        // Native SCP accepts brackets around the entire authority as well as
-        // around an IPv6 address. Strip only an outer, non-IPv6 grouping.
-        let authority = if escaped {
-            authority
-        } else {
-            scp_group(authority)
-        };
-        let (user, host_port) = match authority.split_once('@') {
-            Some((user, host))
-                if !user.is_empty() && !user.contains(':') && !host.contains('@') =>
-            {
-                (user, host)
+        let decoded = |text: &str| {
+            if escaped {
+                decode(text)
+            } else {
+                Ok(text.to_owned())
             }
-            Some(_) => return Err(invalid()),
-            None => ("git", authority),
         };
-        let user = if escaped {
-            decode(user)?
-        } else {
-            user.to_owned()
+        // libgit2 asks the credential callback for a missing or empty user,
+        // and GWZ's callback answers "git".
+        let user = match user {
+            Some(user) if !user.is_empty() => decoded(user)?,
+            _ => "git".to_owned(),
         };
-        if user.is_empty() || user.len() > 128 || user.chars().any(char::is_control) {
+        if user.len() > 128 || user.chars().any(char::is_control) {
             return Err(invalid());
         }
-        let (host, port) = host_port_parts(host_port, escaped)?;
-        let mut path = if escaped {
-            decode(path)?
-        } else {
-            path.to_owned()
-        };
-        // Match native libgit2: /~user is passed to Git as ~user, where the
-        // repository-opening routine handles home-relative operands.
-        if escaped && path.starts_with("/~") {
-            path.remove(0);
+        // A host that keeps brackets, as an scp IPv6 host does, resolves to
+        // nothing in libgit2; one with a ':' resolves only as an IPv6 address.
+        let host = decoded(host)?;
+        if host.is_empty()
+            || host.len() > 255
+            || !host.is_ascii()
+            || host
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control() || "@/?#\\%[]".contains(c))
+            || (host.contains(':') && host.parse::<Ipv6Addr>().is_err())
+        {
+            return Err(invalid());
         }
-        if path.is_empty() || path.len() > 16_384 || path.chars().any(char::is_control) {
+        let port = match port {
+            "" => 22,
+            value if value.bytes().all(|c| c.is_ascii_digit()) => {
+                value.parse::<u16>().map_err(|_| invalid())?
+            }
+            _ => return Err(invalid()),
+        };
+        // libgit2 refuses an option-shaped path before it connects, then
+        // passes /~user as ~user, where Git resolves home-relative operands.
+        if port == 0 || path.starts_with('-') {
+            return Err(invalid());
+        }
+        let path = path
+            .strip_prefix('/')
+            .filter(|p| p.starts_with('~'))
+            .unwrap_or(path);
+        if path.is_empty() || path.len() > 16_384 {
             return Err(invalid());
         }
         Ok(Some(Self {
-            key: Key::ssh(user, host, port),
-            path,
+            key: Key::ssh(user, host.to_ascii_lowercase(), port),
+            path: path.to_owned(),
         }))
     }
 }
@@ -87,85 +90,166 @@ fn invalid() -> io::Error {
     // Do not echo a possibly credential-bearing URL in an error or observation.
     io::Error::new(io::ErrorKind::InvalidInput, "invalid SSH destination")
 }
-fn scp_colon(input: &str) -> io::Result<Option<usize>> {
+/// libgit2's `git_net_url_parse` for an SSH scheme. The authority runs to the
+/// first '/' and is read from its end, so a user may contain '@'. The path
+/// runs from there to a '?' or '#'; it is "/" when the URL has none.
+fn url(rest: &str) -> io::Result<Parts<'_>> {
+    let (authority, path) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+    let path = &path[..path.find(['?', '#']).unwrap_or(path.len())];
+    let (userinfo, hostport) = match authority.rfind('@') {
+        Some(at) => (Some(&authority[..at]), &authority[at + 1..]),
+        None => (None, authority),
+    };
+    // The port is the digits after a last ':', which may be none.
+    let (host, port) = match hostport.rfind(|c: char| !c.is_ascii_digit()) {
+        Some(colon) if hostport.as_bytes()[colon] == b':' => {
+            (&hostport[..colon], &hostport[colon + 1..])
+        }
+        _ => (hostport, ""),
+    };
+    let host = match host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+        Some(inner) if inner.bytes().all(|c| c.is_ascii_hexdigit() || c == b':') => inner,
+        _ if host.contains(['[', ']', ':']) => return Err(invalid()),
+        _ => host,
+    };
+    // libgit2 authenticates with a URL's password when it has a user too; the
+    // transport has no password authentication, so it refuses that pair.
+    let user = match userinfo.map(|info| info.rsplit_once(':').unwrap_or((info, ""))) {
+        Some((user, password)) if !user.is_empty() && !password.is_empty() => {
+            return Err(invalid());
+        }
+        other => other.map(|(user, _)| user),
+    };
+    Ok((user, host, port, if path.is_empty() { "/" } else { path }))
+}
+/// A colon after a slash or a Windows drive designates a local path, as does
+/// input without a colon outside brackets. Unbalanced brackets name SSH.
+fn local(input: &str) -> bool {
     if !input.contains(':') {
-        return Ok(None);
+        return true;
     }
     let mut depth = 0_usize;
     for (index, byte) in input.bytes().enumerate() {
         match byte {
             b'[' => depth += 1,
-            b']' => depth = depth.checked_sub(1).ok_or_else(invalid)?,
-            b':' if depth == 0 => return Ok(Some(index)),
-            b'/' | b'\\' if depth == 0 => return Ok(None),
+            b']' if depth == 0 => return false,
+            b']' => depth -= 1,
+            b':' if depth == 0 => {
+                return input[..index].contains(['/', '\\'])
+                    || (index == 1 && input.as_bytes()[0].is_ascii_alphabetic());
+            }
+            b'/' | b'\\' if depth == 0 => return true,
             _ => {}
         }
     }
-    if depth != 0 {
-        return Err(invalid());
-    }
-    Ok(None)
+    depth == 0
 }
-fn scp_group(input: &str) -> &str {
-    match input.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-        Some(inner) if inner.parse::<Ipv6Addr>().is_err() => inner,
-        _ => input,
+/// libgit2's `git_net_url_parse_scp`, state for state. Nothing is decoded, and
+/// an IPv6 host keeps its brackets.
+fn scp(input: &str) -> io::Result<Parts<'_>> {
+    #[derive(Clone, Copy)]
+    enum At {
+        None,
+        User,
+        HostStart,
+        Host,
+        HostEnd,
+        Ipv6,
+        Ipv6End,
+        PortStart,
+        Port,
+        PortEnd,
+        PathStart,
     }
-}
-fn host_port_parts(input: &str, url: bool) -> io::Result<(String, u16)> {
-    let input = if url { input } else { scp_group(input) };
-    let (host, port) = if let Some(rest) = input.strip_prefix('[') {
-        let (host, suffix) = rest.split_once(']').ok_or_else(invalid)?;
-        host.parse::<Ipv6Addr>().map_err(|_| invalid())?;
-        let port = if suffix.is_empty() {
-            None
-        } else {
-            Some(suffix.strip_prefix(':').ok_or_else(invalid)?)
+    let (mut at, mut bracket, mut start) = (At::None, 0, 0);
+    let (mut user, mut host, mut port) = (None, "", "");
+    for (index, byte) in input.bytes().enumerate() {
+        // Only at a char boundary: the start, or after an ASCII '[' or ':'.
+        let rest = || &input[index..];
+        at = match (at, byte) {
+            (At::None, b'@' | b':') => return Err(invalid()),
+            (At::None, b'[') if ipv6(rest()) => {
+                start = index;
+                At::Ipv6
+            }
+            (At::None, b'[') if bracket < 2 => {
+                bracket += 1;
+                At::None
+            }
+            (At::None, b'[') => return Err(invalid()),
+            (At::None, _) => {
+                start = index;
+                if has_at(rest()) { At::User } else { At::Host }
+            }
+            (At::User, b'@') => {
+                user = Some(&input[start..index]);
+                At::HostStart
+            }
+            (At::HostStart, _) => {
+                start = index;
+                if byte == b'[' { At::Ipv6 } else { At::Host }
+            }
+            (At::Host | At::Ipv6End, b':') => {
+                host = &input[start..index];
+                if bracket > 0 {
+                    At::PortStart
+                } else {
+                    At::PathStart
+                }
+            }
+            (At::Host, b']') if bracket > 0 => {
+                bracket -= 1;
+                host = &input[start..index];
+                At::HostEnd
+            }
+            (At::Port, b']') if bracket > 0 => {
+                bracket -= 1;
+                port = &input[start..index];
+                At::PortEnd
+            }
+            (At::Host | At::Port, b']') => return Err(invalid()),
+            (At::HostEnd | At::PortEnd, b':') => At::PathStart,
+            (At::HostEnd | At::PortEnd | At::Ipv6End, _) => return Err(invalid()),
+            (At::Ipv6, b']') => At::Ipv6End,
+            (At::PortStart, _) => {
+                start = index;
+                At::Port
+            }
+            (At::PathStart, _) => return Ok((user, host, port, rest())),
+            (unchanged, _) => unchanged,
         };
-        (host, port)
-    } else if let Some((host, port)) = input.split_once(':') {
-        (host, Some(port))
-    } else {
-        (input, None)
-    };
-    if host.is_empty()
-        || host.len() > 255
-        || !host.is_ascii()
-        || host
-            .chars()
-            .any(|c| c.is_whitespace() || c.is_control() || "@/?#\\%[]".contains(c))
-        || (!input.starts_with('[') && host.contains(':'))
-    {
-        return Err(invalid());
     }
-    let port = match port {
-        None => 22,
-        Some(value) if !value.is_empty() && value.bytes().all(|c| c.is_ascii_digit()) => {
-            value.parse::<u16>().map_err(|_| invalid())?
-        }
-        Some(_) => return Err(invalid()),
-    };
-    if port == 0 {
-        return Err(invalid());
-    }
-    Ok((host.to_ascii_lowercase(), port))
+    Err(invalid())
 }
+/// libgit2's `is_ipv6`: '[', hex digits and at least two colons, then ']'.
+fn ipv6(text: &str) -> bool {
+    let inner = &text[1..];
+    inner
+        .find(|c: char| !c.is_ascii_hexdigit() && c != ':')
+        .is_some_and(|end| inner.as_bytes()[end] == b']' && inner[..end].matches(':').count() > 1)
+}
+/// libgit2's `has_at`: an '@' before the first ':'.
+fn has_at(text: &str) -> bool {
+    text.find(['@', ':'])
+        .is_some_and(|at| text.as_bytes()[at] == b'@')
+}
+/// libgit2's `git_str_decode_percent`: a '%' that does not start two hex
+/// digits stays as written.
 fn decode(input: &str) -> io::Result<String> {
-    let mut output = Vec::with_capacity(input.len());
-    let mut bytes = input.bytes();
-    while let Some(byte) = bytes.next() {
-        if byte == b'%' {
-            let high = bytes
-                .next()
-                .and_then(|c| (c as char).to_digit(16))
-                .ok_or_else(invalid)?;
-            let low = bytes
-                .next()
-                .and_then(|c| (c as char).to_digit(16))
-                .ok_or_else(invalid)?;
-            output.push((high * 16 + low) as u8);
-        } else {
-            output.push(byte);
+    let bytes = input.as_bytes();
+    let hex = |index: usize| bytes.get(index).and_then(|c| (*c as char).to_digit(16));
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        match (bytes[index], hex(index + 1), hex(index + 2)) {
+            (b'%', Some(high), Some(low)) => {
+                output.push((high * 16 + low) as u8);
+                index += 3;
+            }
+            (byte, _, _) => {
+                output.push(byte);
+                index += 1;
+            }
         }
     }
     String::from_utf8(output).map_err(|_| invalid())

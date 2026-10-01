@@ -23,9 +23,10 @@ impl GitService {
             GitService::ReceivePack => "git-receive-pack",
         };
         // Hosted Git servers parse the canonical command, not a general shell
-        // argv. Reject option-shaped paths above instead of adding `--`.
-        let command = format!("{executable} '{}'", path.replace('\'', "'\\''"));
-        Ok(command)
+        // argv. Reject option-shaped paths above instead of adding `--`. As
+        // libgit2's gen_proto and Git do, quote '!' too, for csh-like shells.
+        let quoted = path.replace('\'', "'\\''").replace('!', "'\\!'");
+        Ok(format!("{executable} '{quoted}'"))
     }
 }
 
