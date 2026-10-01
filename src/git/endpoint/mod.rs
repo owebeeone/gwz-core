@@ -40,6 +40,7 @@ pub(crate) mod https_operation;
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
+        mod budget_wait_tests;
         mod git_turns_tests;
         pub(crate) mod helper_script;
         mod ssh_destination_tests;

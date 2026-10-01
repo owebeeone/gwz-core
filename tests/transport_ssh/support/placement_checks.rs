@@ -418,8 +418,8 @@ fn open_ceiling_keeps_half_the_job_budget_for_the_setups_that_opens_start() {
             max_requests,
         })
     };
-    // Each open holds one supervised job until its reply and starts at most one
-    // more, its key read or its setup.
+    // An open runs one supervised job at a time, its key read or its setup,
+    // and holds none while it waits for the worker's reply.
     assert_eq!(ceiling(1_000, 1_000), super::super::agent_job::LIMIT / 2);
     assert_eq!(ceiling(3, 1_000), 3);
     assert_eq!(ceiling(1_000, 2), 2);

@@ -132,6 +132,29 @@ enum OpenReceiver {
     Blocking(Receiver<io::Result<(BlockingStream, Opened)>>),
     Endpoint(Receiver<OpenOutcome>),
 }
+/// An open the worker has taken, its reply still to come.
+struct Submitted {
+    result: OpenReceiver,
+    absolute: Option<Instant>,
+    cancelled: Arc<AtomicBool>,
+}
+/// A bridged open the worker owns until it replies.
+pub(crate) struct PendingOpen {
+    reply: Receiver<OpenOutcome>,
+}
+impl PendingOpen {
+    /// The worker's reply, once it has replied; a stopped worker is a reply too.
+    pub(crate) fn poll(&self) -> Poll<io::Result<(EndpointAttachment, Opened)>> {
+        match self.reply.try_recv() {
+            Ok(outcome) => Poll::Ready(outcome.and_then(|(stream, opened)| match stream {
+                OpenStream::Endpoint(attachment) => Ok((attachment, opened)),
+                OpenStream::Blocking(_) => Err(io::Error::other("unexpected blocking stream")),
+            })),
+            Err(mpsc::TryRecvError::Empty) => Poll::Pending,
+            Err(mpsc::TryRecvError::Disconnected) => Poll::Ready(Err(stopped())),
+        }
+    }
+}
 /// Bounded message bridge owned by a placement endpoint. The worker retains
 /// the physical channel and pump; this handle only carries typed envelopes.
 pub(crate) struct EndpointAttachment {
@@ -254,6 +277,10 @@ impl OpenRequest {
                 .unwrap_or_else(|e| e.into_inner())
                 .clone();
             let _ = reply.send(Err(EndpointOpenFailure::capture(kind.into(), facts)));
+            // The bridge's owner polls for the reply between its passes.
+            if let Some(waker) = &self.bridge_waker {
+                waker.wake_by_ref();
+            }
         }
     }
 
@@ -266,6 +293,7 @@ impl OpenRequest {
         let Self {
             reply,
             bridge_reply,
+            bridge_waker,
             permit,
             progress,
             ..
@@ -277,6 +305,10 @@ impl OpenRequest {
                 EndpointOpenFailure::capture(error, facts)
             });
             let _ = reply.send(result);
+            // The bridge's owner polls for the reply between its passes.
+            if let Some(waker) = bridge_waker {
+                waker.wake();
+            }
             return;
         }
         if let Some(reply) = reply {
@@ -504,74 +536,11 @@ impl Endpoint {
             OpenStream::Endpoint(_) => Err(io::Error::other("unexpected endpoint stream")),
         })
     }
-    pub(crate) fn open_endpoint_selected(
-        &self,
-        key: Key,
-        selected: PathBuf,
-        service: GitService,
-        path: &str,
-    ) -> io::Result<(EndpointAttachment, Opened)> {
-        self.open_endpoint_selected_context(key, selected, service, path, None)
-    }
-    pub(crate) fn open_endpoint_selected_context(
-        &self,
-        key: Key,
-        selected: PathBuf,
-        service: GitService,
-        path: &str,
-        context: Option<BridgeContext>,
-    ) -> io::Result<(EndpointAttachment, Opened)> {
-        self.open_endpoint_selected_context_cancellable(key, selected, service, path, context, None)
-    }
-    pub(crate) fn open_endpoint_selected_context_cancellable(
-        &self,
-        key: Key,
-        selected: PathBuf,
-        service: GitService,
-        path: &str,
-        context: Option<BridgeContext>,
-        cancelled: Option<Arc<AtomicBool>>,
-    ) -> io::Result<(EndpointAttachment, Opened)> {
-        self.enqueue(
-            key,
-            Identity::Ambient,
-            Some(selected),
-            service,
-            path,
-            Progress::default(),
-            true,
-            context,
-            cancelled,
-        )
-        .and_then(|(stream, opened)| match stream {
-            OpenStream::Endpoint(attachment) => Ok((attachment, opened)),
-            OpenStream::Blocking(_) => Err(io::Error::other("unexpected blocking stream")),
-        })
-    }
     pub(crate) fn open_endpoint_ambient(
         &self,
         key: Key,
         service: GitService,
         path: &str,
-    ) -> io::Result<(EndpointAttachment, Opened)> {
-        self.open_endpoint_ambient_context(key, service, path, None)
-    }
-    pub(crate) fn open_endpoint_ambient_context(
-        &self,
-        key: Key,
-        service: GitService,
-        path: &str,
-        context: Option<BridgeContext>,
-    ) -> io::Result<(EndpointAttachment, Opened)> {
-        self.open_endpoint_ambient_context_cancellable(key, service, path, context, None)
-    }
-    pub(crate) fn open_endpoint_ambient_context_cancellable(
-        &self,
-        key: Key,
-        service: GitService,
-        path: &str,
-        context: Option<BridgeContext>,
-        cancelled: Option<Arc<AtomicBool>>,
     ) -> io::Result<(EndpointAttachment, Opened)> {
         self.enqueue(
             key,
@@ -581,55 +550,41 @@ impl Endpoint {
             path,
             Progress::default(),
             true,
-            context,
-            cancelled,
+            None,
+            None,
         )
         .and_then(|(stream, opened)| match stream {
             OpenStream::Endpoint(attachment) => Ok((attachment, opened)),
             OpenStream::Blocking(_) => Err(io::Error::other("unexpected blocking stream")),
         })
     }
-    pub(crate) fn start_endpoint_selected_job(
+    /// Submits a bridged open, with a selected key or the agent, and returns
+    /// at once. No thread and no supervised job waits for it: the worker owns
+    /// it until it replies, and its reply wakes `context.waker`.
+    pub(crate) fn start_endpoint_open(
         &self,
         key: Key,
-        selected: PathBuf,
+        selected: Option<PathBuf>,
         service: GitService,
-        path: String,
-        context: Option<BridgeContext>,
+        path: &str,
+        context: BridgeContext,
         cancelled: Arc<AtomicBool>,
-    ) -> io::Result<Job<(EndpointAttachment, Opened)>> {
-        let endpoint = self.clone();
-        Job::start(None, self.cleanup, move |control| {
-            control.check()?;
-            endpoint.open_endpoint_selected_context_cancellable(
-                key,
-                selected,
-                service,
-                &path,
-                context,
-                Some(cancelled),
-            )
-        })
-    }
-    pub(crate) fn start_endpoint_ambient_job(
-        &self,
-        key: Key,
-        service: GitService,
-        path: String,
-        context: Option<BridgeContext>,
-        cancelled: Arc<AtomicBool>,
-    ) -> io::Result<Job<(EndpointAttachment, Opened)>> {
-        let endpoint = self.clone();
-        Job::start(None, self.cleanup, move |control| {
-            control.check()?;
-            endpoint.open_endpoint_ambient_context_cancellable(
-                key,
-                service,
-                &path,
-                context,
-                Some(cancelled),
-            )
-        })
+    ) -> io::Result<PendingOpen> {
+        let submitted = self.submit(
+            key,
+            Identity::Ambient,
+            selected,
+            service,
+            path,
+            Progress::default(),
+            true,
+            Some(context),
+            Some(cancelled),
+        )?;
+        match submitted.result {
+            OpenReceiver::Endpoint(reply) => Ok(PendingOpen { reply }),
+            OpenReceiver::Blocking(_) => Err(io::Error::other("unexpected blocking stream")),
+        }
     }
     pub(crate) fn start_identity_check(
         &self,
@@ -714,6 +669,63 @@ impl Endpoint {
         context: Option<BridgeContext>,
         cancelled_override: Option<Arc<AtomicBool>>,
     ) -> OpenOutcome {
+        let Submitted {
+            result,
+            absolute,
+            cancelled,
+        } = self.submit(
+            key,
+            identity,
+            selected,
+            service,
+            path,
+            progress,
+            bridge,
+            context,
+            cancelled_override,
+        )?;
+        let received = match (result, absolute) {
+            (OpenReceiver::Blocking(result), Some(at)) => result
+                .recv_timeout(at.saturating_duration_since(Instant::now()))
+                .map(|result| {
+                    result.map(|(stream, opened)| (OpenStream::Blocking(stream), opened))
+                }),
+            (OpenReceiver::Blocking(result), None) => result
+                .recv()
+                .map(|result| result.map(|(stream, opened)| (OpenStream::Blocking(stream), opened)))
+                .map_err(|_| RecvTimeoutError::Disconnected),
+            (OpenReceiver::Endpoint(result), Some(at)) => {
+                result.recv_timeout(at.saturating_duration_since(Instant::now()))
+            }
+            (OpenReceiver::Endpoint(result), None) => {
+                result.recv().map_err(|_| RecvTimeoutError::Disconnected)
+            }
+        };
+        match received {
+            Ok(result) => result,
+            Err(error) => {
+                cancelled.store(true, Ordering::Release);
+                self.shared.worker.unpark();
+                Err(match error {
+                    RecvTimeoutError::Timeout => io::ErrorKind::TimedOut.into(),
+                    RecvTimeoutError::Disconnected => stopped(),
+                })
+            }
+        }
+    }
+    /// Admits an open and hands it to the worker, without waiting for its reply.
+    fn submit(
+        &self,
+        key: Key,
+        identity: Identity,
+        selected: Option<PathBuf>,
+        service: GitService,
+        path: &str,
+        progress: Progress,
+        bridge: bool,
+        context: Option<BridgeContext>,
+        cancelled_override: Option<Arc<AtomicBool>>,
+    ) -> io::Result<Submitted> {
         if self.shared.stop.load(Ordering::Acquire) {
             return Err(stopped());
         }
@@ -783,34 +795,11 @@ impl Endpoint {
             return Err(stopped());
         }
         self.shared.worker.unpark();
-        let received = match (result, absolute) {
-            (OpenReceiver::Blocking(result), Some(at)) => result
-                .recv_timeout(at.saturating_duration_since(Instant::now()))
-                .map(|result| {
-                    result.map(|(stream, opened)| (OpenStream::Blocking(stream), opened))
-                }),
-            (OpenReceiver::Blocking(result), None) => result
-                .recv()
-                .map(|result| result.map(|(stream, opened)| (OpenStream::Blocking(stream), opened)))
-                .map_err(|_| RecvTimeoutError::Disconnected),
-            (OpenReceiver::Endpoint(result), Some(at)) => {
-                result.recv_timeout(at.saturating_duration_since(Instant::now()))
-            }
-            (OpenReceiver::Endpoint(result), None) => {
-                result.recv().map_err(|_| RecvTimeoutError::Disconnected)
-            }
-        };
-        match received {
-            Ok(result) => result,
-            Err(error) => {
-                cancelled.store(true, Ordering::Release);
-                self.shared.worker.unpark();
-                Err(match error {
-                    RecvTimeoutError::Timeout => io::ErrorKind::TimedOut.into(),
-                    RecvTimeoutError::Disconnected => stopped(),
-                })
-            }
-        }
+        Ok(Submitted {
+            result,
+            absolute,
+            cancelled,
+        })
     }
     pub(crate) fn shutdown_watch(&self) -> ssh_shutdown::ShutdownWatch {
         ssh_shutdown::ShutdownWatch(self.shared.status.clone())

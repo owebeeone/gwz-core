@@ -7,7 +7,7 @@
 use super::{
     agent_job::{self, Job},
     ssh_channel::GitService as NativeService,
-    ssh_worker::{BridgeContext, Endpoint, EndpointAttachment},
+    ssh_worker::{BridgeContext, Endpoint, EndpointAttachment, PendingOpen},
 };
 use gwz_transport::{
     pool::{Capacity, Key},
@@ -52,7 +52,7 @@ struct Request {
 struct OpenJob {
     key: RequestKey,
     pool_key: Key,
-    job: Job<(EndpointAttachment, Opened)>,
+    reply: PendingOpen,
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     deadline: Option<u64>,
     abandoned: bool,
@@ -330,9 +330,7 @@ impl PlacementEndpoint {
                 terminal: false,
             },
         );
-        let endpoint = self.endpoint.clone();
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let worker_cancelled = cancelled.clone();
         let service = native_service(open.service)?;
         let context = BridgeContext {
             session_id: envelope.session_id.clone(),
@@ -342,28 +340,37 @@ impl PlacementEndpoint {
             deadlines: open.deadlines.clone(),
             waker: self.waker.clone(),
         };
-        let job = match selected {
-            Some(path) => endpoint.start_endpoint_selected_job(
-                pool_key.clone(),
-                path,
-                service,
-                repository_path,
-                Some(context),
-                worker_cancelled,
-            ),
-            None => endpoint.start_endpoint_ambient_job(
-                pool_key.clone(),
-                service,
-                repository_path,
-                Some(context),
-                worker_cancelled,
-            ),
-        }
-        .map_err(|_| EndpointError::Capacity)?;
+        // The worker owns the open until it replies. No thread or supervised
+        // job waits for it, so opens leave the job budget to their setups.
+        let reply = match self.endpoint.start_endpoint_open(
+            pool_key.clone(),
+            selected,
+            service,
+            &repository_path,
+            context,
+            cancelled.clone(),
+        ) {
+            Ok(reply) => reply,
+            Err(error) => {
+                // Refused before the worker took it: fail it as its reply would.
+                let message = {
+                    let state = self.requests.get_mut(&key).expect("open request");
+                    state.terminal = true;
+                    envelope_for(
+                        state,
+                        MessageKind::OpenFailed,
+                        Some(failure_for(error)),
+                        None,
+                    )
+                };
+                self.push_outbound(key.0, message);
+                return Ok(());
+            }
+        };
         self.opens.push(OpenJob {
             key,
             pool_key,
-            job,
+            reply,
             cancelled,
             deadline,
             abandoned: false,
@@ -411,7 +418,15 @@ impl PlacementEndpoint {
                 selected,
                 Some(Instant::now() + Duration::from_millis(check.timeout_ms as u64)),
             )
-            .map_err(|_| EndpointError::Capacity)?;
+            .map_err(|error| {
+                // A full job budget is backpressure: the host offers the check
+                // again on a later pass. Nothing of it is held yet.
+                if error.kind() == io::ErrorKind::WouldBlock {
+                    EndpointError::WouldBlock
+                } else {
+                    EndpointError::Capacity
+                }
+            })?;
         self.requests.insert(
             key.clone(),
             Request {
@@ -439,7 +454,7 @@ impl PlacementEndpoint {
         self.waker = Some(cx.waker().clone());
         let now_ms = self.now_ms;
         self.finish_checks(now_ms, cx);
-        self.finish_opens(now_ms, cx);
+        self.finish_opens(now_ms);
         self.start_queued(now_ms)?;
         self.flush_attachments();
         if self.faulted {
@@ -593,7 +608,7 @@ impl PlacementEndpoint {
         }
     }
 
-    fn finish_opens(&mut self, now_ms: u64, cx: &mut Context<'_>) {
+    fn finish_opens(&mut self, now_ms: u64) {
         let mut index = 0;
         while index < self.opens.len() {
             let expired = {
@@ -626,20 +641,9 @@ impl PlacementEndpoint {
                     }
                 }
             }
-            let open = &mut self.opens[index];
-            let result = if open.abandoned {
-                match open.job.poll_disposed(cx) {
-                    Poll::Ready(Ok(())) => Some(Err(io::ErrorKind::BrokenPipe.into())),
-                    Poll::Ready(Err(_)) => None,
-                    Poll::Pending => None,
-                }
-            } else {
-                match open.job.poll_result(cx) {
-                    Poll::Ready(result) => Some(result),
-                    Poll::Pending => None,
-                }
-            };
-            let Some(result) = result else {
+            // An abandoned open waits for the worker's reply too, which its
+            // cancellation brings early; a late success is cancelled below.
+            let Poll::Ready(result) = self.opens[index].reply.poll() else {
                 index += 1;
                 continue;
             };
@@ -1028,9 +1032,9 @@ fn request_state(envelope: &Envelope, operation_id: String) -> Request {
 }
 /// The most opens in flight across every host: the pool's total and request
 /// ceilings, the endpoint's `MAX_REQUESTS`, and half the process-wide budget
-/// of supervised jobs. Each open holds one job until its reply and starts at
-/// most one more, its key read or its setup, so more opens would leave their
-/// own setups without a job.
+/// of supervised jobs. An open holds no job while it waits for the worker and
+/// runs one at a time, its key read or its setup, so the other half stays for
+/// identity checks and for other endpoints.
 fn open_ceiling(capacity: Capacity) -> usize {
     capacity
         .total

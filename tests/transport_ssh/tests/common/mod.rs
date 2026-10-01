@@ -68,8 +68,11 @@ impl SshdFixture {
         fs::write(&known_hosts, format!("[127.0.0.1]:{port} {host_public}")).unwrap();
         let config = temp.path().join("sshd_config");
         let user = run_output(Command::new("id").args(["-un"]));
+        // The transport sets up as many connections to one host at once as an
+        // operation allows, 32 by default. OpenSSH's default MaxStartups drops
+        // unauthenticated connections beyond 10, so this server takes more.
         let config_text = format!(
-            "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\nPidFile none\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nChallengeResponseAuthentication no\nUsePAM no\nPermitRootLogin yes\nPubkeyAuthentication yes\nStrictModes no\nLogLevel ERROR\n",
+            "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\nPidFile none\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nChallengeResponseAuthentication no\nUsePAM no\nPermitRootLogin yes\nPubkeyAuthentication yes\nStrictModes no\nLogLevel ERROR\nMaxStartups 64\n",
             host_key.display(),
             authorized.display(),
         );
