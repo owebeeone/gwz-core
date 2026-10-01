@@ -55,13 +55,9 @@ struct TempRoot(PathBuf);
 
 impl TempRoot {
     fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "gwz-anchor-{name}-{}-{}",
-            std::process::id(),
-            super::super::super::transition::TEMP_SEQUENCE
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&path).unwrap();
+        let path =
+            crate::test_support::unique_dir(&std::env::temp_dir(), &format!("gwz-anchor-{name}"))
+                .unwrap();
         Self(path)
     }
 

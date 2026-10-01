@@ -40,7 +40,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{ActionNamespace, HostActionNamespaceV1, retain_action_namespace};
 use crate::checked_artifact::admission::ActionAdmissionOwnerV1;
@@ -62,8 +61,6 @@ use crate::checked_artifact::protocol::{
     BaseActionSlotV1, CleanupAliasSetV1, ManagedBootstrapInputV1, ProtocolRecordKindV1,
     RecordObservationV1, RequestOwnerBindingV1, RootEntryNameV1, admit_observed_action,
 };
-
-static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 /// Every `namespace.*` boundary, in the order one virgin drive crosses them.
 ///
@@ -131,12 +128,11 @@ pub(super) struct Fixture {
 
 impl Fixture {
     pub(super) fn new(label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "gwz-r2d-namespace-{label}-{}-{}",
-            std::process::id(),
-            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&root).unwrap();
+        let root = crate::test_support::unique_dir(
+            &std::env::temp_dir(),
+            &format!("gwz-r2d-namespace-{label}"),
+        )
+        .unwrap();
         git2::Repository::init(&root).unwrap();
         Self { root }
     }

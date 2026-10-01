@@ -1,17 +1,20 @@
-//! The fixture's own promise: every `TempDir` is a directory that call created,
-//! never one another `TempDir` already holds.
+//! The helper's own promise: every directory it returns is one that call
+//! created, never one another caller already holds.
 //!
 //! On 2026-10-02 two `t_rename` tests that share a prefix got one directory:
 //! the name came from the process id and a clock that macOS reads to the
 //! microsecond, and `create_dir_all` accepted the existing directory. One test
-//! then failed on `config.lock` and the other found no repository.
+//! then failed on `config.lock` and the other found no repository. Every
+//! fixture in the crate drew its temporary directory the same way until they
+//! all took it from here.
 
 use std::collections::HashSet;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Barrier;
 
 use super::TempDir;
+use super::temp_dir::create_fresh;
 
 const THREADS: usize = 8;
 const PER_THREAD: usize = 200;
@@ -57,10 +60,10 @@ fn temp_dirs_with_one_prefix_are_distinct_and_created_fresh() {
         not_fresh.first()
     );
     let mut seen = HashSet::new();
-    let shared: Vec<&PathBuf> = held
+    let shared: Vec<&Path> = held
         .iter()
         .flat_map(|(dirs, _)| dirs)
-        .map(|dir| &dir.path)
+        .map(TempDir::path)
         .filter(|path| !seen.insert(*path))
         .collect();
     assert!(
@@ -70,4 +73,20 @@ fn temp_dirs_with_one_prefix_are_distinct_and_created_fresh() {
         THREADS * PER_THREAD,
         shared.first()
     );
+}
+
+/// The collision above without the race: two calls that draw one name, as two
+/// tests in one clock tick do. The second gets a directory of its own and
+/// leaves the first one's as it was.
+#[test]
+fn a_name_already_taken_is_skipped_and_left_alone() {
+    let parent = TempDir::new("taken-name");
+    let first = create_fresh(parent.path(), "same-tick").unwrap();
+    fs::write(first.join("owner"), "first").unwrap();
+
+    let second = create_fresh(parent.path(), "same-tick").unwrap();
+
+    assert_ne!(first, second);
+    assert_eq!(fs::read_dir(&second).unwrap().count(), 0);
+    assert_eq!(fs::read_to_string(first.join("owner")).unwrap(), "first");
 }

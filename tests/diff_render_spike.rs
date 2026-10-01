@@ -19,38 +19,35 @@
 //! Naming note: the historical project spelling with an `s` is banned by
 //! `tests/rename.rs`; this file uses the current `gwz`/workspace spelling only.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
-use std::sync::atomic::{AtomicU32, Ordering};
 
 use git2::{Diff, DiffFindOptions, DiffFormat, DiffOptions, IndexAddOption, Repository, Signature};
 
 // ---------------------------------------------------------------------------
 // Temp-repo fixture helpers.
 //
-// `gwz-core` has no `tempfile` dev-dependency and the spike must not add one,
-// so we mint unique scratch directories under the OS temp dir by hand and clean
-// them up on drop. This mirrors the "construct a temp git repo" pattern used by
-// the crate's own git backend tests without pulling in new crates.
+// The scratch directories come from the crate's own test helper, included by
+// path, so the spike adds no crate: each is a directory that call created
+// under the OS temp dir, never one a parallel test holds, and is removed on
+// drop.
 // ---------------------------------------------------------------------------
 
-static COUNTER: AtomicU32 = AtomicU32::new(0);
+#[path = "../src/test_support/temp_dir.rs"]
+mod temp_dir;
+
+use temp_dir::TempDir;
 
 struct TempRepo {
-    dir: PathBuf,
+    // The repository closes before its directory is removed.
     repo: Repository,
+    dir: TempDir,
 }
 
 impl TempRepo {
     fn new(tag: &str) -> Self {
-        let pid = std::process::id();
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let mut dir = std::env::temp_dir();
-        dir.push(format!("gwz-diff-spike-{tag}-{pid}-{n}"));
-        // Best-effort clear of any stale directory from a prior aborted run.
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create temp repo dir");
-        let repo = Repository::init(&dir).expect("git init temp repo");
+        let dir = TempDir::new(&format!("diff-spike-{tag}"));
+        let repo = Repository::init(dir.path()).expect("git init temp repo");
         {
             let mut cfg = repo.config().expect("open repo config");
             cfg.set_str("user.name", "Spike Tester").unwrap();
@@ -58,15 +55,15 @@ impl TempRepo {
             // Deterministic detection: keep the exact whitespace git would use.
             cfg.set_str("core.autocrlf", "false").unwrap();
         }
-        TempRepo { dir, repo }
+        TempRepo { repo, dir }
     }
 
     fn path(&self) -> &Path {
-        &self.dir
+        self.dir.path()
     }
 
     fn write(&self, rel: &str, contents: &[u8]) {
-        let full = self.dir.join(rel);
+        let full = self.dir.path().join(rel);
         if let Some(parent) = full.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
@@ -77,7 +74,7 @@ impl TempRepo {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let full = self.dir.join(rel);
+            let full = self.dir.path().join(rel);
             let mut perms = std::fs::metadata(&full).unwrap().permissions();
             perms.set_mode(0o755);
             std::fs::set_permissions(&full, perms).unwrap();
@@ -89,7 +86,7 @@ impl TempRepo {
     }
 
     fn remove(&self, rel: &str) {
-        std::fs::remove_file(self.dir.join(rel)).unwrap();
+        std::fs::remove_file(self.dir.path().join(rel)).unwrap();
     }
 
     /// Stage every path (including deletions) into the index, matching
@@ -129,12 +126,6 @@ impl TempRepo {
             .unwrap()
             .tree()
             .unwrap()
-    }
-}
-
-impl Drop for TempRepo {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
     }
 }
 

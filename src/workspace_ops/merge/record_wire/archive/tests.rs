@@ -4,14 +4,11 @@ mod v0;
 mod v1;
 
 fn location_test_root(name: &str) -> std::path::PathBuf {
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "gwz-record-location-{name}-{}-{nonce}",
-        std::process::id()
-    ));
+    let root = crate::test_support::unique_dir(
+        &std::env::temp_dir(),
+        &format!("gwz-record-location-{name}"),
+    )
+    .unwrap();
     std::fs::create_dir_all(root.join(".gwz/merge")).unwrap();
     root
 }

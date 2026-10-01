@@ -2,7 +2,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use git2::{Commit, Repository, Signature, Time};
 
@@ -651,15 +650,11 @@ struct CommitWorkspaceFixture {
 
 impl CommitWorkspaceFixture {
     fn new(name: &str) -> Self {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let base = std::env::temp_dir().join(format!(
-            "gwz-core-coalesce-{name}-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&base).unwrap();
+        let base = crate::test_support::unique_dir(
+            &std::env::temp_dir(),
+            &format!("gwz-core-coalesce-{name}"),
+        )
+        .unwrap();
         Self {
             workspace: base.join("workspace"),
             remote: base.join("remote.git"),

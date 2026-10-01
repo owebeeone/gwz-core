@@ -23,7 +23,6 @@ use std::ffi::OsStr;
 use std::fs;
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::filesystem::FsDirectory as Dir;
 
@@ -32,20 +31,17 @@ use super::publication::{DestinationRecheckV1, PublicationSourceV1, publish_veri
 use super::retained::encode_identity;
 use crate::checked_artifact::capability::DurableIdentityProvider;
 
-static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-
 struct SpikeFixture {
     root: PathBuf,
 }
 
 impl SpikeFixture {
     fn new(label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "gwz-r2d-track-p-{label}-{}-{}",
-            std::process::id(),
-            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&root).unwrap();
+        let root = crate::test_support::unique_dir(
+            &std::env::temp_dir(),
+            &format!("gwz-r2d-track-p-{label}"),
+        )
+        .unwrap();
         Self { root }
     }
 }

@@ -1,62 +1,14 @@
-//! Temp-repo fixtures and `git diff` parity helpers, in the style of the
-//! existing gitbackend tests (see `src/git/tests/g06.rs`): a self-cleaning
-//! `TempDir` under the system temp dir plus thin wrappers over the `git` CLI.
+//! Temp-repo fixtures and `git diff` parity helpers: the crate's self-cleaning
+//! `TempDir` (`crate::test_support`) plus thin wrappers over the `git` CLI.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::diff::{ComparisonSpec, RepoDiffEntry, RepoDiffManifest, RepoDiffOptions};
 
 pub(crate) use crate::git::{Git2Backend, GitBackend};
-
-/// A unique temp directory that removes itself on drop.
-pub(crate) struct TempDir {
-    pub(crate) path: PathBuf,
-}
-
-/// Names a `TempDir` may try before giving up; a taken name is rare, since it
-/// needs another `TempDir` with the same prefix in the same clock tick.
-const NAME_ATTEMPTS: u32 = 1000;
-
-impl TempDir {
-    /// A directory this call created. `create_dir` refuses a name that already
-    /// exists, so two `TempDir`s never share one even when their names are
-    /// drawn in the same clock tick, which macOS reads to the microsecond. A
-    /// taken name is retried with the next suffix.
-    pub(crate) fn new(prefix: &str) -> Self {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let base = format!("gwz-core-diff-{prefix}-{}-{unique}", std::process::id());
-        let temp = std::env::temp_dir();
-        for attempt in 0..NAME_ATTEMPTS {
-            let path = temp.join(format!("{base}-{attempt}"));
-            match fs::create_dir(&path) {
-                Ok(()) => {
-                    return Self { path };
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => {
-                    panic!("create temp dir {}: {error}", path.display());
-                }
-            }
-        }
-        panic!("no free temp dir name for {base} in {NAME_ATTEMPTS} attempts");
-    }
-
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
+pub(crate) use crate::test_support::TempDir;
 
 /// Initialize a repo with a deterministic identity and config so `git diff`
 /// output is stable across environments.

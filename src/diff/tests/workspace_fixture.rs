@@ -9,7 +9,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::artifact::{
     self, ArtifactSourceKind, ManifestArtifact, ManifestMember, WorkspaceHeader,
@@ -34,14 +33,9 @@ impl Workspace {
     /// Create a workspace root with an initialized root Git repo and an empty
     /// manifest (no members yet). Add members with [`add_member`].
     pub(crate) fn new(tag: &str) -> Self {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
         let root =
-            std::env::temp_dir().join(format!("gwz-core-d3-{tag}-{}-{unique}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
+            crate::test_support::unique_dir(&std::env::temp_dir(), &format!("gwz-core-d3-{tag}"))
+                .unwrap();
         init_repo(&root);
         let manifest = ManifestArtifact {
             schema: artifact::WORKSPACE_SCHEMA.to_owned(),

@@ -24,7 +24,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::authority_record_binding::{
     AuthorityTransactionV1, ObservedLeafWriterClassV1, install_authority_record,
@@ -52,8 +51,6 @@ use crate::checked_artifact::protocol::{
     BaseActionSlotV1, CheckedAuthorityRecordV1, CleanupAliasSetV1, ManagedBootstrapInputV1,
     RequestOwnerBindingV1, RootEntryNameV1, retained_authority_observation_owner,
 };
-
-static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
 /// Every `record.*` boundary, in the order one uninterrupted cycle crosses
 /// them. The install half runs first because the parse half has nothing to
@@ -174,12 +171,11 @@ struct MatrixFixture {
 
 impl MatrixFixture {
     fn new(label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "gwz-r2d-record-matrix-{label}-{}-{}",
-            std::process::id(),
-            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&root).unwrap();
+        let root = crate::test_support::unique_dir(
+            &std::env::temp_dir(),
+            &format!("gwz-r2d-record-matrix-{label}"),
+        )
+        .unwrap();
         git2::Repository::init(&root).unwrap();
         Self { root }
     }

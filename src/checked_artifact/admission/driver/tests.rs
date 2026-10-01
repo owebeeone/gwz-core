@@ -20,7 +20,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::checked_artifact::admission::ActionAdmissionOwnerV1;
 use crate::checked_artifact::bootstrap::try_acquire_workspace_runtime;
@@ -33,20 +32,17 @@ use crate::checked_artifact::protocol::{
     RequestOwnerBindingV1, RootEntryNameV1,
 };
 
-static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-
 struct Fixture {
     root: PathBuf,
 }
 
 impl Fixture {
     fn new(label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "gwz-r2d-kernel-{label}-{}-{}",
-            std::process::id(),
-            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&root).unwrap();
+        let root = crate::test_support::unique_dir(
+            &std::env::temp_dir(),
+            &format!("gwz-r2d-kernel-{label}"),
+        )
+        .unwrap();
         git2::Repository::init(&root).unwrap();
         Self { root }
     }

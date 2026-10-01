@@ -12,7 +12,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use git2::Repository;
 
@@ -38,16 +37,11 @@ struct TempRepo {
 
 impl TempRepo {
     fn new(tag: &str) -> Self {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!(
-            "gwz-core-render-{tag}-{}-{unique}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
+        let dir = crate::test_support::unique_dir(
+            &std::env::temp_dir(),
+            &format!("gwz-core-render-{tag}"),
+        )
+        .unwrap();
         let repo = Repository::init(&dir).unwrap();
         run_git(&dir, &["config", "user.name", "GWZ"]);
         run_git(&dir, &["config", "user.email", "gwz@example.invalid"]);

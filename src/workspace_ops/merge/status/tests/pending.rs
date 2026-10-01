@@ -4,14 +4,7 @@ use crate::workspace_ops::merge::PendingMergeActionKind;
 use super::*;
 
 fn test_root(name: &str) -> PathBuf {
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root =
-        std::env::temp_dir().join(format!("gwz-status-{name}-{}-{unique}", std::process::id()));
-    fs::create_dir_all(&root).unwrap();
-    root
+    crate::test_support::unique_dir(&std::env::temp_dir(), &format!("gwz-status-{name}")).unwrap()
 }
 
 #[test]

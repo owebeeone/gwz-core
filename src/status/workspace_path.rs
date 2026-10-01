@@ -13,8 +13,7 @@ pub(crate) fn workspace_path(member_path: &str, repo_path: &str) -> String {
 mod tests {
     use std::collections::BTreeMap;
     use std::fs;
-    use std::path::{Path, PathBuf};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::path::Path;
 
     use crate::artifact::{
         ArtifactSourceKind, LockArtifact, ManifestArtifact, ManifestMember, RemoteArtifact,
@@ -22,6 +21,7 @@ mod tests {
     };
     use crate::git::{Git2Backend, GitBackend};
     use crate::model::ErrorCode;
+    use crate::test_support::TempDir;
 
     use super::*;
 
@@ -441,35 +441,6 @@ mod tests {
         fn single(&self) -> &T {
             assert_eq!(self.len(), 1);
             &self[0]
-        }
-    }
-
-    struct TempDir {
-        path: PathBuf,
-    }
-
-    impl TempDir {
-        fn new(prefix: &str) -> Self {
-            let unique = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos();
-            let path = std::env::temp_dir().join(format!(
-                "gwz-core-status-{prefix}-{}-{unique}",
-                std::process::id()
-            ));
-            fs::create_dir_all(&path).unwrap();
-            Self { path }
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
         }
     }
 }

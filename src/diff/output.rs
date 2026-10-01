@@ -278,7 +278,6 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use std::process::Command;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use git2::Repository;
 
@@ -305,15 +304,7 @@ mod tests {
     }
 
     fn temp() -> std::path::PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir =
-            std::env::temp_dir().join(format!("gwz-core-stale-{}-{unique}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::test_support::unique_dir(&std::env::temp_dir(), "gwz-core-stale").unwrap()
     }
 
     #[test]

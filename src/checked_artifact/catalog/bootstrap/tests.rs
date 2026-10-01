@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering;
 
 use super::*;
 use crate::checked_artifact::bootstrap::{
@@ -14,20 +14,15 @@ use crate::checked_artifact::fault_v1::{
 };
 use crate::checked_artifact::protocol::{InfrastructureSlotV1, decode_catalog_bootstrap_record};
 
-static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-
 struct Fixture {
     root: PathBuf,
 }
 
 impl Fixture {
     fn new(label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "gwz-r2c2-{label}-{}-{}",
-            std::process::id(),
-            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&root).unwrap();
+        let root =
+            crate::test_support::unique_dir(&std::env::temp_dir(), &format!("gwz-r2c2-{label}"))
+                .unwrap();
         git2::Repository::init(&root).unwrap();
         Self { root }
     }

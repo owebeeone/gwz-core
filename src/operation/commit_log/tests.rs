@@ -4,7 +4,6 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use git2::{Commit, ObjectType, Oid, Repository, Signature, Time};
 
@@ -2898,15 +2897,11 @@ struct Fixture {
 
 impl Fixture {
     fn new(name: &str) -> Self {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "gwz-core-commit-log-{name}-{}-{unique}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).unwrap();
+        let path = crate::test_support::unique_dir(
+            &std::env::temp_dir(),
+            &format!("gwz-core-commit-log-{name}"),
+        )
+        .unwrap();
         let root = Repository::init(&path).unwrap();
         root.set_head("refs/heads/main").unwrap();
         Self { path, root }

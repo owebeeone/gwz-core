@@ -445,28 +445,14 @@ impl FileSystem for NativeFileSystem {
     }
     #[cfg(test)]
     fn test_workspace(&self) -> io::Result<TestFsWorkspace> {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        loop {
-            let path = std::env::temp_dir().join(format!(
-                "gwz-fs-contract-{}-{}",
-                std::process::id(),
-                NEXT.fetch_add(1, Ordering::Relaxed)
-            ));
-            match std::fs::create_dir(&path) {
-                Ok(()) => {
-                    let path = std::fs::canonicalize(path)?;
-                    let cleanup_path = path.clone();
-                    return Ok(TestFsWorkspace {
-                        path,
-                        cleanup: Some(Box::new(move || {
-                            let _ = std::fs::remove_dir_all(cleanup_path);
-                        })),
-                    });
-                }
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error),
-            }
-        }
+        let path = crate::test_support::unique_dir(&std::env::temp_dir(), "gwz-fs-contract")?;
+        let path = std::fs::canonicalize(path)?;
+        let cleanup_path = path.clone();
+        Ok(TestFsWorkspace {
+            path,
+            cleanup: Some(Box::new(move || {
+                let _ = std::fs::remove_dir_all(cleanup_path);
+            })),
+        })
     }
 }

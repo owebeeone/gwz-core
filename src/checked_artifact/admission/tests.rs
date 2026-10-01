@@ -13,7 +13,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::*;
 use crate::checked_artifact::bootstrap::{WorkspaceRuntimeLease, try_acquire_workspace_runtime};
@@ -30,8 +29,6 @@ use crate::checked_artifact::protocol::{
 const ADMISSION_FACT: &str = "action admission";
 const DRIVER_UNAVAILABLE: &str = "physical admission driver is implemented in R2-D phase 1";
 
-static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
-
 /// One real workspace, mirroring the R2-C2 interruption/restart fixture at
 /// `catalog/bootstrap/tests.rs:19-44`.
 struct Fixture {
@@ -40,12 +37,9 @@ struct Fixture {
 
 impl Fixture {
     fn new(label: &str) -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "gwz-r2c3-{label}-{}-{}",
-            std::process::id(),
-            NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&root).unwrap();
+        let root =
+            crate::test_support::unique_dir(&std::env::temp_dir(), &format!("gwz-r2c3-{label}"))
+                .unwrap();
         git2::Repository::init(&root).unwrap();
         Self { root }
     }

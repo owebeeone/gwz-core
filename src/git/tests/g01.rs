@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::model::ErrorCode;
 
@@ -1111,8 +1111,4 @@ pub(crate) fn run_git_ok(root: &Path, args: &[&str]) -> bool {
         .status()
         .expect("spawn git")
         .success()
-}
-
-pub(crate) struct TempDir {
-    pub(crate) path: PathBuf,
 }

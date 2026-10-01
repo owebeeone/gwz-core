@@ -264,8 +264,6 @@
     {"repo": "gwz-core", "path": "src/checked_artifact/tests/recovery_protocol.rs", "attrs": "#[cfg(unix)]", "item": "let before"},
     {"repo": "gwz-core", "path": "src/checked_artifact/tests/recovery_protocol.rs", "attrs": "#[cfg(unix)]", "item": "let goal_inode"},
     {"repo": "gwz-core", "path": "src/checked_artifact/tests/recovery_protocol.rs", "attrs": "#[cfg(unix)]", "item": "let published_inode"},
-    {"repo": "gwz-core", "path": "src/checked_artifact/transition.rs", "attrs": "#[cfg(test)]", "item": "static TEMP_SEQUENCE"},
-    {"repo": "gwz-core", "path": "src/checked_artifact/transition.rs", "attrs": "#[cfg(test)]", "item": "use std::sync::atomic::AtomicU64"},
     {"repo": "gwz-core", "path": "src/diff/mod.rs", "attrs": "#[cfg(test)]", "item": "mod tests"},
     {"repo": "gwz-core", "path": "src/diff/mod.rs", "attrs": "#[cfg(test)]", "item": "use operands::parse_revision_arg"},
     {"repo": "gwz-core", "path": "src/diff/render/mod.rs", "attrs": "#[cfg(test)]", "item": "mod tests"},

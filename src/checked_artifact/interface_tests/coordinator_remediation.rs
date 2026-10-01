@@ -35,14 +35,11 @@ fn v0_bytes_with_state(state: &str, extra: &str) -> Vec<u8> {
 }
 
 fn archive_root(label: &str) -> std::path::PathBuf {
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root = std::env::temp_dir().join(format!(
-        "gwz-checked-archive-{label}-{}-{nonce}",
-        std::process::id()
-    ));
+    let root = crate::test_support::unique_dir(
+        &std::env::temp_dir(),
+        &format!("gwz-checked-archive-{label}"),
+    )
+    .unwrap();
     std::fs::create_dir_all(root.join(".gwz/merge")).unwrap();
     root
 }

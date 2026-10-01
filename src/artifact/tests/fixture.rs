@@ -1,9 +1,7 @@
-//! Golden artifact bytes, sample records and the temp-directory helper
-//! shared by every test in this module.
+//! Golden artifact bytes, sample records and the crate's `TempDir`, shared by
+//! every test in this module.
 
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+pub(crate) use crate::test_support::TempDir;
 
 use super::*;
 
@@ -107,32 +105,5 @@ pub(crate) fn sample_short_member() -> ResolvedMemberArtifact {
         source_kind: ArtifactSourceKind::Git,
         commit: Some("abc123".to_owned()),
         ..ResolvedMemberArtifact::default()
-    }
-}
-
-pub(crate) struct TempDir {
-    path: PathBuf,
-}
-
-impl TempDir {
-    pub(crate) fn new(name: &str) -> Self {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("gwz-core-{name}-{}-{unique}", std::process::id()));
-        fs::create_dir_all(&path).unwrap();
-        Self { path }
-    }
-
-    pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
     }
 }
