@@ -289,6 +289,14 @@ impl Session {
                 .as_ref()
                 .map(|engine| engine.pool().capacity())
         }
+        pub(super) fn ssh_counts_for_test(&self) -> Option<pool::Counts> {
+            self.state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .engine
+                .as_ref()
+                .map(|engine| engine.pool().counts())
+        }
         pub(super) fn https_counts_for_test(&self) -> Option<pool::Counts> {
             self.state
                 .lock()
