@@ -5,12 +5,12 @@
 //! pumping every attached exchange while this object is stepped by the host.
 
 use super::{
-    agent_job::Job,
+    agent_job::{self, Job},
     ssh_channel::GitService as NativeService,
     ssh_worker::{BridgeContext, Endpoint, EndpointAttachment},
 };
 use gwz_transport::{
-    pool::Key,
+    pool::{Capacity, Key},
     protocol::{
         Destination, Effect, Envelope, ErrorCode, Facts, Failure, GitService, Identity,
         IdentityMode, MessageKind, Opened,
@@ -28,7 +28,6 @@ use std::{
 const MAX_REQUESTS: usize = 64;
 const MAX_QUEUED_INPUT: usize = 16;
 const MAX_OUTBOUND: usize = 64;
-const MAX_OPEN_JOBS: usize = 8;
 type RequestKey = (String, i64);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,10 +48,10 @@ struct Request {
     attachment: Option<EndpointAttachment>,
     queued_input: VecDeque<Envelope>,
     terminal: bool,
-    deadline: Option<u64>,
 }
 struct OpenJob {
     key: RequestKey,
+    pool_key: Key,
     job: Job<(EndpointAttachment, Opened)>,
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     deadline: Option<u64>,
@@ -60,6 +59,7 @@ struct OpenJob {
 }
 struct QueuedOpen {
     key: RequestKey,
+    pool_key: Key,
     envelope: Envelope,
     admitted_at: u64,
     deadline: u64,
@@ -277,20 +277,21 @@ impl PlacementEndpoint {
             self.push_outbound(key.0, message);
             return Ok(());
         }
-        if self.opens.len() >= MAX_OPEN_JOBS {
+        let (pool_key, repository_path) = destination(&open.destination)?;
+        if !self.admits_open(&pool_key) {
             let state = request_state(&envelope, open.operation_id.clone());
             let now = self.now();
             let deadline = now.saturating_add(open.deadlines.allocation_ms as u64);
             self.requests.insert(key.clone(), state);
             self.queued_opens.push_back(QueuedOpen {
                 key,
+                pool_key,
                 envelope,
                 admitted_at: now,
                 deadline,
             });
             return Ok(());
         }
-        let (pool_key, repository_path) = destination(&open.destination)?;
         let selected = match selected_path(&self.home, &open.identity) {
             Ok(selected) => selected,
             Err(_) => {
@@ -324,7 +325,6 @@ impl PlacementEndpoint {
                 attachment: None,
                 queued_input: VecDeque::new(),
                 terminal: false,
-                deadline,
             },
         );
         let endpoint = self.endpoint.clone();
@@ -340,7 +340,7 @@ impl PlacementEndpoint {
         };
         let job = match selected {
             Some(path) => endpoint.start_endpoint_selected_job(
-                pool_key,
+                pool_key.clone(),
                 path,
                 service,
                 repository_path,
@@ -348,7 +348,7 @@ impl PlacementEndpoint {
                 worker_cancelled,
             ),
             None => endpoint.start_endpoint_ambient_job(
-                pool_key,
+                pool_key.clone(),
                 service,
                 repository_path,
                 Some(context),
@@ -358,6 +358,7 @@ impl PlacementEndpoint {
         .map_err(|_| EndpointError::Capacity)?;
         self.opens.push(OpenJob {
             key,
+            pool_key,
             job,
             cancelled,
             deadline,
@@ -417,7 +418,6 @@ impl PlacementEndpoint {
                 attachment: None,
                 queued_input: VecDeque::new(),
                 terminal: false,
-                deadline: Some(deadline),
             },
         );
         self.checks.push(CheckJob {
@@ -463,7 +463,7 @@ impl PlacementEndpoint {
                     );
                     self.push_outbound(queued.key.0, message);
                 }
-            } else if self.opens.len() < MAX_OPEN_JOBS {
+            } else if self.admits_open(&queued.pool_key) {
                 let open = queued.envelope.open.as_mut().expect("admitted Open");
                 open.deadlines.allocation_ms = (open.deadlines.allocation_ms as u64)
                     .saturating_sub(now.saturating_sub(queued.admitted_at))
@@ -474,6 +474,24 @@ impl PlacementEndpoint {
             }
         }
         Ok(())
+    }
+
+    /// An open starts while the opens in flight stay within the operation's
+    /// limits, which the transport host installs in the pool before the
+    /// operation's first open: the per-host and per-user ceilings of the open's
+    /// host, and `open_ceiling` across every host.
+    fn admits_open(&self, key: &Key) -> bool {
+        let capacity = self.endpoint.pool().capacity();
+        let host = self
+            .opens
+            .iter()
+            .filter(|open| open.pool_key.host == key.host);
+        self.opens.len() < open_ceiling(capacity)
+            && host.clone().count() < capacity.per_host
+            && host
+                .filter(|open| open.pool_key.username == key.username)
+                .count()
+                < capacity.per_user_host
     }
 
     fn finish_checks(&mut self, now_ms: u64, cx: &mut Context<'_>) {
@@ -999,8 +1017,19 @@ fn request_state(envelope: &Envelope, operation_id: String) -> Request {
         attachment: None,
         queued_input: VecDeque::new(),
         terminal: false,
-        deadline: None,
     }
+}
+/// The most opens in flight across every host: the pool's total and request
+/// ceilings, the endpoint's `MAX_REQUESTS`, and half the process-wide budget
+/// of supervised jobs. Each open holds one job until its reply and starts at
+/// most one more, its key read or its setup, so more opens would leave their
+/// own setups without a job.
+fn open_ceiling(capacity: Capacity) -> usize {
+    capacity
+        .total
+        .min(capacity.max_requests)
+        .min(MAX_REQUESTS)
+        .min(agent_job::LIMIT / 2)
 }
 fn deadline_from_open(deadlines: &gwz_transport::protocol::Deadlines) -> Option<u64> {
     (deadlines.connect_ms != 0).then(|| {

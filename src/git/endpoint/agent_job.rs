@@ -10,7 +10,7 @@ use std::{
     thread::{self, JoinHandle, Thread},
     time::{Duration, Instant},
 };
-const LIMIT: usize = 64;
+pub(super) const LIMIT: usize = 64;
 static COUNT: AtomicUsize = AtomicUsize::new(0);
 struct Permit;
 impl Drop for Permit {
