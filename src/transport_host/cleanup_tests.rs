@@ -157,7 +157,7 @@ fn shutdown_reports_blocked_physical_disposal_then_eventual_zero() {
         assert!(Instant::now() < until, "physical setup was never admitted");
         std::thread::sleep(Duration::from_millis(2));
     }
-    session.drive();
+    session.drive(std::task::Waker::noop());
     session.cancel("request");
     session.close();
     while !disposing.load(Ordering::Acquire) {
@@ -210,8 +210,8 @@ fn completed_request_retirement_cannot_expire_the_shared_session() {
         // another timeout domain. Retirement already completed successfully.
         record.sealed = Some(Instant::now() - super::CLEANUP - Duration::from_millis(1));
     }
-    session.drive();
-    endpoint.drive();
+    session.drive(std::task::Waker::noop());
+    endpoint.drive(std::task::Waker::noop());
     assert!(
         !endpoint.is_closed(),
         "completed retirement killed endpoint session"

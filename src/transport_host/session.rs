@@ -4,6 +4,7 @@ use crate::git::endpoint::{
     shared_reservation::Authority,
     ssh_channel::GitService,
     ssh_destination::Destination,
+    ssh_worker::ThreadWake,
     stream_io::BlockingStream,
 };
 use gwz_transport::{
@@ -15,9 +16,9 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     future::{Future, poll_fn},
     io,
-    pin::pin,
+    pin::{Pin, pin},
     sync::{
-        Condvar,
+        Condvar, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
     task::{Context, Poll, Waker},
@@ -25,6 +26,8 @@ use std::{
     time::Instant,
 };
 mod driver;
+mod local_link;
+pub(super) use local_link::LocalLink;
 cfg_if::cfg_if! {
     if #[cfg(test)] {
         // The transport host's tests downcast SSH open errors to it.
@@ -39,6 +42,14 @@ pub(super) fn limits() -> Limits {
     // Match the existing endpoint stream's bounded receive window.
     limits.receive_window = 65536;
     limits
+}
+/// A stream's next message, kept across passes: while it waits, the stream's
+/// next change wakes the pass that forwards the message.
+pub(super) type NextMessage =
+    Pin<Box<dyn Future<Output = Result<Option<Envelope>, stream::Error>> + Send>>;
+pub(super) fn next_message(peer: &Arc<MessageEndpoint>) -> NextMessage {
+    let peer = peer.clone();
+    Box::pin(async move { peer.next_message().await })
 }
 fn mux_config() -> mux::Config {
     mux::Config {
@@ -118,6 +129,7 @@ struct Entry {
     reply: Arc<Wait<Result<(BlockingStream, Opened), Failure>>>,
     deadline: Option<Instant>,
     pending: Option<Envelope>,
+    next: Option<NextMessage>,
     observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
     facts: Arc<dyn Fn(&Facts) + Send + Sync>,
 }
@@ -211,6 +223,8 @@ pub(super) struct Session {
     capacity_gate: AtomicBool,
     admission_gate: AtomicBool,
     test_hooks: TestHooks,
+    /// The thread that runs the session's passes.
+    passes: OnceLock<thread::Thread>,
 }
 cfg_if::cfg_if! {
     if #[cfg(test)] {
@@ -343,13 +357,17 @@ impl Session {
             capacity_gate: AtomicBool::new(false),
             admission_gate: AtomicBool::new(false),
             test_hooks: TestHooks::new(),
+            passes: OnceLock::new(),
         });
         let weak = Arc::downgrade(&session);
-        thread::Builder::new()
+        let passes = thread::Builder::new()
             .name("gwz-placement".into())
             .spawn(move || {
+                // Whatever gives a pass work wakes this thread. The timeout
+                // only runs the deadlines when nothing does.
+                let waker = Waker::from(Arc::new(ThreadWake(thread::current())));
                 while let Some(session) = weak.upgrade() {
-                    session.drive();
+                    let moved = session.drive(&waker);
                     let done = {
                         let state = session.state.lock().unwrap_or_else(|e| e.into_inner());
                         state.closed
@@ -361,11 +379,20 @@ impl Session {
                     if done {
                         break;
                     }
-                    thread::park_timeout(Duration::from_millis(5));
+                    if !moved {
+                        thread::park_timeout(Duration::from_millis(5));
+                    }
                 }
             })
             .map_err(|_| unavailable("transport supervisor unavailable"))?;
+        let _ = session.passes.set(passes.thread().clone());
         Ok(session)
+    }
+    /// Runs a pass now: the carrier moved a message into or out of its mux.
+    fn wake(&self) {
+        if let Some(thread) = self.passes.get() {
+            thread.unpark();
+        }
     }
     fn empty() -> State {
         State {
@@ -965,10 +992,15 @@ impl TransportPort {
             }
         })
         .await?;
-        match port {
-            Some(port) => port.next_message().await.map_err(mux_error),
-            None => Ok(None),
+        let message = match port {
+            Some(port) => port.next_message().await.map_err(mux_error)?,
+            None => None,
+        };
+        if message.is_some() {
+            // A send that found the mux's queue full can go now.
+            session.wake();
         }
+        Ok(message)
     }
     pub async fn deliver(&self, attachment: Attachment) -> ModelResult<()> {
         let result = self
@@ -982,63 +1014,11 @@ impl TransportPort {
             self.0.0.close();
         }
         self.0.0.event.signal();
+        self.0.0.wake();
         result
     }
     pub fn disconnect(&self) {
         self.0.0.close();
-    }
-}
-pub(super) struct LocalLink {
-    stop: Arc<AtomicBool>,
-}
-impl LocalLink {
-    pub(super) fn new(core: TransportPort, peer: TransportPort) -> ModelResult<Self> {
-        let stop = Arc::new(AtomicBool::new(false));
-        let stopped = stop.clone();
-        thread::Builder::new()
-            .name("gwz-placement-local".into())
-            .spawn(move || {
-                let mut a = None;
-                let mut b = None;
-                let mut cx = Context::from_waker(Waker::noop());
-                while !stopped.load(Ordering::Acquire) {
-                    for (from, to, pending) in [(&core, &peer, &mut a), (&peer, &core, &mut b)] {
-                        if pending.is_none() {
-                            match pin!(from.next_message()).poll(&mut cx) {
-                                Poll::Ready(Ok(Some(item))) => *pending = Some(item),
-                                Poll::Ready(_) => {
-                                    stopped.store(true, Ordering::Release);
-                                    break;
-                                }
-                                Poll::Pending => {}
-                            }
-                        }
-                        if let Some(item) = pending.as_ref() {
-                            match pin!(to.deliver(item.clone())).poll(&mut cx) {
-                                Poll::Ready(Ok(())) => *pending = None,
-                                Poll::Ready(Err(_)) => {
-                                    stopped.store(true, Ordering::Release);
-                                    break;
-                                }
-                                Poll::Pending => {}
-                            }
-                        }
-                    }
-                    thread::park_timeout(Duration::from_millis(2));
-                }
-                core.disconnect();
-                peer.disconnect();
-            })
-            .map_err(|_| unavailable("local forwarding unavailable"))?;
-        Ok(Self { stop })
-    }
-    pub(super) fn stop(&self) {
-        self.stop.store(true, Ordering::Release);
-    }
-}
-impl Drop for LocalLink {
-    fn drop(&mut self) {
-        self.stop();
     }
 }
 

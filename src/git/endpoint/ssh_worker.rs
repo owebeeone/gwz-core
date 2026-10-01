@@ -48,7 +48,8 @@ pub(crate) trait ChannelResource: Resource + Send + 'static {
     /// Restore an idle owner only after the pump's acknowledged complete close.
     fn reclaim(&mut self) -> bool;
 }
-struct ThreadWake(Thread);
+/// Unparks a thread that parks between bounded polls.
+pub(crate) struct ThreadWake(pub(crate) Thread);
 impl Wake for ThreadWake {
     fn wake(self: Arc<Self>) {
         self.0.unpark();
@@ -98,6 +99,8 @@ pub(crate) struct BridgeContext {
     pub(crate) version: i64,
     pub(crate) limits: Limits,
     pub(crate) deadlines: Deadlines,
+    /// Woken when the worker queues a message for the bridge or ends it.
+    pub(crate) waker: Option<Waker>,
 }
 pub(super) struct OpenRequest {
     pub(super) key: Key,
@@ -118,6 +121,7 @@ pub(super) struct OpenRequest {
     pub(super) bridge_version: i64,
     pub(super) bridge_limits: Option<Limits>,
     pub(super) bridge_deadlines: Option<Deadlines>,
+    pub(super) bridge_waker: Option<Waker>,
 }
 pub(super) enum OpenStream {
     Blocking(BlockingStream),
@@ -138,13 +142,19 @@ pub(crate) struct EndpointAttachment {
     inbound: SyncSender<Envelope>,
     outbound: Receiver<Envelope>,
     cancelled: Arc<AtomicBool>,
+    worker: Thread,
 }
 impl EndpointAttachment {
     pub(crate) fn send(&self, message: Envelope) -> io::Result<()> {
-        self.inbound.try_send(message).map_err(|error| match error {
-            TrySendError::Full(_) => io::ErrorKind::WouldBlock.into(),
-            TrySendError::Disconnected(_) => io::ErrorKind::BrokenPipe.into(),
-        })
+        self.inbound
+            .try_send(message)
+            .map_err(|error| match error {
+                TrySendError::Full(_) => io::Error::from(io::ErrorKind::WouldBlock),
+                TrySendError::Disconnected(_) => io::Error::from(io::ErrorKind::BrokenPipe),
+            })?;
+        // The worker parks between polls; the message is work for it now.
+        self.worker.unpark();
+        Ok(())
     }
     pub(crate) fn try_receive(&self) -> io::Result<Option<Envelope>> {
         match self.outbound.try_recv() {
@@ -767,6 +777,7 @@ impl Endpoint {
             bridge_version: context.as_ref().map_or(2, |value| value.version),
             bridge_limits: context.as_ref().map(|value| value.limits.clone()),
             bridge_deadlines: context.as_ref().map(|value| value.deadlines.clone()),
+            bridge_waker: context.as_ref().and_then(|value| value.waker.clone()),
         };
         if self.shared.sender.send(request).is_err() {
             return Err(stopped());
@@ -828,6 +839,7 @@ struct Active {
     bridge_stream_id: i64,
     bridge_version: i64,
     bridge_terminal_delivered: bool,
+    bridge_waker: Option<Waker>,
 }
 impl Drop for Active {
     fn drop(&mut self) {
@@ -1119,6 +1131,7 @@ where
                 inbound,
                 outbound,
                 cancelled,
+                worker: thread::current(),
             }),
         )
     } else {
@@ -1135,6 +1148,7 @@ where
         bridge_stream_id: request.bridge_stream_id,
         bridge_version: request.bridge_version,
         bridge_terminal_delivered: false,
+        bridge_waker: request.bridge_waker.clone(),
     });
     let stream = if let Some(attachment) = bridge_handle {
         OpenStream::Endpoint(attachment)
@@ -1164,6 +1178,7 @@ fn transfer(
 ) -> Result<bool, ()> {
     // Time must precede incoming Close, which switches away from the I/O clock.
     pump.advance(now);
+    let mut handed = false;
     let result = (|| {
         active.peer.advance(now);
         if active
@@ -1213,6 +1228,7 @@ fn transfer(
                     );
                     match outbound.try_send(message) {
                         Ok(()) => {
+                            handed = true;
                             if terminal {
                                 active.bridge_terminal_delivered = true;
                             }
@@ -1238,6 +1254,7 @@ fn transfer(
                         );
                         match outbound.try_send(message) {
                             Ok(()) => {
+                                handed = true;
                                 if terminal {
                                     active.bridge_terminal_delivered = true;
                                 }
@@ -1265,6 +1282,12 @@ fn transfer(
     if result.is_err() {
         pump.cancel();
         active.peer.disconnect();
+    }
+    // The bridge's owner parks between passes: wake it for what it can read.
+    if handed || result != Ok(false) {
+        if let Some(waker) = &active.bridge_waker {
+            waker.wake_by_ref();
+        }
     }
     result
 }

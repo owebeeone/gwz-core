@@ -21,7 +21,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::mpsc,
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
 
@@ -90,6 +90,8 @@ pub(crate) struct PlacementEndpoint {
     terminal_outbound: VecDeque<Outbound>,
     shutting_down: bool,
     faulted: bool,
+    /// The host's waker, which each bridge wakes when it has a message.
+    waker: Option<Waker>,
 }
 impl Drop for PlacementEndpoint {
     fn drop(&mut self) {
@@ -130,6 +132,7 @@ impl PlacementEndpoint {
             terminal_outbound: VecDeque::new(),
             shutting_down: false,
             faulted: false,
+            waker: None,
         })
     }
 
@@ -337,6 +340,7 @@ impl PlacementEndpoint {
             version: envelope.version,
             limits: open.receive_limits.clone(),
             deadlines: open.deadlines.clone(),
+            waker: self.waker.clone(),
         };
         let job = match selected {
             Some(path) => endpoint.start_endpoint_selected_job(
@@ -432,6 +436,7 @@ impl PlacementEndpoint {
     /// Advance bounded checks, open completions, and each live message bridge.
     pub(crate) fn step(&mut self, now_ms: u64, cx: &mut Context<'_>) -> Result<(), EndpointError> {
         self.now_ms = self.now_ms.max(now_ms);
+        self.waker = Some(cx.waker().clone());
         let now_ms = self.now_ms;
         self.finish_checks(now_ms, cx);
         self.finish_opens(now_ms, cx);
