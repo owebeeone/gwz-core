@@ -9,60 +9,28 @@ cfg_if::cfg_if! {
     if #[cfg(all(unix, gwz_transport_candidate))] {
         use crate::git::endpoint::{
             https_remote, https_remote::OpenRpc, ssh_channel::GitService as SshGitService,
-            ssh_destination::Destination, ssh_endpoint::Route, ssh_local,
-            ssh_remote::OpenStream, ssh_remote::RemoteTransport, ssh_worker::Endpoint,
+            ssh_destination::Destination, ssh_remote::OpenStream, ssh_remote::RemoteTransport,
         };
+        use crate::transport_host::RequestContext;
         use gwz_transport::protocol::{AuthPolicy, Facts, GitService, Opened};
         use std::{
             io,
             sync::{Arc, Mutex},
         };
 
-        #[derive(Clone)]
-        pub(crate) struct Runtime(Arc<RuntimeState>);
-        struct RuntimeState {
-            endpoint: Mutex<Option<Endpoint>>,
-            factory: Box<dyn Fn() -> io::Result<Endpoint> + Send + Sync>,
-            host_context: Mutex<Option<crate::transport_host::RequestContext>>,
-        }
+        /// The host context of the operation a backend serves, if any. Only a
+        /// host context reaches the transport (amendment 2's TR2.11): a backend
+        /// without one, `Git2Backend::new()`'s, takes libgit2's native route
+        /// for SSH and HTTPS alike, and constructs no transport endpoint.
+        #[derive(Clone, Default)]
+        pub(crate) struct Runtime(Option<RequestContext>);
 
-        fn pool_config_for_timeout(timeout: u64) -> gwz_transport::pool::Config {
-            let mut config = gwz_transport::pool::Config::default();
-            if timeout == 0 {
-                config.connect_timeout_ms = 0;
-            }
-            config
-        }
-        impl Default for Runtime {
-            fn default() -> Self {
-                Self::with_factory(|| {
-                    let home = std::env::var_os("HOME").ok_or(io::ErrorKind::NotFound)?;
-                    let known = std::path::PathBuf::from(home).join(".ssh/known_hosts");
-                    let agent = std::env::var_os("SSH_AUTH_SOCK")
-                        .filter(|p| !p.is_empty())
-                        .map(Into::into);
-                    let timeout = super::transport_support::server_timeout_ms();
-                    let config = pool_config_for_timeout(timeout);
-                    ssh_local::connect(config, known, agent, timeout)
-                })
-            }
-        }
         impl Runtime {
-            pub(super) fn with_factory(
-                factory: impl Fn() -> io::Result<Endpoint> + Send + Sync + 'static,
-            ) -> Self {
-                Self(Arc::new(RuntimeState {
-                    endpoint: Mutex::new(None),
-                    factory: Box::new(factory),
-                    host_context: Mutex::new(None),
-                }))
+            pub(crate) fn with_host_context(&self, context: RequestContext) -> Self {
+                Self(Some(context))
             }
-            pub(crate) fn with_host_context(&self, context: crate::transport_host::RequestContext) -> Self {
-                *self.0.host_context.lock().unwrap_or_else(|e| e.into_inner()) = Some(context);
-                self.clone()
-            }
-            pub(crate) fn host_context(&self) -> Option<crate::transport_host::RequestContext> {
-                self.0.host_context.lock().unwrap_or_else(|e| e.into_inner()).clone()
+            pub(crate) fn host_context(&self) -> Option<RequestContext> {
+                self.0.clone()
             }
             pub(crate) fn is_cli_context(&self) -> bool {
                 self.host_context().is_some_and(|context| context.is_cli())
@@ -85,33 +53,15 @@ cfg_if::cfg_if! {
                     Ok(())
                 }
             }
-            pub(super) fn endpoint(&self) -> io::Result<Endpoint> {
-                // Construction reserves ownership but performs no network/trust I/O.
-                // Serialize it, publishing only success; transient failures may retry.
-                let mut endpoint = self.0.endpoint.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(endpoint) = &*endpoint {
-                    return Ok(endpoint.clone());
-                }
-                let created = (self.0.factory)()?;
-                *endpoint = Some(created.clone());
-                Ok(created)
-            }
-            cfg_if::cfg_if! {
-                if #[cfg(test)] {
-                    pub(crate) fn from_endpoint(endpoint: Endpoint) -> Self {
-                        Self::with_factory(move || Ok(endpoint.clone()))
-                    }
-                }
-            }
         }
         struct HostRoute {
-            context: crate::transport_host::RequestContext,
+            context: RequestContext,
             selected: Option<String>,
             report: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
             facts: Arc<dyn Fn(&Facts) + Send + Sync>,
         }
         struct HostHttpsRoute {
-            context: crate::transport_host::RequestContext,
+            context: RequestContext,
             policy: Option<AuthPolicy>,
             report: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
             facts: Arc<dyn Fn(&Facts) + Send + Sync>,
@@ -179,11 +129,13 @@ cfg_if::cfg_if! {
             attempt: Option<&TransportAttempt>,
             callbacks: &mut git2::RemoteCallbacks<'_>,
         ) {
-            let runtime = backend.ssh.clone();
+            // The route is chosen here, before any connection opens. Without a
+            // host context nothing is installed, so libgit2 serves the remote
+            // with its own transports, as 1.0.17 does (TR2.11).
+            let Some(context) = backend.ssh.host_context() else {
+                return;
+            };
             if is_https_remote(url) {
-                let Some(context) = runtime.host_context() else {
-                    return;
-                };
                 let policy = https_policy_for(backend.credential_helpers);
                 let attempt = attempt.cloned();
                 let facts_attempt = attempt.clone();
@@ -211,46 +163,26 @@ cfg_if::cfg_if! {
             if matches!(Destination::parse(url), Ok(None)) {
                 return;
             }
-            let selected = identity.map(|i| i.path.clone());
+            let selected = identity.map(|i| i.path.to_string_lossy().into_owned());
             let attempt = attempt.cloned();
             callbacks.smart_transport(false, move |_| {
-                let attempt = attempt.clone();
-                if let Some(context) = runtime.host_context() {
-                    let selected = selected.as_ref().map(|path| path.to_string_lossy().into_owned());
-                    let facts_attempt = attempt.clone();
-                    let opened_attempt = attempt.clone();
-                    let route = HostRoute {
-                        context,
-                        selected,
-                        report: Arc::new(move |stream_id, opened| {
-                            if let Some(attempt) = &opened_attempt {
-                                attempt.opened(stream_id, opened);
-                                attempt.facts(&opened.facts);
-                            }
-                        }),
-                        facts: Arc::new(move |facts| {
-                            if let Some(attempt) = &facts_attempt {
-                                attempt.facts(facts);
-                            }
-                        }),
-                    };
-                    return Ok(RemoteTransport::new(Arc::new(route)));
-                }
-                let route = Route::reporting(
-                    runtime.endpoint().map_err(|e| {
-                        git2::Error::new(
-                            git2::ErrorCode::GenericError,
-                            git2::ErrorClass::Net,
-                            format!("SSH endpoint unavailable: {:?}", e.kind()),
-                        )
-                    })?,
-                    selected.clone(),
-                    Arc::new(move |facts| {
-                        if let Some(attempt) = &attempt {
+                let facts_attempt = attempt.clone();
+                let opened_attempt = attempt.clone();
+                let route = HostRoute {
+                    context: context.clone(),
+                    selected: selected.clone(),
+                    report: Arc::new(move |stream_id, opened| {
+                        if let Some(attempt) = &opened_attempt {
+                            attempt.opened(stream_id, opened);
+                            attempt.facts(&opened.facts);
+                        }
+                    }),
+                    facts: Arc::new(move |facts| {
+                        if let Some(attempt) = &facts_attempt {
                             attempt.facts(facts);
                         }
                     }),
-                );
+                };
                 Ok(RemoteTransport::new(Arc::new(route)))
             });
         }
@@ -290,11 +222,5 @@ cfg_if::cfg_if! {
     if #[cfg(all(test, unix, gwz_transport_candidate))] {
         #[path = "https_transport_binding_tests.rs"]
         mod https_transport_binding_tests;
-
-        #[test]
-        fn native_stall_does_not_shrink_the_pool_setup_budget() {
-            assert_eq!(pool_config_for_timeout(9_000).connect_timeout_ms, 30_000);
-            assert_eq!(pool_config_for_timeout(0).connect_timeout_ms, 0);
-        }
     }
 }

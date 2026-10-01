@@ -1,27 +1,37 @@
 use super::*;
 use crate::{operation::NullSink, workspace_ops::*};
 
-fn meta(f: &common::SshdFixture, members: bool) -> crate::RequestMeta {
+fn meta(f: &common::SshdFixture, members: bool, request_id: &str) -> crate::RequestMeta {
     crate::RequestMeta {
-        request_id: "candidate".into(),
-        schema_version: "gwz.protocol/v0".into(),
-        transport: Some(crate::TransportOptions {
-            default_identity: Some(
-                f.temp
-                    .path()
-                    .join("client_ed25519")
-                    .to_string_lossy()
-                    .into_owned(),
-            ),
-            ..Default::default()
-        }),
         selection: members.then(|| crate::Selection {
             targets: vec!["@all".into()],
             exclude_targets: vec!["@root".into()],
             ..Default::default()
         }),
-        ..Default::default()
+        ..request_meta(f, request_id)
     }
+}
+/// Runs one driver as the CLI runs a network command: in a request of its
+/// own, whose host context admits exactly this metadata and operation.
+fn scoped<T>(
+    host: &Host,
+    meta: crate::RequestMeta,
+    operation: &str,
+    driver: impl FnOnce(&Git2Backend, crate::RequestMeta) -> crate::model::ModelResult<T>,
+) -> T {
+    let request = host.request(meta.clone(), operation);
+    let result = driver(request.backend(), meta).unwrap();
+    assert!(
+        request
+            .backend()
+            .transport_observations()
+            .unwrap()
+            .snapshot()
+            .is_empty(),
+        "each driver scopes its own rows"
+    );
+    host.finish(request);
+    result
 }
 fn assert_reused(response: &crate::ResponseEnvelope) {
     assert!(
@@ -65,7 +75,8 @@ fn checkpoint(root: &Path) {
 }
 #[test]
 fn candidate_command_drivers_share_pool_and_preserve_nested_observations() {
-    let (f, b, e) = fixture();
+    let f = common::SshdFixture::new();
+    let host = Host::new(&f);
     let server = git2::Repository::open_bare(&f.repository).unwrap();
     commit(&server, "first");
     let root = f.temp.path().join("workspace");
@@ -76,19 +87,20 @@ fn candidate_command_drivers_share_pool_and_preserve_nested_observations() {
         remote_name: None,
         branch: None,
     };
-    let init = handle_init_from_sources(
-        &b,
-        &root,
-        crate::InitFromSourcesRequest {
-            meta: meta(&f, false),
-            workspace_root: root.to_string_lossy().into_owned(),
-            sources: vec![source.clone()],
-            ..Default::default()
-        },
-        "init",
-        &NullSink,
-    )
-    .unwrap();
+    let init = scoped(&host, meta(&f, false, "init"), "init", |b, meta| {
+        handle_init_from_sources(
+            b,
+            &root,
+            crate::InitFromSourcesRequest {
+                meta,
+                workspace_root: root.to_string_lossy().into_owned(),
+                sources: vec![source.clone()],
+                ..Default::default()
+            },
+            "init",
+            &NullSink,
+        )
+    });
     assert_eq!(
         init.response.meta.aggregate_status,
         crate::AggregateStatus::Ok
@@ -105,49 +117,47 @@ fn candidate_command_drivers_share_pool_and_preserve_nested_observations() {
         1
     );
     checkpoint(&root);
-    let fetch = handle_fetch(
-        &b,
-        &root,
-        crate::FetchRequest {
-            meta: meta(&f, true),
-        },
-        "fetch",
-    )
-    .unwrap();
+    let fetch = scoped(&host, meta(&f, true, "fetch"), "fetch", |b, meta| {
+        handle_fetch(b, &root, crate::FetchRequest { meta }, "fetch")
+    });
     assert_reused(&fetch.response);
-    let tag = handle_tag(
-        &b,
-        &root,
-        crate::TagRequest {
-            meta: meta(&f, true),
-            op: crate::TagOp::Fetch,
-            remote: Some("origin".into()),
-            ..Default::default()
-        },
-        "tags",
-    )
-    .unwrap();
+    let tag = scoped(&host, meta(&f, true, "tags"), "tags", |b, meta| {
+        handle_tag(
+            b,
+            &root,
+            crate::TagRequest {
+                meta,
+                op: crate::TagOp::Fetch,
+                remote: Some("origin".into()),
+                ..Default::default()
+            },
+            "tags",
+        )
+    });
     assert_reused(&tag.response);
-    let push = handle_push(
-        &b,
-        &root,
-        crate::PushRequest {
-            meta: meta(&f, true),
-            remote: Some("origin".into()),
-            refspec: Some("refs/heads/main:refs/heads/published".into()),
-            ..Default::default()
-        },
-        "push",
-    )
-    .unwrap();
+    let push = scoped(&host, meta(&f, true, "push"), "push", |b, meta| {
+        handle_push(
+            b,
+            &root,
+            crate::PushRequest {
+                meta,
+                remote: Some("origin".into()),
+                refspec: Some("refs/heads/main:refs/heads/published".into()),
+                ..Default::default()
+            },
+            "push",
+        )
+    });
     assert_reused(&push.response);
+    // A snapshot opens no connection, so it runs as the CLI runs it: on a
+    // backend without a host context.
     handle_snapshot(
-        &b,
+        &Git2Backend::new(),
         &root,
         crate::SnapshotRequest {
             meta: crate::RequestMeta {
                 transport: None,
-                ..meta(&f, true)
+                ..meta(&f, true, "snapshot")
             },
             snapshot_id: "saved".into(),
             ..Default::default()
@@ -157,17 +167,18 @@ fn candidate_command_drivers_share_pool_and_preserve_nested_observations() {
     .unwrap();
     // A missing member forces actual clone/fetch inside the nested materializer.
     std::fs::remove_dir_all(root.join("member")).unwrap();
-    let nested = handle_pull_snapshot(
-        &b,
-        &root,
-        crate::PullSnapshotRequest {
-            meta: meta(&f, true),
-            snapshot_id: "saved".into(),
-        },
-        "nested",
-        &NullSink,
-    )
-    .unwrap();
+    let nested = scoped(&host, meta(&f, true, "nested"), "nested", |b, meta| {
+        handle_pull_snapshot(
+            b,
+            &root,
+            crate::PullSnapshotRequest {
+                meta,
+                snapshot_id: "saved".into(),
+            },
+            "nested",
+            &NullSink,
+        )
+    });
     assert_reused(&nested.response);
     assert_eq!(
         nested.response.meta.transport.as_ref().unwrap().len(),
@@ -175,70 +186,73 @@ fn candidate_command_drivers_share_pool_and_preserve_nested_observations() {
         "inner rows must appear exactly once"
     );
     let next = commit(&server, "next");
-    let pull = handle_pull_head(
-        &b,
-        &root,
-        crate::PullHeadRequest {
-            meta: crate::RequestMeta {
-                policy: Some(crate::OperationPolicy {
-                    sync: Some(crate::SyncBehavior::FfOnly),
-                    ..Default::default()
-                }),
-                ..meta(&f, true)
-            },
-        },
-        "pull",
-    )
-    .unwrap();
+    let mut pull_meta = meta(&f, true, "pull");
+    if let Some(policy) = pull_meta.policy.as_mut() {
+        policy.sync = Some(crate::SyncBehavior::FfOnly);
+    }
+    let pull = scoped(&host, pull_meta, "pull", |b, meta| {
+        handle_pull_head(b, &root, crate::PullHeadRequest { meta }, "pull")
+    });
     assert_reused(&pull.response);
     assert_eq!(
-        b.head(&root.join("member")).unwrap().commit,
+        Git2Backend::new()
+            .head(&root.join("member"))
+            .unwrap()
+            .commit,
         Some(next.to_string())
     );
     let mut second = source;
     second.path = Some("second".into());
-    let cloned = handle_clone_repo_member(
-        &b,
-        &root,
-        crate::CloneRepoMemberRequest {
-            meta: meta(&f, false),
-            source: second,
-            ..Default::default()
-        },
+    let cloned = scoped(
+        &host,
+        meta(&f, false, "member-clone"),
         "member-clone",
-        &NullSink,
-    )
-    .unwrap();
+        |b, meta| {
+            handle_clone_repo_member(
+                b,
+                &root,
+                crate::CloneRepoMemberRequest {
+                    meta,
+                    source: second,
+                    ..Default::default()
+                },
+                "member-clone",
+                &NullSink,
+            )
+        },
+    );
     assert_reused(&cloned.response);
     checkpoint(&root);
     let workspace_url = format!("ssh://{}@127.0.0.1:{}{}", f.user, f.port, root.display());
     let copy = f.temp.path().join("workspace-copy");
-    let cloned = handle_clone_workspace_request(
-        &b,
-        f.temp.path(),
-        crate::CloneWorkspaceRequest {
-            meta: meta(&f, true),
-            url: workspace_url,
-            target: copy.to_string_lossy().into_owned(),
-        },
+    let cloned = scoped(
+        &host,
+        meta(&f, true, "workspace-clone"),
         "workspace-clone",
-        &NullSink,
-    )
-    .unwrap();
+        |b, meta| {
+            handle_clone_workspace_request(
+                b,
+                f.temp.path(),
+                crate::CloneWorkspaceRequest {
+                    meta,
+                    url: workspace_url,
+                    target: copy.to_string_lossy().into_owned(),
+                },
+                "workspace-clone",
+                &NullSink,
+            )
+        },
+    );
     assert_reused(&cloned.response);
     assert!(copy.join("member/payload").exists());
     assert!(copy.join("second/payload").exists());
-    assert!(
-        b.transport_observations().unwrap().snapshot().is_empty(),
-        "each driver scopes its own rows"
-    );
-    e.shutdown();
+    host.shutdown();
 }
 
 #[test]
 fn candidate_service_refusal_skips_only_private_members_and_forgets_observations() {
     use std::os::unix::fs::PermissionsExt;
-    let (f, b, e) = fixture();
+    let (f, host, request, b) = fixture();
     let server = git2::Repository::open_bare(&f.repository).unwrap();
     commit(&server, "fixture");
     let script = f.temp.path().join("service.sh");
@@ -270,36 +284,40 @@ fn candidate_service_refusal_skips_only_private_members_and_forgets_observations
         crate::model::ErrorCode::GitCommandFailed,
         "{failed:?}"
     );
+    host.finish(request);
     let root = f.temp.path().join("private-workspace");
     std::fs::create_dir(&root).unwrap();
-    handle_init_from_sources(
-        &b,
-        &root,
-        crate::InitFromSourcesRequest {
-            meta: meta(&f, false),
-            workspace_root: root.to_string_lossy().into(),
-            sources: vec![crate::SourceUrl {
-                url: url(&f),
-                path: Some("secret".into()),
+    scoped(&host, meta(&f, false, "init"), "init", |b, meta| {
+        handle_init_from_sources(
+            b,
+            &root,
+            crate::InitFromSourcesRequest {
+                meta,
+                workspace_root: root.to_string_lossy().into(),
+                sources: vec![crate::SourceUrl {
+                    url: url(&f),
+                    path: Some("secret".into()),
+                    ..Default::default()
+                }],
                 ..Default::default()
-            }],
-            ..Default::default()
-        },
-        "init",
-        &NullSink,
-    )
-    .unwrap();
+            },
+            "init",
+            &NullSink,
+        )
+    });
     git2::Repository::open(root.join("secret"))
         .unwrap()
         .remote_set_url("origin", &denied)
         .unwrap();
+    // `repo sync` opens no connection, so it runs as the CLI runs it: on a
+    // backend without a host context.
     handle_repo_sync(
-        &b,
+        &Git2Backend::new(),
         &root,
         crate::RepoSyncRequest {
             meta: crate::RequestMeta {
                 transport: None,
-                ..meta(&f, true)
+                ..meta(&f, true, "private")
             },
             private: Some(true),
         },
@@ -308,20 +326,26 @@ fn candidate_service_refusal_skips_only_private_members_and_forgets_observations
     .unwrap();
     checkpoint(&root);
     std::fs::remove_dir_all(root.join("secret")).unwrap();
-    let result = handle_materialize(
-        &b,
-        &root,
-        crate::MaterializeRequest {
-            meta: meta(&f, true),
-            target: crate::MaterializeTarget {
-                kind: crate::MaterializeTargetKind::Lock,
-                ..Default::default()
-            },
-        },
+    let result = scoped(
+        &host,
+        meta(&f, true, "private-materialize"),
         "private-materialize",
-        &NullSink,
-    )
-    .unwrap();
+        |b, meta| {
+            handle_materialize(
+                b,
+                &root,
+                crate::MaterializeRequest {
+                    meta,
+                    target: crate::MaterializeTarget {
+                        kind: crate::MaterializeTargetKind::Lock,
+                        ..Default::default()
+                    },
+                },
+                "private-materialize",
+                &NullSink,
+            )
+        },
+    );
     assert!(
         matches!(
             result.response.meta.aggregate_status,
@@ -343,5 +367,5 @@ fn candidate_service_refusal_skips_only_private_members_and_forgets_observations
         result.response.members.is_empty(),
         "private refusal must be quiet: {result:?}"
     );
-    e.shutdown();
+    host.shutdown();
 }

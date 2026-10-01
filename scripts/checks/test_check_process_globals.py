@@ -733,7 +733,16 @@ class Dispositions(unittest.TestCase):
         # 26 -> 25 (2026-09-29): the local-import Git fallback's spawn left, below.
         # 25 -> 24 (2026-09-29): the HTTPS helper `SLOTS` semaphore left; its budget
         # is the host's now (CS6.5, pulled forward).
-        self.assertEqual(len(core), 24)
+        # 24 -> 23 (2026-10-02): the lazy endpoint's HOME and SSH_AUTH_SOCK reads
+        # left, below.
+        self.assertEqual(len(core), 23)
+
+    def test_the_lazy_endpoint_environment_reads_are_gone(self):
+        # Transport release plan amendment 2's TR2.11: only a host context
+        # reaches the transport, so the backend's lazy SSH endpoint, which read
+        # HOME and SSH_AUTH_SOCK at the point of use, is gone with its entry.
+        core, _ = listed(checker.DEFAULT_ALLOWLIST)
+        self.assertNotIn(('src/git/gitbackend/transport_binding.rs', 'env', 'env::var_os'), core)
 
     def test_the_local_import_git_fallback_spawn_is_gone(self):
         # GwzNoFallbackPlan.md §4: `fetch_anonymous` runs on the libgit2 fork
