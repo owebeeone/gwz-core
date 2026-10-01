@@ -1,0 +1,60 @@
+# GwzTransportReleasePlanAmendment-2 — SAFETY-AXIS REVIEW, ROUND 3 (re-verdict on revision 2)
+
+**Review object:** `gwz-core/dev-docs/GwzTransportReleasePlanAmendment-2.md`, revision 2, SHA-256 `c5850e52227e9f27e7c989c417ea262d6f749e312593af3cbbc7baeeda468509`, untracked draft ("draft; not implementation authority"), dated 2026-10-01. Round-3 inputs: remediation plan 2 `GwzTransportReleasePlanAmendment-2-RemPlan-2.md` at SHA-256 `b4182b06bb0c38bcf28329943adaffb9ca043c5ac120e3b1c090d134df117e7e`; revision 1 byte-exact at SHA-256 `42b91afd…` in the scratchpad; the revision 1 → 2 diff (176 lines carrying the 58 changed lines). Controlling document: `GwzTransportReleasePlan.md` at SHA-256 `4e05b8e8…` (unchanged).
+**Baseline:** root `d6f6db59`; gwz-core `0ddc513c`; gwz-cli `5ebb001`; gwz-py `950064d`; gwz-transport `a24e70a` — verified unchanged at the start and as the last action of this round, with the object's, the RemPlan's and the plan's hashes. Sources: the RemPlan-2 and the diff in full (the diff is the complete changed range); no new code was needed, since every citation the changed range adds (`winhttp.c:230-282`, `transport_support.rs:272-274`, `check_process_globals.py:63`) was verified in rounds 1 and 2. The Consistency axis's current round was not seen; nothing here relies on it.
+**Date:** 2026-10-01
+**Axis:** Safety — what the text permits to go wrong. Independent, adversarial, read-only. Filed verbatim by the lane owner.
+
+**Verdict: GO** — 0 P0, 0 P1, 0 P2, 2 P3. P2-6 and P3-9 are closed on re-trace; the two new P3s are bounded documentation corrections that may be applied without a further round. No new architectural root cause: neither finding changes a route, a switch or an interface; the two-round cap is not engaged.
+
+---
+
+## Prior-finding closure table
+
+| ID | Disposition claimed | Verified on corrected tree | Status |
+|---|---|---|---|
+| P2-6 (round 2) | OD16's route gains a third condition — the URL maps to the Local Machine, Intranet or Trusted zone (`IInternetSecurityManager::MapUrlToZone`, libgit2's own fallback bound at `winhttp.c:230-282`); outside it the challenge is refused with a message naming the off switch; the effect is stated (the native connection then offers the logon session's default credentials, as 1.0.17 does, because gwz's callback answers before libgit2's zone check); TR1.8's Safety list names the forced-authentication hazard and the bound; two-zone fixture rows; S7.3 (1.1.0)'s Internet-zone row; OD13's bullet carries "except OD16's one parity exception"; the unbounded alternative is recorded with its hazard. | Re-traced the counterexample: a workspace member at `https://attacker.example/x.git` on Windows → the transport's anonymous ref-advertisement request → `401` with `NTLM` → `MapUrlToZone` yields the Internet zone → the third condition fails → refused; no second connection opens; no NetNTLMv2 leaves the machine (where 1.0.17 sends one). The intranet SSO server (single-label or listed name) → all three conditions hold → native route → default credentials offered, as 1.0.17. The bound is the one libgit2's and WinHTTP's own policies use; an attacker cannot reach the Intranet zone from outside the user's name and address ranges without already being inside them, and HTTPS defeats the LLMNR-poisoning route to a single-label name. A failed zone lookup fails the conjunction, so the route fails closed. S7.3 (1.1.0)'s Internet-zone row and TR1.8's two rows are the regression tests, and both would fail on the unbounded behaviour. | Closed |
+| P3-9 (round 2) | TR2.12: a second candidate configuration builds with both cfgs beside the transport-only configuration, which stays until S7.1 (1.1.0) and then becomes the ordinary build's job; rule (a): "Until S7.1 (1.1.0), CI keeps two candidate shapes green"; a workflow-text test that the candidate job has both legs. | Present in TR2.12, rule (a) and §4. The shipping shape (transport on, session off) stays green continuously until activation. | Closed |
+| P2-4 (round 1), touched by the changed range | The inventory moves from the checkpoint into a per-repository inventory file for each switch, read by a source test in that repository's own CI, with each file's digest recorded in the checkpoint; S7.1 (1.1.0)'s equality check uses the files. | Re-traced the leak: a 1.2.0 site activated by hand at S7.1 (1.1.0) still fails the equality test unless the file is edited in the same change; the independent absence assertions in S7.3 (1.1.0), the post-release check and S7.5's Surface catch a named surface regardless, and the digest record makes an inventory edit visible at the next checkpoint. The gate's weight rests on the absence assertions, which are unchanged. | Still closed |
+| P2-3 (round 1), touched | TR2.12 also extends the process-globals checker's definition of production to `gwz_session_candidate`, with a planted-debt test; the conditional-compilation check needs no change. | Strengthens the round-1 closure: globals and thread-locals in 1.2.0 code are now policed as production. | Still closed |
+
+## Changed-range analysis
+
+- **TR1.8, OD16's trigger (three conditions), effect, bound, and the macOS/Linux clause.** Sound. The effect statement is accurate to the code (gwz's callback returns `Cred::default()` whenever offered, so libgit2's zone-checked fallback never runs on the native path). "On Windows only" with 1.0.17 rows on macOS and Linux against the loopback fixture, and a disclosed refusal if 1.0.17 authenticates there, is the safe shape for those platforms. The fixture under two names (Intranet and Internet zones) is feasible on dabeest with hosts-file entries; the 1.0.17 Internet-zone row will show the hazard against a loopback server, which is the right place to show it.
+- **OD16's alternatives and edit lists.** The unbounded list is complete and states the hazard. Alternative (a)'s list drops OD13's exception phrase without carrying (a)'s own bound into the bullet (P3-10).
+- **The migration notes.** The refusal names the off switch; the notes do not yet say what the switch does to the bound (P3-11).
+- **TR2.12: inventory files, two CI legs, the process-globals checker.** Sound (see the table). Residual: an in-repository inventory is a mirror as much as a gate; the absence assertions and the digest record carry the safety weight, and both are present.
+- **TR3.3's gwz-transport sentence.** Consistent with Phase 10 (1.1.0) step 2; each name now has one first real publication.
+- **S7.1 (1.1.0)'s inventory wording, S7.2's notes list, S7.3's Internet-zone row, rule (a)'s two shapes, §3.15's session-plan sentences and §3.0's marker, §4 and §5.** Consistent with the dispositions; none opens a degraded, mixed-version, irreversible or stuck path.
+
+## 0. Evidence base
+
+The changed range is the 58 lines the diff shows: the status line, §1's session-plan list, TR1.8 (OD16's trigger, effect, bound, the macOS/Linux clause, the evidence rows, the two-zone fixture, the Safety list), TR2.12 (check-cfg, the process-globals checker, two CI legs, inventory files, three tests), TR3.3's gwz-transport sentence, S7.1 (1.1.0)'s inventory files, S7.2's notes list, S7.3 (1.1.0)'s Internet-zone row, rule (a), OD13's exception phrase, OD16 with its two edit lists, §3.15's additions, §4, §5's session-plan status sentence and the changelog. Nothing outside those ranges changed. The code facts the range relies on were verified in earlier rounds: `winhttp.c:230-282` (libgit2's zone-bounded fallback, Local Machine/Intranet/Trusted), `winhttp.c:1000-1050` (the callback runs before that fallback), `winhttp.c:600-626` (`GIT_CREDENTIAL_DEFAULT` from `NTLM`/`Negotiate`), `winhttp.c:184-212` (autologon policy LOW), `transport_support.rs:272-274` (`Cred::default()` when offered), `check_process_globals.py:63` (the production definition naming the transport cfg).
+
+## 1. Findings
+
+### [P3-10] Alternative (a)'s edit list drops OD13's exception phrase without carrying (a)'s own parity bound into the bullet
+**Location.** §3.14 OD16, "Alternative (a) … If (a):" second item ("OD13's parity bullet drops 'or under OD16' and its exception"), against (a)'s own sentence "OD13's parity is bounded to behaviours decidable before an open".
+**Consequence.** If the operator chooses (a), OD13's bullet reads "a Windows configuration that works on 1.0.17 keeps working on 1.1.0 … chosen before any connection opens" with no exception, while every SSO server that authenticates only by `NTLM`/`Negotiate` is refused: an unqualified parity promise in the decision record, with the bound stated only inside OD16.
+**Remedy.** The (a) list's second item reads: "OD13's parity bullet drops 'or under OD16', and its exception reads 'except servers that authenticate only with `NTLM` or `Negotiate`, which 1.1.0 refuses (OD16 (a))'".
+**Closure test.** Under (a), OD13's bullet and OD16's text state the same bound.
+
+### [P3-11] The migration notes name the off switch as OD16's remedy without stating that the switch removes the zone bound for every host
+**Location.** §3.5 TR1.8 "Outside the bound" and §3.14 OD16 "Its bound" (the refusal "with a message naming the off switch"); §3.11 S7.2 (1.1.0)'s notes list ("OD16's parity exception").
+**Consequence.** A user whose Internet-zone SSO server is refused and who follows the message flips the off switch, which sends every network operation of that user's process to the native path: the default-credential offer then goes to any zone, as on 1.0.17, for every host the user fetches, not only the SSO server. The notes do not say so, and the message offers no narrower remedy although one exists: adding the server to the Trusted Sites zone makes the bounded route fire and keeps the transport.
+**Remedy.** The refusal message names the Trusted zone as the first remedy and the off switch as the fallback; S7.2 (1.1.0)'s notes state that the off switch restores 1.0.17's unbounded default-credential offer for every host, and S7.5 (1.1.0)'s Surface reads that message and note.
+**Closure test.** TR1.8's Internet-zone row shows the message naming both remedies; a Trusted-zone row (the same fixture name added to Trusted Sites) succeeds on the native route; the notes carry the off-switch sentence.
+
+## 2. Invariant analysis
+
+- **No fallback after an open.** One bounded, disclosed exception on Windows, with its trigger, effect and bound stated and tested in both zones; alternatives recorded with edit lists.
+- **Credential exposure.** The hostile-host NetNTLMv2 leak that 1.0.17 permits is closed on the transport route under the recommended shape and reintroduced only by the unbounded alternative, which now names it, or by the off switch, which P3-11 asks the notes to say.
+- **OD13 parity.** Bounded by one named exception for the recommended shape; alternative (a) needs the same qualification in the bullet (P3-10).
+- **The switch split.** Two switches, two CI shapes until activation, per-repository inventories with digests, absence assertions at S7.3 (1.1.0), post-release and Surface, and the process-globals checker extended to 1.2.0 code.
+- **OD14, rule (e), publishing, performance, evidence.** Unchanged from round 2's analysis; no changed line touches them except TR3.3's gwz-transport sentence, which is consistent.
+
+## 3. Risks and next action
+
+- Both findings are one-sentence corrections to OD16's alternative list and to the notes' content; neither changes a route or a test's outcome under the recommended shape. They may be applied without a further round.
+- Residual, not findings: TR1.8 should state that a failed `MapUrlToZone` lookup refuses (the conjunction already implies it); the inventory files are mirrors of the tree, so the absence assertions remain the load-bearing gate, as the text has them.
+- **Next action:** acceptance of revision 2 on this axis's GO, with P3-10 and P3-11 applied as post-GO corrections under AgentProcessRules §7.2 and recorded in the changelog; the operator decides OD14, OD15 and OD16 (recommended shape) at acceptance.
