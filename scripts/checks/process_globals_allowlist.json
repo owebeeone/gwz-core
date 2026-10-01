@@ -29,8 +29,6 @@
      "reason": "git tag and git tag -d each inherits the live process environment; spawn it with env_clear() plus the session's snapshot (GwzCoreSessionDesign RemPlan-1, Safety P3-11)."},
     {"path": "src/git/gitbackend/repository.rs", "kind": "process", "name": "Command::new(\"git\")", "disposition": "debt",
      "reason": "git commit inherits the live process environment; spawn it with env_clear() plus the session's snapshot (GwzCoreSessionDesign RemPlan-1, Safety P3-11)."},
-    {"path": "src/git/gitbackend/transport_binding.rs", "kind": "env", "name": "env::var_os", "count": 2, "disposition": "debt",
-     "reason": "Reads HOME and SSH_AUTH_SOCK at the point of use; capture them once at session open (RemPlan B5)."},
     {"path": "src/git/gitbackend/transport_support.rs", "kind": "libgit2", "name": "git2::opts::set_server_connect_timeout_in_milliseconds", "disposition": "permanent", "imposed_by": "libgit2",
      "reason": "libgit2 has only a process-wide server timeout. Ordinary builds freeze it at startup (GWZDesign 'Native connection/read timeout'); RemPlan B5 gives transport builds session-owned timeouts."},
     {"path": "src/git/gitbackend/transport_support.rs", "kind": "libgit2", "name": "git2::opts::set_server_timeout_in_milliseconds", "disposition": "permanent", "imposed_by": "libgit2",

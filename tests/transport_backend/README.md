@@ -24,8 +24,10 @@ The prepared directory symlinks source, so source edits require rebuilding.
 
 The candidate configuration is Unix-only. Tests inject fixture-owned endpoint
 paths, use temporary keys and loopback SSH servers, and never read the user's
-agent, trust store or private key. Ordinary builds retain native libgit2 routing.
-Only the candidate runtime's uninjected path reads HOME/SSH_AUTH_SOCK lazily.
+agent, trust store or private key. Ordinary builds retain native libgit2 routing,
+and so does a candidate backend without a host context (TR2.11). HOME and
+SSH_AUTH_SOCK are read only by `SshEndpointConfig::from_environment`, when a
+runtime is built from it, as `with_local_transport` does.
 
 Tests cover backend clone/fetch/tags/advertisement/manifest/push, push URL and
 rejection callbacks, progress, independent operation observations, shared pool

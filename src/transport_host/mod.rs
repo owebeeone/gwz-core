@@ -84,6 +84,10 @@ impl SshEndpointConfig {
                     io_timeout_ms: 3000,
                 }
             }
+            pub(crate) fn with_io_timeout_ms(mut self, io_timeout_ms: u64) -> Self {
+                self.io_timeout_ms = io_timeout_ms;
+                self
+            }
         }
     }
 }

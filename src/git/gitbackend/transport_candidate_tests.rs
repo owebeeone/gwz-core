@@ -1,50 +1,91 @@
-//! Full backend tests, compiled only by the isolated candidate harness.
+//! Full backend tests, compiled only by the isolated candidate harness. Only a
+//! host context reaches the transport (TR2.11), so every backend here that
+//! takes it carries one, from a request of the fixture's `Host`.
 use super::*;
-use crate::git::endpoint;
+use crate::transport_host::{SshEndpointConfig, TransportRequest, TransportRuntime};
 #[allow(unused_imports)]
 #[path = "../../../tests/transport_ssh/tests/common/mod.rs"]
 mod common;
 mod drivers;
+mod host_context;
 
-fn fixture() -> (
-    common::SshdFixture,
-    Git2Backend,
-    endpoint::ssh_worker::Endpoint,
-) {
-    let f = common::SshdFixture::new();
-    let endpoint = endpoint::ssh_local::connect(
-        gwz_transport::pool::Config {
-            total: 1,
-            per_host: 1,
-            per_user_host: 1,
-            ..Default::default()
-        },
-        f.known_hosts.clone(),
-        None,
+/// One transport runtime for a test, as `with_local_transport` builds one per
+/// command. Its endpoint trusts the fixture's host key.
+struct Host {
+    executor: tokio::runtime::Runtime,
+    runtime: TransportRuntime,
+    /// The endpoint's `known_hosts`, which a test may empty.
+    known_hosts: PathBuf,
+}
+impl Host {
+    fn new(f: &common::SshdFixture) -> Self {
+        let home = f.temp.path().join("endpoint-home");
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        let known_hosts = home.join(".ssh/known_hosts");
+        std::fs::copy(&f.known_hosts, &known_hosts).unwrap();
         // Production's per-step SSH budget. At 3 s, a clone under the full
         // suite's load stalled past it and failed as a Timeout.
-        super::transport_support::DEFAULT_SERVER_TIMEOUT_MS as u64,
-    )
-    .unwrap();
-    let mut backend = Git2Backend::new();
-    backend.ssh = transport_binding::Runtime::from_endpoint(endpoint.clone());
-    let options = crate::TransportOptions {
-        default_identity: Some(
-            f.temp
-                .path()
-                .join("client_ed25519")
-                .to_string_lossy()
-                .into_owned(),
-        ),
-        remote_identities: Vec::new(),
-        url_scheme: None,
+        let config = SshEndpointConfig::fixture(home, None)
+            .with_io_timeout_ms(super::transport_support::DEFAULT_SERVER_TIMEOUT_MS as u64);
+        Self {
+            executor: tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+            runtime: TransportRuntime::new(config).unwrap(),
+            known_hosts,
+        }
+    }
+    /// One operation's request. Its backend carries the host context, which
+    /// admits exactly this metadata and operation.
+    fn request(&self, meta: crate::RequestMeta, operation: &str) -> TransportRequest {
+        self.executor
+            .block_on(self.runtime.request(meta, operation.into()))
+            .unwrap()
+    }
+    fn finish(&self, request: TransportRequest) {
+        self.executor.block_on(request.finish());
+    }
+    fn shutdown(&self) {
+        self.executor.block_on(self.runtime.shutdown());
+    }
+}
+/// A request's metadata: the fixture's key, and one connection per host, the
+/// capacity these tests' endpoint has always had.
+fn request_meta(f: &common::SshdFixture, request_id: &str) -> crate::RequestMeta {
+    crate::RequestMeta {
+        request_id: request_id.into(),
+        schema_version: "gwz.protocol/v0".into(),
+        transport: Some(crate::TransportOptions {
+            default_identity: Some(
+                f.temp
+                    .path()
+                    .join("client_ed25519")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            ..Default::default()
+        }),
+        policy: Some(crate::OperationPolicy {
+            max_connections_per_host: Some(1),
+            ..Default::default()
+        }),
         ..Default::default()
-    };
-    let backend = backend
-        .with_transport(f.temp.path(), Some(&options))
+    }
+}
+/// The fixture, its host, an open request, and that request's backend scoped
+/// to the fixture's key. The request must outlive every use of the backend.
+fn fixture() -> (common::SshdFixture, Host, TransportRequest, Git2Backend) {
+    let f = common::SshdFixture::new();
+    let host = Host::new(&f);
+    let meta = request_meta(&f, "candidate");
+    let request = host.request(meta.clone(), "candidate");
+    let backend = request
+        .backend()
+        .with_transport(f.temp.path(), meta.transport.as_ref())
         .unwrap()
         .unwrap();
-    (f, backend, endpoint)
+    (f, host, request, backend)
 }
 fn url(f: &common::SshdFixture) -> String {
     format!(
@@ -78,7 +119,7 @@ fn commit(repo: &git2::Repository, text: &str) -> git2::Oid {
 }
 #[test]
 fn candidate_backend_clone_fetch_tags_advertisement_manifest_and_push() {
-    let (f, b, e) = fixture();
+    let (f, host, request, b) = fixture();
     let server = git2::Repository::open_bare(&f.repository).unwrap();
     let first = commit(&server, "first");
     let target = f.temp.path().join("clone");
@@ -124,11 +165,12 @@ fn candidate_backend_clone_fetch_tags_advertisement_manifest_and_push() {
             .all(|r| r.credential_method == crate::TransportCredentialMethod::File)
     );
     assert!(!f.marker.exists());
-    e.shutdown();
+    host.finish(request);
+    host.shutdown();
 }
 #[test]
 fn candidate_failed_key_and_trust_have_distinct_facts() {
-    let (f, b, e) = fixture();
+    let (f, host, request, b) = fixture();
     let server = git2::Repository::open_bare(&f.repository).unwrap();
     commit(&server, "first");
     std::fs::write(f.temp.path().join("authorized_keys"), "").unwrap();
@@ -146,7 +188,7 @@ fn candidate_failed_key_and_trust_have_distinct_facts() {
         .unwrap();
     assert!(row.credential_offered);
     assert_eq!(row.authenticated, Some(false));
-    std::fs::write(&f.known_hosts, "").unwrap();
+    std::fs::write(&host.known_hosts, "").unwrap();
     let scoped = b
         .with_transport(
             f.temp.path(),
@@ -178,12 +220,13 @@ fn candidate_failed_key_and_trust_have_distinct_facts() {
         .unwrap();
     assert!(!row.credential_offered);
     assert_eq!(row.authenticated, None);
-    e.shutdown();
+    host.finish(request);
+    host.shutdown();
 }
 
 #[test]
 fn candidate_push_rejection_pushurl_and_native_local_route_are_preserved() {
-    let (f, b, e) = fixture();
+    let (f, host, request, b) = fixture();
     let server = git2::Repository::open_bare(&f.repository).unwrap();
     let first = commit(&server, "first");
     let target = f.temp.path().join("client");
@@ -224,8 +267,8 @@ fn candidate_push_rejection_pushurl_and_native_local_route_are_preserved() {
                 .any(|r| r.target == first.to_string())
         );
     }
-    // A stopped SSH endpoint must have no effect on native local transport.
-    e.shutdown();
+    // A stopped transport host must have no effect on native local transport.
+    host.shutdown();
     let local = f.temp.path().join("local");
     b.clone_repo(f.repository.to_str().unwrap(), &local)
         .unwrap();
@@ -233,11 +276,12 @@ fn candidate_push_rejection_pushurl_and_native_local_route_are_preserved() {
     let rows = b.transport_observations().unwrap().snapshot();
     assert_eq!(rows.iter().filter(|r| r.credential_offered).count(), 1);
     assert_eq!(rows.last().unwrap().authenticated, None);
+    drop(request);
 }
 
 #[test]
 fn candidate_backend_clones_and_nested_scopes_share_pool_not_observation_rows() {
-    let (f, b, e) = fixture();
+    let (f, host, request, b) = fixture();
     let server = git2::Repository::open_bare(&f.repository).unwrap();
     commit(&server, "first");
     b.clone_repo(&url(&f), &f.temp.path().join("one")).unwrap();
@@ -280,67 +324,6 @@ fn candidate_backend_clones_and_nested_scopes_share_pool_not_observation_rows() 
         1,
         "existing preflight refuses before a new network attempt"
     );
-    e.shutdown();
-}
-
-#[test]
-fn candidate_runtime_retries_transient_failure_and_serializes_family_initialization() {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
-    let (f, mut b, e) = fixture();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let count = calls.clone();
-    let owned = e.clone();
-    b.ssh = transport_binding::Runtime::with_factory(move || {
-        if count.fetch_add(1, Ordering::SeqCst) == 0 {
-            return Err(std::io::ErrorKind::WouldBlock.into());
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        Ok(owned.clone())
-    });
-    assert_eq!(
-        b.ssh.endpoint().err().unwrap().kind(),
-        std::io::ErrorKind::WouldBlock
-    );
-    let options = crate::TransportOptions {
-        default_identity: Some(
-            f.temp
-                .path()
-                .join("client_ed25519")
-                .to_string_lossy()
-                .into(),
-        ),
-        ..Default::default()
-    };
-    let scoped = b
-        .with_transport(f.temp.path(), Some(&options))
-        .unwrap()
-        .unwrap();
-    std::thread::scope(|scope| {
-        for runtime in [b.ssh.clone(), b.clone().ssh, scoped.ssh.clone()] {
-            scope.spawn(move || {
-                runtime.endpoint().unwrap();
-            });
-        }
-    });
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        2,
-        "one failed construction, one shared success"
-    );
-    let server = git2::Repository::open_bare(&f.repository).unwrap();
-    commit(&server, "retry");
-    b.clone_repo(&url(&f), &f.temp.path().join("retry-a"))
-        .unwrap();
-    scoped
-        .clone_repo(&url(&f), &f.temp.path().join("retry-b"))
-        .unwrap();
-    assert_eq!(b.transport_observations().unwrap().snapshot().len(), 1);
-    let rows = scoped.transport_observations().unwrap().snapshot();
-    assert_eq!(rows.len(), 1);
-    assert!(!rows[0].credential_offered);
-    assert_eq!(rows[0].authenticated, Some(true));
-    e.shutdown();
+    host.finish(request);
+    host.shutdown();
 }
