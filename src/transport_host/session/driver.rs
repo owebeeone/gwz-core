@@ -93,7 +93,10 @@ impl Session {
         facts: Arc<dyn Fn(&Facts) + Send + Sync>,
     ) -> Result<BlockingStream, Failure> {
         let reply = Wait::new();
-        {
+        // A mux with no stream to spare is backpressure, not a failure: the
+        // open waits for a stream to end, within its allocation deadline.
+        let admit_until = allocation_until.unwrap_or_else(|| Instant::now() + ADMISSION);
+        loop {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.closed {
                 return Err(protocol_failure(
@@ -126,9 +129,9 @@ impl Session {
             let open = Open {
                 endpoint_id: binding.endpoint_id().into(),
                 operation_id: operation.into(),
-                destination,
+                destination: destination.clone(),
                 service,
-                identity,
+                identity: identity.clone(),
                 policy,
                 deadlines: network_deadlines(
                     state.io_timeout_ms,
@@ -137,9 +140,24 @@ impl Session {
                 ),
                 receive_limits: binding.limits().clone(),
             };
-            let id = owner.open(request, open).map_err(|_| {
-                protocol_failure(gwz_transport::protocol::ErrorCode::UnsupportedOperation)
-            })?;
+            let id = match owner.open(request, open) {
+                Ok(id) => id,
+                Err(mux::Error::Capacity | mux::Error::WouldBlock) => {
+                    drop(state);
+                    if Instant::now() >= admit_until {
+                        return Err(protocol_failure(
+                            gwz_transport::protocol::ErrorCode::Timeout,
+                        ));
+                    }
+                    self.wait_for_change(admit_until.saturating_duration_since(Instant::now()));
+                    continue;
+                }
+                Err(_) => {
+                    return Err(protocol_failure(
+                        gwz_transport::protocol::ErrorCode::UnsupportedOperation,
+                    ));
+                }
+            };
             if let Some(observer) = &allocation_observer {
                 observer(allocation_ms);
             }
@@ -172,15 +190,25 @@ impl Session {
                     reply: reply.clone(),
                     deadline,
                     pending: None,
+                    next: None,
                     observe,
                     facts,
                 },
             );
+            break;
         }
         match reply.get() {
             Ok((stream, _)) => Ok(stream),
             Err(failure) => Err(failure),
         }
+    }
+    /// Parks the calling thread until this session's state next changes, at
+    /// most `limit`, and never long: the change can land before the listener.
+    fn wait_for_change(&self, limit: Duration) {
+        let listener = self.listener();
+        let waker = Waker::from(Arc::new(ThreadWake(thread::current())));
+        let _ = listener.arm(&Context::from_waker(&waker));
+        thread::park_timeout(limit.min(Duration::from_millis(10)));
     }
     pub(in crate::transport_host) fn check(
         &self,
@@ -188,7 +216,9 @@ impl Session {
         identity: Identity,
     ) -> ModelResult<()> {
         let result = Wait::new();
-        {
+        // As for an open, a full mux makes the check wait for a stream to end.
+        let admit_until = Instant::now() + ADMISSION;
+        loop {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.closed {
                 return Err(unavailable("endpoint identity check unavailable"));
@@ -197,9 +227,18 @@ impl Session {
                 .owner
                 .as_ref()
                 .ok_or_else(|| unavailable("endpoint not bound"))?;
-            let id = owner
-                .check_identity(request, identity, CHECK_MS)
-                .map_err(mux_error)?;
+            let id = match owner.check_identity(request, identity.clone(), CHECK_MS) {
+                Ok(id) => id,
+                Err(error @ (mux::Error::Capacity | mux::Error::WouldBlock)) => {
+                    drop(state);
+                    if Instant::now() >= admit_until {
+                        return Err(mux_error(error));
+                    }
+                    self.wait_for_change(admit_until.saturating_duration_since(Instant::now()));
+                    continue;
+                }
+                Err(error) => return Err(mux_error(error)),
+            };
             state.checks.insert(
                 id,
                 Check {
@@ -207,6 +246,7 @@ impl Session {
                     result: result.clone(),
                 },
             );
+            break;
         }
         result.get().map_err(|failure| match failure.code {
             gwz_transport::protocol::ErrorCode::InvalidRequest => {
@@ -223,11 +263,14 @@ impl Session {
             _ => unavailable("endpoint identity check failed"),
         })
     }
-    pub(super) fn drive(&self) {
+    /// One pass. `waker` wakes the thread that runs passes; the result says
+    /// whether the pass moved a message, so that another pass runs at once.
+    pub(super) fn drive(&self, waker: &Waker) -> bool {
+        let mut moved = false;
         let mut reports: Vec<Box<dyn FnOnce() -> bool + Send>> = Vec::new();
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let now = self.origin.elapsed().as_millis().min(u64::MAX as u128) as u64;
-        let mut cx = Context::from_waker(Waker::noop());
+        let mut cx = Context::from_waker(waker);
         if let Some(owner) = &state.owner {
             owner.advance(now);
         }
@@ -292,7 +335,7 @@ impl Session {
                                 .accept(request.clone(), message.clone())
                         };
                         match result {
-                            Ok(()) => {}
+                            Ok(()) => moved = true,
                             Err(EndpointError::WouldBlock) => {
                                 state.incoming = Some((request, message));
                                 break;
@@ -304,6 +347,7 @@ impl Session {
                         }
                         continue;
                     }
+                    moved = true;
                     if let Some(check) = state.checks.remove(&message.stream_id) {
                         let result = match message.kind {
                             MessageKind::IdentityChecked => Ok(()),
@@ -365,54 +409,69 @@ impl Session {
                         }
                     }
                 }
-                // Alternate schemes; a busy SSH stream cannot starve HTTPS.
-                if state.pending.is_none() {
-                    let first = if state.prefer_https {
-                        state.https.as_mut().and_then(|e| e.take_outbound(&mut cx))
-                    } else {
-                        state.engine.as_mut().and_then(|e| e.take_outbound())
-                    };
-                    let item = first.or_else(|| {
-                        if state.prefer_https {
-                            state.engine.as_mut().and_then(|e| e.take_outbound())
-                        } else {
+                // Hand the mux every message the endpoints have ready, up to a
+                // bound per pass. Alternate schemes; a busy SSH stream cannot
+                // starve HTTPS.
+                for _ in 0..MAX_HANDOFFS {
+                    if state.pending.is_none() {
+                        let first = if state.prefer_https {
                             state.https.as_mut().and_then(|e| e.take_outbound(&mut cx))
-                        }
-                    });
-                    state.pending = item.map(|out| (out.request, out.envelope));
-                    state.prefer_https = !state.prefer_https;
-                }
-                if let Some(mut item) = state.pending.take() {
+                        } else {
+                            state.engine.as_mut().and_then(|e| e.take_outbound())
+                        };
+                        let item = first.or_else(|| {
+                            if state.prefer_https {
+                                state.engine.as_mut().and_then(|e| e.take_outbound())
+                            } else {
+                                state.https.as_mut().and_then(|e| e.take_outbound(&mut cx))
+                            }
+                        });
+                        state.pending = item.map(|out| (out.request, out.envelope));
+                        state.prefer_https = !state.prefer_https;
+                    }
+                    let Some(mut item) = state.pending.take() else {
+                        break;
+                    };
                     // Local seal makes the mux own the cancellation terminal. Late
                     // physical completion is cleanup only and cannot replace it.
                     let sealed = state
                         .registrations
                         .get(&item.0)
                         .is_some_and(|r| r.sealed.is_some());
-                    if !sealed {
-                        if let Some(engine) = &mut state.https {
-                            engine.before_handoff(&item.0, &mut item.1);
+                    if sealed {
+                        moved = true;
+                        continue;
+                    }
+                    if let Some(engine) = &mut state.https {
+                        engine.before_handoff(&item.0, &mut item.1);
+                    }
+                    match owner.send(&item.0, &item.1) {
+                        Ok(()) => {
+                            moved = true;
+                            if let Some(engine) = &mut state.https {
+                                engine.handed_off(&item.0, &item.1);
+                            }
                         }
-                        match owner.send(&item.0, &item.1) {
-                            Ok(()) => {
-                                if let Some(engine) = &mut state.https {
-                                    engine.handed_off(&item.0, &item.1);
-                                }
-                            }
-                            Err(mux::Error::WouldBlock) => state.pending = Some(item),
-                            Err(mux::Error::InvalidRequest)
-                                if matches!(
-                                    item.1.kind,
-                                    MessageKind::OpenFailed
-                                        | MessageKind::IdentityCheckFailed
-                                        | MessageKind::Failed
-                                        | MessageKind::Closed
-                                ) && state.session.as_deref() == Some(&item.1.session_id) =>
-                            {
-                                // Mux deadline can win against the endpoint worker's
-                                // terminal completion for this same admitted stream.
-                            }
-                            Err(_) => Self::close_state(&mut state),
+                        Err(mux::Error::WouldBlock) => {
+                            state.pending = Some(item);
+                            break;
+                        }
+                        Err(mux::Error::InvalidRequest)
+                            if matches!(
+                                item.1.kind,
+                                MessageKind::OpenFailed
+                                    | MessageKind::IdentityCheckFailed
+                                    | MessageKind::Failed
+                                    | MessageKind::Closed
+                            ) && state.session.as_deref() == Some(&item.1.session_id) =>
+                        {
+                            // Mux deadline can win against the endpoint worker's
+                            // terminal completion for this same admitted stream.
+                            moved = true;
+                        }
+                        Err(_) => {
+                            Self::close_state(&mut state);
+                            break;
                         }
                     }
                 }
@@ -424,7 +483,7 @@ impl Session {
                     .collect();
                 let session = state.session.clone();
                 let mut failed = false;
-                for entry in state.streams.values_mut().filter(|_| !held) {
+                'streams: for entry in state.streams.values_mut().filter(|_| !held) {
                     entry.peer.advance(now);
                     if !entry.opened {
                         if entry.deadline.is_some_and(|at| Instant::now() >= at) {
@@ -436,24 +495,34 @@ impl Session {
                         }
                         continue;
                     }
-                    if entry.pending.is_none() {
-                        if let Poll::Ready(Ok(Some(message))) =
-                            pin!(entry.peer.next_message()).poll(&mut cx)
-                        {
-                            entry.pending = Some(message);
+                    // Forward what the stream has ready, up to a bound per pass.
+                    // A wait for its next message stays pending, so the
+                    // client's next read, write or close wakes this thread.
+                    for _ in 0..MAX_STREAM_MESSAGES {
+                        if entry.pending.is_none() {
+                            let next = entry.next.get_or_insert_with(|| next_message(&entry.peer));
+                            if let Poll::Ready(result) = next.as_mut().poll(&mut cx) {
+                                entry.next = None;
+                                entry.pending = result.ok().flatten();
+                            }
                         }
-                    }
-                    if let Some(message) = entry.pending.take() {
+                        let Some(message) = entry.pending.take() else {
+                            break;
+                        };
                         // As above: the seal made the mux own this request's
                         // cancellation, so a late client message for one of its
                         // streams is stale. The mux may already have retired
                         // the route; forwarding it would fail the whole session.
                         if sealed.contains(&entry.request) {
+                            moved = true;
                             continue;
                         }
                         match owner.send(&entry.request, &message) {
-                            Ok(()) => {}
-                            Err(mux::Error::WouldBlock) => entry.pending = Some(message),
+                            Ok(()) => moved = true,
+                            Err(mux::Error::WouldBlock) => {
+                                entry.pending = Some(message);
+                                break;
+                            }
                             Err(mux::Error::InvalidRequest)
                                 if session.as_deref() == Some(&message.session_id)
                                     && message.version == 2 =>
@@ -469,10 +538,11 @@ impl Session {
                                 // the guard rules out the last two, and the route
                                 // the mux gave this stream belongs to this entry's
                                 // request, so here it means the route is gone.
+                                moved = true;
                             }
                             Err(_) => {
                                 failed = true;
-                                break;
+                                break 'streams;
                             }
                         }
                     }
@@ -537,13 +607,22 @@ impl Session {
             }
         }
         drop(state);
+        moved |= !reports.is_empty();
         for report in reports {
             if !report() {
                 self.close();
             }
         }
+        moved
     }
 }
+/// The endpoint messages one pass hands to the mux, at most.
+const MAX_HANDOFFS: usize = 64;
+/// How long an open or a check without its own allocation deadline waits for
+/// the mux to have a stream to spare; an open's default allocation is as long.
+const ADMISSION: Duration = Duration::from_secs(30);
+/// The messages one pass forwards from one client stream, at most.
+const MAX_STREAM_MESSAGES: usize = 8;
 fn network_deadlines(io_timeout_ms: u64, connect_timeout_ms: u64, allocation_ms: i64) -> Deadlines {
     Deadlines {
         allocation_ms,

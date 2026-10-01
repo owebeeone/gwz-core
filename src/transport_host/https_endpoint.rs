@@ -33,6 +33,8 @@ struct Entry {
     // Retain the application half until its terminal message is drained.
     stream: Option<Stream>,
     peer: Option<Arc<MessageEndpoint>>,
+    /// The wait for the peer's next message; the HTTP task's next write wakes it.
+    next: Option<super::session::NextMessage>,
     output: Option<Envelope>,
     retired: bool,
 }
@@ -254,6 +256,7 @@ impl HttpsEndpoint {
                 opening_published: false,
                 stream: None,
                 peer: None,
+                next: None,
                 output: None,
                 retired: false,
             },
@@ -423,14 +426,18 @@ impl HttpsEndpoint {
             if entry.retired {
                 continue;
             }
-            let message = entry.output.take().or_else(|| {
-                entry.peer.as_ref().and_then(|peer| {
-                    match std::pin::pin!(peer.next_message()).poll(cx) {
-                        Poll::Ready(Ok(Some(message))) => Some(message),
-                        _ => None,
+            let mut message = entry.output.take();
+            if message.is_none() {
+                if let Some(peer) = &entry.peer {
+                    let next = entry
+                        .next
+                        .get_or_insert_with(|| super::session::next_message(peer));
+                    if let Poll::Ready(result) = next.as_mut().poll(cx) {
+                        entry.next = None;
+                        message = result.ok().flatten();
                     }
-                })
-            });
+                }
+            }
             if let Some(envelope) = message {
                 if matches!(
                     envelope.kind,

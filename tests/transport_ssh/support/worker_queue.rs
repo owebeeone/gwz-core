@@ -75,6 +75,7 @@ fn queued_expiry_releases_admission_without_stopping_worker() {
                 bridge_version: 1,
                 bridge_limits: None,
                 bridge_deadlines: None,
+                bridge_waker: None,
             })
             .unwrap();
         result
