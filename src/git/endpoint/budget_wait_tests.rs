@@ -12,7 +12,7 @@ use super::{
     ssh_key_snapshot::Registry,
     ssh_pool::{Connector, Resource},
     ssh_pump::SshPump,
-    ssh_worker::{ChannelResource, Endpoint},
+    ssh_worker::{BridgeContext, ChannelResource, Endpoint, PendingOpen},
 };
 use gwz_transport::{
     pool::{Config, Identity, Key},
@@ -28,7 +28,7 @@ use std::{
     process::Command,
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker},
     thread,
@@ -96,8 +96,9 @@ fn a_selected_key_open_waits_for_a_key_reservation() {
     let registry = Registry::new();
     let setups = Arc::new(AtomicUsize::new(0));
     let counted = setups.clone();
+    let config = Config::default();
     let endpoint = Endpoint::with_registry(
-        Config::default(),
+        config.clone(),
         registry.clone(),
         move |_, _| Counted(counted),
         1_000,
@@ -108,30 +109,36 @@ fn a_selected_key_open_waits_for_a_key_reservation() {
     while let Ok(reservation) = registry.reserve() {
         held.push(reservation);
     }
-    let opener = endpoint.clone();
-    let open = thread::spawn(move || {
-        opener.open_selected(
-            Key::ssh("git", "host", 22),
-            key,
-            NativeService::UploadPack,
-            "repo",
-        )
-    });
+    let open = start_selected_open(&endpoint, &config, key).unwrap();
     let until = Instant::now() + PATIENCE;
-    while endpoint.shutdown_status().pending_admissions != 1 && !open.is_finished() {
+    while endpoint.shutdown_status().pending_admissions != 1 {
+        if let Poll::Ready(result) = open.poll() {
+            panic!(
+                "the open failed while the key registry was full: {:?}",
+                result.err()
+            );
+        }
         assert!(Instant::now() < until, "the open never reached admission");
         thread::sleep(Duration::from_millis(1));
     }
-    assert!(
-        !open.is_finished(),
-        "the open failed while the key registry was full: {:?}",
-        open.join().unwrap().err()
-    );
+    if let Poll::Ready(result) = open.poll() {
+        panic!(
+            "the open failed while the key registry was full: {:?}",
+            result.err()
+        );
+    }
     assert_eq!(setups.load(Ordering::SeqCst), 0);
     drop(held);
-    let error = match open.join().unwrap() {
-        Ok(_) => panic!("the fixture refuses every setup"),
-        Err(error) => error,
+    let until = Instant::now() + PATIENCE;
+    let error = loop {
+        match open.poll() {
+            Poll::Ready(Ok(_)) => panic!("the fixture refuses every setup"),
+            Poll::Ready(Err(error)) => break error,
+            Poll::Pending => {
+                assert!(Instant::now() < until, "the open never replied");
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
     };
     assert_eq!(
         setups.load(Ordering::SeqCst),
@@ -199,7 +206,13 @@ fn full_job_budget_child() {
     let setups = Arc::new(AtomicUsize::new(0));
     let counted = setups.clone();
     let mut endpoint = PlacementEndpoint::new(
-        Endpoint::with_connector(Config::default(), move |_| Counted(counted), 1_000).unwrap(),
+        Endpoint::with_registry(
+            Config::default(),
+            Registry::new(),
+            move |_, _| Counted(counted),
+            1_000,
+        )
+        .unwrap(),
         PathBuf::from("/tmp"),
         "endpoint".into(),
         "owner".into(),
@@ -241,6 +254,38 @@ fn full_job_budget_child() {
         }
     }
     endpoint.shutdown();
+}
+
+/// Submits the open the placement endpoint would, of `repo` on `host` with
+/// the identity file `selected`, over the endpoint's whole policy, without
+/// waiting for the worker's reply.
+fn start_selected_open(
+    endpoint: &Endpoint,
+    config: &Config,
+    selected: PathBuf,
+) -> io::Result<PendingOpen> {
+    let context = BridgeContext {
+        session_id: "session".into(),
+        stream_id: 1,
+        version: 2,
+        limits: gwz_transport::binding::default_limits(),
+        deadlines: Deadlines {
+            allocation_ms: config.allocation_timeout_ms as i64,
+            connect_ms: config.connect_timeout_ms as i64,
+            io_ms: 1_000,
+            interaction_ms: config.interaction_timeout_ms as i64,
+            cleanup_ms: config.cleanup_timeout_ms as i64,
+        },
+        waker: None,
+    };
+    endpoint.start_endpoint_open(
+        Key::ssh("git", "host", 22),
+        Some(selected),
+        NativeService::UploadPack,
+        "repo",
+        context,
+        Arc::new(AtomicBool::new(false)),
+    )
 }
 
 fn ambient_open(stream_id: i64) -> Envelope {

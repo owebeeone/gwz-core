@@ -16,21 +16,6 @@ cfg_if::cfg_if! {
         };
         use std::{io, path::PathBuf, time::Duration};
 
-        pub(crate) fn connect(
-            config: Config,
-            known_hosts: PathBuf,
-            agent_socket: Option<PathBuf>,
-            io_timeout_ms: u64,
-        ) -> io::Result<Endpoint> {
-            connect_with_authority(
-                config.clone(),
-                known_hosts,
-                agent_socket,
-                io_timeout_ms,
-                Authority::new(config.total, config.per_host),
-            )
-        }
-
         pub(crate) fn connect_with_authority(
             config: Config,
             known_hosts: PathBuf,

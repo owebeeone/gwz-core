@@ -1,19 +1,21 @@
-use crate::{
-    common::{self, SshConnection, SshdFixture},
-    *,
-};
+//! A fake SSH agent for the endpoint's agent tests: a proxy socket in front of
+//! a private `ssh-agent` holding two fixture keys, one authorized and one not.
+//! It records each list and sign request, can stall or damage a signature,
+//! and never contacts the user's agent.
+use crate::git::endpoint::ssh_fixture::{self as common, SshConnection, SshdFixture};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::{
     fs,
-    io::{Read, Write},
+    io::{self, Read, Write},
     net::TcpStream,
     path::PathBuf,
     process::{Child, Command, Stdio},
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU8, Ordering},
     },
     thread,
+    time::{Duration, Instant},
 };
 pub struct Fixture {
     pub ssh: SshdFixture,

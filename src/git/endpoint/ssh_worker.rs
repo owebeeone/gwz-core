@@ -1,14 +1,14 @@
-//! Shared endpoint worker. Native setup is an injected nonblocking owner;
-//! blocking Git callers never drive the worker that services their streams.
+//! Shared endpoint worker. Native setup is an injected nonblocking owner; an
+//! open is submitted without waiting, and its reply is an
+//! [`EndpointAttachment`] that the placement endpoint drives.
 use super::{
     agent_job::{Cleanup, Job},
     ssh_admission::{Admissions, Reader},
     ssh_channel::{GitService, SshChannel},
-    ssh_key_snapshot::{Entry, Loaded, Registry},
+    ssh_key_snapshot::{Entry, Registry},
     ssh_pool::{Connector, PoolHost, Progress, Resource},
     ssh_pump::SshPump,
     ssh_shutdown::{self, Status},
-    stream_io::BlockingStream,
 };
 use gwz_transport::{
     pool::{Checkout, Config as PoolConfig, Identity, Key, Lease, Owner, Pool},
@@ -25,7 +25,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-        mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError},
+        mpsc::{self, Receiver, Sender, SyncSender, TrySendError},
     },
     task::{Context, Poll, Wake, Waker},
     thread::{self, JoinHandle, Thread},
@@ -64,7 +64,6 @@ struct Shared {
     outstanding: Arc<AtomicUsize>,
     capacity: AtomicUsize,
     pool: Pool,
-    timeout: Option<Duration>,
     policy: PoolConfig,
     io_timeout_ms: u64,
     stop: Arc<AtomicBool>,
@@ -109,35 +108,16 @@ pub(super) struct OpenRequest {
     pub(super) path: String,
     pub(super) deadline: Option<u64>,
     pub(super) cancelled: Arc<AtomicBool>,
-    pub(super) reply: Option<SyncSender<io::Result<(BlockingStream, Opened)>>>,
-    pub(super) bridge_reply: Option<SyncSender<OpenOutcome>>,
+    pub(super) reply: Option<SyncSender<OpenOutcome>>,
     pub(super) selected: Option<PathBuf>,
+    /// Pins the admitted key snapshot, which the registry holds only weakly,
+    /// until the open completes: the connector finds it there by identity.
     pub(super) authority: Option<Arc<Entry>>,
     pub(super) progress: Progress,
     pub(super) permit: Permit,
-    pub(super) bridge: bool,
-    pub(super) bridge_session: Option<String>,
-    pub(super) bridge_stream_id: i64,
-    pub(super) bridge_version: i64,
-    pub(super) bridge_limits: Option<Limits>,
-    pub(super) bridge_deadlines: Option<Deadlines>,
-    pub(super) bridge_waker: Option<Waker>,
+    pub(super) context: BridgeContext,
 }
-pub(super) enum OpenStream {
-    Blocking(BlockingStream),
-    Endpoint(EndpointAttachment),
-}
-pub(super) type OpenOutcome = io::Result<(OpenStream, Opened)>;
-enum OpenReceiver {
-    Blocking(Receiver<io::Result<(BlockingStream, Opened)>>),
-    Endpoint(Receiver<OpenOutcome>),
-}
-/// An open the worker has taken, its reply still to come.
-struct Submitted {
-    result: OpenReceiver,
-    absolute: Option<Instant>,
-    cancelled: Arc<AtomicBool>,
-}
+pub(super) type OpenOutcome = io::Result<(EndpointAttachment, Opened)>;
 /// A bridged open the worker owns until it replies.
 pub(crate) struct PendingOpen {
     reply: Receiver<OpenOutcome>,
@@ -146,10 +126,7 @@ impl PendingOpen {
     /// The worker's reply, once it has replied; a stopped worker is a reply too.
     pub(crate) fn poll(&self) -> Poll<io::Result<(EndpointAttachment, Opened)>> {
         match self.reply.try_recv() {
-            Ok(outcome) => Poll::Ready(outcome.and_then(|(stream, opened)| match stream {
-                OpenStream::Endpoint(attachment) => Ok((attachment, opened)),
-                OpenStream::Blocking(_) => Err(io::Error::other("unexpected blocking stream")),
-            })),
+            Ok(outcome) => Poll::Ready(outcome),
             Err(mpsc::TryRecvError::Empty) => Poll::Pending,
             Err(mpsc::TryRecvError::Disconnected) => Poll::Ready(Err(stopped())),
         }
@@ -264,13 +241,10 @@ impl EndpointOpenFailure {
 }
 impl OpenRequest {
     pub(super) fn has_reply(&self) -> bool {
-        self.reply.is_some() || self.bridge_reply.is_some()
+        self.reply.is_some()
     }
     pub(super) fn reject(&mut self, kind: io::ErrorKind) {
         if let Some(reply) = self.reply.take() {
-            let _ = reply.send(Err(kind.into()));
-        }
-        if let Some(reply) = self.bridge_reply.take() {
             let facts = self
                 .progress
                 .lock()
@@ -278,7 +252,7 @@ impl OpenRequest {
                 .clone();
             let _ = reply.send(Err(EndpointOpenFailure::capture(kind.into(), facts)));
             // The bridge's owner polls for the reply between its passes.
-            if let Some(waker) = &self.bridge_waker {
+            if let Some(waker) = &self.context.waker {
                 waker.wake_by_ref();
             }
         }
@@ -292,64 +266,31 @@ impl OpenRequest {
         // bounds an active stream; pending admission remains independently bounded.
         let Self {
             reply,
-            bridge_reply,
-            bridge_waker,
             permit,
             progress,
+            context,
             ..
         } = self;
         drop(permit);
-        if let Some(reply) = bridge_reply {
+        if let Some(reply) = reply {
             let result = result.map_err(|error| {
                 let facts = progress.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 EndpointOpenFailure::capture(error, facts)
             });
             let _ = reply.send(result);
             // The bridge's owner polls for the reply between its passes.
-            if let Some(waker) = bridge_waker {
+            if let Some(waker) = context.waker {
                 waker.wake();
             }
-            return;
-        }
-        if let Some(reply) = reply {
-            let result = result.and_then(|(stream, opened)| match stream {
-                OpenStream::Blocking(stream) => Ok((stream, opened)),
-                OpenStream::Endpoint(_) => Err(io::Error::other("unexpected endpoint stream")),
-            });
-            let _ = reply.send(result);
         }
     }
 }
 #[derive(Clone)]
 pub(crate) struct Endpoint {
     shared: Arc<Shared>,
-    registry: Registry,
     cleanup: Duration,
 }
 impl Endpoint {
-    pub(crate) fn new<C>(config: PoolConfig, connector: C, io_timeout_ms: u64) -> io::Result<Self>
-    where
-        C: Connector + Send + 'static,
-        C::Resource: ChannelResource,
-    {
-        Self::with_connector(config, |_| connector, io_timeout_ms)
-    }
-    pub(crate) fn with_connector<C>(
-        config: PoolConfig,
-        factory: impl FnOnce(Instant) -> C,
-        io_timeout_ms: u64,
-    ) -> io::Result<Self>
-    where
-        C: Connector + Send + 'static,
-        C::Resource: ChannelResource,
-    {
-        Self::with_registry(
-            config,
-            Registry::new(),
-            |origin, _| factory(origin),
-            io_timeout_ms,
-        )
-    }
     pub(crate) fn with_registry<C>(
         config: PoolConfig,
         registry: Registry,
@@ -381,21 +322,12 @@ impl Endpoint {
     {
         let retention = Cleanup::reserve()?;
         let origin = Instant::now();
-        let endpoint_registry = registry.clone();
         let connector = factory(origin, registry.clone());
         if io_timeout_ms > i32::MAX as u64 {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         let capacity = config.max_requests;
         let cleanup = config.cleanup_timeout_ms;
-        let timeout = (config.connect_timeout_ms != 0).then(|| {
-            Duration::from_millis(
-                config
-                    .allocation_timeout_ms
-                    .saturating_add(config.connect_timeout_ms)
-                    .saturating_add(config.interaction_timeout_ms),
-            )
-        });
         let policy = config.clone();
         let (pool, host) = PoolHost::new(config, connector, 0)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
@@ -444,7 +376,6 @@ impl Endpoint {
                 outstanding: Arc::new(AtomicUsize::new(0)),
                 capacity: AtomicUsize::new(capacity),
                 pool: client_pool,
-                timeout,
                 policy,
                 io_timeout_ms,
                 stop,
@@ -452,147 +383,8 @@ impl Endpoint {
                 join: Mutex::new(Some(join)),
                 status,
             }),
-            registry: endpoint_registry,
             cleanup: Duration::from_millis(cleanup),
         })
-    }
-    pub(crate) fn open(
-        &self,
-        key: Key,
-        identity: Identity,
-        service: GitService,
-        path: &str,
-    ) -> io::Result<BlockingStream> {
-        self.open_observed(key, identity, service, path)
-            .map(|(stream, _)| stream)
-    }
-    pub(crate) fn open_observed(
-        &self,
-        key: Key,
-        identity: Identity,
-        service: GitService,
-        path: &str,
-    ) -> io::Result<(BlockingStream, Opened)> {
-        self.enqueue(
-            key,
-            identity,
-            None,
-            service,
-            path,
-            Progress::default(),
-            false,
-            None,
-            None,
-        )
-        .and_then(|(stream, opened)| match stream {
-            OpenStream::Blocking(stream) => Ok((stream, opened)),
-            OpenStream::Endpoint(_) => Err(io::Error::other("unexpected endpoint stream")),
-        })
-    }
-    pub(crate) fn open_selected(
-        &self,
-        key: Key,
-        selected: PathBuf,
-        service: GitService,
-        path: &str,
-    ) -> io::Result<(BlockingStream, Opened)> {
-        self.enqueue(
-            key,
-            Identity::Ambient,
-            Some(selected),
-            service,
-            path,
-            Progress::default(),
-            false,
-            None,
-            None,
-        )
-        .and_then(|(stream, opened)| match stream {
-            OpenStream::Blocking(stream) => Ok((stream, opened)),
-            OpenStream::Endpoint(_) => Err(io::Error::other("unexpected endpoint stream")),
-        })
-    }
-    pub(crate) fn open_reported(
-        &self,
-        key: Key,
-        selected: Option<PathBuf>,
-        service: GitService,
-        path: &str,
-        progress: Progress,
-    ) -> io::Result<(BlockingStream, Opened)> {
-        self.enqueue(
-            key,
-            Identity::Ambient,
-            selected,
-            service,
-            path,
-            progress,
-            false,
-            None,
-            None,
-        )
-        .and_then(|(stream, opened)| match stream {
-            OpenStream::Blocking(stream) => Ok((stream, opened)),
-            OpenStream::Endpoint(_) => Err(io::Error::other("unexpected endpoint stream")),
-        })
-    }
-    pub(crate) fn open_endpoint_ambient(
-        &self,
-        key: Key,
-        service: GitService,
-        path: &str,
-    ) -> io::Result<(EndpointAttachment, Opened)> {
-        self.enqueue(
-            key,
-            Identity::Ambient,
-            None,
-            service,
-            path,
-            Progress::default(),
-            true,
-            None,
-            None,
-        )
-        .and_then(|(stream, opened)| match stream {
-            OpenStream::Endpoint(attachment) => Ok((attachment, opened)),
-            OpenStream::Blocking(_) => Err(io::Error::other("unexpected blocking stream")),
-        })
-    }
-    /// Submits a bridged open, with a selected key or the agent, and returns
-    /// at once. No thread and no supervised job waits for it: the worker owns
-    /// it until it replies, and its reply wakes `context.waker`.
-    pub(crate) fn start_endpoint_open(
-        &self,
-        key: Key,
-        selected: Option<PathBuf>,
-        service: GitService,
-        path: &str,
-        context: BridgeContext,
-        cancelled: Arc<AtomicBool>,
-    ) -> io::Result<PendingOpen> {
-        let submitted = self.submit(
-            key,
-            Identity::Ambient,
-            selected,
-            service,
-            path,
-            Progress::default(),
-            true,
-            Some(context),
-            Some(cancelled),
-        )?;
-        match submitted.result {
-            OpenReceiver::Endpoint(reply) => Ok(PendingOpen { reply }),
-            OpenReceiver::Blocking(_) => Err(io::Error::other("unexpected blocking stream")),
-        }
-    }
-    pub(crate) fn start_identity_check(
-        &self,
-        key: Key,
-        selected: PathBuf,
-        deadline: Option<Instant>,
-    ) -> io::Result<Job<Loaded>> {
-        self.registry.start(key, selected, deadline, self.cleanup)
     }
     pub(crate) fn validate_deadlines(&self, d: &Deadlines) -> io::Result<()> {
         fn tightens(value: i64, configured: u64, zero_allowed: bool) -> bool {
@@ -645,9 +437,6 @@ impl Endpoint {
             Ok(())
         })
     }
-    pub(crate) fn intern_identity_check(&self, loaded: Loaded) -> io::Result<Arc<Entry>> {
-        self.registry.intern(loaded, || Ok(()))
-    }
     pub(crate) fn pending_requests(&self) -> usize {
         self.shared.outstanding.load(Ordering::Acquire)
     }
@@ -657,75 +446,20 @@ impl Endpoint {
     pub(crate) fn set_request_capacity(&self, capacity: usize) {
         self.shared.capacity.store(capacity, Ordering::Release);
     }
-    fn enqueue(
+    /// Submits a bridged open, with a selected key or the agent, and returns
+    /// at once. No thread and no supervised job waits for it: the worker owns
+    /// it until it replies, and its reply wakes `context.waker`. A selected
+    /// identity file is admitted by the worker before every checkout,
+    /// including reuse.
+    pub(crate) fn start_endpoint_open(
         &self,
         key: Key,
-        identity: Identity,
         selected: Option<PathBuf>,
         service: GitService,
         path: &str,
-        progress: Progress,
-        bridge: bool,
-        context: Option<BridgeContext>,
-        cancelled_override: Option<Arc<AtomicBool>>,
-    ) -> OpenOutcome {
-        let Submitted {
-            result,
-            absolute,
-            cancelled,
-        } = self.submit(
-            key,
-            identity,
-            selected,
-            service,
-            path,
-            progress,
-            bridge,
-            context,
-            cancelled_override,
-        )?;
-        let received = match (result, absolute) {
-            (OpenReceiver::Blocking(result), Some(at)) => result
-                .recv_timeout(at.saturating_duration_since(Instant::now()))
-                .map(|result| {
-                    result.map(|(stream, opened)| (OpenStream::Blocking(stream), opened))
-                }),
-            (OpenReceiver::Blocking(result), None) => result
-                .recv()
-                .map(|result| result.map(|(stream, opened)| (OpenStream::Blocking(stream), opened)))
-                .map_err(|_| RecvTimeoutError::Disconnected),
-            (OpenReceiver::Endpoint(result), Some(at)) => {
-                result.recv_timeout(at.saturating_duration_since(Instant::now()))
-            }
-            (OpenReceiver::Endpoint(result), None) => {
-                result.recv().map_err(|_| RecvTimeoutError::Disconnected)
-            }
-        };
-        match received {
-            Ok(result) => result,
-            Err(error) => {
-                cancelled.store(true, Ordering::Release);
-                self.shared.worker.unpark();
-                Err(match error {
-                    RecvTimeoutError::Timeout => io::ErrorKind::TimedOut.into(),
-                    RecvTimeoutError::Disconnected => stopped(),
-                })
-            }
-        }
-    }
-    /// Admits an open and hands it to the worker, without waiting for its reply.
-    fn submit(
-        &self,
-        key: Key,
-        identity: Identity,
-        selected: Option<PathBuf>,
-        service: GitService,
-        path: &str,
-        progress: Progress,
-        bridge: bool,
-        context: Option<BridgeContext>,
-        cancelled_override: Option<Arc<AtomicBool>>,
-    ) -> io::Result<Submitted> {
+        context: BridgeContext,
+        cancelled: Arc<AtomicBool>,
+    ) -> io::Result<PendingOpen> {
         if self.shared.stop.load(Ordering::Acquire) {
             return Err(stopped());
         }
@@ -742,27 +476,16 @@ impl Endpoint {
             })
             .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "endpoint admission full"))?;
         let permit = Permit(self.shared.outstanding.clone());
-        let (reply, bridge_reply, result) = if bridge {
-            let (reply, result) = mpsc::sync_channel(1);
-            (None, Some(reply), OpenReceiver::Endpoint(result))
-        } else {
-            let (reply, result) = mpsc::sync_channel(1);
-            (Some(reply), None, OpenReceiver::Blocking(result))
-        };
-        let cancelled = cancelled_override.unwrap_or_else(|| Arc::new(AtomicBool::new(false)));
-        let timeout = if let Some(context) = &context {
-            self.validate_deadlines(&context.deadlines)?;
-            let d = &context.deadlines;
-            (d.connect_ms != 0).then(|| {
-                Duration::from_millis(
-                    (d.allocation_ms as u64)
-                        .saturating_add(d.connect_ms as u64)
-                        .saturating_add(d.interaction_ms as u64),
-                )
-            })
-        } else {
-            self.shared.timeout
-        };
+        let (reply, result) = mpsc::sync_channel(1);
+        self.validate_deadlines(&context.deadlines)?;
+        let d = &context.deadlines;
+        let timeout = (d.connect_ms != 0).then(|| {
+            Duration::from_millis(
+                (d.allocation_ms as u64)
+                    .saturating_add(d.connect_ms as u64)
+                    .saturating_add(d.interaction_ms as u64),
+            )
+        });
         let absolute = timeout
             .map(|duration| {
                 Instant::now()
@@ -772,37 +495,23 @@ impl Endpoint {
             .transpose()?;
         let request = OpenRequest {
             key,
-            identity,
+            identity: Identity::Ambient,
             service,
             path: path.to_owned(),
             permit,
-            reply,
-            bridge_reply,
+            reply: Some(reply),
             selected,
             authority: None,
-            progress,
-            cancelled: cancelled.clone(),
+            progress: Progress::default(),
+            cancelled,
             deadline: absolute.map(|at| at.duration_since(self.shared.origin).as_millis() as u64),
-            bridge,
-            bridge_session: context.as_ref().map(|value| value.session_id.clone()),
-            bridge_stream_id: context.as_ref().map_or(0, |value| value.stream_id),
-            bridge_version: context.as_ref().map_or(2, |value| value.version),
-            bridge_limits: context.as_ref().map(|value| value.limits.clone()),
-            bridge_deadlines: context.as_ref().map(|value| value.deadlines.clone()),
-            bridge_waker: context.as_ref().and_then(|value| value.waker.clone()),
+            context,
         };
         if self.shared.sender.send(request).is_err() {
             return Err(stopped());
         }
         self.shared.worker.unpark();
-        Ok(Submitted {
-            result,
-            absolute,
-            cancelled,
-        })
-    }
-    pub(crate) fn shutdown_watch(&self) -> ssh_shutdown::ShutdownWatch {
-        ssh_shutdown::ShutdownWatch(self.shared.status.clone())
+        Ok(PendingOpen { reply: result })
     }
     pub(crate) fn shutdown_status(&self) -> ShutdownStatus {
         *self.shared.status.lock().unwrap_or_else(|e| e.into_inner())
@@ -820,11 +529,11 @@ struct Pending {
 struct Active {
     lease: Option<Lease>,
     peer: MessageEndpoint,
-    bridge_inbound: Option<Receiver<Envelope>>,
-    bridge_outbound: Option<SyncSender<Envelope>>,
-    bridge_cancelled: Option<Arc<AtomicBool>>,
+    bridge_inbound: Receiver<Envelope>,
+    bridge_outbound: SyncSender<Envelope>,
+    bridge_cancelled: Arc<AtomicBool>,
     bridge_pending: Option<Envelope>,
-    bridge_session: Option<String>,
+    bridge_session: String,
     bridge_stream_id: i64,
     bridge_version: i64,
     bridge_terminal_delivered: bool,
@@ -895,13 +604,9 @@ fn run<C>(
                     .iter()
                     .find(|p| p.checkout.opening_connection() == Some(connection));
                 let stall = item
-                    .and_then(|p| p.request.bridge_deadlines.as_ref())
-                    .map(|deadlines| {
-                        if deadlines.io_ms <= 0 {
-                            0
-                        } else {
-                            deadlines.io_ms as u64
-                        }
+                    .map(|p| {
+                        let io_ms = p.request.context.deadlines.io_ms;
+                        if io_ms <= 0 { 0 } else { io_ms as u64 }
                     })
                     .unwrap_or(io_timeout_ms);
                 stall_ms.store(stall, Ordering::Relaxed);
@@ -949,11 +654,10 @@ fn run<C>(
                 request.identity.clone(),
                 Owner::new(&session, serial.to_string()),
             );
-            if let Some(d) = &request.bridge_deadlines {
-                policy.allocation_timeout_ms = Some(d.allocation_ms as u64);
-                policy.connect_timeout_ms = Some(d.connect_ms as u64);
-                policy.interaction_timeout_ms = Some(d.interaction_ms as u64);
-            }
+            let d = &request.context.deadlines;
+            policy.allocation_timeout_ms = Some(d.allocation_ms as u64);
+            policy.connect_timeout_ms = Some(d.connect_ms as u64);
+            policy.interaction_timeout_ms = Some(d.interaction_ms as u64);
             match pool.checkout_until(policy, request.deadline) {
                 Ok(checkout) => pending.push(Pending { checkout, request }),
                 Err(error) => request.complete(Err(io::Error::other(error))),
@@ -972,20 +676,7 @@ fn run<C>(
                 Poll::Ready(result) => {
                     let item = pending.swap_remove(index);
                     let result = result.map_err(io::Error::other).and_then(|lease| {
-                        let Some(next) = serial.checked_add(1) else {
-                            return Err(io::Error::other("stream IDs exhausted"));
-                        };
-                        serial = next;
-                        attach(
-                            host,
-                            lease,
-                            &item.request,
-                            &session,
-                            serial,
-                            now,
-                            io_timeout_ms,
-                            &mut active,
-                        )
+                        attach(host, lease, &item.request, &session, now, &mut active)
                     });
                     item.request.complete(result);
                 }
@@ -1042,9 +733,7 @@ fn attach<C: Connector>(
     lease: Lease,
     request: &OpenRequest,
     session: &str,
-    serial: i64,
     now: u64,
-    io_timeout: u64,
     active: &mut Vec<Active>,
 ) -> OpenOutcome
 where
@@ -1053,34 +742,23 @@ where
     if request.expired(now) {
         return Err(io::ErrorKind::TimedOut.into());
     }
+    let context = &request.context;
     let config = |side| {
-        let stream_session = request.bridge_session.as_deref().unwrap_or(session);
-        let stream_serial = if request.bridge {
-            request.bridge_stream_id
-        } else {
-            serial
-        };
-        let mut config = StreamConfig::new(stream_session, stream_serial, side);
-        if request.bridge {
-            config.profile_version = 2;
-            if let Some(limits) = &request.bridge_limits {
-                config.receive_limits = limits.clone();
-                config.peer_limits = limits.clone();
-                config.receive_window = (limits.receive_window as usize).min(65_536);
-                config.peer_receive_window = (limits.receive_window as usize).min(65_536);
-                config.max_payload = (limits.data_payload as usize).min(16_384);
-            }
-        }
-        config.io_timeout_ms = io_timeout;
-        if let Some(d) = &request.bridge_deadlines {
-            config.io_timeout_ms = d.io_ms as u64;
-            config.interaction_budget_ms = d.interaction_ms as u64;
-            config.close_timeout_ms = d.cleanup_ms as u64;
-        }
+        let mut config = StreamConfig::new(&context.session_id, context.stream_id, side);
+        config.profile_version = 2;
+        let limits = &context.limits;
+        config.receive_limits = limits.clone();
+        config.peer_limits = limits.clone();
+        config.receive_window = (limits.receive_window as usize).min(65_536);
+        config.peer_receive_window = (limits.receive_window as usize).min(65_536);
+        config.max_payload = (limits.data_payload as usize).min(16_384);
+        let d = &context.deadlines;
+        config.io_timeout_ms = d.io_ms as u64;
+        config.interaction_budget_ms = d.interaction_ms as u64;
+        config.close_timeout_ms = d.cleanup_ms as u64;
         config
     };
     let (client, peer) = Stream::new(config(Side::Initiator)).map_err(io::Error::other)?;
-    let mut client = Some(client);
     let (stream, endpoint) = Stream::new(config(Side::Endpoint)).map_err(io::Error::other)?;
     peer.advance(now);
     endpoint.advance(now);
@@ -1096,59 +774,33 @@ where
     }
     *request.progress.lock().unwrap_or_else(|e| e.into_inner()) = facts.clone();
     resource.start_exchange(stream, endpoint, request.service, &request.path)?;
-    let receipt = Arc::new(AtomicBool::new(false));
-    resource
-        .pump()
-        .ok_or_else(|| io::Error::other("resource did not install a channel pump"))?
-        .track_repository_refusal(receipt.clone());
-    if request.bridge {
-        resource
-            .pump()
-            .ok_or_else(|| io::Error::other("resource did not install a channel pump"))?
-            .enable_typed_failures();
+    if resource.pump().is_none() {
+        return Err(io::Error::other("resource did not install a channel pump"));
     }
-    let (bridge_inbound, bridge_outbound, bridge_cancelled, bridge_handle) = if request.bridge {
-        let (inbound, worker_inbound) = mpsc::sync_channel(16);
-        let (worker_outbound, outbound) = mpsc::sync_channel(16);
-        let cancelled = Arc::new(AtomicBool::new(false));
-        (
-            Some(worker_inbound),
-            Some(worker_outbound),
-            Some(cancelled.clone()),
-            Some(EndpointAttachment {
-                owner: client.take().expect("bridge client"),
-                inbound,
-                outbound,
-                cancelled,
-                worker: thread::current(),
-            }),
-        )
-    } else {
-        (None, None, None, None)
-    };
+    let (inbound, worker_inbound) = mpsc::sync_channel(16);
+    let (worker_outbound, outbound) = mpsc::sync_channel(16);
+    let cancelled = Arc::new(AtomicBool::new(false));
     active.push(Active {
         lease: Some(lease),
         peer,
-        bridge_inbound,
-        bridge_outbound,
-        bridge_cancelled,
+        bridge_inbound: worker_inbound,
+        bridge_outbound: worker_outbound,
+        bridge_cancelled: cancelled.clone(),
         bridge_pending: None,
-        bridge_session: request.bridge_session.clone(),
-        bridge_stream_id: request.bridge_stream_id,
-        bridge_version: request.bridge_version,
+        bridge_session: context.session_id.clone(),
+        bridge_stream_id: context.stream_id,
+        bridge_version: context.version,
         bridge_terminal_delivered: false,
-        bridge_waker: request.bridge_waker.clone(),
+        bridge_waker: context.waker.clone(),
     });
-    let stream = if let Some(attachment) = bridge_handle {
-        OpenStream::Endpoint(attachment)
-    } else {
-        OpenStream::Blocking(BlockingStream::with_repository_receipt(
-            client.take().expect("blocking client"),
-            receipt,
-        ))
-    };
     Ok((
-        stream,
+        EndpointAttachment {
+            owner: client,
+            inbound,
+            outbound,
+            cancelled,
+            worker: thread::current(),
+        },
         Opened {
             connection_id,
             reused,
@@ -1170,103 +822,50 @@ fn transfer(
     let mut handed = false;
     let result = (|| {
         active.peer.advance(now);
-        if active
-            .bridge_cancelled
-            .as_ref()
-            .is_some_and(|cancelled| cancelled.load(Ordering::Acquire))
-        {
+        if active.bridge_cancelled.load(Ordering::Acquire) {
             return Err(());
         }
         for _ in 0..8 {
-            let message = match &active.bridge_inbound {
-                Some(inbound) => match inbound.try_recv() {
-                    Ok(message) => Some(message),
-                    Err(mpsc::TryRecvError::Empty) => None,
-                    Err(mpsc::TryRecvError::Disconnected) => return Err(()),
-                },
-                None => match pin!(active.peer.next_message()).poll(cx) {
-                    Poll::Ready(Ok(Some(message))) => Some(message),
-                    Poll::Ready(Err(_)) => return Err(()),
-                    _ => None,
-                },
+            let mut message = match active.bridge_inbound.try_recv() {
+                Ok(message) => message,
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => return Err(()),
             };
-            let Some(message) = message else {
-                break;
-            };
-            if active.bridge_inbound.is_some() {
-                let mut message = message;
-                message.session_id = active
-                    .bridge_session
-                    .clone()
-                    .unwrap_or_else(|| message.session_id.clone());
-                message.stream_id = active.bridge_stream_id;
-                message.version = active.bridge_version;
-                pump.deliver(message).map_err(|_| ())?;
-            } else {
-                pump.deliver(message).map_err(|_| ())?;
-            }
+            message.session_id = active.bridge_session.clone();
+            message.stream_id = active.bridge_stream_id;
+            message.version = active.bridge_version;
+            pump.deliver(message).map_err(|_| ())?;
         }
         pump.tick(cx, now).map_err(|_| ())?;
         for _ in 0..8 {
-            if let Some(message) = active.bridge_pending.take() {
-                if let Some(outbound) = &active.bridge_outbound {
-                    let terminal = matches!(
-                        message.kind,
-                        gwz_transport::protocol::MessageKind::Closed
-                            | gwz_transport::protocol::MessageKind::Failed
-                    );
-                    match outbound.try_send(message) {
-                        Ok(()) => {
-                            handed = true;
-                            if terminal {
-                                active.bridge_terminal_delivered = true;
-                            }
-                        }
-                        Err(TrySendError::Full(message)) => {
-                            active.bridge_pending = Some(message);
-                            break;
-                        }
-                        Err(TrySendError::Disconnected(_)) => return Err(()),
-                    }
-                } else {
-                    active.peer.deliver(message).map_err(|_| ())?;
-                }
-                continue;
-            }
-            match pump.poll_next_message(cx) {
-                Poll::Ready(Ok(Some(message))) => {
-                    if let Some(outbound) = &active.bridge_outbound {
-                        let terminal = matches!(
-                            message.kind,
-                            gwz_transport::protocol::MessageKind::Closed
-                                | gwz_transport::protocol::MessageKind::Failed
-                        );
-                        match outbound.try_send(message) {
-                            Ok(()) => {
-                                handed = true;
-                                if terminal {
-                                    active.bridge_terminal_delivered = true;
-                                }
-                            }
-                            Err(TrySendError::Full(message)) => {
-                                active.bridge_pending = Some(message);
-                                break;
-                            }
-                            Err(TrySendError::Disconnected(_)) => return Err(()),
-                        }
-                    } else {
-                        active.peer.deliver(message).map_err(|_| ())?;
+            let message = match active.bridge_pending.take() {
+                Some(message) => message,
+                None => match pump.poll_next_message(cx) {
+                    Poll::Ready(Ok(Some(message))) => message,
+                    Poll::Ready(Err(_)) => return Err(()),
+                    _ => break,
+                },
+            };
+            let terminal = matches!(
+                message.kind,
+                gwz_transport::protocol::MessageKind::Closed
+                    | gwz_transport::protocol::MessageKind::Failed
+            );
+            match active.bridge_outbound.try_send(message) {
+                Ok(()) => {
+                    handed = true;
+                    if terminal {
+                        active.bridge_terminal_delivered = true;
                     }
                 }
-                Poll::Ready(Err(_)) => return Err(()),
-                _ => break,
+                Err(TrySendError::Full(message)) => {
+                    active.bridge_pending = Some(message);
+                    break;
+                }
+                Err(TrySendError::Disconnected(_)) => return Err(()),
             }
         }
-        Ok(if active.bridge_outbound.is_some() {
-            active.bridge_terminal_delivered && active.bridge_pending.is_none()
-        } else {
-            pump.stream_stats().terminal
-        })
+        Ok(active.bridge_terminal_delivered && active.bridge_pending.is_none())
     })();
     if result.is_err() {
         pump.cancel();
@@ -1293,7 +892,14 @@ fn stopped() -> io::Error {
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
-        #[path = "../../../tests/transport_ssh/support/worker_queue.rs"]
+        impl Endpoint {
+            /// The worker's shutdown status, still readable once every clone
+            /// of this endpoint is gone.
+            pub(crate) fn shutdown_watch(&self) -> ssh_shutdown::ShutdownWatch {
+                ssh_shutdown::ShutdownWatch(self.shared.status.clone())
+            }
+        }
+        #[path = "ssh_worker_tests.rs"]
         mod queue_tests;
     }
 }

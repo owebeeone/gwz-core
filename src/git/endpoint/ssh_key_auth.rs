@@ -12,31 +12,9 @@ impl Verified {
     pub(crate) fn into_parts(self) -> (SshConnection, Arc<Entry>) {
         (self.connection, self.entry)
     }
-
-    /// Only call after the authentication Job has joined. Check the original
-    /// request, not the consumed helper Control, immediately before promotion.
-    pub(crate) fn publish(
-        mut self,
-        live: impl FnOnce() -> io::Result<()>,
-    ) -> io::Result<(SshConnection, Arc<Entry>)> {
-        live()?;
-        if !self.connection.session().authenticated() {
-            return Err(io::ErrorKind::PermissionDenied.into());
-        }
-        self.entry.promote();
-        Ok((self.connection, self.entry))
-    }
 }
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
-        pub(crate) fn authenticate(
-            connection: SshConnection,
-            trusted: &[u8],
-            entry: Arc<Entry>,
-            control: Arc<Control>,
-        ) -> io::Result<Verified> {
-            authenticate_reporting(connection, trusted, entry, control, || {}, || {})
-        }
         pub(crate) fn authenticate_reporting(
             connection: SshConnection, trusted: &[u8], entry: Arc<Entry>, control: Arc<Control>,
             mut offered: impl FnMut(), mut rejected: impl FnMut(),

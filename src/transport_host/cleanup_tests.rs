@@ -90,9 +90,10 @@ fn shutdown_reports_blocked_physical_disposal_then_eventual_zero() {
     config.total = 1;
     config.per_host = 1;
     config.cleanup_timeout_ms = 20;
-    let endpoint = Endpoint::with_connector(
+    let endpoint = Endpoint::with_registry(
         config,
-        |_| GateConnector {
+        crate::git::endpoint::ssh_key_snapshot::Registry::new(),
+        |_, _| GateConnector {
             entered: entered.clone(),
             disposing: disposing.clone(),
             released: released.clone(),

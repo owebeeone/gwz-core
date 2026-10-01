@@ -10,8 +10,8 @@ use std::{
     ffi::{OsStr, OsString},
     fmt, io,
     path::PathBuf,
-    sync::atomic::{AtomicU64, AtomicUsize, Ordering},
-    sync::{Arc, Mutex, OnceLock},
+    sync::atomic::{AtomicUsize, Ordering},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -47,21 +47,12 @@ pub(crate) struct Config {
 
 struct PendingChild {
     child: Child,
-    helper_slot: OwnedSemaphorePermit,
-}
-
-struct OrphanChild {
-    owner_id: u64,
-    pending: PendingChild,
-}
-
-fn orphan_registry() -> &'static Mutex<Vec<OrphanChild>> {
-    static ORPHANS: OnceLock<Mutex<Vec<OrphanChild>>> = OnceLock::new();
-    ORPHANS.get_or_init(|| Mutex::new(Vec::new()))
+    /// Held for its drop: the host's helper slot stays charged until the
+    /// child is reaped or its owner is gone.
+    _helper_slot: OwnedSemaphorePermit,
 }
 
 struct AuthOwnerInner {
-    id: u64,
     cancelled: CancellationToken,
     active: Arc<AtomicUsize>,
     reaping: AtomicUsize,
@@ -69,35 +60,14 @@ struct AuthOwnerInner {
     helper_slots: HelperSlots,
 }
 
-impl Drop for AuthOwnerInner {
-    fn drop(&mut self) {
-        let pending = std::mem::take(
-            &mut *self
-                .pending
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()),
-        );
-        if pending.is_empty() {
-            return;
-        }
-        orphan_registry()
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .extend(pending.into_iter().map(|pending| OrphanChild {
-                owner_id: self.id,
-                pending,
-            }));
-    }
-}
-
 /// Endpoint-scoped ownership for credential helper processes.
 ///
 /// Helper admission comes from the host's `HelperSlots`, so another host's
 /// live or retained helpers never exhaust it. Retained children and their
-/// admission permits live in this owner only. A
-/// dropped owner transfers them to an owner-ID-tagged fallback queue, so
-/// `kill_on_drop` is not used to release a still-reserved permit and cleanup
-/// cannot be accidentally attributed to another endpoint.
+/// admission permits live in this owner only, until `reap_pending` joins
+/// them; a child is killed before it is retained. An owner dropped with
+/// children still retained drops them with it, which releases their slots
+/// and leaves the killed children to tokio's background reaping.
 #[derive(Clone)]
 pub(crate) struct AuthOwner {
     inner: Arc<AuthOwnerInner>,
@@ -105,10 +75,8 @@ pub(crate) struct AuthOwner {
 
 impl AuthOwner {
     pub(crate) fn new(helper_slots: HelperSlots) -> Self {
-        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
         Self {
             inner: Arc::new(AuthOwnerInner {
-                id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
                 cancelled: CancellationToken::new(),
                 active: Arc::new(AtomicUsize::new(0)),
                 reaping: AtomicUsize::new(0),
@@ -118,18 +86,10 @@ impl AuthOwner {
         }
     }
 
-    pub(crate) fn id(&self) -> u64 {
-        self.inner.id
-    }
-
     /// Cancel all owned active helper lookups. Retained children remain in the
     /// owner registry until `reap_pending` joins them or the owner is dropped.
     pub(crate) fn cancel(&self) {
         self.inner.cancelled.cancel();
-    }
-
-    pub(crate) fn active_count(&self) -> usize {
-        self.inner.active.load(Ordering::Acquire)
     }
 
     pub(crate) fn pending_cleanup_count(&self) -> usize {
@@ -296,20 +256,6 @@ impl Drop for Secret {
         self.username.fill(0);
         self.password.fill(0);
     }
-}
-
-pub(crate) async fn lookup(
-    config: &Config,
-    destination: &Destination,
-    deadline: Instant,
-    cancelled: &CancellationToken,
-) -> Result<Secret, AuthError> {
-    // Compatibility wrapper for callers that have not yet adopted endpoint
-    // ownership. The temporary owner, its own host, ensures a retained child
-    // cannot enter a process-wide cleanup pool; endpoint callers should use
-    // `lookup_owned`.
-    let owner = AuthOwner::new(HelperSlots::new());
-    lookup_owned(&owner, config, destination, deadline, cancelled).await
 }
 
 pub(crate) async fn lookup_owned(
@@ -550,63 +496,11 @@ impl Drop for HelperJob {
             return;
         }
         let _ = child.start_kill();
-        self.owner
-            .retain_pending(PendingChild { child, helper_slot });
+        self.owner.retain_pending(PendingChild {
+            child,
+            _helper_slot: helper_slot,
+        });
     }
-}
-
-/// Compatibility shim for callers that have not yet supplied an
-/// `AuthOwner`. New endpoint code must call `AuthOwner::reap_pending` so
-/// cleanup remains endpoint-scoped.
-static ORPHAN_REAPING: AtomicUsize = AtomicUsize::new(0);
-pub(crate) fn pending_cleanup_count() -> usize {
-    let pending = orphan_registry()
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    pending.len() + ORPHAN_REAPING.load(Ordering::Acquire)
-}
-struct OrphanReapBatch {
-    children: Vec<OrphanChild>,
-}
-impl Drop for OrphanReapBatch {
-    fn drop(&mut self) {
-        let count = self.children.len();
-        let mut pending = orphan_registry().lock().unwrap_or_else(|e| e.into_inner());
-        for mut child in self.children.drain(..) {
-            let _ = child.pending.child.start_kill();
-            pending.push(child);
-        }
-        ORPHAN_REAPING.fetch_sub(count, Ordering::AcqRel);
-    }
-}
-async fn reap_orphans(deadline: Instant) -> usize {
-    let children = {
-        let mut pending = orphan_registry().lock().unwrap_or_else(|e| e.into_inner());
-        let children = std::mem::take(&mut *pending);
-        ORPHAN_REAPING.fetch_add(children.len(), Ordering::AcqRel);
-        children
-    };
-    let mut batch = OrphanReapBatch { children };
-    let mut index = 0;
-    while index < batch.children.len() && Instant::now() < deadline {
-        let result =
-            tokio::time::timeout_at(deadline, batch.children[index].pending.child.wait()).await;
-        if matches!(result, Ok(Ok(_))) {
-            batch.children.swap_remove(index);
-            ORPHAN_REAPING.fetch_sub(1, Ordering::AcqRel);
-        } else {
-            index += 1;
-        }
-    }
-    drop(batch);
-    pending_cleanup_count()
-}
-
-/// Compatibility shim for the old process-wide cleanup call. Owned lookups
-/// never place children in that pool, so there is no cross-endpoint work to
-/// perform here.
-pub(crate) async fn reap_pending(_deadline: Instant) -> usize {
-    reap_orphans(_deadline).await
 }
 
 fn parse_secret(output: &[u8]) -> Result<Secret, AuthError> {
@@ -655,6 +549,12 @@ fn parse_secret(output: &[u8]) -> Result<Secret, AuthError> {
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
+        impl AuthOwner {
+            /// The helper lookups in flight.
+            pub(crate) fn active_count(&self) -> usize {
+                self.inner.active.load(Ordering::Acquire)
+            }
+        }
         mod tests {
             use super::*;
             use crate::git::endpoint::helper_script::write_helper_script;
@@ -707,7 +607,8 @@ cfg_if::cfg_if! {
             async fn lookup_accepts_gh_output_without_a_blank_line() {
                 let (directory, config) = helper("printf 'protocol=https\\nhost=github.com\\nusername=alice\\npassword=secret\\n'");
                 let destination = Destination::parse("https://github.com/owner/repo.git").unwrap();
-                let secret = lookup(
+                let secret = lookup_owned(
+                    &AuthOwner::new(HelperSlots::new()),
                     &config,
                     &destination,
                     Instant::now() + Duration::from_secs(5),
@@ -723,7 +624,8 @@ cfg_if::cfg_if! {
             async fn lookup_uses_bounded_direct_helper_and_returns_secret() {
                 let (directory, config) = helper("printf 'username=alice\\npassword=secret\\n\\n'");
                 let destination = Destination::parse("https://example.com/owner/repo").unwrap();
-                let secret = lookup(
+                let secret = lookup_owned(
+                    &AuthOwner::new(HelperSlots::new()),
                     &config,
                     &destination,
                     Instant::now() + Duration::from_secs(5),
@@ -784,7 +686,8 @@ cfg_if::cfg_if! {
                 let destination = Destination::parse("https://example.com/owner/repo").unwrap();
                 let cancelled = CancellationToken::new();
                 cancelled.cancel();
-                let result = lookup(
+                let result = lookup_owned(
+                    &AuthOwner::new(HelperSlots::new()),
                     &config,
                     &destination,
                     Instant::now() + Duration::from_secs(5),
@@ -801,7 +704,7 @@ cfg_if::cfg_if! {
                 let slots = owner.inner.helper_slots.0.clone();
                 let before = slots.available_permits();
                 let child = Command::new("/bin/sleep").arg("5").kill_on_drop(true).spawn().unwrap();
-                owner.retain_pending(PendingChild { child, helper_slot: slots.clone().try_acquire_owned().unwrap() });
+                owner.retain_pending(PendingChild { child, _helper_slot: slots.clone().try_acquire_owned().unwrap() });
                 let reaper = owner.clone();
                 let task = tokio::spawn(async move { reaper.reap_pending(Instant::now()+Duration::from_secs(5)).await });
                 while !owner.inner.pending.lock().unwrap().is_empty() { tokio::task::yield_now().await; }
@@ -814,16 +717,37 @@ cfg_if::cfg_if! {
                 assert_eq!(owner.pending_cleanup_count(), 0);
             }
 
+            /// An owner dropped while it retains a killed helper drops the
+            /// child with it, and the host gets the helper's slot back; no
+            /// process-wide registry keeps either.
+            #[tokio::test]
+            async fn a_dropped_owner_releases_its_retained_helpers_slots() {
+                let host = HelperSlots::new();
+                let owner = AuthOwner::new(host.clone());
+                let slots = host.0.clone();
+                let before = slots.available_permits();
+                let mut child = Command::new("/bin/sleep").arg("5").spawn().unwrap();
+                // A helper is killed before its owner retains it.
+                child.start_kill().unwrap();
+                owner.retain_pending(PendingChild {
+                    child,
+                    _helper_slot: slots.clone().try_acquire_owned().unwrap(),
+                });
+                assert_eq!(slots.available_permits(), before - 1);
+                drop(owner);
+                assert_eq!(slots.available_permits(), before, "the dropped owner kept its helper's slot");
+            }
+
             #[tokio::test]
             async fn reap_reports_children_arriving_while_it_waits() {
                 let owner = AuthOwner::new(HelperSlots::new());
                 let child = Command::new("/bin/sleep").arg("0.1").kill_on_drop(true).spawn().unwrap();
-                owner.retain_pending(PendingChild { child, helper_slot: owner.inner.helper_slots.0.clone().try_acquire_owned().unwrap() });
+                owner.retain_pending(PendingChild { child, _helper_slot: owner.inner.helper_slots.0.clone().try_acquire_owned().unwrap() });
                 let reaper = owner.clone();
                 let task = tokio::spawn(async move { reaper.reap_pending(Instant::now()+Duration::from_secs(1)).await });
                 while !owner.inner.pending.lock().unwrap().is_empty() { tokio::task::yield_now().await; }
                 let child = Command::new("/bin/sleep").arg("5").kill_on_drop(true).spawn().unwrap();
-                owner.retain_pending(PendingChild { child, helper_slot: owner.inner.helper_slots.0.clone().try_acquire_owned().unwrap() });
+                owner.retain_pending(PendingChild { child, _helper_slot: owner.inner.helper_slots.0.clone().try_acquire_owned().unwrap() });
                 let reported = task.await.unwrap();
                 let actual = owner.pending_cleanup_count();
                 for pending in owner.inner.pending.lock().unwrap().iter_mut() { let _ = pending.child.start_kill(); }
@@ -1008,7 +932,8 @@ cfg_if::cfg_if! {
             async fn oversized_output_is_stopped_at_sixteen_kibibytes() {
                 let (directory, config) = helper("head -c 17000 /dev/zero");
                 let destination = Destination::parse("https://example.com/owner/repo").unwrap();
-                let result = lookup(
+                let result = lookup_owned(
+                    &AuthOwner::new(HelperSlots::new()),
                     &config,
                     &destination,
                     Instant::now() + Duration::from_secs(5),

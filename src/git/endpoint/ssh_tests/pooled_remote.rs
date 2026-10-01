@@ -1,21 +1,13 @@
-#![allow(dead_code, unused_imports)]
-mod common;
-use common::{SshdFixture, ssh_channel, ssh_connection};
-#[path = "common/pooled.rs"]
-mod pooled;
-#[path = "../../../src/git/endpoint/ssh_pool.rs"]
-mod ssh_pool;
-#[path = "../../../src/git/endpoint/git_turns.rs"]
-mod git_turns;
-#[path = "../../../src/git/endpoint/ssh_pump.rs"]
-mod ssh_pump;
-#[path = "../../../src/git/endpoint/ssh_remote.rs"]
-mod ssh_remote;
-#[path = "../../../src/git/endpoint/stream_io.rs"]
-mod stream_io;
+use super::pooled;
+use crate::git::endpoint::ssh_fixture as common;
+use crate::git::endpoint::ssh_remote;
+use common::SshdFixture;
 
-use git2::{FetchOptions, PushOptions, Repository, Signature, build::RepoBuilder};
-use std::{path::Path, sync::atomic::Ordering};
+use git2::{FetchOptions, PushOptions, RemoteCallbacks, Repository, Signature, build::RepoBuilder};
+use std::{
+    path::Path,
+    sync::{Arc, atomic::Ordering},
+};
 
 fn commit(repo: &Repository, seed: u32) -> git2::Oid {
     let mut state = seed;
@@ -42,15 +34,25 @@ fn commit(repo: &Repository, seed: u32) -> git2::Oid {
     )
     .unwrap()
 }
+/// Callbacks that give each remote a stateful transport of its own over
+/// `endpoint`, as `transport_binding::configure` gives each remote one over
+/// its host route.
+fn callbacks(endpoint: Arc<dyn ssh_remote::OpenStream>) -> RemoteCallbacks<'static> {
+    let mut callbacks = RemoteCallbacks::new();
+    callbacks.smart_transport(false, move |_remote| {
+        Ok(ssh_remote::RemoteTransport::new(endpoint.clone()))
+    });
+    callbacks
+}
 fn fetch_options(host: &pooled::Harness) -> FetchOptions<'static> {
     let mut options = FetchOptions::new();
-    options.remote_callbacks(ssh_remote::callbacks(host.endpoint.clone()));
+    options.remote_callbacks(callbacks(host.endpoint.clone()));
     options
 }
 fn push(repo: &Repository, url: &str, host: &pooled::Harness) {
     let mut remote = repo.remote_anonymous(url).unwrap();
     let mut options = PushOptions::new();
-    options.remote_callbacks(ssh_remote::callbacks(host.endpoint.clone()));
+    options.remote_callbacks(callbacks(host.endpoint.clone()));
     remote
         .push(&["refs/heads/main:refs/heads/main"], Some(&mut options))
         .unwrap();

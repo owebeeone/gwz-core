@@ -2,10 +2,8 @@
 //! host context reaches the transport (TR2.11), so every backend here that
 //! takes it carries one, from a request of the fixture's `Host`.
 use super::*;
+use crate::git::endpoint::ssh_fixture as common;
 use crate::transport_host::{SshEndpointConfig, TransportRequest, TransportRuntime};
-#[allow(unused_imports)]
-#[path = "../../../tests/transport_ssh/tests/common/mod.rs"]
-mod common;
 mod drivers;
 mod host_context;
 mod url_parity;

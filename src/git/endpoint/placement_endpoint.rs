@@ -12,15 +12,14 @@ use super::{
 use gwz_transport::{
     pool::{Capacity, Key},
     protocol::{
-        Destination, Effect, Envelope, ErrorCode, Facts, Failure, GitService, Identity,
-        IdentityMode, MessageKind, Opened,
+        Destination, Effect, Envelope, ErrorCode, Failure, GitService, Identity, IdentityMode,
+        MessageKind, Opened,
     },
 };
 use std::{
     collections::{BTreeMap, VecDeque},
     io,
     path::{Path, PathBuf},
-    sync::mpsc,
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
@@ -42,7 +41,6 @@ pub(crate) enum EndpointError {
 
 struct Request {
     stream_id: i64,
-    operation_id: String,
     session_id: String,
     version: i64,
     attachment: Option<EndpointAttachment>,
@@ -271,7 +269,7 @@ impl PlacementEndpoint {
         }
         // Reject unsupported peer policy before queue ownership or arithmetic.
         if self.endpoint.validate_deadlines(&open.deadlines).is_err() {
-            let mut state = request_state(&envelope, open.operation_id.clone());
+            let mut state = request_state(&envelope);
             state.terminal = true;
             let message = envelope_for(
                 &state,
@@ -290,7 +288,7 @@ impl PlacementEndpoint {
         }
         let (pool_key, repository_path) = destination(&open.destination)?;
         if !self.admits_open(&pool_key) {
-            let state = request_state(&envelope, open.operation_id.clone());
+            let state = request_state(&envelope);
             let now = self.now();
             let deadline = now.saturating_add(open.deadlines.allocation_ms as u64);
             self.requests.insert(key.clone(), state);
@@ -306,7 +304,7 @@ impl PlacementEndpoint {
         let selected = match selected_path(&self.home, &open.identity) {
             Ok(selected) => selected,
             Err(_) => {
-                let mut state = request_state(&envelope, open.operation_id.clone());
+                let mut state = request_state(&envelope);
                 state.terminal = true;
                 let message = envelope_for(
                     &state,
@@ -330,7 +328,6 @@ impl PlacementEndpoint {
             key.clone(),
             Request {
                 stream_id: envelope.stream_id,
-                operation_id: open.operation_id.clone(),
                 session_id: envelope.session_id.clone(),
                 version: envelope.version,
                 attachment: None,
@@ -339,7 +336,7 @@ impl PlacementEndpoint {
             },
         );
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let service = native_service(open.service)?;
+        let service = native_service(open.service);
         let context = BridgeContext {
             session_id: envelope.session_id.clone(),
             stream_id: envelope.stream_id,
@@ -401,7 +398,7 @@ impl PlacementEndpoint {
         let selected = match selected_path(&self.home, &check.identity) {
             Ok(Some(selected)) => selected,
             Ok(None) | Err(_) => {
-                let mut state = request_state(&envelope, check.operation_id.clone());
+                let mut state = request_state(&envelope);
                 state.terminal = true;
                 let message = envelope_for(
                     &state,
@@ -439,7 +436,6 @@ impl PlacementEndpoint {
             key.clone(),
             Request {
                 stream_id: envelope.stream_id,
-                operation_id: check.operation_id.clone(),
                 session_id: envelope.session_id,
                 version: envelope.version,
                 attachment: None,
@@ -1020,20 +1016,19 @@ fn selected_path(home: &Path, identity: &Identity) -> Result<Option<PathBuf>, En
         Ok(Some(base.join(path)))
     }
 }
-fn native_service(service: GitService) -> Result<NativeService, EndpointError> {
+fn native_service(service: GitService) -> NativeService {
     match service {
         GitService::UploadPackAdvertisement | GitService::UploadPackExchange => {
-            Ok(NativeService::UploadPack)
+            NativeService::UploadPack
         }
         GitService::ReceivePackAdvertisement | GitService::ReceivePackExchange => {
-            Ok(NativeService::ReceivePack)
+            NativeService::ReceivePack
         }
     }
 }
-fn request_state(envelope: &Envelope, operation_id: String) -> Request {
+fn request_state(envelope: &Envelope) -> Request {
     Request {
         stream_id: envelope.stream_id,
-        operation_id,
         session_id: envelope.session_id.clone(),
         version: envelope.version,
         attachment: None,
@@ -1109,7 +1104,7 @@ fn failure_for(error: io::Error) -> Failure {
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
-        #[path = "../../../tests/transport_ssh/support/placement_checks.rs"]
+        #[path = "placement_endpoint_tests.rs"]
         mod check_tests;
     }
 }

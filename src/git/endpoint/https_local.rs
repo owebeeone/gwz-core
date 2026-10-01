@@ -7,7 +7,7 @@ use super::{
 };
 use gwz_transport::{
     protocol::*,
-    stream::{Config, MessageEndpoint, Side, Stream},
+    stream::{Config, Side, Stream},
 };
 use std::{
     io,

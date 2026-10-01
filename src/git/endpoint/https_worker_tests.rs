@@ -1,4 +1,5 @@
 use super::*;
+use tokio::time::timeout;
 #[test]
 fn request_rejects_non_https_before_any_helper_or_connection() {
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -35,8 +36,7 @@ fn request_rejects_non_https_before_any_helper_or_connection() {
     });
 }
 
-#[path = "https_fixture.rs"]
-mod fixture;
+use crate::git::endpoint::https_fixture as fixture;
 use fixture::*;
 #[test]
 fn tls_discovery_and_seeded_large_exchange_reuse_one_connection() {
@@ -400,9 +400,16 @@ fn native_git_clone_fetch_and_push_use_https_rpc_messages() {
             let destination = temp.path().join("clone");
             let rpc_client = rpc.clone();
             let origin_client = origin.clone();
+            // Each remote gets its own stateless transport over the RPC, as
+            // `transport_binding::configure` installs one.
+            let callbacks = |rpc: Arc<super::super::https_local::LocalRpc>| {
+                let mut callbacks = git2::RemoteCallbacks::new();
+                super::super::https_remote::install(&mut callbacks, rpc);
+                callbacks
+            };
             tokio::task::spawn_blocking(move || {
                 let mut fetch = git2::FetchOptions::new();
-                fetch.remote_callbacks(super::super::https_remote::callbacks(rpc_client.clone()));
+                fetch.remote_callbacks(callbacks(rpc_client.clone()));
                 let repo = git2::build::RepoBuilder::new()
                     .fetch_options(fetch)
                     .clone(&url, &destination)
@@ -440,7 +447,7 @@ fn native_git_clone_fetch_and_push_use_https_rpc_messages() {
                 fetch_posts.store(0, Ordering::SeqCst);
                 let mut remote = repo.find_remote("origin").unwrap();
                 let mut options = git2::FetchOptions::new();
-                options.remote_callbacks(super::super::https_remote::callbacks(rpc_client.clone()));
+                options.remote_callbacks(callbacks(rpc_client.clone()));
                 remote
                     .fetch(&[] as &[&str], Some(&mut options), None)
                     .unwrap();
@@ -465,7 +472,7 @@ fn native_git_clone_fetch_and_push_use_https_rpc_messages() {
                 )
                 .unwrap();
                 let mut push = git2::PushOptions::new();
-                push.remote_callbacks(super::super::https_remote::callbacks(rpc_client));
+                push.remote_callbacks(callbacks(rpc_client));
                 remote
                     .push(&["HEAD:refs/heads/copied"], Some(&mut push))
                     .unwrap();

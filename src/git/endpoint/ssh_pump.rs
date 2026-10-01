@@ -4,17 +4,13 @@ use super::{
 };
 use gwz_transport::{
     protocol::{Disposition, Effect, Envelope, ErrorCode, Facts, Failure, MessageKind},
-    stream::{Error as StreamError, IoState, MessageEndpoint, Snapshot, Stream},
+    stream::{Error as StreamError, IoState, MessageEndpoint, Stream},
 };
 use std::{
     collections::VecDeque,
     future::Future,
     io::{self, Read, Write},
     pin::pin,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
     task::{Context, Poll},
 };
 pub(crate) trait ChannelIo {
@@ -28,7 +24,6 @@ pub(crate) trait ChannelIo {
     fn abort(&mut self);
     fn poll_dispose(&mut self) -> io::Result<()>;
     fn force_dispose(&mut self) -> io::Result<()>;
-    fn is_disposed(&self) -> bool;
     fn into_owner(self) -> Result<Self::Owner, Self>
     where
         Self: Sized;
@@ -62,18 +57,17 @@ impl ChannelIo for SshChannel {
     fn force_dispose(&mut self) -> io::Result<()> {
         Self::force_dispose(self)
     }
-    fn is_disposed(&self) -> bool {
-        Self::is_disposed(self)
-    }
     fn into_owner(self) -> Result<Self::Owner, Self> {
         SshChannel::into_session(self)
     }
 }
+/// Why the pump stopped: its stream, its channel, or a broken invariant. The
+/// worker discards a failed exchange whatever the cause.
 #[derive(Debug)]
 pub(crate) enum PumpError {
-    Stream(StreamError),
-    Io(io::Error),
-    Invariant(&'static str),
+    Stream,
+    Io,
+    Invariant,
 }
 pub(crate) struct SshPump<C: ChannelIo> {
     stream: Stream,
@@ -84,8 +78,6 @@ pub(crate) struct SshPump<C: ChannelIo> {
     stderr: Vec<u8>,
     stderr_truncated: bool,
     saw_stdout: bool,
-    repository_refused: Option<Arc<AtomicBool>>,
-    typed_failures: bool,
     mirror_cap: usize,
     stderr_cap: usize,
     end_sent: bool,
@@ -121,8 +113,6 @@ impl<C: ChannelIo> SshPump<C> {
             stderr: Vec::new(),
             stderr_truncated: false,
             saw_stdout: false,
-            repository_refused: None,
-            typed_failures: false,
             mirror_cap,
             stderr_cap,
             end_sent: false,
@@ -148,27 +138,20 @@ impl<C: ChannelIo> SshPump<C> {
     pub(crate) fn set_facts(&mut self, facts: Facts) {
         self.facts = facts;
     }
-    /// Local stream-scoped classification only; no server text crosses this seam.
-    pub(crate) fn track_repository_refusal(&mut self, receipt: Arc<AtomicBool>) {
-        self.repository_refused = Some(receipt);
-    }
-    pub(crate) fn enable_typed_failures(&mut self) {
-        self.typed_failures = true;
-    }
     pub(crate) fn deliver(&mut self, message: Envelope) -> Result<(), PumpError> {
         let payload = if message.kind == MessageKind::Data {
-            let data = message.data.as_ref().ok_or(PumpError::Invariant("data"))?;
+            let data = message.data.as_ref().ok_or(PumpError::Invariant)?;
             if self.forward.len().saturating_add(data.payload.len()) > self.mirror_cap {
-                return Err(PumpError::Invariant("forward mirror full"));
+                return Err(PumpError::Invariant);
             }
             Some(data.payload.clone())
         } else {
             None
         };
         let kind = message.kind;
-        if let Err(error) = self.endpoint.deliver(message) {
+        if self.endpoint.deliver(message).is_err() {
             self.invalidate_after_error();
-            return Err(PumpError::Stream(error));
+            return Err(PumpError::Stream);
         }
         if let Some(payload) = payload {
             self.turns.client_bytes(&payload);
@@ -180,7 +163,10 @@ impl<C: ChannelIo> SshPump<C> {
         if kind == MessageKind::Close {
             self.close_received = true;
         }
-        if matches!(kind, MessageKind::Cancel | MessageKind::Failed) {
+        // An initiator's Cancel never arrives here: the placement endpoint
+        // answers it and cancels the attachment, so the worker discards the
+        // connection instead.
+        if kind == MessageKind::Failed {
             self.invalidate_after_error();
         }
         Ok(())
@@ -210,24 +196,6 @@ impl<C: ChannelIo> SshPump<C> {
             }
         }
         result
-    }
-    pub(crate) fn next_deadline(&self) -> Option<u64> {
-        self.endpoint.next_deadline()
-    }
-    pub(crate) fn stream_stats(&self) -> Snapshot {
-        self.endpoint.stats()
-    }
-    pub(crate) fn io_status(&self) -> gwz_transport::stream::IoStatus {
-        self.endpoint.io_status()
-    }
-    pub(crate) fn forward_len(&self) -> usize {
-        self.forward.len()
-    }
-    pub(crate) fn stderr_len(&self) -> usize {
-        self.stderr.len()
-    }
-    pub(crate) fn channel(&self) -> &C {
-        &self.channel
     }
     pub(crate) fn cancel(&mut self) {
         self.endpoint.disconnect();
@@ -266,7 +234,7 @@ impl<C: ChannelIo> SshPump<C> {
                 match self.channel.send_eof() {
                     Ok(()) => self.end_sent = true,
                     Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-                    Err(error) => return Err(PumpError::Io(error)),
+                    Err(_) => return Err(PumpError::Io),
                 }
             }
             return Ok(());
@@ -275,10 +243,10 @@ impl<C: ChannelIo> SshPump<C> {
         let count = match self.channel.write_backend(first) {
             Ok(count) => count,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
-            Err(error) => return Err(PumpError::Io(error)),
+            Err(_) => return Err(PumpError::Io),
         };
         if count == 0 {
-            return Err(PumpError::Invariant("backend accepted zero bytes"));
+            return Err(PumpError::Invariant);
         }
         self.record_progress(count)?;
         let mut consumed = vec![0; count];
@@ -289,9 +257,9 @@ impl<C: ChannelIo> SshPump<C> {
                 }
                 Ok(())
             }
-            Poll::Ready(Ok(_)) => Err(PumpError::Invariant("stream/backend prefix mismatch")),
-            Poll::Ready(Err(error)) => Err(PumpError::Stream(error)),
-            Poll::Pending => Err(PumpError::Invariant("accepted bytes were not readable")),
+            Poll::Ready(Ok(_)) => Err(PumpError::Invariant),
+            Poll::Ready(Err(_)) => Err(PumpError::Stream),
+            Poll::Pending => Err(PumpError::Invariant),
         }
     }
     fn read_reverse(&mut self) -> Result<(), PumpError> {
@@ -311,7 +279,7 @@ impl<C: ChannelIo> SshPump<C> {
                 self.reverse.extend(&bytes[..count]);
             }
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-            Err(error) => return Err(PumpError::Io(error)),
+            Err(_) => return Err(PumpError::Io),
         }
         Ok(())
     }
@@ -327,27 +295,26 @@ impl<C: ChannelIo> SshPump<C> {
                         || (message.starts_with("error: permission to ")
                             && message.contains(" denied to ")
                             && !message.chars().any(char::is_control));
+                    // Local stream-scoped classification only; no server
+                    // text crosses this seam, only the typed refusal, which
+                    // the worker's version 2 streams carry.
                     if refused {
-                        if self.typed_failures {
-                            self.endpoint
-                                .fail_terminal(Failure {
-                                    setup_cause: None,
-                                    code: ErrorCode::RepositoryRefused,
-                                    effect: Effect::None,
-                                    facts: Some(self.facts.clone()),
-                                })
-                                .map_err(PumpError::Stream)?;
-                            // The terminal now owns the outcome. Do not attempt
-                            // EndWrite or a successful service close after it.
-                            return Ok(());
-                        } else if let Some(receipt) = &self.repository_refused {
-                            receipt.store(true, Ordering::Release);
-                        }
+                        self.endpoint
+                            .fail_terminal(Failure {
+                                setup_cause: None,
+                                code: ErrorCode::RepositoryRefused,
+                                effect: Effect::None,
+                                facts: Some(self.facts.clone()),
+                            })
+                            .map_err(|_| PumpError::Stream)?;
+                        // The terminal now owns the outcome. Do not attempt
+                        // EndWrite or a successful service close after it.
+                        return Ok(());
                     }
                 }
                 match poll_end_write(&self.stream, cx) {
                     Poll::Ready(Ok(())) => self.reverse_end_sent = true,
-                    Poll::Ready(Err(error)) => return Err(PumpError::Stream(error)),
+                    Poll::Ready(Err(_)) => return Err(PumpError::Stream),
                     Poll::Pending => {}
                 }
             }
@@ -357,11 +324,11 @@ impl<C: ChannelIo> SshPump<C> {
         match poll_write(&self.stream, cx, &bytes) {
             Poll::Ready(Ok(count)) => {
                 if count == 0 {
-                    return Err(PumpError::Invariant("stream accepted zero bytes"));
+                    return Err(PumpError::Invariant);
                 }
                 self.reverse.drain(..count);
             }
-            Poll::Ready(Err(error)) => return Err(PumpError::Stream(error)),
+            Poll::Ready(Err(_)) => return Err(PumpError::Stream),
             Poll::Pending => {}
         }
         Ok(())
@@ -388,7 +355,7 @@ impl<C: ChannelIo> SshPump<C> {
                         .extend_from_slice(&bytes[..count.min(remaining)]);
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
-                Err(error) => return Err(PumpError::Io(error)),
+                Err(_) => return Err(PumpError::Io),
             }
         }
         Ok(())
@@ -400,9 +367,9 @@ impl<C: ChannelIo> SshPump<C> {
         if !self.finished {
             match self.channel.finish() {
                 Ok(0) => self.finished = true,
-                Ok(_) => return Err(PumpError::Invariant("backend service failed")),
+                Ok(_) => return Err(PumpError::Invariant),
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
-                Err(error) => return Err(PumpError::Io(error)),
+                Err(_) => return Err(PumpError::Io),
             }
         }
         Ok(())
@@ -416,7 +383,7 @@ impl<C: ChannelIo> SshPump<C> {
                 {
                     Ok(()) => self.close_completed = true,
                     Err(StreamError::WouldBlock) => {}
-                    Err(error) => return Err(PumpError::Stream(error)),
+                    Err(_) => return Err(PumpError::Stream),
                 }
             }
         }
@@ -426,7 +393,7 @@ impl<C: ChannelIo> SshPump<C> {
         if !self.close_received {
             self.endpoint
                 .record_io_progress(count)
-                .map_err(PumpError::Stream)?;
+                .map_err(|_| PumpError::Stream)?;
         }
         Ok(())
     }
@@ -449,7 +416,7 @@ impl<C: ChannelIo> SshPump<C> {
         };
         self.endpoint
             .set_io_state(state)
-            .map_err(PumpError::Stream)?;
+            .map_err(|_| PumpError::Stream)?;
         Ok(())
     }
     /// Backend output is the server's turn: it may end an `Idle` the tick
@@ -460,7 +427,7 @@ impl<C: ChannelIo> SshPump<C> {
         }
         self.endpoint
             .set_io_state(IoState::Network)
-            .map_err(PumpError::Stream)
+            .map_err(|_| PumpError::Stream)
     }
     /// Abandon the physical channel. A stream that ended on its own keeps its
     /// terminal message (the I/O clock's Timeout, say) for the peer: a bridged
@@ -490,7 +457,7 @@ impl<C: ChannelIo> SshPump<C> {
             match self.channel.poll_open() {
                 Ok(()) => self.opened = true,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
-                Err(error) => return Err(PumpError::Io(error)),
+                Err(_) => return Err(PumpError::Io),
             }
         }
         self.write_forward(cx)?;
@@ -521,4 +488,27 @@ fn poll_write(
 fn poll_end_write(stream: &Stream, cx: &mut Context<'_>) -> Poll<Result<(), StreamError>> {
     let future = stream.end_write();
     pin!(future).poll(cx)
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        /// What the pump's tests observe.
+        impl<C: ChannelIo> SshPump<C> {
+            pub(crate) fn stream_stats(&self) -> gwz_transport::stream::Snapshot {
+                self.endpoint.stats()
+            }
+            pub(crate) fn io_status(&self) -> gwz_transport::stream::IoStatus {
+                self.endpoint.io_status()
+            }
+            pub(crate) fn forward_len(&self) -> usize {
+                self.forward.len()
+            }
+            pub(crate) fn stderr_len(&self) -> usize {
+                self.stderr.len()
+            }
+            pub(crate) fn channel(&self) -> &C {
+                &self.channel
+            }
+        }
+    }
 }

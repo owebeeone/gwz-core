@@ -1,84 +1,26 @@
-#![allow(dead_code, unused_imports)]
-
-#[path = "../../../src/git/endpoint/ssh_channel.rs"]
-mod ssh_channel;
-#[path = "../../../src/git/endpoint/ssh_connection.rs"]
-mod ssh_connection;
-#[path = "../../../src/git/endpoint/ssh_destination.rs"]
-mod ssh_destination;
-#[path = "../../../src/git/endpoint/ssh_endpoint.rs"]
-mod ssh_endpoint;
-#[path = "../../../src/git/endpoint/ssh_pool.rs"]
-mod ssh_pool;
-#[path = "../../../src/git/endpoint/git_turns.rs"]
-mod git_turns;
-#[path = "../../../src/git/endpoint/ssh_pump.rs"]
-mod ssh_pump;
-#[path = "../../../src/git/endpoint/ssh_remote.rs"]
-mod ssh_remote;
-#[path = "../../../src/git/endpoint/agent_job.rs"]
-mod agent_job;
-#[path = "../../../src/git/endpoint/ssh_key_auth.rs"]
-mod ssh_key_auth;
-#[path = "../../../src/git/endpoint/ssh_key_container.rs"]
-mod ssh_key_container;
-#[path = "../../../src/git/endpoint/ssh_key_snapshot.rs"]
-mod ssh_key_snapshot;
-#[path = "../../../src/git/endpoint/ssh_admission.rs"]
-mod ssh_admission;
-#[path = "../../../src/git/endpoint/ssh_shutdown.rs"]
-mod ssh_shutdown;
-#[path = "../../../src/git/endpoint/ssh_worker.rs"]
-mod ssh_worker;
-#[path = "../../../src/git/endpoint/stream_io.rs"]
-mod stream_io;
-
+//! The worker over pre-authenticated fixture connections, through the
+//! attachment path the placement endpoint takes.
+use super::attachment;
+use crate::git::endpoint::{
+    ssh_channel::{self, GitService},
+    ssh_connection, ssh_fixture as common,
+    ssh_key_snapshot::Registry,
+    ssh_pool::{Connector, Resource},
+    ssh_pump::SshPump,
+    ssh_worker::{ChannelResource, Endpoint},
+};
 use gwz_transport::{
     pool::{Config as PoolConfig, Identity, Key},
     protocol::{Effect, ErrorCode, Failure},
     stream::{MessageEndpoint, Stream},
 };
-mod common;
-use ssh_channel::GitService;
-use ssh_endpoint::{IdentityResolver, Route};
-use ssh_pool::{Connector, Resource};
-use ssh_pump::{ChannelIo, SshPump};
-use ssh_remote::OpenStream;
-use ssh_worker::{ChannelResource, Endpoint};
 use std::{
     io::{self, Read},
     net::TcpStream,
-    sync::{Arc, Mutex},
+    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
-
-fn commit(repo: &git2::Repository) -> git2::Oid {
-    let blob = repo.blob(b"worker route").unwrap();
-    let mut tree = repo.treebuilder(None).unwrap();
-    tree.insert("payload", blob, 0o100644).unwrap();
-    let tree = repo.find_tree(tree.write().unwrap()).unwrap();
-    let signature = git2::Signature::now("worker", "worker@example.invalid").unwrap();
-    repo.set_head("refs/heads/main").unwrap();
-    let parent = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
-    let parents: Vec<_> = parent.iter().collect();
-    repo.commit(
-        Some("HEAD"),
-        &signature,
-        &signature,
-        "worker",
-        &tree,
-        &parents,
-    )
-    .unwrap()
-}
-
-struct AmbientResolver;
-impl IdentityResolver for AmbientResolver {
-    fn resolve(&self, _: &Key) -> io::Result<Identity> {
-        Ok(Identity::Ambient)
-    }
-}
 
 struct NativeResource {
     idle: Option<ssh_connection::SshConnection>,
@@ -269,28 +211,37 @@ fn key(fixture: &common::SshdFixture) -> Key {
     Key::ssh(&fixture.user, "127.0.0.1", fixture.port)
 }
 
+/// An endpoint over `connector`, built as production builds one.
+fn endpoint<C>(config: PoolConfig, connector: C, io_timeout_ms: u64) -> Endpoint
+where
+    C: Connector + Send + 'static,
+    C::Resource: ChannelResource,
+{
+    Endpoint::with_registry(config, Registry::new(), |_, _| connector, io_timeout_ms).unwrap()
+}
+
 #[test]
 fn worker_reads_native_upload_pack_and_endpoint_clone_keeps_worker_alive() {
     let mut fixture = common::SshdFixture::new();
     let session = authenticated(&mut fixture);
-    let endpoint = Endpoint::new(
+    let endpoint = endpoint(
         config(1),
         NativeConnector {
             sessions: vec![session],
         },
         5_000,
+    );
+    let clone = endpoint.clone();
+    drop(endpoint);
+    let (mut stream, _) = attachment::open(
+        &clone,
+        key(&fixture),
+        None,
+        GitService::UploadPack,
+        fixture.repository.to_str().unwrap(),
+        attachment::deadlines(&config(1), 5_000),
     )
     .unwrap();
-    let clone = endpoint.clone();
-    let route = Route::new(clone, Arc::new(AmbientResolver));
-    drop(endpoint);
-    let url = format!(
-        "ssh://{}@127.0.0.1:{}{}",
-        fixture.user,
-        fixture.port,
-        fixture.repository.display()
-    );
-    let mut stream = route.open(&url, GitService::UploadPack).unwrap();
     let mut header = [0; 4];
     stream.read_exact(&mut header).unwrap();
     let packet_len = usize::from_str_radix(std::str::from_utf8(&header).unwrap(), 16).unwrap();
@@ -299,7 +250,7 @@ fn worker_reads_native_upload_pack_and_endpoint_clone_keeps_worker_alive() {
     stream.read_exact(&mut advertisement).unwrap();
     assert!(!advertisement.is_empty());
     drop(stream);
-    drop(route);
+    drop(clone);
 }
 
 #[test]
@@ -307,29 +258,32 @@ fn failed_exchange_isolated_from_a_second_native_connection() {
     let mut fixture = common::SshdFixture::new();
     let first = authenticated(&mut fixture);
     let second = authenticated(&mut fixture);
-    let endpoint = Endpoint::new(
+    let endpoint = endpoint(
         config(2),
         NativeConnector {
             sessions: vec![second, first],
         },
         5_000,
-    )
-    .unwrap();
-    let refused = endpoint.open(
+    );
+    let deadlines = attachment::deadlines(&config(2), 5_000);
+    let refused = attachment::open(
+        &endpoint,
         key(&fixture),
-        Identity::Ambient,
+        None,
         GitService::UploadPack,
         "reject",
+        deadlines.clone(),
     );
     assert!(matches!(refused, Err(error) if error.kind() == io::ErrorKind::PermissionDenied));
-    let mut stream = endpoint
-        .open(
-            key(&fixture),
-            Identity::Ambient,
-            GitService::UploadPack,
-            fixture.repository.to_str().unwrap(),
-        )
-        .unwrap();
+    let (mut stream, _) = attachment::open(
+        &endpoint,
+        key(&fixture),
+        None,
+        GitService::UploadPack,
+        fixture.repository.to_str().unwrap(),
+        deadlines,
+    )
+    .unwrap();
     let mut header = [0; 4];
     stream.read_exact(&mut header).unwrap();
     assert!(header.iter().all(u8::is_ascii_hexdigit));
@@ -338,153 +292,88 @@ fn failed_exchange_isolated_from_a_second_native_connection() {
 }
 
 #[test]
-fn route_drives_git_push_clone_and_fetch_through_one_shared_connection() {
-    use git2::{FetchOptions, PushOptions, Repository, build::RepoBuilder};
-    let mut fixture = common::SshdFixture::new();
-    let session = authenticated(&mut fixture);
-    let endpoint = Endpoint::new(
-        config(1),
-        NativeConnector {
-            sessions: vec![session],
-        },
-        5_000,
-    )
-    .unwrap();
-    let route = Arc::new(Route::new(endpoint, Arc::new(AmbientResolver)));
-    let url = format!(
-        "ssh://{}@127.0.0.1:{}{}",
-        fixture.user,
-        fixture.port,
-        fixture.repository.display()
-    );
-    let source = Repository::init(fixture.temp.path().join("source")).unwrap();
-    let expected = commit(&source);
-    let mut remote = source.remote_anonymous(&url).unwrap();
-    let mut push = PushOptions::new();
-    push.remote_callbacks(ssh_remote::callbacks(route.clone()));
-    remote
-        .push(&["refs/heads/main:refs/heads/main"], Some(&mut push))
-        .unwrap();
-    remote.disconnect().unwrap();
-    let mut fetch = FetchOptions::new();
-    fetch.remote_callbacks(ssh_remote::callbacks(route.clone()));
-    let clone_path = fixture.temp.path().join("clone");
-    let clone = RepoBuilder::new()
-        .fetch_options(fetch)
-        .clone(&url, &clone_path)
-        .unwrap();
-    assert_eq!(clone.head().unwrap().target(), Some(expected));
-    let updated = commit(&source);
-    assert_ne!(expected, updated);
-    remote
-        .push(&["refs/heads/main:refs/heads/main"], Some(&mut push))
-        .unwrap();
-    remote.disconnect().unwrap();
-    let mut fetch = FetchOptions::new();
-    fetch.remote_callbacks(ssh_remote::callbacks(route.clone()));
-    let mut remote = clone.find_remote("origin").unwrap();
-    remote
-        .fetch(
-            &["refs/heads/main:refs/remotes/origin/main"],
-            Some(&mut fetch),
-            None,
-        )
-        .unwrap();
-    assert_eq!(
-        clone
-            .find_reference("refs/remotes/origin/main")
-            .unwrap()
-            .target(),
-        Some(updated)
-    );
-    assert!(clone.find_commit(updated).is_ok());
-    drop(route);
-}
-
-#[test]
 fn pending_request_holds_admission_until_completion() {
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let endpoint = Endpoint::new(
-        PoolConfig {
-            total: 1,
-            per_host: 1,
-            per_user_host: 1,
-            max_requests: 1,
-            allocation_timeout_ms: 100,
-            connect_timeout_ms: 100,
-            interaction_timeout_ms: 100,
-            cleanup_timeout_ms: 10,
-            ..PoolConfig::default()
-        },
+    let config = PoolConfig {
+        total: 1,
+        per_host: 1,
+        per_user_host: 1,
+        max_requests: 1,
+        allocation_timeout_ms: 100,
+        connect_timeout_ms: 100,
+        interaction_timeout_ms: 100,
+        cleanup_timeout_ms: 10,
+        ..PoolConfig::default()
+    };
+    let endpoint = endpoint(
+        config.clone(),
         PendingConnector {
             started: started.clone(),
             ready: ready.clone(),
         },
         100,
-    )
-    .unwrap();
-    let waiting = endpoint.clone();
-    let first = std::thread::spawn(move || {
-        waiting.open(
+    );
+    let open = || {
+        attachment::start(
+            &endpoint,
             Key::ssh("git", "127.0.0.1", 22),
-            Identity::Ambient,
+            None,
             GitService::UploadPack,
             "repo",
+            attachment::deadlines(&config, 100),
         )
-    });
+    };
+    let first = open().unwrap();
     await_started(&started);
-    let second = endpoint.open(
-        Key::ssh("git", "127.0.0.1", 22),
-        Identity::Ambient,
-        GitService::UploadPack,
-        "repo",
-    );
+    // The worker refuses the second open as it is submitted, while the first
+    // holds the endpoint's only admission.
+    let second = open();
     assert!(matches!(second, Err(error) if error.kind() == io::ErrorKind::WouldBlock));
     ready.store(true, std::sync::atomic::Ordering::Release);
-    assert!(first.join().unwrap().is_err());
+    assert!(attachment::finish(&first).is_err());
 }
 
 #[test]
 fn shutdown_wakes_an_unbounded_connect_request_when_network_timeout_is_disabled() {
     let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let started = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let endpoint = Endpoint::new(
-        PoolConfig {
-            total: 1,
-            per_host: 1,
-            per_user_host: 1,
-            max_requests: 1,
-            connect_timeout_ms: 0,
-            allocation_timeout_ms: 100,
-            interaction_timeout_ms: 100,
-            cleanup_timeout_ms: 10,
-            ..PoolConfig::default()
-        },
+    let config = PoolConfig {
+        total: 1,
+        per_host: 1,
+        per_user_host: 1,
+        max_requests: 1,
+        connect_timeout_ms: 0,
+        allocation_timeout_ms: 100,
+        interaction_timeout_ms: 100,
+        cleanup_timeout_ms: 10,
+        ..PoolConfig::default()
+    };
+    let endpoint = endpoint(
+        config.clone(),
         PendingConnector {
             ready,
             started: started.clone(),
         },
         100,
+    );
+    let first = attachment::start(
+        &endpoint,
+        Key::ssh("git", "127.0.0.1", 22),
+        None,
+        GitService::UploadPack,
+        "repo",
+        attachment::deadlines(&config, 100),
     )
     .unwrap();
-    let waiting = endpoint.clone();
-    let first = std::thread::spawn(move || {
-        waiting.open(
-            Key::ssh("git", "127.0.0.1", 22),
-            Identity::Ambient,
-            GitService::UploadPack,
-            "repo",
-        )
-    });
     await_started(&started);
     std::thread::sleep(Duration::from_millis(250));
     assert!(
-        !first.is_finished(),
+        first.poll().is_pending(),
         "disabled connect timeout must remain pending"
     );
     endpoint.shutdown();
-    assert!(first.join().unwrap().is_err());
+    assert!(attachment::finish(&first).is_err());
 }
 
 fn await_started(started: &std::sync::atomic::AtomicBool) {
@@ -503,31 +392,33 @@ fn failed_active_service_does_not_stop_another_active_stream() {
     let mut fixture = common::SshdFixture::new();
     let first = authenticated(&mut fixture);
     let second = authenticated(&mut fixture);
-    let endpoint = Endpoint::new(
+    let endpoint = endpoint(
         config(2),
         NativeConnector {
             sessions: vec![first, second],
         },
         5_000,
+    );
+    let deadlines = attachment::deadlines(&config(2), 5_000);
+    let (mut healthy, _) = attachment::open(
+        &endpoint,
+        key(&fixture),
+        None,
+        GitService::UploadPack,
+        fixture.repository.to_str().unwrap(),
+        deadlines.clone(),
     )
     .unwrap();
-    let mut healthy = endpoint
-        .open(
-            key(&fixture),
-            Identity::Ambient,
-            GitService::UploadPack,
-            fixture.repository.to_str().unwrap(),
-        )
-        .unwrap();
     let missing = fixture.temp.path().join("does-not-exist.git");
-    let mut failed = endpoint
-        .open(
-            key(&fixture),
-            Identity::Ambient,
-            GitService::UploadPack,
-            missing.to_str().unwrap(),
-        )
-        .unwrap();
+    let (mut failed, _) = attachment::open(
+        &endpoint,
+        key(&fixture),
+        None,
+        GitService::UploadPack,
+        missing.to_str().unwrap(),
+        deadlines,
+    )
+    .unwrap();
     let mut discarded = Vec::new();
     failed.end_write().unwrap();
     // EOF may arrive before service status; close must reject failed cleanup.

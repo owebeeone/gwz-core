@@ -1,45 +1,8 @@
-#![allow(dead_code, unused_imports)]
-
-#[path = "../../../src/git/endpoint/agent_auth.rs"]
-mod agent_auth;
-#[path = "../../../src/git/endpoint/agent_client.rs"]
-mod agent_client;
-#[path = "../../../src/git/endpoint/agent_job.rs"]
-mod agent_job;
-#[path = "../../../src/git/endpoint/agent_socket.rs"]
-mod agent_socket;
-#[path = "../../../src/git/endpoint/placement_endpoint.rs"]
-mod placement_endpoint;
-#[path = "../../../src/git/endpoint/ssh_admission.rs"]
-mod ssh_admission;
-#[path = "../../../src/git/endpoint/ssh_channel.rs"]
-mod ssh_channel;
-#[path = "../../../src/git/endpoint/ssh_connection.rs"]
-mod ssh_connection;
-#[path = "../../../src/git/endpoint/ssh_destination.rs"]
-mod ssh_destination;
-#[path = "../../../src/git/endpoint/ssh_key_auth.rs"]
-mod ssh_key_auth;
-#[path = "../../../src/git/endpoint/ssh_key_container.rs"]
-mod ssh_key_container;
-#[path = "../../../src/git/endpoint/ssh_key_snapshot.rs"]
-mod ssh_key_snapshot;
-#[path = "../../../src/git/endpoint/ssh_network.rs"]
-mod ssh_network;
-#[path = "../../../src/git/endpoint/ssh_pool.rs"]
-mod ssh_pool;
-#[path = "../../../src/git/endpoint/git_turns.rs"]
-mod git_turns;
-#[path = "../../../src/git/endpoint/ssh_pump.rs"]
-mod ssh_pump;
-#[path = "../../../src/git/endpoint/ssh_setup.rs"]
-mod ssh_setup;
-#[path = "../../../src/git/endpoint/ssh_shutdown.rs"]
-mod ssh_shutdown;
-#[path = "../../../src/git/endpoint/ssh_worker.rs"]
-mod ssh_worker;
-#[path = "../../../src/git/endpoint/stream_io.rs"]
-mod stream_io;
+use crate::git::endpoint::placement_endpoint;
+use crate::git::endpoint::ssh_key_snapshot;
+use crate::git::endpoint::ssh_pool;
+use crate::git::endpoint::ssh_setup;
+use crate::git::endpoint::ssh_worker;
 
 use gwz_transport::{
     pool::Config as PoolConfig,
@@ -49,6 +12,7 @@ use gwz_transport::{
     },
 };
 use placement_endpoint::{EndpointError, PlacementEndpoint};
+use ssh_key_snapshot::Registry;
 use ssh_pool::Connector;
 use ssh_worker::Endpoint;
 use std::{
@@ -75,7 +39,7 @@ fn endpoint() -> Endpoint {
             })
         }
     }
-    Endpoint::with_connector(PoolConfig::default(), |_| Noop, 100).unwrap()
+    Endpoint::with_registry(PoolConfig::default(), Registry::new(), |_, _| Noop, 100).unwrap()
 }
 
 fn open(identity: Identity) -> Envelope {
@@ -239,7 +203,8 @@ fn check(path: String, stream_id: i64) -> Envelope {
 
 #[test]
 fn check_identity_reads_regular_file_without_parsing_and_reports_missing_file() {
-    let path = std::env::temp_dir().join(format!("gwz-placement-{}", std::process::id()));
+    let temp = crate::test_support::TempDir::new("placement-identity");
+    let path = temp.path().join("identity");
     fs::write(&path, b"not an ssh key").unwrap();
     let mut regular_endpoint = PlacementEndpoint::new(
         endpoint(),
@@ -354,12 +319,13 @@ fn message_deadlines_tighten_pool_policy_and_cannot_disable_a_positive_policy() 
         (0, 0, true),
     ] {
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let worker = Endpoint::with_connector(
+        let worker = Endpoint::with_registry(
             PoolConfig {
                 connect_timeout_ms: configured,
                 ..Default::default()
             },
-            |_| Record(calls.clone()),
+            Registry::new(),
+            |_, _| Record(calls.clone()),
             configured,
         )
         .unwrap();
@@ -450,9 +416,10 @@ fn open_timeout_replies_before_blocked_physical_work_finishes() {
     }
     let (entered, seen) = mpsc::sync_channel(1);
     let (release, blocked) = mpsc::sync_channel(1);
-    let worker = Endpoint::with_connector(
+    let worker = Endpoint::with_registry(
         PoolConfig::default(),
-        |_| Blocked {
+        Registry::new(),
+        |_, _| Blocked {
             entered,
             release: Arc::new(Mutex::new(blocked)),
         },

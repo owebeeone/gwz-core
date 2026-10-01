@@ -735,7 +735,21 @@ class Dispositions(unittest.TestCase):
         # is the host's now (CS6.5, pulled forward).
         # 24 -> 23 (2026-10-02): the lazy endpoint's HOME and SSH_AUTH_SOCK reads
         # left, below.
-        self.assertEqual(len(core), 23)
+        # 23 -> 19 (2026-10-02): TR2.15's dead HTTPS state left, below.
+        self.assertEqual(len(core), 19)
+
+    def test_the_dead_https_helper_state_is_gone(self):
+        # Transport release plan amendment 2's TR2.15: nothing read the orphaned
+        # helper registry once its reaper had no caller, and the auth owner's ID
+        # tagged only those orphans, so ORPHANS, ORPHAN_REAPING and NEXT_ID left
+        # with them; https_local's in-process fixture is test code now, so its
+        # NEXT_SESSION is no production state.
+        core, _ = listed(checker.DEFAULT_ALLOWLIST)
+        for path, name in (('src/git/endpoint/https_auth.rs', 'NEXT_ID'),
+                           ('src/git/endpoint/https_auth.rs', 'ORPHANS'),
+                           ('src/git/endpoint/https_auth.rs', 'ORPHAN_REAPING'),
+                           ('src/git/endpoint/https_local.rs', 'NEXT_SESSION')):
+            self.assertNotIn((path, 'static', name), core)
 
     def test_the_lazy_endpoint_environment_reads_are_gone(self):
         # Transport release plan amendment 2's TR2.11: only a host context
@@ -762,9 +776,8 @@ class Dispositions(unittest.TestCase):
         core, _ = listed(checker.DEFAULT_ALLOWLIST)
         transport, _ = listed(TRANSPORT_ALLOWLIST)
         extraction = "CS7.1, the candidate crates' extraction (IdSource)"
+        # NEXT_ID and NEXT_SESSION left with TR2.15 (test_the_dead_https_helper_state_is_gone).
         expected = [
-            (core, 'src/git/endpoint/https_auth.rs', 'static', 'NEXT_ID', extraction),
-            (core, 'src/git/endpoint/https_local.rs', 'static', 'NEXT_SESSION', extraction),
             (core, 'src/git/endpoint/ssh_worker.rs', 'static', 'NEXT_WORKER', extraction),
             (core, 'src/transport_host/session.rs', 'static', 'SERIAL', extraction),
             (transport, 'src/pool/machine.rs', 'static', 'NEXT_POOL',

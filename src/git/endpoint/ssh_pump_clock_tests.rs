@@ -81,9 +81,6 @@ impl ChannelIo for Server {
     fn force_dispose(&mut self) -> io::Result<()> {
         Ok(())
     }
-    fn is_disposed(&self) -> bool {
-        false
-    }
     fn into_owner(self) -> Result<(), Self> {
         Err(self)
     }

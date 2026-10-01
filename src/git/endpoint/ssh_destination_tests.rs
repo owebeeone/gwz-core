@@ -126,6 +126,8 @@ fn what_libgit2_refuses_or_cannot_resolve_is_refused() {
         "[fe80::1:/a",
         "[[fe80::1]:42:/a",
         "[git@[fe80::1:42]:/a",
+        "git@[::1:a",
+        "host]:a",
         // The transport's bounds, which libgit2 does not have.
         "ssh://u:sentinel@host/a",
         "ssh://host/a\n",

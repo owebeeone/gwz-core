@@ -70,15 +70,6 @@ pub(crate) struct SetupConnector {
     factory: Factory,
 }
 impl SetupConnector {
-    pub(crate) fn new(
-        origin: Instant,
-        cleanup: Duration,
-        mut factory: impl FnMut(&Key, &Identity) -> io::Result<Setup> + Send + 'static,
-    ) -> Self {
-        Self::reported(origin, cleanup, move |key, identity, _| {
-            factory(key, identity)
-        })
-    }
     pub(crate) fn reported(
         origin: Instant,
         cleanup: Duration,
@@ -183,9 +174,6 @@ impl Resource for NativeResource {
                         *self.progress.lock().unwrap_or_else(|e| e.into_inner()) =
                             authenticated.facts.clone();
                         self.authority = authenticated.authority.take();
-                        if let Some(entry) = &self.authority {
-                            entry.promote();
-                        }
                         let identity = authenticated.identity.clone();
                         self.state = State::Idle(authenticated);
                         Poll::Ready(Ok(Some(identity)))
@@ -256,16 +244,6 @@ impl Resource for NativeResource {
     }
     fn reusable(&self) -> bool {
         matches!(self.state, State::Idle(_))
-    }
-    fn begin_interaction(&mut self) {
-        if let State::Connecting(job) = &self.state {
-            job.begin_interaction();
-        }
-    }
-    fn end_interaction(&mut self) {
-        if let State::Connecting(job) = &self.state {
-            job.end_interaction();
-        }
     }
 }
 impl ChannelResource for NativeResource {

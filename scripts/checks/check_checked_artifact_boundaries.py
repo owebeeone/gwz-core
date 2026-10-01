@@ -105,31 +105,24 @@ APPROVED_RUST_PATH_EDGES = {
     # lane: 21961474 (2026-09-20). Remote-transport lane: 073395b5 (2026-09-21); 280f970a,
     # afd3b8f5, 4f063843, 1d3a759a, 2f12bbd6, 6b9be8a2, 7a5195ec, c5dd3071 and c92abc41
     # (2026-09-22).
-    ("git/endpoint/https_budget_tests.rs", "https_fixture.rs"),
     ("git/endpoint/https_opening.rs", "https_opening_tests.rs"),
-    ("git/endpoint/https_opening_tests.rs", "https_fixture.rs"),
     ("git/endpoint/https_policy.rs", "https_policy_tests.rs"),
     ("git/endpoint/https_remote.rs", "https_remote_tests.rs"),
     ("git/endpoint/https_worker.rs", "https_budget_tests.rs"),
     ("git/endpoint/https_worker.rs", "https_worker_tests.rs"),
     ("git/endpoint/https_worker_tests.rs", "https_auth_integration_tests.rs"),
-    ("git/endpoint/https_worker_tests.rs", "https_fixture.rs"),
     ("git/endpoint/https_worker_tests.rs", "https_lifecycle_tests.rs"),
-    (
-        "git/endpoint/placement_endpoint.rs",
-        "../../../tests/transport_ssh/support/placement_checks.rs",
-    ),
-    ("git/endpoint/ssh_worker.rs", "../../../tests/transport_ssh/support/worker_queue.rs"),
+    # 2026-10-02, TR2.15: the tests/transport_ssh crate is folded into the
+    # candidate tests, so the placement and worker checks it held sit beside
+    # their modules, and the SSH and HTTPS fixtures are each one test module
+    # (git/endpoint/ssh_fixture.rs, git/endpoint/https_fixture.rs) instead of
+    # a copy included by every suite that uses it.
+    ("git/endpoint/placement_endpoint.rs", "placement_endpoint_tests.rs"),
+    ("git/endpoint/ssh_worker.rs", "ssh_worker_tests.rs"),
     ("git/gitbackend/transport_binding.rs", "https_transport_binding_tests.rs"),
-    (
-        "git/gitbackend/transport_candidate_tests.rs",
-        "../../../tests/transport_ssh/tests/common/mod.rs",
-    ),
     ("operation/commit_log/tests.rs", "path_characterization.rs"),
-    ("transport_host/driver_tests.rs", "../../tests/transport_ssh/tests/common/mod.rs"),
     ("transport_host/https_endpoint.rs", "cancellation_tests.rs"),
     ("transport_host/https_endpoint.rs", "https_cancel_mux_tests.rs"),
-    ("transport_host/https_tests.rs", "../git/endpoint/https_fixture.rs"),
     (
         "transport_host/message_embedding_tests.rs",
         "../../tests/transport_backend/python_embedding.rs",
