@@ -56,28 +56,6 @@ pub(crate) fn timeout_reason(error: &io::Error) -> Option<TimeoutReason> {
 pub(crate) fn wall_clock() -> Arc<dyn Fn() -> Instant + Send + Sync> {
     Arc::new(Instant::now)
 }
-#[derive(Clone)]
-pub(crate) struct ManualClock {
-    now: Arc<Mutex<Instant>>,
-}
-impl ManualClock {
-    pub(crate) fn new() -> Self {
-        Self {
-            now: Arc::new(Mutex::new(Instant::now())),
-        }
-    }
-    pub(crate) fn now(&self) -> Instant {
-        *self.now.lock().unwrap_or_else(|e| e.into_inner())
-    }
-    pub(crate) fn advance(&self, by: Duration) {
-        let mut now = self.now.lock().unwrap_or_else(|e| e.into_inner());
-        *now += by;
-    }
-    pub(crate) fn clock(&self) -> Arc<dyn Fn() -> Instant + Send + Sync> {
-        let now = self.now.clone();
-        Arc::new(move || *now.lock().unwrap_or_else(|e| e.into_inner()))
-    }
-}
 #[derive(Clone, Copy)]
 struct Fail {
     kind: io::ErrorKind,
@@ -99,9 +77,6 @@ struct State {
     waker: Option<Waker>,
     aggregate: Option<Instant>,
     wait_started: Option<Instant>,
-    interacting: bool,
-    interaction_started: Option<Instant>,
-    paused_elapsed: Option<Duration>,
 }
 pub(crate) struct Control {
     state: Mutex<State>,
@@ -110,14 +85,6 @@ pub(crate) struct Control {
     clock: Arc<dyn Fn() -> Instant + Send + Sync>,
 }
 impl Control {
-    pub(crate) fn scripted(
-        aggregate: Option<Instant>,
-        stall: Duration,
-        cleanup: Duration,
-        clock: Arc<dyn Fn() -> Instant + Send + Sync>,
-    ) -> Arc<Self> {
-        Arc::new(Self::new(aggregate, stall, cleanup, clock))
-    }
     fn new(
         aggregate: Option<Instant>,
         stall: Duration,
@@ -133,9 +100,6 @@ impl Control {
                 waker: None,
                 aggregate,
                 wait_started: None,
-                interacting: false,
-                interaction_started: None,
-                paused_elapsed: None,
             }),
             stall,
             cleanup,
@@ -153,7 +117,7 @@ impl Control {
         state.cancelled_at = Some(self.now());
     }
     fn update(&self, state: &mut State) {
-        if state.consumed || state.failure.is_some() || state.interacting {
+        if state.consumed || state.failure.is_some() {
             return;
         }
         let now = self.now();
@@ -187,7 +151,7 @@ impl Control {
         if let Some(failure) = state.failure {
             return Err(failure.into_io());
         }
-        if self.stall > Duration::ZERO && !state.interacting && state.wait_started.is_none() {
+        if self.stall > Duration::ZERO && state.wait_started.is_none() {
             state.wait_started = Some(self.now());
         }
         Ok(())
@@ -198,13 +162,8 @@ impl Control {
         if let Some(failure) = state.failure {
             return Err(failure.into_io());
         }
-        let now = self.now();
         if self.stall > Duration::ZERO {
-            if state.interacting {
-                state.paused_elapsed = Some(Duration::ZERO);
-            } else {
-                state.wait_started = Some(now);
-            }
+            state.wait_started = Some(self.now());
         }
         Ok(())
     }
@@ -250,58 +209,15 @@ impl Control {
     }
     fn aggregate_remaining(&self, state: &State) -> Option<Duration> {
         let at = state.aggregate?;
-        if state.interacting {
-            let origin = state.interaction_started.unwrap_or(at);
-            Some(at.saturating_duration_since(origin))
-        } else {
-            Some(at.saturating_duration_since(self.now()))
-        }
+        Some(at.saturating_duration_since(self.now()))
     }
     fn stall_remaining(&self, state: &State) -> Option<Duration> {
         if self.stall == Duration::ZERO {
             return None;
         }
-        if state.interacting {
-            let elapsed = state.paused_elapsed.unwrap_or(Duration::ZERO);
-            return Some(self.stall.saturating_sub(elapsed));
-        }
         let start = state.wait_started?;
         let elapsed = self.now().saturating_duration_since(start);
         Some(self.stall.saturating_sub(elapsed))
-    }
-    pub(crate) fn begin_interaction(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        self.update(&mut state);
-        if state.failure.is_some() || state.interacting {
-            return;
-        }
-        let now = self.now();
-        if let Some(start) = state.wait_started.take() {
-            state.paused_elapsed = Some(now.saturating_duration_since(start));
-        }
-        state.interaction_started = Some(now);
-        state.interacting = true;
-    }
-    pub(crate) fn end_interaction(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        if !state.interacting {
-            return;
-        }
-        let now = self.now();
-        if let Some(started) = state.interaction_started.take() {
-            let paused = now.saturating_duration_since(started);
-            if let Some(at) = state.aggregate {
-                state.aggregate = at.checked_add(paused).or(Some(at));
-            }
-        }
-        if let Some(elapsed) = state.paused_elapsed.take() {
-            state.wait_started = now.checked_sub(elapsed);
-        }
-        state.interacting = false;
-    }
-    pub(crate) fn disposal_due(&self) -> bool {
-        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        state.cancelled_at.is_some_and(|at| self.cleanup_due(at))
     }
     fn cleanup_due(&self, at: Instant) -> bool {
         match at.checked_add(self.cleanup) {
@@ -457,15 +373,6 @@ impl<T: Send + 'static> Job<T> {
             thread::Builder::new().name(name.into()).spawn(body)
         })
     }
-    // Private injection seam for deterministic thread-creation failure tests.
-    pub(crate) fn start_with(
-        deadline: Option<Instant>,
-        cleanup: Duration,
-        work: impl FnOnce(Arc<Control>) -> io::Result<T> + Send + 'static,
-        spawn: impl FnMut(&str, Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
-    ) -> io::Result<Self> {
-        Self::start_inner(deadline, Duration::ZERO, cleanup, wall_clock(), work, spawn)
-    }
     fn start_inner(
         aggregate: Option<Instant>,
         stall: Duration,
@@ -514,12 +421,6 @@ impl<T: Send + 'static> Job<T> {
     pub(crate) fn cancel(&self) {
         self.cell.control.cancel();
         self.hub.worker.unpark();
-    }
-    pub(crate) fn begin_interaction(&self) {
-        self.cell.control.begin_interaction();
-    }
-    pub(crate) fn end_interaction(&self) {
-        self.cell.control.end_interaction();
     }
     pub(crate) fn poll_result(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<T>> {
         let control = &self.cell.control;
@@ -636,6 +537,57 @@ impl Cleanup {
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
+        /// A clock that moves only when a test advances it.
+        #[derive(Clone)]
+        pub(crate) struct ManualClock {
+            now: Arc<Mutex<Instant>>,
+        }
+        impl ManualClock {
+            pub(crate) fn new() -> Self {
+                Self {
+                    now: Arc::new(Mutex::new(Instant::now())),
+                }
+            }
+            pub(crate) fn now(&self) -> Instant {
+                *self.now.lock().unwrap_or_else(|e| e.into_inner())
+            }
+            pub(crate) fn advance(&self, by: Duration) {
+                let mut now = self.now.lock().unwrap_or_else(|e| e.into_inner());
+                *now += by;
+            }
+            pub(crate) fn clock(&self) -> Arc<dyn Fn() -> Instant + Send + Sync> {
+                let now = self.now.clone();
+                Arc::new(move || *now.lock().unwrap_or_else(|e| e.into_inner()))
+            }
+        }
+        impl Control {
+            /// A control on a test's clock, outside any job.
+            pub(crate) fn scripted(
+                aggregate: Option<Instant>,
+                stall: Duration,
+                cleanup: Duration,
+                clock: Arc<dyn Fn() -> Instant + Send + Sync>,
+            ) -> Arc<Self> {
+                Arc::new(Self::new(aggregate, stall, cleanup, clock))
+            }
+            pub(crate) fn disposal_due(&self) -> bool {
+                let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+                state.cancelled_at.is_some_and(|at| self.cleanup_due(at))
+            }
+        }
+        impl<T: Send + 'static> Job<T> {
+            /// Starts a job whose threads `spawn` creates, so a test can make
+            /// thread creation fail deterministically.
+            pub(crate) fn start_with(
+                deadline: Option<Instant>,
+                cleanup: Duration,
+                work: impl FnOnce(Arc<Control>) -> io::Result<T> + Send + 'static,
+                spawn: impl FnMut(&str, Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
+            ) -> io::Result<Self> {
+                Self::start_inner(deadline, Duration::ZERO, cleanup, wall_clock(), work, spawn)
+            }
+        }
+
         fn scripted(stall: Duration, aggregate: Duration) -> (ManualClock, Arc<Control>) {
             let clock = ManualClock::new();
             let aggregate = (aggregate > Duration::ZERO).then(|| clock.now() + aggregate);
@@ -696,19 +648,6 @@ cfg_if::cfg_if! {
                 control.end_slice(true).unwrap();
             }
             control.check().unwrap();
-        }
-
-        #[test]
-        fn interaction_spends_neither_clock() {
-            let (clock, control) = scripted(Duration::from_secs(1), Duration::from_secs(2));
-            control.begin_interaction();
-            clock.advance(Duration::from_secs(5));
-            control.check().unwrap();
-            control.end_interaction();
-            control.begin_wait().unwrap();
-            clock.advance(Duration::from_secs(1));
-            let error = control.check().unwrap_err();
-            assert_eq!(timeout_reason(&error), Some(TimeoutReason::Stall));
         }
 
         #[test]

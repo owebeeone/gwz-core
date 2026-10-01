@@ -1,18 +1,11 @@
 use super::*;
-use crate::git::endpoint::{
-    https_connection, https_policy,
-    https_worker::{Endpoint, Prepared},
-};
-use gwz_transport::stream::{MessageEndpoint, Side, Stream};
-use http_body_util::BodyExt;
+use crate::git::endpoint::https_fixture as fixture;
+use crate::git::endpoint::{https_connection, https_worker::Endpoint};
+use fixture::*;
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
-use tokio::time::Instant;
-#[path = "https_fixture.rs"]
-mod fixture;
-use fixture::*;
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()

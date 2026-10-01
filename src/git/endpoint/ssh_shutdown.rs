@@ -20,11 +20,15 @@ pub(crate) struct ShutdownStatus {
     pub failure: Option<io::ErrorKind>,
 }
 pub(crate) type Status = Arc<Mutex<ShutdownStatus>>;
-#[derive(Clone)]
-pub(crate) struct ShutdownWatch(pub(crate) Status);
-impl ShutdownWatch {
-    pub(crate) fn status(&self) -> ShutdownStatus {
-        *self.0.lock().unwrap_or_else(|e| e.into_inner())
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        #[derive(Clone)]
+        pub(crate) struct ShutdownWatch(pub(crate) Status);
+        impl ShutdownWatch {
+            pub(crate) fn status(&self) -> ShutdownStatus {
+                *self.0.lock().unwrap_or_else(|e| e.into_inner())
+            }
+        }
     }
 }
 pub(crate) fn fail(status: &Status, error: io::ErrorKind) {

@@ -1,7 +1,7 @@
 //! Single-owner, nonblocking SSH Git channel. Connection, trust/authentication,
 //! readiness, deadlines and pool disposition are responsibilities of the host.
 use super::ssh_connection::SshConnection;
-use ssh2::{BlockDirections, Channel};
+use ssh2::Channel;
 use std::io::{self, Read, Write};
 
 #[derive(Clone, Copy, Debug)]
@@ -74,15 +74,6 @@ impl SshChannel {
             stderr_eof: false,
             exit_status: None,
         })
-    }
-
-    /// Native readiness interest after WouldBlock; the host owns socket waits.
-    pub fn block_directions(&self) -> BlockDirections {
-        self.session
-            .as_ref()
-            .map_or(BlockDirections::None, |owner| {
-                owner.native().block_directions()
-            })
     }
 
     pub fn poll_open(&mut self) -> io::Result<()> {

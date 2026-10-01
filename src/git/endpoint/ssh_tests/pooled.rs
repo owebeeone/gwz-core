@@ -1,6 +1,6 @@
 //! Controlled local composition host; production credential/routing policy is
 //! deliberately not implemented by this fixture. Connections arrive authenticated.
-use crate::{
+use crate::git::endpoint::{
     ssh_channel::{GitService, SshChannel},
     ssh_connection::SshConnection,
     ssh_pool::{Connector, PoolHost, Resource},

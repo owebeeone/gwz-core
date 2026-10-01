@@ -8,17 +8,11 @@
 use super::*;
 use crate::TransportOptions;
 use crate::git::GitBackend;
-use crate::git::endpoint::{
-    https_auth, https_connection, https_policy,
-    https_worker::{Input, Prepared},
-};
+use crate::git::endpoint::https_auth;
 use crate::operation::NullSink;
 use crate::workspace_ops::{handle_fetch, handle_init_from_sources, handle_tag};
 use bytes::Bytes;
-use gwz_transport::{
-    protocol::{AuthPolicy, GitService, MessageKind},
-    stream::Stream,
-};
+use gwz_transport::protocol::AuthPolicy;
 use http_body_util::{BodyExt, Full};
 use hyper::{
     Request, Response, StatusCode,
@@ -28,14 +22,11 @@ use hyper::{
 use std::{
     path::{Path, PathBuf},
     process::Stdio,
-    sync::{Arc, Mutex, atomic::Ordering},
-    time::{Duration, Instant},
+    sync::{Arc, atomic::Ordering},
 };
 use tokio::{io::AsyncWriteExt, process::Command, runtime::Builder};
-use tokio_util::sync::CancellationToken;
 
-#[path = "../git/endpoint/https_fixture.rs"]
-pub(super) mod fixture;
+pub(super) use crate::git::endpoint::https_fixture as fixture;
 
 pub(super) fn endpoint_home(root: &Path) -> PathBuf {
     let home = root.join("endpoint-home");

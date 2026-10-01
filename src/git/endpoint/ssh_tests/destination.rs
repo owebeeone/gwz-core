@@ -1,6 +1,4 @@
-#![allow(dead_code)]
-#[path = "../../../src/git/endpoint/ssh_destination.rs"]
-mod ssh_destination;
+use crate::git::endpoint::ssh_destination;
 use ssh_destination::Destination;
 
 #[test]
@@ -174,5 +172,22 @@ fn pinned_native_scp_authorities_and_root_operands() {
             "{url}"
         );
         assert_eq!(target.path, path);
+    }
+}
+/// The bracketed SCP spellings the retired `Route` refused, which no other
+/// case here covers: a port out of range or not a number, an empty operand,
+/// and an unbalanced bracket. Each is refused, never left to a native route.
+#[test]
+fn bracketed_scp_authorities_with_bad_ports_operands_or_brackets_are_refused() {
+    for url in [
+        "[host:0]:repo",
+        "[host:65536]:repo",
+        "[host:bad]:repo",
+        "[host]:",
+        "[host:repo",
+        "host]:repo",
+    ] {
+        let error = Destination::parse(url).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{url}");
     }
 }

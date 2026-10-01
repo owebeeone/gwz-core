@@ -7,10 +7,7 @@ use gwz_transport::pool::{Identity, Key};
 use std::{
     io,
     path::PathBuf,
-    sync::{
-        Arc, Mutex, Weak,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex, Weak},
     time::{Duration, Instant},
 };
 const MAX_KEY: usize = 1 << 20;
@@ -39,10 +36,10 @@ pub(crate) struct Loaded {
 }
 pub(crate) struct Entry {
     text: String,
-    permit: Reservation,
+    /// Held for its drop, which returns the snapshot's charge to the registry.
+    _permit: Reservation,
     key: Key,
     token: String,
-    proven: AtomicBool,
 }
 impl Registry {
     pub(crate) fn new() -> Self {
@@ -125,10 +122,9 @@ impl Registry {
         state.next = state.next.checked_add(1).ok_or(io::ErrorKind::Other)?;
         let entry = Arc::new(Entry {
             text: loaded.text,
-            permit: loaded.permit,
+            _permit: loaded.permit,
             key: loaded.key,
             token: format!("selected-{}", state.next),
-            proven: AtomicBool::new(false),
         });
         state.entries.push(Arc::downgrade(&entry));
         drop(state);
@@ -206,12 +202,6 @@ impl Entry {
     }
     pub(crate) fn text(&self) -> &str {
         &self.text
-    }
-    pub(crate) fn proven(&self) -> bool {
-        self.proven.load(Ordering::Acquire)
-    }
-    pub(crate) fn promote(&self) {
-        self.proven.store(true, Ordering::Release);
     }
 }
 fn clean(error: io::Error) -> io::Error {

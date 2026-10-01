@@ -1,10 +1,6 @@
-#![allow(dead_code)]
-#[path = "../../../src/git/endpoint/agent_client.rs"]
-mod agent_client;
-#[path = "../../../src/git/endpoint/agent_job.rs"]
-mod agent_job;
-#[path = "../../../src/git/endpoint/agent_socket.rs"]
-mod agent_socket;
+use crate::git::endpoint::agent_client;
+use crate::git::endpoint::agent_job;
+use crate::git::endpoint::agent_socket;
 use agent_client::{Agent, Channel};
 use agent_job::{Control, Job};
 use std::{

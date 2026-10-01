@@ -21,9 +21,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[allow(unused_imports)]
-#[path = "../../tests/transport_ssh/tests/common/mod.rs"]
-pub(super) mod common;
+pub(super) use crate::git::endpoint::ssh_fixture as common;
 
 pub(super) fn block_on<F: Future>(future: F) -> F::Output {
     let mut future = pin!(future);

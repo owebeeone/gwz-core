@@ -1,21 +1,9 @@
-#![allow(dead_code, unused_imports)]
+//! Selected-key admission in the worker's pool, through the attachment path.
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
-        mod common;
-        use common::{ssh_channel,ssh_connection};
-        #[path="../../../src/git/endpoint/agent_job.rs"] mod agent_job;
-        #[path="../../../src/git/endpoint/ssh_key_container.rs"] mod ssh_key_container;
-        #[path="../../../src/git/endpoint/ssh_key_snapshot.rs"] mod ssh_key_snapshot;
-        #[path="../../../src/git/endpoint/ssh_key_auth.rs"] mod ssh_key_auth;
-        #[path="../../../src/git/endpoint/ssh_network.rs"] mod ssh_network;
-        #[path="../../../src/git/endpoint/ssh_admission.rs"] mod ssh_admission;
-        #[path="../../../src/git/endpoint/ssh_pool.rs"] mod ssh_pool;
-        #[path="../../../src/git/endpoint/git_turns.rs"] mod git_turns;
-        #[path="../../../src/git/endpoint/ssh_pump.rs"] mod ssh_pump;
-        #[path="../../../src/git/endpoint/ssh_setup.rs"] mod ssh_setup;
-        #[path="../../../src/git/endpoint/ssh_shutdown.rs"] mod ssh_shutdown;
-        #[path="../../../src/git/endpoint/ssh_worker.rs"] mod ssh_worker;
-        #[path="../../../src/git/endpoint/stream_io.rs"] mod stream_io;
+        use super::attachment;
+        use crate::git::endpoint::ssh_fixture as common;
+        use crate::git::endpoint::{agent_job, ssh_admission, ssh_channel, ssh_key_auth, ssh_key_snapshot, ssh_network, ssh_setup, ssh_worker, stream_io};
         use std::{fs,io::{self,Read,Write},sync::{Arc,Mutex,atomic::{AtomicUsize,Ordering},mpsc::{self,Receiver,Sender}},time::{Duration,Instant}};
         use gwz_transport::{pool::{Config,Key,Identity},protocol::{Opened,AuthMethod}};
         use agent_job::Job;
@@ -33,13 +21,13 @@ cfg_if::cfg_if! {
         fn endpoint_with_reader_config(c:Config,f:&common::SshdFixture,r:Registry,calls:Arc<AtomicUsize>,barrier:Arc<Mutex<Option<Receiver<()>>>>,reader:Reader) -> Endpoint {
             let known=f.known_hosts.clone();
             Endpoint::with_reader(c,r,reader,move |origin,registry| {
-                ssh_setup::SetupConnector::new(origin,Duration::from_millis(50),move |key:&Key,identity:&Identity| ->io::Result<ssh_setup::Setup> {
+                ssh_setup::SetupConnector::reported(origin,Duration::from_millis(50),move |key:&Key,identity:&Identity,_| ->io::Result<ssh_setup::Setup> {
                     let pin=registry.lookup(key,identity)?;let key=key.clone();let known=known.clone();let barrier=barrier.clone();let calls=calls.clone();
                     Ok(Box::new(move |c| {
                         calls.fetch_add(1,Ordering::SeqCst);
                         let wait=barrier.lock().unwrap().take(); if let Some(wait)=wait {wait.recv().unwrap();}
                         let (connection,host)=ssh_network::establish(&key,&known,&c)?;
-                        ssh_key_auth::authenticate(connection,&host,pin,c).and_then(ssh_setup::Authenticated::selected)
+                        ssh_key_auth::authenticate_reporting(connection,&host,pin,c,|| {},|| {}).and_then(ssh_setup::Authenticated::selected)
                     }))
                 })
             },1000).unwrap()
@@ -74,7 +62,7 @@ cfg_if::cfg_if! {
             let endpoint=endpoint(&f,r.clone(),calls.clone(),Arc::new(Mutex::new(Some(wait))));
             let key=Key::ssh(&f.user,"127.0.0.1",f.port);let path=f.temp.path().join("client_ed25519");
             let threads:Vec<_>=(0..6).map(|_| {let endpoint=endpoint.clone();let key=key.clone();let path=path.clone();let repo=f.repository.clone();std::thread::spawn(move || {
-                let (stream,opened)=endpoint.open_selected(key,path,ssh_channel::GitService::UploadPack,repo.to_str().unwrap()).unwrap();exchange(stream);opened
+                let (stream,opened)=attachment::open(&endpoint,key,Some(path),ssh_channel::GitService::UploadPack,repo.to_str().unwrap(),attachment::deadlines(&config(),1000)).unwrap();exchange(stream);opened
             })}).collect();
             let until=Instant::now()+Duration::from_secs(3);
             while calls.load(Ordering::SeqCst)==0 || endpoint.pending_requests()!=6 || endpoint.shutdown_status().pending_admissions!=0 {assert!(Instant::now()<until);std::thread::sleep(Duration::from_millis(1));}
@@ -90,7 +78,7 @@ cfg_if::cfg_if! {
             let f=common::SshdFixture::new();let r=Registry::new();let calls=Arc::new(AtomicUsize::new(0));
             let endpoint=endpoint(&f,r.clone(),calls.clone(),Arc::new(Mutex::new(None)));
             let key=Key::ssh(&f.user,"127.0.0.1",f.port);let path=f.temp.path().join("client_ed25519");let alternate=f.temp.path().join("alternate");fs::copy(&path,&alternate).unwrap();
-            let open=|path|endpoint.open_selected(key.clone(),path,ssh_channel::GitService::UploadPack,f.repository.to_str().unwrap());
+            let open=|path|attachment::open(&endpoint,key.clone(),Some(path),ssh_channel::GitService::UploadPack,f.repository.to_str().unwrap(),attachment::deadlines(&config(),1000));
             let (stream,first)=open(path.clone()).unwrap();exchange(stream);
             let (stream,reused)=open(alternate.clone()).unwrap();exchange(stream);assert_eq!(first.connection_id,reused.connection_id);assert!(reused.reused);
             fs::write(&alternate,"invalid").unwrap();assert!(open(alternate.clone()).is_err());fs::remove_file(alternate.clone()).unwrap();assert!(open(alternate).is_err());assert_eq!(calls.load(Ordering::SeqCst),1);
@@ -102,9 +90,9 @@ cfg_if::cfg_if! {
             let (started,entered)=mpsc::channel();let (release,wait)=mpsc::channel();
             let reader=stalled_reader(started,Arc::new(Mutex::new(Some(wait))));
             let short=Config { allocation_timeout_ms:20, connect_timeout_ms:20, interaction_timeout_ms:20, ..config() };
-            let endpoint=endpoint_with_reader_config(short,&f,r.clone(),calls.clone(),Arc::new(Mutex::new(None)),reader);
+            let endpoint=endpoint_with_reader_config(short.clone(),&f,r.clone(),calls.clone(),Arc::new(Mutex::new(None)),reader);
             let key=Key::ssh(&f.user,"127.0.0.1",f.port);let path=f.temp.path().join("client_ed25519");let endpoint2=endpoint.clone();
-            let open=std::thread::spawn(move || endpoint2.open_selected(key,path,ssh_channel::GitService::UploadPack,"repo"));
+            let deadlines=attachment::deadlines(&short,1000);let open=std::thread::spawn(move || attachment::open(&endpoint2,key,Some(path),ssh_channel::GitService::UploadPack,"repo",deadlines));
             entered.recv_timeout(Duration::from_secs(3)).unwrap();
             let until=Instant::now()+Duration::from_secs(3);
             while endpoint.shutdown_status().pending_admissions!=1 { assert!(Instant::now()<until); std::thread::sleep(Duration::from_millis(1)); }
@@ -122,9 +110,9 @@ cfg_if::cfg_if! {
             let (started,entered)=mpsc::channel();let (release_tx,wait)=mpsc::channel();let release=Arc::new(Mutex::new(Some(wait)));let normal=Arc::new(Registry::start);let stalled=stalled_reader(started,release);
             let reader:Reader={let invocations=invocations.clone();let normal=normal.clone();let stalled=stalled.clone();Arc::new(move |registry,key,path,deadline,cleanup| {if invocations.fetch_add(1,Ordering::SeqCst)==0 {(normal)(registry,key,path,deadline,cleanup)} else {(stalled)(registry,key,path,deadline,cleanup)}})};
             let short=Config { allocation_timeout_ms:100, connect_timeout_ms:100, interaction_timeout_ms:100, ..config() };
-            let endpoint=endpoint_with_reader_config(short,&f,r,calls.clone(),Arc::new(Mutex::new(None)),reader);let key=Key::ssh(&f.user,"127.0.0.1",f.port);let path=f.temp.path().join("client_ed25519");
-            let (mut stream,_)=endpoint.open_selected(key.clone(),path.clone(),ssh_channel::GitService::UploadPack,f.repository.to_str().unwrap()).unwrap();
-            let endpoint2=endpoint.clone();let second=std::thread::spawn(move || endpoint2.open_selected(key,path,ssh_channel::GitService::UploadPack,"repo"));entered.recv_timeout(Duration::from_secs(3)).unwrap();
+            let endpoint=endpoint_with_reader_config(short.clone(),&f,r,calls.clone(),Arc::new(Mutex::new(None)),reader);let key=Key::ssh(&f.user,"127.0.0.1",f.port);let path=f.temp.path().join("client_ed25519");
+            let deadlines=attachment::deadlines(&short,1000);let (mut stream,_)=attachment::open(&endpoint,key.clone(),Some(path.clone()),ssh_channel::GitService::UploadPack,f.repository.to_str().unwrap(),deadlines.clone()).unwrap();
+            let endpoint2=endpoint.clone();let second=std::thread::spawn(move || attachment::open(&endpoint2,key,Some(path),ssh_channel::GitService::UploadPack,"repo",deadlines));entered.recv_timeout(Duration::from_secs(3)).unwrap();
             stream.write_all(b"0000").unwrap();stream.end_write().unwrap();let mut bytes=Vec::new();stream.read_to_end(&mut bytes).unwrap();assert!(!bytes.is_empty());stream.close().unwrap();assert_eq!(calls.load(Ordering::SeqCst),1);
             endpoint.shutdown();assert!(second.join().unwrap().is_err());release_tx.send(()).unwrap();
             let until=Instant::now()+Duration::from_secs(3);while !endpoint.shutdown_status().cleanup_complete {assert!(Instant::now()<until);std::thread::sleep(Duration::from_millis(1));}

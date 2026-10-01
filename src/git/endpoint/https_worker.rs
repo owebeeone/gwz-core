@@ -28,7 +28,7 @@ use std::{
 };
 use tokio::{
     sync::{OwnedSemaphorePermit, Semaphore, mpsc},
-    time::{Instant, timeout},
+    time::Instant,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -57,24 +57,6 @@ pub(crate) struct Endpoint {
     pool: RunningPool,
 }
 impl Endpoint {
-    pub(crate) fn new(
-        tls: https_connection::Config,
-        auth: Option<https_auth::Config>,
-        config: pool::Config,
-    ) -> Result<Self, Failure> {
-        Self::new_with_io_timeout(tls, auth, config, 9_000)
-    }
-    pub(crate) fn new_with_io_timeout(
-        tls: https_connection::Config,
-        auth: Option<https_auth::Config>,
-        config: pool::Config,
-        io_timeout_ms: u64,
-    ) -> Result<Self, Failure> {
-        // A standalone endpoint is its own host: its own authority and slots.
-        let authority = Authority::new(config.total, config.per_host);
-        let helper_slots = https_auth::HelperSlots::new();
-        Self::with_authority(tls, auth, config, io_timeout_ms, authority, helper_slots)
-    }
     pub(crate) fn with_authority(
         tls: https_connection::Config,
         auth: Option<https_auth::Config>,
@@ -223,56 +205,6 @@ impl Client {
     ) -> Result<super::https_operation::Dependency, ErrorCode> {
         self.operations.acquire(operation)
     }
-
-    pub(crate) async fn prepare(
-        &self,
-        input: Input,
-        cancel: &CancellationToken,
-    ) -> Result<Prepared, Failure> {
-        self.prepare_until(
-            input,
-            cancel,
-            Instant::now() + Duration::from_millis(self.config.allocation_timeout_ms),
-            Duration::from_millis(self.config.interaction_timeout_ms),
-        )
-        .await
-    }
-    /// Sole authentication replay: anonymous discovery 401/404, once. The
-    /// caller retains the first receipt and publishes only the final result.
-    pub(crate) async fn prepare_auto(
-        &self,
-        mut input: Input,
-        cancel: &CancellationToken,
-        first: &mut Option<Failure>,
-    ) -> Result<Prepared, Failure> {
-        let mut budget = self.budget();
-        let mut challenge = None;
-        if https_policy::receive_pack(input.service) {
-            input.policy = AuthPolicy::Gh;
-        }
-        let result = self
-            .prepare_budget_for_transition(input.clone(), cancel, &mut budget, &mut challenge)
-            .await;
-        match result {
-            Err(f)
-                if input.policy == AuthPolicy::Anonymous
-                    && https_policy::advertisement(input.service)
-                    && matches!(
-                        f.code,
-                        ErrorCode::Authentication | ErrorCode::RepositoryRefused
-                    )
-                    && f.facts
-                        .as_ref()
-                        .is_some_and(|facts| matches!(facts.http_status, Some(401 | 404))) =>
-            {
-                *first = Some(f);
-                input.policy = AuthPolicy::Gh;
-                self.prepare_budget_for_transition(input, cancel, &mut budget, &mut challenge)
-                    .await
-            }
-            other => other,
-        }
-    }
     pub(crate) fn budget(&self) -> Budget {
         budget_for_config(&self.config, self.io_timeout_ms)
     }
@@ -291,38 +223,6 @@ fn budget_for_config(config: &pool::Config, io_timeout_ms: u64) -> Budget {
     }
 }
 impl Client {
-    pub(crate) async fn prepare_until(
-        &self,
-        input: Input,
-        cancel: &CancellationToken,
-        until: Instant,
-        helper_remaining: Duration,
-    ) -> Result<Prepared, Failure> {
-        let mut budget = self.budget();
-        budget.allocation = until.saturating_duration_since(Instant::now());
-        budget.helper = helper_remaining;
-        self.prepare_budget(input, cancel, &mut budget).await
-    }
-    /// Apply an Open request's positive deadline values as upper bounds. Zero
-    /// retains the endpoint's captured setting, including zero-disabled I/O.
-    pub(crate) async fn prepare_open(
-        &self,
-        input: Input,
-        cancel: &CancellationToken,
-        deadlines: &Deadlines,
-    ) -> Result<Prepared, Failure> {
-        let mut budget = self.budget_for_open(deadlines);
-        self.prepare_budget(input, cancel, &mut budget).await
-    }
-    pub(crate) fn configured_deadlines(&self) -> Deadlines {
-        Deadlines {
-            allocation_ms: self.config.allocation_timeout_ms as i64,
-            connect_ms: self.config.connect_timeout_ms as i64,
-            io_ms: self.io_timeout_ms as i64,
-            interaction_ms: self.config.interaction_timeout_ms as i64,
-            cleanup_ms: self.config.cleanup_timeout_ms as i64,
-        }
-    }
     pub(crate) fn budget_for_open(&self, deadlines: &Deadlines) -> Budget {
         let mut budget = self.budget();
         if deadlines.allocation_ms > 0 {
@@ -359,15 +259,6 @@ impl Client {
         budget
     }
 
-    pub(crate) async fn prepare_budget(
-        &self,
-        input: Input,
-        cancel: &CancellationToken,
-        budget: &mut Budget,
-    ) -> Result<Prepared, Failure> {
-        self.prepare_budget_inner(input, cancel, budget, &mut None, false)
-            .await
-    }
     pub(crate) async fn prepare_budget_for_transition(
         &self,
         input: Input,
@@ -1057,3 +948,123 @@ fn stream_code(error: gwz_transport::stream::Error) -> ErrorCode {
 }
 cfg_if::cfg_if! { if #[cfg(test)] { #[path="https_worker_tests.rs"] mod tests; } }
 cfg_if::cfg_if! { if #[cfg(test)] { #[path="https_budget_tests.rs"] mod budget_tests; } }
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        /// A standalone endpoint and the client's direct entry points, which
+        /// the HTTPS tests drive; production enters through
+        /// `prepare_budget_for_transition` with `budget_for_open`.
+        impl Endpoint {
+            pub(crate) fn new(
+                tls: https_connection::Config,
+                auth: Option<https_auth::Config>,
+                config: pool::Config,
+            ) -> Result<Self, Failure> {
+                Self::new_with_io_timeout(tls, auth, config, 9_000)
+            }
+            pub(crate) fn new_with_io_timeout(
+                tls: https_connection::Config,
+                auth: Option<https_auth::Config>,
+                config: pool::Config,
+                io_timeout_ms: u64,
+            ) -> Result<Self, Failure> {
+                // A standalone endpoint is its own host: its own authority and slots.
+                let authority = Authority::new(config.total, config.per_host);
+                let helper_slots = https_auth::HelperSlots::new();
+                Self::with_authority(tls, auth, config, io_timeout_ms, authority, helper_slots)
+            }
+        }
+        impl Client {
+            pub(crate) async fn prepare(
+                &self,
+                input: Input,
+                cancel: &CancellationToken,
+            ) -> Result<Prepared, Failure> {
+                self.prepare_until(
+                    input,
+                    cancel,
+                    Instant::now() + Duration::from_millis(self.config.allocation_timeout_ms),
+                    Duration::from_millis(self.config.interaction_timeout_ms),
+                )
+                .await
+            }
+            /// Sole authentication replay: anonymous discovery 401/404, once. The
+            /// caller retains the first receipt and publishes only the final result.
+            pub(crate) async fn prepare_auto(
+                &self,
+                mut input: Input,
+                cancel: &CancellationToken,
+                first: &mut Option<Failure>,
+            ) -> Result<Prepared, Failure> {
+                let mut budget = self.budget();
+                let mut challenge = None;
+                if https_policy::receive_pack(input.service) {
+                    input.policy = AuthPolicy::Gh;
+                }
+                let result = self
+                    .prepare_budget_for_transition(input.clone(), cancel, &mut budget, &mut challenge)
+                    .await;
+                match result {
+                    Err(f)
+                        if input.policy == AuthPolicy::Anonymous
+                            && https_policy::advertisement(input.service)
+                            && matches!(
+                                f.code,
+                                ErrorCode::Authentication | ErrorCode::RepositoryRefused
+                            )
+                            && f.facts
+                                .as_ref()
+                                .is_some_and(|facts| matches!(facts.http_status, Some(401 | 404))) =>
+                    {
+                        *first = Some(f);
+                        input.policy = AuthPolicy::Gh;
+                        self.prepare_budget_for_transition(input, cancel, &mut budget, &mut challenge)
+                            .await
+                    }
+                    other => other,
+                }
+            }
+            pub(crate) async fn prepare_until(
+                &self,
+                input: Input,
+                cancel: &CancellationToken,
+                until: Instant,
+                helper_remaining: Duration,
+            ) -> Result<Prepared, Failure> {
+                let mut budget = self.budget();
+                budget.allocation = until.saturating_duration_since(Instant::now());
+                budget.helper = helper_remaining;
+                self.prepare_budget(input, cancel, &mut budget).await
+            }
+            /// Apply an Open request's positive deadline values as upper bounds. Zero
+            /// retains the endpoint's captured setting, including zero-disabled I/O.
+            pub(crate) async fn prepare_open(
+                &self,
+                input: Input,
+                cancel: &CancellationToken,
+                deadlines: &Deadlines,
+            ) -> Result<Prepared, Failure> {
+                let mut budget = self.budget_for_open(deadlines);
+                self.prepare_budget(input, cancel, &mut budget).await
+            }
+            pub(crate) fn configured_deadlines(&self) -> Deadlines {
+                Deadlines {
+                    allocation_ms: self.config.allocation_timeout_ms as i64,
+                    connect_ms: self.config.connect_timeout_ms as i64,
+                    io_ms: self.io_timeout_ms as i64,
+                    interaction_ms: self.config.interaction_timeout_ms as i64,
+                    cleanup_ms: self.config.cleanup_timeout_ms as i64,
+                }
+            }
+            pub(crate) async fn prepare_budget(
+                &self,
+                input: Input,
+                cancel: &CancellationToken,
+                budget: &mut Budget,
+            ) -> Result<Prepared, Failure> {
+                self.prepare_budget_inner(input, cancel, budget, &mut None, false)
+                    .await
+            }
+        }
+    }
+}

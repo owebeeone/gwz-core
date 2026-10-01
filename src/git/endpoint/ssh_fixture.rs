@@ -1,9 +1,11 @@
-#![allow(dead_code)]
-
-#[path = "../../../../src/git/endpoint/ssh_channel.rs"]
-pub(crate) mod ssh_channel;
-#[path = "../../../../src/git/endpoint/ssh_connection.rs"]
-pub(crate) mod ssh_connection;
+//! A disposable OpenSSH server for the SSH endpoint's tests: a loopback
+//! `/usr/sbin/sshd` on a high port with temporary host and client keys, a
+//! temporary `known_hosts` that trusts only its host key, and a bare
+//! repository whose name carries a shell-injection marker. It never reads or
+//! changes the user's SSH configuration, keys, agent or `known_hosts`, and it
+//! stops and reaps its server on drop. A missing `sshd` fails the test rather
+//! than skipping it.
+pub(crate) use super::{ssh_channel, ssh_connection};
 
 use ssh2::{CheckResult, KnownHostFileKind};
 use std::fs;
@@ -279,7 +281,6 @@ fn collect_children(root: i32, children: &HashMap<i32, Vec<i32>>, output: &mut V
 pub(crate) fn open(channel: &mut SshChannel) {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let _ = channel.block_directions();
         match channel.poll_open() {
             Ok(()) => return,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}

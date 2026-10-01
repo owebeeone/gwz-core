@@ -1,12 +1,6 @@
-#![allow(dead_code)]
-#[path = "../../../src/git/endpoint/ssh_channel.rs"]
-mod ssh_channel;
-#[path = "../../../src/git/endpoint/ssh_connection.rs"]
-mod ssh_connection;
-#[path = "../../../src/git/endpoint/ssh_remote.rs"]
-mod ssh_remote;
-#[path = "../../../src/git/endpoint/stream_io.rs"]
-mod stream_io;
+use crate::git::endpoint::ssh_channel;
+use crate::git::endpoint::ssh_remote;
+use crate::git::endpoint::stream_io;
 
 use git2::transport::{Service, SmartSubtransport};
 use gwz_transport::stream::{Config, Side, Stream};

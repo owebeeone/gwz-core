@@ -136,12 +136,6 @@ impl<R: Resource> Resource for ReservedResource<R> {
     fn reusable(&self) -> bool {
         self.inner.reusable()
     }
-    fn begin_interaction(&mut self) {
-        self.inner.begin_interaction();
-    }
-    fn end_interaction(&mut self) {
-        self.inner.end_interaction();
-    }
 }
 
 impl<R: ChannelResource> ChannelResource for ReservedResource<R> {
@@ -222,11 +216,6 @@ impl Authority {
             host,
         })
     }
-
-    pub(crate) fn counts(&self, host: &str) -> (usize, usize) {
-        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        (state.total, state.hosts.get(host).copied().unwrap_or(0))
-    }
 }
 
 impl Drop for Reservation {
@@ -247,6 +236,13 @@ impl Drop for Reservation {
 }
 
 cfg_if::cfg_if! { if #[cfg(test)] {
+impl Authority {
+    /// The reservations held in total and for `host`.
+    pub(crate) fn counts(&self, host: &str) -> (usize, usize) {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        (state.total, state.hosts.get(host).copied().unwrap_or(0))
+    }
+}
 mod tests {
     use super::super::ssh_pool::{Connector, Resource};
     use super::super::ssh_worker::ChannelResource;
