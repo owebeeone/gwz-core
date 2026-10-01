@@ -689,6 +689,12 @@ impl PlacementEndpoint {
             let Some(state) = self.requests.get_mut(&request) else {
                 continue;
             };
+            // A terminal request has queued its last message and stays only
+            // until that message is taken. Its worker drops the bridge after
+            // the terminal, so reading on would queue a false Failed each pass.
+            if state.terminal {
+                continue;
+            }
             let Some(attachment) = state.attachment.as_ref() else {
                 continue;
             };
@@ -730,6 +736,9 @@ impl PlacementEndpoint {
                             request: request.0.clone(),
                             envelope: message,
                         });
+                        if state.terminal {
+                            break;
+                        }
                     }
                     Ok(None) => break,
                     Err(_) => {
@@ -777,13 +786,6 @@ impl PlacementEndpoint {
             }
         }
         item
-    }
-    pub(crate) fn requeue_outbound(&mut self, item: Outbound) -> Result<(), EndpointError> {
-        if self.outbound.len() >= MAX_OUTBOUND {
-            return Err(EndpointError::Capacity);
-        }
-        self.outbound.push_front(item);
-        Ok(())
     }
     pub(crate) fn pending_request(&self, request: &str) -> bool {
         self.requests.keys().any(|key| key.0 == request)

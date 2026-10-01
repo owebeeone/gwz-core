@@ -43,7 +43,7 @@ pub(super) fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
-fn endpoint_home(fixture: &common::SshdFixture) -> PathBuf {
+pub(super) fn endpoint_home(fixture: &common::SshdFixture) -> PathBuf {
     let home = fixture.temp.path().join("endpoint-home");
     std::fs::create_dir_all(home.join(".ssh")).unwrap();
     std::fs::copy(&fixture.known_hosts, home.join(".ssh/known_hosts")).unwrap();
@@ -68,7 +68,7 @@ pub(super) fn fixture_url(fixture: &common::SshdFixture) -> String {
     )
 }
 
-fn local_meta(id: &str, home: &Path) -> RequestMeta {
+pub(super) fn local_meta(id: &str, home: &Path) -> RequestMeta {
     RequestMeta {
         request_id: id.into(),
         schema_version: "gwz.protocol/v0".into(),
@@ -146,7 +146,7 @@ fn a_live_local_lease_admits_an_overlapping_request_with_the_same_capacity() {
     block_on(runtime.shutdown());
 }
 
-fn commit(repository: &git2::Repository, text: &str) -> git2::Oid {
+pub(super) fn commit(repository: &git2::Repository, text: &str) -> git2::Oid {
     let blob = repository.blob(text.as_bytes()).unwrap();
     let mut builder = repository.treebuilder(None).unwrap();
     builder.insert("payload", blob, 0o100644).unwrap();

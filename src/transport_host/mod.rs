@@ -8,6 +8,7 @@ cfg_if::cfg_if! {
     if #[cfg(test)] {
         mod tests;
         mod driver_tests;
+        mod close_tests;
         mod fault_tests;
         mod command_tests;
         mod fetch_preflight_tests;
