@@ -126,6 +126,7 @@ cfg_if::cfg_if! {
                 None,
                 3_000,
                 Authority::new(256, 32),
+                Default::default(),
             )
             .unwrap();
             let mut placement = PlacementEndpoint::new(

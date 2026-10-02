@@ -44,10 +44,10 @@ impl super::super::ssh_pool::Connector for Scripted {
         key: &Key,
         identity: &gwz_transport::pool::Identity,
         deadline: Option<u64>,
-        progress: super::super::ssh_pool::Progress,
+        opening: super::super::ssh_pool::Opening,
     ) -> Result<Setting, Failure> {
         if self.offer_first && *self.starts.lock().unwrap() == 0 {
-            let mut facts = progress.lock().unwrap();
+            let mut facts = opening.progress.lock().unwrap();
             facts.method = gwz_transport::protocol::AuthMethod::SshAgent;
             facts.credential_offered = true;
         }
