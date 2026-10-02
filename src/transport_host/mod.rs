@@ -23,6 +23,7 @@ cfg_if::cfg_if! {
         mod cancellable_tests;
         mod cancellable_https_tests;
         mod endpoint_environment_tests;
+        mod ca_bundle_tests;
     }
 }
 use crate::git::endpoint::{https_auth::HelperSlots, ssh_local};

@@ -71,7 +71,9 @@ pub(crate) struct Proxy {
 }
 #[derive(Clone, Default)]
 pub(crate) struct Config {
-    pub(crate) ca_pem: Option<Vec<u8>>,
+    /// The CA file's certificates (`super::ca_bundle`), each added as a root
+    /// beside the platform's built-in roots.
+    pub(crate) ca_roots: Vec<native_tls::Certificate>,
     pub(crate) proxy: Option<Proxy>,
     /// Exact DNS hosts/IPs or leading-dot suffixes. No caller/core environment.
     pub(crate) no_proxy: Vec<String>,
@@ -211,11 +213,8 @@ impl Connector for HttpConnector {
             let addresses = (host, port).to_socket_addrs()?.take(16).collect::<Vec<_>>();
             control.check()?;
             let mut builder = native_tls::TlsConnector::builder();
-            if let Some(pem) = config.ca_pem {
-                builder.add_root_certificate(
-                    native_tls::Certificate::from_pem(&pem)
-                        .map_err(|_| io::ErrorKind::InvalidInput)?,
-                );
+            for root in config.ca_roots {
+                builder.add_root_certificate(root);
             }
             let tls = builder.build().map_err(|_| io::ErrorKind::InvalidInput)?;
             Ok(Setup {

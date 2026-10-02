@@ -21,7 +21,7 @@
 //! build that reaches it.
 
 use super::{HttpsEndpointConfig, SshEndpointConfig, apply_native_timeout, invalid};
-use crate::git::endpoint::{https_auth, https_connection};
+use crate::git::endpoint::{ca_bundle, https_auth, https_connection};
 use crate::model::ModelResult;
 use crate::session_host::EnvironmentSnapshot;
 use gwz_transport::pool;
@@ -32,7 +32,8 @@ use std::{ffi::OsString, path::PathBuf};
 ///
 /// The TLS and proxy settings are checked first, as `with_local_transport`
 /// always checked them: an unusable CA file or proxy refuses the operation
-/// before any endpoint exists. The CA file is read here. The transport
+/// before any endpoint exists. The CA file is read, and each of its
+/// certificates taken as a root (TR2.7), here. The transport
 /// timeout is gwz state, not environment, which `configure_transport_runtime`
 /// sets; it is read once, here, as the runtime starts.
 pub(super) fn endpoint_config(
@@ -90,7 +91,12 @@ fn tls_config(environment: &EnvironmentSnapshot) -> ModelResult<https_connection
         if bytes.len() > 1024 * 1024 {
             return Err(invalid("endpoint CA file exceeds 1 MiB"));
         }
-        config.ca_pem = Some(bytes);
+        config.ca_roots = ca_bundle::certificates(&bytes).map_err(|refusal| match refusal {
+            ca_bundle::Refusal::Malformed => {
+                invalid("endpoint CA file has a malformed certificate block")
+            }
+            ca_bundle::Refusal::NoCertificate => invalid("endpoint CA file has no certificate"),
+        })?;
     }
     platform::proxy(environment, &mut config)?;
     config
