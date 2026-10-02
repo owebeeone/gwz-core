@@ -1,6 +1,6 @@
-# Credential implementation remediation round 1
+# Credential implementation remediation rounds 1–2
 
-2026-10-03. Working correction to the six distinct blockers and two Surface
+2026-10-03. Round1 Code/Surface report GO and State closes every original finding but raises one new non-architectural P2. Round2 corrects it under `GwzTransportCredentialHelpers-RemPlan-2.md`; reviewer closure remains pending. Working correction to the six distinct blockers and two Surface
 follow-ups in `GwzTransportCredentialHelpers-RemPlan.md`. This is a drafter
 implementation receipt, **not a reviewer verdict or acceptance**. Root owns
 settlement, fresh Code/State review of the material admission API change, Surface
@@ -114,3 +114,54 @@ claimed. Initial Git discovery's accepted native-file read limitation and physic
 cleanup budgets remain. Inherited warnings/ignored long randomized campaigns
 remain labeled and unwaived. Source correction does not close reviewers' findings;
 root must settle exact bytes and obtain required fresh Code/State and Surface GO.
+
+
+## Round2: final admission before cleanup retirement
+
+The State round1 report identifies a later refusal after `complete_if_exited`
+has cleared the leader/group and Job permit reference. This is a new
+non-architectural defect, separate from the original late-answer counterexample
+which the reviewer closed. Root filed reports/RemPlan2 at core `6f365909`; the
+unchanged reviewed production baseline is core `64ec0390`.
+
+The runner now has one private finalizer. Its final success-admission callback
+runs while HelperJob still owns the child, process group and permit reference.
+A refused result takes the existing group-termination/reap path. An admitted
+success retires ownership and returns that already admitted result; no later
+clock or cancellation check can manufacture an ownerless refusal. Output and
+before/after parsing checks, the unchanged deadline and cancellation order,
+secret wiping, pending-child ownership and configuration error mapping remain.
+No HelperJob, shared clock, public protocol/API, policy or platform contract
+changes. The private clock-sampling closure preserves production `Instant::now`
+at its existing comparison position and supplies exact equality to the test.
+
+Three new regressions live in the existing runner test file (294 lines), with
+no new source-loading edge or inventory exception. The real supervised leader
+emits a valid answer and exits; its same-group descendant closes inherited
+stdin/stdout/stderr and continues independent heartbeat writes. Final admission
+forces exact deadline equality or cancellation, verifies the Job's permit
+reference is still present and both admission slots are charged, then asserts
+refused answer/no Authorization derivation, no false retained-cleanup count,
+slot recovery and bounded cessation of independent writes. Normal success
+cancels immediately after its admitted decision and remains success through
+retirement. A fixture guard kills only its captured own group on panic/success;
+original RED cannot leak its descendant.
+
+Original RED `gwz-tr222-round2-red-boundary-v2.log` is **0 passed / 3 failed**:
+independent writes continue after refusal (equality 34 vs29, cancellation35 vs30
+bytes after cleanup grace), and normal admission sees the already retired Job
+reference. Its behavior-preserving factored source hashes precede the production
+correction in `gwz-tr222-round2-red-source.json`. The earlier temporary stderr
+buffer lifetime compile error remains separately recorded, never counted as a
+counterexample pass. No production/test assertion or timeout was weakened.
+
+Round2 exact cwd/argv/env, source and log hashes are in
+`/Volumes/projects/limbo/gwz-tr222-round2-final-source-receipt-20261003.json`.
+Focused runner/helper tests and affected credential union are rerun on frozen
+corrected source, with the existing Rust1.95/retained target/profile. Necessary
+Clippy and source guards are refreshed. Transport, CLI help and Python source
+are unchanged and their accepted round1 receipts are reused; no all-world rerun
+or final MAIN composition/platform acceptance is claimed. State same-reviewer
+closure and cheap Code changed-range confirmation remain root-owned.
+
+Round2 final results: focused runner/helper **17/0**, affected credential union **458/0/4 existing ignores** (61.05 seconds), core Clippy exit0/**49 retained warnings**, cfg/candidate/process-global guards exit0. All three specifically new boundary rows pass. Root-provided unchanged checked-artifact boundary guard also passed (`credential-implementation-review/round2-working-boundary.log`). Production/tests are frozen; no further source changes or repeated unaffected suites. Exact receipt owns only the runner, existing runner test file and this record; excluded drafts and root-owned reports/plan/checkpoint are untouched.

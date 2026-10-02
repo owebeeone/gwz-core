@@ -18,11 +18,15 @@ struct ChildRequest<'a> {
 
 impl Runner<'_> {
     pub(super) fn check(&self) -> Result<(), AuthError> {
+        self.check_with_now(Instant::now)
+    }
+
+    fn check_with_now(&self, now: impl FnOnce() -> Instant) -> Result<(), AuthError> {
         if self.setup.is_some_and(|setup| setup.check().is_err()) { return Err(AuthError::Cancelled); }
         if self.cancelled.is_cancelled() || self.owner.inner.cancelled.is_cancelled() {
             return Err(AuthError::Cancelled);
         }
-        if Instant::now() >= self.deadline {
+        if now() >= self.deadline {
             return Err(AuthError::Timeout);
         }
         Ok(())
@@ -149,13 +153,7 @@ impl Runner<'_> {
         // and recheck the unchanged clock/cancellation while the job still
         // owns its process group and both admission permits.
         let result = self.admit_child_output(result).and_then(finish);
-        let result = self.admit_child_output(result);
-        if result.is_ok() {
-            job.complete_if_exited();
-        } else {
-            job.terminate().await?;
-        }
-        self.admit_child_output(result).map_err(|error| {
+        self.finish_job(&mut job, result, |result| self.admit_child_output(result)).await.map_err(|error| {
             if preparing
                 && matches!(
                     error,
@@ -170,6 +168,24 @@ impl Runner<'_> {
                 error
             }
         })
+    }
+
+    async fn finish_job<T>(
+        &self,
+        job: &mut HelperJob,
+        result: Result<T, AuthError>,
+        admit: impl FnOnce(Result<T, AuthError>) -> Result<T, AuthError>,
+    ) -> Result<T, AuthError> {
+        // This is the last decision that can turn successful output into a
+        // refusal. Its cleanup capability must still be owned at that point.
+        let result = admit(result);
+        if result.is_ok() {
+            job.complete_if_exited();
+        } else {
+            job.terminate().await?;
+        }
+        // Success is already admitted: retirement cannot invent a new refusal.
+        result
     }
 
     fn admit_child_output<T>(&self, result: Result<T, AuthError>) -> Result<T, AuthError> {
