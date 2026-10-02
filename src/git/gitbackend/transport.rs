@@ -58,7 +58,7 @@ pub(super) fn clone_repo_named(
     ));
     let repo = builder
         .clone(url, path)
-        .map_err(|error| clone_error(url, error))?;
+        .map_err(|error| attempt.error().unwrap_or_else(|| clone_error(url, error)))?;
     attempt.succeeded();
     pin_creation_time_filter_neutralization(&repo)?;
     Ok(GitCloneResult {
@@ -99,7 +99,7 @@ pub(super) fn fetch(
             )),
             Some("gwz fetch"),
         )
-        .map_err(git_error)?;
+        .map_err(|error| attempt.error().unwrap_or_else(|| git_error(error)))?;
     attempt.succeeded();
     Ok(GitFetchResult {
         remote: remote.to_owned(),
@@ -139,7 +139,7 @@ pub(super) fn tag_fetch(
             )),
             Some("gwz tag fetch"),
         )
-        .map_err(git_error)?;
+        .map_err(|error| attempt.error().unwrap_or_else(|| git_error(error)))?;
     attempt.succeeded();
     Ok(GitFetchResult {
         remote: remote.to_owned(),
@@ -207,7 +207,7 @@ fn advertised_refs(
             )),
             None,
         )
-        .map_err(git_error)?;
+        .map_err(|error| attempt.error().unwrap_or_else(|| git_error(error)))?;
     let refs = connection
         .list()
         .map_err(git_error)?
@@ -477,6 +477,7 @@ fn perform_push(
         None => remote_handle.push(&plan.refspecs, Some(&mut options)),
     };
     pushed.map_err(|error| {
+        if let Some(error) = attempt.error() { return error; }
         if error.code() == git2::ErrorCode::NotFastForward {
             ModelError::new(ErrorCode::RemoteRejected, error.message())
         } else {
@@ -709,7 +710,7 @@ pub(super) fn read_remote_file(
     ));
     let repo = builder
         .clone(url, &scratch.path().join("probe.git"))
-        .map_err(git_error)?;
+        .map_err(|error| attempt.error().unwrap_or_else(|| git_error(error)))?;
     attempt.succeeded();
     let tree = repo
         .head()

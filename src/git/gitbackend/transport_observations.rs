@@ -20,7 +20,7 @@ impl PartialEq for TransportObservations {
 impl Eq for TransportObservations {}
 
 #[derive(Clone, Debug)]
-pub(crate) struct TransportAttempt(Arc<Mutex<crate::TransportObservation>>, Arc<AtomicBool>);
+pub(crate) struct TransportAttempt(Arc<Mutex<crate::TransportObservation>>, Arc<AtomicBool>, Arc<Mutex<Option<crate::model::ModelError>>>);
 
 impl TransportObservations {
     pub fn snapshot(&self) -> Vec<crate::TransportObservation> {
@@ -83,7 +83,7 @@ impl TransportObservations {
             public_key_fingerprint: None,
             ..Default::default()
         };
-        let attempt = TransportAttempt(Arc::new(Mutex::new(row)), Arc::new(AtomicBool::new(false)));
+        let attempt = TransportAttempt(Arc::new(Mutex::new(row)), Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None)));
         self.rows
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -93,6 +93,14 @@ impl TransportObservations {
 }
 
 impl TransportAttempt {
+    pub(crate) fn error(&self) -> Option<crate::model::ModelError> {
+        self.2.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+    cfg_if::cfg_if! { if #[cfg(all(unix, gwz_transport_candidate))] {
+        pub(crate) fn failed(&self, error: crate::model::ModelError) {
+            self.2.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(error);
+        }
+    } }
     cfg_if::cfg_if! {
         if #[cfg(all(unix, gwz_transport_candidate))] {
             pub(crate) fn opened(&self, stream_id: i64, opened: &gwz_transport::protocol::Opened) {
@@ -181,6 +189,16 @@ cfg_if::cfg_if! {
     if #[cfg(all(test, unix, gwz_transport_candidate))] {
         mod https_tests {
             use super::*;
+
+            #[test]
+            fn owned_helper_failure_keeps_first_error_across_late_terminal_reports() {
+                let attempt = TransportObservations::default().begin(Path::new("repo"), "origin", crate::TransportOperation::Fetch, None);
+                attempt.failed(crate::model::ModelError::new(crate::model::ErrorCode::CredentialHelperTimeout, "first captured allowance"));
+                attempt.failed(crate::model::ModelError::new(crate::model::ErrorCode::ExternalToolMissing, "late outcome"));
+                let first = attempt.error().unwrap();
+                assert_eq!(first.code, crate::model::ErrorCode::CredentialHelperTimeout);
+                assert_eq!(first.message, "first captured allowance");
+            }
 
             fn opened() -> gwz_transport::protocol::Opened {
                 gwz_transport::protocol::Opened {

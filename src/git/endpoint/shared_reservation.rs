@@ -61,6 +61,7 @@ impl<C> ReservedConnector<C> {
 
 impl<C: Connector> Connector for ReservedConnector<C> {
     type Resource = ReservedResource<C::Resource>;
+    fn setup_clock_source(&self) -> Option<(std::time::Instant, Arc<dyn Fn() -> u64 + Send + Sync>)> { self.inner.setup_clock_source() }
 
     fn set_stall_ms(&mut self, stall_ms: u64) {
         self.inner.set_stall_ms(stall_ms);

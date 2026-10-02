@@ -25,6 +25,7 @@ gwz_transport_candidate  src/git/gitbackend.rs  use transport_support::server_ti
 gwz_transport_candidate  src/git/gitbackend/backend.rs  fn with_host_context
 gwz_transport_candidate  src/git/gitbackend/transport_binding.rs  mod https_transport_binding_tests
 gwz_transport_candidate  src/git/gitbackend/transport_binding.rs  struct Runtime
+gwz_transport_candidate  src/git/gitbackend/transport_observations.rs  fn failed
 gwz_transport_candidate  src/git/gitbackend/transport_observations.rs  fn opened
 gwz_transport_candidate  src/git/gitbackend/transport_observations.rs  mod https_tests
 gwz_transport_candidate  src/git/gitbackend/transport_support.rs  fn server_timeout_ms

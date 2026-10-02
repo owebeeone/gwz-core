@@ -68,7 +68,7 @@ pub(super) fn repository(root: &Path) -> (PathBuf, git2::Oid) {
 
 fn fake_gh(root: &Path) -> https_auth::Config {
     let executable = root.join("gh");
-    crate::git::endpoint::helper_script::write_helper_script(
+    crate::git::endpoint::helper_script::write_git_fixture(
         &executable,
         "cat >/dev/null\nprintf 'username=fixture\\npassword=fixture-token\\n\\n'\n",
     );
@@ -78,7 +78,7 @@ fn fake_gh(root: &Path) -> https_auth::Config {
     }
 }
 
-fn commit_worktree(path: &Path, text: &str) -> git2::Oid {
+pub(super) fn commit_worktree(path: &Path, text: &str) -> git2::Oid {
     let repository = git2::Repository::open(path).unwrap();
     std::fs::write(path.join("payload"), text).unwrap();
     let mut index = repository.index().unwrap();

@@ -59,6 +59,7 @@ fn queued_expiry_releases_admission_without_stopping_worker() {
         sender
             .send(OpenRequest {
                 progress: Default::default(),
+                setup_slot: Arc::default(),
                 key: Key::ssh("git", "host", 22),
                 identity: Identity::Ambient,
                 service: GitService::UploadPack,

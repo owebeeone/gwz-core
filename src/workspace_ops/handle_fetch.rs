@@ -430,7 +430,7 @@ where
     backend
         .fetch(&target.path, remote)
         .map_err(|error| match error.code {
-            ErrorCode::MissingRemote => error,
+            ErrorCode::MissingRemote | ErrorCode::ExternalToolMissing | ErrorCode::CredentialHelperTimeout => error,
             _ => ModelError::new(ErrorCode::RemoteRejected, error.message),
         })?;
     let after = backend.read_ref(&target.path, upstream)?;

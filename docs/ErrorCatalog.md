@@ -30,6 +30,7 @@
 | `remote_rejected` | Remote rejected push/tag push/delete. | Inspect remote permissions, protected refs, credentials, or refspec. |
 | `git_command_failed` | libgit2 or porcelain `git` primitive failed. | Inspect the message and reproduce in the affected repo with Git. |
 | `external_tool_missing` | Reserved for missing external tooling. | Install the required external tool. |
+| `credential_helper_timeout` (75) | A configured HTTPS credential helper did not answer within its captured interaction allowance, or could not start within the remaining allocation allowance. No credential was sent. | Finish or close an open sign-in, unlock or repair the helper GWZ uses, then retry. The message gives the actual allowance in seconds. See [HTTPS credential helper failures](../dev-docs/GwzTransportCredentialHelpersSurface.md). |
 | `operation_not_found` | Runtime event/result lookup used an unknown operation id. | Use the operation id returned in the accepted response. |
 | `attribution_denied` | Reserved for rejected attribution policy. | Adjust caller identity or policy. |
 | `permission_denied` | Reserved for filesystem/authorization denial. | Check filesystem permissions or credentials. |

@@ -65,9 +65,10 @@ fn the_endpoint_configuration_comes_from_the_snapshot() {
         ("proxy.example", 3128, false)
     );
     assert_eq!(https.tls.no_proxy, ["internal.example", ".corp.example"]);
-    // The gh helper is spawned with env_clear() and exactly the snapshot.
-    let auth = https.auth.expect("gh authentication");
-    assert_eq!(auth.executable, PathBuf::from("gh"));
+    // TR1.6 §3.2/configuration-view amendment: supervised Git receives the
+    // captured snapshot; helper selection is performed in its controlled view.
+    let auth = https.auth.expect("configured credential authentication");
+    assert_eq!(auth.executable, PathBuf::from("git"));
     let mut entries = auth.environment;
     entries.sort();
     assert_eq!(

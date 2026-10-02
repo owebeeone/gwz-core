@@ -29,6 +29,7 @@ impl Session {
             gwz_transport::protocol::Destination {
                 scheme: Scheme::Ssh,
                 ssh_username: destination.key.username,
+                https_username: None,
                 host: destination.key.host,
                 port: destination.key.port as i64,
                 path: destination.path,
@@ -70,6 +71,8 @@ impl Session {
             gwz_transport::protocol::Destination {
                 scheme: Scheme::Https,
                 ssh_username: None,
+                https_username: (!destination.url.username().is_empty())
+                    .then(|| destination.url.username().to_owned()),
                 host: destination.host().into(),
                 port: destination.port() as i64,
                 path: destination.url.path().into(),
@@ -114,7 +117,11 @@ impl Session {
         let deposit;
         // A mux with no stream to spare is backpressure, not a failure: the
         // open waits for a stream to end, within its allocation deadline.
-        let admit_until = allocation_until.unwrap_or_else(|| Instant::now() + ADMISSION);
+        let ssh = destination.scheme == Scheme::Ssh;
+        let allocation_allowance = if ssh {
+            Duration::from_millis(self.state.lock().unwrap_or_else(|e| e.into_inner()).ssh_allocation_ms)
+        } else { ADMISSION };
+        let admit_until = allocation_until.unwrap_or_else(|| Instant::now() + allocation_allowance);
         loop {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.closed {
@@ -140,7 +147,7 @@ impl Session {
             // Check after taking the session mutex: contention here is part of
             // admission too. Truncate sub-millisecond remainders and fail;
             // never send zero, which an endpoint could interpret as a default.
-            let allocation_ms = match allocation_until {
+            let allocation_ms = match allocation_until.or(ssh.then_some(admit_until)) {
                 Some(until) => {
                     let remaining = until.saturating_duration_since(Instant::now()).as_millis();
                     if remaining == 0 {
@@ -150,6 +157,8 @@ impl Session {
                 }
                 None => 30_000,
             };
+            let mut deadlines = network_deadlines(state.io_timeout_ms, state.connect_timeout_ms, allocation_ms);
+            if ssh { deadlines.interaction_ms = state.ssh_interaction_ms as i64; }
             let open = Open {
                 endpoint_id: binding.endpoint_id().into(),
                 operation_id: operation.into(),
@@ -157,11 +166,7 @@ impl Session {
                 service,
                 identity: identity.clone(),
                 policy,
-                deadlines: network_deadlines(
-                    state.io_timeout_ms,
-                    state.connect_timeout_ms,
-                    allocation_ms,
-                ),
+                deadlines,
                 receive_limits: binding.limits().clone(),
             };
             let opened = match &state.handoff {

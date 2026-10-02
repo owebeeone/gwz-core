@@ -129,10 +129,10 @@ def _load_candidate(core_path: Path, owner_path: Path, load_schema):
 def _generate(args: argparse.Namespace) -> dict[Path, str]:
     pin = _verify_pin(args.owner_schema)
     core_digest = hashlib.sha256(args.core_schema.read_bytes()).hexdigest()
-    if core_digest != pin["retained-old-schema-sha256"]:
+    if core_digest != pin["current-core-schema-sha256"]:
         raise SystemExit(
-            "retained old schema digest mismatch: "
-            f"expected {pin['retained-old-schema-sha256']}, got {core_digest}"
+            "current core schema digest mismatch: "
+            f"expected {pin['current-core-schema-sha256']}, got {core_digest}"
         )
     package, emit, load_schema, schema_from_json, corpus = _load_taut(pin)
     candidate = _load_candidate(args.core_schema, args.owner_schema, load_schema)

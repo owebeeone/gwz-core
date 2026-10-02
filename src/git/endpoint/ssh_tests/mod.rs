@@ -45,6 +45,7 @@ mod selected_key;
 mod selected_pool;
 mod supervised;
 mod worker;
+cfg_if::cfg_if! { if #[cfg(unix)] { mod password_helpers; } }
 
 /// Runs `test`, an ignored test of `module`, alone in a child of this test
 /// binary, and asserts that the child ran exactly that test and passed. The

@@ -355,7 +355,6 @@
     {"repo": "gwz-core", "path": "src/git/tests/g15/root_preservation/stash.rs", "attrs": "#[cfg(all(unix, not(target_os = \"macos\")))]", "item": "let cases"},
     {"repo": "gwz-core", "path": "src/lib.rs", "attrs": "#[cfg(test)]", "item": "mod test_backend"},
     {"repo": "gwz-core", "path": "src/local_clone/mod.rs", "attrs": "#[cfg(test)]", "item": "mod tests"},
-    {"repo": "gwz-core", "path": "src/model/mod.rs", "attrs": "#[cfg(test)]", "item": "mod tests"},
     {"repo": "gwz-core", "path": "src/operation/commit_log/handler.rs", "attrs": "#[cfg(test)]", "item": "use std::sync::atomic::AtomicBool"},
     {"repo": "gwz-core", "path": "src/operation/commit_log/mod.rs", "attrs": "#[cfg(test)]", "item": "let _reader_probe"},
     {"repo": "gwz-core", "path": "src/operation/commit_log/mod.rs", "attrs": "#[cfg(test)]", "item": "mod coalesce_tests"},

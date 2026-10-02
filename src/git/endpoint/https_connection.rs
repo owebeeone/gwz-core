@@ -161,6 +161,7 @@ impl Connection {
     }
 }
 pub(crate) struct HttpResource {
+    identity: Identity,
     setup: Option<Job<Setup>>,
     connecting: Option<JoinHandle<Result<Connection, Failure>>>,
     pub(crate) connection: Option<Arc<Mutex<Connection>>>,
@@ -188,7 +189,7 @@ impl Connector for HttpConnector {
     fn start(
         &mut self,
         key: &Key,
-        _identity: &Identity,
+        identity: &Identity,
         deadline: Option<u64>,
     ) -> Result<HttpResource, Failure> {
         self.config.validate()?;
@@ -227,6 +228,7 @@ impl Connector for HttpConnector {
         })
         .map_err(|_| failure(ErrorCode::Capacity))?;
         Ok(HttpResource {
+            identity: identity.clone(),
             setup: Some(setup),
             connecting: None,
             connection: None,
@@ -293,7 +295,7 @@ impl Resource for HttpResource {
         }
         // HTTPS proves the TLS resource identity, not an authenticated account.
         // The generic pool requires this proof before admitting idle reuse.
-        Poll::Ready(Ok(Some(Identity::Https)))
+        Poll::Ready(Ok(Some(self.identity.clone())))
     }
     fn poll_dispose(&mut self, cx: &mut Context<'_>, _force: bool) -> Poll<io::Result<()>> {
         self.cancel.cancel();

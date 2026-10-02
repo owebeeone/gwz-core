@@ -34,6 +34,8 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 mod budget;
+pub(crate) mod credentials;
+mod challenges;
 mod prepare;
 mod serve;
 
@@ -56,6 +58,7 @@ pub(crate) struct Client {
     io_timeout_ms: u64,
     auth_owner: https_auth::AuthOwner,
     operations: super::https_operation::Operations,
+    ids: Arc<gwz_ids::IdSource>,
 }
 pub(crate) struct Endpoint {
     pub(crate) client: Client,
@@ -83,6 +86,7 @@ impl Endpoint {
             helpers: Arc::new(Semaphore::new(8)),
             routes,
             operations,
+            ids: Arc::new(crate::operation_context::new_id_source()),
             auth_owner: https_auth::AuthOwner::new(helper_slots),
             config,
             io_timeout_ms,
@@ -127,7 +131,8 @@ pub(crate) struct Prepared {
     response: Option<Response<Incoming>>,
     input: Input,
     destination: Destination,
-    authorization: Option<String>,
+    authorization: Option<https_auth::SecretHeader>,
+    credential: Option<Arc<credentials::Credential>>,
     _slot: OwnedSemaphorePermit,
     _operation: super::https_operation::Dependency,
     protocol_error: Arc<AtomicBool>,
@@ -198,6 +203,7 @@ pub(crate) struct Budget {
     connect: Option<Duration>,
     network: Option<Duration>,
     cleanup: Duration,
+    redirect_hops: usize,
 }
 impl Client {
     pub(crate) fn pool(&self) -> &pool::Pool {
@@ -235,15 +241,55 @@ fn with_facts(code: ErrorCode, effect: Effect, facts: &Facts) -> Failure {
         facts: Some(facts.clone()),
     }
 }
-/// A failure of the `gh` helper's turn, whose clock is the interaction
-/// allowance: a timeout there has that origin.
-fn helper_failure(code: ErrorCode, facts: &Facts) -> Failure {
-    let mut failure = with_facts(code, Effect::None, facts);
-    if code == ErrorCode::Timeout {
-        failure.setup_cause = Some(SetupFailureCause::Interaction);
+/// Preserve the configured-helper phase without treating local pipes as network loss.
+fn helper_failure(error: https_auth::AuthError, facts: &Facts) -> Failure {
+    let mut failure = with_facts(error.code(), Effect::None, facts);
+    failure.setup_cause = match error {
+        https_auth::AuthError::Timeout => Some(SetupFailureCause::Interaction),
+        https_auth::AuthError::AllocationTimeout => Some(SetupFailureCause::Allocation),
+        https_auth::AuthError::MissingExecutable => {
+            Some(SetupFailureCause::NotFound)
+        }
+        _ => None,
+    };
+    use gwz_transport::protocol::{FailureDetail, HelperFailureCause};
+    let cause = match error {
+        https_auth::AuthError::Pipe(_) => Some(HelperFailureCause::PipeFailure),
+        https_auth::AuthError::ControlCharacter => Some(HelperFailureCause::ControlCharacter),
+        https_auth::AuthError::UsernameColon => Some(HelperFailureCause::UsernameColon),
+        https_auth::AuthError::NotUtf8 => Some(HelperFailureCause::NotUtf8),
+        https_auth::AuthError::MissingNewline => Some(HelperFailureCause::MissingNewline),
+        https_auth::AuthError::MissingCredential => Some(HelperFailureCause::MissingField),
+        https_auth::AuthError::MalformedOutput => Some(HelperFailureCause::MalformedOutput),
+        https_auth::AuthError::OutputTooLarge => Some(HelperFailureCause::OutputLimit),
+        _ => None,
+    };
+    if let Some(cause) = cause {
+        failure.detail = Some(Box::new(FailureDetail {
+            helper_cause: Some(cause),
+            pipe_kind: match error {
+                https_auth::AuthError::Pipe(kind) => Some(format!("{kind:?}")),
+                _ => None,
+            },
+            ..FailureDetail::default()
+        }));
     }
     failure
 }
+
+pub(super) fn helper_timeout(error: https_auth::AuthError, facts: &Facts, allocation_ms: i64, interaction_ms: i64) -> Failure {
+    let mut failed = helper_failure(error, facts);
+    let allowance = match error {
+        https_auth::AuthError::AllocationTimeout => Some(allocation_ms),
+        https_auth::AuthError::Timeout if interaction_ms > 0 => Some(interaction_ms),
+        _ => None,
+    };
+    if let Some(allowance) = allowance {
+        failed.detail = Some(Box::new(FailureDetail { helper_budget_ms: Some(allowance), ..Default::default() }));
+    }
+    failed
+}
+
 fn classify_hyper_error(error: &hyper::Error) -> ErrorCode {
     if error.is_parse() {
         ErrorCode::Protocol
@@ -270,7 +316,7 @@ fn validate_content(response: &Response<Incoming>, service: GitService) -> Resul
 }
 cfg_if::cfg_if! { if #[cfg(test)] { #[path="https_worker_tests.rs"] mod tests; } }
 cfg_if::cfg_if! { if #[cfg(test)] { #[path="https_budget_tests.rs"] mod budget_tests; } }
-cfg_if::cfg_if! { if #[cfg(test)] { mod retry_tests; } }
+cfg_if::cfg_if! { if #[cfg(test)] { mod retry_tests; mod helper_budget_tests; mod credential_tests; } }
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
@@ -323,9 +369,6 @@ cfg_if::cfg_if! {
             ) -> Result<Prepared, Failure> {
                 let mut budget = self.budget();
                 let mut challenge = None;
-                if https_policy::receive_pack(input.service) {
-                    input.policy = AuthPolicy::Gh;
-                }
                 let result = self
                     .prepare_budget_for_transition(input.clone(), cancel, &mut budget, &mut challenge)
                     .await;
@@ -337,9 +380,10 @@ cfg_if::cfg_if! {
                                 f.code,
                                 ErrorCode::Authentication | ErrorCode::RepositoryRefused
                             )
+                            && f.detail.as_ref().is_none_or(|d| d.schemes.is_none())
                             && f.facts
                                 .as_ref()
-                                .is_some_and(|facts| matches!(facts.http_status, Some(401 | 404))) =>
+                                .is_some_and(|facts| matches!(facts.http_status, Some(401))) =>
                     {
                         *first = Some(f);
                         input.policy = AuthPolicy::Gh;

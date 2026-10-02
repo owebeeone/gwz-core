@@ -56,187 +56,6 @@ pub(crate) fn timeout_reason(error: &io::Error) -> Option<TimeoutReason> {
 pub(crate) fn wall_clock() -> Arc<dyn Fn() -> Instant + Send + Sync> {
     Arc::new(Instant::now)
 }
-#[derive(Clone, Copy)]
-struct Fail {
-    kind: io::ErrorKind,
-    reason: Option<TimeoutReason>,
-}
-impl Fail {
-    fn into_io(self) -> io::Error {
-        match self.reason {
-            Some(reason) => io::Error::new(self.kind, SetupTimeout { reason }),
-            None => self.kind.into(),
-        }
-    }
-}
-struct State {
-    failure: Option<Fail>,
-    cancelled_at: Option<Instant>,
-    joined: bool,
-    consumed: bool,
-    waker: Option<Waker>,
-    aggregate: Option<Instant>,
-    wait_started: Option<Instant>,
-}
-pub(crate) struct Control {
-    state: Mutex<State>,
-    stall: Duration,
-    cleanup: Duration,
-    clock: Arc<dyn Fn() -> Instant + Send + Sync>,
-}
-impl Control {
-    fn new(
-        aggregate: Option<Instant>,
-        stall: Duration,
-        cleanup: Duration,
-        clock: Arc<dyn Fn() -> Instant + Send + Sync>,
-    ) -> Self {
-        Self {
-            state: Mutex::new(State {
-                failure: None,
-                cancelled_at: None,
-                joined: false,
-                consumed: false,
-                waker: None,
-                aggregate,
-                wait_started: None,
-            }),
-            stall,
-            cleanup,
-            clock,
-        }
-    }
-    fn now(&self) -> Instant {
-        (self.clock)()
-    }
-    fn fail(&self, state: &mut State, reason: TimeoutReason) {
-        state.failure = Some(Fail {
-            kind: io::ErrorKind::TimedOut,
-            reason: Some(reason),
-        });
-        state.cancelled_at = Some(self.now());
-    }
-    fn update(&self, state: &mut State) {
-        if state.consumed || state.failure.is_some() {
-            return;
-        }
-        let now = self.now();
-        let stall_at = if self.stall > Duration::ZERO {
-            state
-                .wait_started
-                .and_then(|start| start.checked_add(self.stall))
-        } else {
-            None
-        };
-        let aggregate_at = state.aggregate;
-        let stall_due = stall_at.is_some_and(|at| now >= at);
-        let aggregate_due = aggregate_at.is_some_and(|at| now >= at);
-        let reason = match (stall_due, aggregate_due) {
-            (true, true) => {
-                if aggregate_at <= stall_at {
-                    TimeoutReason::Aggregate
-                } else {
-                    TimeoutReason::Stall
-                }
-            }
-            (false, true) => TimeoutReason::Aggregate,
-            (true, false) => TimeoutReason::Stall,
-            (false, false) => return,
-        };
-        self.fail(state, reason);
-    }
-    pub(crate) fn begin_wait(&self) -> io::Result<()> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        self.update(&mut state);
-        if let Some(failure) = state.failure {
-            return Err(failure.into_io());
-        }
-        if self.stall > Duration::ZERO && state.wait_started.is_none() {
-            state.wait_started = Some(self.now());
-        }
-        Ok(())
-    }
-    pub(crate) fn complete_wait(&self) -> io::Result<()> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        self.update(&mut state);
-        if let Some(failure) = state.failure {
-            return Err(failure.into_io());
-        }
-        if self.stall > Duration::ZERO {
-            state.wait_started = Some(self.now());
-        }
-        Ok(())
-    }
-    pub(crate) fn begin_slice(&self) -> io::Result<Duration> {
-        self.begin_wait()?;
-        self.quantum()
-    }
-    pub(crate) fn end_slice(&self, ready: bool) -> io::Result<()> {
-        if ready {
-            self.complete_wait()?;
-        }
-        self.check()
-    }
-    pub(crate) fn wait_step(
-        &self,
-        poll: impl FnOnce(Duration) -> io::Result<bool>,
-    ) -> io::Result<()> {
-        let duration = self.begin_slice()?;
-        let outcome = poll(duration);
-        self.check()?;
-        let ready = outcome?;
-        self.end_slice(ready)
-    }
-    pub(crate) fn check(&self) -> io::Result<()> {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        self.update(&mut state);
-        match state.failure {
-            Some(failure) => Err(failure.into_io()),
-            None => Ok(()),
-        }
-    }
-    pub(crate) fn quantum(&self) -> io::Result<Duration> {
-        self.check()?;
-        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let mut limit = Duration::from_millis(20);
-        if let Some(left) = self.aggregate_remaining(&state) {
-            limit = limit.min(left);
-        }
-        if let Some(left) = self.stall_remaining(&state) {
-            limit = limit.min(left);
-        }
-        Ok(limit)
-    }
-    fn aggregate_remaining(&self, state: &State) -> Option<Duration> {
-        let at = state.aggregate?;
-        Some(at.saturating_duration_since(self.now()))
-    }
-    fn stall_remaining(&self, state: &State) -> Option<Duration> {
-        if self.stall == Duration::ZERO {
-            return None;
-        }
-        let start = state.wait_started?;
-        let elapsed = self.now().saturating_duration_since(start);
-        Some(self.stall.saturating_sub(elapsed))
-    }
-    fn cleanup_due(&self, at: Instant) -> bool {
-        match at.checked_add(self.cleanup) {
-            Some(due) => self.now() >= due,
-            None => true,
-        }
-    }
-    fn cancel(&self) {
-        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        self.update(&mut state);
-        if !state.consumed && state.failure.is_none() {
-            state.failure = Some(Fail {
-                kind: io::ErrorKind::ConnectionAborted,
-                reason: None,
-            });
-            state.cancelled_at = Some(self.now());
-        }
-    }
-}
 struct Cell<T> {
     control: Arc<Control>,
     result: Mutex<Option<io::Result<T>>>,
@@ -261,6 +80,7 @@ impl<T: Send + 'static> Reap for Entry<T> {
     fn reap(&mut self) -> bool {
         if self.join.as_ref().is_some_and(|join| !join.is_finished()) {
             let control = &self.cell.control;
+            control.sync_shared();
             let mut state = control.state.lock().unwrap_or_else(|e| e.into_inner());
             control.update(&mut state);
             let wake = if state.cancelled_at.is_some_and(|at| control.cleanup_due(at)) {
@@ -276,12 +96,14 @@ impl<T: Send + 'static> Reap for Entry<T> {
         }
         let panic = self.join.take().is_some_and(|join| join.join().is_err());
         let control = &self.cell.control;
+        control.sync_shared();
         let mut state = control.state.lock().unwrap_or_else(|e| e.into_inner());
         control.update(&mut state);
         if panic && state.failure.is_none() {
             state.failure = Some(Fail {
                 kind: io::ErrorKind::Other,
                 reason: None,
+                terminal: None,
             });
         }
         if state.failure.is_some() && !state.consumed {
@@ -390,6 +212,40 @@ impl<T: Send + 'static> Job<T> {
         cleanup: Duration,
         clock: Arc<dyn Fn() -> Instant + Send + Sync>,
         work: impl FnOnce(Arc<Control>) -> io::Result<T> + Send + 'static,
+        spawn: impl FnMut(&str, Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
+    ) -> io::Result<Self> {
+        Self::start_control(
+            Arc::new(Control::new(aggregate, stall, cleanup, clock)),
+            work,
+            spawn,
+        )
+    }
+    pub(crate) fn start_setup(
+        setup: Arc<super::ssh_setup_context::SetupContext>,
+        cleanup: Duration,
+        work: impl FnOnce(Arc<Control>) -> io::Result<T> + Send + 'static,
+    ) -> io::Result<Self> {
+        let control = Arc::new(Control::new_shared(setup.clone(), cleanup, wall_clock()));
+        Self::start_control(
+            control,
+            move |control| {
+                work(control).map_err(|error| {
+                    if error
+                        .get_ref()
+                        .is_some_and(|cause| cause.is::<super::ssh_setup_context::SetupEnded>())
+                    {
+                        error
+                    } else {
+                        setup.terminate_failure(super::ssh_setup::failure_from_io(&error))
+                    }
+                })
+            },
+            |name, body| thread::Builder::new().name(name.into()).spawn(body),
+        )
+    }
+    fn start_control(
+        control: Arc<Control>,
+        work: impl FnOnce(Arc<Control>) -> io::Result<T> + Send + 'static,
         mut spawn: impl FnMut(&str, Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
     ) -> io::Result<Self> {
         let hub = Hub::global(&mut spawn)?;
@@ -399,7 +255,6 @@ impl<T: Send + 'static> Job<T> {
             })
             .map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))?;
         let permit = Permit;
-        let control = Arc::new(Control::new(aggregate, stall, cleanup, clock));
         let cell = Arc::new(Cell {
             control: control.clone(),
             result: Mutex::new(None),
@@ -411,6 +266,7 @@ impl<T: Send + 'static> Job<T> {
             "gwz-agent-setup",
             Box::new(move || {
                 let result = control.check().and_then(|_| work(control.clone()));
+                control.sync_shared();
                 let mut state = control.state.lock().unwrap_or_else(|e| e.into_inner());
                 control.update(&mut state);
                 // Even cancelled results stay owned until the supervisor joins and disposes.
@@ -435,6 +291,7 @@ impl<T: Send + 'static> Job<T> {
     }
     pub(crate) fn poll_result(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<T>> {
         let control = &self.cell.control;
+        control.sync_shared();
         let mut state = control.state.lock().unwrap_or_else(|e| e.into_inner());
         control.update(&mut state);
         state.waker = Some(cx.waker().clone());
@@ -547,176 +404,7 @@ impl Cleanup {
     }
 }
 
-cfg_if::cfg_if! {
-    if #[cfg(test)] {
-        mod permit_tests;
-
-        /// A clock that moves only when a test advances it.
-        #[derive(Clone)]
-        pub(crate) struct ManualClock {
-            now: Arc<Mutex<Instant>>,
-        }
-        impl ManualClock {
-            pub(crate) fn new() -> Self {
-                Self {
-                    now: Arc::new(Mutex::new(Instant::now())),
-                }
-            }
-            pub(crate) fn now(&self) -> Instant {
-                *self.now.lock().unwrap_or_else(|e| e.into_inner())
-            }
-            pub(crate) fn advance(&self, by: Duration) {
-                let mut now = self.now.lock().unwrap_or_else(|e| e.into_inner());
-                *now += by;
-            }
-            pub(crate) fn clock(&self) -> Arc<dyn Fn() -> Instant + Send + Sync> {
-                let now = self.now.clone();
-                Arc::new(move || *now.lock().unwrap_or_else(|e| e.into_inner()))
-            }
-        }
-        impl Control {
-            /// A control on a test's clock, outside any job.
-            pub(crate) fn scripted(
-                aggregate: Option<Instant>,
-                stall: Duration,
-                cleanup: Duration,
-                clock: Arc<dyn Fn() -> Instant + Send + Sync>,
-            ) -> Arc<Self> {
-                Arc::new(Self::new(aggregate, stall, cleanup, clock))
-            }
-            pub(crate) fn disposal_due(&self) -> bool {
-                let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                state.cancelled_at.is_some_and(|at| self.cleanup_due(at))
-            }
-        }
-        impl<T: Send + 'static> Job<T> {
-            /// Starts a job whose threads `spawn` creates, so a test can make
-            /// thread creation fail deterministically.
-            pub(crate) fn start_with(
-                deadline: Option<Instant>,
-                cleanup: Duration,
-                work: impl FnOnce(Arc<Control>) -> io::Result<T> + Send + 'static,
-                spawn: impl FnMut(&str, Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
-            ) -> io::Result<Self> {
-                Self::start_inner(deadline, Duration::ZERO, cleanup, wall_clock(), work, spawn)
-            }
-        }
-
-        fn scripted(stall: Duration, aggregate: Duration) -> (ManualClock, Arc<Control>) {
-            let clock = ManualClock::new();
-            let aggregate = (aggregate > Duration::ZERO).then(|| clock.now() + aggregate);
-            let control = Control::scripted(aggregate, stall, Duration::from_secs(5), clock.clock());
-            (clock, control)
-        }
-
-        #[test]
-        fn progressing_waits_outlive_one_stall_allowance() {
-            let (clock, control) = scripted(Duration::from_millis(1_000), Duration::from_millis(10_000));
-            for _ in 0..4 {
-                control.begin_slice().unwrap();
-                clock.advance(Duration::from_millis(600));
-                control.end_slice(true).unwrap();
-            }
-            control.check().unwrap();
-        }
-
-        #[test]
-        fn idle_slices_expire_as_stall_while_aggregate_remains() {
-            let (clock, control) = scripted(Duration::from_millis(1_000), Duration::from_millis(10_000));
-            control.begin_wait().unwrap();
-            let _ = control.quantum().unwrap();
-            let _ = control.quantum().unwrap();
-            clock.advance(Duration::from_millis(1_000));
-            let error = control.check().unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-            assert_eq!(timeout_reason(&error), Some(TimeoutReason::Stall));
-        }
-
-        #[test]
-        fn completed_native_attempt_after_stall_is_rejected() {
-            let (clock, control) = scripted(Duration::from_millis(1_000), Duration::from_millis(10_000));
-            control.begin_wait().unwrap();
-            clock.advance(Duration::from_millis(1_001));
-            let error = control.complete_wait().unwrap_err();
-            assert_eq!(timeout_reason(&error), Some(TimeoutReason::Stall));
-        }
-
-        #[test]
-        fn terminal_stall_wins_over_a_poll_error() {
-            let (clock, control) = scripted(Duration::from_millis(1_000), Duration::from_millis(10_000));
-            let error = control
-                .wait_step(|_| {
-                    clock.advance(Duration::from_millis(1_000));
-                    Err(io::ErrorKind::ConnectionRefused.into())
-                })
-                .unwrap_err();
-            assert_eq!(timeout_reason(&error), Some(TimeoutReason::Stall));
-        }
-
-        #[test]
-        fn handshake_completions_reset_the_stall() {
-            let (clock, control) = scripted(Duration::from_millis(1_000), Duration::from_millis(10_000));
-            for _ in 0..3 {
-                control.begin_slice().unwrap();
-                clock.advance(Duration::from_millis(700));
-                control.end_slice(true).unwrap();
-            }
-            control.check().unwrap();
-        }
-
-        #[test]
-        fn disabled_stall_does_not_invent_a_deadline() {
-            let (clock, control) = scripted(Duration::ZERO, Duration::from_secs(10));
-            control.begin_wait().unwrap();
-            clock.advance(Duration::from_secs(3));
-            control.check().unwrap();
-            clock.advance(Duration::from_millis(6_999));
-            control.check().unwrap();
-            clock.advance(Duration::from_millis(1));
-            let error = control.check().unwrap_err();
-            assert_eq!(timeout_reason(&error), Some(TimeoutReason::Aggregate));
-        }
-
-        #[test]
-        fn zero_aggregate_has_no_network_deadline() {
-            let clock = ManualClock::new();
-            let control = Control::scripted(None, Duration::ZERO, Duration::from_secs(5), clock.clock());
-            control.begin_wait().unwrap();
-            clock.advance(Duration::from_secs(30));
-            control.complete_wait().unwrap();
-            control.check().unwrap();
-            control.cancel();
-            assert!(!control.disposal_due());
-            clock.advance(Duration::from_secs(5));
-            assert!(control.disposal_due());
-        }
-
-        #[test]
-        fn short_waits_fail_when_their_sum_passes_the_aggregate() {
-            let (clock, control) = scripted(Duration::from_millis(1_000), Duration::from_millis(2_500));
-            for _ in 0..2 {
-                control.begin_slice().unwrap();
-                clock.advance(Duration::from_millis(800));
-                control.end_slice(true).unwrap();
-            }
-            control.begin_slice().unwrap();
-            clock.advance(Duration::from_millis(900));
-            let error = control.end_slice(true).unwrap_err();
-            assert_eq!(timeout_reason(&error), Some(TimeoutReason::Aggregate));
-        }
-
-        #[test]
-        fn cancel_drops_a_success_inside_the_aggregate() {
-            let (clock, control) = scripted(Duration::from_secs(3), Duration::from_secs(10));
-            for _ in 0..4 {
-                control.begin_slice().unwrap();
-                clock.advance(Duration::from_millis(1_250));
-                control.end_slice(true).unwrap();
-            }
-            control.cancel();
-            let error = control.check().unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::ConnectionAborted);
-            assert!(timeout_reason(&error).is_none());
-        }
-    }
-}
+mod control;
+pub(crate) use control::Control;
+use control::Fail;
+cfg_if::cfg_if! { if #[cfg(test)] { mod tests; pub(crate) use tests::ManualClock; } }

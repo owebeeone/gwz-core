@@ -1,6 +1,11 @@
 use super::*;
 
 impl Prepared {
+    fn reject_credential(&self, response: &Response<Incoming>) {
+        if matches!(response.status().as_u16(), 401 | 403) {
+            if let Some(credential) = &self.credential { credential.rejected.store(true, Ordering::Release); }
+        }
+    }
     pub(crate) fn io_timeout_ms(&self) -> u64 {
         self.io_ms
     }
@@ -25,7 +30,10 @@ impl Prepared {
             );
         }
         if let Some(authorization) = self.authorization.take() {
-            request = request.header(AUTHORIZATION, authorization);
+            let mut value = hyper::http::HeaderValue::from_bytes(authorization.as_bytes())
+                .expect("Basic credential header is ASCII");
+            value.set_sensitive(true);
+            request = request.header(AUTHORIZATION, value);
         }
         let mut request = request
             .body(body)
@@ -155,6 +163,7 @@ impl Prepared {
             tokio::select! {
                 result=&mut send=>{
                     let response=result?;
+                    self.reject_credential(&response);
                     record_response(&response,&facts);
                     check_response(&response,self.input.service)?;
                     // A final rejection is returned immediately, even when Git is
@@ -165,6 +174,7 @@ impl Prepared {
                 },
                 result=&mut producer=>{
                     let response=send.await?;
+                    self.reject_credential(&response);
                     record_response(&response,&facts);
                     check_response(&response,self.input.service)?;
                     result?;
@@ -172,6 +182,7 @@ impl Prepared {
                 },
             }
         };
+        self.reject_credential(&response);
         record_response(&response, &facts);
         check_response(&response, self.input.service)?;
         loop {

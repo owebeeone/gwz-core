@@ -129,6 +129,7 @@ fn shutdown_reports_blocked_physical_disposal_then_eventual_zero() {
                 port: 22,
                 path: "/repo".into(),
                 ssh_username: Some("git".into()),
+                https_username: None,
             },
             service: WireService::UploadPackAdvertisement,
             identity: WireIdentity::default(),

@@ -1,6 +1,6 @@
 use gwz_transport::protocol::{ErrorCode, GitService};
 cfg_if::cfg_if! { if #[cfg(test)] { #[path="https_policy_tests.rs"] mod tests; } }
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum ResponseAction {
     Success,
@@ -68,13 +68,15 @@ impl RouteKey {
 }
 pub(crate) struct Routes {
     capacity: usize,
-    routes: BTreeMap<RouteKey, Option<String>>,
+    routes: BTreeMap<RouteKey, Route>,
+    missing: BTreeMap<String, gwz_transport::protocol::Failure>,
 }
 impl Routes {
     pub(crate) fn new(capacity: usize) -> Self {
         Self {
             capacity,
             routes: BTreeMap::new(),
+            missing: BTreeMap::new(),
         }
     }
     pub(crate) fn admit(&mut self, key: RouteKey) -> Result<(), ErrorCode> {
@@ -82,12 +84,12 @@ impl Routes {
             if self.routes.len() >= self.capacity {
                 return Err(ErrorCode::Capacity);
             }
-            self.routes.insert(key, None);
+            self.routes.insert(key, Route { pinned: None, challenge: None, answers: Arc::new(Default::default()) });
         }
         Ok(())
     }
     pub(crate) fn install(&mut self, key: &RouteKey, base: &str) -> Result<(), ErrorCode> {
-        let slot = self.routes.get_mut(key).ok_or(ErrorCode::InvalidRequest)?;
+        let slot = &mut self.routes.get_mut(key).ok_or(ErrorCode::InvalidRequest)?.pinned;
         if let Some(pinned) = slot {
             if pinned != base {
                 return Err(ErrorCode::Protocol);
@@ -100,10 +102,35 @@ impl Routes {
     pub(crate) fn get(&self, key: &RouteKey) -> Result<&str, ErrorCode> {
         self.routes
             .get(key)
-            .and_then(Option::as_deref)
+            .and_then(|route| route.pinned.as_deref())
             .ok_or(ErrorCode::InvalidRequest)
     }
     pub(crate) fn finish(&mut self, operation: &str) {
         self.routes.retain(|key, _| key.operation != operation);
+        self.missing.remove(operation);
+    }
+}
+
+struct Route {
+    pinned: Option<String>,
+    challenge: Option<String>,
+    answers: Arc<super::https_worker::credentials::Answers>,
+}
+impl Routes {
+    pub(crate) fn answers(&self, key: &RouteKey) -> Result<Arc<super::https_worker::credentials::Answers>, ErrorCode> {
+        self.routes.get(key).map(|r| r.answers.clone()).ok_or(ErrorCode::InvalidRequest)
+    }
+    pub(crate) fn challenge(&mut self, key: &RouteKey, base: &str) -> Result<(), ErrorCode> {
+        self.routes.get_mut(key).ok_or(ErrorCode::InvalidRequest)?.challenge = Some(base.into());
+        Ok(())
+    }
+    pub(crate) fn challenged(&self, key: &RouteKey) -> Option<&str> {
+        self.routes.get(key).and_then(|r| r.challenge.as_deref())
+    }
+    pub(crate) fn missing_git(&self, key: &RouteKey) -> Option<gwz_transport::protocol::Failure> {
+        self.missing.get(&key.operation).cloned()
+    }
+    pub(crate) fn latch_missing_git(&mut self, key: &RouteKey, failure: gwz_transport::protocol::Failure) {
+        self.missing.entry(key.operation.clone()).or_insert(failure);
     }
 }

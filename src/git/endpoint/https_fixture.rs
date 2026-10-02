@@ -106,7 +106,9 @@ pub(crate) fn response(
     service: GitService,
     body: impl Into<Bytes>,
 ) -> Response<Full<Bytes>> {
-    Response::builder()
+    let mut builder = Response::builder();
+    if status == 401 { builder = builder.header("WWW-Authenticate", "Basic realm=\"fixture\""); }
+    builder
         .status(status)
         .header("Content-Type", https_policy::response_type(service))
         .body(Full::new(body.into()))

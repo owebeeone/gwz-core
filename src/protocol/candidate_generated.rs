@@ -21,7 +21,9 @@ pub use gwz_transport::protocol::Envelope as Envelope;
 pub use gwz_transport::protocol::ErrorCode as ErrorCode;
 pub use gwz_transport::protocol::Facts as Facts;
 pub use gwz_transport::protocol::Failure as Failure;
+pub use gwz_transport::protocol::FailureDetail as FailureDetail;
 pub use gwz_transport::protocol::GitService as GitService;
+pub use gwz_transport::protocol::HelperFailureCause as HelperFailureCause;
 pub use gwz_transport::protocol::Identity as Identity;
 pub use gwz_transport::protocol::IdentityChecked as IdentityChecked;
 pub use gwz_transport::protocol::IdentityMode as IdentityMode;
@@ -29,6 +31,7 @@ pub use gwz_transport::protocol::Limits as Limits;
 pub use gwz_transport::protocol::MessageKind as MessageKind;
 pub use gwz_transport::protocol::Open as Open;
 pub use gwz_transport::protocol::Opened as Opened;
+pub use gwz_transport::protocol::RetryAttempt as RetryAttempt;
 pub use gwz_transport::protocol::Scheme as Scheme;
 pub use gwz_transport::protocol::SetupFailureCause as SetupFailureCause;
 pub use gwz_transport::protocol::Window as Window;
@@ -1646,6 +1649,7 @@ pub enum GwzErrorCode {
     UrlSchemeUnavailable,
     Cancelled,
     TransportRecordLimit,
+    CredentialHelperTimeout,
 }
 impl GwzErrorCode {
     pub fn wire(self) -> i64 { match self {
@@ -1724,6 +1728,7 @@ impl GwzErrorCode {
         Self::UrlSchemeUnavailable => 72,
         Self::Cancelled => 73,
         Self::TransportRecordLimit => 74,
+        Self::CredentialHelperTimeout => 75,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Ok,
@@ -1801,6 +1806,7 @@ impl GwzErrorCode {
         72 => Self::UrlSchemeUnavailable,
         73 => Self::Cancelled,
         74 => Self::TransportRecordLimit,
+        75 => Self::CredentialHelperTimeout,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "GwzErrorCode", value: v }),
     }) }
 }

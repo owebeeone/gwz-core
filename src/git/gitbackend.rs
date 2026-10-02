@@ -32,6 +32,13 @@ mod stash;
 mod stash_support;
 mod transport;
 mod transport_binding;
+
+pub(crate) fn credential_helper_unavailable(error: &git2::Error) -> bool {
+    transport_binding::credential_helper_unavailable(error)
+}
+pub(crate) fn credential_helper_timeout(error: &git2::Error) -> bool {
+    transport_binding::credential_helper_timeout(error)
+}
 mod transport_observations;
 mod transport_support;
 cfg_if::cfg_if! {

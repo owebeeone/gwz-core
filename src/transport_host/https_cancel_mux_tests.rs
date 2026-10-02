@@ -58,6 +58,7 @@ fn open_for(destination: &HttpsDestination, limits: &Limits) -> Open {
             port: destination.port() as i64,
             path: destination.url.path().into(),
             ssh_username: None,
+            https_username: None,
         },
         service: GitService::UploadPackAdvertisement,
         identity: Identity {

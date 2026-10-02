@@ -1,5 +1,6 @@
 //! Physical ownership behind the transport pool's exclusive lease ledger.
 //! One endpoint worker drives this host and its timer independently of Git calls.
+use super::ssh_setup_context::SetupContext;
 use super::{ssh_handoff::UrlExtras, ssh_key_snapshot::Entry as Selected};
 use gwz_transport::{
     pool::{Action, Config, ConnectionId, Error, Identity, Key, Lease, Pool, PoolDriver},
@@ -29,6 +30,11 @@ pub(crate) struct Opening {
     /// The open's selected key, which a URL password's open authenticates
     /// with when the server does not take the password.
     pub(crate) selected: Option<Arc<Selected>>,
+    pub(crate) setup: Option<Arc<SetupContext>>,
+    pub(crate) setup_slot: Arc<Mutex<Option<Arc<SetupContext>>>>,
+    pub(crate) path: String,
+    pub(crate) allocation_ms: u64,
+    pub(crate) interaction_ms: u64,
 }
 
 /// Connection setup is nonblocking. An error returned by start owns no remaining
@@ -37,6 +43,11 @@ pub(crate) struct Opening {
 pub(crate) trait Connector {
     type Resource: Resource;
     fn set_stall_ms(&mut self, _stall_ms: u64) {}
+    fn setup_clock_source(
+        &self,
+    ) -> Option<(std::time::Instant, Arc<dyn Fn() -> u64 + Send + Sync>)> {
+        None
+    }
     fn start(
         &mut self,
         key: &Key,
@@ -76,6 +87,7 @@ struct Entry<R> {
     resource: R,
     phase: Phase,
     used: bool,
+    _setup: Option<Arc<SetupContext>>,
 }
 pub(crate) struct PoolHost<C: Connector> {
     // Physical owners are destroyed before driver loss invalidates clients.
@@ -174,6 +186,7 @@ impl<C: Connector> PoolHost<C> {
         self.actions(cx, &mut opening)?;
         let ids: Vec<_> = self.entries.keys().copied().collect();
         for id in ids {
+            let _ = self.driver.service_setup_clock(id, cx.waker());
             let entry = self.entries.get_mut(&id).expect("worker-owned entry");
             match &mut entry.phase {
                 Phase::Connecting => match entry.resource.poll_connected(cx) {
@@ -236,11 +249,32 @@ impl<C: Connector> PoolHost<C> {
                     identity,
                     network_deadline,
                 } => match catch_unwind(AssertUnwindSafe(|| {
-                    let reported = opening(connection);
+                    let mut reported = opening(connection);
+                    if let Some(remaining) = self.driver.opening_allocation_remaining(connection) {
+                        reported.allocation_ms = reported.allocation_ms.min(remaining);
+                    }
                     let stall = self.stall_ms.load(Ordering::Relaxed);
                     self.connector.set_stall_ms(stall);
+                    if let Some((origin, source)) = self.connector.setup_clock_source() {
+                        let clock = self
+                            .driver
+                            .install_setup_clock(connection, source, stall)
+                            .map_err(|_| Failure {
+                                code: ErrorCode::Timeout,
+                                effect: Effect::None,
+                                ..Default::default()
+                            })?;
+                        clock.register_driver(Arc::new(cx.waker().clone())).deliver();
+                        reported.setup = Some(SetupContext::new(clock, origin));
+                        *reported
+                            .setup_slot
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner()) = reported.setup.clone();
+                    }
+                    let setup = reported.setup.clone();
                     self.connector
                         .start_reported(&key, &identity, network_deadline, reported)
+                        .map(|resource| (resource, setup))
                 })) {
                     Err(panic) => {
                         // The dequeued Connect has no physical owner after start
@@ -259,13 +293,14 @@ impl<C: Connector> PoolHost<C> {
                         resume_unwind(panic);
                     }
                     Ok(result) => match result {
-                        Ok(resource) => {
+                        Ok((resource, setup)) => {
                             self.entries.insert(
                                 connection,
                                 Entry {
                                     resource,
                                     phase: Phase::Connecting,
                                     used: false,
+                                    _setup: setup,
                                 },
                             );
                         }

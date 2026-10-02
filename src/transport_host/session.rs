@@ -37,12 +37,7 @@ mod requests;
 mod wait;
 pub(super) use local_link::LocalLink;
 use wait::Wait;
-cfg_if::cfg_if! {
-    if #[cfg(test)] {
-        // The transport host's tests downcast SSH open errors to it.
-        pub(super) use driver::SshOpenFailure;
-    }
-}
+pub(crate) use driver::SshOpenFailure;
 pub type Attachment = (String, Envelope);
 const CLEANUP: Duration = Duration::from_secs(5);
 const CHECK_MS: u64 = 120_000;
@@ -137,6 +132,8 @@ struct State {
     incoming: Option<Attachment>,
     io_timeout_ms: u64,
     connect_timeout_ms: u64,
+    ssh_allocation_ms: u64,
+    ssh_interaction_ms: u64,
     /// A driver's handoff to the endpoint session in its process, when it
     /// has one: each SSH open's URL extras go through it (TR2.18).
     handoff: Option<Handoff>,
@@ -310,6 +307,8 @@ impl Session {
             incoming: None,
             io_timeout_ms: 9000,
             connect_timeout_ms: 30_000,
+            ssh_allocation_ms: 30_000,
+            ssh_interaction_ms: 120_000,
             handoff: None,
         }
     }
@@ -320,9 +319,20 @@ impl Session {
         connect_timeout_ms: u64,
         handoff: Option<Handoff>,
     ) -> ModelResult<(Arc<Self>, TransportPort)> {
+        Self::driver_with_ssh_budgets(io_timeout_ms, connect_timeout_ms, handoff, 30_000, 120_000)
+    }
+    pub(super) fn driver_with_ssh_budgets(
+        io_timeout_ms: u64,
+        connect_timeout_ms: u64,
+        handoff: Option<Handoff>,
+        allocation_ms: u64,
+        interaction_ms: u64,
+    ) -> ModelResult<(Arc<Self>, TransportPort)> {
         let mut state = Self::empty();
         state.io_timeout_ms = io_timeout_ms;
         state.connect_timeout_ms = connect_timeout_ms;
+        state.ssh_allocation_ms = allocation_ms;
+        state.ssh_interaction_ms = interaction_ms.min(120_000);
         state.handoff = handoff;
         let id = unique()?;
         let (owner, port) = Owner::new(Mux::initiator(&id, mux_config()).map_err(mux_error)?);
@@ -350,13 +360,16 @@ impl Session {
         );
         state.authority = Some(authority.clone());
         state.installed_capacity = Some(pool::Capacity::from(&config.pool));
-        let ssh = ssh_local::connect_with_authority(
+        let ssh_helpers = https.as_ref().and_then(|(https, slots)| https.auth.as_ref().map(|auth|
+            Arc::new(crate::git::endpoint::ssh_password_helpers::Helpers::new(auth.clone(), slots.clone()))));
+        let ssh = ssh_local::connect_with_helpers(
             config.pool.clone(),
             config.home.join(".ssh/known_hosts"),
             config.agent.clone(),
             config.io_timeout_ms,
             authority.clone(),
             handoff,
+            ssh_helpers,
         )
         .map_err(|_| unavailable("SSH endpoint construction failed"))?;
         if let Some((https, helper_slots)) = https {

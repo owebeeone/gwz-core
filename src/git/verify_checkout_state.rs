@@ -130,7 +130,14 @@ pub(crate) fn verify_checkout_state(path: &Path, expected: git2::Oid) -> ModelRe
 }
 
 pub(crate) fn git_error(error: git2::Error) -> ModelError {
-    ModelError::new(ErrorCode::GitCommandFailed, error.message())
+    let code = if credential_helper_timeout(&error) {
+        ErrorCode::CredentialHelperTimeout
+    } else if super::gitbackend::credential_helper_unavailable(&error) {
+        ErrorCode::ExternalToolMissing
+    } else {
+        ErrorCode::GitCommandFailed
+    };
+    ModelError::new(code, error.message())
 }
 
 pub(crate) fn io_error(error: std::io::Error) -> ModelError {

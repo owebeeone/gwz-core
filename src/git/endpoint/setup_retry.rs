@@ -75,6 +75,7 @@ pub(crate) fn classify(failure: &Failure, phase: Phase) -> Verdict {
 pub(crate) fn phase_of(error: &pool::Error) -> Phase {
     match error {
         pool::Error::ConnectFailed { .. }
+        | pool::Error::SetupEnded(_)
         | pool::Error::ConnectTimeout
         | pool::Error::InteractionTimeout
         | pool::Error::IdentityMismatch => Phase::Setup,

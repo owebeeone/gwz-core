@@ -55,12 +55,14 @@ cfg_if::cfg_if! {
             }
         }
         struct HostRoute {
+            attempt: Option<TransportAttempt>,
             context: RequestContext,
             selected: Option<String>,
             report: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
             facts: Arc<dyn Fn(&Facts) + Send + Sync>,
         }
         struct HostHttpsRoute {
+            attempt: Option<TransportAttempt>,
             context: RequestContext,
             policy: Option<AuthPolicy>,
             report: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
@@ -69,6 +71,16 @@ cfg_if::cfg_if! {
             first_failure: Arc<Mutex<Option<crate::transport_host::HttpsAttemptReceipt>>>,
         }
         impl OpenRpc for HostHttpsRoute {
+            fn report_failure(&self, failure: gwz_transport::protocol::Failure, service: GitService) {
+                let message = crate::transport_host::HttpsOpenFailure {
+                    failure, anonymous: None, attempts: None, service: Some(service),
+                    helpers_disabled: self.policy == Some(AuthPolicy::Anonymous), cli_hint: self.context.is_cli(),
+                };
+                if let Some(error) = message.model_error()
+                    && let Some(attempt) = &self.attempt {
+                    attempt.failed(error);
+                }
+            }
             fn open(
                 &self,
                 url: &str,
@@ -82,6 +94,13 @@ cfg_if::cfg_if! {
                     self.facts.clone(),
                     self.first_failure.clone(),
                 )
+                .inspect_err(|error| {
+                    if let Some(failed) = error.get_ref().and_then(|e| e.downcast_ref::<crate::transport_host::HttpsOpenFailure>()) {
+                        if let Some(error) = failed.model_error() {
+                            if let Some(attempt) = &self.attempt { attempt.failed(error); }
+                        }
+                    }
+                })
                 .map(|stream| {
                     *self.active.lock().unwrap_or_else(|e| e.into_inner()) =
                         Some(stream.clone());
@@ -119,7 +138,13 @@ cfg_if::cfg_if! {
                     self.selected.clone(),
                     self.report.clone(),
                     self.facts.clone(),
-                )
+                ).inspect_err(|error| {
+                    if let Some(failed) = error.get_ref().and_then(|e| e.downcast_ref::<crate::transport_host::SshOpenFailure>())
+                        && let Some(error) = failed.model_error(self.context.is_cli())
+                        && let Some(attempt) = &self.attempt {
+                        attempt.failed(error);
+                    }
+                })
             }
         }
         pub(crate) fn configure(
@@ -141,6 +166,7 @@ cfg_if::cfg_if! {
                 let facts_attempt = attempt.clone();
                 let opened_attempt = attempt.clone();
                 let route = HostHttpsRoute {
+                    attempt,
                     context,
                     policy,
                     report: Arc::new(move |stream_id, opened| {
@@ -169,6 +195,7 @@ cfg_if::cfg_if! {
                 let facts_attempt = attempt.clone();
                 let opened_attempt = attempt.clone();
                 let route = HostRoute {
+                    attempt: attempt.clone(),
                     context: context.clone(),
                     selected: selected.clone(),
                     report: Arc::new(move |stream_id, opened| {
@@ -192,6 +219,15 @@ cfg_if::cfg_if! {
                 || (error.class() == git2::ErrorClass::Http
                     && error.message() == crate::git::endpoint::https_remote::REPOSITORY_REFUSED)
         }
+        pub(super) fn credential_helper_unavailable(error: &git2::Error) -> bool {
+            error.code() == git2::ErrorCode::NotFound && error.class() == git2::ErrorClass::Http
+                && error.message().starts_with("HTTPS authentication needs `git` on PATH:")
+        }
+        pub(super) fn credential_helper_timeout(error: &git2::Error) -> bool {
+            error.code() == git2::ErrorCode::Timeout
+                && error.class() == git2::ErrorClass::Http
+                && crate::transport_host::HttpsOpenFailure::is_helper_timeout_message(error.message())
+        }
     } else {
         #[derive(Clone, Default)]
         pub(crate) struct Runtime;
@@ -211,6 +247,8 @@ cfg_if::cfg_if! {
             }
         }
         pub(super) fn repository_refused(_error: &git2::Error) -> bool { false }
+        pub(super) fn credential_helper_unavailable(_error: &git2::Error) -> bool { false }
+        pub(super) fn credential_helper_timeout(_error: &git2::Error) -> bool { false }
         pub(crate) fn configure(
             _backend: &Git2Backend, _url: &str, _identity: Option<&SelectedIdentity>,
             _attempt: Option<&TransportAttempt>, _callbacks: &mut git2::RemoteCallbacks<'_>,

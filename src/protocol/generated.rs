@@ -1598,6 +1598,7 @@ pub enum GwzErrorCode {
     UrlSchemeUnavailable,
     Cancelled,
     TransportRecordLimit,
+    CredentialHelperTimeout,
 }
 impl GwzErrorCode {
     pub fn wire(self) -> i64 { match self {
@@ -1676,6 +1677,7 @@ impl GwzErrorCode {
         Self::UrlSchemeUnavailable => 72,
         Self::Cancelled => 73,
         Self::TransportRecordLimit => 74,
+        Self::CredentialHelperTimeout => 75,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Ok,
@@ -1753,6 +1755,7 @@ impl GwzErrorCode {
         72 => Self::UrlSchemeUnavailable,
         73 => Self::Cancelled,
         74 => Self::TransportRecordLimit,
+        75 => Self::CredentialHelperTimeout,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "GwzErrorCode", value: v }),
     }) }
 }

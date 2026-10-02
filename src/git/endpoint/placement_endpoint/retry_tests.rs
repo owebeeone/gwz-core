@@ -170,6 +170,7 @@ fn open(stream_id: i64, allocation_ms: i64) -> Envelope {
                 port: 22,
                 path: "/repo".into(),
                 ssh_username: Some("git".into()),
+                https_username: None,
             },
             service: GitService::UploadPackExchange,
             identity: Identity::default(),

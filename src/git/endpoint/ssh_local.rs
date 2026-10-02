@@ -19,6 +19,7 @@ cfg_if::cfg_if! {
         };
         use std::{io, path::PathBuf, time::Duration};
 
+        cfg_if::cfg_if! { if #[cfg(test)] {
         /// The endpoint. A driver in its process deposits each open's URL
         /// extras in `handoff`; any other driver's opens have none (TR2.18).
         pub(crate) fn connect_with_authority(
@@ -29,6 +30,14 @@ cfg_if::cfg_if! {
             authority: Authority,
             handoff: Handoff,
         ) -> io::Result<Endpoint> {
+            connect_with_helpers(config, known_hosts, agent_socket, io_timeout_ms, authority, handoff, None)
+        }
+        } }
+        pub(crate) fn connect_with_helpers(
+            config: Config, known_hosts: PathBuf, agent_socket: Option<PathBuf>, io_timeout_ms: u64,
+            authority: Authority, handoff: Handoff,
+            helpers: Option<std::sync::Arc<super::ssh_password_helpers::Helpers>>,
+        ) -> io::Result<Endpoint> {
             let cleanup = Duration::from_millis(config.cleanup_timeout_ms);
             Endpoint::with_handoff(
                 config,
@@ -38,7 +47,8 @@ cfg_if::cfg_if! {
                         origin,
                         cleanup,
                         move |key: &Key, identity: &Identity, opening: Opening| -> io::Result<Setup> {
-                            let Opening { progress, url, selected: pinned } = opening;
+                            let helper_opening = opening.clone();
+                            let Opening { progress, url, selected: pinned, .. } = opening;
                             // A URL password's open has an identity of its own and
                             // brings its own selected key, if any (TR2.18). Any
                             // other selected key is found by its identity: lookup
@@ -58,6 +68,7 @@ cfg_if::cfg_if! {
                             let written = url.map_or_else(|| key.host.clone(), |url| url.host().to_owned());
                             let known_hosts = known_hosts.clone();
                             let agent_socket = agent_socket.clone();
+                            let helpers = helpers.clone();
                             Ok(Box::new(move |control| {
                                 let offered = |method| {
                                     let mut facts = progress.lock().unwrap_or_else(|e| e.into_inner());
@@ -101,6 +112,16 @@ cfg_if::cfg_if! {
                                     } else {
                                         authenticated
                                     });
+                                }
+                                if let Some(helpers) = helpers
+                                    && ssh_password::password_only(&mut connection, user, &control)? {
+                                        progress.lock().unwrap_or_else(|e| e.into_inner()).method = AuthMethod::Gh;
+                                        let mut secret = helpers.lookup(&key, &helper_opening, &control)?;
+                                        let accepted = ssh_password::authenticate_helper(connection, &mut secret, &trusted, &control,
+                                            || offered(AuthMethod::Gh), rejected)?;
+                                        let mut facts = progress.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                                        facts.authenticated = Some(true);
+                                        return Authenticated::new(accepted, requested, facts);
                                 }
                                 let socket = agent_socket.ok_or(io::ErrorKind::NotFound)?;
                                 let connection = agent_auth::authenticate_reporting(

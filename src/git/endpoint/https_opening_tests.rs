@@ -12,6 +12,27 @@ fn runtime() -> tokio::runtime::Runtime {
         .build()
         .unwrap()
 }
+
+#[test]
+fn open_carries_encoded_account_and_refuses_decoded_controls_before_admission() {
+    runtime().block_on(async {
+        let mut endpoint = Endpoint::new(https_connection::Config::default(), None, Default::default()).unwrap();
+        let mut input = Input { destination: "https://a%3Ab@example.test/repo.git".into(),
+            service: GitService::UploadPackAdvertisement, policy: AuthPolicy::Anonymous,
+            session: "session".into(), operation: "operation".into() };
+        let open = open_for(&endpoint.client, &input).unwrap();
+        assert_eq!(open.destination.https_username.as_deref(), Some("a%3Ab"));
+        assert!(open.destination.ssh_username.is_none());
+        let destination = HttpsDestination::parse(&input.destination).unwrap();
+        assert_eq!(destination.request(GitService::UploadPackAdvertisement).as_str(), "https://example.test/repo.git/info/refs?service=git-upload-pack");
+        assert!(!format!("{:?}", open.destination).contains("a%3Ab"));
+        for url in ["https://a%0Ab@example.test/repo.git", "https://account@example.test/repo%0D.git"] {
+            input.destination = url.into();
+            assert!(open_for(&endpoint.client, &input).is_err());
+        }
+        assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
+    });
+}
 async fn opening(client: &Client, input: Input, automatic: bool) -> (Outcome, OpeningSession) {
     let open = open_for(client, &input).unwrap();
     let mut session = OpeningSession::new(
@@ -112,7 +133,7 @@ fn anonymous_failure_crosses_mux_before_distinct_gh_open() {
             } => assert_eq!(first.facts.as_ref().unwrap().http_status, Some(401)),
             _ => panic!("missing first failure"),
         }
-        failed(outcome, ErrorCode::Authentication);
+        failed(outcome, ErrorCode::Unavailable);
         assert_eq!(session.receipts().len(), 2);
         assert_ne!(
             session.receipts()[0].stream_id,
@@ -144,8 +165,8 @@ cfg_if::cfg_if! {
                     })
                 })).await;
                 let helper = tempfile::tempdir().unwrap();
-                let executable = helper.path().join("gh");
-                crate::git::endpoint::helper_script::write_helper_script(&executable, "cat >/dev/null\nprintf 'username=fixture\\npassword=token\\n\\n'\n");
+                let executable = helper.path().join("git");
+                crate::git::endpoint::helper_script::write_git_fixture(&executable, "cat >/dev/null\nprintf 'username=fixture\\npassword=token\\n\\n'\n");
                 let auth = crate::git::endpoint::https_auth::Config { executable, environment: Vec::new() };
                 let mut endpoint = Endpoint::new(server.config(), Some(auth), gwz_transport::pool::Config::default()).unwrap();
                 let (outcome, session) = opening(
@@ -283,16 +304,16 @@ fn trust_and_exhausted_network_budget_are_open_failed() {
 cfg_if::cfg_if! { if #[cfg(unix)] {
 mod unix {
     use super::*;
-    use crate::git::endpoint::{helper_script::write_helper_script, https_auth};
+    use crate::git::endpoint::{helper_script::write_git_fixture, https_auth};
     fn helper(body: &str, environment: Vec<(std::ffi::OsString,std::ffi::OsString)>) -> (tempfile::TempDir, https_auth::Config) {
-        let dir=tempfile::tempdir().unwrap(); let path=dir.path().join("gh");
-        write_helper_script(&path,&format!("{body}\n"));
+        let dir=tempfile::tempdir().unwrap(); let path=dir.path().join("git");
+        write_git_fixture(&path,&format!("{body}\n"));
         (dir,https_auth::Config{executable:path,environment})
     }
     #[test]
     fn redirected_helper_failure_preserves_earlier_credential_offer_in_open_failed() {
         runtime().block_on(async {
-            let target=Server::start(Arc::new(|_|Box::pin(async {panic!("target helper failed; request must not run")}))).await;
+            let target=Server::start(Arc::new(|request|Box::pin(async move {assert!(!request.headers().contains_key("Authorization")); response(401,GitService::UploadPackAdvertisement,"")}))).await;
             let target_url=target.url.clone();
             let source=Server::start(Arc::new(move |request| { let url=target_url.clone(); Box::pin(async move {
                 assert_eq!(request.headers()["Authorization"],"Basic Zml4dHVyZTpzZW50aW5lbA==");
@@ -300,7 +321,7 @@ mod unix {
                 r.headers_mut().insert("Location",format!("{url}/info/refs").parse().unwrap());r
             })})).await;
             let source_host=HttpsDestination::parse(&source.url).unwrap().authority();
-            let (_dir,auth)=helper("input=$(/bin/cat)\ncase \"$input\" in *\"host=$SOURCE\"*) printf 'username=fixture\\npassword=sentinel\\n\\n';; *) exit 1;; esac",vec![("SOURCE".into(),source_host.into())]);
+            let (_dir,auth)=helper("input=$(/bin/cat)\ncase \"$input\" in *\"https://$SOURCE/\"*) printf 'username=fixture\\npassword=sentinel\\n\\n';; *) exit 1;; esac",vec![("SOURCE".into(),source_host.into())]);
             let mut endpoint=Endpoint::new(source.config(),Some(auth),gwz_transport::pool::Config::default()).unwrap();
             let mut request=input(&source,GitService::UploadPackAdvertisement);request.policy=AuthPolicy::Gh;
             let (outcome,session)=opening(&endpoint.client,request,false).await;

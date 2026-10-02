@@ -26,7 +26,7 @@ fn delayed_helper_is_charged_to_interaction_not_allocation() {
         // The helper outlasts the whole allocation allowance: charged to
         // allocation it would exhaust it, charged to interaction it fits. The
         // allowance still covers admission before the helper on a loaded host.
-        crate::git::endpoint::helper_script::write_helper_script(
+        crate::git::endpoint::helper_script::write_git_fixture(
             &helper,
             "/bin/cat >/dev/null\n/bin/sleep 0.5\nprintf 'username=fixture\\npassword=token\\n\\n'\n",
         );

@@ -141,6 +141,12 @@ APPROVED_RUST_PATH_EDGES = {
     ("git/endpoint/https_worker_tests.rs", "https_worker_tests/proxy.rs"),
     ("git/endpoint/https_worker_tests.rs", "https_worker_tests/pool.rs"),
     ("git/endpoint/https_worker_tests.rs", "https_worker_tests/configured_helpers.rs"),
+    # 2026-10-03, TR2.22: root-approved cohesive test leaves. Each target is a
+    # regular in-crate source, behind its parent's enclosing test boundary.
+    ("git/endpoint/agent_job/tests.rs", "permit_tests.rs"),
+    ("git/endpoint/https_auth_integration_tests.rs", "https_auth_integration_tests/challenge.rs"),
+    ("git/endpoint/https_auth_integration_tests.rs", "https_auth_integration_tests/policy.rs"),
+    ("git/endpoint/https_auth_integration_tests.rs", "https_auth_integration_tests/route.rs"),
     # 2026-10-02, TR2.15: the tests/transport_ssh crate is folded into the
     # candidate tests, so the placement and worker checks it held sit beside
     # their modules, and the SSH and HTTPS fixtures are each one test module

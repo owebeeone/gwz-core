@@ -2,6 +2,7 @@
 mod cancellable;
 mod endpoint_environment;
 mod https_endpoint;
+mod helper_failure;
 mod local_command;
 pub use cancellable::with_cancellable_local_transport;
 pub use local_command::with_local_transport;
@@ -19,6 +20,12 @@ cfg_if::cfg_if! {
         mod message_embedding_tests;
         mod https_tests;
         mod https_policy_tests;
+        cfg_if::cfg_if! {
+            if #[cfg(unix)] {
+                mod https_helper_projection_tests;
+                mod ssh_helper_projection_tests;
+            }
+        }
         mod https_compat_tests;
         mod cancellable_tests;
         mod cancellable_https_tests;
@@ -49,6 +56,7 @@ pub fn validate_request_context(meta: &RequestMeta, operation_id: &str) -> Model
 }
 pub(crate) use request::{HttpsAttemptReceipt, HttpsOpenFailure, RequestContext};
 use session::Session;
+pub(crate) use session::SshOpenFailure;
 pub use session::{Attachment, TransportPort};
 use std::{
     path::PathBuf,
@@ -161,12 +169,14 @@ impl TransportRuntime {
         let enabled = https.is_some();
         let io_timeout_ms = local.io_timeout_ms;
         let connect_timeout_ms = local.pool.connect_timeout_ms;
+        let allocation_ms = local.pool.allocation_timeout_ms;
+        let interaction_ms = local.pool.interaction_timeout_ms;
         // The driver and the endpoint share this process, so each SSH open's
         // URL extras go from one to the other through this (TR2.18).
         let handoff = crate::git::endpoint::ssh_handoff::Handoff::default();
         let (endpoint, peer_port) = Session::endpoint_with_https(local, https, handoff.clone())?;
         let (driver, core_port) =
-            Session::driver(io_timeout_ms, connect_timeout_ms, Some(handoff))?;
+            Session::driver_with_ssh_budgets(io_timeout_ms, connect_timeout_ms, Some(handoff), allocation_ms, interaction_ms)?;
         let link = session::LocalLink::new(core_port, peer_port)?;
         Ok(Self(Arc::new(Mutex::new(RuntimeState {
             local: driver,

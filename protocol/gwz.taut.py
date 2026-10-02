@@ -833,7 +833,10 @@ SCHEMA = schema(
          cancelled=73,
          # The operation's own bounded event/result record overflowed after
          # admission; do not infer Git success from the truncated record.
-         transport_record_limit=74),
+         transport_record_limit=74,
+         # Configured credential helper interaction/admission exceeded its
+         # accepted bound before a credential was offered (TR1.6 OQ5(a)).
+         credential_helper_timeout=75),
 
     # Compatibility wave required to execute an allocated durable merge record.
     MergeRecordRequiredWave=Enum(

@@ -81,6 +81,7 @@ impl From<model::ErrorCode> for generated::GwzErrorCode {
             model::ErrorCode::UnknownEvidence => Self::UnknownEvidence,
             model::ErrorCode::DisposalIncomplete => Self::DisposalIncomplete,
             model::ErrorCode::UrlSchemeUnavailable => Self::UrlSchemeUnavailable,
+            model::ErrorCode::CredentialHelperTimeout => Self::CredentialHelperTimeout,
             // Native-session bridge errors do not enter an OperationResult.
             model::ErrorCode::TransportCapacityConflict => Self::IoError,
             model::ErrorCode::TransportSessionFull => Self::IoError,
@@ -311,6 +312,9 @@ mod tests {
         let code: generated::GwzErrorCode = model::ErrorCode::DivergedMember.into();
         assert_eq!(code, generated::GwzErrorCode::DivergedMember);
         assert_eq!(code.wire(), 16);
+        let timeout: generated::GwzErrorCode = model::ErrorCode::CredentialHelperTimeout.into();
+        assert_eq!(timeout, generated::GwzErrorCode::CredentialHelperTimeout);
+        assert_eq!(timeout.wire(), 75);
     }
 
     #[test]

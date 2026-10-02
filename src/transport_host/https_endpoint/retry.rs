@@ -288,9 +288,11 @@ fn input(open: &Open, session: &str, name: &str) -> Input {
     } else {
         open.destination.host.clone()
     };
+    let selector = open.destination.https_username.as_deref()
+        .map_or_else(String::new, |value| format!("{value}@"));
     Input {
         destination: format!(
-            "https://{host}:{}{}",
+            "https://{selector}{host}:{}{}",
             open.destination.port, open.destination.path
         ),
         service: open.service,

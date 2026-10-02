@@ -185,7 +185,6 @@ fn exhausted_retry_domains_fail_before_gh_lookup_without_refilling() {
                     matches!(
                         result,
                         Err(Failure {
-                            setup_cause: None,
                             code: ErrorCode::Timeout,
                             effect: Effect::None,
                             ..

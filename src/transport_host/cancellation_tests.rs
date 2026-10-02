@@ -48,6 +48,7 @@ fn cancel_after_opened_is_queued_replaces_opened_with_cancelled_terminal() {
                     port: destination.port() as i64,
                     path: destination.url.path().into(),
                     ssh_username: None,
+                    https_username: None,
                 },
                 service: GitService::UploadPackAdvertisement,
                 identity: Identity {

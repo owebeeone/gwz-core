@@ -21,6 +21,8 @@ command-line output, use the hosted
   snapshot, and local runtime state.
 - [GitBackend](GitBackend.md) - Git backend boundary, credentials, progress,
   timeouts, tags, and fallback behavior.
+- [CredentialHelpers](CredentialHelpers.md) - candidate helper selection,
+  captured configuration scope, timeout errors and recovery.
 - [MemberListing](MemberListing.md) - `LsRequest`, `LsResponse`,
   `MemberEntry`, materialization filtering, and `forall` reuse.
 - [TagManagement](TagManagement.md) - `TagRequest`, `TagOp`, `TagInfo`, real

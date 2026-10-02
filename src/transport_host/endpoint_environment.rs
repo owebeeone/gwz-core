@@ -57,7 +57,7 @@ pub(super) fn endpoint_config(
         .map(|(name, value)| (name.to_owned(), value.to_owned()))
         .collect();
     let auth = https_auth::Config {
-        executable: PathBuf::from("gh"),
+        executable: PathBuf::from("git"),
         environment,
     };
     Ok((

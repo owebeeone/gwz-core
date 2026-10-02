@@ -271,10 +271,11 @@ def pre_log_projection(schema_ir: dict[str, Any]) -> dict[str, Any]:
     if added != [expected]:
         raise ValueError("RequestMeta.invocation must be the optional InvocationContext at tag 9")
     request_meta["fields"].remove(added[0])
-    # Python shared transport session v2 appends only two terminal codes.
-    # Remove exactly those additive members to retain the prior wire pin.
+    # Python shared transport v2 and accepted TR1.6 OQ5(a) append only the
+    # named terminal codes. Remove these exact members, retaining the old pin.
     error_codes = next(enum for enum in projected["enums"] if enum["name"] == "GwzErrorCode")
-    for name, value in (("cancelled", 73), ("transport_record_limit", 74)):
+    for name, value in (("cancelled", 73), ("transport_record_limit", 74),
+                        ("credential_helper_timeout", 75)):
         actual = error_codes["members"].pop(name, None)
         if actual != value:
             raise ValueError(f"GwzErrorCode.{name} must occupy additive slot {value}")

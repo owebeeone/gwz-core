@@ -10,6 +10,18 @@ use std::{
     task::Waker,
 };
 
+#[test]
+fn retry_allowance_and_challenge_keys_are_account_specific() {
+    let mut envelope = open(1, 443, 1_000);
+    let first = envelope.open.as_mut().unwrap();
+    first.destination.https_username = Some("account-a".into());
+    let a = retry_key(first);
+    first.destination.https_username = Some("account-b".into());
+    assert_ne!(a, retry_key(first));
+    first.destination.https_username = None;
+    assert_ne!(a, retry_key(first));
+}
+
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -56,6 +68,7 @@ fn open(stream: i64, port: u16, allocation_ms: i64) -> Envelope {
                 port: port as i64,
                 path: "/repo".into(),
                 ssh_username: None,
+                https_username: None,
             },
             service: GitService::UploadPackAdvertisement,
             identity: Identity {

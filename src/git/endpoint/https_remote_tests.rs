@@ -95,6 +95,7 @@ fn open_failure(
     authenticated: Option<bool>,
 ) -> git2::Error {
     let failure = crate::transport_host::HttpsOpenFailure {
+            service: None, helpers_disabled: false, cli_hint: true,
         failure: gwz_transport::protocol::Failure {
             detail: None,
             setup_cause: None,
@@ -118,6 +119,7 @@ fn a_failed_open_names_a_timeouts_origin_and_the_attempt_it_ended() {
     use gwz_transport::protocol::SetupFailureCause;
     let message = |setup_cause, attempts| {
         let failure = crate::transport_host::HttpsOpenFailure {
+            service: None, helpers_disabled: false, cli_hint: true,
             failure: gwz_transport::protocol::Failure {
                 detail: None,
                 setup_cause,
@@ -186,4 +188,50 @@ fn exchange_refusal_never_maps_to_private_repository_marker() {
     );
     assert_eq!(error.code(), git2::ErrorCode::GenericError);
     assert_ne!(error.message(), REPOSITORY_REFUSED);
+}
+
+#[test]
+fn helper_timeout_keeps_public_code_75_without_reclassifying_general_timeouts() {
+    use gwz_transport::protocol::*;
+    for budget in [None, Some(1_250)] {
+        let failure = crate::transport_host::HttpsOpenFailure {
+            service: None, helpers_disabled: false, cli_hint: true,
+            failure: Failure {
+                code: ErrorCode::Timeout,
+                effect: Effect::None,
+                setup_cause: Some(SetupFailureCause::Interaction),
+                detail: budget.map(|ms| {
+                    Box::new(FailureDetail {
+                        helper_budget_ms: Some(ms),
+                        ..Default::default()
+                    })
+                }),
+                ..Default::default()
+            },
+            anonymous: None,
+            attempts: None,
+        };
+        let git = map_open_error(
+            io::Error::other(failure),
+            GitService::UploadPackAdvertisement,
+        );
+        let model = crate::git::git_error(git);
+        assert_eq!(
+            model.code,
+            if budget.is_some() {
+                crate::model::ErrorCode::CredentialHelperTimeout
+            } else {
+                crate::model::ErrorCode::GitCommandFailed
+            }
+        );
+    }
+    let forged = git2::Error::new(
+        git2::ErrorCode::GenericError,
+        git2::ErrorClass::Http,
+        "No credential helper answered within 1.25 seconds",
+    );
+    assert_eq!(
+        crate::git::git_error(forged).code,
+        crate::model::ErrorCode::GitCommandFailed
+    );
 }

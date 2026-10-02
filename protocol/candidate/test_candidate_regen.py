@@ -114,8 +114,9 @@ def test_retained_reader_is_pinned_checked_in_baseline():
     assert REGEN.hashlib.sha256(retained.read_bytes()).hexdigest() == metadata[
         "retained-old-rust-sha256"
     ]
+    assert metadata["retained-old-schema-sha256"] == "423cb73b8c17a6779155431aebe40949f90a429ef69625683b449ed7fe072adb"
     assert REGEN.hashlib.sha256(CORE_SCHEMA.read_bytes()).hexdigest() == metadata[
-        "retained-old-schema-sha256"
+        "current-core-schema-sha256"
     ]
 
 

@@ -24,13 +24,14 @@ impl Client {
 fn budget_for_config(config: &pool::Config, io_timeout_ms: u64) -> Budget {
     Budget {
         allocation: Duration::from_millis(config.allocation_timeout_ms),
-        helper: Duration::from_millis(config.interaction_timeout_ms),
+        helper: Duration::from_millis(config.interaction_timeout_ms.min(120_000)),
         connect: (config.connect_timeout_ms != 0)
             .then(|| Duration::from_millis(config.connect_timeout_ms)),
         // Active I/O consumes one cumulative budget across redirects and
         // authentication attempts; zero deliberately disables the deadline.
         network: (io_timeout_ms != 0).then(|| Duration::from_millis(io_timeout_ms)),
         cleanup: Duration::from_millis(config.cleanup_timeout_ms),
+        redirect_hops: 0,
     }
 }
 impl Client {
@@ -49,7 +50,7 @@ impl Client {
                     .map_or(requested, |current| current.min(requested)),
             );
         }
-        if deadlines.interaction_ms >= 0 {
+        if deadlines.interaction_ms > 0 {
             budget.helper = budget
                 .helper
                 .min(Duration::from_millis(deadlines.interaction_ms as u64));

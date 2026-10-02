@@ -9,9 +9,8 @@
 //! | a refusal, an expired password or an unverified key is `GIT_EAUTH` (lines 371-374), and then the credential callback is asked, with the methods first listed (lines 856-863) | [`Password::Declined`]: the setup goes on to its key or agent, which gwz's callback gives libgit2 only when `publickey` is listed (`transport_support.rs:244-280`) |
 //! | any other failure ends the setup (lines 376-380) | an error |
 //!
-//! A server that lists no `publickey` leaves gwz's callback nothing to offer
-//! but a configured credential helper, on 1.0.17's ambient route, which the
-//! transport does not run for SSH: here that setup fails. A server that takes
+//! A server that lists no `publickey` uses the configured helper on the accepted
+//! ambient password-only route. A server that takes
 //! the `none` request fails on 1.0.17, whose callback has no type to answer;
 //! here it has authenticated the user.
 use super::{
@@ -96,7 +95,7 @@ pub(crate) fn authenticate(
     };
     if methods.password {
         offered();
-        if attempt(&mut connection, &user, password, control)? {
+        if attempt(&mut connection, &user, password.bytes(), control)? {
             return Ok(Password::Accepted(connection));
         }
         rejected();
@@ -105,6 +104,39 @@ pub(crate) fn authenticate(
         return Err(io::ErrorKind::PermissionDenied.into());
     }
     Ok(Password::Declined(connection))
+}
+
+pub(crate) fn password_only(
+    connection: &mut SshConnection,
+    user: &str,
+    control: &Control,
+) -> io::Result<bool> {
+    let user = CString::new(user).map_err(|_| io::ErrorKind::InvalidInput)?;
+    connection.set_nonblocking()?;
+    Ok(list(connection, &user, control)?
+        .is_some_and(|methods| methods.password && !methods.publickey))
+}
+
+pub(crate) fn authenticate_helper(
+    mut connection: SshConnection,
+    secret: &mut super::https_auth::Secret,
+    trusted: &[u8],
+    control: &Control,
+    mut offered: impl FnMut(),
+    mut rejected: impl FnMut(),
+) -> io::Result<SshConnection> {
+    control.check()?;
+    if trusted.is_empty() || connection.session().host_key().map(|(key, _)| key) != Some(trusted) {
+        return Err(io::ErrorKind::PermissionDenied.into());
+    }
+    let (user, password) = secret.ssh_parts();
+    offered();
+    if attempt(&mut connection, user, password, control)? {
+        Ok(connection)
+    } else {
+        rejected();
+        Err(io::ErrorKind::PermissionDenied.into())
+    }
 }
 
 /// libssh2's `none` request: the server's methods, or None when it took the
@@ -157,10 +189,10 @@ fn list(
 fn attempt(
     connection: &mut SshConnection,
     user: &CStr,
-    password: &UrlPassword,
+    password: &[u8],
     control: &Control,
 ) -> io::Result<bool> {
-    let secret = password.bytes();
+    let secret = password;
     let length = c_uint::try_from(secret.len()).map_err(|_| io::ErrorKind::InvalidInput)?;
     loop {
         control.begin_wait()?;

@@ -1,4 +1,6 @@
 use super::*;
+mod https_failure;
+pub(crate) use https_failure::{HttpsAttemptReceipt, HttpsOpenFailure};
 use crate::git::endpoint::{setup_retry, ssh_channel::GitService, stream_io::BlockingStream};
 use gwz_session_host::{CancelRegistration, CancellationToken};
 use gwz_transport::protocol::{Facts, Opened};
@@ -108,6 +110,7 @@ impl RequestContext {
         use gwz_transport::protocol::{AuthPolicy, Effect, ErrorCode, Failure};
         let early = |code| {
             io::Error::other(HttpsOpenFailure {
+                    service: Some(service), helpers_disabled: policy == Some(AuthPolicy::Anonymous), cli_hint: self.is_cli(),
                 failure: Failure {
                     detail: None,
                     setup_cause: None,
@@ -142,6 +145,7 @@ impl RequestContext {
                 .map_err(|_| early(ErrorCode::Cancelled))?;
             if std::time::Instant::now() >= until {
                 return Err(io::Error::other(HttpsOpenFailure {
+                    service: Some(service), helpers_disabled: policy == Some(AuthPolicy::Anonymous), cli_hint: self.is_cli(),
                     failure: setup_retry::allocation_timeout(),
                     anonymous: None,
                     attempts: None,
@@ -162,13 +166,7 @@ impl RequestContext {
             return Err(early(ErrorCode::InvalidRequest));
         }
         route.mode = Some(policy);
-        let first = policy.unwrap_or_else(|| {
-            if crate::git::endpoint::https_policy::receive_pack(service) {
-                AuthPolicy::Gh
-            } else {
-                route.resolved
-            }
-        });
+        let first = policy.unwrap_or(route.resolved);
         if first == AuthPolicy::Anonymous
             && crate::git::endpoint::https_policy::advertisement(service)
         {
@@ -198,10 +196,10 @@ impl RequestContext {
                 if matches!(
                     failure.code,
                     ErrorCode::Authentication | ErrorCode::RepositoryRefused
-                ) && failure
+                ) && failure.detail.as_ref().is_none_or(|d| d.schemes.is_none()) && failure
                     .facts
                     .as_ref()
-                    .is_some_and(|f| matches!(f.http_status, Some(401 | 404)))
+                    .is_some_and(|f| matches!(f.http_status, Some(401)))
                 {
                     anonymous = Some(HttpsAttemptReceipt {
                         failure: failure.clone(),
@@ -246,6 +244,7 @@ impl RequestContext {
                 }
                 let attempts = setup_retry::reported_attempt(&failure);
                 Err(io::Error::other(HttpsOpenFailure {
+                    service: Some(service), helpers_disabled: policy == Some(AuthPolicy::Anonymous), cli_hint: self.is_cli(),
                     failure,
                     anonymous,
                     attempts,
@@ -431,51 +430,6 @@ impl Default for HttpsRouteState {
         }
     }
 }
-#[derive(Clone, Debug)]
-pub(crate) struct HttpsAttemptReceipt {
-    pub(crate) failure: gwz_transport::protocol::Failure,
-}
-#[derive(Debug)]
-pub(crate) struct HttpsOpenFailure {
-    pub(crate) failure: gwz_transport::protocol::Failure,
-    pub(crate) anonymous: Option<HttpsAttemptReceipt>,
-    /// The attempt the failure ended, as `(N, M)`, when the failure alone
-    /// reports it (the retry plan's §5; `setup_retry::reported_attempt`).
-    pub(crate) attempts: Option<(u32, u32)>,
-}
-impl HttpsOpenFailure {
-    /// The failure in words: its code, a timeout's origin (stall,
-    /// aggregate, interaction or allocation, as on SSH), and the attempt it
-    /// ended when that is known.
-    pub(crate) fn reason(&self) -> String {
-        let mut reason = format!("HTTPS endpoint request failed: {:?}", self.failure.code);
-        if self.failure.code == gwz_transport::protocol::ErrorCode::Timeout
-            && let Some(origin) = setup_retry::timeout_origin(self.failure.setup_cause)
-        {
-            reason.push_str(": ");
-            reason.push_str(origin);
-        }
-        if let Some((attempt, attempts)) = self.attempts {
-            reason.push_str(&format!(" (attempt {attempt} of {attempts})"));
-        }
-        reason
-    }
-}
-impl std::fmt::Display for HttpsOpenFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(status) = self
-            .anonymous
-            .as_ref()
-            .and_then(|r| r.failure.facts.as_ref())
-            .and_then(|f| f.http_status)
-        {
-            write!(f, "anonymous discovery returned HTTP {status}; ")?;
-        }
-        f.write_str(&self.reason())
-    }
-}
-impl std::error::Error for HttpsOpenFailure {}
-
 cfg_if::cfg_if! {
     if #[cfg(test)] {
         impl RequestContext {

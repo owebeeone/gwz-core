@@ -108,6 +108,8 @@ impl HttpsPool {
             .unwrap_or_else(|e| e.into_inner())
             .physical_count()
     }
+    cfg_if::cfg_if! {
+        if #[cfg(test)] {
     /// Leases a connection for `key`. A failure carries its phase: only the
     /// pool's own connect failures end a setup (`setup_retry::phase_of`).
     pub(crate) async fn checkout(
@@ -118,8 +120,17 @@ impl HttpsPool {
         connect_ms: u64,
         cancel: &CancellationToken,
     ) -> Result<HttpLease, (Failure, Phase)> {
+        self.checkout_scoped(key, owner, allocation_ms, connect_ms, cancel, None).await
+    }
+        }
+    }
+    pub(crate) async fn checkout_scoped(
+        &self, key: Key, owner: Owner, allocation_ms: u64, connect_ms: u64,
+        cancel: &CancellationToken, scope: Option<&str>,
+    ) -> Result<HttpLease, (Failure, Phase)> {
         let other = |failure| (failure, Phase::Other);
-        let mut request = Request::new(key, Identity::Https, owner);
+        let identity = scope.map_or(Identity::Https, |scope| Identity::HttpsScoped(scope.into()));
+        let mut request = Request::new(key, identity, owner);
         request.connect_timeout_ms = Some(connect_ms);
         request.allocation_timeout_ms = Some(allocation_ms);
         let started = Instant::now();
@@ -227,6 +238,10 @@ pub(crate) struct HttpLease {
     pub(crate) reused: bool,
 }
 impl HttpLease {
+    pub(crate) fn scope(&self, scope: &str) -> Result<(), Failure> {
+        self.lease.as_ref().ok_or_else(|| https_connection::failure(ErrorCode::Protocol))?
+            .scope_https(scope).map_err(pool_failure)
+    }
     pub(crate) fn finish(mut self, disposition: Disposition) -> Result<(), Failure> {
         self.connection = None;
         self.reusable

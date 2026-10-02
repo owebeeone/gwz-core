@@ -2,11 +2,12 @@
   "taut-proto": "0.10.0",
   "owner-package": "gwz-transport",
   "owner-version": "0.1.0",
-  "owner-schema-sha256": "205c19ab8c9ae538f7707b7734ad13278485b877bb177544c412ad275edbc939",
+  "owner-schema-sha256": "15fe305ced6e197d8c069d842eb651225552011e414d6ea45bb49c4ee29ef798",
   "retained-old-rust-source": "gwz-core/src/protocol/generated.rs",
   "retained-old-rust-revision": "2514dc19675591f8ea3231f22764cdb5d3d5a146",
   "retained-old-rust-sha256": "5ba6d4ac299e272c3f8ebcd0cd35489870cb6706b1ce3fdf0b1a771cb53ef544",
   "retained-old-schema-sha256": "423cb73b8c17a6779155431aebe40949f90a429ef69625683b449ed7fe072adb",
   "rustfmt": "rustfmt 1.9.0-stable (59807616e1 2026-04-14)",
-  "rust-module": "gwz_transport::protocol"
+  "rust-module": "gwz_transport::protocol",
+  "current-core-schema-sha256": "7766b94d190f3913922a916c4049bb46b85ae96bc16803c46e0e8b2faa36899e"
 }

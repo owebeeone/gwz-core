@@ -72,6 +72,16 @@ class SetupFailureCause(Enum):
     not_found = 6
     stall = 1
 
+class HelperFailureCause(Enum):
+    control_character = 3
+    malformed_output = 8
+    missing_field = 7
+    missing_newline = 6
+    not_utf8 = 5
+    output_limit = 2
+    pipe_failure = 1
+    username_colon = 4
+
 class Effect(Enum):
     none = 1
     possible = 2
@@ -579,6 +589,7 @@ class GwzErrorCode(Enum):
     url_scheme_unavailable = 72
     cancelled = 73
     transport_record_limit = 74
+    credential_helper_timeout = 75
 
 class MergeRecordRequiredWave(Enum):
     a1 = 0
@@ -743,11 +754,25 @@ class Bound:
     trust_owner: str
 
 @dataclass(slots=True)
+class RetryAttempt:
+    attempt: int
+    attempts: int
+
+@dataclass(slots=True)
+class FailureDetail:
+    helper_cause: HelperFailureCause | None
+    pipe_kind: str | None
+    schemes: list[str] | None
+    retry_attempt: RetryAttempt | None
+    helper_budget_ms: int | None
+
+@dataclass(slots=True)
 class Failure:
     code: ErrorCode
     effect: Effect
     facts: Facts | None
     setup_cause: SetupFailureCause | None
+    detail: FailureDetail | None
 
 @dataclass(slots=True)
 class Destination:
@@ -756,6 +781,7 @@ class Destination:
     port: int
     path: str
     ssh_username: str | None
+    https_username: str | None
 
 @dataclass(slots=True)
 class Identity:

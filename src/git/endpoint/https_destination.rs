@@ -6,9 +6,22 @@
 use gwz_transport::protocol::{ErrorCode, GitService};
 use url::{Host, Url};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+mod control;
+
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Destination {
     pub(crate) url: Url,
+}
+
+impl std::fmt::Debug for Destination {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Destination")
+            .field("host", &self.host())
+            .field("port", &self.port())
+            .field("path", &self.url.path())
+            .field("https_username", &(!self.url.username().is_empty()).then_some("<redacted>"))
+            .finish()
+    }
 }
 
 impl Destination {
@@ -24,10 +37,7 @@ impl Destination {
         if !has_path {
             return Err(ErrorCode::InvalidRequest);
         }
-        if input.split_once("://").is_some_and(|(_, rest)| {
-            let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-            rest[..end].contains(['%', '\\', '@'])
-        }) {
+        if ambiguous_authority(input) {
             return Err(ErrorCode::InvalidRequest);
         }
         let url = Url::parse(input).map_err(|_| ErrorCode::InvalidRequest)?;
@@ -72,6 +82,13 @@ impl Destination {
     }
 
     pub(crate) fn request(&self, service: GitService) -> Url {
+        let mut request = self.selected_request(service);
+        request.set_username("").expect("HTTPS URL supports removing userinfo");
+        request.set_password(None).expect("HTTPS URL supports removing password");
+        request
+    }
+
+    fn selected_request(&self, service: GitService) -> Url {
         let mut request = self.url.clone();
         let path = service_path(service);
         {
@@ -102,7 +119,7 @@ impl Destination {
             return Err(ErrorCode::InvalidRequest);
         }
         let target = self
-            .request(service)
+            .selected_request(service)
             .join(location)
             .map_err(|_| ErrorCode::InvalidRequest)?;
         validate_redirect_url(&target, expected)?;
@@ -121,7 +138,7 @@ impl Destination {
         let candidate = Self::from_url(base)?;
         let mut expected_request = target.clone();
         expected_request.set_query(Some(expected));
-        if candidate.request(service) != expected_request {
+        if candidate.selected_request(service) != expected_request {
             return Err(ErrorCode::InvalidRequest);
         }
         Ok(candidate)
@@ -156,7 +173,9 @@ fn ambiguous_authority(input: &str) -> bool {
         .or_else(|| input.strip_prefix("//"));
     rest.is_some_and(|rest| {
         let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-        rest[..end].contains(['%', '\\', '@'])
+        let authority = &rest[..end];
+        let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+        authority.contains('\\') || host.contains('%')
     })
 }
 
@@ -179,8 +198,9 @@ fn validate_redirect_url(url: &Url, expected_query: &str) -> Result<(), ErrorCod
 fn validate_url_shape(url: &Url) -> Result<(), ErrorCode> {
     if !url.scheme().eq_ignore_ascii_case("https")
         || url.cannot_be_a_base()
-        || !url.username().is_empty()
         || url.password().is_some()
+        || url.as_str().len() > 18_000
+        || control::has_decoded_control(url.username())
     {
         return Err(ErrorCode::InvalidRequest);
     }
@@ -193,7 +213,7 @@ fn validate_url_shape(url: &Url) -> Result<(), ErrorCode> {
         return Err(ErrorCode::InvalidRequest);
     }
     let path = url.path();
-    if path.is_empty() || path.chars().any(char::is_control) {
+    if path.is_empty() || path.chars().any(char::is_control) || control::has_decoded_control(path) {
         return Err(ErrorCode::InvalidRequest);
     }
     if url.port_or_known_default().is_none_or(|port| port == 0) {
@@ -229,6 +249,32 @@ cfg_if::cfg_if! {
             }
 
             #[test]
+            fn preserves_encoded_account_selector_only_in_private_helper_url() {
+                let destination = Destination::parse("https://account%2Bselector%40team@example.com/owner/repo").unwrap();
+                assert_eq!(destination.url.username(), "account%2Bselector%40team");
+                assert_eq!(destination.base(), "https://account%2Bselector%40team@example.com/owner/repo");
+                assert_eq!(destination.authority(), "example.com");
+                assert_eq!(destination.request(upload_advertisement()).as_str(), "https://example.com/owner/repo/info/refs?service=git-upload-pack");
+                assert!(!format!("{destination:?}").contains("account"));
+                let redirected = destination.redirect(upload_advertisement(), "/moved/info/refs").unwrap();
+                assert_eq!(redirected.url.username(), "account%2Bselector%40team");
+                assert_eq!(redirected.request(upload_advertisement()).username(), "");
+                let replaced = destination.redirect(upload_advertisement(), "https://example.net/new/info/refs").unwrap();
+                assert_eq!(replaced.url.username(), "");
+            }
+
+            #[test]
+            fn refuses_decoded_controls_before_effects_but_preserves_literal_percent() {
+                for component in ["%00", "%0d", "%0A", "%7f", "%c2%85", "%FF%0a"] {
+                    for input in [format!("https://{component}@example.com/repo"), format!("https://example.com/repo{component}")] {
+                        assert_eq!(Destination::parse(&input), Err(ErrorCode::InvalidRequest));
+                    }
+                }
+                let literal = Destination::parse("https://name%oops@example.com/repo%bad").unwrap();
+                assert_eq!(literal.url.username(), "name%oops");
+            }
+
+            #[test]
             fn accepts_ipv6_and_omits_default_port() {
                 let destination = Destination::parse("https://[2001:db8::1]/repo").unwrap();
                 assert_eq!(destination.authority(), "[2001:db8::1]");
@@ -238,7 +284,6 @@ cfg_if::cfg_if! {
             #[test]
             fn rejects_credential_query_fragment_and_escaped_authority_forms() {
                 for input in [
-                    "https://user@example.com/repo",
                     "https://user:password@example.com/repo",
                     "https://example.com/repo?token=secret",
                     "https://example.com/repo#fragment",

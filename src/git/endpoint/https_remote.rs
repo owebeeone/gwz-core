@@ -23,8 +23,10 @@ pub(crate) trait HalfClose: Read + Write {
     fn end_write(&self) -> io::Result<()>;
     fn finish(&self) -> io::Result<()>;
     fn cancel(&self);
+    fn retained_failure(&self) -> Option<gwz_transport::protocol::Failure> { None }
 }
 impl HalfClose for BlockingStream {
+    fn retained_failure(&self) -> Option<gwz_transport::protocol::Failure> { BlockingStream::retained_failure(self) }
     fn end_write(&self) -> io::Result<()> {
         BlockingStream::end_write(self)
     }
@@ -38,6 +40,7 @@ impl HalfClose for BlockingStream {
 pub(crate) struct RpcIo<S: HalfClose> {
     stream: S,
     advertisement: bool,
+    report: Option<Arc<dyn Fn(gwz_transport::protocol::Failure, GitService) + Send + Sync>>,
     reading: bool,
     done: bool,
     failed: bool,
@@ -48,11 +51,24 @@ impl<S: HalfClose> RpcIo<S> {
         Self {
             stream,
             advertisement,
+            report: None,
             reading: false,
             done: false,
             failed: false,
             alive: Arc::new(AtomicBool::new(true)),
         }
+    }
+}
+impl<S: HalfClose> RpcIo<S> {
+    fn failure(&self, error: io::Error) -> io::Error {
+        let Some(failure) = self.stream.retained_failure() else { return error; };
+        let service = if self.advertisement { GitService::UploadPackAdvertisement } else { GitService::UploadPackExchange };
+        if let Some(report) = &self.report { report(failure.clone(), service); }
+        let message = crate::transport_host::HttpsOpenFailure {
+            failure, anonymous: None, attempts: None, service: Some(service),
+            helpers_disabled: false, cli_hint: true,
+        };
+        io::Error::new(error.kind(), message)
     }
 }
 impl<S: HalfClose> Read for RpcIo<S> {
@@ -63,7 +79,7 @@ impl<S: HalfClose> Read for RpcIo<S> {
         if !self.reading {
             if let Err(error) = self.stream.end_write() {
                 self.failed = true;
-                return Err(error);
+                return Err(self.failure(error));
             }
             self.reading = true;
         }
@@ -71,13 +87,13 @@ impl<S: HalfClose> Read for RpcIo<S> {
             Ok(count) => count,
             Err(error) => {
                 self.failed = true;
-                return Err(error);
+                return Err(self.failure(error));
             }
         };
         if count == 0 {
             if let Err(error) = self.stream.finish() {
                 self.failed = true;
-                return Err(error);
+                return Err(self.failure(error));
             }
             self.done = true;
             self.alive.store(false, Ordering::Release);
@@ -114,6 +130,7 @@ impl<S: HalfClose> Drop for RpcIo<S> {
 pub(crate) trait OpenRpc: Send + Sync + 'static {
     fn open(&self, url: &str, service: GitService) -> io::Result<BlockingStream>;
     fn cancel(&self);
+    fn report_failure(&self, _failure: gwz_transport::protocol::Failure, _service: GitService) {}
 }
 struct Remote {
     endpoint: Arc<dyn OpenRpc>,
@@ -155,7 +172,9 @@ impl SmartSubtransport for Remote {
             .endpoint
             .open(url, service)
             .map_err(|error| map_open_error(error, service))?;
-        let rpc = RpcIo::new(stream, advertisement);
+        let mut rpc = RpcIo::new(stream, advertisement);
+        let endpoint = self.endpoint.clone();
+        rpc.report = Some(Arc::new(move |failure, _| endpoint.report_failure(failure, service)));
         *active = Arc::downgrade(&rpc.alive);
         Ok(Box::new(rpc))
     }
@@ -185,14 +204,21 @@ fn map_open_error(error: io::Error, service: GitService) -> git2::Error {
         );
     }
 
-    // Legacy clone handling treats libgit2 Auth as a suppressible access
-    // refusal. Only the verified discovery receipt above authorizes that for
-    // this endpoint; helper/authentication failures must remain visible.
-    git2::Error::new(
-        git2::ErrorCode::GenericError,
-        git2::ErrorClass::Http,
-        failure.reason(),
-    )
+    // Accepted helper outcomes preserve native clone/private-member classification.
+    // TR1.6 §11 permits suppression for the named Authentication outcomes;
+    // rejected credentials, missing Git and helper bounds remain visible.
+    let code = if failure.helper_timeout() {
+        git2::ErrorCode::Timeout
+    } else if failure.failure.code == gwz_transport::protocol::ErrorCode::Unavailable
+        && failure.failure.facts.as_ref().is_some_and(|f| f.method == gwz_transport::protocol::AuthMethod::Gh) {
+        git2::ErrorCode::NotFound
+    } else if failure.failure.code == gwz_transport::protocol::ErrorCode::Authentication
+        && !failure.failure.facts.as_ref().is_some_and(|f| f.authenticated == Some(false))
+        && !failure.failure.detail.as_ref().and_then(|d| d.schemes.as_ref()).is_some_and(|schemes| schemes.iter().any(|s| s.eq_ignore_ascii_case("Negotiate"))) {
+        git2::ErrorCode::Auth
+    } else { git2::ErrorCode::GenericError };
+    git2::Error::new(code, git2::ErrorClass::Http, failure.reason())
+
 }
 
 fn is_repository_refused(

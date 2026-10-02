@@ -58,6 +58,7 @@ fn open(identity: Identity) -> Envelope {
                 port: 22,
                 path: "/repo".into(),
                 ssh_username: Some("git".into()),
+                https_username: None,
             },
             service: GitService::UploadPackExchange,
             identity,

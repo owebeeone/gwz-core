@@ -47,6 +47,8 @@ pub(crate) fn open_for(client: &Client, input: &Input) -> Result<Open, Failure> 
             port: destination.port() as i64,
             path: destination.url.path().into(),
             ssh_username: None,
+            https_username: (!destination.url.username().is_empty())
+                .then(|| destination.url.username().to_owned()),
         },
         service: input.service,
         identity: Identity {

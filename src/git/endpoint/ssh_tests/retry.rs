@@ -54,6 +54,7 @@ cfg_if::cfg_if! {
                         port: fixture.port as i64,
                         path: fixture.repository.to_str().unwrap().into(),
                         ssh_username: Some(fixture.user.clone()),
+                        https_username: None,
                     },
                     service: GitService::UploadPackExchange,
                     identity: Identity {

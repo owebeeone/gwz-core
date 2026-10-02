@@ -746,6 +746,9 @@ has no service method and no handler that executes commands.
 | unknown_evidence | 70 |
 | disposal_incomplete | 71 |
 | url_scheme_unavailable | 72 |
+| cancelled | 73 |
+| transport_record_limit | 74 |
+| credential_helper_timeout | 75 |
 
 ### MergeRecordRequiredWave
 
@@ -931,6 +934,7 @@ has no service method and no handler that executes commands.
 | unchanged | 1 |
 | no_upstream | 2 |
 | failed | 3 |
+| planned | 4 |
 
 ### RemoteCheck
 
