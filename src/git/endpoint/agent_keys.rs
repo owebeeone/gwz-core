@@ -99,15 +99,12 @@ impl KeyType {
     ) -> io::Result<Signed> {
         let mut input = reply;
         let named = field(&mut input)?;
-        if named == b"ssh-rsa" && algorithm.starts_with("rsa-sha2-") {
-            let downgraded = !field(&mut input)?.is_empty() && input.is_empty();
-            return if downgraded {
-                Ok(Signed::Downgraded)
-            } else {
-                Err(invalid())
-            };
-        }
-        if named != algorithm.as_bytes() && named != method.as_bytes() {
+        let downgraded = self.family == Family::Rsa
+            && named == b"ssh-rsa"
+            && matches!(algorithm, "rsa-sha2-512" | "rsa-sha2-256");
+        if self.algorithm(method)? != algorithm
+            || (!downgraded && named != algorithm.as_bytes() && named != method.as_bytes())
+        {
             return Err(invalid());
         }
         let modulus = self.key(blob)?;
@@ -123,6 +120,11 @@ impl KeyType {
         };
         if !valid || input.len() != if sk { 5 } else { 0 } {
             return Err(invalid());
+        }
+        // A downgrade is a signing transition, so validate the complete key
+        // and signature before permitting the one extra native attempt.
+        if downgraded {
+            return Ok(Signed::Downgraded);
         }
         Ok(Signed::Signature(if sk { body } else { raw }.to_vec()))
     }

@@ -52,13 +52,20 @@ fn line<'a>(
     if start > bytes.len() {
         return Ok(None);
     }
-    let end = checked_scan(&bytes[start..], control, |byte| byte == b'\n')?
-        .map_or(bytes.len(), |offset| start + offset);
-    let mut value = &bytes[start..end];
-    if value.last() == Some(&b'\r') {
-        value = &value[..value.len() - 1];
-    }
-    Ok(Some((value, if end < bytes.len() { end + 1 } else { end })))
+    // libssh2's in-memory PEM/OpenSSH reader treats both CR and LF as
+    // boundaries. Admission must see every block native parsing can select.
+    let end = checked_scan(&bytes[start..], control, |byte| {
+        matches!(byte, b'\r' | b'\n')
+    })?
+    .map_or(bytes.len(), |offset| start + offset);
+    let next = if bytes.get(end) == Some(&b'\r') && bytes.get(end + 1) == Some(&b'\n') {
+        end + 2
+    } else if end < bytes.len() {
+        end + 1
+    } else {
+        end
+    };
+    Ok(Some((&bytes[start..end], next)))
 }
 
 /// The label of an armor line, `-----BEGIN <label>-----` for `edge`

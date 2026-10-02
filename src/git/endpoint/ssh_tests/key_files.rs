@@ -116,6 +116,31 @@ cfg_if::cfg_if! {
         }
 
         #[test]
+        fn snapshot_rejects_keys_hidden_behind_carriage_returns_before_native_authentication() {
+            let dir = tempfile::tempdir().unwrap();
+            let first = keys::keygen(dir.path(), "first", "ed25519", None);
+            let second = keys::keygen(dir.path(), "second", "ed25519", None);
+            let plain = fs::read_to_string(&first).unwrap();
+            let second_text = fs::read_to_string(&second).unwrap();
+            common::run(Command::new("ssh-keygen").args(["-q", "-p", "-P", "", "-N", "fixture-passphrase", "-f"]).arg(&first));
+            let encrypted = fs::read_to_string(&first).unwrap();
+            for (name, hidden) in [("plain", &plain), ("encrypted", &encrypted)] {
+                let path = dir.path().join(format!("ambiguous-{name}"));
+                fs::write(&path, format!("ignored\r{}ignored\n{second_text}", hidden.replace('\n', "\r"))).unwrap();
+                let registry = Registry::new();
+                // Snapshot admission finishes before any caller can dispatch native auth.
+                let mut read = registry.start(Key::ssh("git", "127.0.0.1", 22), path, None, Duration::from_secs(1)).unwrap();
+                assert_eq!(finish(&mut read).err().unwrap().kind(), io::ErrorKind::InvalidInput, "{name}");
+            }
+            let public = keys::public(dir.path(), "second");
+            for (name, ending) in [("cr", "\r"), ("lf", "\n"), ("crlf", "\r\n")] {
+                let path = dir.path().join(name);
+                fs::write(&path, format!("ignored{ending}{}", second_text.replace('\n', ending))).unwrap();
+                authenticate(&path, &public).unwrap_or_else(|e| panic!("{name}: {e}"));
+            }
+        }
+
+        #[test]
         fn ecdsa_and_ed25519_key_files_in_each_container_authenticate() {
             let dir = tempfile::tempdir().unwrap();
             for bits in [256, 384, 521] {

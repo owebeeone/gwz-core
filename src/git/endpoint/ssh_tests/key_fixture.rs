@@ -35,11 +35,23 @@ pub(crate) enum Sign<'a> {
     Dsa,
     /// Every request for this key is refused, as for an absent security key.
     Absent(&'a str),
+    /// The first reply is a malformed SHA-1 signature; later replies would sign.
+    MalformedRsa { key: &'a str, length: usize },
+}
+
+struct OwnedChild(Child);
+
+impl Drop for OwnedChild {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 pub(crate) struct KeyAgent {
-    upstream: Child,
-    agent: Child,
+    // Drop the proxy first, then its upstream, including during construction.
+    _agent: OwnedChild,
+    _upstream: OwnedChild,
     pub(crate) path: PathBuf,
     log: PathBuf,
     /// Each listed key's base64 public blob, in list order.
@@ -52,14 +64,27 @@ impl KeyAgent {
     /// private agent. With `rsa_sha1` it answers a `rsa-sha2-*` request with
     /// an `ssh-rsa` signature.
     pub(crate) fn start(dir: &Path, private: &[&Path], keys: &[Sign<'_>], rsa_sha1: bool) -> Self {
+        Self::start_observing(dir, private, keys, rsa_sha1, |_| {})
+    }
+
+    fn start_observing(
+        dir: &Path,
+        private: &[&Path],
+        keys: &[Sign<'_>],
+        rsa_sha1: bool,
+        mut spawned: impl FnMut(&Child),
+    ) -> Self {
         let real = dir.join("private-agent.sock");
-        let upstream = Command::new("ssh-agent")
-            .args(["-D", "-a"])
-            .arg(&real)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
+        let upstream = OwnedChild(
+            Command::new("ssh-agent")
+                .args(["-D", "-a"])
+                .arg(&real)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        spawned(&upstream.0);
         // ssh-agent binds its socket before it listens: wait until it accepts.
         let deadline = Instant::now() + Duration::from_secs(5);
         while std::os::unix::net::UnixStream::connect(&real).is_err() {
@@ -85,6 +110,9 @@ impl KeyAgent {
                 Sign::Sk { key, backing } => json!({"sign": "sk", "blob": key, "backing": backing}),
                 Sign::Dsa => json!({"sign": "dsa"}),
                 Sign::Absent(blob) => json!({"sign": "absent", "blob": blob}),
+                Sign::MalformedRsa { key, length } => {
+                    json!({"sign": "malformed_rsa", "blob": key, "length": length})
+                }
             })
             .collect();
         let config = dir.join("agent.json");
@@ -92,17 +120,20 @@ impl KeyAgent {
         fs::write(&config, text.to_string()).unwrap();
         let python =
             std::env::var_os(ssh_password_fixture::PYTHON).unwrap_or_else(|| "python3".into());
-        let mut agent = Command::new(python)
-            .arg("-B")
-            .arg(&script)
-            .arg(&config)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(fs::File::create(dir.join("agent-stderr.txt")).unwrap())
-            .spawn()
-            .expect("python3 runs the key agent");
+        let mut agent = OwnedChild(
+            Command::new(python)
+                .arg("-B")
+                .arg(&script)
+                .arg(&config)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(fs::File::create(dir.join("agent-stderr.txt")).unwrap())
+                .spawn()
+                .expect("python3 runs the key agent"),
+        );
+        spawned(&agent.0);
         let mut ready = String::new();
-        BufReader::new(agent.stdout.take().unwrap())
+        BufReader::new(agent.0.stdout.take().unwrap())
             .read_line(&mut ready)
             .unwrap();
         let ready: serde_json::Value = serde_json::from_str(&ready)
@@ -114,8 +145,8 @@ impl KeyAgent {
             .map(|blob| blob.as_str().unwrap().to_owned())
             .collect();
         Self {
-            upstream,
-            agent,
+            _upstream: upstream,
+            _agent: agent,
             path,
             log,
             blobs,
@@ -138,11 +169,40 @@ impl KeyAgent {
     }
 }
 
-impl Drop for KeyAgent {
-    fn drop(&mut self) {
-        for child in [&mut self.agent, &mut self.upstream] {
-            let _ = child.kill();
-            let _ = child.wait();
+#[test]
+fn startup_failures_terminate_and_reap_every_spawned_child() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    for fail_after in [0, 1, 2] {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing-key");
+        let private: Vec<&Path> = if fail_after == 0 {
+            vec![&missing]
+        } else {
+            vec![]
+        };
+        let mut pids = Vec::new();
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                KeyAgent::start_observing(dir.path(), &private, &[], false, |child| {
+                    pids.push(child.id() as libc::pid_t);
+                    assert!(pids.len() != fail_after, "injected startup failure");
+                })
+            }))
+            .is_err()
+        );
+        assert_eq!(pids.len(), fail_after.max(1));
+        for pid in pids {
+            // Neither a live child nor a zombie is left after unwinding.
+            assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+            assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+            assert_eq!(
+                unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) },
+                -1
+            );
+            assert_eq!(
+                io::Error::last_os_error().raw_os_error(),
+                Some(libc::ECHILD)
+            );
         }
     }
 }

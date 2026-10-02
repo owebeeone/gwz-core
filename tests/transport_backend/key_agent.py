@@ -186,6 +186,10 @@ class Agent:
         self.log({"op": "sign", "key": index, "flags": flags})
         if key["sign"] == "absent":
             return FAILURE
+        if key["sign"] == "malformed_rsa":
+            key["sign"] = "upstream"
+            signature = string(b"ssh-rsa") + string(bytes([0xff]) * key["length"])
+            return bytes([SIGN_RESPONSE]) + string(signature)
         if key["sign"] == "dsa":
             signature = string(b"ssh-dss") + string(dsa_sign(key["x"], data))
             return bytes([SIGN_RESPONSE]) + string(signature)

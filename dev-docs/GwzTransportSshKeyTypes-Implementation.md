@@ -1,6 +1,7 @@
 # TR2.8 — SSH keys and signatures implementation
 
-Date: 2026-10-02. Status: implemented checkpoint, pending Code/State review.
+Date: 2026-10-02. Status: implemented checkpoint, pending Code/State re-review
+after bounded remediation round 1.
 
 ## Scope and authority
 
@@ -36,6 +37,14 @@ child-only tests (run by their parent tests). Disposable OpenSSH 10.3p1 and
 the standard-library Python server exercise certificates, security keys,
 agent refusal, selected-key formats, and the three SHA-1 cases. Full suite
 results are recorded in the acceptance section once complete.
+
+Both original full suites (candidate and ordinary) passed. The reviewers then
+found two blocking root causes, recorded in the [remediation plan](GwzTransportSshKeyTypes-RemPlan.md).
+Both regressions failed on the reviewed code (`remediation-red.log`). After
+correction the focused SSH suite passed: 153 passed, 0 failed, 3 ignored
+(`remediation-ssh.log`), including malformed downgrade responses, native CR/LF
+parser agreement, snapshot rejection before authentication, and fixture startup
+unwind/reaping. Full final candidate validation covers both candidate switches.
 
 Build manifest: `/Volumes/projects/limbo/gwz-tr2-8-candidate-20261002`.
 Candidate target: `/Volumes/projects/limbo/gwz-tr2-8-target-20261002`.

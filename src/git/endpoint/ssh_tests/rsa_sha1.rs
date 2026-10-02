@@ -20,12 +20,18 @@ cfg_if::cfg_if! {
         /// The agent lists `listed` (`rsa` and `dsa`, in order); the server
         /// authorizes them and sends `sig_algs`.
         fn row(listed: &[&str], sig_algs: Option<&str>, rsa_sha1: bool) -> Row {
+            row_inner(listed, sig_algs, rsa_sha1, None)
+        }
+
+        fn row_inner(listed: &[&str], sig_algs: Option<&str>, rsa_sha1: bool, malformed: Option<usize>) -> Row {
             let dir = tempfile::tempdir().unwrap();
             let path = keys::keygen(dir.path(), "rsa", "rsa", Some(2048));
             let rsa = keys::public(dir.path(), "rsa");
             let signs: Vec<_> = listed
                 .iter()
-                .map(|name| if *name == "rsa" { Sign::Upstream(&rsa.1) } else { Sign::Dsa })
+                .map(|name| if *name == "rsa" {
+                    malformed.map_or(Sign::Upstream(&rsa.1), |length| Sign::MalformedRsa { key: &rsa.1, length })
+                } else { Sign::Dsa })
                 .collect();
             let agent = KeyAgent::start(dir.path(), &[&path], &signs, rsa_sha1);
             let authorized: Vec<_> = listed
@@ -42,6 +48,16 @@ cfg_if::cfg_if! {
         impl Row {
             fn authenticate(&self) -> io::Result<()> {
                 keys::authenticate(self.server.port, &self.known, "git", &self.agent.path)
+            }
+        }
+
+        #[test]
+        fn malformed_sha1_answer_never_requests_a_fallback_query_or_signature() {
+            for length in [1, 257] {
+                let row = row_inner(&["rsa"], Some("rsa-sha2-512,ssh-rsa"), false, Some(length));
+                assert_eq!(row.authenticate().unwrap_err().kind(), io::ErrorKind::InvalidData);
+                assert_eq!(row.agent.requests(), ["list", "sign:0:4"]);
+                assert_eq!(row.server.publickey_requests(), ["rsa-sha2-512:query"]);
             }
         }
 

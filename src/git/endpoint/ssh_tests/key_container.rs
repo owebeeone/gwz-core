@@ -58,6 +58,19 @@ cfg_if::cfg_if! {
         }
 
         #[test]
+        fn carriage_return_boundaries_cannot_hide_a_second_or_encrypted_key() {
+            let plain = armor("OPENSSH PRIVATE KEY", &openssh(b"none", b"none", b""));
+            let encrypted = armor("ENCRYPTED PRIVATE KEY", &[1, 2, 3]);
+            for hidden in [&plain, &encrypted] {
+                let text = format!("ignored\r{}ignored\n{plain}", hidden.replace('\n', "\r"));
+                assert_eq!(check(text).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+            }
+            for ending in ["\r", "\n", "\r\n"] {
+                check(format!("ignored{ending}{}", plain.replace('\n', ending))).unwrap();
+            }
+        }
+
+        #[test]
         fn accepts_unencrypted_traditional_pkcs8_and_openssh_framing() {
             for label in ["RSA PRIVATE KEY", "DSA PRIVATE KEY", "EC PRIVATE KEY"] {
                 check(armor(label, &[1, 2, 3, 4])).unwrap();

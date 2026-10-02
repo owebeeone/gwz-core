@@ -154,7 +154,7 @@ impl Fixture {
                 write_frame(&mut upstream, &body);
                 let mut response = read_frame(&mut upstream).unwrap();
                 if body[0] == 13 {
-                    match damage.load(Ordering::SeqCst) {
+                    match damage.swap(0, Ordering::SeqCst) {
                         1 => {
                             // Valid envelope carrying a structurally short signature.
                             let n = u32::from_be_bytes(response[5..9].try_into().unwrap()) as usize;
@@ -166,6 +166,17 @@ impl Fixture {
                         }
                         2 => {
                             response[9] = b'X';
+                        }
+                        fault @ (3 | 4) => {
+                            let size = if fault == 3 { 1 } else { 257 };
+                            let mut signature = Vec::new();
+                            for field in [b"ssh-rsa".as_slice(), &vec![0xff; size]] {
+                                signature.extend_from_slice(&(field.len() as u32).to_be_bytes());
+                                signature.extend_from_slice(field);
+                            }
+                            response = vec![14];
+                            response.extend_from_slice(&(signature.len() as u32).to_be_bytes());
+                            response.extend_from_slice(&signature);
                         }
                         _ => {}
                     }

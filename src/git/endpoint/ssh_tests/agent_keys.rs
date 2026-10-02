@@ -242,6 +242,43 @@ fn only_an_ssh_rsa_answer_to_a_sha2_request_is_a_downgrade() {
     );
 }
 
+#[test]
+fn malformed_rsa_downgrades_fail_for_plain_and_certified_keys() {
+    for certificate in [false, true] {
+        let mut key = if certificate {
+            blob(&[
+                b"ssh-rsa-cert-v01@openssh.com",
+                b"nonce",
+                &[1, 0, 1],
+                &[0xc5; 256],
+            ])
+        } else {
+            blob(&[b"ssh-rsa", &[1, 0, 1], &[0xc5; 256]])
+        };
+        if certificate {
+            key.extend(certificate_tail());
+        }
+        let kind = KeyType::of(&key).unwrap();
+        let method = if certificate {
+            "rsa-sha2-512-cert-v01@openssh.com"
+        } else {
+            "rsa-sha2-512"
+        };
+        let check = |key: &[u8], reply: &[u8]| kind.signature(key, method, "rsa-sha2-512", reply);
+        for size in [0, 1, 255, 257] {
+            assert!(
+                check(&key, &blob(&[b"ssh-rsa", &vec![0xff; size]])).is_err(),
+                "certificate={certificate}, size={size}"
+            );
+        }
+        let valid = blob(&[b"ssh-rsa", &[3; 256]]);
+        assert!(matches!(check(&key, &valid), Ok(Signed::Downgraded)));
+        assert!(check(&key, &valid[..valid.len() - 1]).is_err());
+        assert!(check(&key, &[valid.clone(), vec![0]].concat()).is_err());
+        assert!(check(&key[..key.len() - 1], &valid).is_err());
+    }
+}
+
 struct Script(Cursor<Vec<u8>>);
 impl Read for Script {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
