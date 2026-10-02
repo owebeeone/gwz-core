@@ -2462,6 +2462,7 @@ pub struct OperationPolicy {
     pub concurrency: Option<i64>,
     pub progress_min_interval_ms: Option<i64>,
     pub max_connections_per_host: Option<i64>,
+    pub max_retries: Option<i64>,
 }
 impl OperationPolicy {
     pub const MAX_DEPTH: usize = 32;
@@ -2476,6 +2477,7 @@ impl OperationPolicy {
             (6, match &self.concurrency { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
             (7, match &self.progress_min_interval_ms { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
             (8, match &self.max_connections_per_host { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+            (9, match &self.max_retries { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -2488,6 +2490,7 @@ impl OperationPolicy {
             concurrency: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_int()?) } },
             progress_min_interval_ms: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_int()?) } },
             max_connections_per_host: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            max_retries: { let v = c.try_get_opt(9)?; match v { None => None, Some(v) => if v.is_null() { None } else { Some(v.try_int()?) } } },
         })
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
