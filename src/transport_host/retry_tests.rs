@@ -209,3 +209,22 @@ fn a_negative_max_retries_is_refused_before_the_request_registers() {
     let error = validate_request_context(&meta, "fetch").unwrap_err();
     assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
 }
+
+#[test]
+fn a_max_retries_beyond_u32_is_refused_before_the_request_registers_and_u32_max_is_kept() {
+    let meta = |max_retries: i64| RequestMeta {
+        request_id: "range".into(),
+        schema_version: "gwz.protocol/v0".into(),
+        policy: Some(crate::OperationPolicy {
+            max_retries: Some(max_retries),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    // A value the endpoint's count cannot hold is refused, not saturated to
+    // one the request never named (the State review's P3-2).
+    let error = validate_request_context(&meta(i64::from(u32::MAX) + 1), "fetch").unwrap_err();
+    assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
+    validate_request_context(&meta(i64::from(u32::MAX)), "fetch").unwrap();
+    assert_eq!(request::max_retries(&meta(i64::from(u32::MAX))), u32::MAX);
+}

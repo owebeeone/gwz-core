@@ -384,6 +384,16 @@ pub(super) fn validate_meta(meta: &RequestMeta, operation: &str) -> ModelResult<
     {
         return Err(invalid("max_retries must not be negative"));
     }
+    // The endpoint counts attempts in a u32: a larger budget is refused, not
+    // saturated to one the request never named.
+    if meta
+        .policy
+        .as_ref()
+        .and_then(|policy| policy.max_retries)
+        .is_some_and(|value| value > i64::from(u32::MAX))
+    {
+        return Err(invalid("max_retries exceeds the supported range"));
+    }
     if let Some(base) = meta
         .transport
         .as_ref()
@@ -396,7 +406,7 @@ pub(super) fn validate_meta(meta: &RequestMeta, operation: &str) -> ModelResult<
     Ok(())
 }
 /// The operation's `--max-retries`; absent means the default, 3 (the retry
-/// plan's §5). `validate_meta` refuses a negative value first.
+/// plan's §5). `validate_meta` refuses a value outside `u32` first.
 pub(super) fn max_retries(meta: &RequestMeta) -> u32 {
     meta.policy
         .as_ref()
