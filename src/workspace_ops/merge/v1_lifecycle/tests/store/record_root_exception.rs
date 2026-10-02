@@ -32,8 +32,9 @@ const DOOR_TAIL: &str = "_record";
 
 /// E4.2's LANDED sibling door and its exact namers: the positive control.
 const LANDED_DOOR: &str = "create_merge_store_record";
-const LANDED_DOOR_FILES: [&str; 2] = [
+const LANDED_DOOR_FILES: [&str; 3] = [
     "checked_artifact/entry.rs",
+    "checked_artifact/entry/catalog.rs",
     "workspace_ops/merge/v1_lifecycle/store/rewrite.rs",
 ];
 
@@ -123,7 +124,7 @@ fn the_checked_rewrite_door_is_absent_from_production_sources() {
     assert_eq!(
         named(LANDED_DOOR),
         BTreeSet::from(LANDED_DOOR_FILES),
-        "the positive control moved: until `{LANDED_DOOR}` is restored to its two production \
+        "the positive control moved: until `{LANDED_DOOR}` is restored to its registered production \
          files, or re-pinned in a reviewed commit, this scan proves nothing about the absence \
          asserted next"
     );

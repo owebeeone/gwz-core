@@ -56,6 +56,8 @@ CONTEXT_PROTECTED = (
     'src/workspace_ops/merge/root/v1_rollback.rs',
     'src/workspace_ops/merge/v1_rollback',
     'src/checked_artifact/entry.rs',
+    'src/checked_artifact/entry',
+    'src/checked_artifact/entry',
     'src/checked_artifact/observation.rs',
     'src/checked_artifact/bootstrap/runtime/paths.rs',
     'src/checked_artifact/bootstrap/runtime/catalog_lease.rs',

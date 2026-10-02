@@ -246,8 +246,9 @@ fn force_merge_commit_construction_sites_stay_v1_lifecycle_only() {
     assert_eq!(
         files_containing(&variant),
         [
-            // Declaration plus the default-trait rejection arm.
+            // Declaration and its split default-trait rejection arm.
             "git/gitbackend/contract.rs",
+            "git/gitbackend/contract/methods_merge.rs",
             // Backend-level test of the forced arm.
             "git/tests/g12.rs",
             // The only construction site: the cfg(test) v1 lifecycle.

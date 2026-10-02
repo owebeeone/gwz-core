@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 ///
 /// **2026-09-01 (R2-E E4.1): ONE — this step is the mover.** The relocation
 /// landed (R1.1 `027da5b`), the A1 coexistence gate is satisfied, and the first
-/// production catalog activation is `checked_artifact/entry.rs`'s
+/// production catalog activation is `checked_artifact/entry/catalog.rs`'s
 /// `activate_workspace_catalog`, called from the FORWARD v1 paths only —
 /// `V1MutationLease::acquire_activated` (checked start/resume) and dispatch's
 /// pre-upgrade viability window; the plain abort lease never activates. The pin
@@ -140,7 +140,7 @@ fn the_catalog_owner_gains_its_first_production_caller_only_at_e4_1() {
         PRODUCTION_CALLER_COUNT,
         "the production files outside the owner naming `recover_or_create` — usually callers, \
          possibly mentions — are {callers:?}, which is not {PRODUCTION_CALLER_COUNT}. E4.1 added \
-         the first deliberately (`entry.rs`'s `activate_workspace_catalog`); a further one is \
+         the first deliberately (`entry/catalog.rs`'s `activate_workspace_catalog`); a further one is \
          DR-1's conversion, not an E4 step's, and moves this pin in its own reviewed commit, and \
          a LOST one means \
          production catalog activation was removed"

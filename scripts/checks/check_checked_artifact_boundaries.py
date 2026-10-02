@@ -13,6 +13,27 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
+# 2026-10-03 movement-only split: these private modules are parts of the
+# existing entry boundary. Its public names, external callers and raw writer
+# remain frozen; no arbitrary descendant may join this ownership set.
+ENTRY_PARTS = {
+    "checked_artifact/entry/artifacts.rs",
+    "checked_artifact/entry/catalog.rs",
+    "checked_artifact/entry/observation.rs",
+    "checked_artifact/entry/recovery.rs",
+}
+ENTRY_FILES = {"checked_artifact/entry.rs", *ENTRY_PARTS}
+ENTRY_REEXPORTS = {
+    ("crate", "catalog"): {
+        "activate_workspace_catalog", "bootstrap_merge_start_parents",
+        "create_merge_store_record", "prepare_merge_start_parents_uncatalogued",
+    },
+    ("super", "catalog"): {"CATALOG_LABEL", "render_catalog_refusal"},
+    ("crate", "recovery"): {
+        "CrashRecoveryDecision", "crash_recovery_decision_in",
+    },
+}
+
 # Each module here must keep `#![forbid(clippy::disallowed_methods)]`, so CI's
 # clippy run (-D warnings, with the disallowed-methods lists) rejects a direct
 # raw writer in it, and no local allow can switch that off. Nothing pins these
@@ -20,6 +41,7 @@ ROOT = Path(__file__).resolve().parents[2]
 # (2026-09-08) removed digest enforcement, and 2026-09-29 removed its dead tables.
 PROTECTED_COMPILER_MODULES = {
     "checked_artifact/entry.rs",
+    *ENTRY_PARTS,
     "git/gitbackend/authority_backend.rs",
     "git/gitbackend/preservation_image.rs",
     "workspace_ops/merge/preserve/checked_bundle.rs",
@@ -112,6 +134,12 @@ APPROVED_RUST_PATH_EDGES = {
     ("git/endpoint/https_worker.rs", "https_worker_tests.rs"),
     ("git/endpoint/https_worker_tests.rs", "https_auth_integration_tests.rs"),
     ("git/endpoint/https_worker_tests.rs", "https_lifecycle_tests.rs"),
+    # 2026-10-03: cohesive worker-test parts remain behind the existing test edge.
+    ("git/endpoint/https_worker_tests.rs", "https_worker_tests/exchange.rs"),
+    ("git/endpoint/https_worker_tests.rs", "https_worker_tests/discovery.rs"),
+    ("git/endpoint/https_worker_tests.rs", "https_worker_tests/failure.rs"),
+    ("git/endpoint/https_worker_tests.rs", "https_worker_tests/proxy.rs"),
+    ("git/endpoint/https_worker_tests.rs", "https_worker_tests/pool.rs"),
     # 2026-10-02, TR2.15: the tests/transport_ssh crate is folded into the
     # candidate tests, so the placement and worker checks it held sit beside
     # their modules, and the SSH and HTTPS fixtures are each one test module
@@ -1441,9 +1469,36 @@ def check(source: Path) -> list[str]:
         )
     entry_path = source / "checked_artifact/entry.rs"
     entry_text = mask_non_code(entry_path.read_text(encoding="utf-8"))
-    definitions = {name for _, name in VISIBLE_ITEM.findall(entry_text)}
+    part_texts = {
+        relative: mask_non_code((source / relative).read_text(encoding="utf-8"))
+        for relative in sorted(ENTRY_PARTS)
+    }
+    actual_parts = {
+        path.relative_to(source).as_posix()
+        for path in (source / "checked_artifact/entry").rglob("*.rs")
+    }
+    modules = set(re.findall(r"\bmod\s+(artifacts|catalog|observation|recovery)\s*;", entry_text))
+    if actual_parts != ENTRY_PARTS or modules != {"artifacts", "catalog", "observation", "recovery"}:
+        findings.append("checked entry private-module ownership changed")
+    definitions = {
+        name for text in [entry_text, *part_texts.values()]
+        for _, name in VISIBLE_ITEM.findall(text)
+    }
+    reexport_pattern = re.compile(r"\bpub\((crate|super)\)\s+use\s+(\w+)\s*::\s*\{([^}]+)\}\s*;")
+    reexports = {}
+    stripped_entry = entry_text
+    for match in reexport_pattern.finditer(entry_text):
+        key = (match.group(1), match.group(2))
+        if key in reexports:
+            findings.append("duplicate checked entry re-export group")
+        reexports[key] = {name.strip() for name in match.group(3).split(",") if name.strip()}
+        stripped_entry = stripped_entry.replace(match.group(0), "", 1)
+    if reexports != ENTRY_REEXPORTS:
+        findings.append("checked entry facade re-export inventory changed")
     expected = set(ENTRY_REFERENCES)
-    if definitions != expected or VISIBLE_REEXPORT.search(entry_text):
+    if definitions != expected or VISIBLE_REEXPORT.search(stripped_entry) or any(
+        VISIBLE_REEXPORT.search(text) for text in part_texts.values()
+    ):
         findings.append(
             "checked entry visible-item inventory changed: "
             f"expected={sorted(expected)} actual={sorted(definitions)}"
@@ -1467,8 +1522,10 @@ def check(source: Path) -> list[str]:
         # `PROTECTED_COMPILER_MODULES`. It is not byte-pinned, and its complete
         # item, import and call inventories are not checked (removed in
         # 107aca7a, 2026-09-08), so an edit that adds no visible item, reference
-        # or disallowed method passes this gate unreviewed.
-        if relative == "checked_artifact/entry.rs":
+        # or disallowed method passes this gate unreviewed. The 2026-10-03
+        # split keeps that same owner exclusion across the fixed ENTRY_FILES;
+        # it does not repair this pre-existing lease/import inventory hole.
+        if relative in ENTRY_FILES:
             continue
         text = mask_non_code(path.read_text(encoding="utf-8"))
         masked_sources[relative] = text
