@@ -184,8 +184,31 @@ fn candidate_failed_key_and_trust_have_distinct_facts() {
         .unwrap();
     assert!(row.credential_offered);
     assert_eq!(row.authenticated, Some(false));
+    // The rejection closes the key for the rest of the operation (the retry
+    // plan's §4): a later clone in it finishes with that rejection at once,
+    // and its row reports no offer, since it set nothing up.
+    assert_eq!(
+        b.clone_repo(&url(&f), &f.temp.path().join("closed"))
+            .unwrap_err()
+            .code,
+        crate::model::ErrorCode::RemoteRejected
+    );
+    let row = b
+        .transport_observations()
+        .unwrap()
+        .snapshot()
+        .pop()
+        .unwrap();
+    assert!(!row.credential_offered);
+    assert_eq!(row.authenticated, None);
+    host.finish(request);
+    // The next operation starts its keys Cold, and there an untrusted host
+    // refuses before any credential is offered.
     std::fs::write(&host.known_hosts, "").unwrap();
-    let scoped = b
+    let meta = request_meta(&f, "candidate-untrusted");
+    let request = host.request(meta, "candidate-untrusted");
+    let scoped = request
+        .backend()
         .with_transport(
             f.temp.path(),
             Some(&crate::TransportOptions {

@@ -28,6 +28,7 @@ mod pooled_remote;
 mod pump;
 mod regression;
 mod remote_bridge;
+mod retry;
 mod selected_key;
 mod selected_pool;
 mod supervised;

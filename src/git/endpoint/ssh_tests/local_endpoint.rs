@@ -76,7 +76,7 @@ cfg_if::cfg_if! {
                 .get_ref()
                 .and_then(|cause| cause.downcast_ref::<EndpointOpenFailure>())
                 .expect("the bridge keeps the typed setup failure")
-                .0
+                .failure
                 .clone()
         }
         fn facts(error: &io::Error) -> Facts {

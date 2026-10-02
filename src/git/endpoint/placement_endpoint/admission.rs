@@ -83,6 +83,7 @@ impl PlacementEndpoint {
                 open.abandoned = true;
                 open.cancelled
                     .store(true, std::sync::atomic::Ordering::Release);
+                self.retries.machine(&key.0, &open.pool_key).abandoned(&key);
                 state.terminal = true;
                 let message = envelope_for(
                     state,
@@ -153,101 +154,145 @@ impl PlacementEndpoint {
             self.push_outbound(key.0, message);
             return Ok(());
         }
-        let (pool_key, repository_path) = destination(&open.destination)?;
-        if !self.admits_open(&pool_key) {
-            let state = request_state(&envelope);
-            let now = self.now();
-            let deadline = now.saturating_add(open.deadlines.allocation_ms as u64);
-            self.requests.insert(key.clone(), state);
-            self.queued_opens.push_back(QueuedOpen {
+        let (pool_key, _) = destination(&open.destination)?;
+        let now = self.now();
+        let deadline = now.saturating_add(open.deadlines.allocation_ms as u64);
+        self.requests.insert(key.clone(), request_state(&envelope));
+        self.admit(
+            QueuedOpen {
                 key,
                 pool_key,
                 envelope,
                 admitted_at: now,
                 deadline,
-            });
-            return Ok(());
+            },
+            now,
+        )
+    }
+
+    /// Starts `queued` when its key's retry machine and the operation's
+    /// limits allow it, finishes it when its key is closed, and otherwise
+    /// queues it. While the key holds it, its allocation clock waits too.
+    fn admit(&mut self, mut queued: QueuedOpen, now: u64) -> Result<(), EndpointError> {
+        let decision = self
+            .retries
+            .machine(&queued.key.0, &queued.pool_key)
+            .decide(now);
+        match decision {
+            // The key's recorded failure, without the facts of the setup
+            // that recorded it: this member set nothing up in this pass.
+            Decision::Finish(last) => {
+                let failure = Failure {
+                    facts: None,
+                    ..last.failure
+                };
+                self.fail_open(&queued.key, failure);
+                Ok(())
+            }
+            Decision::Wait => {
+                let allocation = queued.deadline.saturating_sub(queued.admitted_at);
+                queued.admitted_at = now;
+                queued.deadline = now.saturating_add(allocation);
+                self.queued_opens.push_back(queued);
+                Ok(())
+            }
+            Decision::Start if now >= queued.deadline => {
+                self.fail_open(
+                    &queued.key,
+                    Failure {
+                        setup_cause: None,
+                        code: ErrorCode::Timeout,
+                        effect: Effect::None,
+                        facts: None,
+                    },
+                );
+                Ok(())
+            }
+            Decision::Start if self.admits_open(&queued.pool_key) => {
+                self.start_attempt(queued, now);
+                Ok(())
+            }
+            Decision::Start => {
+                self.queued_opens.push_back(queued);
+                Ok(())
+            }
         }
+    }
+
+    /// One attempt of `queued`'s open, with the allocation it has left and
+    /// fresh network clocks.
+    fn start_attempt(&mut self, queued: QueuedOpen, now: u64) {
+        let QueuedOpen {
+            key,
+            pool_key,
+            envelope,
+            deadline,
+            ..
+        } = queued;
+        let open = envelope.open.as_ref().expect("admitted Open");
         let selected = match selected_path(&self.home, &open.identity) {
             Ok(selected) => selected,
             Err(_) => {
-                let mut state = request_state(&envelope);
-                state.terminal = true;
-                let message = envelope_for(
-                    &state,
-                    MessageKind::OpenFailed,
-                    Some(Failure {
+                self.fail_open(
+                    &key,
+                    Failure {
                         setup_cause: None,
                         code: ErrorCode::InvalidRequest,
                         effect: Effect::None,
                         facts: None,
-                    }),
-                    None,
+                    },
                 );
-                self.requests.insert(key.clone(), state);
-                self.push_outbound(key.0, message);
-                return Ok(());
+                return;
             }
         };
-        let deadline =
-            deadline_from_open(&open.deadlines).map(|duration| self.now().saturating_add(duration));
-        self.requests.insert(
-            key.clone(),
-            Request {
-                stream_id: envelope.stream_id,
-                session_id: envelope.session_id.clone(),
-                version: envelope.version,
-                attachment: None,
-                queued_input: VecDeque::new(),
-                terminal: false,
-            },
-        );
+        let mut deadlines = open.deadlines.clone();
+        deadlines.allocation_ms = deadline.saturating_sub(now).max(1) as i64;
+        let attempt_deadline =
+            deadline_from_open(&deadlines).map(|duration| now.saturating_add(duration));
+        self.retries.machine(&key.0, &pool_key).start(key.clone());
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let service = native_service(open.service);
         let context = BridgeContext {
             session_id: envelope.session_id.clone(),
             stream_id: envelope.stream_id,
             version: envelope.version,
             limits: open.receive_limits.clone(),
-            deadlines: open.deadlines.clone(),
+            deadlines,
             waker: self.waker.clone(),
         };
         // The worker owns the open until it replies. No thread or supervised
         // job waits for it, so opens leave the job budget to their setups.
-        let reply = match self.endpoint.start_endpoint_open(
+        match self.endpoint.start_endpoint_open(
             pool_key.clone(),
             selected,
-            service,
-            &repository_path,
+            native_service(open.service),
+            &open.destination.path,
             context,
             cancelled.clone(),
         ) {
-            Ok(reply) => reply,
-            Err(error) => {
-                // Refused before the worker took it: fail it as its reply would.
-                let message = {
-                    let state = self.requests.get_mut(&key).expect("open request");
-                    state.terminal = true;
-                    envelope_for(
-                        state,
-                        MessageKind::OpenFailed,
-                        Some(failure_for(error)),
-                        None,
-                    )
-                };
-                self.push_outbound(key.0, message);
-                return Ok(());
+            Ok(reply) => self.opens.push(OpenJob {
+                key,
+                pool_key,
+                reply,
+                cancelled,
+                deadline: attempt_deadline,
+                abandoned: false,
+                envelope,
+            }),
+            // Refused before the worker took it: fail it as its reply would.
+            Err(error) => self.attempt_failed(key, pool_key, envelope, &error, now),
+        }
+    }
+
+    /// Ends a member's open with `failure`, unless it has ended already.
+    pub(super) fn fail_open(&mut self, key: &RequestKey, failure: Failure) {
+        if let Some(state) = self.requests.get_mut(key) {
+            if state.terminal {
+                return;
             }
-        };
-        self.opens.push(OpenJob {
-            key,
-            pool_key,
-            reply,
-            cancelled,
-            deadline,
-            abandoned: false,
-        });
-        Ok(())
+            state.terminal = true;
+            let message = envelope_for(state, MessageKind::OpenFailed, Some(failure), None);
+            self.push_outbound(key.0.clone(), message);
+        }
     }
 
     fn accept_check(&mut self, key: RequestKey, envelope: Envelope) -> Result<(), EndpointError> {
@@ -321,32 +366,8 @@ impl PlacementEndpoint {
 
     pub(super) fn start_queued(&mut self, now: u64) -> Result<(), EndpointError> {
         for _ in 0..self.queued_opens.len() {
-            let mut queued = self.queued_opens.pop_front().expect("queued length");
-            if now >= queued.deadline {
-                if let Some(state) = self.requests.get_mut(&queued.key) {
-                    state.terminal = true;
-                    let message = envelope_for(
-                        state,
-                        MessageKind::OpenFailed,
-                        Some(Failure {
-                            setup_cause: None,
-                            code: ErrorCode::Timeout,
-                            effect: Effect::None,
-                            facts: None,
-                        }),
-                        None,
-                    );
-                    self.push_outbound(queued.key.0, message);
-                }
-            } else if self.admits_open(&queued.pool_key) {
-                let open = queued.envelope.open.as_mut().expect("admitted Open");
-                open.deadlines.allocation_ms = (open.deadlines.allocation_ms as u64)
-                    .saturating_sub(now.saturating_sub(queued.admitted_at))
-                    .max(1) as i64;
-                self.accept_open(queued.key, queued.envelope)?;
-            } else {
-                self.queued_opens.push_back(queued);
-            }
+            let queued = self.queued_opens.pop_front().expect("queued length");
+            self.admit(queued, now)?;
         }
         Ok(())
     }

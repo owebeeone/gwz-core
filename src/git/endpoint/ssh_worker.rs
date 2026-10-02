@@ -3,6 +3,7 @@
 //! [`EndpointAttachment`] that the placement endpoint drives.
 use super::{
     agent_job::{Cleanup, Job},
+    setup_retry::{self, Phase},
     ssh_admission::{Admissions, Reader},
     ssh_channel::{GitService, SshChannel},
     ssh_key_snapshot::{Entry, Registry},
@@ -142,6 +143,7 @@ pub(crate) struct EndpointAttachment {
     inbound: SyncSender<Envelope>,
     outbound: Receiver<Envelope>,
     cancelled: Arc<AtomicBool>,
+    discard: Arc<AtomicBool>,
     worker: Thread,
 }
 impl EndpointAttachment {
@@ -167,13 +169,24 @@ impl EndpointAttachment {
         self.cancelled.store(true, Ordering::Release);
         self.owner.cancel();
     }
+    /// The session serves this exchange and is then closed rather than kept
+    /// idle: a setup the key's retry machine did not admit (the retry plan's
+    /// §4).
+    pub(crate) fn discard_after_use(&self) {
+        self.discard.store(true, Ordering::Release);
+    }
 }
-/// Sanitized endpoint outcome; native diagnostics and credential paths stay local.
+/// Sanitized endpoint outcome; native diagnostics and credential paths stay
+/// local. `phase` says whether a started setup failed, which only this side
+/// of the transport knows (the retry plan's §4).
 #[derive(Debug)]
-pub(crate) struct EndpointOpenFailure(pub(crate) Failure);
+pub(crate) struct EndpointOpenFailure {
+    pub(crate) failure: Failure,
+    pub(crate) phase: Phase,
+}
 impl std::fmt::Display for EndpointOpenFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "SSH endpoint open failed: {:?}", self.0.code)
+        write!(f, "SSH endpoint open failed: {:?}", self.failure.code)
     }
 }
 impl std::error::Error for EndpointOpenFailure {}
@@ -181,10 +194,11 @@ impl EndpointOpenFailure {
     fn capture(error: io::Error, facts: Facts) -> io::Error {
         use gwz_transport::pool::Error as PoolError;
         use gwz_transport::protocol::SetupFailureCause;
-        let (code, effect, setup_cause) = match error
+        let pool = error
             .get_ref()
-            .and_then(|cause| cause.downcast_ref::<PoolError>())
-        {
+            .and_then(|cause| cause.downcast_ref::<PoolError>());
+        let phase = pool.map_or(Phase::Other, setup_retry::phase_of);
+        let (code, effect, setup_cause) = match pool {
             Some(PoolError::ConnectFailed {
                 code,
                 effect,
@@ -209,6 +223,8 @@ impl EndpointOpenFailure {
                 (ErrorCode::Capacity, Effect::None, None)
             }
             Some(PoolError::Cancelled) => (ErrorCode::Cancelled, Effect::None, None),
+            // The setup authenticated as an identity other than the one asked.
+            Some(PoolError::IdentityMismatch) => (ErrorCode::Authentication, Effect::None, None),
             Some(PoolError::DriverLost | PoolError::Shutdown) => {
                 (ErrorCode::CarrierLost, Effect::None, None)
             }
@@ -230,12 +246,15 @@ impl EndpointOpenFailure {
         };
         io::Error::new(
             error.kind(),
-            Self(Failure {
-                setup_cause,
-                code,
-                effect,
-                facts: Some(facts),
-            }),
+            Self {
+                failure: Failure {
+                    setup_cause,
+                    code,
+                    effect,
+                    facts: Some(facts),
+                },
+                phase,
+            },
         )
     }
 }
@@ -538,6 +557,7 @@ struct Active {
     bridge_version: i64,
     bridge_terminal_delivered: bool,
     bridge_waker: Option<Waker>,
+    discard: Arc<AtomicBool>,
 }
 impl Drop for Active {
     fn drop(&mut self) {
@@ -685,6 +705,7 @@ fn run<C>(
         let mut index = 0;
         while index < active.len() {
             let exchange = &mut active[index];
+            let discard = exchange.discard.load(Ordering::Acquire);
             let disposition = match host.resource(exchange.lease.as_ref().expect("active lease")) {
                 Ok(resource) => {
                     let result = match resource.pump() {
@@ -693,7 +714,7 @@ fn run<C>(
                     };
                     match result {
                         Ok(false) => None,
-                        Ok(true) if resource.reclaim() => Some(Disposition::Reusable),
+                        Ok(true) if !discard && resource.reclaim() => Some(Disposition::Reusable),
                         _ => Some(Disposition::Discarded),
                     }
                 }
@@ -780,6 +801,7 @@ where
     let (inbound, worker_inbound) = mpsc::sync_channel(16);
     let (worker_outbound, outbound) = mpsc::sync_channel(16);
     let cancelled = Arc::new(AtomicBool::new(false));
+    let discard = Arc::new(AtomicBool::new(false));
     active.push(Active {
         lease: Some(lease),
         peer,
@@ -792,6 +814,7 @@ where
         bridge_version: context.version,
         bridge_terminal_delivered: false,
         bridge_waker: context.waker.clone(),
+        discard: discard.clone(),
     });
     Ok((
         EndpointAttachment {
@@ -799,6 +822,7 @@ where
             inbound,
             outbound,
             cancelled,
+            discard,
             worker: thread::current(),
         },
         Opened {

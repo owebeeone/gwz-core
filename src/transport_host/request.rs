@@ -22,6 +22,7 @@ impl RequestContext {
         operation: String,
     ) -> ModelResult<Self> {
         session.register(&meta.request_id, Some(operation.clone()))?;
+        session.set_max_retries(&meta.request_id, max_retries(&meta));
         Ok(Self {
             session,
             meta,
@@ -362,6 +363,14 @@ pub(super) fn validate_meta(meta: &RequestMeta, operation: &str) -> ModelResult<
     if meta.schema_version != "gwz.protocol/v0" {
         return Err(unsupported("unsupported request version"));
     }
+    if meta
+        .policy
+        .as_ref()
+        .and_then(|policy| policy.max_retries)
+        .is_some_and(|value| value < 0)
+    {
+        return Err(invalid("max_retries must not be negative"));
+    }
     if let Some(base) = meta
         .transport
         .as_ref()
@@ -372,6 +381,17 @@ pub(super) fn validate_meta(meta: &RequestMeta, operation: &str) -> ModelResult<
         }
     }
     Ok(())
+}
+/// The operation's `--max-retries`; absent means the default, 3 (the retry
+/// plan's §5). `validate_meta` refuses a negative value first.
+pub(super) fn max_retries(meta: &RequestMeta) -> u32 {
+    meta.policy
+        .as_ref()
+        .and_then(|policy| policy.max_retries)
+        .map_or(
+            crate::git::endpoint::setup_retry::DEFAULT_MAX_RETRIES,
+            |value| u32::try_from(value).unwrap_or(u32::MAX),
+        )
 }
 pub(super) fn identifier(value: &str) -> bool {
     !value.is_empty() && value.len() <= 128 && !value.chars().any(char::is_control)

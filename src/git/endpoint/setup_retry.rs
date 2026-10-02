@@ -11,6 +11,14 @@ use gwz_transport::{
     protocol::{ErrorCode, Failure, SetupFailureCause},
 };
 
+mod backoff;
+mod machine;
+mod operations;
+
+pub(crate) use backoff::{Jitter, wait_bound_ms};
+pub(crate) use machine::{Decision, Machine, Outcome};
+pub(crate) use operations::{DEFAULT_MAX_RETRIES, Operations};
+
 /// Where an open's failure happened, as the endpoint that owns it saw it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Phase {
@@ -75,5 +83,6 @@ pub(crate) fn phase_of(error: &pool::Error) -> Phase {
 cfg_if::cfg_if! {
     if #[cfg(test)] {
         mod classify_tests;
+        mod machine_tests;
     }
 }

@@ -204,6 +204,8 @@ fn unsupported_deadline_policy_has_no_physical_or_queued_work() {
 
 /// A fixture whose setup takes `setup`: each connection records when its setup
 /// starts and fails once `setup` has passed. It holds no thread and no job.
+/// The failure is `Capacity`, which the retry plan's §4 returns once without
+/// moving the key, so the operation's limits alone decide when an open starts.
 struct SlowSetup {
     started: Arc<Mutex<Vec<Instant>>>,
     setup: Duration,
@@ -232,7 +234,7 @@ impl super::super::ssh_pool::Resource for Setting {
         }
         Poll::Ready(Err(Failure {
             setup_cause: None,
-            code: ErrorCode::Unavailable,
+            code: ErrorCode::Capacity,
             effect: Effect::None,
             facts: None,
         }))

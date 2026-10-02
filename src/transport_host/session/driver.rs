@@ -172,8 +172,15 @@ impl Session {
                 .min(binding.limits().data_payload as usize);
             let (stream, peer) = Stream::new(config)
                 .map_err(|_| protocol_failure(gwz_transport::protocol::ErrorCode::Protocol))?;
+            let max_retries = state
+                .registrations
+                .get(request)
+                .map_or(setup_retry::DEFAULT_MAX_RETRIES, |record| {
+                    record.max_retries
+                });
             let deadline = (state.io_timeout_ms != 0)
-                .then(|| Instant::now() + Duration::from_millis(150_000 + state.io_timeout_ms));
+                .then(|| open_backstop_ms(state.io_timeout_ms, max_retries))
+                .and_then(|backstop| Instant::now().checked_add(Duration::from_millis(backstop)));
             state.streams.insert(
                 id,
                 Entry {
@@ -623,6 +630,17 @@ const MAX_HANDOFFS: usize = 64;
 const ADMISSION: Duration = Duration::from_secs(30);
 /// The messages one pass forwards from one client stream, at most.
 const MAX_STREAM_MESSAGES: usize = 8;
+/// How long an open waits for its endpoint's answer: each of its
+/// `max_retries + 1` setup attempts may use the 120 s interaction allowance,
+/// the 30 s aggregate and a stall, and the waits between them come on top
+/// (the retry plan's §5 bound).
+fn open_backstop_ms(io_timeout_ms: u64, max_retries: u32) -> u64 {
+    u64::from(max_retries)
+        .saturating_add(1)
+        .saturating_mul(OPEN_ATTEMPT_MS.saturating_add(io_timeout_ms))
+        .saturating_add(setup_retry::wait_bound_ms(max_retries))
+}
+const OPEN_ATTEMPT_MS: u64 = 150_000;
 fn network_deadlines(io_timeout_ms: u64, connect_timeout_ms: u64, allocation_ms: i64) -> Deadlines {
     Deadlines {
         allocation_ms,
@@ -695,6 +713,15 @@ cfg_if::cfg_if! {
             let deadlines = network_deadlines(9_000, 30_000, 30_000);
             assert_eq!(deadlines.io_ms, 9_000);
             assert_eq!(deadlines.connect_ms, 30_000);
+        }
+
+        #[test]
+        fn the_open_backstop_covers_every_attempt_and_the_waits_between_them() {
+            // One attempt: the interaction allowance, the aggregate and a stall.
+            assert_eq!(open_backstop_ms(9_000, 0), 159_000);
+            // The default four attempts and their waits, at most 7.75 s.
+            assert_eq!(open_backstop_ms(9_000, 3), 4 * 159_000 + 7_750);
+            assert_eq!(open_backstop_ms(u64::MAX, u32::MAX), u64::MAX);
         }
 
         #[test]
