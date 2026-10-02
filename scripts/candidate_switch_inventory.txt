@@ -33,6 +33,7 @@ gwz_transport_candidate  src/git/gitbackend/transport_support/identity.rs  fn va
 gwz_transport_candidate  src/git/mod.rs  mod endpoint
 gwz_transport_candidate  src/lib.rs  mod protocol_corpus
 gwz_transport_candidate  src/lib.rs  mod transport_host
+gwz_transport_candidate  src/lib.rs  mod transport_setting
 gwz_transport_candidate  src/lib.rs  use gwz_transport::cbor
 gwz_transport_candidate  src/protocol/mod.rs  mod generated
 gwz_transport_candidate  src/workspace_ops/merge/validate.rs  fn max_retries_is_refused_like_every_policy_field_merge_does_not_act_on
