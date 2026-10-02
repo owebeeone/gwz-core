@@ -166,6 +166,36 @@ fn an_https_setup_that_stalls_is_retried_and_its_display_names_the_attempt() {
 }
 
 #[test]
+fn the_cli_placement_refuses_a_retry_budget_it_cannot_carry_to_its_endpoint() {
+    use super::driver_tests::{CliHarness, block_on};
+    // The Cli placement's endpoint is beyond the port, and the session
+    // protocol carries no budget to it: it would retry three times while
+    // this driver counted the request's budget (the State review's P3-1).
+    let harness = CliHarness::new();
+    let mut meta = harness.meta("cli-budget");
+    meta.policy = Some(crate::OperationPolicy {
+        max_retries: Some(0),
+        ..Default::default()
+    });
+    let _budgeted = harness.endpoint.register_request(&meta.request_id).unwrap();
+    let Err(error) = block_on(harness.runtime.request(meta, "fetch".into())) else {
+        panic!("a Cli-placed request cannot carry --max-retries");
+    };
+    assert_eq!(error.code, crate::model::ErrorCode::UnsupportedOperation);
+    assert!(error.message.contains("Cli placement"), "{}", error.message);
+    // Without one it opens, and the driver's record keeps the default.
+    let meta = harness.meta("cli-default");
+    let _endpoint = harness.endpoint.register_request(&meta.request_id).unwrap();
+    let request = block_on(harness.runtime.request(meta, "fetch".into())).unwrap();
+    assert_eq!(
+        request.context.session.max_retries("cli-default"),
+        crate::git::endpoint::setup_retry::DEFAULT_MAX_RETRIES
+    );
+    block_on(request.finish());
+    block_on(harness.runtime.shutdown());
+}
+
+#[test]
 fn a_negative_max_retries_is_refused_before_the_request_registers() {
     let mut meta = RequestMeta {
         request_id: "negative".into(),

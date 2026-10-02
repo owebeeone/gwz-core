@@ -256,6 +256,20 @@ impl TransportRuntime {
     ) -> ModelResult<TransportRequest> {
         request::validate_meta(&meta, &operation_id)?;
         let cli = request::is_cli(&meta);
+        // The Cli placement's endpoint is beyond the port, and the session
+        // protocol carries it no retry budget: it would run the default while
+        // this driver counted the request's. Until that protocol carries one,
+        // a budget is refused there, so the driver's record keeps the default.
+        if cli
+            && meta
+                .policy
+                .as_ref()
+                .is_some_and(|policy| policy.max_retries.is_some())
+        {
+            return Err(unsupported(
+                "--max-retries is not carried to the Cli placement's endpoint",
+            ));
+        }
         let (session, local_endpoint) = {
             let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
             if state.closed {
