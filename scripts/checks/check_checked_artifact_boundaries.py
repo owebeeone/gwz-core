@@ -129,6 +129,10 @@ APPROVED_RUST_PATH_EDGES = {
     ),
     ("transport_host/request.rs", "https_budget_gate_tests.rs"),
     ("transport_host/session.rs", "cleanup_tests.rs"),
+    # 2026-10-02, 1.1.0 S6.2: transport_scope's source test, which pins the
+    # operations it names to the handlers that call with_transport, sits
+    # beside it.
+    ("transport_scope.rs", "transport_scope_tests.rs"),
 }
 
 # Every permitted raw-rename reference in production checked-artifact source,
