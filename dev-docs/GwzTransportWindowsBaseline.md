@@ -206,7 +206,70 @@ trust, proxy, hosts, zone, service, account or job policy changes occurred.
   Owned COM reference released. No routing, TLS, redirect or authentication row
   executed; names have no installed hosts/zone override in this batch.
 
+### WDigest and SSPI worker ownership, bounded fourth batch
+
+[2026-10-03-tr1-8-digest-workers](../../gwz-core-evidence/campaigns/transport-qualification/runs/2026-10-03-tr1-8-digest-workers/README.md)
+(private access required), external E:/gwz-tests/tr1-8-digest-workers-20261003-61-c879e2.
+Prior three runs unchanged; no accounts, policy, trust, service, agent, proxy,
+hosts/zone, product or design changes. Investigation stopped at its fixed budget.
+
+- P07/B14: WDigest query succeeds, max token 4096. Four explicit synthetic
+  acquire variants (basic Unicode realm; EX Unicode realm; EX ANSI realm; EX
+  Unicode empty domain) all refuse SEC_E_UNKNOWN_CREDENTIALS in 1.94–2.13ms.
+  Native identity sizes 48/72 and EX version 512 recorded. All owned diagnostic
+  processes reaped; native identity buffers zeroed. HTTP method/URI exchange
+  remains UNEXECUTED, zero initialization calls/listeners after failed acquire.
+  Microsoft documents supplied credentials and distinguishes Credential Guard's
+  blocked SSO from explicit credentials; this result does not establish a
+  supported general Digest prohibition or prove the refusal's precise cause.
+  A provider-accepted disposable identity/fixture remains a prerequisite; no
+  account/policy weakening was tried or implied.
+- P05: two actual explicit NTLM first-leg contexts and output/identity storage
+  remained live through a 100ms cancellation deadline while workers waited in
+  an owned native WaitForSingleObject fixture. Capacity 2 remained charged;
+  20 third-slot admission attempts refused. CancelSynchronousIo returned false,
+  error 1168 for both; storage was not freed. After native waits timed out at
+  about 2000ms, held kernel thread handles confirmed exit before output/identity
+  zeroing, FreeContextBuffer/DeleteSecurityContext/FreeCredentialsHandle (all 0)
+  and capacity release. Canceled results were suppressed. Earlier missing
+  thread-query rights caused a retained v1 failure; versioned v2 uses documented
+  own-thread query rights and passes. Outer owned fixture process reaped.
+  Real SSPI calls took 0.057–0.104ms and had already returned: blocked-provider
+  cancellation remains UNEXECUTED. Native wait is a controlled seam, not a
+  simulated success for an actually blocked SSPI provider or LSASS quiescence.
+
+A production deadline needs a proved provider-interruption seam or an isolated
+worker/broker contract with bounded admission, retained ownership and its own
+secret review. Broker exit cannot establish external Pageant prompt/mapping
+quiescence, as the earlier receiver-retention evidence already demonstrates.
+No new Pageant or guardian test ran. Root owns design revisions and dispositions.
+
 ## 3. Released baseline — executed facts and remaining rows
+
+### Native Rust TLS binding primitive, fifth bounded batch
+
+[2026-10-03-tr1-8-tls-adapter](../../gwz-core-evidence/campaigns/transport-qualification/runs/2026-10-03-tr1-8-tls-adapter/README.md)
+(private access required), external E:/gwz-tests/tr1-8-tls-adapter-021ace.
+Native Win11 build 26200, Rust 1.95 x86_64-msvc; native-tls 0.2.18,
+tokio-native-tls 0.3.1 and Schannel 0.1.29. Standalone fixture dependencies have
+their own locked resolution; this is not a full MAIN candidate build.
+
+Five rows pass: each of two distinct verified origin leaves returns the expected
+independently calculated SHA256 binding through the actual Rust API; untrusted
+and wrong-name TLS peers refuse before binding query/application write; nested
+TLS proxy, CONNECT and origin TLS produce distinct correct proxy/origin bindings.
+Only connector-local fixture roots are used, with hostname checks enabled.
+Owned Python/OpenSSL servers read external PEM keys; the unexecuted native PFX
+server shape was discarded because its import could persist keys. No OS trust,
+proxy, hosts, account, policy or service changes. Native client/server exit 0 and
+owned server threads join/reap. Collector bookkeeping failures are preserved
+separately from the successful native execution.
+
+This closes the initial native TLS binding API primitive, not EPA, HTTP auth,
+Hyper/pool integration, full algorithm/TLS-version coverage or renegotiation.
+§8 of the DRAFT design now selects this API; no review GO or product code change.
+The fourth batch's public-document hashes describe its handoff snapshot; this
+coordinator addition changes public documentation only and preserves its raw run.
 
 Released behavior assertions below use **released 1.0.17**, exact archive/binary hash,
 source tags and pinned Rust/toolchain provenance where built. Native prerequisite
@@ -252,9 +315,9 @@ coordinate its creation/removal rather than silently inventing it.
 | P02 | PARTIAL | Pageant bounded send | Actual encrypted-key dialog timeout and live mapping until owned Pageant reap; synthetic late write, vanished/replacement-owner refusal executed. Concurrency 4×8 actual and synthetic requests passed; numeric reuse remains unexecuted after fixed cap |
 | P03 | PARTIAL | Local pipe | Owned local pipe partial replies/cancel completion995 before storage release, fixture no-UNC guard and server PID executed; native service identity remains |
 | P04 | PARTIAL | WinHTTP capture | Native capture/GlobalFree and exact DIRECT restore executed; grammar, implicit loopback bypass and immutable candidate snapshot still need proof/disposition |
-| P05 | PARTIAL | SSPI | Default handshake/synthetic CBT plus explicit/default first legs and between-leg worker retirement executed; full helper isolation/HTTP EPA/in-flight cancellation remain |
-| P06 | PARTIAL | TLS/EPA | Schannel peer DER/OID and RSA SHA1/256/384/512 RFC5929 hashes match in TLS1.2+1.3; pin negative refuses. ECDSA/PSS SHA256/384 hashes also match; MD5 native handshakes fail. Transport adapter/EPA and MD5 disposition remain |
-| P07 | PARTIAL (refusal) | Digest | Synthetic Unicode/ANSI WDigest acquire refused before initialization; direct WinHTTP HTTP GET/POST remain401/no offers. Method/URI completion-token/parity unresolved |
+| P05 | PARTIAL | SSPI | Default handshake/synthetic CBT plus explicit/default first legs and between-leg worker retirement executed; bounded canceled-worker storage/capacity retention also passes; controlled wait is not in-flight provider cancellation. Full helper isolation/HTTP EPA/provider deadline remain |
+| P06 | PARTIAL | TLS/EPA | Earlier Schannel hash rows pass within their scope; MD5 native handshakes fail. Native Rust binding API now passes two origin digests, untrusted/wrong-name refusal and distinct nested proxy/origin bindings. EPA, integrated adapter lifetime and MD5 disposition remain |
+| P07 | PARTIAL (refusal) | Digest | Basic/EX Unicode/ANSI WDigest acquire refused at fixed diagnostic cap; direct WinHTTP HTTP GET/POST remain401/no offers. Native method/URI exchange unexecuted; accepted fixture/provider cause unresolved |
 | P08 | EXECUTED (primitive) | Helper Job Object | Spaces/direct/shell/GUI/nested job, assignment before resume, partial stdout and every enumerated owned descendant kill/reap executed; helper parser integration separate |
 
 These spikes run outside repositories and build outputs stay outside the
@@ -275,7 +338,7 @@ complete. The rows below identify residual work, not an execution approval.
 | B09/P04 | Owned machine-proxy grammar/bypass and capture/snapshot fixtures | Root serializes each proxy interval; exact prior DIRECT/guard/restore required; no generic reset/PAC/user-proxy change |
 | B11 | Fake configured-helper invocation counter plus default-logon server fixture | Full released HTTPS row needs approved Windows native trust/supervisor precondition; helper is fake, no live gh |
 | B12/B13 | Generated explicit fixture credentials and controlled verifier can be prepared | Full HTTPS needs Windows trust. If OS-backed distinct user is needed, account/token provisioning needs separate root approval; no operator password use |
-| B14/P07 | WDigest acquire and direct WinHTTP Digest GET/POST refusals executed | Current synthetic-credential fixture does not complete Digest. Diagnose interface/provider prerequisites without policy changes; full released HTTPS/helper row still needs trust |
+| B14/P07 | WDigest acquire and direct WinHTTP Digest GET/POST refusals executed | Current synthetic-credential fixture does not complete Digest. Four basic/EX Unicode/ANSI variants exhausted the bounded diagnostic and refuse acquire; obtain a provider-accepted disposable identity/fixture or root-owned mechanism redesign. No general unsupported-provider claim; full released row needs trust |
 | B15 | Native URL-zone classification executed; fixture routing can be prepared | Full HTTPS requires trust and named certificate/routing. Try owned proxy routing without hosts edits; hosts/zone edits require root approval if unavoidable |
 | B16 | Existing synthetic CBT proof remains partial | Actual TLS/EPA-required positive/negative server rows need Windows trust and verified peer binding; no distinct account necessarily required |
 | B17 | Mac row awaits requested approval; Linux fixture source can be prepared | Mac native trust unapproved; Linux target assignment/prerequisites needed, no Linux row attempted here |
@@ -283,8 +346,8 @@ complete. The rows below identify residual work, not an execution approval.
 | P01 | Collision/ACL/list/signature executed | Real cross-SID actor requires separately coordinated distinct token/account; no real agent changes |
 | P02 | Actual prompt/mapping retirement and synthetic stale/replacement cases executed | Concurrency executed; numeric reuse not observed within fixed 100000/15s cap. Mandatory reused-window assertion remains unexecuted, requiring root disposition or a separately bounded reproducible fixture |
 | P03 | Owned overlapped partial/cancel/no-UNC primitive executed | Native service identity/auth still needs coordinated provider setup; fake server is not native service proof |
-| P05 | Default/explicit first legs and between-leg owned worker cancellation executed | Full distinct identity and in-flight cancellation remain. Distinct OS identity only if needed requires approval; no policy change |
-| P06 | Native process-pinned RSA TLS1.2+1.3 peer/hash primitive executed | ECDSA/PSS executed process scoped; MD5 fails native handshake and needs compatibility/provider disposition. Transport adapter proof remains; released HTTPS/EPA needs approved native trust |
+| P05 | Default/explicit first legs and between-leg owned worker cancellation executed | Controlled-wait canceled capacity/storage retention executed; actual provider blocking/interruption unproved. A practical isolated ownership/deadline seam and full identity proof remain; no account/policy change authorized |
+| P06 | Native peer/hash primitives and initial Rust binding API executed | MD5 native refusal needs explicit disposition. Hyper/pool/lifetime integration and EPA remain; released HTTPS needs approved native trust |
 | P08 | Complete owned job primitive executed | Parser/configured-helper composition remains later implementation; inherited host job policy/service/elevation changes prohibited |
 
 B01/B02/B03/B05/B07 have executed outcomes described above; B10's measured

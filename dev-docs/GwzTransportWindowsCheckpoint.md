@@ -75,3 +75,38 @@ flags0 measures proposed HTTP/HTTPS names as Intranet 1/Internet 3, with COM
 reference released; routing/redirect/auth remain unexecuted. No broader mutations,
 trust approval, design change or GO. Root still owns mandatory prerequisite
 dispositions and canonical reviews after settlement.
+
+Fourth bounded batch: private
+[2026-10-03-tr1-8-digest-workers](../../gwz-core-evidence/campaigns/transport-qualification/runs/2026-10-03-tr1-8-digest-workers/README.md),
+external E:/gwz-tests/tr1-8-digest-workers-20261003-61-c879e2. Prior three unchanged.
+Four WDigest basic/EX Unicode/ANSI acquire variants refuse UNKNOWN_CREDENTIALS;
+method/URI exchange unexecuted, diagnostic stopped. Microsoft supports supplied
+credentials under Credential Guard, so no general provider limitation inferred.
+Two live NTLM workers retain native storage/capacity through 100ms cancellation;
+20 third admissions refused, CancelSynchronousIo returns false/1168 during owned
+native waits. After ~2s, held kernel handles confirm exit before zero/free and
+capacity release; canceled results suppressed. v1 missing thread-query-right
+failure retained; v2 passes. Real SSPI calls already returned in 0.057–0.104ms;
+blocked-provider interruption remains unproved. Provider-accepted Digest fixture
+and practical SSPI deadline/isolated ownership redesign remain root dependencies.
+No trust, accounts/policy or product change; external Pageant receiver obligation
+is separate from broker reaping. Coordinator disposition/design drafts untouched.
+
+Fifth bounded native TLS API batch: private
+[2026-10-03-tr1-8-tls-adapter](../../gwz-core-evidence/campaigns/transport-qualification/runs/2026-10-03-tr1-8-tls-adapter/README.md),
+external E:/gwz-tests/tr1-8-tls-adapter-021ace. Five native Rust rows pass: two
+verified origin leaf bindings match independent expected hashes; untrusted and
+wrong-name peers refuse before binding/application writes; nested proxy TLS and
+origin TLS return distinct correct bindings. No OS trust change or native PFX
+import; owned client/server and server threads retired. Static collector failures
+are retained separately. This proves the initial existing API seam only, not
+EPA/auth, Hyper/pool/lifetime integration or full Windows qualification.
+
+Coordinator draft §8 now selects that existing digest API. Proposed HOME and
+timeout/receiver ownership dispositions are recorded in
+[ProofDispositions-DRAFT](GwzTransportWindowsProofDispositions-DRAFT.md);
+they are not accepted compatibility changes. Before canonical review, refresh
+the lane's controlling graph from accepted MAIN helper-context/timing and SSH
+clock amendments; this lane predates their integration. Digest/provider deadline,
+Pageant receiver boundary, native provider/identity, proxy and approved trust
+fixture prerequisites remain. No Windows design GO or implementation.

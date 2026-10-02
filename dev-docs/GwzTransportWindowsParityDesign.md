@@ -7,6 +7,11 @@ implementation may consume this as GO. S4.1 native prerequisites and partial
 Pageant, SSPI and machine-proxy rows have executed; their limits remain gates. The current design work changes no
 product source and preserves `endpoint_environment`'s `compile_error!`.
 
+[The coordinator's proof-disposition working note](GwzTransportWindowsProofDispositions-DRAFT.md)
+records proposed HOME handling and the distinction between retiring GWZ's
+Pageant sender and cancelling an external receiver. Its proposals are not
+accepted clauses and do not waive the baseline's outstanding assertions.
+
 ## 1. Authority and object
 
 The transport release plan, amendment 2 revision 6 §§3.5, 3.18 and 3.19,
@@ -254,9 +259,30 @@ SEC_CHANNEL_BINDINGS with application data `tls-server-end-point:` plus the
 RFC5929 certificate digest (weak signature hashes upgraded to SHA-256).
 All offsets/lengths are checked. Do not use the configured CA certificate,
 the original redirect host's certificate or bytes from a prior connection.
-The TLS adapter must expose peer DER and its signature algorithm to this
-private core boundary; the current native-tls seam does not already prove it.
-TLS 1.3/certificate-algorithm cases and an EPA-required server are proof rows.
+Capture the private binding outcome immediately after the final origin TLS
+handshake in `https_connection::connect`, before the concrete stream is wrapped
+for Hyper. The pinned tokio-native-tls 0.3.1 stream exposes the native-tls 0.2.18
+stream through `get_ref()`; its `tls_server_end_point()` queries the actual peer
+through Schannel 0.1.29 and returns the digest without the prefix. Use this
+existing method, not a new certificate parser. Accept only the expected bounded
+32/48/64-byte digest lengths; prepend the 21-byte binding prefix once when
+constructing the checked SSPI layout. Retain this owned outcome on that physical
+connection. It is not a hostname cache or a unique connection identifier.
+
+For a TLS proxy, capture from the final origin handshake after CONNECT, not
+from the preceding proxy TLS stream. A new connection after retry or discovery
+redirect captures a new outcome even if the peer digest happens to match.
+Native `None` or error refuses an SSPI authentication attempt before any offer;
+never substitute an empty binding or silently omit it. An anonymous or Basic
+exchange does not need this SSPI binding and is not refused merely for its
+unavailability. Initial extraction is not a claim of lifetime peer immutability;
+resolve peer change/renegotiation against the connection's binding invariant.
+
+The bounded native Rust probe proves two distinct verified origin digests,
+untrusted/wrong-name refusal before binding query or application write, and
+different proxy/origin bindings through nested TLS and CONNECT. Its roots are
+connector-local only. TLS 1.3/certificate-algorithm coverage beyond that probe
+and an EPA-required server remain proof rows; the probe is not HTTP auth parity.
 
 Digest uses WDigest's HTTP mode ISC_REQ_HTTP | ISC_REQ_ALLOCATE_MEMORY with
 helper identity only. Its input includes the entire validated challenge token,
