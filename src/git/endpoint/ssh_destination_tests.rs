@@ -30,6 +30,22 @@ fn spellings_share_a_pool_key_and_keep_their_paths() {
 }
 
 #[test]
+fn the_host_as_written_stays_beside_the_lowercased_key() {
+    for (url, written) in [
+        ("ssh://git@GitHost.Example:22/a", "GitHost.Example"),
+        ("SSH://git@GITHOST.example/a", "GITHOST.example"),
+        ("ssh://git@GitHost%2EExample/a", "GitHost.Example"),
+        ("git@GitHost.Example:a", "GitHost.Example"),
+        ("[GitHost.Example:22]:a", "GitHost.Example"),
+        ("ssh://git@[FE80::1]/a", "FE80::1"),
+    ] {
+        let target = Destination::parse(url).unwrap().unwrap();
+        assert_eq!(target.written_host, written, "{url}");
+        assert_eq!(target.key.host, written.to_ascii_lowercase(), "{url}");
+    }
+}
+
+#[test]
 fn paths_pass_as_written_but_a_url_query_and_the_slash_before_a_tilde() {
     for (url, path) in [
         (

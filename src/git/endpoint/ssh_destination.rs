@@ -6,7 +6,11 @@ use std::{io, net::Ipv6Addr};
 
 #[derive(Debug)]
 pub(crate) struct Destination {
+    /// The pool key. Its host is the URL's, lowercased.
     pub(crate) key: Key,
+    /// The host as the URL wrote it, which a hashed `known_hosts` name may
+    /// hash, as libssh2 does for 1.0.17 (TR2.18).
+    pub(crate) written_host: String,
     pub(crate) path: String,
 }
 /// libgit2's parse: user, host, port ("" for the default) and path.
@@ -82,6 +86,7 @@ impl Destination {
         }
         Ok(Some(Self {
             key: Key::ssh(user, host.to_ascii_lowercase(), port),
+            written_host: host,
             path: path.to_owned(),
         }))
     }

@@ -1,5 +1,6 @@
 //! Physical ownership behind the transport pool's exclusive lease ledger.
 //! One endpoint worker drives this host and its timer independently of Git calls.
+use super::ssh_handoff::UrlExtras;
 use gwz_transport::{
     pool::{Action, Config, ConnectionId, Error, Identity, Key, Lease, Pool, PoolDriver},
     protocol::{Disposition, Effect, ErrorCode, Facts, Failure},
@@ -18,6 +19,15 @@ use std::{
 };
 pub(crate) type Progress = Arc<Mutex<Facts>>;
 
+/// The open a connection's setup serves: where the setup reports progress,
+/// and what that open's URL holds beyond its pool key (TR2.18). A connection
+/// opened for no live open gets the default, which holds nothing.
+#[derive(Clone, Default)]
+pub(crate) struct Opening {
+    pub(crate) progress: Progress,
+    pub(crate) url: Option<Arc<UrlExtras>>,
+}
+
 /// Connection setup is nonblocking. An error returned by start owns no remaining
 /// physical resources, including after an unwinding panic. Trust must be checked
 /// before authentication is offered; setup ownership must transfer atomically.
@@ -35,7 +45,7 @@ pub(crate) trait Connector {
         key: &Key,
         identity: &Identity,
         deadline: Option<u64>,
-        _progress: Progress,
+        _opening: Opening,
     ) -> Result<Self::Resource, Failure> {
         self.start(key, identity, deadline)
     }
@@ -148,16 +158,17 @@ impl<C: Connector> PoolHost<C> {
     /// Bounded turn. Advance BEFORE processing completions: exact deadline wins.
     /// Host must call periodically even when no checkout or action wakes it.
     pub(crate) fn step(&mut self, cx: &mut Context<'_>, now: u64) -> Result<(), Error> {
-        self.step_reported(cx, now, |_| Progress::default())
+        self.step_reported(cx, now, |_| Opening::default())
     }
+    /// `step`, where `opening` names the open each new connection serves.
     pub(crate) fn step_reported(
         &mut self,
         cx: &mut Context<'_>,
         now: u64,
-        mut progress: impl FnMut(ConnectionId) -> Progress,
+        mut opening: impl FnMut(ConnectionId) -> Opening,
     ) -> Result<(), Error> {
         self.driver.advance(now);
-        self.actions(cx, &mut progress)?;
+        self.actions(cx, &mut opening)?;
         let ids: Vec<_> = self.entries.keys().copied().collect();
         for id in ids {
             let entry = self.entries.get_mut(&id).expect("worker-owned entry");
@@ -202,13 +213,13 @@ impl<C: Connector> PoolHost<C> {
                 Phase::Ready => {}
             }
         }
-        self.actions(cx, &mut progress)
+        self.actions(cx, &mut opening)
     }
 
     fn actions(
         &mut self,
         cx: &mut Context<'_>,
-        progress: &mut impl FnMut(ConnectionId) -> Progress,
+        opening: &mut impl FnMut(ConnectionId) -> Opening,
     ) -> Result<(), Error> {
         for _ in 0..self.action_budget {
             let action = match pin!(self.driver.next_action()).poll(cx) {
@@ -222,7 +233,7 @@ impl<C: Connector> PoolHost<C> {
                     identity,
                     network_deadline,
                 } => match catch_unwind(AssertUnwindSafe(|| {
-                    let reported = progress(connection);
+                    let reported = opening(connection);
                     let stall = self.stall_ms.load(Ordering::Relaxed);
                     self.connector.set_stall_ms(stall);
                     self.connector

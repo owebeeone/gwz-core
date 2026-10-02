@@ -9,6 +9,7 @@ cfg_if! {
             use socket2::{Domain, SockAddr, Socket, Type};
             use ssh2::{BlockDirections, CheckResult, KnownHostFileKind, MethodType};
             use std::{
+                borrow::Cow,
                 fs::OpenOptions,
                 io::{self, Read},
                 net::{SocketAddr, TcpStream, ToSocketAddrs},
@@ -28,16 +29,21 @@ cfg_if! {
                 ("ssh-rsa", "rsa-sha2-512,rsa-sha2-256,ssh-rsa"),
             ];
 
-            pub(crate) fn establish(
+            /// Connects to `key`'s server and establishes trust in it, for
+            /// an open whose URL wrote the host as `written`, one of the key's
+            /// host's ASCII case variants (TR2.18).
+            pub(crate) fn establish_written(
                 key: &Key,
+                written: &str,
                 known_hosts: &Path,
                 control: &Control,
             ) -> io::Result<(SshConnection, Vec<u8>)> {
-                establish_inner(key, known_hosts, control, read_regular, resolve)
+                establish_inner(key, written, known_hosts, control, read_regular, resolve)
             }
 
             pub(crate) fn establish_inner<L, R>(
                 key: &Key,
+                written: &str,
                 known_path: &Path,
                 control: &Control,
                 load: L,
@@ -48,6 +54,15 @@ cfg_if! {
                 R: FnOnce(&str, u16, &Control) -> io::Result<Vec<SocketAddr>>,
             {
                 validate_key(key)?;
+                // Trust is looked up under the key's host lowercased, as the
+                // pool keys it, and under the host as the open's URL wrote it,
+                // which a hashed known_hosts name may hash (TR2.18).
+                let lowered = key.host.to_ascii_lowercase();
+                if !written.eq_ignore_ascii_case(&lowered) {
+                    return Err(io::ErrorKind::InvalidInput.into());
+                }
+                let both = [lowered.as_str(), written];
+                let names = if written == lowered { &both[..1] } else { &both[..] };
                 control.check()?;
                 let text = load(known_path, control)?;
                 control.check()?;
@@ -60,7 +75,7 @@ cfg_if! {
                     return Err(io::ErrorKind::NotFound.into());
                 }
                 let socket = connect_addresses(addresses, control, connect)?;
-                handshake(socket, &key.host, key.port, &text, control)
+                handshake(socket, names, key.port, &text, control)
             }
 
             pub(crate) fn connect_addresses<C>(
@@ -100,6 +115,19 @@ cfg_if! {
                     return Err(io::ErrorKind::InvalidInput.into());
                 }
                 Ok(())
+            }
+
+            cfg_if::cfg_if! {
+                if #[cfg(test)] {
+                    /// `establish_written` for a URL that wrote the host as the key has it.
+                    pub(crate) fn establish(
+                        key: &Key,
+                        known_hosts: &Path,
+                        control: &Control,
+                    ) -> io::Result<(SshConnection, Vec<u8>)> {
+                        establish_written(key, &key.host, known_hosts, control)
+                    }
+                }
             }
 
             pub(crate) fn read_regular(path: &Path, control: &Control) -> io::Result<String> {
@@ -234,7 +262,7 @@ cfg_if! {
 
             fn handshake(
                 socket: TcpStream,
-                host: &str,
+                names: &[&str],
                 port: u16,
                 text: &str,
                 control: &Control,
@@ -245,7 +273,7 @@ cfg_if! {
                 control.check()?;
                 let mut known = connection.session().known_hosts().map_err(ssh)?;
                 load_known(&mut known, text, None, control)?;
-                let prefs = preferences(&mut connection, text, host, port, control)?;
+                let prefs = preferences(&mut connection, text, names, port, control)?;
                 if !prefs.is_empty() {
                     control.check()?;
                     connection
@@ -277,7 +305,10 @@ cfg_if! {
                     .map(|(key, _)| key.to_vec())
                     .ok_or(io::ErrorKind::InvalidData)?;
                 control.check()?;
-                if !matches!(known.check_port(host, port, &host_key), CheckResult::Match) {
+                if !names
+                    .iter()
+                    .any(|name| matches!(known.check_port(name, port, &host_key), CheckResult::Match))
+                {
                     return Err(io::ErrorKind::PermissionDenied.into());
                 }
                 Ok((connection, host_key))
@@ -313,21 +344,23 @@ cfg_if! {
             fn preferences(
                 connection: &mut SshConnection,
                 text: &str,
-                host: &str,
+                names: &[&str],
                 port: u16,
                 control: &Control,
             ) -> io::Result<String> {
                 let mut prefs = String::new();
-                for (kind, names) in HOSTKEYS {
+                for (kind, algorithms) in HOSTKEYS {
                     control.check()?;
                     let mut set = connection.session().known_hosts().map_err(ssh)?;
                     if load_known(&mut set, text, Some(kind), control)?
-                        && matches!(set.check_port(host, port, &[0]), CheckResult::Mismatch)
+                        && names.iter().any(|name| {
+                            matches!(set.check_port(name, port, &[0]), CheckResult::Mismatch)
+                        })
                     {
                         if !prefs.is_empty() {
                             prefs.push(',');
                         }
-                        prefs.push_str(names);
+                        prefs.push_str(algorithms);
                     }
                 }
                 Ok(prefs)
@@ -340,7 +373,8 @@ cfg_if! {
                 control: &Control,
             ) -> io::Result<bool> {
                 let mut loaded = false;
-                // CR/LF exclusion measures admission; preserve all native token bytes.
+                // CR/LF exclusion measures admission; preserve every native token
+                // byte but a plain host field's ASCII case, which `folded` drops.
                 for line in text.split('\n') {
                     control.check()?;
                     if line.trim_matches([' ', '\t']).is_empty()
@@ -352,12 +386,40 @@ cfg_if! {
                         continue;
                     }
                     known
-                        .read_str(line, KnownHostFileKind::OpenSSH)
+                        .read_str(&folded(line), KnownHostFileKind::OpenSSH)
                         .map_err(ssh)?;
                     loaded = true;
                     control.check()?;
                 }
                 Ok(loaded)
+            }
+
+            /// libssh2 compares a plain known_hosts name byte for byte, where
+            /// the transport matches it ignoring ASCII case (TR2.18). So a
+            /// plain line's host field, which libssh2's readline takes up to
+            /// the first space or tab after leading blanks, is lowercased
+            /// before libssh2 reads the line, and the host is looked up
+            /// lowercased. libssh2's hostline takes a field of more than two
+            /// bytes that does not start with `|1|` as plain names. Any other
+            /// field, a hashed name among them, stays as written: its hash is
+            /// of the name as it was written.
+            fn folded(line: &str) -> Cow<'_, str> {
+                let start = line.len() - line.trim_start_matches([' ', '\t']).len();
+                let end = line[start..]
+                    .find([' ', '\t'])
+                    .map_or(line.len(), |at| start + at);
+                let field = &line[start..end];
+                if field.len() <= 2
+                    || field.starts_with("|1|")
+                    || !field.bytes().any(|byte| byte.is_ascii_uppercase())
+                {
+                    return Cow::Borrowed(line);
+                }
+                let mut folded = String::with_capacity(line.len());
+                folded.push_str(&line[..start]);
+                folded.push_str(&field.to_ascii_lowercase());
+                folded.push_str(&line[end..]);
+                Cow::Owned(folded)
             }
 
             fn line_kind(line: &str) -> Option<&str> {
@@ -379,10 +441,28 @@ cfg_if! {
                 clean(io::Error::from(error))
             }
         }
-        pub(crate) use unix::establish;
+        pub(crate) use unix::establish_written;
         cfg_if! {
             if #[cfg(test)] {
-                pub(crate) use unix::{connect_addresses, establish_inner as establish_with, read_regular, timed_resolution, wait_step};
+                pub(crate) use unix::{connect_addresses, establish, establish_inner, read_regular, timed_resolution, wait_step};
+                use super::agent_job::Control;
+                use gwz_transport::pool::Key;
+                use std::{io, net::SocketAddr, path::Path};
+
+                /// `establish_inner` for a URL that wrote the host as the key has it.
+                pub(crate) fn establish_with<L, R>(
+                    key: &Key,
+                    known_path: &Path,
+                    control: &Control,
+                    load: L,
+                    resolve_addresses: R,
+                ) -> io::Result<(super::ssh_connection::SshConnection, Vec<u8>)>
+                where
+                    L: FnOnce(&Path, &Control) -> io::Result<String>,
+                    R: FnOnce(&str, u16, &Control) -> io::Result<Vec<SocketAddr>>,
+                {
+                    establish_inner(key, &key.host, known_path, control, load, resolve_addresses)
+                }
             }
         }
     }

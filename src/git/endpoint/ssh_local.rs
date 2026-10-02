@@ -4,8 +4,10 @@ cfg_if::cfg_if! {
     if #[cfg(unix)] {
         use super::{
             agent_auth, agent_socket, ssh_key_auth,
+            ssh_handoff::Handoff,
             ssh_key_snapshot::Registry,
             ssh_network,
+            ssh_pool::Opening,
             ssh_setup::{Authenticated, Setup, SetupConnector},
             ssh_worker::Endpoint,
         };
@@ -16,22 +18,26 @@ cfg_if::cfg_if! {
         };
         use std::{io, path::PathBuf, time::Duration};
 
+        /// The endpoint. A driver in its process deposits each open's URL
+        /// extras in `handoff`; any other driver's opens have none (TR2.18).
         pub(crate) fn connect_with_authority(
             config: Config,
             known_hosts: PathBuf,
             agent_socket: Option<PathBuf>,
             io_timeout_ms: u64,
             authority: Authority,
+            handoff: Handoff,
         ) -> io::Result<Endpoint> {
             let cleanup = Duration::from_millis(config.cleanup_timeout_ms);
-            Endpoint::with_registry(
+            Endpoint::with_handoff(
                 config,
                 Registry::new(),
                 move |origin, registry| {
                     ReservedConnector::new(SetupConnector::reported(
                         origin,
                         cleanup,
-                        move |key: &Key, identity: &Identity, progress| -> io::Result<Setup> {
+                        move |key: &Key, identity: &Identity, opening: Opening| -> io::Result<Setup> {
+                            let Opening { progress, url } = opening;
                             // Lookup pins the already admitted snapshot. It performs no
                             // file access; the path is never reopened during setup.
                             let selected = match identity {
@@ -40,6 +46,9 @@ cfg_if::cfg_if! {
                                 Identity::Https => return Err(io::ErrorKind::InvalidInput.into()),
                             };
                             let key = key.clone();
+                            // The host as the open's URL wrote it, for a hashed
+                            // known_hosts name (TR2.18); else the key's own.
+                            let written = url.map_or_else(|| key.host.clone(), |url| url.host().to_owned());
                             let known_hosts = known_hosts.clone();
                             let agent_socket = agent_socket.clone();
                             Ok(Box::new(move |control| {
@@ -52,8 +61,12 @@ cfg_if::cfg_if! {
                                 let rejected = || {
                                     progress.lock().unwrap_or_else(|e| e.into_inner()).authenticated = Some(false);
                                 };
-                                let (connection, trusted) =
-                                    ssh_network::establish(&key, &known_hosts, &control)?;
+                                let (connection, trusted) = ssh_network::establish_written(
+                                    &key,
+                                    &written,
+                                    &known_hosts,
+                                    &control,
+                                )?;
                                 if let Some(selected) = selected {
                                     return ssh_key_auth::authenticate_reporting(
                                         connection, &trusted, selected, control,
@@ -86,6 +99,7 @@ cfg_if::cfg_if! {
                     ), authority.clone())
                 },
                 io_timeout_ms,
+                handoff,
             )
         }
     }

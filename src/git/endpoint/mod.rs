@@ -10,6 +10,7 @@ pub(crate) mod ssh_admission;
 pub(crate) mod ssh_channel;
 pub(crate) mod ssh_connection;
 pub(crate) mod ssh_destination;
+pub(crate) mod ssh_handoff;
 pub(crate) mod ssh_key_auth;
 pub(crate) mod ssh_key_container;
 pub(crate) mod ssh_key_snapshot;

@@ -6,6 +6,7 @@ use crate::git::endpoint::ssh_fixture as common;
 use crate::transport_host::{SshEndpointConfig, TransportRequest, TransportRuntime};
 mod drivers;
 mod host_context;
+mod known_hosts_case;
 mod url_parity;
 
 /// One transport runtime for a test, as `with_local_transport` builds one per

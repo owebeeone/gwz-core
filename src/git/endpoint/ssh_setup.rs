@@ -5,7 +5,7 @@ use super::{
     ssh_connection::SshConnection,
     ssh_key_auth::Verified,
     ssh_key_snapshot::Entry,
-    ssh_pool::{Connector, Progress, Resource},
+    ssh_pool::{Connector, Opening, Progress, Resource},
     ssh_pump::SshPump,
     ssh_worker::ChannelResource,
 };
@@ -62,7 +62,7 @@ impl Authenticated {
         })
     }
 }
-type Factory = Box<dyn FnMut(&Key, &Identity, Progress) -> io::Result<Setup> + Send>;
+type Factory = Box<dyn FnMut(&Key, &Identity, Opening) -> io::Result<Setup> + Send>;
 pub(crate) struct SetupConnector {
     origin: Instant,
     cleanup: Duration,
@@ -73,7 +73,7 @@ impl SetupConnector {
     pub(crate) fn reported(
         origin: Instant,
         cleanup: Duration,
-        factory: impl FnMut(&Key, &Identity, Progress) -> io::Result<Setup> + Send + 'static,
+        factory: impl FnMut(&Key, &Identity, Opening) -> io::Result<Setup> + Send + 'static,
     ) -> Self {
         Self {
             origin,
@@ -95,15 +95,16 @@ impl Connector for SetupConnector {
         identity: &Identity,
         deadline: Option<u64>,
     ) -> Result<Self::Resource, Failure> {
-        self.start_reported(key, identity, deadline, Progress::default())
+        self.start_reported(key, identity, deadline, Opening::default())
     }
     fn start_reported(
         &mut self,
         key: &Key,
         identity: &Identity,
         deadline: Option<u64>,
-        progress: Progress,
+        opening: Opening,
     ) -> Result<Self::Resource, Failure> {
+        let progress = opening.progress.clone();
         let deadline = deadline
             .map(|milliseconds| {
                 self.origin
@@ -111,8 +112,8 @@ impl Connector for SetupConnector {
                     .ok_or_else(|| failure(io::ErrorKind::InvalidInput))
             })
             .transpose()?;
-        let setup = (self.factory)(key, identity, progress.clone())
-            .map_err(|error| failure(error.kind()))?;
+        let setup =
+            (self.factory)(key, identity, opening).map_err(|error| failure(error.kind()))?;
         let requested = identity.clone();
         let job = Job::start_timed(
             deadline,
