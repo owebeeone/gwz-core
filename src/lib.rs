@@ -72,6 +72,16 @@ pub mod status;
 // that gwz-cli's dispatch and gwz-py's native entry call to decide whether a
 // request runs inside a transport runtime.
 pub mod transport_scope;
+// dev-docs/GwzTransportOffSwitchDesign.md §7 (TR1.5, TR2.5): the transport
+// setting, gwz or native, which the same two drivers resolve beside the
+// transport scope, and the repository values it ignores. Candidate code under
+// rule (a), on Linux and macOS until 1.1.0 S4.5 opens the transport's Windows
+// sites.
+cfg_if::cfg_if! {
+    if #[cfg(all(unix, gwz_transport_candidate))] {
+        pub mod transport_setting;
+    }
+}
 // M5d step (3) (dev-docs/GwzM5-8M5d-Charter.md §3/§4): the NEUTRAL home of the
 // merge record's raw publication primitive on a handle-fail volume. Private to
 // the crate and named by exactly one production caller,
