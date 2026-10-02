@@ -664,22 +664,29 @@ const ADMISSION: Duration = Duration::from_secs(30);
 const MAX_STREAM_MESSAGES: usize = 8;
 /// How long an open waits for its endpoint's answer: each of its
 /// `max_retries + 1` setup attempts may use the 120 s interaction allowance,
-/// the 30 s aggregate and a stall, and the waits between them come on top
-/// (the retry plan's §5 bound).
+/// the 30 s aggregate, a stall and the Open's cleanup allowance, and the
+/// waits between them come on top (the retry plan's §5 bound). The cleanup
+/// allowance counts because the endpoint disposes a failed setup, joining
+/// its setup thread, before it reports the failure.
 fn open_backstop_ms(io_timeout_ms: u64, max_retries: u32) -> u64 {
+    let attempt = OPEN_ATTEMPT_MS
+        .saturating_add(io_timeout_ms)
+        .saturating_add(OPEN_CLEANUP_MS);
     u64::from(max_retries)
         .saturating_add(1)
-        .saturating_mul(OPEN_ATTEMPT_MS.saturating_add(io_timeout_ms))
+        .saturating_mul(attempt)
         .saturating_add(setup_retry::wait_bound_ms(max_retries))
 }
 const OPEN_ATTEMPT_MS: u64 = 150_000;
+/// The cleanup allowance each Open grants its endpoint.
+const OPEN_CLEANUP_MS: u64 = 5_000;
 fn network_deadlines(io_timeout_ms: u64, connect_timeout_ms: u64, allocation_ms: i64) -> Deadlines {
     Deadlines {
         allocation_ms,
         connect_ms: connect_timeout_ms as i64,
         io_ms: io_timeout_ms as i64,
         interaction_ms: 120000,
-        cleanup_ms: 5000,
+        cleanup_ms: OPEN_CLEANUP_MS as i64,
     }
 }
 /// An SSH open's failure, and the attempt it ended as `(N, M)` when that is
@@ -749,11 +756,31 @@ cfg_if::cfg_if! {
 
         #[test]
         fn the_open_backstop_covers_every_attempt_and_the_waits_between_them() {
-            // One attempt: the interaction allowance, the aggregate and a stall.
-            assert_eq!(open_backstop_ms(9_000, 0), 159_000);
+            // One attempt: the interaction allowance, the aggregate, a stall,
+            // and the cleanup allowance the failed setup's disposal may use
+            // before the endpoint reports it.
+            assert_eq!(open_backstop_ms(9_000, 0), 164_000);
             // The default four attempts and their waits, at most 7.75 s.
-            assert_eq!(open_backstop_ms(9_000, 3), 4 * 159_000 + 7_750);
+            assert_eq!(open_backstop_ms(9_000, 3), 4 * 164_000 + 7_750);
             assert_eq!(open_backstop_ms(u64::MAX, u32::MAX), u64::MAX);
+        }
+
+        #[test]
+        fn the_open_backstop_covers_the_full_bound_also_below_a_five_second_stall() {
+            // The retry plan's §5 full bound: each attempt's 30 s aggregate,
+            // 120 s interaction allowance and 5 s cleanup allowance, and the
+            // waits. A stall shorter than the cleanup allowance does not stand
+            // in for it.
+            for max_retries in [0, 3, 10] {
+                let full = u64::from(max_retries + 1) * (30_000 + 120_000 + 5_000)
+                    + setup_retry::wait_bound_ms(max_retries);
+                for stall in [1_000, 4_999, 9_000] {
+                    assert!(
+                        open_backstop_ms(stall, max_retries) >= full,
+                        "stall {stall} ms, --max-retries {max_retries}"
+                    );
+                }
+            }
         }
 
         #[test]
