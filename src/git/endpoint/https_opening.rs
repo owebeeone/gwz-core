@@ -156,7 +156,7 @@ impl OpeningSession {
         cancel: &CancellationToken,
     ) -> Outcome {
         let mut budget = client.budget_for_open(&self.open.deadlines);
-        self.attempt(client, input, cancel, &mut budget, &mut None, false)
+        self.attempt(client, input, cancel, &mut budget, &mut None)
             .await
     }
     async fn attempt(
@@ -166,7 +166,6 @@ impl OpeningSession {
         cancel: &CancellationToken,
         budget: &mut Budget,
         challenge: &mut Option<ChallengeLease>,
-        automatic: bool,
     ) -> Outcome {
         let expected = match open_for(client, &input) {
             Ok(open) => open,
@@ -181,13 +180,9 @@ impl OpeningSession {
         }
         // Pool ownership uses the same session as the admitted message.
         input.session = self.session_id.clone();
-        let result = if automatic {
-            client
-                .prepare_budget_for_transition(input, cancel, budget, challenge)
-                .await
-        } else {
-            client.prepare_budget(input, cancel, budget).await
-        };
+        let result = client
+            .prepare_budget_for_transition(input, cancel, budget, challenge)
+            .await;
         let mut message = match self.endpoint.message(
             self.stream_id,
             if result.is_ok() {
@@ -238,7 +233,6 @@ impl OpeningSession {
                 cancel,
                 &mut budget,
                 &mut challenge,
-                true,
             )
             .await;
         let first_failure = match first {
@@ -265,7 +259,7 @@ impl OpeningSession {
             return Outcome::Rejected(error);
         }
         match self
-            .attempt(client, gh_input, cancel, &mut budget, &mut challenge, true)
+            .attempt(client, gh_input, cancel, &mut budget, &mut challenge)
             .await
         {
             Outcome::Ready {

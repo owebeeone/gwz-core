@@ -22,7 +22,12 @@ fn request_rejects_non_https_before_any_helper_or_connection() {
         };
         let result = endpoint
             .client
-            .prepare(request, &CancellationToken::new())
+            .prepare_budget_for_transition(
+                request,
+                &CancellationToken::new(),
+                &mut endpoint.client.budget(),
+                &mut None,
+            )
             .await;
         assert!(matches!(
             result,
@@ -64,9 +69,11 @@ fn tls_discovery_and_seeded_large_exchange_reuse_one_connection() {
             .unwrap();
             let first = endpoint
                 .client
-                .prepare(
+                .prepare_budget_for_transition(
                     input(&server, GitService::UploadPackAdvertisement),
                     &CancellationToken::new(),
+                    &mut endpoint.client.budget(),
+                    &mut None,
                 )
                 .await
                 .unwrap();
@@ -91,9 +98,11 @@ fn tls_discovery_and_seeded_large_exchange_reuse_one_connection() {
             task.await.unwrap();
             let next = endpoint
                 .client
-                .prepare(
+                .prepare_budget_for_transition(
                     input(&server, GitService::UploadPackExchange),
                     &CancellationToken::new(),
+                    &mut endpoint.client.budget(),
+                    &mut None,
                 )
                 .await
                 .unwrap();
@@ -188,7 +197,12 @@ fn discovery_redirect_pins_post_route_and_final_connection() {
             ] {
                 let prepared = endpoint
                     .client
-                    .prepare(input(&server, service), &CancellationToken::new())
+                    .prepare_budget_for_transition(
+                        input(&server, service),
+                        &CancellationToken::new(),
+                        &mut endpoint.client.budget(),
+                        &mut None,
+                    )
                     .await
                     .unwrap();
                 let (stream, task) = attach(prepared);
@@ -237,9 +251,11 @@ fn early_post_rejection_wakes_blocked_writer_without_replay() {
             .unwrap();
             let prepared = endpoint
                 .client
-                .prepare(
+                .prepare_budget_for_transition(
                     input(&server, GitService::ReceivePackAdvertisement),
                     &CancellationToken::new(),
+                    &mut endpoint.client.budget(),
+                    &mut None,
                 )
                 .await
                 .unwrap();
@@ -251,9 +267,11 @@ fn early_post_rejection_wakes_blocked_writer_without_replay() {
             task.await.unwrap();
             let prepared = endpoint
                 .client
-                .prepare(
+                .prepare_budget_for_transition(
                     input(&server, GitService::ReceivePackExchange),
                     &CancellationToken::new(),
+                    &mut endpoint.client.budget(),
+                    &mut None,
                 )
                 .await
                 .unwrap();
@@ -554,7 +572,12 @@ fn discovery_failures_preserve_status_without_git_bytes_and_hops_are_bounded() {
                 request.destination = server.url.replace("/repo", &format!("/{status}"));
                 let failure = match endpoint
                     .client
-                    .prepare(request, &CancellationToken::new())
+                    .prepare_budget_for_transition(
+                        request,
+                        &CancellationToken::new(),
+                        &mut endpoint.client.budget(),
+                        &mut None,
+                    )
                     .await
                 {
                     Err(f) => f,
@@ -567,9 +590,11 @@ fn discovery_failures_preserve_status_without_git_bytes_and_hops_are_bounded() {
             let before = count.load(Ordering::SeqCst);
             let failed = endpoint
                 .client
-                .prepare(
+                .prepare_budget_for_transition(
                     input(&server, GitService::UploadPackAdvertisement),
                     &CancellationToken::new(),
+                    &mut endpoint.client.budget(),
+                    &mut None,
                 )
                 .await;
             assert!(matches!(
@@ -603,7 +628,7 @@ cfg_if::cfg_if! { if #[cfg(unix)] {
             let mut receipt=None;let first=endpoint.client.prepare_auto(input(&server,GitService::UploadPackAdvertisement),&CancellationToken::new(),&mut receipt).await.unwrap();
             assert_eq!(receipt.unwrap().facts.unwrap().http_status,Some(401));assert!(first.opened.facts.credential_offered);assert_eq!(first.opened.facts.authenticated,None);let id=first.opened.connection_id.clone();finish(first).await;
             std::fs::write(&token,"second-fixture-token").unwrap();let mut request=input(&server,GitService::UploadPackAdvertisement);request.policy=AuthPolicy::Gh;
-            let second=endpoint.client.prepare(request,&CancellationToken::new()).await.unwrap();assert!(second.opened.reused);assert_eq!(second.opened.connection_id,id);assert!(second.opened.facts.credential_offered);finish(second).await;
+            let second=endpoint.client.prepare_budget_for_transition(request,&CancellationToken::new(),&mut endpoint.client.budget(),&mut None).await.unwrap();assert!(second.opened.reused);assert_eq!(second.opened.connection_id,id);assert!(second.opened.facts.credential_offered);finish(second).await;
             let seen=seen.lock().unwrap();assert_eq!(seen.len(),3);assert!(seen[0].is_none());assert!(seen[1].is_some() && seen[2].is_some() && seen[1]!=seen[2]);drop(seen);
             assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await,0);
         });
@@ -613,7 +638,7 @@ cfg_if::cfg_if! { if #[cfg(unix)] {
 fn truncated_tls_response_fails_and_never_returns_connection_to_pool() {
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
         let server=Server::raw(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-git-upload-pack-advertisement\r\nContent-Length: 100\r\n\r\npartial".to_vec()).await;
-        let mut endpoint=Endpoint::new(server.config(),None,gwz_transport::pool::Config::default()).unwrap();let prepared=endpoint.client.prepare(input(&server,GitService::UploadPackAdvertisement),&CancellationToken::new()).await.unwrap();
+        let mut endpoint=Endpoint::new(server.config(),None,gwz_transport::pool::Config::default()).unwrap();let prepared=endpoint.client.prepare_budget_for_transition(input(&server,GitService::UploadPackAdvertisement),&CancellationToken::new(),&mut endpoint.client.budget(),&mut None).await.unwrap();
         let (stream,task)=attach(prepared);stream.end_write().await.unwrap();let mut buffer=[0;50];let failed=loop {match stream.read(&mut buffer).await {Ok(0)=>panic!("truncation must not be EOF"),Ok(_)=>{},Err(error)=>break error}};
         assert!(matches!(failed,gwz_transport::stream::Error::PeerFailed{code:ErrorCode::Protocol,..}));task.await.unwrap();assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await,0);
     });
@@ -622,8 +647,8 @@ fn truncated_tls_response_fails_and_never_returns_connection_to_pool() {
 fn informational_responses_are_bounded_and_tls_trust_is_required() {
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
         let mut bytes=b"HTTP/1.1 103 Early Hints\r\n\r\n".repeat(9);bytes.extend_from_slice(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-git-upload-pack-advertisement\r\nContent-Length: 0\r\n\r\n");let server=Server::raw(bytes).await;
-        let mut endpoint=Endpoint::new(server.config(),None,gwz_transport::pool::Config::default()).unwrap();let failed=endpoint.client.prepare(input(&server,GitService::UploadPackAdvertisement),&CancellationToken::new()).await;assert!(matches!(failed,Err(Failure{code:ErrorCode::Protocol,..})));assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await,0);
-        let mut untrusted=Endpoint::new(https_connection::Config::default(),None,gwz_transport::pool::Config::default()).unwrap();assert!(matches!(untrusted.client.prepare(input(&server,GitService::UploadPackAdvertisement),&CancellationToken::new()).await,Err(Failure{code:ErrorCode::Trust,..})));assert_eq!(untrusted.shutdown(Duration::from_secs(2)).await,0);
+        let mut endpoint=Endpoint::new(server.config(),None,gwz_transport::pool::Config::default()).unwrap();let failed=endpoint.client.prepare_budget_for_transition(input(&server,GitService::UploadPackAdvertisement),&CancellationToken::new(),&mut endpoint.client.budget(),&mut None).await;assert!(matches!(failed,Err(Failure{code:ErrorCode::Protocol,..})));assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await,0);
+        let mut untrusted=Endpoint::new(https_connection::Config::default(),None,gwz_transport::pool::Config::default()).unwrap();assert!(matches!(untrusted.client.prepare_budget_for_transition(input(&server,GitService::UploadPackAdvertisement),&CancellationToken::new(),&mut untrusted.client.budget(),&mut None).await,Err(Failure{code:ErrorCode::Trust,..})));assert_eq!(untrusted.shutdown(Duration::from_secs(2)).await,0);
     });
 }
 #[test]
@@ -653,9 +678,11 @@ fn connect_proxy_and_no_proxy_keep_proxy_credentials_out_of_origin_requests() {
                 finish(
                     endpoint
                         .client
-                        .prepare(
+                        .prepare_budget_for_transition(
                             input(&server, GitService::UploadPackAdvertisement),
                             &CancellationToken::new(),
+                            &mut endpoint.client.budget(),
+                            &mut None,
                         )
                         .await
                         .unwrap(),
@@ -676,9 +703,11 @@ fn connect_proxy_and_no_proxy_keep_proxy_credentials_out_of_origin_requests() {
             assert!(matches!(
                 endpoint
                     .client
-                    .prepare(
+                    .prepare_budget_for_transition(
                         input(&server, GitService::UploadPackAdvertisement),
-                        &CancellationToken::new()
+                        &CancellationToken::new(),
+                        &mut endpoint.client.budget(),
+                        &mut None,
                     )
                     .await,
                 Err(Failure {
@@ -719,9 +748,11 @@ fn stalled_post_response_times_out_after_endwrite_without_replay() {
             finish(
                 endpoint
                     .client
-                    .prepare(
+                    .prepare_budget_for_transition(
                         input(&server, GitService::ReceivePackAdvertisement),
                         &CancellationToken::new(),
+                        &mut endpoint.client.budget(),
+                        &mut None,
                     )
                     .await
                     .unwrap(),
@@ -729,9 +760,11 @@ fn stalled_post_response_times_out_after_endwrite_without_replay() {
             .await;
             let prepared = endpoint
                 .client
-                .prepare(
+                .prepare_budget_for_transition(
                     input(&server, GitService::ReceivePackExchange),
                     &CancellationToken::new(),
+                    &mut endpoint.client.budget(),
+                    &mut None,
                 )
                 .await
                 .unwrap();
@@ -770,9 +803,11 @@ fn idle_connection_is_reaped_and_shutdown_can_be_polled_again() {
             finish(
                 endpoint
                     .client
-                    .prepare(
+                    .prepare_budget_for_transition(
                         input(&server, GitService::UploadPackAdvertisement),
                         &CancellationToken::new(),
+                        &mut endpoint.client.budget(),
+                        &mut None,
                     )
                     .await
                     .unwrap(),
@@ -782,9 +817,11 @@ fn idle_connection_is_reaped_and_shutdown_can_be_polled_again() {
             assert_eq!(endpoint.client.pool.pending(), 0);
             let prepared = endpoint
                 .client
-                .prepare(
+                .prepare_budget_for_transition(
                     input(&server, GitService::UploadPackAdvertisement),
                     &CancellationToken::new(),
+                    &mut endpoint.client.budget(),
+                    &mut None,
                 )
                 .await
                 .unwrap();
@@ -799,8 +836,8 @@ fn idle_connection_is_reaped_and_shutdown_can_be_polled_again() {
 fn idle_peer_close_is_a_typed_failure_without_a_hidden_get_retry() {
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
         let server=Server::raw(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-git-upload-pack-advertisement\r\nContent-Length: 2\r\n\r\nok".to_vec()).await;
-        let mut endpoint=Endpoint::new(server.config(),None,gwz_transport::pool::Config::default()).unwrap();finish(endpoint.client.prepare(input(&server,GitService::UploadPackAdvertisement),&CancellationToken::new()).await.unwrap()).await;
-        tokio::time::sleep(Duration::from_millis(80)).await;let failed=endpoint.client.prepare(input(&server,GitService::UploadPackAdvertisement),&CancellationToken::new()).await;
+        let mut endpoint=Endpoint::new(server.config(),None,gwz_transport::pool::Config::default()).unwrap();finish(endpoint.client.prepare_budget_for_transition(input(&server,GitService::UploadPackAdvertisement),&CancellationToken::new(),&mut endpoint.client.budget(),&mut None).await.unwrap()).await;
+        tokio::time::sleep(Duration::from_millis(80)).await;let failed=endpoint.client.prepare_budget_for_transition(input(&server,GitService::UploadPackAdvertisement),&CancellationToken::new(),&mut endpoint.client.budget(),&mut None).await;
         assert!(matches!(failed,Err(Failure{code:ErrorCode::Io,..})));assert_eq!(server.connections.load(Ordering::SeqCst),1);assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await,0);
     });
 }
@@ -808,11 +845,11 @@ fn idle_peer_close_is_a_typed_failure_without_a_hidden_get_retry() {
 fn seeded_cancellation_releases_paused_streams_and_physical_capacity() {
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
         let server=Server::start(Arc::new(|request|Box::pin(async move {if request.method()=="GET" {response(200,GitService::UploadPackAdvertisement,"ok")}else{let data=request.into_body().collect().await;response(200,GitService::UploadPackExchange,data.map(|v|v.to_bytes()).unwrap_or_default())}}))).await;
-        let mut endpoint=Endpoint::new(server.config(),None,gwz_transport::pool::Config::default()).unwrap();finish(endpoint.client.prepare(input(&server,GitService::UploadPackAdvertisement),&CancellationToken::new()).await.unwrap()).await;
+        let mut endpoint=Endpoint::new(server.config(),None,gwz_transport::pool::Config::default()).unwrap();finish(endpoint.client.prepare_budget_for_transition(input(&server,GitService::UploadPackAdvertisement),&CancellationToken::new(),&mut endpoint.client.budget(),&mut None).await.unwrap()).await;
         let seed=0xca11ce1u64;let mut state=seed;
         for iteration in 0..16 {
             state^=state<<13;state^=state>>7;state^=state<<17;
-            let prepared=endpoint.client.prepare(input(&server,GitService::UploadPackExchange),&CancellationToken::new()).await.unwrap();let (stream,task)=attach(prepared);let payload=vec![state as u8;300_000];
+            let prepared=endpoint.client.prepare_budget_for_transition(input(&server,GitService::UploadPackExchange),&CancellationToken::new(),&mut endpoint.client.budget(),&mut None).await.unwrap();let (stream,task)=attach(prepared);let payload=vec![state as u8;300_000];
             let writing=stream.write_all(&payload);tokio::pin!(writing);
             tokio::select! {_=&mut writing=>{},_=tokio::time::sleep(Duration::from_millis(1+state%7))=>{}}
             // No response reader grants additional credit; cancellation must still pass.
@@ -847,9 +884,11 @@ fn https_connect_proxy_preserves_origin_tls_verification() {
             finish(
                 endpoint
                     .client
-                    .prepare(
+                    .prepare_budget_for_transition(
                         input(&server, GitService::UploadPackAdvertisement),
                         &CancellationToken::new(),
+                        &mut endpoint.client.budget(),
+                        &mut None,
                     )
                     .await
                     .unwrap(),
@@ -877,7 +916,9 @@ fn exhausted_retry_domains_fail_before_gh_lookup_without_refilling() {
             )
             .unwrap();
             for domain in 0..5 {
-                let mut budget = endpoint.client.budget_for_open(&Deadlines::default());
+                // The configured budget, so each pass exhausts its one domain alone:
+                // an Open's zero interaction deadline would exhaust the helper in all.
+                let mut budget = endpoint.client.budget();
                 match domain {
                     0 => budget.allocation = Duration::ZERO,
                     1 => budget.helper = Duration::ZERO,
@@ -887,7 +928,7 @@ fn exhausted_retry_domains_fail_before_gh_lookup_without_refilling() {
                 }
                 let result = endpoint
                     .client
-                    .prepare_budget(
+                    .prepare_budget_for_transition(
                         Input {
                             destination: "https://example.invalid/repo".into(),
                             service: GitService::UploadPackAdvertisement,
@@ -897,6 +938,7 @@ fn exhausted_retry_domains_fail_before_gh_lookup_without_refilling() {
                         },
                         &CancellationToken::new(),
                         &mut budget,
+                        &mut None,
                     )
                     .await;
                 assert!(

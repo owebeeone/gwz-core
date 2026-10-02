@@ -237,9 +237,11 @@ cfg_if::cfg_if! { if #[cfg(test)] { #[path="https_budget_tests.rs"] mod budget_t
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
-        /// A standalone endpoint and the client's direct entry points, which
-        /// the HTTPS tests drive; production enters through
-        /// `prepare_budget_for_transition` with `budget_for_open`.
+        /// A standalone endpoint, the anonymous-then-Gh replay and the configured
+        /// deadlines, for the HTTPS tests. They prepare through
+        /// `prepare_budget_for_transition`, as the transport host's HTTPS endpoint
+        /// does; `budget()` is what `budget_for_open` gives an Open that carries
+        /// the configured deadlines.
         impl Endpoint {
             pub(crate) fn new(
                 tls: https_connection::Config,
@@ -261,19 +263,6 @@ cfg_if::cfg_if! {
             }
         }
         impl Client {
-            pub(crate) async fn prepare(
-                &self,
-                input: Input,
-                cancel: &CancellationToken,
-            ) -> Result<Prepared, Failure> {
-                self.prepare_until(
-                    input,
-                    cancel,
-                    Instant::now() + Duration::from_millis(self.config.allocation_timeout_ms),
-                    Duration::from_millis(self.config.interaction_timeout_ms),
-                )
-                .await
-            }
             /// Sole authentication replay: anonymous discovery 401/404, once. The
             /// caller retains the first receipt and publishes only the final result.
             pub(crate) async fn prepare_auto(
@@ -310,29 +299,6 @@ cfg_if::cfg_if! {
                     other => other,
                 }
             }
-            pub(crate) async fn prepare_until(
-                &self,
-                input: Input,
-                cancel: &CancellationToken,
-                until: Instant,
-                helper_remaining: Duration,
-            ) -> Result<Prepared, Failure> {
-                let mut budget = self.budget();
-                budget.allocation = until.saturating_duration_since(Instant::now());
-                budget.helper = helper_remaining;
-                self.prepare_budget(input, cancel, &mut budget).await
-            }
-            /// Apply an Open request's positive deadline values as upper bounds. Zero
-            /// retains the endpoint's captured setting, including zero-disabled I/O.
-            pub(crate) async fn prepare_open(
-                &self,
-                input: Input,
-                cancel: &CancellationToken,
-                deadlines: &Deadlines,
-            ) -> Result<Prepared, Failure> {
-                let mut budget = self.budget_for_open(deadlines);
-                self.prepare_budget(input, cancel, &mut budget).await
-            }
             pub(crate) fn configured_deadlines(&self) -> Deadlines {
                 Deadlines {
                     allocation_ms: self.config.allocation_timeout_ms as i64,
@@ -341,15 +307,6 @@ cfg_if::cfg_if! {
                     interaction_ms: self.config.interaction_timeout_ms as i64,
                     cleanup_ms: self.config.cleanup_timeout_ms as i64,
                 }
-            }
-            pub(crate) async fn prepare_budget(
-                &self,
-                input: Input,
-                cancel: &CancellationToken,
-                budget: &mut Budget,
-            ) -> Result<Prepared, Failure> {
-                self.prepare_budget_inner(input, cancel, budget, &mut None, false)
-                    .await
             }
         }
     }

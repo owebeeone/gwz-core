@@ -161,9 +161,11 @@ printf 'username=fixture\\npassword=%s\\n\\n' \"$token\"\n",
                     let mut b = a.clone();
                     b.operation = "seed-b".into();
                     let seed_cancel = CancellationToken::new();
+                    let (mut budget_a, mut budget_b) = (endpoint.client.budget(), endpoint.client.budget());
+                    let (mut challenge_a, mut challenge_b) = (None, None);
                     let (a, b) = tokio::join!(
-                        endpoint.client.prepare(a, &seed_cancel),
-                        endpoint.client.prepare(b, &seed_cancel),
+                        endpoint.client.prepare_budget_for_transition(a, &seed_cancel, &mut budget_a, &mut challenge_a),
+                        endpoint.client.prepare_budget_for_transition(b, &seed_cancel, &mut budget_b, &mut challenge_b),
                     );
                     finish(a.unwrap()).await;
                     finish(b.unwrap()).await;
@@ -283,7 +285,7 @@ printf 'username=fixture\\npassword=%s\\n\\n' \"$token\"\n",
                     let mut fresh = input(&server, GitService::UploadPackAdvertisement);
                     fresh.policy = AuthPolicy::Gh;
                     fresh.operation = "fresh".into();
-                    finish(endpoint.client.prepare(fresh, &CancellationToken::new()).await.unwrap()).await;
+                    finish(endpoint.client.prepare_budget_for_transition(fresh, &CancellationToken::new(), &mut endpoint.client.budget(), &mut None).await.unwrap()).await;
                     let requests = seen.lock().unwrap().clone();
                     assert_eq!(requests.len(), 2);
                     assert_eq!(requests[0].0, false);
@@ -430,7 +432,12 @@ printf 'username=fixture\\npassword=%s\\n\\n' \"$token\"\n",
                         finish(
                             endpoint
                                 .client
-                                .prepare(request, &CancellationToken::new())
+                                .prepare_budget_for_transition(
+                                    request,
+                                    &CancellationToken::new(),
+                                    &mut endpoint.client.budget(),
+                                    &mut None,
+                                )
                                 .await
                                 .unwrap(),
                         )
@@ -546,9 +553,11 @@ printf 'username=fixture\\npassword=%s\\n\\n' \"$token\"\n",
                         finish(
                             endpoint
                                 .client
-                                .prepare(
+                                .prepare_budget_for_transition(
                                     input(&server, GitService::UploadPackAdvertisement),
                                     &CancellationToken::new(),
+                                    &mut endpoint.client.budget(),
+                                    &mut None,
                                 )
                                 .await
                                 .unwrap(),
@@ -589,7 +598,12 @@ printf 'username=fixture\\npassword=%s\\n\\n' \"$token\"\n",
                         request.policy = AuthPolicy::Gh;
                         let failure = endpoint
                             .client
-                            .prepare(request, &CancellationToken::new())
+                            .prepare_budget_for_transition(
+                                request,
+                                &CancellationToken::new(),
+                                &mut endpoint.client.budget(),
+                                &mut None,
+                            )
                             .await
                             .err().expect("expected failure");
                         assert_eq!(failure.code, ErrorCode::Authentication);
@@ -620,9 +634,11 @@ printf 'username=fixture\\npassword=%s\\n\\n' \"$token\"\n",
                         .unwrap();
                         let prepared = endpoint
                             .client
-                            .prepare(
+                            .prepare_budget_for_transition(
                                 input(&server, GitService::UploadPackAdvertisement),
                                 &CancellationToken::new(),
+                                &mut endpoint.client.budget(),
+                                &mut None,
                             )
                             .await
                             .unwrap();
@@ -684,13 +700,20 @@ printf 'username=fixture\\npassword=%s\\n\\n' \"$token\"\n",
                         )
                         .unwrap();
                         let cancellation=CancellationToken::new();
-                        let first = endpoint.client.prepare(
+                        let (mut first_budget, mut second_budget) =
+                            (endpoint.client.budget(), endpoint.client.budget());
+                        let (mut first_challenge, mut second_challenge) = (None, None);
+                        let first = endpoint.client.prepare_budget_for_transition(
                             input(&source, GitService::UploadPackAdvertisement),
                             &cancellation,
+                            &mut first_budget,
+                            &mut first_challenge,
                         );
-                        let second = endpoint.client.prepare(
+                        let second = endpoint.client.prepare_budget_for_transition(
                             input(&source, GitService::UploadPackAdvertisement),
                             &cancellation,
+                            &mut second_budget,
+                            &mut second_challenge,
                         );
                         let (first, second) = tokio::join!(first, second);
                         let mut successes = 0;

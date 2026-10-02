@@ -42,7 +42,12 @@ fn delayed_helper_is_charged_to_interaction_not_allocation() {
         request.policy = AuthPolicy::Gh;
         let prepared = endpoint
             .client
-            .prepare(request, &CancellationToken::new())
+            .prepare_budget_for_transition(
+                request,
+                &CancellationToken::new(),
+                &mut endpoint.client.budget(),
+                &mut None,
+            )
             .await
             .expect("helper work must use interaction budget");
         drop(prepared);
@@ -102,9 +107,11 @@ fn active_io_custom_timeout_expires_delayed_headers() {
         .unwrap();
         let result = endpoint
             .client
-            .prepare(
+            .prepare_budget_for_transition(
                 input(&server, GitService::UploadPackAdvertisement),
                 &CancellationToken::new(),
+                &mut endpoint.client.budget(),
+                &mut None,
             )
             .await;
         assert!(matches!(
@@ -138,9 +145,11 @@ fn active_io_zero_allows_delayed_headers() {
         .unwrap();
         let result = endpoint
             .client
-            .prepare(
+            .prepare_budget_for_transition(
                 input(&server, GitService::UploadPackAdvertisement),
                 &CancellationToken::new(),
+                &mut endpoint.client.budget(),
+                &mut None,
             )
             .await;
         let prepared = result.expect("zero active I/O timeout must be disabled");
@@ -165,17 +174,21 @@ fn physical_capacity_wait_uses_allocation_deadline() {
         let mut endpoint = Endpoint::new(server.config(), None, config).unwrap();
         let held = endpoint
             .client
-            .prepare(
+            .prepare_budget_for_transition(
                 input(&server, GitService::UploadPackAdvertisement),
                 &CancellationToken::new(),
+                &mut endpoint.client.budget(),
+                &mut None,
             )
             .await
             .unwrap();
         let result = endpoint
             .client
-            .prepare(
+            .prepare_budget_for_transition(
                 input(&server, GitService::UploadPackAdvertisement),
                 &CancellationToken::new(),
+                &mut endpoint.client.budget(),
+                &mut None,
             )
             .await;
         assert!(matches!(
@@ -229,9 +242,11 @@ fn redirects_do_not_refill_network_budget() {
         .unwrap();
         let failed = endpoint
             .client
-            .prepare(
+            .prepare_budget_for_transition(
                 input(&server, GitService::UploadPackAdvertisement),
                 &CancellationToken::new(),
+                &mut endpoint.client.budget(),
+                &mut None,
             )
             .await;
         assert!(matches!(
@@ -270,10 +285,11 @@ fn open_can_shorten_but_cannot_disable_endpoint_network_timeout() {
         };
         let failed = endpoint
             .client
-            .prepare_open(
+            .prepare_budget_for_transition(
                 input(&server, GitService::UploadPackAdvertisement),
                 &CancellationToken::new(),
-                &deadlines,
+                &mut endpoint.client.budget_for_open(&deadlines),
+                &mut None,
             )
             .await;
         assert!(matches!(
@@ -286,10 +302,11 @@ fn open_can_shorten_but_cannot_disable_endpoint_network_timeout() {
         ));
         let prepared = endpoint
             .client
-            .prepare_open(
+            .prepare_budget_for_transition(
                 input(&server, GitService::UploadPackAdvertisement),
                 &CancellationToken::new(),
-                &Deadlines::default(),
+                &mut endpoint.client.budget_for_open(&Deadlines::default()),
+                &mut None,
             )
             .await
             .unwrap();
