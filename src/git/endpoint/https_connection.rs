@@ -35,6 +35,7 @@ use tokio_util::sync::CancellationToken;
 
 pub(crate) fn failure(code: ErrorCode) -> Failure {
     Failure {
+        detail: None,
         setup_cause: None,
         code,
         effect: Effect::None,
@@ -56,6 +57,7 @@ fn failure_from_io(error: &io::Error) -> Failure {
     };
     Failure {
         code,
+        detail: None,
         setup_cause,
         effect: Effect::None,
         facts: None,

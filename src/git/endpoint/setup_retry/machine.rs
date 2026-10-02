@@ -16,6 +16,22 @@ pub(crate) struct Final {
     pub(crate) attempts: u32,
 }
 
+impl Final {
+    /// Project the endpoint's known count into the wire failure without
+    /// changing the retry machine or inferring a count at the driver.
+    pub(crate) fn wire_failure(self) -> Failure {
+        let mut failure = self.failure;
+        if self.attempt > 1 || super::classify(&failure, super::Phase::Setup) == Verdict::Retry {
+            let detail = failure.detail.get_or_insert_with(Box::default);
+            detail.retry_attempt = Some(gwz_transport::protocol::RetryAttempt {
+                attempt: i64::from(self.attempt),
+                attempts: i64::from(self.attempts),
+            });
+        }
+        failure
+    }
+}
+
 /// Whether a member that wants a connection may start an attempt now.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Decision {

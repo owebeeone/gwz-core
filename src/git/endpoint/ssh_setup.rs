@@ -379,6 +379,7 @@ pub(crate) fn setup_is_reusable(result: &Result<(), Failure>) -> bool {
 }
 fn timeout_failure(reason: TimeoutReason) -> Failure {
     Failure {
+        detail: None,
         setup_cause: Some(reason.setup_cause()),
         facts: None,
         code: ErrorCode::Timeout,
@@ -407,6 +408,7 @@ fn failure(kind: io::ErrorKind) -> Failure {
         _ => ErrorCode::Io,
     };
     Failure {
+        detail: None,
         setup_cause: match kind {
             io::ErrorKind::ConnectionRefused => Some(SetupFailureCause::ConnectionRefused),
             io::ErrorKind::NotFound => Some(SetupFailureCause::NotFound),

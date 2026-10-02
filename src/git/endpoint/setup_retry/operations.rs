@@ -68,6 +68,7 @@ cfg_if::cfg_if! {
 
         fn stall() -> Failure {
             Failure {
+                detail: None,
                 setup_cause: Some(SetupFailureCause::Stall),
                 code: ErrorCode::Timeout,
                 effect: Effect::None,

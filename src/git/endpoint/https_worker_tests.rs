@@ -58,5 +58,12 @@ cfg_if::cfg_if! { if #[cfg(unix)] {
 #[path = "https_auth_integration_tests.rs"]
 mod auth_integration;
 
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        #[path = "https_worker_tests/configured_helpers.rs"]
+        mod configured_helpers;
+    }
+}
+
 #[path = "https_lifecycle_tests.rs"]
 mod lifecycle;

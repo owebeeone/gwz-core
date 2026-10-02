@@ -33,6 +33,7 @@ impl PlacementEndpoint {
                             state,
                             MessageKind::Failed,
                             Some(Failure {
+                                detail: None,
                                 setup_cause: None,
                                 code: ErrorCode::Io,
                                 effect: Effect::Possible,
@@ -68,6 +69,7 @@ impl PlacementEndpoint {
                             state,
                             MessageKind::Failed,
                             Some(Failure {
+                                detail: None,
                                 setup_cause: None,
                                 code: ErrorCode::Io,
                                 effect: Effect::Possible,

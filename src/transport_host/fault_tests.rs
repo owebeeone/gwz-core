@@ -137,6 +137,7 @@ impl Harness {
                 stream_id: open.1.stream_id,
                 kind: MessageKind::Failed,
                 failed: Some(Failure {
+                    detail: None,
                     setup_cause: None,
                     code: gwz_transport::protocol::ErrorCode::RepositoryRefused,
                     effect: Effect::None,
@@ -156,6 +157,7 @@ impl Harness {
                 stream_id: open.1.stream_id,
                 kind: MessageKind::OpenFailed,
                 open_failed: Some(Failure {
+                    detail: None,
                     setup_cause: None,
                     code: gwz_transport::protocol::ErrorCode::Cancelled,
                     effect: Effect::None,

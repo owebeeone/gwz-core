@@ -80,6 +80,7 @@ cfg_if::cfg_if! {
 
         fn stamped(reason: TimeoutReason) -> Failure {
             Failure {
+                detail: None,
                 setup_cause: Some(reason.setup_cause()),
                 code: ErrorCode::Timeout,
                 effect: Effect::None,
@@ -197,6 +198,7 @@ cfg_if::cfg_if! {
         fn authentication_failure_stays_authentication() {
             let reported = failure_io(
                 Failure {
+                    detail: None,
                     setup_cause: None,
                     code: ErrorCode::Authentication,
                     effect: Effect::None,

@@ -109,6 +109,7 @@ impl RequestContext {
         let early = |code| {
             io::Error::other(HttpsOpenFailure {
                 failure: Failure {
+                    detail: None,
                     setup_cause: None,
                     code,
                     effect: Effect::None,
@@ -209,6 +210,7 @@ impl RequestContext {
                     selected = AuthPolicy::Gh;
                     result = if self.validate(&self.meta, &self.operation).is_err() {
                         Err(Failure {
+                            detail: None,
                             setup_cause: None,
                             code: ErrorCode::Cancelled,
                             effect: Effect::None,
@@ -242,10 +244,7 @@ impl RequestContext {
                 if let Some(value) = &failure.facts {
                     facts(value);
                 }
-                let attempts = setup_retry::spent_budget(
-                    &failure,
-                    self.session.max_retries(&self.meta.request_id),
-                );
+                let attempts = setup_retry::reported_attempt(&failure);
                 Err(io::Error::other(HttpsOpenFailure {
                     failure,
                     anonymous,
@@ -441,7 +440,7 @@ pub(crate) struct HttpsOpenFailure {
     pub(crate) failure: gwz_transport::protocol::Failure,
     pub(crate) anonymous: Option<HttpsAttemptReceipt>,
     /// The attempt the failure ended, as `(N, M)`, when the failure alone
-    /// says so (the retry plan's §5; `setup_retry::spent_budget`).
+    /// reports it (the retry plan's §5; `setup_retry::reported_attempt`).
     pub(crate) attempts: Option<(u32, u32)>,
 }
 impl HttpsOpenFailure {

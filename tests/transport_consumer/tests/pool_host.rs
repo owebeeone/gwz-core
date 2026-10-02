@@ -49,6 +49,7 @@ fn host_clock_keeps_large_nonzero_origin_for_connect_budget() {
                 code: ErrorCode::Io,
                 effect: Effect::None,
                 facts: None,
+                detail: None,
                 setup_cause: None,
             }),
         )

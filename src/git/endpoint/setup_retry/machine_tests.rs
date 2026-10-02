@@ -8,6 +8,7 @@ const JITTER: u64 = 7;
 
 fn failure(code: ErrorCode, setup_cause: Option<SetupFailureCause>) -> Failure {
     Failure {
+        detail: None,
         setup_cause,
         code,
         effect: Effect::None,

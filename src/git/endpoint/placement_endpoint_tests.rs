@@ -233,6 +233,7 @@ impl super::super::ssh_pool::Resource for Setting {
             return Poll::Pending;
         }
         Poll::Ready(Err(Failure {
+            detail: None,
             setup_cause: None,
             code: ErrorCode::Capacity,
             effect: Effect::None,

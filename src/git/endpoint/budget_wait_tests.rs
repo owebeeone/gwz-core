@@ -51,6 +51,7 @@ impl Connector for Counted {
 impl Resource for Refused {
     fn poll_connected(&mut self, _: &mut Context<'_>) -> Poll<Result<Option<Identity>, Failure>> {
         Poll::Ready(Err(Failure {
+            detail: None,
             setup_cause: None,
             code: ErrorCode::Unavailable,
             effect: Effect::None,

@@ -52,6 +52,7 @@ impl PlacementEndpoint {
                     state,
                     MessageKind::OpenFailed,
                     Some(Failure {
+                        detail: None,
                         setup_cause: None,
                         code: ErrorCode::Cancelled,
                         effect: Effect::None,
@@ -69,6 +70,7 @@ impl PlacementEndpoint {
                     state,
                     MessageKind::IdentityCheckFailed,
                     Some(Failure {
+                        detail: None,
                         setup_cause: None,
                         code: ErrorCode::Cancelled,
                         effect: Effect::None,
@@ -91,6 +93,7 @@ impl PlacementEndpoint {
                     state,
                     MessageKind::OpenFailed,
                     Some(Failure {
+                        detail: None,
                         setup_cause: None,
                         code: ErrorCode::Cancelled,
                         effect: Effect::None,
@@ -145,6 +148,7 @@ impl PlacementEndpoint {
                 &state,
                 MessageKind::OpenFailed,
                 Some(Failure {
+                    detail: None,
                     setup_cause: None,
                     code: ErrorCode::InvalidRequest,
                     effect: Effect::None,
@@ -189,7 +193,7 @@ impl PlacementEndpoint {
             Decision::Finish(last) => {
                 let failure = Failure {
                     facts: None,
-                    ..last.failure
+                    ..last.wire_failure()
                 };
                 self.fail_open(&queued.key, failure);
                 Ok(())
@@ -230,6 +234,7 @@ impl PlacementEndpoint {
                 self.fail_open(
                     &key,
                     Failure {
+                        detail: None,
                         setup_cause: None,
                         code: ErrorCode::InvalidRequest,
                         effect: Effect::None,
@@ -327,6 +332,7 @@ impl PlacementEndpoint {
                     &state,
                     MessageKind::IdentityCheckFailed,
                     Some(Failure {
+                        detail: None,
                         setup_cause: None,
                         code: ErrorCode::InvalidRequest,
                         effect: Effect::None,

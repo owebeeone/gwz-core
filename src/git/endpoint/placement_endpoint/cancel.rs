@@ -46,6 +46,7 @@ impl PlacementEndpoint {
                     MessageKind::Failed
                 },
                 Some(Failure {
+                    detail: None,
                     setup_cause: None,
                     code: ErrorCode::Cancelled,
                     effect: Effect::None,
@@ -84,6 +85,7 @@ impl PlacementEndpoint {
                             MessageKind::Failed
                         },
                         Some(Failure {
+                            detail: None,
                             setup_cause: None,
                             code: ErrorCode::CarrierLost,
                             effect: Effect::None,

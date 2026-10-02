@@ -24,6 +24,7 @@ impl PlacementEndpoint {
                             state,
                             MessageKind::IdentityCheckFailed,
                             Some(Failure {
+                                detail: None,
                                 setup_cause: None,
                                 code: ErrorCode::Timeout,
                                 effect: Effect::None,
@@ -83,6 +84,7 @@ impl PlacementEndpoint {
                     state,
                     MessageKind::IdentityCheckFailed,
                     Some(Failure {
+                        detail: None,
                         setup_cause: None,
                         code,
                         effect: Effect::None,
@@ -116,6 +118,7 @@ impl PlacementEndpoint {
                 self.fail_open(
                     &key,
                     Failure {
+                        detail: None,
                         setup_cause: None,
                         code: ErrorCode::Timeout,
                         effect: Effect::None,
@@ -137,6 +140,7 @@ impl PlacementEndpoint {
                 self.fail_open(
                     &job.key,
                     Failure {
+                        detail: None,
                         setup_cause: None,
                         code: ErrorCode::Timeout,
                         effect: Effect::None,
@@ -222,7 +226,7 @@ impl PlacementEndpoint {
                 &key,
                 Failure {
                     facts: failure.facts,
-                    ..last.failure
+                    ..last.wire_failure()
                 },
             ),
             Outcome::Return => self.fail_open(&key, failure),

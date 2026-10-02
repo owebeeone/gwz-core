@@ -73,6 +73,7 @@ impl<C: Connector> Connector for ReservedConnector<C> {
     ) -> Result<Self::Resource, Failure> {
         let host = key.host.clone();
         let reservation = self.authority.try_reserve(host).ok_or(Failure {
+            detail: None,
             setup_cause: None,
             code: ErrorCode::Capacity,
             effect: Effect::None,
@@ -100,6 +101,7 @@ impl<C: Connector> Connector for ReservedConnector<C> {
             .authority
             .try_reserve(key.host.clone())
             .ok_or(Failure {
+                detail: None,
                 setup_cause: None,
                 code: ErrorCode::Capacity,
                 effect: Effect::None,
@@ -274,6 +276,7 @@ mod tests {
         ) -> Result<Self::Resource, Failure> {
             if self.fail {
                 return Err(Failure {
+                    detail: None,
                     setup_cause: None,
                     code: ErrorCode::Io,
                     effect: Effect::None,

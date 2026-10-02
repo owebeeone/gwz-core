@@ -260,6 +260,7 @@ fn open_failure(error: &io::Error) -> (Failure, Phase) {
         _ => ErrorCode::Io,
     };
     let failure = Failure {
+        detail: None,
         setup_cause: None,
         code,
         effect: Effect::None,

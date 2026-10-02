@@ -4,6 +4,7 @@ use gwz_transport::protocol::Effect;
 
 fn failure(code: ErrorCode, setup_cause: Option<SetupFailureCause>) -> Failure {
     Failure {
+        detail: None,
         setup_cause,
         code,
         effect: Effect::None,
@@ -157,29 +158,27 @@ fn the_pool_errors_that_end_a_started_setup_have_the_setup_phase() {
 }
 
 #[test]
-fn only_a_spent_budget_shows_its_attempt_on_the_failure_alone() {
-    for spent in [
-        failure(ErrorCode::Timeout, Some(SetupFailureCause::Stall)),
-        failure(ErrorCode::Timeout, Some(SetupFailureCause::Aggregate)),
-        failure(
-            ErrorCode::Unavailable,
-            Some(SetupFailureCause::ConnectionRefused),
-        ),
-    ] {
-        assert_eq!(spent_budget(&spent, 3), Some((4, 4)), "{spent:?}");
-        assert_eq!(spent_budget(&spent, 0), Some((1, 1)), "{spent:?}");
+fn display_uses_only_the_endpoint_reported_attempt() {
+    use gwz_transport::protocol::{FailureDetail, RetryAttempt};
+    let mut reported = failure(ErrorCode::Io, None);
+    assert_eq!(reported_attempt(&reported), None);
+    reported.detail = Some(Box::new(FailureDetail {
+        retry_attempt: Some(RetryAttempt {
+            attempt: 2,
+            attempts: 5,
+        }),
+        ..FailureDetail::default()
+    }));
+    assert_eq!(reported_attempt(&reported), Some((2, 5)));
+    for (attempt, attempts) in [(0, 5), (-1, 5), (6, 5), (1, i64::MAX)] {
+        reported.detail.as_mut().unwrap().retry_attempt = Some(RetryAttempt { attempt, attempts });
+        assert_eq!(reported_attempt(&reported), None);
     }
-    // These can end an earlier attempt, or an open outside setup: the
-    // failure alone does not say which attempt it ended.
-    for other in [
-        failure(ErrorCode::Io, None),
-        failure(ErrorCode::Authentication, None),
-        failure(ErrorCode::Timeout, None),
-        failure(ErrorCode::Timeout, Some(SetupFailureCause::Interaction)),
-        failure(ErrorCode::Unavailable, Some(SetupFailureCause::NotFound)),
-    ] {
-        assert_eq!(spent_budget(&other, 3), None, "{other:?}");
-    }
+    // A timeout's code cannot supply an endpoint count that is absent.
+    assert_eq!(
+        reported_attempt(&failure(ErrorCode::Timeout, Some(SetupFailureCause::Stall))),
+        None
+    );
 }
 
 #[test]

@@ -140,6 +140,7 @@ APPROVED_RUST_PATH_EDGES = {
     ("git/endpoint/https_worker_tests.rs", "https_worker_tests/failure.rs"),
     ("git/endpoint/https_worker_tests.rs", "https_worker_tests/proxy.rs"),
     ("git/endpoint/https_worker_tests.rs", "https_worker_tests/pool.rs"),
+    ("git/endpoint/https_worker_tests.rs", "https_worker_tests/configured_helpers.rs"),
     # 2026-10-02, TR2.15: the tests/transport_ssh crate is folded into the
     # candidate tests, so the placement and worker checks it held sit beside
     # their modules, and the SSH and HTTPS fixtures are each one test module

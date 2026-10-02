@@ -14,6 +14,7 @@ const OPERATION: &str = "operation";
 
 fn failure(code: ErrorCode, setup_cause: Option<SetupFailureCause>) -> Failure {
     Failure {
+        detail: None,
         setup_cause,
         code,
         effect: Effect::None,
@@ -312,6 +313,18 @@ fn max_retries_zero_finishes_on_the_first_stall_and_one_allows_two_attempts() {
             "--max-retries {max_retries}"
         );
         assert_eq!(open_failure(&terminals[0]), shape(&stall()));
+        let count = terminals[0]
+            .open_failed
+            .as_ref()
+            .unwrap()
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.retry_attempt.as_ref())
+            .unwrap();
+        assert_eq!(
+            (count.attempt, count.attempts),
+            (attempts as i64, attempts as i64)
+        );
     }
 }
 

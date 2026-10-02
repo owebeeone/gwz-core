@@ -39,6 +39,7 @@ impl Connector for NativeConnector {
                 pump: None,
             })
             .ok_or(Failure {
+                detail: None,
                 setup_cause: None,
                 facts: None,
                 code: ErrorCode::Io,

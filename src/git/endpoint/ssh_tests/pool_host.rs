@@ -38,6 +38,7 @@ impl Resource for Fake {
         let state = self.0.lock().unwrap();
         if state.fail_connect {
             Poll::Ready(Err(Failure {
+                detail: None,
                 setup_cause: None,
                 facts: None,
                 code: ErrorCode::Io,

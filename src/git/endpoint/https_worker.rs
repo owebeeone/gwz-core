@@ -228,6 +228,7 @@ fn body_channel() -> (mpsc::Sender<std::io::Result<Bytes>>, RequestBody) {
 }
 fn with_facts(code: ErrorCode, effect: Effect, facts: &Facts) -> Failure {
     Failure {
+        detail: None,
         setup_cause: None,
         code,
         effect,

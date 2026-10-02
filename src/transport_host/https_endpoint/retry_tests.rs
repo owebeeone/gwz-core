@@ -172,6 +172,17 @@ fn a_dead_keys_first_wave_is_its_per_host_limit_and_then_one_probe_at_a_time() {
         let finished = settle(&mut endpoint, 3_000).await;
         assert_eq!(accepted.load(Ordering::Acquire), 4);
         assert_eq!(finished.len(), 6);
+        for message in &finished {
+            let count = message
+                .open_failed
+                .as_ref()
+                .unwrap()
+                .detail
+                .as_ref()
+                .and_then(|detail| detail.retry_attempt.as_ref())
+                .unwrap();
+            assert_eq!((count.attempt, count.attempts), (3, 3));
+        }
         assert!(
             finished
                 .iter()

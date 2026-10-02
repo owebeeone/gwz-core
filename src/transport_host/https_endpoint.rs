@@ -300,6 +300,7 @@ impl HttpsEndpoint {
                             .ok()
                             .map(|prepared| prepared.opened.facts.clone());
                         result = Err(Failure {
+                            detail: None,
                             setup_cause: None,
                             code: ErrorCode::Cancelled,
                             effect: Effect::None,
@@ -580,6 +581,7 @@ fn cancel_entry(entry: &mut Entry) {
         // Opened was published, but the initiator supplied no POST data yet.
         if let Some(peer) = &entry.peer {
             let _ = peer.fail_terminal(Failure {
+                detail: None,
                 setup_cause: None,
                 code: ErrorCode::Cancelled,
                 effect: Effect::None,
@@ -597,6 +599,7 @@ fn cancelled_open(envelope: &Envelope, facts: Option<Facts>) -> Envelope {
         stream_id: envelope.stream_id,
         kind: MessageKind::OpenFailed,
         open_failed: Some(Failure {
+            detail: None,
             setup_cause: None,
             code: ErrorCode::Cancelled,
             effect: Effect::None,

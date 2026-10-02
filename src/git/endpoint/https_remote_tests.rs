@@ -96,6 +96,7 @@ fn open_failure(
 ) -> git2::Error {
     let failure = crate::transport_host::HttpsOpenFailure {
         failure: gwz_transport::protocol::Failure {
+            detail: None,
             setup_cause: None,
             code: gwz_transport::protocol::ErrorCode::RepositoryRefused,
             effect: gwz_transport::protocol::Effect::None,
@@ -118,6 +119,7 @@ fn a_failed_open_names_a_timeouts_origin_and_the_attempt_it_ended() {
     let message = |setup_cause, attempts| {
         let failure = crate::transport_host::HttpsOpenFailure {
             failure: gwz_transport::protocol::Failure {
+                detail: None,
                 setup_cause,
                 code: gwz_transport::protocol::ErrorCode::Timeout,
                 effect: gwz_transport::protocol::Effect::None,

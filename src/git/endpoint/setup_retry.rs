@@ -86,6 +86,7 @@ pub(crate) fn phase_of(error: &pool::Error) -> Phase {
 /// before a setup started, which §4 returns once and never retries.
 pub(crate) fn allocation_timeout() -> Failure {
     Failure {
+        detail: None,
         setup_cause: Some(SetupFailureCause::Allocation),
         code: ErrorCode::Timeout,
         effect: Effect::None,
@@ -110,24 +111,13 @@ pub(crate) fn timeout_origin(cause: Option<SetupFailureCause>) -> Option<&'stati
 
 /// The attempt a final failure ended, as `(N, M)` for its display's
 /// `attempt N of M` (the retry plan's §5), when the failure alone says so.
-/// A setup timeout whose origin is stall or aggregate, and a refused
-/// connection, can end an open only once its key has spent the budget of
-/// `max_retries`: they are retried until then, and nothing outside a setup
-/// reports them. Any other failure may end an earlier attempt, and the
-/// transport's failure carries no attempt number to tell which.
-pub(crate) fn spent_budget(failure: &Failure, max_retries: u32) -> Option<(u32, u32)> {
-    let only_retried = matches!(
-        (failure.code, failure.setup_cause),
-        (
-            ErrorCode::Timeout,
-            Some(SetupFailureCause::Stall | SetupFailureCause::Aggregate)
-        ) | (
-            ErrorCode::Unavailable,
-            Some(SetupFailureCause::ConnectionRefused)
-        )
-    );
-    let attempts = max_retries.saturating_add(1);
-    only_retried.then_some((attempts, attempts))
+/// The endpoint's reported count. No cause or driver-local retry budget
+/// substitutes for a missing count; malformed internal fixtures fail closed.
+pub(crate) fn reported_attempt(failure: &Failure) -> Option<(u32, u32)> {
+    let count = failure.detail.as_ref()?.retry_attempt.as_ref()?;
+    let attempt = u32::try_from(count.attempt).ok()?;
+    let attempts = u32::try_from(count.attempts).ok()?;
+    (attempt > 0 && attempt <= attempts).then_some((attempt, attempts))
 }
 
 /// One member's attempts as its one diagnostic row: each intermediate

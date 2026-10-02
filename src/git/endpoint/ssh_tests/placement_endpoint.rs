@@ -32,6 +32,7 @@ fn endpoint() -> Endpoint {
             _: Option<u64>,
         ) -> Result<Self::Resource, gwz_transport::protocol::Failure> {
             Err(gwz_transport::protocol::Failure {
+                detail: None,
                 setup_cause: None,
                 code: gwz_transport::protocol::ErrorCode::Unavailable,
                 effect: gwz_transport::protocol::Effect::None,
@@ -305,6 +306,7 @@ fn message_deadlines_tighten_pool_policy_and_cannot_disable_a_positive_policy() 
         ) -> Result<Self::Resource, gwz_transport::protocol::Failure> {
             self.0.lock().unwrap().push(deadline);
             Err(gwz_transport::protocol::Failure {
+                detail: None,
                 setup_cause: None,
                 code: gwz_transport::protocol::ErrorCode::Unavailable,
                 effect: gwz_transport::protocol::Effect::None,
@@ -407,6 +409,7 @@ fn open_timeout_replies_before_blocked_physical_work_finishes() {
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .unwrap();
             Err(gwz_transport::protocol::Failure {
+                detail: None,
                 setup_cause: None,
                 code: gwz_transport::protocol::ErrorCode::Unavailable,
                 effect: gwz_transport::protocol::Effect::None,

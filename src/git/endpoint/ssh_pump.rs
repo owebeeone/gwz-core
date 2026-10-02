@@ -301,6 +301,7 @@ impl<C: ChannelIo> SshPump<C> {
                     if refused {
                         self.endpoint
                             .fail_terminal(Failure {
+                                detail: None,
                                 setup_cause: None,
                                 code: ErrorCode::RepositoryRefused,
                                 effect: Effect::None,

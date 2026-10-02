@@ -24,17 +24,6 @@ impl Session {
             endpoint.set_max_retries(request, max_retries);
         }
     }
-    /// The request's `--max-retries`, as its admission installed it.
-    pub(in crate::transport_host) fn max_retries(&self, request: &str) -> u32 {
-        self.state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .registrations
-            .get(request)
-            .map_or(setup_retry::DEFAULT_MAX_RETRIES, |record| {
-                record.max_retries
-            })
-    }
     pub(in crate::transport_host) async fn ready(&self) -> ModelResult<()> {
         let owner = self
             .state
@@ -71,6 +60,7 @@ impl Session {
             // arrives. Complete its independent blocking waiter before retiring
             // the stream so cancellation never relies on a peer acknowledgment.
             entry.reply.complete(Err(Failure {
+                detail: None,
                 setup_cause: None,
                 code: gwz_transport::protocol::ErrorCode::Cancelled,
                 effect: entry.opening_cancel_effect,
@@ -128,5 +118,23 @@ impl Session {
             }
         })
         .await
+    }
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        impl Session {
+            /// Read the admission record for its budget-installation test.
+            pub(in crate::transport_host) fn max_retries(&self, request: &str) -> u32 {
+                self.state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .registrations
+                    .get(request)
+                    .map_or(setup_retry::DEFAULT_MAX_RETRIES, |record| {
+                        record.max_retries
+                    })
+            }
+        }
     }
 }

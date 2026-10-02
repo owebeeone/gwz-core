@@ -46,7 +46,7 @@ impl Session {
             extras,
         )
         .map_err(|failure| {
-            let attempts = setup_retry::spent_budget(&failure, self.max_retries(request));
+            let attempts = setup_retry::reported_attempt(&failure);
             failure_io(failure, attempts)
         })
     }

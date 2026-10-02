@@ -75,6 +75,7 @@ pub(super) fn unique() -> ModelResult<String> {
 }
 fn protocol_failure(code: gwz_transport::protocol::ErrorCode) -> Failure {
     Failure {
+        detail: None,
         setup_cause: None,
         code,
         effect: Effect::None,

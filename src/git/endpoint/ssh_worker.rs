@@ -255,6 +255,7 @@ impl EndpointOpenFailure {
             error.kind(),
             Self {
                 failure: Failure {
+                    detail: None,
                     setup_cause,
                     code,
                     effect,

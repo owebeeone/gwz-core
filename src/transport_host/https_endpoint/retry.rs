@@ -128,7 +128,7 @@ impl Retries {
             // failure another open's setup recorded.
             Outcome::Finish(last) => Failure {
                 facts: failure.facts,
-                ..last.failure
+                ..last.wire_failure()
             },
             Outcome::Return => failure,
         };
@@ -182,7 +182,7 @@ impl HttpsEndpoint {
                     entry,
                     Failure {
                         facts: None,
-                        ..last.failure
+                        ..last.wire_failure()
                     },
                 );
             }
