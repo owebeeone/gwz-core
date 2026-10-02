@@ -33,8 +33,31 @@ workers are terminated before cleanup and cannot write afterward. Only one
 fixture certificate is proposed; no machineRoot, elevation, existing keychain
 unlock, policy bypass or live account is included.
 
-Still deferred: native service/both-agents, HOME edges, Pageant collision/cross-
-user/confirmation/HWND reuse, pipe/helper Job Object partial/cancel I/O, provider
-cancellation ownership, actual TLS/EPA, helper identity, Digest/POST, measured
-zones/redirects, Linux baseline. No freeze until required physical proof and
-filed independent Consistency/Safety+Surface reports on root's settled tuple.
+The second batch below advances the initial deferred list. No freeze until
+required physical proof and filed independent Consistency/Safety+Surface reports
+on root's settled tuple.
+
+Root preserved the initial partial package at root fdfa9e2c/core49714994/
+evidence70f48114 with exact core gate and tracked archive verification passing.
+The authorized second batch is in private
+[2026-10-03-tr1-8-primitives](../../gwz-core-evidence/campaigns/transport-qualification/runs/2026-10-03-tr1-8-primitives/README.md),
+external E:/gwz-tests/tr1-8-primitives-20261003-61-9c481a. Prior run unchanged.
+Executed: HOME edges reveal empty/Unicode/first-existing-home trust refusal and
+relative-path acceptance requiring compatibility dispositions; actual Pageant
+deferred-decryption prompt timeout and mapping lifetime through owned process
+reap; collision/stale/replacement-owner guards; native owned pipe partial reply
+and overlapped cancellation completion before storage release; Python direct,
+shell, GUI and nested Job Object assignment/partial-output/all-descendant reap;
+SSPI explicit/default first legs and between-leg owned worker cancellation;
+Schannel peer DER/RSA signature hashes in TLS1.2+1.3 with independent digest
+checks and a unique process-pin refusal control. WDigest synthetic Unicode/ANSI
+credentials refuse acquire; direct WinHTTP Digest GET/POST stay401/no offers.
+Failures and bounded limits are retained; no global provider-unavailability claim.
+
+Residual: native service/both-agents and cross-SID provider/account scope;
+numeric HWND reuse/concurrency; full helper/default identity isolation and
+in-flight provider cancellation; non-RSA/PSS/MD5/transport TLS adapter/EPA;
+Digest interface/provider disposition and released HTTPS/POST; proxy grammar/
+snapshot and zones/redirects; Mac approved-trust receipt and Linux assignment.
+Mac approval remains unanswered, Windows trust held, no trust mutation or new
+guardian variant. No product implementation or Git/GWZ mutation in this batch.
