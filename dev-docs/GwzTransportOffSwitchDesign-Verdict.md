@@ -64,12 +64,16 @@ The operator can reverse any of these before TR2.5:
 - **D3.** With native selected, 1.0.17's defaults apply: `--jobs` 50, `--max-per-host` 8, and `--ssh-timeout` 3 s in gwz-cli. In gwz-py the libgit2 timeout is one clock for the whole process, 9 s unless it is set.
 - **E3.** In 1.1.0 the drivers fill those defaults in. gwz-py's `Client(max_connections_per_host=None)` keyword postdates 1.0.17. TR2.11's callers without a host context run at 100 and 32. In 1.2.0 the session host fills them.
 
-## Open for the operator
+## The operator's answers, 2026-10-02 ("All as recommended")
 
-- **OQ1.** Silencing the note. Recommended: no.
-- **OQ2.** A gwz-core module, or a crate. Recommended: the module.
-- **OQ3.** Four 1.2.0 items for the server design's next revision. Recommended: all four.
-- **OQ4.** A consumer-build row in S7.3 (1.1.0). Recommended: yes.
+D2, D3 and E3 are kept, and each question is answered as recommended:
+
+- **OQ1.** There is no way to silence the note.
+- **OQ2.** It is a gwz-core module, not a crate.
+- **OQ3.** All four items go to the server design's next revision.
+- **OQ4.** S7.3 (1.1.0) gains a consumer-build row with `GWZ_TRANSPORT=native`. Amendment 2's next revision adds it.
+
+TR2.5 may start.
 
 ## Follow-ons
 
