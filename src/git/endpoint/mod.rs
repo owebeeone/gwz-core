@@ -6,6 +6,7 @@ pub(crate) mod agent_job;
 pub(crate) mod agent_socket;
 pub(crate) mod git_turns;
 pub(crate) mod placement_endpoint;
+pub(crate) mod setup_retry;
 pub(crate) mod ssh_admission;
 pub(crate) mod ssh_channel;
 pub(crate) mod ssh_connection;
