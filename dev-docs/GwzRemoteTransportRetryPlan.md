@@ -15,6 +15,10 @@ the acceptance evidence.
 Amended 2026-09-28 by
 [`GwzConnectionReuseDesign.md`](../../dev-docs/GwzConnectionReuseDesign.md).
 This document remains authoritative only as amended for §3 item 7, §6 and S1.4.
+Amended 2026-10-02 by
+[`GwzTransportReleasePlanAmendment-2.md`](GwzTransportReleasePlanAmendment-2.md)
+revision 6. Its §4 sentence on what Closed stops, its §5 Cold state and two
+S3.1 test sentences read as that amendment's §3.20 (OD18) states.
 
 ## 1. Outcome
 
@@ -483,3 +487,17 @@ The candidate amendment that stood here was withdrawn when the Python concurrenc
   to open a new connection, and may lease an eligible idle one. The note on the
   withdrawn Python concurrency amendment, that §3 item 7, §6 and S1.4 "stand as
   written", now says they stood until this amendment.
+- 2026-10-02: amended by
+  [`GwzTransportReleasePlanAmendment-2.md`](GwzTransportReleasePlanAmendment-2.md)
+  revision 6, §3.20, on the operator's decision OD18. In each operation a key's
+  first wave of setups starts in parallel, up to the operation's per-host
+  limit, as 1.0.17's connections do. The wave is the key's first attempt, and
+  the single-probe rules apply from its first retriable failure. §5's Cold
+  state, §4's sentence on what Closed stops and two S3.1 sentences read as that
+  section states. This reverses the single Cold probe that closed Safety
+  `[P2-4]`: the first wave is bounded, but it is not the equivalent mechanism
+  that finding asked for, and the operator accepts its handshakes on a dead key
+  or bad credentials for 1.0.17 parity, which the migration notes state. The
+  reuse design's §9, which the 2026-09-28 entry made §5's Cold state for the
+  transport host, is not amended. That design's next revision carries the first
+  wave into it, and into the session plan's CS7.23, before CS7.23 starts.

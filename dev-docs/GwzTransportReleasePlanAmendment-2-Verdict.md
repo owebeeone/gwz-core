@@ -112,6 +112,19 @@ Still to come:
     - the release definition still said "gh-only HTTPS".
   - All eight are applied without a further round. The same reviewer's [re-check](GwzTransportReleasePlanAmendment-2-ReviewSkim-5.md) closed all eight, and found one new P2, introduced by the P2-3 fix, and three new P3s. The P2: on 1.0.17 a challenge that offers only `Negotiate` never reaches a credential helper, and the logon session answers it, so a helper must not answer it first; a stale stored password there would fail the login, or lock the account. All four are applied. The [second re-check](GwzTransportReleasePlanAmendment-2-ReviewSkim-6.md) reported **GO**, with all four closed and nothing new. The amendment then hashes `807dda1e88b40203d2b5d8adb7efeeb5fd8dfb44c2d279359a4c1a854be63449`. Revision 5 carries a skim-review GO, not a dual-review GO.
 
+## Revision 6: Phase 2's added steps and OD18
+
+- **What it records,** after revision 5 was committed (gwz-core `19ee698f`):
+  - the steps Phase 2's implementation added, TR2.13–TR2.17 done, TR2.18–TR2.22 to come, and the split of `placement_endpoint.rs`;
+  - S6.2's follow-ups, done at gwz-py `766de53`;
+  - the operator's fourteen decisions of 2026-10-02 ("all as recommended"), and decision 14's known limitation.
+- **OD18, the cold start** (decision 1). In each operation a key's first wave of setups starts in parallel, up to the per-host limit, as 1.0.17's connections do. The wave is the key's first attempt, and the retry plan's single-probe rules apply from its first retriable failure. This amends the retry plan's §5 Cold state, its §4 sentence on what Closed stops, and two S3.1 sentences. It reverses the single Cold probe that closed the retry plan's Safety `[P2-4]`: the wave is bounded, but not the equivalent mechanism that finding asked for, and the operator accepts its handshakes on a dead key for parity. TR2.1 classifies a server's `MaxStartups` drop as retriable.
+- **Its review:** one skim review, as for revisions 3–5.
+  - [Skim review 7](GwzTransportReleasePlanAmendment-2-ReviewSkim-7.md) reported **GO** on revision 6 (`32c6ae18…`), with eight P3s and no P0–P2. Six are applied as given. P3-1 is applied with its Safety sentence reworded, as above. P3-7 is applied in part: the boundary between TR2.2 and TR2.22 is added, and the change to line 507's edge is disputed, since revision 5 already removes that edge.
+  - The same reviewer's [re-check](GwzTransportReleasePlanAmendment-2-ReviewSkim-8.md) (`0ac4f118…`) reported **GO**. All eight are closed and the dispute is upheld. Its two new P3s are applied: a wave setup still in flight when the key turns Healthy is governed by Healthy's rules, and §3.10 runs TR8.1 (1.1.0) and TR8.4 after TR2.1. Two nits are applied with them.
+  - The amendment then hashes `8a532c4ad38fe33f1fe15aeb0d90c45e6d45669e274c5fb3198f00c21db2601e`. Revision 6 carries a skim-review GO, not a dual-review GO.
+- **The other documents.** The retry plan's status and changelog record the amendment; the plan's changelog records revision 6. The reuse design's §9 and the session plan's CS7.23 are not amended; the reuse design's next revision carries OD18 into both before CS7.23 starts.
+
 ## Next action
 
-OD13–OD16 are decided, with OD10 and OD11 reversed. Revision 4 is committed (root `1292b0c`, gwz-core `fde46265`, gwz-py `b24204e`), and revision 5 is committed on its second re-check's GO, under the operator's go to commit. TR2.9 and TR2.10 are running, and the other lanes in the amendment's §3.13 under "What can start now" follow. TR2.9 is first: it covers the serialized closes, the measured blocker for 1.1.0.
+OD13–OD16 and OD18 are decided, with OD10 and OD11 reversed. Revisions 4 and 5 are committed, and revision 6 is committed on its re-check's GO, under the operator's go of 2026-10-02 ("Push, and all as recommended"). The split of `placement_endpoint.rs`, TR2.18, TR2.19 and TR2.21 are running, with the TR1.5 and TR1.6 design drafts. After the split merges, TR2.1 (with OD18) and TR2.20 follow; after TR1.6's GO, TR2.22.

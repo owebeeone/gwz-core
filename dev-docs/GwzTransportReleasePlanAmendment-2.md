@@ -1,6 +1,6 @@
 # GWZ transport release plan — amendment 2: 1.1.0 ships the transport on three platforms; the session host, reuse and the server move to 1.2.0
 
-Date: 2026-10-01; revision 4, 2026-10-02. Status: **accepted at SHA-256 `c5850e52227e9f27e7c989c417ea262d6f749e312593af3cbbc7baeeda468509` after [Consistency-2](GwzTransportReleasePlanAmendment-2-ReviewConsistency-2.md) and [Safety-2](GwzTransportReleasePlanAmendment-2-ReviewSafety-2.md) reported GO; this accepts the amendment text only**.
+Date: 2026-10-01; revisions 4–6, 2026-10-02. Status: **accepted at SHA-256 `c5850e52227e9f27e7c989c417ea262d6f749e312593af3cbbc7baeeda468509` after [Consistency-2](GwzTransportReleasePlanAmendment-2-ReviewConsistency-2.md) and [Safety-2](GwzTransportReleasePlanAmendment-2-ReviewSafety-2.md) reported GO; this accepts the amendment text only**.
 - This status sentence was added after that GO.
 - So were the corrections the reviewers cleared without a further round: Consistency-2's P3-A, P3-B and P3-C, and Safety-2's P3-10 and P3-11. The [verdict](GwzTransportReleasePlanAmendment-2-Verdict.md) records them.
 - Revision 1 applied [remediation plan 1](GwzTransportReleasePlanAmendment-2-RemPlan.md) after revision 0's reviews: [Consistency](GwzTransportReleasePlanAmendment-2-ReviewConsistency.md) and [Safety](GwzTransportReleasePlanAmendment-2-ReviewSafety.md), both NO-GO.
@@ -8,13 +8,14 @@ Date: 2026-10-01; revision 4, 2026-10-02. Status: **accepted at SHA-256 `c5850e5
 - On 2026-10-01 the operator decided OD14: its alternative, gwz-py's network operations on the per-operation transport entry in 1.1.0. Revision 3 applies it, with the 1.1.0 amendment's S6.1–S6.3 restored (§3.17) and the Python [design](../../gwz-py/dev-docs/GwzPyPerOperationTransportDesign.md) they point to. On the operator's instruction it skips the review loop, and one skim review checks it ([skim review](GwzTransportReleasePlanAmendment-2-ReviewSkim.md)).
 - On 2026-10-01 the operator decided OD15 under OD13's parity: the transport itself does what 1.0.17's native path does on Windows, and no native route stands in for it. Revision 4 applies it, with OD16's shape following it (§3.14), three Windows steps (TR4.8–TR4.10), and the server design's and session plan's sentences it changes (§3.18). It is skim-reviewed only, as revision 3 was ([skim review 2](GwzTransportReleasePlanAmendment-2-ReviewSkim-2.md) and its [re-check](GwzTransportReleasePlanAmendment-2-ReviewSkim-3.md)), because TR1.8's and TR4.10's own dual reviews carry the Windows designs.
 - On 2026-10-02 the operator decided three more: OD16's unbounded alternative, so the transport offers the logon session's default credentials to any host that asks, as 1.0.17 does; and OD10 and OD11 reversed, so the transport itself runs the user's configured credential helpers and signs with every agent key type 1.0.17 uses. Revision 5 applies them (§3.19). It is skim-reviewed only, as revisions 3 and 4 were.
+- Revision 6 records what Phase 2's implementation added (TR2.13–TR2.22 and the split of `placement_endpoint.rs`), the operator's decisions of 2026-10-02 on its follow-ups, and OD18, the cold start (§3.20). It is skim-reviewed only, as revisions 3–5 were.
 - OD17 is taken only if TR8.1 (1.1.0) misses.
 - Acceptance authorizes no implementation, commit, tag, push or publish.
 
 This amendment controls the [transport release plan](GwzTransportReleasePlan.md), as [amendment 1](GwzTransportReleasePlanAmendment.md), the [reuse design](../../dev-docs/GwzConnectionReuseDesign.md) and the [server design](../../dev-docs/GwzCoreServerDesign.md) left it, and named sections of the [session plan](../../dev-docs/GwzCoreSessionPlan.md) and the [crate map](../../dev-docs/GwzCoreSessionCrateMap.md).
 - It records the operator's decision of 2026-10-01, OD13: the release ships as two minor releases, **1.1.0, the transport**, and **1.2.0, the session release**, and 1.1.0 has **Windows parity**.
-- It records OD14, decided by the operator on 2026-10-01: gwz-py's network operations take the per-operation transport entry in 1.1.0 (§3.17). It records OD15, decided by the operator on 2026-10-01: Windows parity is built into the transport, not reached by native routes. OD16, how the transport answers a challenge for the logon session's default credentials, was decided on 2026-10-02, with OD10 and OD11 reversed onto the transport (§3.19). It names a fourth, OD17, to be taken if 1.1.0 misses its speed target.
-- It adds thirteen steps: TR1.8, TR2.9 to TR2.12, TR3.3, TR3.4, TR4.6 to TR4.10, and TR8.4. It restores the 1.1.0 amendment's S6.1–S6.3 for 1.1.0 (§3.17).
+- It records OD14, decided by the operator on 2026-10-01: gwz-py's network operations take the per-operation transport entry in 1.1.0 (§3.17). It records OD15, decided by the operator on 2026-10-01: Windows parity is built into the transport, not reached by native routes. OD16, how the transport answers a challenge for the logon session's default credentials, was decided on 2026-10-02, with OD10 and OD11 reversed onto the transport (§3.19). It names a fourth, OD17, to be taken if 1.1.0 misses its speed target. It records OD18, the cold start, decided by the operator on 2026-10-02 (§3.20).
+- It adds thirteen steps: TR1.8, TR2.9 to TR2.12, TR3.3, TR3.4, TR4.6 to TR4.10, and TR8.4. Revision 6 adds TR2.13 to TR2.22 and the split of `placement_endpoint.rs` (§3.20). It restores the 1.1.0 amendment's S6.1–S6.3 for 1.1.0 (§3.17).
 - It retires no accepted design and no step. It assigns each phase, or part of a phase, to one of the two releases.
 
 ## 1. Documents controlled
@@ -25,6 +26,7 @@ This amendment controls the [transport release plan](GwzTransportReleasePlan.md)
 - `gwz-core/dev-docs/GwzTransportReleasePlanAmendment.md`: §3.3 assigns each of its sections to a release. §3.19 changes its OD11 texts: §3.2's key-type row, §3.4's routed operations, TR2.8, §3.6's routed exit rows, §3.7's cell, §3.8's notes, §3.11's OD11, §3.12's risk, §3.13's out-of-scope bullet, §3.14's RSA sentence and §4's key-type rows.
 - `gwz-core/dev-docs/GwzRemoteTransportSshAgentDesign.md`: its §5 fixture sentence, as amendment 1 left it (§3.19).
 - `gwz-core/dev-docs/GwzV110PlanAmendment.md`, adopted through the plan's §4: in 1.1.0's run, its §3.4 (Phase 6, S6.1–S6.3) applies as §3.17 restores it, and its §3.5 and §3.6 sentences on gwz-py apply as written (§3.11, §3.12).
+- `gwz-core/dev-docs/GwzRemoteTransportRetryPlan.md`: its §4 sentence on what Closed stops, its §5 Cold state and two S3.1 test sentences (§3.20, OD18).
 - `gwz-py/dev-docs/GwzPyPerOperationTransportDesign.md`: the Python design that the 1.1.0 amendment's S6.2 and S6.3 call "S1.1's revision" (§3.17).
 - `dev-docs/GwzCoreSessionPlan.md`: §1.1, §2.3's G2, §2.4's candidate-build sentence, §3.0's definition of an **Ordinary path** step, §5.3's row for S6.2's release pins, CS5.3's files, CS6.5's two sentences on the lazy endpoint's read, CS7.24, §5.4's `transport_binding.rs` row, Phase 6's preamble sentence on the lazy endpoint's debt entry, and its mentions of gwz-py's `native/src/transport_session.rs` (§3.15); CS8.1's and CS8.18's sentences on the logon session, CS8.18's logon-session test row, and CS8.19's Pageant clause (§3.18); CS8.3's routing rule, its test rows and dependencies, and the sketch's two CS8.3 edges (§3.19); CS3.4's transport half (§3.15, §3.19).
 - `dev-docs/GwzCoreSessionCrateMap.md`: its sentence on when candidate crates are published (line 25), and the ruling on the thirteen crates.io names (lines 156 and 199), which TR3.3 applies (§3.16).
@@ -258,9 +260,9 @@ Phase 5's milestone (line 344), Phase 6's (line 352) and Phase 7's (line 367) ar
 - **1.1.0's run:**
   - Line 382's milestone reads, for 1.1.0: "defaults chosen inside the frozen caps, on evidence from the CLI in process on the three platforms".
   - **S5.1 (1.1.0)** reads without "long-lived reuse", which is TR8.2's (1.2.0). "Both placements" stays `local` only (line 110). S5.2 and S5.3 apply as written, without a server.
-  - **TR8.1 (1.1.0)** (lines 385–388) applies, measured with the CLI in process, after TR2.9 and TR2.10 have merged. Its connection counts come from the fixture or from a `connect()` record, since the transport rows do not show connections. It gains a native-route row at the default settings, with the off switch on: 16 and 32 members, three rounds, no partial result, on macOS.
+  - **TR8.1 (1.1.0)** (lines 385–388) applies, measured with the CLI in process, after TR2.1, TR2.9 and TR2.10 have merged. Its connection counts come from the fixture or from a `connect()` record, since the transport rows do not show connections. It gains a native-route row at the default settings, with the off switch on: 16 and 32 members, three rounds, no partial result, on macOS.
   - **On a 1.1.0 miss,** S5.4 retunes first and the rows are measured again. A remaining gap goes to the operator as OD17: ship with the measured gap stated in the notes, hold 1.1.0, or bring in OD8's channels, whose re-run list for 1.1.0 is TR2.6's tests, TR8.1, TR8.4 and S7.4 (1.1.0). S7.1 (1.1.0) waits on TR8.1 being met or on OD17's answer. Lines 392–397 apply to 1.2.0's run.
-  - **TR8.4** runs beside TR8.1 (1.1.0), before S5.4 (§3.5).
+  - **TR8.4** runs beside TR8.1 (1.1.0), after TR2.1 and before S5.4 (§3.5).
   - **Line 405's defaults** wait, for 1.1.0, on TR8.1, TR8.4 and S5.3. **S5.5 (1.1.0)** then repeats TR8.1's and TR8.4's speed targets on the chosen defaults.
   - **Line 406's sign-off,** for 1.1.0, covers TR2.8's agent key types and signature algorithms, TR1.6's credential helpers, and a cell for each behaviour TR1.8 designs. The server and reuse cells are 1.2.0's.
 - **1.2.0's run:** lines 382–406 as written, including TR8.2 and TR8.3. It repeats TR8.1 with reuse.
@@ -280,7 +282,7 @@ Phase 5's milestone (line 344), Phase 6's (line 352) and Phase 7's (line 367) ar
   - **S7.2 (1.1.0)** (lines 416–426):
     - Line 417's adoption of the 1.1.0 amendment's S7.2 addition applies for 1.1.0, with S6.3's and S7.3 (1.1.0)'s route assertions as its evidence. Its sentence on gwz-py's notes applies as written: one runtime per network operation, the environment captured at each operation's start, no reuse across operations, and at most 8 operations at once per `Client`.
     - The route ledger has rows for the CLI in process, gwz-py on the per-operation entry, a gwz-core caller without a host context on the native route (TR2.11), and the off switch. OD10's and OD11's routes are gone (§3.19). On Windows, Pageant, the machine proxy and default credentials are the transport route's own, not routes of their own.
-    - Help, docs pages and migration notes cover `--max-retries`, the off switch, pooling within one command, Windows parity on the transport (Pageant, the machine proxy and the logon session's default credentials), the hazard of the default-credential offer to any host (OD16) and the credential helpers' precedence over it, the credential helpers the transport runs (TR1.6), the key types and signature algorithms it signs with (TR2.8), and, where TR1.8 records it, the `Negotiate` case on macOS and Linux, the transport's proxy policy against 1.0.17's on every platform, and amendment 1's §3.8 items.
+    - Help, docs pages and migration notes cover `--max-retries`, the off switch, pooling within one command, Windows parity on the transport (Pageant, the machine proxy and the logon session's default credentials), the hazard of the default-credential offer to any host (OD16) and the credential helpers' precedence over it, the credential helpers the transport runs (TR1.6), the key types and signature algorithms it signs with (TR2.8), the first wave's failing handshakes on a dead key or bad credentials (OD18), the control characters the SSH path refuses (TR2.18), the public paths TR2.19 removes, gwz-py's `dispatch::record` limitation (decision 14), and, where TR1.8 records it, the `Negotiate` case on macOS and Linux, the transport's proxy policy against 1.0.17's on every platform, and amendment 1's §3.8 items.
     - The notes state gwz-py's per-operation transport, as the 1.1.0 amendment's S7.2 sentence gives it, and its cancellation, `close()` and interpreter-exit behaviour (the [design](../../gwz-py/dev-docs/GwzPyPerOperationTransportDesign.md)).
     - Lines 419–421, the server, Python and reuse items of line 424, and line 425 are 1.2.0's.
   - **S7.3 (1.1.0)** (lines 427–433), on each platform's consumer build:
@@ -293,7 +295,7 @@ Phase 5's milestone (line 344), Phase 6's (line 352) and Phase 7's (line 367) ar
 
     Lines 429–431, and line 433's sentences on the server and reuse, are 1.2.0's.
   - **S7.4 (1.1.0)** rechecks attribution without reuse. Line 434's reuse recheck is 1.2.0's.
-  - **S7.5 (1.1.0)** (lines 435–441): Surface covers `--max-retries`, the off switch, the `--verbose` transport-row fields, TR2.3's `errors` contract, TR1.8's Windows messages for Pageant and the machine proxy, OD16's notes on the hazard, TR1.6's helper messages, gwz-py's per-operation semantics (cancellation, `close()`, interpreter exit and the per-`Client` limit), any ordinary-protocol field S7.1 (1.1.0) names, every ordinary-path change admitted under rule (e) that §6(c) names, and the absence of the 1.2.0 surfaces. Lines 436 and 439 are 1.2.0's.
+  - **S7.5 (1.1.0)** (lines 435–441): Surface covers `--max-retries`, the off switch, the `--verbose` transport-row fields, TR2.3's `errors` contract as TR2.19 widens it, the public paths TR2.19 removes, TR1.8's Windows messages for Pageant and the machine proxy, OD16's notes on the hazard, TR1.6's helper messages, gwz-py's per-operation semantics (cancellation, `close()`, interpreter exit and the per-`Client` limit), any ordinary-protocol field S7.1 (1.1.0) names, every ordinary-path change admitted under rule (e) that §6(c) names, and the absence of the 1.2.0 surfaces. Lines 436 and 439 are 1.2.0's.
   - **Exit rows (lines 442–444):** "Network-entry ledger" maps, for 1.1.0, to S7.2 (1.1.0) and S7.3 (1.1.0).
 - **1.2.0's run:** lines 408–444 as written, after 1.1.0's tag. Its S7.1 removes `gwz_session_candidate`, with the same completeness check for that name.
 
@@ -335,7 +337,7 @@ Phase 5's milestone (line 344), Phase 6's (line 352) and Phase 7's (line 367) ar
 
 - **"What can start now"** (lines 486–492) becomes:
   - TR2.9, TR2.10, TR2.11 and TR2.12; 1.1.0 S6.1, then S6.2 and S6.3;
-  - TR2.1, TR2.2's reproduction and fix, TR2.3, TR2.4, TR2.7 and TR2.8;
+  - TR2.2's reproduction and fix, TR2.3, TR2.4, TR2.7 and TR2.8;
   - TR1.5, then TR2.5; TR1.6;
   - 1.1.0 S4.1, then TR1.8 and S4.2–S4.4, then TR4.8–TR4.10 on TR1.8's GO; TR4.6's ordinary-build job;
   - 1.1.0 S2.1–S2.3, TR3.3's code, and TR3.4; TR3.2 after TR3.3's registry steps;
@@ -346,7 +348,7 @@ Phase 5's milestone (line 344), Phase 6's (line 352) and Phase 7's (line 367) ar
 
 ### 3.14 §7, §8 and §9
 
-- **§7 (line 512)** gains: "OD13, OD14 and OD15 were decided on 2026-10-01 (amendment 2), and OD16 on 2026-10-02, when the operator also reversed OD10 and OD11 (§3.19). OD17 is taken if TR8.1 (1.1.0) misses." These entries follow line 535:
+- **§7 (line 512)** gains: "OD13, OD14 and OD15 were decided on 2026-10-01 (amendment 2), and OD16 on 2026-10-02, when the operator also reversed OD10 and OD11 (§3.19). OD17 is taken if TR8.1 (1.1.0) misses. OD18 was decided on 2026-10-02 (§3.20)." These entries follow line 535:
   - **OD13. Two minor releases, with Windows parity in 1.1.0.** Decided by the operator on 2026-10-01.
     - **1.1.0** ships the transport to the `gwz` CLI, in process, on macOS ARM64, Linux x86-64 and Windows x86-64.
     - **1.2.0** ships the session host, reuse, the server, and gwz-py through the session host, replacing 1.1.0's per-operation stage (OD14).
@@ -365,6 +367,7 @@ Phase 5's milestone (line 344), Phase 6's (line 352) and Phase 7's (line 367) ar
     - **the hazard, accepted for parity:** a host that answers with `NTLM` receives the logon session's NetNTLMv2 response, which can be cracked offline or relayed, as on 1.0.17. The migration notes state it. The off switch does not lessen it, since the native path makes the same offer.
     - The recommendation, revision 2's bound to the Local Machine, Intranet and Trusted zones with a refusal elsewhere, was not taken. Alternative (a), refusing every such challenge, does not meet OD13's parity.
   - **OD17. A TR8.1 (1.1.0) miss.** Taken when the measurement is in: ship with the measured gap stated in the notes, hold 1.1.0, or bring in OD8's channels.
+  - **OD18. The cold start.** Decided by the operator on 2026-10-02: in each operation, a key's first wave of setups starts in parallel, up to the operation's per-host limit, as 1.0.17's connections do, and the retry plan's single-probe rules apply from the wave's first retriable failure. §3.20 states it, with its hazard.
 - **§8:**
   - Line 539 becomes: "**Schedule.** 1.1.0 waits on Phases 2–4 and its measurements; 1.2.0 on the session program. Every Windows transport row that needs a fixture runs on dabeest, so dabeest's availability bounds 1.1.0." Lines 540–549 are 1.2.0's.
   - Line 550 becomes: "**The split** (OD13) ships the transport in 1.1.0 to the CLI and, one runtime per operation, to gwz-py (OD14). 1.2.0 replaces gwz-py's stage with the session host."
@@ -505,9 +508,62 @@ The operator's words: "lift that", for OD16's zone bound; and "yes", for moving 
   - its "TR2.8 row" and "TR1.6 row" dependencies go, with the sketch's edges "TR2.8 ── CS8.3's TR2.8 row" and "TR1.6 + TR2.2 ── CS8.3's TR1.6 row".
 - **Reuse design.** Line 120's and line 385's sentences on presence keys and certificates read: "TR2.8 admits them, so they reach transport connections." A reused connection authenticated with a security key serves later operations without a new touch, as an SSH control master does. The reuse design's next revision decides, before 1.2.0's Phase 6, whether a presence key is revalidated once per operation, as its §15.2(b) does for a confirm-required key.
 
+### 3.20 What implementation added, and the operator's decisions of 2026-10-02 (revision 6)
+
+Phase 2's implementation found defects and dead code the plan did not foresee. The operator also decided fourteen follow-up questions on 2026-10-02 ("all as recommended"). This section records both. Each step below was or will be tested in its own lane, merged into `main`, and covered by TR2.6's review.
+
+**Steps added to Phase 2:**
+- **TR2.13, endpoint throughput** (done, gwz-core `67c680a7`). Every hop between libgit2 and the network polled on a fixed timer and moved one message a pass, which capped a session near 2 MiB/s. Each pass now moves every ready message, within the existing bounds, and work arriving wakes the session. A 32 MiB clone takes 462 ms over SSH against 15.7 s before, level with libgit2. Tests hold the transport within 1.5 times libgit2's time plus 1 s.
+- **TR2.14, open admission without job permits** (done with the concurrency fix, gwz-core `ab5fee76`). TR2.10's 32 concurrent opens exhausted the 64 supervised-job permits and the key registry. An open now holds no job permit while it waits for the worker, and an identity check or key read waits for room instead of failing.
+- **TR2.15, the dead blocking SSH open path** (done, gwz-core `9d4dd92f`). It is removed, the module-level `allow(dead_code)` that hid it is gone, and the `tests/transport_ssh` crate is folded into gwz-core's candidate tests.
+- **TR2.16, SSH destination parity** (done, gwz-core `ff2bf4f2`). The transport parses SSH destinations exactly as libgit2 1.9.7 does, and refuses before any open what libgit2 refuses before connecting.
+- **TR2.17, prompt cancel and prompt permit release** (done, gwz-core `a6cc1737`). A cancel returns in about 14 ms instead of waiting out the 5 s cleanup bound, and a job's permit is freed when its result is taken.
+- **TR2.18, SSH parity follow-ups:**
+  - a password in an SSH URL is used exactly where 1.0.17's libgit2 uses it (decision 5);
+  - `known_hosts` host names match case-insensitively, which serves both of 1.0.17's cases (decision 7);
+  - control characters in an SSH path stay refused (decision 6): the one deliberate difference from 1.0.17 here, which S7.2 (1.1.0)'s notes list.
+- **TR2.19, the error contract and dead API:**
+  - TR2.3's rule widens to `Failed` and `Rejected` aggregates, so every non-success result lists each failed or rejected member's error in `errors` (decision 8);
+  - gwz-core's `OperationRuntime`, `ResponseBuilder::result` and `ExecutionReport`, which nothing called outside their own tests, are removed (decision 9). S7.2 (1.1.0)'s notes name each removed public path.
+  - the widened contract and the removed paths are S7.5 (1.1.0)'s Surface items, under the plan's §6 rule (c). gwz-py, which pins gwz-core exactly (TR3.4), and gwz-cli are gwz-core's only known consumers, and neither uses the removed paths.
+- **TR2.20, HTTPS tests onto the production mode** (after the split). About 100 HTTPS test call sites use worker wrappers that run a mode production never uses (`allow_transition = false`). They move onto `prepare_budget_for_transition`, and the test-only mode is removed (decision 12).
+- **TR2.21, gwz-py's candidate CI.** A gwz-py job builds the candidate extension with `scripts/build_candidate_extension.py` and runs the Python suite with its transport rows, and gwz-py's Rust unit tests run in CI (decision 13).
+- **TR2.22, credential helpers on the transport.** TR2.2 still reproduces and fixes defect 1, the two `gh` helper forms, now. TR2.22 follows it: after TR1.6's GO it implements that design (§3.19) for every configured helper, and keeps TR2.2's fixes and regression tests. It is under 500 lines, or two steps.
+- **The split of `placement_endpoint.rs`,** movement only (decision 3). It is brought forward from the session plan's CS7.1, which keeps its other files.
+- **S6.2's follow-ups** (done, gwz-py `766de53`):
+  - gwz-py's model errors are built lazily, so a failure after the exit bound no longer touches a finalizing interpreter;
+  - a request ID matching a live operation is refused, and one matching an ended operation gets a fresh record (the contract's §4.3);
+  - the candidate extension has a committed build recipe.
+
+**OD18. The cold start** (decided 2026-10-02, decision 1). In 1.1.0 every command starts its keys Cold, since there is no reuse across commands. The retry plan's single Cold setup would add a full SSH login ahead of every command's other members, and TR8.1 compares against 1.0.17, which opens its connections at once. So:
+- **The retry plan's §5 "Cold" state reads:** "No successful setup yet for this operation. The first wave of setups starts in parallel, up to the operation's per-host limit, as 1.0.17's connections do; members beyond the limit wait. The wave is the key's first attempt. When a setup of the wave fails retriably, that attempt is counted, its member returns to the key's queue, the key leaves Cold, and every later setup follows the single-probe rules below. A success that comes before any failure marks the key Healthy; the wave's setups still in flight are then Healthy's own, and §5's Healthy and Degraded rules govern them. Setups of the wave still in flight once the key has left Cold other than for Healthy complete as Degraded's in-flight setups do: a success completes its member and does not change the key's state; a retriable failure counts no attempt and returns its member to the key's queue; a non-retriable failure puts the key in Closed as §4 says."
+- **Its S3.1 sentences read:**
+  - "Thirty-two cold members on one dead key open one handshake at a time and exactly four handshakes in total" becomes "Thirty-two cold members on one dead key open a first wave at the per-host limit, then one handshake at a time, and at most the per-host limit plus three handshakes in total".
+  - "An authentication failure does not wait and does not open a second handshake for the queued members" becomes "… for the members not already in the first wave".
+- **Its §4 sentence** "That stops `--jobs 1` from running a fresh budget for each member, and it stops an authentication failure from becoming a series of handshakes" becomes "…, and, beyond the first wave, it stops an authentication failure from becoming a series of handshakes".
+- **The Safety finding it reverses.** The single Cold probe closed the retry plan's Safety review `[P2-4]`, the initial connection stampede (`GwzRemoteTransportRetryPlan-ReviewSafety.md`). OD18 reverses that probe. The first wave, at most the per-host limit and counted as one attempt, followed by single probes, is bounded, but it is not the "bounded mechanism with equivalent safety" that finding's correction asks for: on a dead key it sends the whole wave at once. The operator accepts that difference, the hazard below, for 1.0.17 parity.
+- **A server's `MaxStartups`.** A stock OpenSSH server starts dropping new unauthenticated connections beyond its `MaxStartups` start value, 10 by default (`10:30:100`). TR2.1 classifies such a drop as a retriable setup failure, and its tests include it. They pin the error kinds each platform reports for the drop: `ssh_setup.rs` maps `UnexpectedEof` and `ConnectionReset` to `Io`, which is retriable, but `ConnectionAborted` to `Cancelled`, which is not.
+- **The hazard,** which the migration notes state: on a dead key or bad credentials, the first wave sends up to the per-host limit of failing handshakes at once, as 1.0.17 does, before Closed stops the rest.
+- TR2.10's 32-open test holds under this rule. TR2.1 implements it.
+
+**Decision 14, a known limitation.** gwz-py's `dispatch::record` still formats a failed submit's error through the interpreter when its host is not exiting. A network operation that ends just before the exit hook runs, or a submitted non-network operation such as `clone_local_workspace`, can therefore still touch a finalizing interpreter. 1.2.0's session host replaces that code, so S7.2 (1.1.0)'s notes list this as a known 1.1.0 limitation.
+
+**TR2.6's scope** gains TR2.13–TR2.22, the split and S6.2's follow-ups.
+
+**The sketch and "What can start now"** (§3.13) gain the following, and TR2.1 leaves the second bullet of "What can start now", since its machine lives in the file being split:
+- the split, then TR2.1 and TR2.20;
+- TR2.18, TR2.19 and TR2.21 now;
+- TR2.2 and TR1.6's GO, then TR2.22;
+- in the sketch only: TR2.1 ── TR8.1 (1.1.0) and TR8.4, so both measurements against 1.0.17 run with the retry machine and OD18's first wave; and TR2.13–TR2.22, the split and S6.2's follow-ups ── TR2.6.
+
+**Retry plan:** `GwzRemoteTransportRetryPlan.md`'s status gains: "Amended 2026-10-02 by `GwzTransportReleasePlanAmendment-2.md` revision 6. Its §4 sentence on what Closed stops, its §5 Cold state and two S3.1 test sentences read as that amendment's §3.20 (OD18) states."
+
+**Reuse design (1.2.0).** Its §9 (line 200), which the retry plan's 2026-09-28 amendment makes §5's Cold state for the transport host, and the session plan's CS7.23 still say that only new setups wait for "the one probe". This revision does not amend them. The reuse design's next revision carries OD18's first wave into its §9 and CS7.23 before CS7.23 starts, as §3.19 leaves that revision the presence-key question.
+
 ## 4. Affected tests and evidence
 
 - **Phase 2:** TR2.9's to TR2.12's tests, including TR2.12's two CI legs and each repository's inventory test; 1.1.0 S6.1's and S6.3's tests, with the design's §3 rows (§3.17); TR2.8's key-type and signature tests, and TR2.2's tests under TR1.6's helper design (§3.19); and TR2.6's review of them.
+- **Phase 2, from revision 6:** the tests of TR2.13–TR2.22 and of S6.2's follow-ups, inside their steps; OD18's first-wave and `MaxStartups` rows in TR2.1; TR2.21's CI jobs.
 - **Phase 3:** TR3.4's tests; TR3.3's registry record.
 - **Phase 4:** TR4.6's job, 1.1.0 S4.2–S4.5's tests on dabeest, TR4.8–TR4.10's tests against TR1.8's Pageant, proxy and `Negotiate` fixtures, TR1.8's `HOME`-unset rows and its macOS and Linux 1.0.17 rows, TR4.10's review, and TR4.7's review.
 - **Phase 8:** TR8.1 (1.1.0) on macOS and Linux, and TR8.4 on dabeest, both against 1.0.17, with their off-switch rows, and S5.5 (1.1.0)'s repeat; S5.6's cells for the behaviours TR1.8 designs.
@@ -517,7 +573,7 @@ The operator's words: "lift that", for OD16's zone bound; and "yes", for moving 
 
 ## 5. Review and application
 
-- **Review.** Dual peer-blind Consistency and Safety review of this draft's text, identified by its SHA-256. There is no Surface review of this amendment, because it freezes no command, option or API. TR1.8 and S7.5 (1.1.0) carry Surface. Revision 3 was skim-reviewed only, on the operator's instruction ([skim review](GwzTransportReleasePlanAmendment-2-ReviewSkim.md)); S7.5 (1.1.0)'s Surface covers gwz-py's per-operation semantics. Revisions 4 and 5, which apply OD15 and then OD16 with OD10's and OD11's reversal, were skim-reviewed in the same way ([skim review 2](GwzTransportReleasePlanAmendment-2-ReviewSkim-2.md), [re-check](GwzTransportReleasePlanAmendment-2-ReviewSkim-3.md)). The Windows designs themselves get TR1.8's dual and Surface review, and TR4.10 its own dual review.
+- **Review.** Dual peer-blind Consistency and Safety review of this draft's text, identified by its SHA-256. There is no Surface review of this amendment, because it freezes no command, option or API. TR1.8 and S7.5 (1.1.0) carry Surface. Revision 3 was skim-reviewed only, on the operator's instruction ([skim review](GwzTransportReleasePlanAmendment-2-ReviewSkim.md)); S7.5 (1.1.0)'s Surface covers gwz-py's per-operation semantics. Revisions 4 and 5, which apply OD15 and then OD16 with OD10's and OD11's reversal, were skim-reviewed in the same way ([skim review 2](GwzTransportReleasePlanAmendment-2-ReviewSkim-2.md), [re-check](GwzTransportReleasePlanAmendment-2-ReviewSkim-3.md)), and so was revision 6 ([skim review 7](GwzTransportReleasePlanAmendment-2-ReviewSkim-7.md)). The Windows designs themselves get TR1.8's dual and Surface review, and TR4.10 its own dual review.
 - **On GO,** these edits follow under AgentProcessRules §7.2, each with a changelog entry:
   - **`GwzTransportReleasePlan.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for its status block's decision record, §1's name, outcome, decisions and authorities, §2's table, §4's adopted table and closing condition, each phase's release, Phases 1–4 and 8–10 as that amendment restricts them, §6, §7, §8 and §9."
   - **`GwzTransportReleasePlanAmendment.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for the release each of its sections belongs to, and, from revision 5, for its OD11 texts (§3.19)."
@@ -527,6 +583,7 @@ The operator's words: "lift that", for OD16's zone bound; and "yes", for moving 
   - **`GwzConnectionReuseDesign.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for its open item on network operations without a binding, in 1.1.0, the release its supersessions take effect in, and, from revision 5, its key-type sentences (§3.19)."
   - **`GwzCoreServerDesign.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for the release from which its rule "One agent source per session" governs the in-process transport, and, from revision 4, every sentence on Pageant and on the Windows logon session that §3.18 lists, and, from revision 5, the routed native operations §3.19 removes."
   - **`GwzRemoteTransportSshAgentDesign.md`'s status** gains, from revision 5: "Amended 2026-10-02 by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for its §5 fixture sentence (that amendment's §3.19)."
+  - **`GwzRemoteTransportRetryPlan.md`'s status** gains, from revision 6: "Amended 2026-10-02 by `GwzTransportReleasePlanAmendment-2.md` revision 6. Its §4 sentence on what Closed stops, its §5 Cold state and two S3.1 test sentences read as that amendment's §3.20 (OD18) states."
   - **The program checkpoint** records the acceptance, OD14's and OD15's answers and OD16's applied shape, TR3.1's closure, and, once TR2.12 creates them, the digests of the switches' inventory files.
 - **No authorization.** This amendment authorizes no implementation, commit, tag, push or publish.
 
@@ -570,3 +627,5 @@ The operator's words: "lift that", for OD16's zone bound; and "yes", for moving 
   - amendment 1's §3.8 notes item states TR2.8's three SHA-1 cases (P3-5);
   - CS3.4's transport half is TR1.6's in 1.1.0 (§3.15) (P3-6).
 - 2026-10-02: the [second re-check](GwzTransportReleasePlanAmendment-2-ReviewSkim-6.md) reported **GO**: P2-6, P3-4, P3-5 and P3-6 are closed, with no new issue. Revision 5 carries a skim-review GO, not a dual-review GO.
+- 2026-10-02: revision 6. It records the steps Phase 2's implementation added: TR2.13 throughput, TR2.14 open admission without job permits, TR2.15 the dead blocking SSH path, TR2.16 SSH destination parity, TR2.17 prompt cancel, TR2.18 SSH parity follow-ups, TR2.19 the widened error contract and dead API, TR2.20 HTTPS tests onto the production mode, TR2.21 gwz-py's candidate CI, TR2.22 credential helpers after TR1.6, and the split of `placement_endpoint.rs`. It also records S6.2's follow-ups, the operator's decisions of 2026-10-02, OD18 (the cold start's first wave in parallel, amending the retry plan's §4 sentence on what Closed stops, its §5 Cold state and two S3.1 sentences) and decision 14's known limitation (§3.20). §1, §4 and §5 follow. It is skim-reviewed only.
+- 2026-10-02: [skim review 7](GwzTransportReleasePlanAmendment-2-ReviewSkim-7.md) reported **GO** on revision 6 (`32c6ae18…`), with eight P3s and no P0–P2. Six are applied as given. P3-1 is applied with one sentence reworded: the first wave is bounded, but it lacks the equivalent safety that the retry plan's Safety `[P2-4]` asked of another mechanism, and the operator accepts the difference for parity. P3-7 is applied in part: the boundary between TR2.2 and TR2.22 is added, and the change to line 507's edge is disputed, since revision 5 already removes that edge. The same reviewer's [re-check](GwzTransportReleasePlanAmendment-2-ReviewSkim-8.md) (`0ac4f118…`) reported **GO**: all eight are closed and the dispute is upheld. Its two new P3s are applied: a wave setup still in flight when the key turns Healthy is governed by Healthy's rules, and §3.10 runs TR8.1 (1.1.0) and TR8.4 after TR2.1. Revision 6 carries a skim-review GO, not a dual-review GO.
