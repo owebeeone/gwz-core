@@ -27,6 +27,7 @@ pub(crate) mod ssh_shutdown;
 pub(crate) mod ssh_worker;
 pub(crate) mod stream_io;
 
+pub(crate) mod ca_bundle;
 pub(crate) mod https_auth;
 pub(crate) mod https_connection;
 pub(crate) mod https_destination;

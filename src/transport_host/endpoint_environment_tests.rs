@@ -42,8 +42,8 @@ fn the_endpoint_configuration_comes_from_the_snapshot() {
     let home = root.path().join("home");
     let agent = root.path().join("agent.sock");
     let ca = root.path().join("ca.pem");
-    let pem = b"-----BEGIN CERTIFICATE-----\nZml4dHVyZQ==\n-----END CERTIFICATE-----\n";
-    std::fs::write(&ca, pem).unwrap();
+    let pem = super::ca_bundle_tests::unrelated_ca(root.path(), "snapshot-ca");
+    std::fs::write(&ca, &pem).unwrap();
     let environment = snapshot(&[
         ("HOME", home.as_os_str()),
         ("SSH_AUTH_SOCK", agent.as_os_str()),
@@ -54,7 +54,11 @@ fn the_endpoint_configuration_comes_from_the_snapshot() {
     let (ssh, https) = endpoint_config(&environment).unwrap();
     assert_eq!(ssh.home, home);
     assert_eq!(ssh.agent, Some(agent));
-    assert_eq!(https.tls.ca_pem.as_deref(), Some(&pem[..]));
+    let der = |roots: &[native_tls::Certificate]| -> Vec<Vec<u8>> {
+        roots.iter().map(|root| root.to_der().unwrap()).collect()
+    };
+    let expected = crate::git::endpoint::ca_bundle::certificates(&pem).unwrap();
+    assert_eq!(der(&https.tls.ca_roots), der(&expected));
     let proxy = https.tls.proxy.as_ref().expect("the snapshot's proxy");
     assert_eq!(
         (proxy.host.as_str(), proxy.port, proxy.tls),

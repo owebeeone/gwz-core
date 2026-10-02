@@ -96,7 +96,7 @@ impl Server {
     }
     pub fn config(&self) -> https_connection::Config {
         https_connection::Config {
-            ca_pem: Some(self.ca.clone()),
+            ca_roots: super::ca_bundle::certificates(&self.ca).unwrap(),
             ..Default::default()
         }
     }
