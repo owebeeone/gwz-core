@@ -62,8 +62,8 @@ Most operation responses wrap a `ResponseEnvelope`:
 - `meta` identifies the request, action, aggregate status, operation id, and
   optional attribution.
 - `members` reports per-member plan or execution state.
-- `errors` reports operation-level errors that are not tied to exactly one
-  member.
+- `errors` reports operation-level errors. A partial, failed or rejected result
+  first repeats the error of every failed or refused member, in member order.
 
 Check the aggregate status first, then inspect member statuses and errors. Do
 not infer success from an empty error list alone; partial and rejected operations

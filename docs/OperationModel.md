@@ -71,7 +71,10 @@ executes later must be prepared for state to change between plan and apply.
 - `meta`: request id, schema version, action, aggregate status, operation id,
   message, and attribution.
 - `members`: per-member state, status, plan, Git status, or member-scoped error.
-- `errors`: operation-level errors that are not tied to one member.
+- `errors`: operation-level errors. A `partial`, `failed` or `rejected` result
+  first repeats the error of every `failed` or `rejected` member entry, in
+  member order (gwz-cli `docs/MachineOutput.md`, "Failed, rejected and partial
+  results").
 
 `AggregateStatus` values:
 

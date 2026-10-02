@@ -3,14 +3,10 @@ use std::path::Path;
 use crate::artifact::{self, ArtifactSourceKind, LockArtifact, ManifestMember};
 use crate::git::{GitBackend, GitHeadState, GitStatus as BackendGitStatus};
 use crate::model::{ErrorCode, ModelError, ModelResult};
-use crate::operation::{ActionKind, OperationRequest};
+use crate::operation::OperationRequest;
 
 use super::*;
 
-#[allow(
-    clippy::needless_update,
-    reason = "gwz_transport_candidate adds fields"
-)]
 pub fn handle_status<B>(
     backend: &B,
     start: &Path,
@@ -83,22 +79,11 @@ where
         )
     });
 
+    // The shared builder, so a failed or refused member's error is repeated in
+    // `errors` as every other handler's is.
+    let aggregate = aggregate_status(&members);
     Ok(crate::StatusResponse {
-        response: crate::ResponseEnvelope {
-            meta: crate::ResponseMeta {
-                transport: None,
-                request_id: context.request_id,
-                schema_version: context.schema_version,
-                action: ActionKind::Status.into(),
-                aggregate_status: aggregate_status(&members),
-                operation_id: Some(context.operation_id),
-                message: None,
-                attribution: context.attribution.as_ref().map(Into::into),
-                ..Default::default()
-            },
-            members,
-            errors: Vec::new(),
-        },
+        response: crate::workspace_ops::response_envelope(context, aggregate, members),
         workspace_git_status,
     })
 }
