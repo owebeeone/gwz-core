@@ -69,9 +69,9 @@ Check the aggregate status first, then inspect member statuses and errors. Do
 not infer success from an empty error list alone; partial and rejected operations
 may still include useful member records.
 
-Longer-running drivers can use `OperationRuntime` for accepted responses,
-operation events, and final `OperationResult` lookup. The synchronous `handle_*`
-functions are the simpler entrypoints for direct embedding and tests.
+The synchronous `handle_*` functions are the entrypoints for direct embedding
+and tests. Their event-aware variants deliver `OperationEvent` records to a
+caller-supplied `operation::EventSink` as the operation runs.
 
 ## Request Types
 

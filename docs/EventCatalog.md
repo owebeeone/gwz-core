@@ -42,7 +42,7 @@ operations.
 | `warn` | Recoverable anomaly such as event history reset. |
 | `error` | Operation or member error. |
 
-Current event emitters mostly use `info`; runtime overflow uses `warn`.
+Current event emitters mostly use `info`.
 
 ## GitTransferProgress
 

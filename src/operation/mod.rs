@@ -1,27 +1,26 @@
-mod aggregate_status;
 mod attribution_from_protocol;
 mod commit_log;
 mod eventemitter;
-mod eventsubscription;
-mod impl_operationrecord;
 mod membermutationguard;
 mod now_ms;
 mod open_merge_gate;
-mod operation_runtime;
 mod par_map_per_host;
 mod push_event;
 mod resolve_jobs;
 mod resolve_per_host;
 mod workspace_mutator_lock;
 
-pub use aggregate_status::*;
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        mod tests;
+    }
+}
+
 pub(crate) use attribution_from_protocol::*;
 pub use eventemitter::*;
-pub use eventsubscription::*;
 pub use membermutationguard::*;
 pub(crate) use now_ms::*;
 pub use open_merge_gate::*;
-pub use operation_runtime::*;
 pub use par_map_per_host::*;
 pub use push_event::*;
 pub use resolve_jobs::*;
