@@ -1,12 +1,16 @@
-# SSH password-helper setup clock — DRAFT, remediation round 2
+# SSH password-helper setup clock — accepted mechanism
 
-2026-10-03. This corrects the complete draft reviewed at core `eb06fac24` under
-GwzTransportSshHelperClock-RemPlan.md and the bounded second correction in
-GwzTransportSshHelperClock-RemPlan-2.md. Round1 closed the original findings; Consistency returned GO and Safety
-retained the bounded P2-3 refusal branch. This correction awaits both original
-reviewers at a newly settled tuple; implementation remains NO-GO meanwhile.
-The following interfaces and tests are proposals, not executed implementation.
-Do not implement this clock mechanism before root-relayed review GO.
+2026-10-03. Status: **accepted at root `0bb560c5f34ba5bde5ece053dc58e33ef10fd8e0`,
+core `fde5878ac11b9e02892127f438cb50954551b9a3`, transport
+`9f9f0dc4dd82e6329d6ce53e102a231e214ff673` and evidence
+`662d89828b478a2acce8c0308834db7d17c872f7` after
+[Consistency](GwzTransportSshHelperClock-ReviewConsistency-2.md) and
+[Safety](GwzTransportSshHelperClock-ReviewSafety-2.md) reported GO. This accepts
+the complete corrected clock mechanism only and authorizes its implementation.**
+Two remediation rounds close all findings; the architectural root-cause count
+remains two. The declarations and tests below remain implementation obligations,
+not executed proof. Final credential Code/State and combined Surface acceptance,
+platform qualification and release remain separate gates.
 
 TR1.6 §3.3/OQ6(a) and the accepted helper timing amendment §1 already require
 full effective interaction after admission and exclusion of local helper work

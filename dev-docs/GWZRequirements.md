@@ -1,5 +1,9 @@
 # GWZ Core Requirements
 
+## SSH password-helper setup clock (accepted 2026-10-03; implementation pending)
+
+Candidate SSH password-helper setup MUST satisfy the accepted [SSH helper clock amendment](GwzTransportSshHelperClockAmendment.md): one shared expiry/transition authority, exact captured admission and interaction budgets, network aggregate/stall pause and resume, immutable first terminal cause, validated prepared-token refusal, exact core-owned helper provenance and retained cleanup ownership. Non-shared users retain their contracts. Implementation acceptance, platform qualification and release remain separate.
+
 ## Credential configuration view (accepted 2026-10-03; implementation pending)
 
 Candidate configured-helper preparation MUST satisfy the accepted [configuration-view amendment](GwzTransportCredentialHelperConfigurationViewAmendment.md): unconditional-only ordered scope, explicit absolute include anchors or refusal, native byte-preserving parsing/verification, bounded process-lifetime parameters, no named sensitive preparation copies and one owned deadline. Controlled E2BIG MUST be Authentication/M2 without a missing-Git latch; ordinary missing/unexecutable Git retains M1. Implementation and release qualification remain separate.

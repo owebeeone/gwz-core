@@ -2,6 +2,10 @@
 
 Status: accepted
 
+## SSH password-helper setup clock (accepted 2026-10-03; implementation pending)
+
+The accepted [SSH helper clock amendment](GwzTransportSshHelperClockAmendment.md) supplies one connection-scoped, transport-neutral setup clock for pool expiry, Control and final connected admission. Local admission and interaction preserve their captured independent allowances while pausing network aggregate and live stall remainders. Core retains helper provenance; transport holds only neutral connection/phase identities and terminal causes. Atomic publication, acknowledgement, prepared-token refusal and retained physical cleanup follow the accepted mechanism. This authorizes implementation only; authentication policy, application schemas and wire fields are unchanged.
+
 ## Credential configuration view (accepted 2026-10-03; implementation pending)
 
 The accepted [configuration-view amendment](GwzTransportCredentialHelperConfigurationViewAmendment.md) implements TR1.6's unconditional-only scope through supervised native Git discovery/stdin parsing and bounded process-lifetime configuration parameters. Its explicit HOME anchors, one deadline, child/worker ownership, byte roundtrip and controlled E2BIG exception govern this mechanism; it creates no named sensitive preparation files and adds no public API or Windows mechanism.
