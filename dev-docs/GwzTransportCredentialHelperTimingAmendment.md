@@ -78,13 +78,62 @@ its detail, so rounding does not invent a duration. The renderer converts
 milliseconds to seconds exactly: an integer when divisible by 1,000, otherwise
 a decimal with up to three fractional digits and trailing zeroes removed.
 For example 120,000 becomes `120`, 1,250 becomes `1.25`, and 1 becomes `0.001`.
-This fills existing `<n>`/`<m>` slots. M4's wording remains unchanged. To avoid
-calling a configurable allowance a fixed 30-second bound, M10's first clause
-is precisely amended to: "No credential helper could start in the <m> seconds
-available to wait for resources:". The remainder of M10 stands. Its
-driver default remains 30 seconds; the amendment introduces no new policy or
-wait duration. TR1.6 §11's statement that `<m>` is at most 30 is qualified as
-the production driver's default, not a universal typed-Open bound.
+A retained allocation remainder below one millisecond is captured by rounding
+down to zero milliseconds and treated as expired: start no admission wait or
+helper, report helper Allocation with zero, and set no latch. Rounding never
+extends the deadline. The captured integer milliseconds drive both the timer
+and the detail, including a positive remainder: 1,250 ms starts a 1,250 ms
+timer and renders `1.25` seconds. The effective helper interaction allowance
+comes from positive integer-millisecond configured/Open values and is not
+charged for slot waits or earlier helper execution; M4 therefore always has
+a positive captured integer. This precisely replaces TR1.6 §10 T15(b)'s
+requirement that D−W seconds be rounded down; both that old row and the new
+retained-budget row use exact seconds from the same captured milliseconds.
+
+M4's message stays unchanged. M10's complete message, including the previously
+unchanged remainder, becomes:
+
+> No credential helper could start in the <m> seconds available to wait for
+> resources. Other helpers may be busy, waiting for sign-ins or stuck. Finish
+> any open sign-in, or sign in once with `git ls-remote` and this member's URL
+> (`git -C <path> remote get-url origin` prints it; before the member is cloned,
+> use the manifest's URL, or under `--url-scheme https` the one
+> `gwz --verbose materialize --lock` prints after `->`), then retry. See
+> Troubleshooting: HTTPS Credential Failure.
+
+No occupancy fact is inferred, including when the retained allowance is zero
+and all slots are free. The caller heading is "A helper could not start in
+time". Its production-driver default remains 30 seconds; TR1.6 §11's at-most-30
+statement is qualified as that default, not a universal typed-Open bound.
+An already-exhausted helper admission uses M10 without waiting, spawning or
+latching. No resource allowance or wait duration changes.
+
+## Scope-aware recovery wording
+
+The complete M8 message becomes:
+
+> gwz could not use `git credential fill`'s answer: <cause>. No credential was
+> sent. `git config --get-urlmatch credential.helper` with this member's URL
+> (`git -C <path> remote get-url origin` prints it; before the member is cloned,
+> use the manifest's URL, or under `--url-scheme https` the one
+> `gwz --verbose materialize --lock` prints after `->`) can select a different
+> helper through repository settings or conditional includes. Check the helper
+> chain GWZ uses. See
+> Troubleshooting: HTTPS Credential Failure.
+
+M4 and M10's ordinary `git ls-remote` action can unlock or sign into a store;
+a success is not proof the helper selected by GWZ was repaired. Likewise an
+ordinary `git config --get-urlmatch credential.helper` run inside a repository
+can identify a different helper. Their common caller explanation must identify
+system/global/XDG and session `GIT_CONFIG_*` sources, helper order and empty
+resets, follow legitimate unconditional includes, and explain the ignored
+repository-local/conditional-include scope. It must guide repair/sign-in of the
+actual unconditional helper A even when native Git succeeds through helper B
+from a matching includeIf or local file, while keeping an A-only setup simple.
+Do not replace this with `--no-includes`, which drops legitimate unconditional
+includes. Record prior entries/order and restore them for undo; never print
+credential output. This corrects recovery claims only; the accepted lookup
+configuration policy and public GWZ API remain unchanged.
 
 ## One missing fixed parser cause
 
@@ -160,16 +209,28 @@ This DRAFT supersedes only these representation restrictions if accepted:
 3. The accepted authored Destination declaration and HTTPS codec shape: allow
    only the separate bounded optional HTTPS username; `ssh_username` remains
    forbidden on HTTPS. No other scheme/policy combination changes.
-4. TR1.6 §11 M8's seven-cause list: add exactly the fixed malformed-output
-   phrase above, preserving §9.1's parser refusals. TR1.6 §11 M10's first clause
-   and its universal 30-second ceiling: use the precise configurable-budget
-   qualification above. All other wording and code/clone outcomes stand.
+4. TR1.6 §4/§11 M8's seven-cause list and identification sentence: add the
+   fixed malformed-output phrase and use the full scope-aware M8 text above.
+   Preserve §9.1 parser refusals. TR1.6 §4/§11 M10's complete message, universal
+   30-second ceiling and this draft's old unchanged-remainder restriction:
+   replace them with the complete causal-neutral message and configurable-budget
+   qualification above. Its zero-allocation assignment is expressly M10 with
+   no occupancy assertion, wait, spawn or latch. Code/clone outcomes stand.
+5. TR1.6 §10 T15(b)'s rounded-down D−W seconds assertion: replace it with exact
+   seconds from the same captured integer milliseconds that drive the timer;
+   1,250 ms means `1.25`, and sub-millisecond retained allocation expires at zero.
+6. TR1.6 §4/§11 M4/M8/M10 recovery and helper-identification claims, and the
+   corresponding troubleshooting/release-note recovery advice: qualify ordinary
+   Git success/identification by configuration scope and provide the actual
+   unconditional helper-chain repair and paired undo described above. M4's
+   full message remains unchanged; its common explanation supplies the caveat.
 
 The older HTTPS design's §5 no-userinfo sentence is already superseded for
 usernames by TR1.6 §9.1's OQ1(b) contingency. This amendment supplies the
 carrier; it does not supersede that policy again. No public application schema,
 error-code number, clone suppression rule or secret policy is changed here.
-Only the exact M8 cause and M10 clause named above change message wording.
+Only the exact M8/M10 wording and common recovery qualifications above change
+caller text; the fixed cause addition remains bounded as specified.
 
 ## Affected owners and checks
 
@@ -194,7 +255,10 @@ amendment allocates no error code.
 Regression rows:
 
 1. Old absent detail retains generic timeout text; no inferred helper message.
-2. Round-trip both valid phases and exact 1,250 ms decimal rendering.
+2. Round-trip both valid phases and exact 1,250 ms decimal rendering in both
+   TR1.6 §10 T15(b) and the new retained-budget regression; the same captured
+   integer milliseconds drive timer/detail. A sub-millisecond retained
+   allocation expires at captured zero without extending its deadline.
 3. Reject wrong code/effect/cause, forbidden mixed detail, zero interaction,
    negative values, 120,001 interaction and 86,400,001 allocation, through local
    admission and encoded decode on every Failure carrier.
@@ -202,6 +266,9 @@ Regression rows:
    that retained allowance, starts no helper and sets no latch.
 5. Endpoint-permit wait followed by host-slot wait uses the same deadline and
    reports their initial allowance; a started helper receives its full bound.
+   Zero retained allocation with free endpoint/host slots selects truthful M10
+   `0 seconds`, starts no helper, sets no latch and makes no saturation claim.
+   Positive saturation continues to use one deadline and names its allowance.
 6. A general connection/pool allocation timeout remains generic.
 7. A URL username such as `a%3Ab` reaches a recording Git helper as Git's one
    username selector, with no password selector; the wire preserves the encoded
@@ -215,6 +282,13 @@ Regression rows:
    fixed malformed-output cause; unknown lines remain ignored. A larger valid
    configured allocation allowance round-trips and is rendered truthfully,
    without changing the default driver's 30-second wait or adding a new cap.
+
+10. Recovery counterexamples: broken global helper A reached through an
+    unconditional include, with working B selected by native Git through a
+    matching includeIf and separately a local file. The instructions must reach
+    A, preserve the unconditional include, repair its entry and explain undo;
+    include the ordinary A-only, XDG and GIT_CONFIG_* source cases. Capture and
+    compare synthetic credential answers without printing them.
 
 No new free-form diagnostics, clocks, retry transition, authentication policy,
 Windows activation or timing campaign is authorized. Root must settle this
