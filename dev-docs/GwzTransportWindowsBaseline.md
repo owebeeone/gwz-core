@@ -178,10 +178,39 @@ No OS trust, proxy, service, account, zone or inherited job policy changed.
   import occurred. Non-RSA/PSS/MD5 and the eventual transport TLS adapter/EPA
   composition remain unproved; this is not released native HTTPS evidence.
 
+### Bounded residual primitives, 2026-10-03
+
+The third isolated run
+[2026-10-03-tr1-8-residual-primitives](../../gwz-core-evidence/campaigns/transport-qualification/runs/2026-10-03-tr1-8-residual-primitives/README.md)
+(private access required) uses external E:/gwz-tests/tr1-8-residual-20261003-61-5dd1f1.
+Both preceding runs remain byte-for-byte unchanged. No production/design, native
+trust, proxy, hosts, zone, service, account or job policy changes occurred.
+
+- P02: four simultaneous sender threads each completed eight actual owned empty
+  Pageant requests (32 total, 4ms), and eight nonce-tagged synthetic requests
+  (32 total, 13ms), with distinct mappings and no crossed replies. Threads,
+  receiver and actual Pageant were reaped. A versioned measurement repeat
+  observed maximum four in-flight send scopes for actual and synthetic receivers
+  (32 each; 4ms/918ms); no extra handle churn. Retired Pageant HWND 33226944 was not
+  reused in 100000 native creates/destroys over 2223ms, within a fixed 100000/15s
+  cap. Numeric reuse assertion is UNEXECUTED; no further churn was attempted.
+- P06: process-pinned Schannel peer DER/OIDs and digests matched independent
+  DER calculations for ECDSA P-256/SHA256, P-384/SHA384 and RSA-PSS SHA256/SHA384
+  in TLS1.2 and TLS1.3. PSS parameters identify matching message/MGF1 hashes;
+  the fixture refuses differing hashes. MD5 peers failed both native handshakes
+  with AuthenticationException (exit 2); no native MD5 peer/hash pass is claimed.
+  All clients, listener sockets and server threads retired. These are hash
+  primitives, not a TLS1.3 channel-binding policy, transport adapter or EPA proof.
+- B15: native URLMON MapUrlToZone(flags0) returned HRESULT0, zone1/Intranet for
+  http/https://gwz-tr18/ and zone3/Internet for http/https://gwz-tr18.invalid/.
+  Owned COM reference released. No routing, TLS, redirect or authentication row
+  executed; names have no installed hosts/zone override in this batch.
+
 ## 3. Released baseline — executed facts and remaining rows
 
-All rows below use **released 1.0.17**, exact downloaded archive/binary hash,
-source tags and the pinned Rust/toolchain provenance where built. A current
+Released behavior assertions below use **released 1.0.17**, exact archive/binary hash,
+source tags and pinned Rust/toolchain provenance where built. Native prerequisite
+observations are explicitly labeled and do not complete released assertions. A current
 1.0.17 version string in a main candidate binary is not released 1.0.17 proof.
 
 | ID | Status | Row | Observed outcome or required assertion |
@@ -200,14 +229,14 @@ source tags and the pinned Rust/toolchain provenance where built. A current
 | B12 | UNEXECUTED | NTLM-only | Helper identity authenticates, then no-helper default identity row |
 | B13 | UNEXECUTED | Mixed Negotiate+Basic | Fake gh then non-gh helper authenticate over Negotiate, no default offer |
 | B14 | UNEXECUTED | Digest | Helper identity authenticates, method/URI and POST behavior characterized |
-| B15 | UNEXECUTED | Zone/redirect | Disposable Intranet and Internet names, discovery first-to-second, auth at second under OD16 |
+| B15 | PARTIAL (native prerequisite) | Zone/redirect | URLMON flags0 classifies gwz-tr18 as Intranet/1 and gwz-tr18.invalid as Internet/3 for HTTP/HTTPS; released redirect/auth assertions unexecuted |
 | B16 | UNEXECUTED | EPA | Server requires channel binding, successful auth; missing/wrong binding negative controls |
 | B17 | PARTIAL | macOS/Linux | Mac plain-HTTP Negotiate unsupported characterization; HTTPS blocked by native trust; Linux unexecuted |
 | B18 | UNEXECUTED | Windows POST challenge | Anonymous discovery then 401 POST: actual replay/body behavior and effect recorded |
 
-Fixture names proposed: `gwz-tr18` (single-label/Intranet) and
-`gwz-tr18.invalid` (dotted/Internet), both loopback. Their actual URL-zone
-classification must be measured before use, never inferred from spelling.
+Fixture names proposed: `gwz-tr18` and `gwz-tr18.invalid`, with proposed owned
+loopback routing. URLMON measured Intranet/1 and Internet/3 respectively for
+HTTP/HTTPS in the third run; routing itself remains uninstalled/unexecuted.
 Do not edit hosts or zone configuration without coordinated authorization.
 Do not use a live account to prove a disposable identity row. An explicit
 credential selected from a configured test helper must be distinguishable from
@@ -220,11 +249,11 @@ coordinate its creation/removal rather than silently inventing it.
 | ID | Status | Primitive | Observed proof / remaining required counterexamples |
 |---|---|---|---|
 | P01 | PARTIAL | Pageant mapping | Actual Pageant ACL/list/signature and owned collision183/no-write executed; cross-user negative remains |
-| P02 | PARTIAL | Pageant bounded send | Actual encrypted-key dialog timeout and live mapping until owned Pageant reap; synthetic late write, vanished/replacement-owner refusal executed. Numeric HWND reuse/concurrency remain |
+| P02 | PARTIAL | Pageant bounded send | Actual encrypted-key dialog timeout and live mapping until owned Pageant reap; synthetic late write, vanished/replacement-owner refusal executed. Concurrency 4×8 actual and synthetic requests passed; numeric reuse remains unexecuted after fixed cap |
 | P03 | PARTIAL | Local pipe | Owned local pipe partial replies/cancel completion995 before storage release, fixture no-UNC guard and server PID executed; native service identity remains |
 | P04 | PARTIAL | WinHTTP capture | Native capture/GlobalFree and exact DIRECT restore executed; grammar, implicit loopback bypass and immutable candidate snapshot still need proof/disposition |
 | P05 | PARTIAL | SSPI | Default handshake/synthetic CBT plus explicit/default first legs and between-leg worker retirement executed; full helper isolation/HTTP EPA/in-flight cancellation remain |
-| P06 | PARTIAL | TLS/EPA | Schannel peer DER/OID and RSA SHA1/256/384/512 RFC5929 hashes match in TLS1.2+1.3; pin negative refuses. Non-RSA/PSS/MD5/transport adapter/EPA remain |
+| P06 | PARTIAL | TLS/EPA | Schannel peer DER/OID and RSA SHA1/256/384/512 RFC5929 hashes match in TLS1.2+1.3; pin negative refuses. ECDSA/PSS SHA256/384 hashes also match; MD5 native handshakes fail. Transport adapter/EPA and MD5 disposition remain |
 | P07 | PARTIAL (refusal) | Digest | Synthetic Unicode/ANSI WDigest acquire refused before initialization; direct WinHTTP HTTP GET/POST remain401/no offers. Method/URI completion-token/parity unresolved |
 | P08 | EXECUTED (primitive) | Helper Job Object | Spaces/direct/shell/GUI/nested job, assignment before resume, partial stdout and every enumerated owned descendant kill/reap executed; helper parser integration separate |
 
@@ -247,15 +276,15 @@ complete. The rows below identify residual work, not an execution approval.
 | B11 | Fake configured-helper invocation counter plus default-logon server fixture | Full released HTTPS row needs approved Windows native trust/supervisor precondition; helper is fake, no live gh |
 | B12/B13 | Generated explicit fixture credentials and controlled verifier can be prepared | Full HTTPS needs Windows trust. If OS-backed distinct user is needed, account/token provisioning needs separate root approval; no operator password use |
 | B14/P07 | WDigest acquire and direct WinHTTP Digest GET/POST refusals executed | Current synthetic-credential fixture does not complete Digest. Diagnose interface/provider prerequisites without policy changes; full released HTTPS/helper row still needs trust |
-| B15 | Read-only actual URL-zone classification and fixture routing can be prepared | Full HTTPS requires trust and named certificate/routing. Try owned proxy routing without hosts edits; hosts/zone edits require root approval if unavoidable |
+| B15 | Native URL-zone classification executed; fixture routing can be prepared | Full HTTPS requires trust and named certificate/routing. Try owned proxy routing without hosts edits; hosts/zone edits require root approval if unavoidable |
 | B16 | Existing synthetic CBT proof remains partial | Actual TLS/EPA-required positive/negative server rows need Windows trust and verified peer binding; no distinct account necessarily required |
 | B17 | Mac row awaits requested approval; Linux fixture source can be prepared | Mac native trust unapproved; Linux target assignment/prerequisites needed, no Linux row attempted here |
 | B18 | Owned discovery/POST challenge/replay fixture can be prepared | Full released HTTPS row needs Windows trust; document actual body/effect, not inferred replay |
 | P01 | Collision/ACL/list/signature executed | Real cross-SID actor requires separately coordinated distinct token/account; no real agent changes |
-| P02 | Actual prompt/mapping retirement and synthetic stale/replacement cases executed | Numeric HWND reuse and concurrency still need measured controls; unique owned fixture scope can cover them without accounts |
+| P02 | Actual prompt/mapping retirement and synthetic stale/replacement cases executed | Concurrency executed; numeric reuse not observed within fixed 100000/15s cap. Mandatory reused-window assertion remains unexecuted, requiring root disposition or a separately bounded reproducible fixture |
 | P03 | Owned overlapped partial/cancel/no-UNC primitive executed | Native service identity/auth still needs coordinated provider setup; fake server is not native service proof |
 | P05 | Default/explicit first legs and between-leg owned worker cancellation executed | Full distinct identity and in-flight cancellation remain. Distinct OS identity only if needed requires approval; no policy change |
-| P06 | Native process-pinned RSA TLS1.2+1.3 peer/hash primitive executed | Non-RSA/PSS/MD5/transport-adapter proof can remain process scoped; released HTTPS/EPA still needs approved native trust |
+| P06 | Native process-pinned RSA TLS1.2+1.3 peer/hash primitive executed | ECDSA/PSS executed process scoped; MD5 fails native handshake and needs compatibility/provider disposition. Transport adapter proof remains; released HTTPS/EPA needs approved native trust |
 | P08 | Complete owned job primitive executed | Parser/configured-helper composition remains later implementation; inherited host job policy/service/elevation changes prohibited |
 
 B01/B02/B03/B05/B07 have executed outcomes described above; B10's measured

@@ -55,9 +55,23 @@ credentials refuse acquire; direct WinHTTP Digest GET/POST stay401/no offers.
 Failures and bounded limits are retained; no global provider-unavailability claim.
 
 Residual: native service/both-agents and cross-SID provider/account scope;
-numeric HWND reuse/concurrency; full helper/default identity isolation and
-in-flight provider cancellation; non-RSA/PSS/MD5/transport TLS adapter/EPA;
+numeric HWND reuse (bounded100000 attempts did not reuse); full helper/default identity isolation and
+in-flight provider cancellation; MD5 native handshake disposition and transport TLS adapter/EPA;
 Digest interface/provider disposition and released HTTPS/POST; proxy grammar/
 snapshot and zones/redirects; Mac approved-trust receipt and Linux assignment.
 Mac approval remains unanswered, Windows trust held, no trust mutation or new
 guardian variant. No product implementation or Git/GWZ mutation in this batch.
+
+Third bounded batch: private
+[2026-10-03-tr1-8-residual-primitives](../../gwz-core-evidence/campaigns/transport-qualification/runs/2026-10-03-tr1-8-residual-primitives/README.md),
+external E:/gwz-tests/tr1-8-residual-20261003-61-5dd1f1. Prior two runs unchanged.
+P02 actual and nonce-isolated synthetic concurrency each completed 4×8 requests;
+maximum four in-flight send scopes measured; owned threads/windows/providers
+retired. No numeric retired Pageant HWND reuse
+in 100000 attempts/2223ms (fixed 100000/15s cap): reuse assertion UNEXECUTED.
+P06 ECDSA256/384 and PSS256/384 native peer DER/hash pass TLS1.2+1.3; both MD5
+handshakes fail AuthenticationException/exit 2, not an MD5 hash pass. B15 URLMON
+flags0 measures proposed HTTP/HTTPS names as Intranet 1/Internet 3, with COM
+reference released; routing/redirect/auth remain unexecuted. No broader mutations,
+trust approval, design change or GO. Root still owns mandatory prerequisite
+dispositions and canonical reviews after settlement.
