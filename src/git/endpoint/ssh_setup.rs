@@ -385,7 +385,8 @@ fn timeout_failure(reason: TimeoutReason) -> Failure {
         effect: Effect::None,
     }
 }
-fn failure_from_io(error: &io::Error) -> Failure {
+/// The failure a setup job's error stands for, with a timeout's origin.
+pub(crate) fn failure_from_io(error: &io::Error) -> Failure {
     if let Some(reason) = timeout_reason(error) {
         return timeout_failure(reason);
     }
@@ -484,6 +485,29 @@ cfg_if::cfg_if! {
             let generic = failure_from_io(&io::Error::from(io::ErrorKind::Other));
             assert_eq!(generic.code, ErrorCode::Io);
             assert_eq!(generic.setup_cause, None);
+        }
+
+        #[test]
+        fn the_kinds_a_dropped_setup_reports_are_retried_and_a_cancelled_one_is_not() {
+            use super::setup_retry::{Phase, Verdict, classify};
+            // A server's MaxStartups drop reaches the handshake as a reset or an
+            // end of stream, which libssh2 reports as its own error and ssh2 as
+            // `Other` (ssh_tests::max_startups). Each such kind is an `Io`.
+            for kind in [
+                io::ErrorKind::Other,
+                io::ErrorKind::ConnectionReset,
+                io::ErrorKind::UnexpectedEof,
+                io::ErrorKind::BrokenPipe,
+            ] {
+                let failure = failure_from_io(&io::Error::from(kind));
+                assert_eq!(failure.code, ErrorCode::Io, "{kind:?}");
+                assert_eq!(classify(&failure, Phase::Setup), Verdict::Retry, "{kind:?}");
+            }
+            // The transport's own cancellation of a setup job reports
+            // `ConnectionAborted`, which is never retried.
+            let aborted = failure_from_io(&io::Error::from(io::ErrorKind::ConnectionAborted));
+            assert_eq!(aborted.code, ErrorCode::Cancelled);
+            assert_eq!(classify(&aborted, Phase::Setup), Verdict::Return);
         }
     }
 }

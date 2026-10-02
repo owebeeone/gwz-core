@@ -191,10 +191,11 @@ fn physical_capacity_wait_uses_allocation_deadline() {
                 &mut None,
             )
             .await;
+        // A timeout whose origin is allocation, which a setup never retries.
         assert!(matches!(
             result,
             Err(Failure {
-                setup_cause: None,
+                setup_cause: Some(SetupFailureCause::Allocation),
                 code: ErrorCode::Timeout,
                 ..
             })

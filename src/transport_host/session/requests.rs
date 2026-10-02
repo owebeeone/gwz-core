@@ -10,6 +10,31 @@ impl Session {
             .begin(request)
             .map_err(mux_error)
     }
+    /// The request's `--max-retries`: its driver's opens wait out that many
+    /// retried setups, and its endpoint's retry machines allow them.
+    pub(in crate::transport_host) fn set_max_retries(&self, request: &str, max_retries: u32) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(record) = state.registrations.get_mut(request) {
+            record.max_retries = max_retries;
+        }
+        if let Some(engine) = &mut state.engine {
+            engine.set_max_retries(request, max_retries);
+        }
+        if let Some(endpoint) = &mut state.https {
+            endpoint.set_max_retries(request, max_retries);
+        }
+    }
+    /// The request's `--max-retries`, as its admission installed it.
+    pub(in crate::transport_host) fn max_retries(&self, request: &str) -> u32 {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .registrations
+            .get(request)
+            .map_or(setup_retry::DEFAULT_MAX_RETRIES, |record| {
+                record.max_retries
+            })
+    }
     pub(in crate::transport_host) async fn ready(&self) -> ModelResult<()> {
         let owner = self
             .state

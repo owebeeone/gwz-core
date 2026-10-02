@@ -93,6 +93,47 @@ fn candidate_null_and_absent_are_equivalent_but_present_malformed_is_rejected() 
 }
 
 #[test]
+fn candidate_max_retries_is_read_by_the_retained_old_rust_decoder_and_absent_or_null_is_none() {
+    // A candidate writer's `--max-retries` is an unknown tag to the retained
+    // old reader, which reads the rest of the policy.
+    let policy = new::OperationPolicy {
+        concurrency: Some(4),
+        max_retries: Some(0),
+        ..Default::default()
+    };
+    let tree =
+        cbor::try_decode(&cbor::encode(&policy.to_cbor())).expect("candidate wire must decode");
+    let retained = old::OperationPolicy::from_cbor(&tree).expect("old reader accepts unknown tags");
+    assert_eq!(retained.concurrency, Some(4));
+    assert_eq!(
+        new::OperationPolicy::from_cbor(&tree).unwrap().max_retries,
+        Some(0)
+    );
+
+    // An older writer leaves the field absent, and null reads the same: no
+    // budget, so the transport's default of three retries applies.
+    let absent = new::OperationPolicy::from_cbor(
+        &old::OperationPolicy {
+            concurrency: Some(4),
+            ..Default::default()
+        }
+        .to_cbor(),
+    )
+    .expect("the field may be absent");
+    let null = new::OperationPolicy::from_cbor(
+        &new::OperationPolicy {
+            concurrency: Some(4),
+            max_retries: None,
+            ..Default::default()
+        }
+        .to_cbor(),
+    )
+    .expect("the field may be null");
+    assert_eq!(absent.max_retries, None);
+    assert_eq!(absent, null);
+}
+
+#[test]
 fn external_owner_envelope_is_used_without_a_duplicate_definition() {
     let envelope = gwz_transport::protocol::Envelope {
         version: 1,

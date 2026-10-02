@@ -38,6 +38,24 @@ fn a_driver_with_no_endpoint_in_process_refuses_a_url_password() {
     assert!(!format!("{error:?} {error}").contains("sentinel"));
 }
 #[test]
+fn operation_policy_carries_max_retries_and_an_older_writer_leaves_it_absent() {
+    use crate::cbor::Cbor;
+    let policy = crate::OperationPolicy {
+        max_retries: Some(0),
+        ..Default::default()
+    };
+    let decoded = crate::OperationPolicy::from_cbor(&policy.to_cbor()).unwrap();
+    assert_eq!(decoded.max_retries, Some(0));
+    // A writer without the field, production's encoder among them, sends
+    // keys 1 to 8 only; its policy decodes with the field absent.
+    let Cbor::Map(mut entries) = policy.to_cbor() else {
+        panic!("a policy encodes as a map");
+    };
+    entries.retain(|(key, _)| *key != 9);
+    let older = crate::OperationPolicy::from_cbor(&Cbor::Map(entries)).unwrap();
+    assert_eq!(older.max_retries, None);
+}
+#[test]
 fn request_installs_its_resolved_pool_capacity_before_bind() {
     let runtime = TransportRuntime::new(config()).unwrap();
     let mut custom = meta("capacity-custom", TransportPlacement::Local);

@@ -24,6 +24,8 @@ impl PlacementEndpoint {
                     .store(true, std::sync::atomic::Ordering::Release);
             }
         }
+        // Its members are all finished: no wake opens a probe for it.
+        self.retries.remove(request);
     }
     /// Ends one cancelled stream: queues its `Cancelled` terminal, unless it
     /// has one already, and abandons its attached exchange.
@@ -111,5 +113,6 @@ impl PlacementEndpoint {
         self.terminal_outbound.clear();
         self.requests.clear();
         self.queued_opens.clear();
+        self.retries.clear();
     }
 }

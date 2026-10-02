@@ -21,6 +21,11 @@ pub(crate) use ssh_channel::{GitService, SshChannel};
 pub(crate) use ssh_connection::SshConnection;
 use std::collections::HashMap;
 
+/// The transport sets up as many connections to one host at once as an
+/// operation allows, 32 by default. OpenSSH's default `MaxStartups` drops
+/// unauthenticated connections beyond 10, so the fixture's server takes more.
+const OPEN_STARTUPS: &str = "MaxStartups 64\n";
+
 pub(crate) struct SshdFixture {
     pub(crate) temp: TempDir,
     pub(crate) child: Child,
@@ -34,14 +39,20 @@ pub(crate) struct SshdFixture {
 
 impl SshdFixture {
     pub(crate) fn new() -> Self {
-        Self::new_mode(false)
+        Self::new_mode(false, OPEN_STARTUPS)
     }
 
     pub(crate) fn new_debug() -> Self {
-        Self::new_mode(true)
+        Self::new_mode(true, OPEN_STARTUPS)
     }
 
-    fn new_mode(debug: bool) -> Self {
+    /// A server with `startups` in place of [`OPEN_STARTUPS`]: its
+    /// `MaxStartups` line, and any other directive the test needs with it.
+    pub(crate) fn with_startups(startups: &str) -> Self {
+        Self::new_mode(false, startups)
+    }
+
+    fn new_mode(debug: bool, startups: &str) -> Self {
         assert!(
             Path::new("/usr/sbin/sshd").exists(),
             "native gate requires /usr/sbin/sshd; this is not a skipped qualification"
@@ -70,11 +81,8 @@ impl SshdFixture {
         fs::write(&known_hosts, format!("[127.0.0.1]:{port} {host_public}")).unwrap();
         let config = temp.path().join("sshd_config");
         let user = run_output(Command::new("id").args(["-un"]));
-        // The transport sets up as many connections to one host at once as an
-        // operation allows, 32 by default. OpenSSH's default MaxStartups drops
-        // unauthenticated connections beyond 10, so this server takes more.
         let config_text = format!(
-            "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\nPidFile none\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nChallengeResponseAuthentication no\nUsePAM no\nPermitRootLogin yes\nPubkeyAuthentication yes\nStrictModes no\nLogLevel ERROR\nMaxStartups 64\n",
+            "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\nPidFile none\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nChallengeResponseAuthentication no\nUsePAM no\nPermitRootLogin yes\nPubkeyAuthentication yes\nStrictModes no\nLogLevel ERROR\n{startups}",
             host_key.display(),
             authorized.display(),
         );

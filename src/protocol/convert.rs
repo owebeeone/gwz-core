@@ -202,6 +202,10 @@ impl From<&model::Selection> for generated::Selection {
 }
 
 impl From<&model::OperationPolicy> for generated::OperationPolicy {
+    #[allow(
+        clippy::needless_update,
+        reason = "gwz_transport_candidate adds max_retries"
+    )]
     fn from(value: &model::OperationPolicy) -> Self {
         Self {
             partial: Some(value.partial.into()),
@@ -210,10 +214,12 @@ impl From<&model::OperationPolicy> for generated::OperationPolicy {
             unsupported_member: Some(value.unsupported_member.into()),
             remote: value.remote.clone(),
             concurrency: value.concurrency.map(|value| value as i64),
-            // Progress coalescing and per-host limits are read directly from the
-            // wire policy by handlers; the internal model does not carry them.
+            // Progress coalescing, per-host limits and the candidate's retry
+            // budget are read directly from the wire policy by handlers; the
+            // internal model does not carry them.
             progress_min_interval_ms: None,
             max_connections_per_host: None,
+            ..Default::default()
         }
     }
 }

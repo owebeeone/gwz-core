@@ -107,8 +107,49 @@ fn open_failure(
             }),
         },
         anonymous: None,
+        attempts: None,
     };
     map_open_error(io::Error::new(io::ErrorKind::Other, failure), service)
+}
+
+#[test]
+fn a_failed_open_names_a_timeouts_origin_and_the_attempt_it_ended() {
+    use gwz_transport::protocol::SetupFailureCause;
+    let message = |setup_cause, attempts| {
+        let failure = crate::transport_host::HttpsOpenFailure {
+            failure: gwz_transport::protocol::Failure {
+                setup_cause,
+                code: gwz_transport::protocol::ErrorCode::Timeout,
+                effect: gwz_transport::protocol::Effect::None,
+                facts: None,
+            },
+            anonymous: None,
+            attempts,
+        };
+        map_open_error(
+            io::Error::other(failure),
+            GitService::UploadPackAdvertisement,
+        )
+        .message()
+        .to_owned()
+    };
+    // The retry plan's §5 suffix, after the origin §4 decides by.
+    assert_eq!(
+        message(Some(SetupFailureCause::Aggregate), Some((4, 4))),
+        "HTTPS endpoint request failed: Timeout: aggregate (attempt 4 of 4)"
+    );
+    assert_eq!(
+        message(Some(SetupFailureCause::Allocation), None),
+        "HTTPS endpoint request failed: Timeout: allocation"
+    );
+    assert_eq!(
+        message(Some(SetupFailureCause::Interaction), None),
+        "HTTPS endpoint request failed: Timeout: interaction"
+    );
+    assert_eq!(
+        message(None, None),
+        "HTTPS endpoint request failed: Timeout"
+    );
 }
 
 #[test]

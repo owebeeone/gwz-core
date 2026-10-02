@@ -6,6 +6,7 @@
 
 use super::{
     agent_job::{self, Job},
+    setup_retry::{self, AllocationClock, Decision, Jitter, Operations, Outcome, Phase},
     ssh_channel::GitService as NativeService,
     ssh_worker::{BridgeContext, Endpoint, EndpointAttachment, PendingOpen},
 };
@@ -36,6 +37,21 @@ const MAX_REQUESTS: usize = 64;
 const MAX_QUEUED_INPUT: usize = 16;
 const MAX_OUTBOUND: usize = 64;
 type RequestKey = (String, i64);
+/// What a setup retry machine is kept for: an open's pool key and the identity
+/// its Open names. 1.0.17 authenticated each member on its own, and a
+/// workspace can name a different key for each remote (gwzSshIdentity), so
+/// one identity's refused key closes its own machine and leaves the members
+/// of the same host that authenticate otherwise to their own setups.
+type RetryKey = (Key, Identity);
+/// The retry machine `envelope`'s open, on `pool_key`, belongs to.
+fn retry_key(pool_key: &Key, envelope: &Envelope) -> RetryKey {
+    let identity = envelope
+        .open
+        .as_ref()
+        .map(|open| open.identity.clone())
+        .unwrap_or_default();
+    (pool_key.clone(), identity)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EndpointError {
@@ -54,6 +70,9 @@ struct Request {
     attachment: Option<EndpointAttachment>,
     queued_input: VecDeque<Envelope>,
     terminal: bool,
+    /// The facts of this member's setup attempts so far, which its one reply
+    /// carries: progress on its diagnostic row (the retry plan's §5).
+    facts: Option<gwz_transport::protocol::Facts>,
 }
 struct OpenJob {
     key: RequestKey,
@@ -62,13 +81,15 @@ struct OpenJob {
     cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
     deadline: Option<u64>,
     abandoned: bool,
+    /// The Open as it arrived, which a retried attempt starts from again.
+    envelope: Envelope,
 }
 struct QueuedOpen {
     key: RequestKey,
     pool_key: Key,
     envelope: Envelope,
-    admitted_at: u64,
-    deadline: u64,
+    /// Its allocation clock, which stops while its key holds it.
+    allocation: AllocationClock,
 }
 struct CheckJob {
     key: RequestKey,
@@ -98,6 +119,11 @@ pub(crate) struct PlacementEndpoint {
     faulted: bool,
     /// The host's waker, which each bridge wakes when it has a message.
     waker: Option<Waker>,
+    /// Each operation's setup retry machines, by pool key and identity (the
+    /// retry plan's §5, and `RetryKey`); an attempt's member is its request
+    /// key.
+    retries: Operations<RetryKey, RequestKey>,
+    jitter: Jitter,
 }
 impl Drop for PlacementEndpoint {
     fn drop(&mut self) {
@@ -139,7 +165,14 @@ impl PlacementEndpoint {
             shutting_down: false,
             faulted: false,
             waker: None,
+            retries: Operations::new(),
+            jitter: Jitter::random(),
         })
+    }
+    /// The operation's `--max-retries`, which its admission installs before
+    /// its first open. An operation never given one retries three times.
+    pub(crate) fn set_max_retries(&mut self, request: &str, max_retries: u32) {
+        self.retries.set_max_retries(request, max_retries);
     }
 
     /// Advance bounded checks, open completions, and each live message bridge.
@@ -194,6 +227,7 @@ fn request_state(envelope: &Envelope) -> Request {
         attachment: None,
         queued_input: VecDeque::new(),
         terminal: false,
+        facts: None,
     }
 }
 /// The most opens in flight across every host: the pool's total and request
@@ -208,12 +242,14 @@ fn open_ceiling(capacity: Capacity) -> usize {
         .min(MAX_REQUESTS)
         .min(agent_job::LIMIT / 2)
 }
-fn failure_for(error: io::Error) -> Failure {
+/// An open's failure, and whether a started setup failed: only the worker's
+/// typed failure says so; every other refusal ends the open before a setup.
+fn open_failure(error: &io::Error) -> (Failure, Phase) {
     if let Some(failure) = error
         .get_ref()
         .and_then(|cause| cause.downcast_ref::<super::ssh_worker::EndpointOpenFailure>())
     {
-        return failure.0.clone();
+        return (failure.failure.clone(), failure.phase);
     }
     let code = match error.kind() {
         io::ErrorKind::TimedOut => ErrorCode::Timeout,
@@ -223,17 +259,28 @@ fn failure_for(error: io::Error) -> Failure {
         io::ErrorKind::ConnectionAborted | io::ErrorKind::BrokenPipe => ErrorCode::CarrierLost,
         _ => ErrorCode::Io,
     };
-    Failure {
+    let failure = Failure {
         setup_cause: None,
         code,
         effect: Effect::None,
         facts: None,
-    }
+    };
+    (failure, Phase::Other)
 }
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
+        impl PlacementEndpoint {
+            pub(crate) fn set_jitter(&mut self, jitter: Jitter) {
+                self.jitter = jitter;
+            }
+            /// The attempts that have started and not yet ended.
+            pub(crate) fn attempts_in_flight_for_test(&self) -> usize {
+                self.opens.len()
+            }
+        }
         #[path = "placement_endpoint_tests.rs"]
         mod check_tests;
+        mod retry_tests;
     }
 }

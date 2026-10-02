@@ -20,7 +20,7 @@ CANDIDATE_SCHEMA = ROOT.parents[1] / "protocol" / "candidate" / "candidate.taut.
 os.environ["GWZ_CORE_SCHEMA"] = str(CORE_SCHEMA)
 os.environ["GWZ_TRANSPORT_SCHEMA"] = str(OWNER_SCHEMA)
 
-from taut.ir.load import load_schema  # noqa: E402
+from taut.ir.load import load_schema, schema_from_json  # noqa: E402
 from taut.ir.model import MISSING_OK  # noqa: E402
 from taut.wire import codec  # noqa: E402
 
@@ -37,6 +37,9 @@ retained_spec.loader.exec_module(retained_codec)
 
 NEW = load_schema(CANDIDATE_SCHEMA)
 OLD = load_schema(CORE_SCHEMA)
+# The transport owner's declarations, which the candidate composition imports
+# whole: they are the owner's schema, not the candidate's overlay.
+OWNER = schema_from_json(json.loads(OWNER_SCHEMA.read_text()))
 
 
 def _old_options():
@@ -45,6 +48,19 @@ def _old_options():
 
 def _old_capabilities():
     return {"file_identity": True, "exact_agent_identity": True}
+
+
+def _old_policy():
+    return {
+        "partial": None,
+        "destructive": None,
+        "sync": None,
+        "unsupported_member": None,
+        "remote": None,
+        "concurrency": 4,
+        "progress_min_interval_ms": None,
+        "max_connections_per_host": None,
+    }
 
 
 def _old_request_meta():
@@ -66,6 +82,7 @@ def test_overlay_has_exact_additive_tags_and_missing_ok_contract():
         "TransportOptions": {"placement": 4, "endpoint_path_base": 5},
         "RequestMeta": {"transport_message": 10},
         "ResponseMeta": {"transport_message": 9},
+        "OperationPolicy": {"max_retries": 9},
         "TransportCapabilitiesResponse": {
             "message_versions": 3,
             "placements": 4,
@@ -81,6 +98,23 @@ def test_overlay_has_exact_additive_tags_and_missing_ok_contract():
         },
     }
     assert NEW.enums["TransportPlacement"].members == {"local": 1, "cli": 2}
+    # `expected` is the whole overlay: every field the candidate has and the
+    # production core schema lacks, outside the owner's declarations, and the
+    # one enum it adds. A field added, removed or renamed without it fails here.
+    added = {
+        (message_name, field.name)
+        for message_name, message in NEW.messages.items()
+        if message_name not in OWNER.messages
+        for field in message.fields
+        if message_name not in OLD.messages
+        or field.name not in {old.name for old in OLD.messages[message_name].fields}
+    }
+    assert added == {
+        (message_name, field_name)
+        for message_name, fields in expected.items()
+        for field_name in fields
+    }
+    assert set(NEW.enums) - set(OLD.enums) - set(OWNER.enums) == {"TransportPlacement"}
     for message_name, fields in expected.items():
         actual = {field.name: field for field in NEW.messages[message_name].fields}
         for field_name, tag in fields.items():
@@ -154,6 +188,24 @@ def test_candidate_missing_null_and_malformed_values_have_distinct_rules():
     malformed = {**old_wire, 4: "cli"}
     with pytest.raises(codec.DecodeError):
         codec.decode_struct(NEW, "TransportOptions", malformed, strict=True)
+
+
+def test_max_retries_crosses_the_retained_python_reader_and_absent_or_null_is_none():
+    # A candidate writer's `--max-retries` is an unknown tag to the retained
+    # old Python reader, which reads the rest of the policy.
+    wire = codec.encode(NEW, "OperationPolicy", {**_old_policy(), "max_retries": 0})
+    retained = retained_codec.decode(OLD, "OperationPolicy", wire)
+    assert retained["concurrency"] == 4
+    assert set(retained["__unknown__"]) == {9}
+    assert codec.decode(NEW, "OperationPolicy", wire)["max_retries"] == 0
+    # An older writer leaves the field absent, and null reads the same: no
+    # budget, so the transport's default of three retries applies.
+    old_wire = codec.encode_struct(OLD, "OperationPolicy", _old_policy())
+    absent = codec.decode_struct(NEW, "OperationPolicy", old_wire, strict=True)
+    null = codec.decode_struct(NEW, "OperationPolicy", {**old_wire, 9: None}, strict=True)
+    assert absent["max_retries"] is None
+    assert null["max_retries"] is None
+    assert absent["concurrency"] == null["concurrency"] == 4
 
 
 def test_default_local_and_capability_gating_refuse_old_or_incomplete_results():

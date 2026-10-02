@@ -777,10 +777,13 @@ fn cli_open_rechecks_a_selected_file_after_successful_preflight() {
         error
             .get_ref()
             .and_then(|cause| cause.downcast_ref::<SshOpenFailure>()),
-        Some(SshOpenFailure(gwz_transport::protocol::Failure {
-            code: gwz_transport::protocol::ErrorCode::Unavailable,
-            ..
-        }))
+        Some(SshOpenFailure(
+            gwz_transport::protocol::Failure {
+                code: gwz_transport::protocol::ErrorCode::Unavailable,
+                ..
+            },
+            _
+        ))
     ));
     assert!(!harness.fixture.marker.exists());
     block_on(request.finish());

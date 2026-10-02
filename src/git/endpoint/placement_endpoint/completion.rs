@@ -104,29 +104,24 @@ impl PlacementEndpoint {
                     open.abandoned = true;
                     open.cancelled
                         .store(true, std::sync::atomic::Ordering::Release);
-                    Some(open.key.clone())
+                    Some((open.key.clone(), retry_key(&open.pool_key, &open.envelope)))
                 } else {
                     None
                 }
             };
-            if let Some(key) = expired {
-                if let Some(state) = self.requests.get_mut(&key) {
-                    if !state.terminal {
-                        state.terminal = true;
-                        let message = envelope_for(
-                            state,
-                            MessageKind::OpenFailed,
-                            Some(Failure {
-                                setup_cause: None,
-                                code: ErrorCode::Timeout,
-                                effect: Effect::None,
-                                facts: None,
-                            }),
-                            None,
-                        );
-                        self.push_outbound(key.0, message);
-                    }
-                }
+            if let Some((key, machine)) = expired {
+                // The attempt ran out of its own time before its setup had an
+                // outcome: no verdict for the key.
+                self.retries.machine(&key.0, &machine).abandoned(&key);
+                self.fail_open(
+                    &key,
+                    Failure {
+                        setup_cause: None,
+                        code: ErrorCode::Timeout,
+                        effect: Effect::None,
+                        facts: None,
+                    },
+                );
             }
             // An abandoned open waits for the worker's reply too, which its
             // cancellation brings early; a late success is cancelled below.
@@ -139,33 +134,34 @@ impl PlacementEndpoint {
                 if let Ok((attachment, _)) = result {
                     attachment.cancel();
                 }
-                if let Some(state) = self.requests.get_mut(&job.key) {
-                    if !state.terminal {
-                        state.terminal = true;
-                        let message = envelope_for(
-                            state,
-                            MessageKind::OpenFailed,
-                            Some(Failure {
-                                setup_cause: None,
-                                code: ErrorCode::Timeout,
-                                effect: Effect::None,
-                                facts: None,
-                            }),
-                            None,
-                        );
-                        self.push_outbound(job.key.0, message);
-                    }
-                }
+                self.fail_open(
+                    &job.key,
+                    Failure {
+                        setup_cause: None,
+                        code: ErrorCode::Timeout,
+                        effect: Effect::None,
+                        facts: None,
+                    },
+                );
                 continue;
             }
             match result {
                 Ok((attachment, mut opened)) => {
+                    let admitted = self
+                        .retries
+                        .machine(&job.key.0, &retry_key(&job.pool_key, &job.envelope))
+                        .succeeded(&job.key, !opened.reused);
+                    if !admitted {
+                        attachment.discard_after_use();
+                    }
                     opened.endpoint_id = self.endpoint_id.clone();
                     opened.trust_owner = self.trust_owner.clone();
                     if !self.requests.contains_key(&job.key) {
                         attachment.cancel();
                         continue;
                     }
+                    let facts = std::mem::take(&mut opened.facts);
+                    opened.facts = self.keep_facts(&job.key, Some(facts)).unwrap_or_default();
                     let message = {
                         let state = self.requests.get_mut(&job.key).expect("open request");
                         let message = envelope_for(state, MessageKind::Opened, None, Some(opened));
@@ -175,22 +171,61 @@ impl PlacementEndpoint {
                     self.push_outbound(job.key.0.clone(), message);
                 }
                 Err(error) => {
-                    if !self.requests.contains_key(&job.key) {
-                        continue;
-                    }
-                    let message = {
-                        let state = self.requests.get_mut(&job.key).expect("open request");
-                        state.terminal = true;
-                        envelope_for(
-                            state,
-                            MessageKind::OpenFailed,
-                            Some(failure_for(error)),
-                            None,
-                        )
-                    };
-                    self.push_outbound(job.key.0.clone(), message);
+                    self.attempt_failed(job.key, job.pool_key, job.envelope, &error, now_ms);
                 }
             }
+        }
+    }
+
+    /// A member's attempt failed with `error`. The key's machine decides,
+    /// from the failure and its phase (the retry plan's §4): the member waits
+    /// in the queue for another attempt, or is finished.
+    pub(super) fn attempt_failed(
+        &mut self,
+        key: RequestKey,
+        pool_key: Key,
+        envelope: Envelope,
+        error: &io::Error,
+        now: u64,
+    ) {
+        if !self.requests.contains_key(&key) {
+            return;
+        }
+        let (failure, phase) = open_failure(error);
+        let verdict = setup_retry::classify(&failure, phase);
+        let jitter = self.jitter.draw();
+        let machine = retry_key(&pool_key, &envelope);
+        let outcome = self.retries.machine(&key.0, &machine).failed(
+            &key,
+            verdict,
+            failure.clone(),
+            now,
+            jitter,
+        );
+        match outcome {
+            Outcome::Retry => {
+                self.keep_facts(&key, failure.facts);
+                let allocation = envelope
+                    .open
+                    .as_ref()
+                    .map_or(0, |open| open.deadlines.allocation_ms.max(0) as u64);
+                self.queued_opens.push_back(QueuedOpen {
+                    key,
+                    pool_key,
+                    envelope,
+                    allocation: AllocationClock::new(now, allocation),
+                });
+            }
+            // Its own attempts' facts, also when the key finishes it with a
+            // failure another member's setup recorded.
+            Outcome::Finish(last) => self.fail_open(
+                &key,
+                Failure {
+                    facts: failure.facts,
+                    ..last.failure
+                },
+            ),
+            Outcome::Return => self.fail_open(&key, failure),
         }
     }
 }

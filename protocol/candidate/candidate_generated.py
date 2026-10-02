@@ -914,6 +914,7 @@ class OperationPolicy:
     concurrency: int | None
     progress_min_interval_ms: int | None
     max_connections_per_host: int | None
+    max_retries: int | None
 
 @dataclass(slots=True)
 class RemoteSshIdentity:

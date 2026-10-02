@@ -88,6 +88,15 @@ def compose(core_path: Path, owner_path: Path) -> Schema:
             FieldDef("transport_message", 10, MsgRef("Envelope"), optional, False, None),
         ),
     )
+    # `--max-retries`: the setup attempts an operation makes after the first
+    # (gwz-core dev-docs/GwzRemoteTransportRetryPlan.md §5). Absent means the
+    # default, 3, so a writer without the field keeps it.
+    messages["OperationPolicy"] = _add_fields(
+        messages["OperationPolicy"],
+        (
+            FieldDef("max_retries", 9, Scalar("int"), optional, False, None),
+        ),
+    )
     messages["ResponseMeta"] = _add_fields(
         messages["ResponseMeta"],
         (

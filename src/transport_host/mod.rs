@@ -23,6 +23,7 @@ cfg_if::cfg_if! {
         mod cancellable_tests;
         mod cancellable_https_tests;
         mod endpoint_environment_tests;
+        mod retry_tests;
     }
 }
 use crate::git::endpoint::{https_auth::HelperSlots, ssh_local};
@@ -97,6 +98,11 @@ impl SshEndpointConfig {
             }
             pub(crate) fn with_io_timeout_ms(mut self, io_timeout_ms: u64) -> Self {
                 self.io_timeout_ms = io_timeout_ms;
+                self
+            }
+            /// The setup's aggregate clock, which the HTTPS connect uses too.
+            pub(crate) fn with_connect_timeout_ms(mut self, connect_timeout_ms: u64) -> Self {
+                self.pool.connect_timeout_ms = connect_timeout_ms;
                 self
             }
         }
@@ -250,6 +256,20 @@ impl TransportRuntime {
     ) -> ModelResult<TransportRequest> {
         request::validate_meta(&meta, &operation_id)?;
         let cli = request::is_cli(&meta);
+        // The Cli placement's endpoint is beyond the port, and the session
+        // protocol carries it no retry budget: it would run the default while
+        // this driver counted the request's. Until that protocol carries one,
+        // a budget is refused there, so the driver's record keeps the default.
+        if cli
+            && meta
+                .policy
+                .as_ref()
+                .is_some_and(|policy| policy.max_retries.is_some())
+        {
+            return Err(unsupported(
+                "--max-retries is not carried to the Cli placement's endpoint",
+            ));
+        }
         let (session, local_endpoint) = {
             let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
             if state.closed {
@@ -269,24 +289,25 @@ impl TransportRuntime {
         };
         // Endpoint registration precedes the driver Bind even for the in-process route.
         let client_guard = if let Some(endpoint) = local_endpoint {
+            let max_retries = request::max_retries(&meta);
             let policy = meta.policy.as_ref();
             let jobs = crate::operation::resolve_jobs(policy.and_then(|value| value.concurrency));
             let per_host = crate::operation::resolve_per_host(
                 policy.and_then(|value| value.max_connections_per_host),
             );
-            Some(
-                endpoint
-                    .admit_client_request(
-                        &meta.request_id,
-                        pool::Capacity {
-                            per_user_host: per_host,
-                            per_host,
-                            total: jobs.max(256),
-                            max_requests: jobs.max(1024),
-                        },
-                    )
-                    .await?,
-            )
+            let client = endpoint
+                .admit_client_request(
+                    &meta.request_id,
+                    pool::Capacity {
+                        per_user_host: per_host,
+                        per_host,
+                        total: jobs.max(256),
+                        max_requests: jobs.max(1024),
+                    },
+                )
+                .await?;
+            endpoint.set_max_retries(&meta.request_id, max_retries);
+            Some(client)
         } else {
             None
         };

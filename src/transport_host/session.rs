@@ -1,6 +1,7 @@
 use super::*;
 use crate::git::endpoint::{
     placement_endpoint::{EndpointError, PlacementEndpoint},
+    setup_retry,
     shared_reservation::Authority,
     ssh_channel::GitService,
     ssh_destination::Destination,
@@ -113,6 +114,8 @@ struct Registration {
     // Logical mux retirement is one-shot; physical cleanup can outlive it.
     mux_retired: bool,
     result: Option<CleanupReport>,
+    /// The request's `--max-retries`, which bounds how long its opens wait.
+    max_retries: u32,
 }
 struct State {
     owner: Option<Owner>,
@@ -423,6 +426,7 @@ impl Session {
                 sealed: None,
                 mux_retired: false,
                 result: None,
+                max_retries: setup_retry::DEFAULT_MAX_RETRIES,
             },
         );
         Ok(())

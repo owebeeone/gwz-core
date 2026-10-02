@@ -184,6 +184,16 @@ fn validate_common_meta(request: &crate::MergeRequest) -> ModelResult<()> {
             "policy.max_connections_per_host (--max-per-host)",
             policy.max_connections_per_host.is_some(),
         )?;
+        cfg_if::cfg_if! {
+            if #[cfg(gwz_transport_candidate)] {
+                // Only the transport build's policy has the field, and merge
+                // opens no connection it could retry.
+                reject_policy_field(
+                    "policy.max_retries (--max-retries)",
+                    policy.max_retries.is_some(),
+                )?;
+            }
+        }
     }
     Ok(())
 }
@@ -515,6 +525,37 @@ mod tests {
             assert_eq!(error.code, ErrorCode::MergeValidationFailed, "{field}");
             assert!(error.message.contains(field), "{field}: {}", error.message);
             assert!(error.message.contains(option), "{field}: {}", error.message);
+        }
+    }
+
+    cfg_if::cfg_if! {
+        if #[cfg(gwz_transport_candidate)] {
+            /// Only the transport build has `--max-retries`, and merge opens no
+            /// connection it could retry: it refuses the field on every
+            /// operation, as it refuses `--jobs` (the State review's P3-3).
+            #[test]
+            fn max_retries_is_refused_like_every_policy_field_merge_does_not_act_on() {
+                for op in [
+                    crate::MergeOp::Start,
+                    crate::MergeOp::Resume,
+                    crate::MergeOp::Abort,
+                    crate::MergeOp::Status,
+                    crate::MergeOp::Gc,
+                ] {
+                    let mut value = request(op);
+                    value.meta.policy = Some(crate::OperationPolicy {
+                        max_retries: Some(0),
+                        ..crate::OperationPolicy::default()
+                    });
+                    let error = validate_merge_request(&value).unwrap_err();
+                    assert_eq!(error.code, ErrorCode::MergeValidationFailed, "{op:?}");
+                    assert!(
+                        error.message.contains("policy.max_retries (--max-retries)"),
+                        "{op:?}: {}",
+                        error.message
+                    );
+                }
+            }
         }
     }
 }

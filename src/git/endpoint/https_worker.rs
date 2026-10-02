@@ -5,6 +5,7 @@ use super::{
     https_destination::Destination,
     https_policy::{self, ResponseAction, RouteKey, Routes},
     https_pool::{HttpLease, HttpsPool, RunningPool},
+    setup_retry::{self, Phase},
     shared_reservation::Authority,
 };
 use bytes::Bytes;
@@ -132,6 +133,31 @@ pub(crate) struct Prepared {
     protocol_error: Arc<AtomicBool>,
     io_ms: u64,
     cleanup_ms: u64,
+    /// The connection serves this exchange and is then discarded, never
+    /// returned to the pool for reuse.
+    discard: bool,
+}
+impl Prepared {
+    /// A setup its key's retry machine does not admit for reuse: one from a
+    /// generation the key has left (the retry plan's §4).
+    pub(crate) fn discard_after_use(&mut self) {
+        self.discard = true;
+    }
+}
+/// What an open's first connect did, which its key's retry machine learns
+/// (the retry plan's §4 and §5). Only a fresh connect for the open's first
+/// request, before that request's first byte, is a setup: a redirect's
+/// connect, a carried or idle connection, and the work before a connect are
+/// none.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum FirstConnect {
+    /// No fresh connect: none was needed, or none was reached.
+    #[default]
+    None,
+    /// The fresh connect succeeded, whatever the request after it did.
+    Connected,
+    /// The fresh connect failed, and the preparation's failure is its.
+    Failed,
 }
 pub(crate) struct ChallengeLease {
     lease: Option<HttpLease>,
@@ -208,6 +234,15 @@ fn with_facts(code: ErrorCode, effect: Effect, facts: &Facts) -> Failure {
         facts: Some(facts.clone()),
     }
 }
+/// A failure of the `gh` helper's turn, whose clock is the interaction
+/// allowance: a timeout there has that origin.
+fn helper_failure(code: ErrorCode, facts: &Facts) -> Failure {
+    let mut failure = with_facts(code, Effect::None, facts);
+    if code == ErrorCode::Timeout {
+        failure.setup_cause = Some(SetupFailureCause::Interaction);
+    }
+    failure
+}
 fn classify_hyper_error(error: &hyper::Error) -> ErrorCode {
     if error.is_parse() {
         ErrorCode::Protocol
@@ -234,14 +269,16 @@ fn validate_content(response: &Response<Incoming>, service: GitService) -> Resul
 }
 cfg_if::cfg_if! { if #[cfg(test)] { #[path="https_worker_tests.rs"] mod tests; } }
 cfg_if::cfg_if! { if #[cfg(test)] { #[path="https_budget_tests.rs"] mod budget_tests; } }
+cfg_if::cfg_if! { if #[cfg(test)] { mod retry_tests; } }
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
         /// A standalone endpoint, the anonymous-then-Gh replay and the configured
         /// deadlines, for the HTTPS tests. They prepare through
-        /// `prepare_budget_for_transition`, as the transport host's HTTPS endpoint
-        /// does; `budget()` is what `budget_for_open` gives an Open that carries
-        /// the configured deadlines.
+        /// `prepare_budget_for_transition`, which is `prepare_attempt`, the
+        /// transport host's HTTPS endpoint's entry, without the first connect's
+        /// report; `budget()` is what `budget_for_open` gives an Open that
+        /// carries the configured deadlines.
         impl Endpoint {
             pub(crate) fn new(
                 tls: https_connection::Config,
@@ -263,6 +300,18 @@ cfg_if::cfg_if! {
             }
         }
         impl Client {
+            /// `prepare_attempt`, the production entry, without what its
+            /// first connect did, which only the transport host's retry
+            /// machine reads.
+            pub(crate) async fn prepare_budget_for_transition(
+                &self,
+                input: Input,
+                cancel: &CancellationToken,
+                budget: &mut Budget,
+                challenge: &mut Option<ChallengeLease>,
+            ) -> Result<Prepared, Failure> {
+                self.prepare_attempt(input, cancel, budget, challenge).await.0
+            }
             /// Sole authentication replay: anonymous discovery 401/404, once. The
             /// caller retains the first receipt and publishes only the final result.
             pub(crate) async fn prepare_auto(
