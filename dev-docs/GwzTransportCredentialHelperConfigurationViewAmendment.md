@@ -1,6 +1,6 @@
 # TR2.22 unconditional configuration view mechanism
 
-Date: 2026-10-03. Status: **DRAFT; not accepted or implemented**.
+Date: 2026-10-03. Status: **round-1 corrected DRAFT; not accepted or implemented**.
 Root settles and independently reviews this mechanism before adoption. The
 accepted helper-context amendment remains separate and unchanged. No transport
 wire or public GWZ API is added here.
@@ -18,18 +18,18 @@ this scope refusal remains red. Cwd `/` excludes repository configuration and
 repository-dependent conditions, but does not exclude every conditional include.
 
 A disposable Rust 1.95 physical spike executed the complete chosen primitive:
-Git NUL discovery, actual Git parsing of private bounded source copies, an
-ordered unconditional walk, a private flattened view, and real credential fill.
+Git NUL discovery, actual Git parsing of bounded source bytes through stdin, an
+ordered unconditional walk, a process-lifetime flattened environment view, and real credential fill.
 The original configuration selects hasconfig helper B; the view selects A.
 Assertions also pass for actual system/XDG/global order, Git-decoded PARAMETERS
 and COUNT overlays with duplicate/reset order, captured-HOME and relative root
 and nested includes, missing and empty includes, valueless versus empty fields,
 newline/tab/quote/backslash and non-UTF-8 values, and subsection normalization.
-Final controlled discovery contains only the private global view, suppressing
+Final controlled discovery contains only the flattened command entries, suppressing
 Apple Git's leading installation source as well as original system/XDG/global
 files. Synthetic credential answers are captured and wiped, never printed.
 Repeated identical system/global root paths produce two complete visits, with
-their duplicate/reset/helper sequence preserved. Private modes and successful
+their duplicate/reset/helper sequence preserved. Fixture modes and successful
 cleanup are checked; fixtures also have a cleanup
 owner on assertion failure. This is feasibility, not product acceptance.
 
@@ -47,7 +47,7 @@ Preserve TR1.6 §3.2's exclusion of **every** conditional include, its ordered
 system/global/XDG/GIT_CONFIG_* sources and legitimate unconditional includes.
 Preserve `git -c core.askPass= credential fill`, URL-only encoded input,
 terminal-prompt refusal, 120-second effective interaction limit and all helper
-result/parser/retry rules. A new private flattened configuration view implements
+result/parser/retry rules. A new process-lifetime flattened configuration view implements
 that existing policy; `--no-includes` is never applied to the final lookup as
 an alleged equivalent configuration.
 
@@ -85,21 +85,24 @@ no helper credential (M2), with native transport available under the existing
 escape hatch. No new minimum Git version or application error code is declared.
 
 For each file root, read bounded regular-file bytes into core-owned zeroizing
-memory, create a private 0600 copy, and supervise this read-only parse child:
+memory and supervise this read-only parse child, writing those bytes on stdin:
 
-`git config --no-includes --null --file <owned source copy> --list`
+`git config --no-includes --null --file - --list`
 
 Use the same Git, captured environment and cwd. The explicit-file command
 excludes root discovery and PARAMETERS/COUNT overlays; the spike asserts this
 with both overlays present. Decode only NUL name/optional-value framing; Git
-itself parses configuration grammar. Close/reap the child before wiping and
-unlinking its source copy. Never read user files through an unbounded Git parse
-child: the owned copy is already bounded. No repository command is introduced.
+itself parses configuration grammar. Close/reap the child before releasing its
+buffer/pipe owner. No named source copy or configuration view is created.
+The source bytes are already bounded before entering this parse child. No
+repository command is introduced.
 
 Walk parsed entries in source order. On `include.path`, resolve absolute paths
 unchanged and relative paths against the original source file's directory,
-expanding `~/` only against captured HOME. If HOME is absent when required,
-refuse the lookup. Missing include targets contribute no entries, matching Git;
+expanding `~/` only against a nonempty absolute captured HOME byte path. Absent,
+empty or relative HOME refuses as M2 only when `~/` is required. Validate that
+anchor before any include open; never use a parent cwd or ambient home. Both
+relative source and command-cwd anchors are explicit absolute paths before I/O. Missing include targets contribute no entries, matching Git;
 other open/read errors fail closed. Empty include files contribute no entries.
 Command-scope relative includes resolve against cwd `/`. Preserve path bytes,
 including non-UTF-8, rather than using lossy conversion. Unsupported tilde-user
@@ -113,43 +116,49 @@ credential URL subsections, duplicate helpers, resets and non-UTF-8 values.
 No handwritten configuration grammar, native parser binding or ambient home
 fallback is added.
 
-Serialize parsed entries into one native Git configuration file. This is a
-writer for already parsed names/values, not a replacement parser. It must
-preserve normalized section/variable and exact subsection/value bytes,
-valueless versus empty, duplicate/reset order and escaping. Before final fill,
-parse the owned view with the same supervised explicit-file
-command and require exact ordered name/optional-value equality to the flattened
-entries. Git normalizes section/variable case, preserves quoted subsection case,
-and lowercases legacy dotted subsections; the writer consumes those parsed names.
-This final comparison covers every input, not only test examples. Any writer or
-unsupported grammar discrepancy fails closed as M2. The physical spike covers
-case normalization, non-UTF-8, valueless and escaped-value round trips.
-Unrepresentable bytes fail closed as M2, never
-become a different helper selection. NUL in a source or decoded field is
-unrepresentable and fails before final fill. No secret content is formatted
-into any error.
+Encode the flattened entries as Git's process-lifetime GIT_CONFIG_PARAMETERS
+syntax: single-quote the normalized key, append `=` and a single-quoted value
+only for a present value, with Git-compatible apostrophe escaping. Valueless
+`'key'` and empty `'key'=''` remain distinct. Entries are space-separated in
+original order. Preserve all subsection/value bytes including non-UTF-8; NUL is
+unrepresentable and refuses before final fill. This is an encoder of parsed
+entries, not a configuration grammar parser. No secret content enters errors.
 
-The final fill child receives the original filtered snapshot except:
-GIT_CONFIG_SYSTEM is removed, GIT_CONFIG_GLOBAL names the private flattened
-source, and GIT_CONFIG_NOSYSTEM=1 suppresses system and the observed leading
-Apple installation source;
-GIT_CONFIG_PARAMETERS, GIT_CONFIG_COUNT and numbered GIT_CONFIG_KEY_*/VALUE_*
-are removed after their effective entries have been folded into the view.
-The single explicit global source suppresses XDG and original global files.
-Before fill, supervised controlled discovery must contain only that global
-file origin (or no entries if empty), with no installation/system/other origin;
-otherwise refuse the lookup. This structural check never displays source paths
-or configuration values. Other snapshot entries stand.
-The final command's `-c core.askPass=` remains last and GIT_TERMINAL_PROMPT=0
-still wins. Helpers inheriting these settings see the same flattened view;
-there is no original conditional include left to re-activate in a helper.
+The controlled child environment starts from the original filtered snapshot,
+then removes GIT_CONFIG_SYSTEM; sets GIT_CONFIG_GLOBAL=/dev/null and
+GIT_CONFIG_NOSYSTEM=1; replaces GIT_CONFIG_PARAMETERS with the flattened bytes;
+and removes GIT_CONFIG_COUNT and every numbered GIT_CONFIG_KEY_*/VALUE_* after
+folding their effective entries. `/dev/null` is the existing OS-owned empty
+source on this Unix mechanism; it is never written. No Windows mechanism is
+inferred. Other captured entries stand, and final `-c core.askPass=` remains
+last with GIT_TERMINAL_PROMPT=0. Helpers inherit this controlled environment.
+There is no remaining include directive to reactivate conditional sources.
+
+Before fill, perform the same supervised controlled discovery command. Require
+exact ordered name/optional-value equality to the flattened entries, every
+entry in command/`command line:` scope, and no file/installation/system/global
+origin. Empty views produce no entries. A parser/encoder discrepancy, unexpected
+origin or unsuccessful verification refuses as M2, never chooses another
+helper. Git normalizes section/variable case, preserves quoted subsection case,
+and lowercases legacy dotted subsections; the spike proves all three and the
+null/empty/escaping/non-UTF-8/environment-overlay cases. No second grammar or
+FFI binding remains. The original user configuration is never written.
+
+The encoded parameter allocation counts against the 4-MiB preparation ceiling.
+OS execution/environment limits may be lower and include the complete captured
+environment. `ArgumentListTooLong` while spawning controlled verification or
+fill is M2 configuration refusal, not missing Git or a missing-Git latch. There
+is no truncation, file fallback, wider-scope retry or invented platform capacity.
+The physical OS E2BIG refusal occurred before child execution. Same-user or
+privileged OS inspection can observe child environment/pipe memory; the design
+does not claim otherwise. No such bytes enter GWZ diagnostics or retained data.
 
 ## Bounded ownership, clocks and cleanup
 
 Both admissions and their allocation provenance remain exactly as accepted.
 One interaction deadline starts after admission, before configuration discovery;
-it includes discovery, each source parse, file/view preparation, the final
-round-trip and controlled-origin checks, and final fill. No stage starts a
+it includes discovery, each source parse, file/environment preparation, the
+final ordered round-trip/origin check, and final fill. No stage starts a
 fresh 120 seconds. Every read-only parse/discovery and fill child uses its own
 new process group,
 with the same group kill/reap/500-ms retained-cleanup rules. Only one child is
@@ -157,7 +166,7 @@ active for this lookup at a time. No source path, configuration field, value,
 helper output or stderr enters Failure, events or logs.
 
 Proposed explicit preparation ceilings: 1 MiB per regular source file, 4 MiB
-cumulative source/view/discovery/parser-output bytes, 4,096 parsed entries,
+cumulative source/encoded-parameters/discovery/parser-output bytes, 4,096 parsed entries,
 include depth 10
 (matching the Git recursive-include ceiling), and 128 files visited, repeated visits
 included. Open with nonblocking file flags, then refuse FIFOs/devices/directories before
@@ -170,9 +179,9 @@ credential answer bound stands unchanged. Initial discovery necessarily uses
 Git to parse original root files before their paths are known: its stdout is
 bounded and its child is clocked/killed, but these limits do not claim to cap
 Git's internal allocation or original-file reads. Per-file input limits apply
-when core opens discovered roots and includes for their private parse copies.
+when core opens discovered roots and includes for their stdin parse buffers.
 This native-child limit is explicit for Safety review, not concealed by the
-bounded copies used in later stages. These preparation limits are new
+bounded stdin buffers used in later stages. These preparation limits are new
 explicit mechanism limits, not alleged pre-existing configuration ceilings.
 
 Blocking file reads/parsing run in a context-owned bounded worker, never on a
@@ -186,24 +195,23 @@ its zeroizing buffers on every exit. A 500-ms cleanup miss is cleanup-pending,
 not a disposal acknowledgement or permission to reuse its slots. No global
 supervisor/counter is added, and existing SSH global-job debt is not expanded.
 
-The worker creates a unique private scratch directory (0700), bounded source copies and the flattened
-configuration file (0600), using create-new ownership under the runtime's scratch parent.
-Hold the directory/files through discovery preparation, final fill and its
-joined/retained cleanup; do not remove them while a live child may read them.
-No repository files or user configuration are written. Memory buffers wipe
-whole capacity on drop. On disposal, best-effort overwrite scratch file bytes,
-close and unlink files/directory; do not claim physical secure erasure on an
-SSD or that unlink zeroizes storage. Failure to remove private scratch remains
-explicit pending cleanup owned by the context and is not reported as clean.
-Library/parser and OS copies have their ordinary lifetimes; no secret Debug
-or log form is introduced. This private configuration-copy exception requires
-Safety acceptance rather than being inferred from the existing buffer rule.
+No core-owned named sensitive filesystem artifact exists during preparation,
+fill, cancellation, drop or process death. A context-owned worker holds source,
+parsed-entry, encoded-parameter and pipe buffers in zeroizing allocations. It
+checks cancellation/deadline before and after each bounded operation. Encoded
+bytes are passed as borrowed OsStr to Command; unavoidable Command/OS/native
+Git copies expire through command/child ownership. Wipe whole capacity of
+core-owned buffers after joined/retained ownership ends. Drop/kill/process death
+needs no directory scan, durable recovery marker or independent filesystem
+supervisor, because this mechanism never writes sensitive config copies.
+Memory/OS copies are not promised physically zeroized on process death.
+The inherited bounded environment-copy exception to §3.4 requires Safety review.
 
 ## Source owners and binding boundary
 
 Core's `src/git/endpoint/https_auth` owns this mechanism: private configuration
 view modules own zeroizing entry/path/value buffers, the bounded file worker,
-private scratch ownership and ordered walk/writer. Its existing supervised child
+process-lifetime buffer ownership and ordered walk/encoder. Its existing supervised child
 runner owns discovery/parse/fill groups, deadline, answer buffers and retained
 cleanup; the AuthOwner retains both admissions through every unfinished worker
 or child. Endpoint environment construction remains the snapshot producer.
@@ -214,8 +222,8 @@ there is no git2-rs/libgit2-sys binding, gwz-git wrapper/G0 amendment, CLI/Pytho
 schema, transport wire or public GWZ API change. Core-owned sensitive buffers
 are zeroized; unavoidable native Git and OS copies expire through child/handle
 ownership and are not claimed zeroized by Rust. At most 128 source-parse children,
-one initial discovery, one view round-trip, one controlled-origin verification
-and one fill are launched: 132 sequential children, all under one deadline.
+one initial discovery, one controlled ordered round-trip/origin verification
+and one fill are launched: 131 sequential children, all under one deadline.
 This is a proposal, not permission to mutate the protected dependencies.
 
 ## Precise supersessions and product checks
@@ -226,8 +234,8 @@ named above; its cwd/no-local/every-conditional-include policy stands. It adds
 the bounded supervised read-only discovery/parse/verification commands and context-owned view
 preparation before §3.1's otherwise unchanged final credential-fill command.
 It qualifies §3.3's lookup-start statement so the same interaction deadline
-covers all preparation, without extending clocks. It adds the explicit private
-scratch-copy ownership/cleanup exception to §3.4, with no new diagnostic data.
+covers all preparation, without extending clocks. It adds the explicit bounded process-lifetime configuration
+environment-copy ownership exception to §3.4, with no new diagnostic data.
 The permanent process-spawn inventory must name discovery, explicit-file parses,
 controlled-origin verification and final fill;
 no native credential callback, CLI/Python schema or Windows mechanism changes.
@@ -239,10 +247,11 @@ actual system file (including a non-/etc Git installation), global/XDG order,
 GIT_CONFIG_GLOBAL/SYSTEM/NOSYSTEM, PARAMETERS and COUNT ordering/resets;
 relative and captured-HOME `~/` unconditional includes; nested legitimate
 includes and ignored unknown/future conditions; value/null/non-UTF-8/escaping
-round-trip; bounded/cyclic/FIFO and symlink-handle refusal; prepared view plus
-helper answer sentinel redaction; cancellation/drop/timeout during discovery,
+round-trip; absent/relative/empty HOME refusal and no parent-cwd reads; bounded/cyclic/FIFO and symlink-handle refusal; prepared view plus
+helper answer/environment sentinel redaction and helper inheritance; cancellation/drop/timeout during discovery,
 worker preparation and fill; stopped worker/child retains both quotas and
-scratch until joined; failed scratch removal remains pending; no repository
+buffers until joined; no named config copy on failure/drop/kill/process death;
+OS environment-size refusal before helper execution; no repository
 configuration and no network/repository Git command. Repair/undo fixtures
 compare synthetic answers without printing them. Keep the executed hasconfig
 counterexample red until the adopted mechanism makes that real child green.
