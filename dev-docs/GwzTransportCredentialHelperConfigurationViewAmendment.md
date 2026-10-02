@@ -94,9 +94,14 @@ memory and supervise this read-only parse child, writing those bytes on stdin:
 
 `git config --no-includes --null --file - --list`
 
-Use the same Git, captured environment and cwd. The explicit-file command
-excludes root discovery and PARAMETERS/COUNT overlays; the spike asserts this
-with both overlays present. Decode only NUL name/optional-value framing; Git
+Use the same Git and cwd, with captured non-configuration environment entries.
+Apply the controlled-view suppression from the final view below, with an empty
+parameter view: NOSYSTEM=1, GLOBAL=/dev/null, SYSTEM/PARAMETERS/COUNT and every
+numbered KEY/VALUE entry removed. Root/overlay discovery already occurred in
+the initial child. An explicit-file command alone does not prevent native Git
+from prereading captured global includes before processing its options; a FIFO
+counterexample demonstrates this. The empty controlled environment prevents
+that preread, while the stdin bytes remain the only parsed source. Decode only NUL name/optional-value framing; Git
 itself parses configuration grammar. Close/reap the child before releasing its
 buffer/pipe owner. No named source copy or configuration view is created.
 The source bytes are already bounded before entering this parse child. No
@@ -183,7 +188,10 @@ it does not misuse the 16-KiB answer's M8 output-limit cause. The 16-KiB final
 credential answer bound stands unchanged. Initial discovery necessarily uses
 Git to parse original root files before their paths are known: its stdout is
 bounded and its child is clocked/killed, but these limits do not claim to cap
-Git's internal allocation or original-file reads. Per-file input limits apply
+Git's internal allocation or original-file reads, including native early
+include reads before `--no-includes` takes effect. A blocking FIFO at this stage
+therefore produces a bounded Interaction timeout with child/group cleanup and
+both admissions retained through reap, rather than a claimed early M2 refusal. Per-file input limits apply
 when core opens discovered roots and includes for their stdin parse buffers.
 This native-child limit is explicit for Safety review, not concealed by the
 bounded stdin buffers used in later stages. These preparation limits are new
@@ -275,3 +283,8 @@ settled-tree acceptance before release.
 The already accepted username/timing/fixed-cause implementation and existing
 lifecycle/secret work may proceed independently. This is a mechanism correction
 for one discovered scope gap, not an authentication-policy expansion.
+
+Implementation-contact correction, 2026-10-03: the empty controlled stdin-parser
+environment and initial FIFO limitation above were discovered after mechanism
+review. These corrected bytes await the final full implementation Code/State
+review; the earlier mechanism GO does not certify this changed call graph.

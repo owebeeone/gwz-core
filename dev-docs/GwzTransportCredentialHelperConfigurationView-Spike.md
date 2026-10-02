@@ -33,3 +33,15 @@ file reads or internal memory allocation are capped. The corrected mechanism dra
 that limitation, new preparation/environment-size limits and native/OS sensitive
 copy lifetimes for the original reviewers. It replaces named files with stdin
 and bounded configuration parameters; no durable recovery owner is inferred.
+
+Version8 retains an executed FIFO counterexample: initial native discovery and
+stdin parsing with the captured configuration environment each time out at two
+seconds. Applying the final-view suppression with an empty parameter view to
+the stdin parser avoids the FIFO preread and preserves ordered null, empty,
+apostrophe and non-UTF-8 values. This is an implementation-contact correction
+pending full implementation Code/State acceptance, not a claim that the earlier
+mechanism review covered these bytes. Initial discovery still has the stated
+native-read limitation; product regressions check its interaction deadline,
+both admissions and reap, separately from controlled parsing and core regular-
+file refusal. Version8's source and raw receipts are retained without changing
+versions1–7.
