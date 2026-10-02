@@ -37,7 +37,10 @@ impl Session {
             observe,
             facts,
         )
-        .map_err(failure_io)
+        .map_err(|failure| {
+            let attempts = setup_retry::spent_budget(&failure, self.max_retries(request));
+            failure_io(failure, attempts)
+        })
     }
     pub(in crate::transport_host) fn open_https(
         &self,
@@ -650,8 +653,10 @@ fn network_deadlines(io_timeout_ms: u64, connect_timeout_ms: u64, allocation_ms:
         cleanup_ms: 5000,
     }
 }
+/// An SSH open's failure, and the attempt it ended as `(N, M)` when that is
+/// known: its display then ends `(attempt N of M)` (the retry plan's §5).
 #[derive(Debug)]
-pub(crate) struct SshOpenFailure(pub(crate) Failure);
+pub(crate) struct SshOpenFailure(pub(crate) Failure, pub(crate) Option<(u32, u32)>);
 impl std::fmt::Display for SshOpenFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use gwz_transport::protocol::{ErrorCode, SetupFailureCause};
@@ -663,9 +668,14 @@ impl std::fmt::Display for SshOpenFailure {
                 Some(SetupFailureCause::Allocation) => "allocation",
                 _ => "unknown",
             };
-            return write!(f, "ssh setup timeout: {label}");
+            write!(f, "ssh setup timeout: {label}")?;
+        } else {
+            write!(f, "ssh setup failed: {:?}", self.0.code)?;
         }
-        write!(f, "ssh setup failed: {:?}", self.0.code)
+        if let Some((attempt, attempts)) = self.1 {
+            write!(f, " (attempt {attempt} of {attempts})")?;
+        }
+        Ok(())
     }
 }
 impl std::error::Error for SshOpenFailure {
@@ -677,13 +687,13 @@ impl std::error::Error for SshOpenFailure {
         }
     }
 }
-fn failure_io(failure: Failure) -> io::Error {
+fn failure_io(failure: Failure, attempts: Option<(u32, u32)>) -> io::Error {
     let kind = match failure.code {
         gwz_transport::protocol::ErrorCode::Authentication => io::ErrorKind::PermissionDenied,
         gwz_transport::protocol::ErrorCode::Timeout => io::ErrorKind::TimedOut,
         _ => io::ErrorKind::Other,
     };
-    io::Error::new(kind, SshOpenFailure(failure))
+    io::Error::new(kind, SshOpenFailure(failure, attempts))
 }
 cfg_if::cfg_if! {
     if #[cfg(test)] {
@@ -745,7 +755,7 @@ cfg_if::cfg_if! {
             clock.advance(std::time::Duration::from_secs(3));
             let error = control.end_slice(false).unwrap_err();
             assert_eq!(timeout_reason(&error), Some(TimeoutReason::Stall));
-            let reported = failure_io(stamped(TimeoutReason::Stall));
+            let reported = failure_io(stamped(TimeoutReason::Stall), None);
             assert_eq!(reported.kind(), io::ErrorKind::TimedOut);
             assert!(reported.to_string().contains("ssh setup timeout: stall"));
             assert_eq!(reported.get_ref().unwrap().downcast_ref::<SshOpenFailure>().unwrap().0.setup_cause, Some(gwz_transport::protocol::SetupFailureCause::Stall));
@@ -770,20 +780,34 @@ cfg_if::cfg_if! {
             clock.advance(std::time::Duration::from_millis(900));
             let error = control.end_slice(true).unwrap_err();
             assert_eq!(timeout_reason(&error), Some(TimeoutReason::Aggregate));
-            let reported = failure_io(stamped(TimeoutReason::Aggregate));
+            let reported = failure_io(stamped(TimeoutReason::Aggregate), None);
             assert_eq!(reported.kind(), io::ErrorKind::TimedOut);
             assert!(reported.to_string().contains("ssh setup timeout: aggregate"));
             assert_eq!(reported.get_ref().unwrap().downcast_ref::<SshOpenFailure>().unwrap().0.setup_cause, Some(gwz_transport::protocol::SetupFailureCause::Aggregate));
         }
 
         #[test]
+        fn a_spent_budget_ends_the_display_with_its_attempt() {
+            let reported = failure_io(stamped(TimeoutReason::Stall), Some((4, 4)));
+            assert_eq!(reported.to_string(), "ssh setup timeout: stall (attempt 4 of 4)");
+            let reported = failure_io(stamped(TimeoutReason::Aggregate), Some((1, 1)));
+            assert_eq!(reported.to_string(), "ssh setup timeout: aggregate (attempt 1 of 1)");
+            // The reason string stays as it was where the attempt is not known.
+            let reported = failure_io(stamped(TimeoutReason::Stall), None);
+            assert_eq!(reported.to_string(), "ssh setup timeout: stall");
+        }
+
+        #[test]
         fn authentication_failure_stays_authentication() {
-            let reported = failure_io(Failure {
-                setup_cause: None,
-                code: ErrorCode::Authentication,
-                effect: Effect::None,
-                facts: None,
-            });
+            let reported = failure_io(
+                Failure {
+                    setup_cause: None,
+                    code: ErrorCode::Authentication,
+                    effect: Effect::None,
+                    facts: None,
+                },
+                None,
+            );
             assert_eq!(reported.kind(), io::ErrorKind::PermissionDenied);
             assert!(
                 reported

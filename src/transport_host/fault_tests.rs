@@ -239,10 +239,13 @@ fn carrier_drop_wakes_blocking_open() {
         error
             .get_ref()
             .and_then(|cause| cause.downcast_ref::<SshOpenFailure>()),
-        Some(SshOpenFailure(gwz_transport::protocol::Failure {
-            code: gwz_transport::protocol::ErrorCode::CarrierLost,
-            ..
-        }))
+        Some(SshOpenFailure(
+            gwz_transport::protocol::Failure {
+                code: gwz_transport::protocol::ErrorCode::CarrierLost,
+                ..
+            },
+            _
+        ))
     ));
 }
 
@@ -369,10 +372,13 @@ fn cancellation_wakes_open_and_late_terminals_cannot_close_sibling_binding() {
         error
             .get_ref()
             .and_then(|cause| cause.downcast_ref::<SshOpenFailure>()),
-        Some(SshOpenFailure(gwz_transport::protocol::Failure {
-            code: gwz_transport::protocol::ErrorCode::Cancelled,
-            ..
-        }))
+        Some(SshOpenFailure(
+            gwz_transport::protocol::Failure {
+                code: gwz_transport::protocol::ErrorCode::Cancelled,
+                ..
+            },
+            _
+        ))
     ));
 
     // Deliver stale endpoint terminals directly at the host port.  The mux

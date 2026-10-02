@@ -8,7 +8,7 @@
 //! the operation, or returned once to its member without moving the key.
 use gwz_transport::{
     pool,
-    protocol::{ErrorCode, Failure, SetupFailureCause},
+    protocol::{AuthMethod, ErrorCode, Facts, Failure, SetupFailureCause},
 };
 
 mod backoff;
@@ -78,6 +78,51 @@ pub(crate) fn phase_of(error: &pool::Error) -> Phase {
         | pool::Error::IdentityMismatch => Phase::Setup,
         _ => Phase::Other,
     }
+}
+
+/// The attempt a final failure ended, as `(N, M)` for its display's
+/// `attempt N of M` (the retry plan's §5), when the failure alone says so.
+/// A setup timeout whose origin is stall or aggregate, and a refused
+/// connection, can end an open only once its key has spent the budget of
+/// `max_retries`: they are retried until then, and nothing outside a setup
+/// reports them. Any other failure may end an earlier attempt, and the
+/// transport's failure carries no attempt number to tell which.
+pub(crate) fn spent_budget(failure: &Failure, max_retries: u32) -> Option<(u32, u32)> {
+    let only_retried = matches!(
+        (failure.code, failure.setup_cause),
+        (
+            ErrorCode::Timeout,
+            Some(SetupFailureCause::Stall | SetupFailureCause::Aggregate)
+        ) | (
+            ErrorCode::Unavailable,
+            Some(SetupFailureCause::ConnectionRefused)
+        )
+    );
+    let attempts = max_retries.saturating_add(1);
+    only_retried.then_some((attempts, attempts))
+}
+
+/// One member's attempts as its one diagnostic row: each intermediate
+/// attempt is progress on the row its open already has (the retry plan's
+/// §5). A later attempt's value wins where it has one, and a credential
+/// offered in any attempt stays offered.
+pub(crate) fn merged_facts(earlier: Option<Facts>, later: Option<Facts>) -> Option<Facts> {
+    let (earlier, later) = match (earlier, later) {
+        (Some(earlier), Some(later)) => (earlier, later),
+        (earlier, later) => return later.or(earlier),
+    };
+    Some(Facts {
+        method: if later.method == AuthMethod::None {
+            earlier.method
+        } else {
+            later.method
+        },
+        credential_offered: earlier.credential_offered || later.credential_offered,
+        authenticated: later.authenticated.or(earlier.authenticated),
+        key_fingerprint: later.key_fingerprint.or(earlier.key_fingerprint),
+        http_status: later.http_status.or(earlier.http_status),
+        ssh_exit_status: later.ssh_exit_status.or(earlier.ssh_exit_status),
+    })
 }
 
 cfg_if::cfg_if! {

@@ -55,6 +55,9 @@ struct Request {
     attachment: Option<EndpointAttachment>,
     queued_input: VecDeque<Envelope>,
     terminal: bool,
+    /// The facts of this member's setup attempts so far, which its one reply
+    /// carries: progress on its diagnostic row (the retry plan's §5).
+    facts: Option<gwz_transport::protocol::Facts>,
 }
 struct OpenJob {
     key: RequestKey,
@@ -208,6 +211,7 @@ fn request_state(envelope: &Envelope) -> Request {
         attachment: None,
         queued_input: VecDeque::new(),
         terminal: false,
+        facts: None,
     }
 }
 /// The most opens in flight across every host: the pool's total and request

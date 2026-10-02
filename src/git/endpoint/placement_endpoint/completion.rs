@@ -160,6 +160,8 @@ impl PlacementEndpoint {
                         attachment.cancel();
                         continue;
                     }
+                    let facts = std::mem::take(&mut opened.facts);
+                    opened.facts = self.keep_facts(&job.key, Some(facts)).unwrap_or_default();
                     let message = {
                         let state = self.requests.get_mut(&job.key).expect("open request");
                         let message = envelope_for(state, MessageKind::Opened, None, Some(opened));
@@ -201,6 +203,7 @@ impl PlacementEndpoint {
         );
         match outcome {
             Outcome::Retry => {
+                self.keep_facts(&key, failure.facts);
                 let allocation = envelope
                     .open
                     .as_ref()
@@ -213,7 +216,7 @@ impl PlacementEndpoint {
                     deadline: now.saturating_add(allocation),
                 });
             }
-            // Its own attempt's facts, also when the key finishes it with a
+            // Its own attempts' facts, also when the key finishes it with a
             // failure another member's setup recorded.
             Outcome::Finish(last) => self.fail_open(
                 &key,

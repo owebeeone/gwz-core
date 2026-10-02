@@ -283,13 +283,28 @@ impl PlacementEndpoint {
         }
     }
 
-    /// Ends a member's open with `failure`, unless it has ended already.
+    /// Keeps `facts`, an attempt's, among the member's facts so far, and
+    /// returns them all.
+    pub(super) fn keep_facts(
+        &mut self,
+        key: &RequestKey,
+        facts: Option<gwz_transport::protocol::Facts>,
+    ) -> Option<gwz_transport::protocol::Facts> {
+        let state = self.requests.get_mut(key)?;
+        state.facts = setup_retry::merged_facts(state.facts.take(), facts);
+        state.facts.clone()
+    }
+
+    /// Ends a member's open with `failure`, unless it has ended already. The
+    /// failure carries every fact of the member's attempts.
     pub(super) fn fail_open(&mut self, key: &RequestKey, failure: Failure) {
+        let facts = self.keep_facts(key, failure.facts.clone());
         if let Some(state) = self.requests.get_mut(key) {
             if state.terminal {
                 return;
             }
             state.terminal = true;
+            let failure = Failure { facts, ..failure };
             let message = envelope_for(state, MessageKind::OpenFailed, Some(failure), None);
             self.push_outbound(key.0.clone(), message);
         }
@@ -353,6 +368,7 @@ impl PlacementEndpoint {
                 attachment: None,
                 queued_input: VecDeque::new(),
                 terminal: false,
+                facts: None,
             },
         );
         self.checks.push(CheckJob {

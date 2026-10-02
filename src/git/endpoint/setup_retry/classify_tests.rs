@@ -155,3 +155,62 @@ fn the_pool_errors_that_end_a_started_setup_have_the_setup_phase() {
         assert_eq!(phase_of(&error), Phase::Other, "{error:?}");
     }
 }
+
+#[test]
+fn only_a_spent_budget_shows_its_attempt_on_the_failure_alone() {
+    for spent in [
+        failure(ErrorCode::Timeout, Some(SetupFailureCause::Stall)),
+        failure(ErrorCode::Timeout, Some(SetupFailureCause::Aggregate)),
+        failure(
+            ErrorCode::Unavailable,
+            Some(SetupFailureCause::ConnectionRefused),
+        ),
+    ] {
+        assert_eq!(spent_budget(&spent, 3), Some((4, 4)), "{spent:?}");
+        assert_eq!(spent_budget(&spent, 0), Some((1, 1)), "{spent:?}");
+    }
+    // These can end an earlier attempt, or an open outside setup: the
+    // failure alone does not say which attempt it ended.
+    for other in [
+        failure(ErrorCode::Io, None),
+        failure(ErrorCode::Authentication, None),
+        failure(ErrorCode::Timeout, None),
+        failure(ErrorCode::Timeout, Some(SetupFailureCause::Interaction)),
+        failure(ErrorCode::Unavailable, Some(SetupFailureCause::NotFound)),
+    ] {
+        assert_eq!(spent_budget(&other, 3), None, "{other:?}");
+    }
+}
+
+#[test]
+fn a_members_attempts_merge_into_its_one_diagnostic_row() {
+    use gwz_transport::protocol::{AuthMethod, Facts};
+    let offered = Facts {
+        method: AuthMethod::SshAgent,
+        credential_offered: true,
+        authenticated: Some(false),
+        key_fingerprint: Some("SHA256:first".into()),
+        ..Facts::default()
+    };
+    // A later attempt that stalled before it offered anything keeps the
+    // earlier offer on the row.
+    let merged = merged_facts(Some(offered.clone()), Some(Facts::default())).unwrap();
+    assert_eq!(merged, offered);
+    // A later attempt's own values win.
+    let succeeded = Facts {
+        method: AuthMethod::SshKey,
+        credential_offered: true,
+        authenticated: Some(true),
+        ..Facts::default()
+    };
+    let merged = merged_facts(Some(offered.clone()), Some(succeeded)).unwrap();
+    assert_eq!(merged.method, AuthMethod::SshKey);
+    assert_eq!(merged.authenticated, Some(true));
+    assert_eq!(merged.key_fingerprint.as_deref(), Some("SHA256:first"));
+    assert_eq!(
+        merged_facts(None, Some(offered.clone())),
+        Some(offered.clone())
+    );
+    assert_eq!(merged_facts(Some(offered.clone()), None), Some(offered));
+    assert_eq!(merged_facts(None, None), None);
+}

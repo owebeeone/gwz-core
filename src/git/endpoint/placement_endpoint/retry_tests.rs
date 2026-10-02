@@ -25,11 +25,13 @@ fn stall() -> Failure {
 }
 
 /// Setups that each end `after` their start with `outcome`, or never when
-/// `after` is `None`; every start is recorded.
+/// `after` is `None`; every start is recorded. With `offer_first` the first
+/// setup reports an agent offer, as a setup that stalls after offering does.
 struct Scripted {
     starts: Arc<Mutex<usize>>,
     after: Option<Duration>,
     outcome: Failure,
+    offer_first: bool,
 }
 struct Setting {
     ends: Option<Instant>,
@@ -37,6 +39,20 @@ struct Setting {
 }
 impl super::super::ssh_pool::Connector for Scripted {
     type Resource = Setting;
+    fn start_reported(
+        &mut self,
+        key: &Key,
+        identity: &gwz_transport::pool::Identity,
+        deadline: Option<u64>,
+        progress: super::super::ssh_pool::Progress,
+    ) -> Result<Setting, Failure> {
+        if self.offer_first && *self.starts.lock().unwrap() == 0 {
+            let mut facts = progress.lock().unwrap();
+            facts.method = gwz_transport::protocol::AuthMethod::SshAgent;
+            facts.credential_offered = true;
+        }
+        self.start(key, identity, deadline)
+    }
     fn start(
         &mut self,
         _: &Key,
@@ -95,12 +111,23 @@ fn endpoint(
     per_host: usize,
     max_retries: u32,
 ) -> (PlacementEndpoint, Arc<Mutex<usize>>) {
-    let starts = Arc::new(Mutex::new(0));
-    let connector = Scripted {
-        starts: starts.clone(),
-        after,
-        outcome,
-    };
+    scripted_endpoint(
+        Scripted {
+            starts: Arc::new(Mutex::new(0)),
+            after,
+            outcome,
+            offer_first: false,
+        },
+        per_host,
+        max_retries,
+    )
+}
+fn scripted_endpoint(
+    connector: Scripted,
+    per_host: usize,
+    max_retries: u32,
+) -> (PlacementEndpoint, Arc<Mutex<usize>>) {
+    let starts = connector.starts.clone();
     let mut endpoint = PlacementEndpoint::new(
         Endpoint::with_registry(
             gwz_transport::pool::Config::default(),
@@ -416,4 +443,32 @@ fn a_cancel_during_the_wait_opens_no_probe() {
     assert_eq!(*starts.lock().unwrap(), 2, "the wake opens no probe");
     assert_eq!(terminals.len(), 2);
     assert_eq!(open_failure(&terminals[1]).0, ErrorCode::Cancelled);
+}
+
+#[test]
+fn each_attempts_facts_are_progress_on_the_members_one_row() {
+    // Attempt 1 offers the agent's key and stalls; attempt 2 stalls before
+    // any offer. The member's one reply carries both.
+    let (mut endpoint, starts) = scripted_endpoint(
+        Scripted {
+            starts: Arc::new(Mutex::new(0)),
+            after: Some(Duration::from_millis(5)),
+            outcome: stall(),
+            offer_first: true,
+        },
+        32,
+        1,
+    );
+    let (terminals, _) = run(&mut endpoint, 1);
+    assert_eq!(*starts.lock().unwrap(), 2);
+    let facts = terminals[0]
+        .open_failed
+        .as_ref()
+        .and_then(|failure| failure.facts.as_ref())
+        .expect("the reply carries the member's facts");
+    assert!(
+        facts.credential_offered,
+        "attempt 1's offer stays on the row"
+    );
+    assert_eq!(facts.method, gwz_transport::protocol::AuthMethod::SshAgent);
 }
