@@ -2,6 +2,10 @@
 
 Status: accepted
 
+## Credential helper context (accepted 2026-10-03; implementation pending)
+
+The internal helper context uses the accepted [helper context amendment](GwzTransportCredentialHelperTimingAmendment.md), extending TR1.6 revision 4 with bounded helper timeout provenance, separate encoded HTTPS username carriage and a fixed malformed-output cause. Its exact supersessions, causal-neutral timeout text, scope-aware recovery and redaction rules control those details; the public application request/response API is unchanged.
+
 ## Python shared transport session (retired 2026-09-24)
 
 The Python session v2 design adoption and the v4 foundation draft that stood here were retired with their design train on 2026-09-24. Their text is preserved in [history](history/GwzPythonSessionTrainExcerpts-20260924.md). A [clean-slate proposal](../../dev-docs/GwzClientCoreTransportProposals.md) for the client, core and transport boundary replaces them.

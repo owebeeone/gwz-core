@@ -1,5 +1,9 @@
 # GWZ Core Requirements
 
+## Credential helper context (accepted 2026-10-03; implementation pending)
+
+Candidate configured-helper context MUST satisfy the accepted [helper context amendment](GwzTransportCredentialHelperTimingAmendment.md): exact captured budgets, no inferred busy-helper cause, encoded account selection confined to helper input/private routing, fixed parser causes and scope-aware recovery. This acceptance supplies implementation authority only and does not qualify release or platform behavior.
+
 Status: complete
 
 ## Python shared transport session amendments (retired 2026-09-24)

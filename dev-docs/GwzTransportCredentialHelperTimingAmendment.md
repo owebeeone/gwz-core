@@ -1,7 +1,13 @@
 # TR2.22 helper context amendment
 
-Date: 2026-10-03. Status: **DRAFT; not accepted or implemented**.
-The coordinator owns settlement and independent amendment review.
+Date: 2026-10-03. Status: **accepted contract; implementation pending**.
+Accepted by root after the original Consistency, Safety and Surface reviewers
+returned GO at corrected document tuple root
+`745c37398ebe3da9037dffff4020cebd49bc7c89`, core
+`ec1b95831582651953bb0bd3be3c4f88985aba6b`, transport
+`9f9f0dc4dd82e6329d6ce53e102a231e214ff673`. Complete round-1 reports
+are filed verbatim beside this amendment. This accepts only the bounded
+contract; no runner implementation, Windows or release qualification.
 
 ## Problem and controlling text
 
