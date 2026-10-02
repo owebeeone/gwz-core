@@ -1,5 +1,5 @@
 use super::*;
-use crate::git::endpoint::{ssh_channel::GitService, stream_io::BlockingStream};
+use crate::git::endpoint::{setup_retry, ssh_channel::GitService, stream_io::BlockingStream};
 use gwz_session_host::{CancelRegistration, CancellationToken};
 use gwz_transport::protocol::{Facts, Opened};
 use std::{
@@ -115,6 +115,7 @@ impl RequestContext {
                     facts: None,
                 },
                 anonymous: None,
+                attempts: None,
             })
         };
         // One admission deadline spans route contention and session admission.
@@ -139,7 +140,11 @@ impl RequestContext {
             self.validate(&self.meta, &self.operation)
                 .map_err(|_| early(ErrorCode::Cancelled))?;
             if std::time::Instant::now() >= until {
-                return Err(early(ErrorCode::Timeout));
+                return Err(io::Error::other(HttpsOpenFailure {
+                    failure: setup_retry::allocation_timeout(),
+                    anonymous: None,
+                    attempts: None,
+                }));
             }
             match route.try_lock() {
                 Ok(guard) => break guard,
@@ -237,7 +242,15 @@ impl RequestContext {
                 if let Some(value) = &failure.facts {
                     facts(value);
                 }
-                Err(io::Error::other(HttpsOpenFailure { failure, anonymous }))
+                let attempts = setup_retry::spent_budget(
+                    &failure,
+                    self.session.max_retries(&self.meta.request_id),
+                );
+                Err(io::Error::other(HttpsOpenFailure {
+                    failure,
+                    anonymous,
+                    attempts,
+                }))
             }
         }
     }
@@ -417,6 +430,27 @@ pub(crate) struct HttpsAttemptReceipt {
 pub(crate) struct HttpsOpenFailure {
     pub(crate) failure: gwz_transport::protocol::Failure,
     pub(crate) anonymous: Option<HttpsAttemptReceipt>,
+    /// The attempt the failure ended, as `(N, M)`, when the failure alone
+    /// says so (the retry plan's §5; `setup_retry::spent_budget`).
+    pub(crate) attempts: Option<(u32, u32)>,
+}
+impl HttpsOpenFailure {
+    /// The failure in words: its code, a timeout's origin (stall,
+    /// aggregate, interaction or allocation, as on SSH), and the attempt it
+    /// ended when that is known.
+    pub(crate) fn reason(&self) -> String {
+        let mut reason = format!("HTTPS endpoint request failed: {:?}", self.failure.code);
+        if self.failure.code == gwz_transport::protocol::ErrorCode::Timeout
+            && let Some(origin) = setup_retry::timeout_origin(self.failure.setup_cause)
+        {
+            reason.push_str(": ");
+            reason.push_str(origin);
+        }
+        if let Some((attempt, attempts)) = self.attempts {
+            reason.push_str(&format!(" (attempt {attempt} of {attempts})"));
+        }
+        reason
+    }
 }
 impl std::fmt::Display for HttpsOpenFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -428,7 +462,7 @@ impl std::fmt::Display for HttpsOpenFailure {
         {
             write!(f, "anonymous discovery returned HTTP {status}; ")?;
         }
-        write!(f, "HTTPS endpoint request failed: {:?}", self.failure.code)
+        f.write_str(&self.reason())
     }
 }
 impl std::error::Error for HttpsOpenFailure {}

@@ -100,6 +100,11 @@ impl SshEndpointConfig {
                 self.io_timeout_ms = io_timeout_ms;
                 self
             }
+            /// The setup's aggregate clock, which the HTTPS connect uses too.
+            pub(crate) fn with_connect_timeout_ms(mut self, connect_timeout_ms: u64) -> Self {
+                self.pool.connect_timeout_ms = connect_timeout_ms;
+                self
+            }
         }
     }
 }

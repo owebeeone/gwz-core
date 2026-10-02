@@ -214,3 +214,27 @@ fn a_members_attempts_merge_into_its_one_diagnostic_row() {
     assert_eq!(merged_facts(Some(offered.clone()), None), Some(offered));
     assert_eq!(merged_facts(None, None), None);
 }
+
+#[test]
+fn each_timeout_origin_has_its_word_on_both_schemes_and_allocation_is_returned_once() {
+    for (cause, word) in [
+        (SetupFailureCause::Stall, Some("stall")),
+        (SetupFailureCause::Aggregate, Some("aggregate")),
+        (SetupFailureCause::Interaction, Some("interaction")),
+        (SetupFailureCause::Allocation, Some("allocation")),
+        (SetupFailureCause::ConnectionRefused, None),
+        (SetupFailureCause::NotFound, None),
+        (SetupFailureCause::AddressNotAvailable, None),
+    ] {
+        assert_eq!(timeout_origin(Some(cause)), word, "{cause:?}");
+    }
+    assert_eq!(timeout_origin(None), None);
+    // The allocation timeout an endpoint's or a driver's own queue reports
+    // has its origin, so it is returned once wherever it happens.
+    let allocation = allocation_timeout();
+    assert_eq!(
+        (allocation.code, allocation.setup_cause),
+        (ErrorCode::Timeout, Some(SetupFailureCause::Allocation))
+    );
+    assert_eq!(classify(&allocation, Phase::Setup), Verdict::Return);
+}

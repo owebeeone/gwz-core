@@ -156,23 +156,23 @@ impl PlacementEndpoint {
         }
         let (pool_key, _) = destination(&open.destination)?;
         let now = self.now();
-        let deadline = now.saturating_add(open.deadlines.allocation_ms as u64);
+        let allocation = AllocationClock::new(now, open.deadlines.allocation_ms.max(0) as u64);
         self.requests.insert(key.clone(), request_state(&envelope));
         self.admit(
             QueuedOpen {
                 key,
                 pool_key,
                 envelope,
-                admitted_at: now,
-                deadline,
+                allocation,
             },
             now,
         )
     }
 
     /// Starts `queued` when its key's retry machine and the operation's
-    /// limits allow it, finishes it when its key is closed, and otherwise
-    /// queues it. While the key holds it, its allocation clock waits too.
+    /// limits allow it, finishes it when its key is closed or its allocation
+    /// ran out, and otherwise queues it. While the key holds it, its
+    /// allocation clock stops.
     fn admit(&mut self, mut queued: QueuedOpen, now: u64) -> Result<(), EndpointError> {
         let decision = self
             .retries
@@ -190,43 +190,32 @@ impl PlacementEndpoint {
                 Ok(())
             }
             Decision::Wait => {
-                let allocation = queued.deadline.saturating_sub(queued.admitted_at);
-                queued.admitted_at = now;
-                queued.deadline = now.saturating_add(allocation);
+                queued.allocation.stop(now);
                 self.queued_opens.push_back(queued);
-                Ok(())
-            }
-            Decision::Start if now >= queued.deadline => {
-                self.fail_open(
-                    &queued.key,
-                    Failure {
-                        setup_cause: None,
-                        code: ErrorCode::Timeout,
-                        effect: Effect::None,
-                        facts: None,
-                    },
-                );
-                Ok(())
-            }
-            Decision::Start if self.admits_open(&queued.pool_key) => {
-                self.start_attempt(queued, now);
                 Ok(())
             }
             Decision::Start => {
-                self.queued_opens.push_back(queued);
+                queued.allocation.run(now);
+                let left = queued.allocation.left(now);
+                if left == 0 {
+                    self.fail_open(&queued.key, setup_retry::allocation_timeout());
+                } else if self.admits_open(&queued.pool_key) {
+                    self.start_attempt(queued, now, left);
+                } else {
+                    self.queued_opens.push_back(queued);
+                }
                 Ok(())
             }
         }
     }
 
-    /// One attempt of `queued`'s open, with the allocation it has left and
+    /// One attempt of `queued`'s open, with the allocation it has `left` and
     /// fresh network clocks.
-    fn start_attempt(&mut self, queued: QueuedOpen, now: u64) {
+    fn start_attempt(&mut self, queued: QueuedOpen, now: u64, left: u64) {
         let QueuedOpen {
             key,
             pool_key,
             envelope,
-            deadline,
             ..
         } = queued;
         let open = envelope.open.as_ref().expect("admitted Open");
@@ -246,7 +235,7 @@ impl PlacementEndpoint {
             }
         };
         let mut deadlines = open.deadlines.clone();
-        deadlines.allocation_ms = deadline.saturating_sub(now).max(1) as i64;
+        deadlines.allocation_ms = left.min(i64::MAX as u64) as i64;
         let attempt_deadline =
             deadline_from_open(&deadlines).map(|duration| now.saturating_add(duration));
         self.retries.machine(&key.0, &pool_key).start(key.clone());

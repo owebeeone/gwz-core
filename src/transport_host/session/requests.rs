@@ -20,6 +20,9 @@ impl Session {
         if let Some(engine) = &mut state.engine {
             engine.set_max_retries(request, max_retries);
         }
+        if let Some(endpoint) = &mut state.https {
+            endpoint.set_max_retries(request, max_retries);
+        }
     }
     /// The request's `--max-retries`, as its admission installed it.
     pub(in crate::transport_host) fn max_retries(&self, request: &str) -> u32 {

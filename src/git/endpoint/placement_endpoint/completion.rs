@@ -207,13 +207,12 @@ impl PlacementEndpoint {
                 let allocation = envelope
                     .open
                     .as_ref()
-                    .map_or(0, |open| open.deadlines.allocation_ms as u64);
+                    .map_or(0, |open| open.deadlines.allocation_ms.max(0) as u64);
                 self.queued_opens.push_back(QueuedOpen {
                     key,
                     pool_key,
                     envelope,
-                    admitted_at: now,
-                    deadline: now.saturating_add(allocation),
+                    allocation: AllocationClock::new(now, allocation),
                 });
             }
             // Its own attempts' facts, also when the key finishes it with a

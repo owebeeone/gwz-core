@@ -121,9 +121,7 @@ impl Session {
                 Some(until) => {
                     let remaining = until.saturating_duration_since(Instant::now()).as_millis();
                     if remaining == 0 {
-                        return Err(protocol_failure(
-                            gwz_transport::protocol::ErrorCode::Timeout,
-                        ));
+                        return Err(setup_retry::allocation_timeout());
                     }
                     remaining.min(i64::MAX as u128) as i64
                 }
@@ -148,9 +146,7 @@ impl Session {
                 Err(mux::Error::Capacity | mux::Error::WouldBlock) => {
                     drop(state);
                     if Instant::now() >= admit_until {
-                        return Err(protocol_failure(
-                            gwz_transport::protocol::ErrorCode::Timeout,
-                        ));
+                        return Err(setup_retry::allocation_timeout());
                     }
                     self.wait_for_change(admit_until.saturating_duration_since(Instant::now()));
                     continue;
@@ -659,15 +655,8 @@ fn network_deadlines(io_timeout_ms: u64, connect_timeout_ms: u64, allocation_ms:
 pub(crate) struct SshOpenFailure(pub(crate) Failure, pub(crate) Option<(u32, u32)>);
 impl std::fmt::Display for SshOpenFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use gwz_transport::protocol::{ErrorCode, SetupFailureCause};
-        if self.0.code == ErrorCode::Timeout {
-            let label = match self.0.setup_cause {
-                Some(SetupFailureCause::Stall) => "stall",
-                Some(SetupFailureCause::Aggregate) => "aggregate",
-                Some(SetupFailureCause::Interaction) => "interaction",
-                Some(SetupFailureCause::Allocation) => "allocation",
-                _ => "unknown",
-            };
+        if self.0.code == gwz_transport::protocol::ErrorCode::Timeout {
+            let label = setup_retry::timeout_origin(self.0.setup_cause).unwrap_or("unknown");
             write!(f, "ssh setup timeout: {label}")?;
         } else {
             write!(f, "ssh setup failed: {:?}", self.0.code)?;

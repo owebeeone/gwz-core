@@ -8,13 +8,15 @@
 //! the operation, or returned once to its member without moving the key.
 use gwz_transport::{
     pool,
-    protocol::{AuthMethod, ErrorCode, Facts, Failure, SetupFailureCause},
+    protocol::{AuthMethod, Effect, ErrorCode, Facts, Failure, SetupFailureCause},
 };
 
+mod allocation;
 mod backoff;
 mod machine;
 mod operations;
 
+pub(crate) use allocation::AllocationClock;
 pub(crate) use backoff::{Jitter, wait_bound_ms};
 pub(crate) use machine::{Decision, Machine, Outcome};
 pub(crate) use operations::{DEFAULT_MAX_RETRIES, Operations};
@@ -77,6 +79,32 @@ pub(crate) fn phase_of(error: &pool::Error) -> Phase {
         | pool::Error::InteractionTimeout
         | pool::Error::IdentityMismatch => Phase::Setup,
         _ => Phase::Other,
+    }
+}
+
+/// A timeout whose origin is allocation: an open that ran out of its turn
+/// before a setup started, which §4 returns once and never retries.
+pub(crate) fn allocation_timeout() -> Failure {
+    Failure {
+        setup_cause: Some(SetupFailureCause::Allocation),
+        code: ErrorCode::Timeout,
+        effect: Effect::None,
+        facts: None,
+    }
+}
+
+/// The word a timeout's origin has in a failure's display, the same on SSH
+/// and HTTPS: stall, aggregate, interaction or allocation (§4). A timeout
+/// without one of those origins has none.
+pub(crate) fn timeout_origin(cause: Option<SetupFailureCause>) -> Option<&'static str> {
+    match cause? {
+        SetupFailureCause::Stall => Some("stall"),
+        SetupFailureCause::Aggregate => Some("aggregate"),
+        SetupFailureCause::Interaction => Some("interaction"),
+        SetupFailureCause::Allocation => Some("allocation"),
+        SetupFailureCause::ConnectionRefused
+        | SetupFailureCause::NotFound
+        | SetupFailureCause::AddressNotAvailable => None,
     }
 }
 

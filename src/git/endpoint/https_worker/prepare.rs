@@ -1,15 +1,22 @@
 use super::*;
 
 impl Client {
-    pub(crate) async fn prepare_budget_for_transition(
+    /// The transport host's entry: one attempt of an open, continuing the
+    /// budget and challenge it is given, and what the attempt's first connect
+    /// did, which the open's key's retry machine learns (the retry plan's §4
+    /// and §5).
+    pub(crate) async fn prepare_attempt(
         &self,
         input: Input,
         cancel: &CancellationToken,
         budget: &mut Budget,
         challenge: &mut Option<ChallengeLease>,
-    ) -> Result<Prepared, Failure> {
-        self.prepare_budget_inner(input, cancel, budget, challenge, true)
-            .await
+    ) -> (Result<Prepared, Failure>, FirstConnect) {
+        let mut connect = FirstConnect::None;
+        let result = self
+            .prepare_budget_inner(input, cancel, budget, challenge, true, &mut connect)
+            .await;
+        (result, connect)
     }
     pub(super) async fn prepare_budget_inner(
         &self,
@@ -18,6 +25,7 @@ impl Client {
         budget: &mut Budget,
         challenge: &mut Option<ChallengeLease>,
         allow_transition: bool,
+        connect: &mut FirstConnect,
     ) -> Result<Prepared, Failure> {
         let original = Destination::parse(&input.destination).map_err(failure)?;
         let original_base = original.base();
@@ -71,7 +79,7 @@ impl Client {
                 let started = Instant::now();
                 let _helper = acquire_slot(self.helpers.clone(), budget.helper, cancel)
                     .await
-                    .map_err(|error| with_facts(error.code, Effect::None, &facts))?;
+                    .map_err(|error| helper_failure(error.code, &facts))?;
                 budget.helper = budget.helper.saturating_sub(started.elapsed());
                 let started = Instant::now();
                 let secret = https_auth::lookup_owned(
@@ -82,7 +90,7 @@ impl Client {
                     cancel,
                 )
                 .await
-                .map_err(|error| with_facts(error.code(), Effect::None, &facts))?;
+                .map_err(|error| helper_failure(error.code(), &facts))?;
                 budget.helper = budget.helper.saturating_sub(started.elapsed());
                 authorization = Some(secret.header());
             }
@@ -106,7 +114,12 @@ impl Client {
                     return Err(with_facts(ErrorCode::Protocol, Effect::None, &facts));
                 }
             } else {
-                self.pool
+                // Only the first hop connects before the open's first request
+                // byte, so its connect alone is the open's setup, and only its
+                // failure keeps an origin a retry is decided by (§4).
+                let first = hops == 0;
+                let lease = self
+                    .pool
                     .checkout(
                         Key::https(destination.host(), destination.port()),
                         Owner::new(&input.session, &input.operation),
@@ -115,7 +128,20 @@ impl Client {
                         cancel,
                     )
                     .await
-                    .map_err(|error| with_facts(error.code, error.effect, &facts))?
+                    .map_err(|(error, phase)| {
+                        let mut failed = with_facts(error.code, error.effect, &facts);
+                        if first {
+                            failed.setup_cause = error.setup_cause;
+                            if phase == Phase::Setup {
+                                *connect = FirstConnect::Failed;
+                            }
+                        }
+                        failed
+                    })?;
+                if first && !lease.reused {
+                    *connect = FirstConnect::Connected;
+                }
+                lease
             };
             if let Some(remaining) = budget.connect.as_mut() {
                 *remaining = remaining.saturating_sub(lease.connect_elapsed);
@@ -141,6 +167,7 @@ impl Client {
                 protocol_error: Arc::new(AtomicBool::new(false)),
                 io_ms: budget.network.map_or(0, duration_ms),
                 cleanup_ms: duration_ms(budget.cleanup),
+                discard: false,
             };
             if !https_policy::advertisement(input.service) {
                 return Ok(prepared);
@@ -386,12 +413,12 @@ async fn acquire_slot(
     cancel: &CancellationToken,
 ) -> Result<OwnedSemaphorePermit, Failure> {
     if allocation.is_zero() {
-        return Err(failure(ErrorCode::Timeout));
+        return Err(setup_retry::allocation_timeout());
     }
     tokio::select! {
         _ = cancel.cancelled() => Err(failure(ErrorCode::Cancelled)),
         result = tokio::time::timeout(allocation, slots.acquire_owned()) => {
-            result.map_err(|_| failure(ErrorCode::Timeout))?
+            result.map_err(|_| setup_retry::allocation_timeout())?
                 .map_err(|_| failure(ErrorCode::Cancelled))
         }
     }

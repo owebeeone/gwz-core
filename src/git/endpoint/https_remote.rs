@@ -191,7 +191,7 @@ fn map_open_error(error: io::Error, service: GitService) -> git2::Error {
     git2::Error::new(
         git2::ErrorCode::GenericError,
         git2::ErrorClass::Http,
-        format!("HTTPS endpoint request failed: {:?}", failure.failure.code),
+        failure.reason(),
     )
 }
 

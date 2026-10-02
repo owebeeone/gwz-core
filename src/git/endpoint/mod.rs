@@ -27,6 +27,7 @@ pub(crate) mod stream_io;
 pub(crate) mod https_auth;
 pub(crate) mod https_connection;
 pub(crate) mod https_destination;
+pub(crate) mod https_handshake;
 pub(crate) mod https_policy;
 pub(crate) mod https_pool;
 pub(crate) mod https_progress;

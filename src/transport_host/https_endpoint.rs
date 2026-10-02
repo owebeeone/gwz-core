@@ -4,7 +4,9 @@ use super::{Arc, Duration, HttpsEndpointConfig, ModelResult, pool, unavailable};
 use crate::git::endpoint::{
     https_auth::HelperSlots,
     https_policy,
-    https_worker::{Budget, ChallengeLease, Client, Endpoint as HttpEndpoint, Input, Prepared},
+    https_worker::{
+        Budget, ChallengeLease, Client, Endpoint as HttpEndpoint, FirstConnect, Input, Prepared,
+    },
     placement_endpoint::{EndpointError, Outbound},
     shared_reservation::Authority,
 };
@@ -21,11 +23,18 @@ use std::{
 };
 use tokio::{runtime::Handle, sync::oneshot, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
+
+mod retry;
+use retry::{Held, Retries};
+
 type Key = (String, i64);
+/// An attempt's preparation, what its first connect did, and the budget and
+/// challenge it leaves.
+type Attempt = (Result<Prepared, Failure>, FirstConnect, Retry);
 struct Entry {
     envelope: Envelope,
     cancel: CancellationToken,
-    preparing: Option<JoinHandle<(Result<Prepared, Failure>, Retry)>>,
+    preparing: Option<JoinHandle<Attempt>>,
     serving: Option<JoinHandle<()>>,
     prepared: Option<Prepared>,
     handoff: bool,
@@ -37,6 +46,13 @@ struct Entry {
     next: Option<super::session::NextMessage>,
     output: Option<Envelope>,
     retired: bool,
+    /// The HTTPS pool key whose retry machine decides this open's attempts.
+    pool_key: pool::Key,
+    /// The open while it waits for an attempt (retry.rs).
+    held: Option<Held>,
+    /// The facts of the open's attempts so far, which its one reply carries:
+    /// progress on its diagnostic row (the retry plan's §5).
+    facts: Option<Facts>,
 }
 struct Operation {
     name: String,
@@ -58,6 +74,10 @@ pub(super) struct HttpsEndpoint {
     trust_owner: String,
     shutting_down: bool,
     last_outbound: Option<Key>,
+    /// Each operation's setup retry machines (retry.rs).
+    retries: Retries,
+    /// The latest time `step` was given, in its clock.
+    now_ms: u64,
 }
 impl HttpsEndpoint {
     pub(super) fn pool(&self) -> &pool::Pool {
@@ -116,7 +136,14 @@ impl HttpsEndpoint {
             endpoint,
             shutting_down: false,
             last_outbound: None,
+            retries: Retries::new(),
+            now_ms: 0,
         })
+    }
+    /// The operation's `--max-retries`, which its admission installs before
+    /// its first open. An operation never given one retries three times.
+    pub(super) fn set_max_retries(&mut self, request: &str, max_retries: u32) {
+        self.retries.set_max_retries(request, max_retries);
     }
     pub(super) fn owns(&self, request: &str, id: i64) -> bool {
         self.entries.contains_key(&(request.into(), id))
@@ -134,6 +161,12 @@ impl HttpsEndpoint {
             if let Some(entry) = self.entries.get_mut(&key) {
                 if envelope.kind == MessageKind::Cancel {
                     cancel_entry(entry);
+                    // Its attempt ends with no verdict, which frees a probe,
+                    // and a held open starts none.
+                    if entry.preparing.is_some() && !entry.retired {
+                        self.retries.abandoned(&key, &entry.pool_key);
+                    }
+                    entry.held = None;
                     return Ok(());
                 }
                 if entry.cancel.is_cancelled() {
@@ -197,21 +230,6 @@ impl HttpsEndpoint {
             .operations
             .get_mut(&request)
             .expect("registered operation");
-        let host = if open.destination.host.contains(':') {
-            format!("[{}]", open.destination.host)
-        } else {
-            open.destination.host.clone()
-        };
-        let input = Input {
-            destination: format!(
-                "https://{host}:{}{}",
-                open.destination.port, open.destination.path
-            ),
-            service: open.service,
-            policy: open.policy,
-            session: envelope.session_id.clone(),
-            operation: operation.name.clone(),
-        };
         let retry_key = retry_key(open);
         let mut retry = if open.policy == AuthPolicy::Gh {
             operation
@@ -230,26 +248,16 @@ impl HttpsEndpoint {
         retry
             .budget
             .shorten(self.client.budget_for_open(&open.deadlines));
-        let cancel = CancellationToken::new();
-        let cancelled = cancel.clone();
-        let client = self.client.clone();
-        let preparing = self.runtime.spawn(async move {
-            let result = client
-                .prepare_budget_for_transition(
-                    input,
-                    &cancelled,
-                    &mut retry.budget,
-                    &mut retry.challenge,
-                )
-                .await;
-            (result, retry)
-        });
+        // The key's retry machine decides when its first attempt starts.
+        let pool_key =
+            pool::Key::https(open.destination.host.clone(), open.destination.port as u16);
+        let held = Held::new(Some(retry), self.now_ms, open.deadlines.allocation_ms);
         self.entries.insert(
-            key,
+            key.clone(),
             Entry {
                 envelope,
-                cancel,
-                preparing: Some(preparing),
+                cancel: CancellationToken::new(),
+                preparing: None,
                 serving: None,
                 prepared: None,
                 handoff: false,
@@ -259,11 +267,16 @@ impl HttpsEndpoint {
                 next: None,
                 output: None,
                 retired: false,
+                pool_key,
+                held: Some(held),
+                facts: None,
             },
         );
+        self.admit(&key);
         Ok(())
     }
     pub(super) fn step(&mut self, now: u64, cx: &mut Context<'_>) -> Result<(), EndpointError> {
+        self.now_ms = self.now_ms.max(now);
         for operation in self.operations.values_mut() {
             for retry in operation.retries.values_mut() {
                 if retry
@@ -279,7 +292,8 @@ impl HttpsEndpoint {
             if let Some(task) = entry.preparing.as_mut() {
                 if let Poll::Ready(result) = Pin::new(task).poll(cx) {
                     entry.preparing = None;
-                    let (mut result, retry) = result.map_err(|_| EndpointError::Protocol)?;
+                    let (mut result, connect, mut retry) =
+                        result.map_err(|_| EndpointError::Protocol)?;
                     if entry.cancel.is_cancelled() && result.is_ok() {
                         let facts = result
                             .as_ref()
@@ -295,6 +309,24 @@ impl HttpsEndpoint {
                     if self.shutting_down || entry.retired {
                         drop(result);
                         continue;
+                    }
+                    // The key learns how the attempt's setup went; a retried
+                    // open waits for its next attempt (retry.rs). A cancelled
+                    // one told it at its cancellation.
+                    if !entry.cancel.is_cancelled() {
+                        let member = (request.clone(), entry.envelope.stream_id);
+                        let settled = self.retries.settle(
+                            self.now_ms,
+                            member,
+                            entry,
+                            result,
+                            connect,
+                            &mut retry,
+                        );
+                        let Some(settled) = settled else {
+                            continue;
+                        };
+                        result = settled;
                     }
                     let mut receipt = Envelope {
                         version: entry.envelope.version,
@@ -403,6 +435,7 @@ impl HttpsEndpoint {
                 }
             }
         }
+        self.start_held();
         self.entries.retain(|_, entry| {
             !(entry.retired && entry.preparing.is_none() && entry.serving.is_none())
         });
@@ -483,6 +516,7 @@ impl HttpsEndpoint {
                 entry.handoff = false;
                 entry.retired = true;
                 entry.output = None;
+                entry.held = None;
                 if let Some(peer) = &entry.peer {
                     peer.disconnect();
                 }
@@ -491,6 +525,8 @@ impl HttpsEndpoint {
         if let Some(operation) = self.operations.remove(request) {
             self.client.finish_operation(&operation.name);
         }
+        // Its opens are all finished: no wake starts an attempt for it.
+        self.retries.remove(request);
     }
     pub(super) fn pending_request_count(&self, request: &str) -> usize {
         self.entries.keys().filter(|(id, _)| id == request).count() + self.client.pending_cleanup()
@@ -575,4 +611,5 @@ cfg_if::cfg_if! { if #[cfg(test)] {
     mod cancellation_tests;
     #[path = "https_cancel_mux_tests.rs"]
     mod https_cancel_mux_tests;
+    mod retry_tests;
 } }

@@ -6,7 +6,7 @@
 
 use super::{
     agent_job::{self, Job},
-    setup_retry::{self, Decision, Jitter, Operations, Outcome, Phase},
+    setup_retry::{self, AllocationClock, Decision, Jitter, Operations, Outcome, Phase},
     ssh_channel::GitService as NativeService,
     ssh_worker::{BridgeContext, Endpoint, EndpointAttachment, PendingOpen},
 };
@@ -73,8 +73,8 @@ struct QueuedOpen {
     key: RequestKey,
     pool_key: Key,
     envelope: Envelope,
-    admitted_at: u64,
-    deadline: u64,
+    /// Its allocation clock, which stops while its key holds it.
+    allocation: AllocationClock,
 }
 struct CheckJob {
     key: RequestKey,

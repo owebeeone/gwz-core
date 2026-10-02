@@ -204,10 +204,12 @@ impl Prepared {
         let disposition = {
             let connection = self.lease.as_ref().unwrap().connection.as_ref().unwrap();
             let mut guard = connection.lock().await;
-            if matches!(
-                tokio::time::timeout_at(until, guard.sender.ready()).await,
-                Ok(Ok(()))
-            ) {
+            if !self.discard
+                && matches!(
+                    tokio::time::timeout_at(until, guard.sender.ready()).await,
+                    Ok(Ok(()))
+                )
+            {
                 Disposition::Reusable
             } else {
                 Disposition::Discarded

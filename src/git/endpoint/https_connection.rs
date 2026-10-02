@@ -381,11 +381,7 @@ async fn connect(setup: Setup, key: Key) -> Result<Connection, Failure> {
     let mut io: Socket = Box::new(socket);
     if let Some(proxy) = setup.proxy {
         if proxy.tls {
-            io = Box::new(
-                tls.connect(&proxy.host, io)
-                    .await
-                    .map_err(|_| failure(ErrorCode::Trust))?,
-            );
+            io = Box::new(super::https_handshake::handshake(&tls, &proxy.host, io).await?);
         }
         let host = if key.host.contains(':') {
             format!("[{}]", key.host)
@@ -442,10 +438,7 @@ async fn connect(setup: Setup, key: Key) -> Result<Connection, Failure> {
             _ => return Err(failure(ErrorCode::Io)),
         }
     }
-    let io = tls
-        .connect(&key.host, io)
-        .await
-        .map_err(|_| failure(ErrorCode::Trust))?;
+    let io = super::https_handshake::handshake(&tls, &key.host, io).await?;
     let progress = Arc::new(AtomicU64::new(0));
     let io = super::https_progress::Tracked {
         io,

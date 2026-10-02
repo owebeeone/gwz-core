@@ -1,6 +1,7 @@
 //! HTTPS physical owner using the existing generic pool, driven independently of Git.
 use super::{
     https_connection::{self, Config, Connection, HttpConnector, HttpResource},
+    setup_retry::{self, Phase},
     shared_reservation::{Authority, ReservedConnector},
     ssh_pool::{PoolHost, Resource},
 };
@@ -107,6 +108,8 @@ impl HttpsPool {
             .unwrap_or_else(|e| e.into_inner())
             .physical_count()
     }
+    /// Leases a connection for `key`. A failure carries its phase: only the
+    /// pool's own connect failures end a setup (`setup_retry::phase_of`).
     pub(crate) async fn checkout(
         &self,
         key: Key,
@@ -114,7 +117,8 @@ impl HttpsPool {
         allocation_ms: u64,
         connect_ms: u64,
         cancel: &CancellationToken,
-    ) -> Result<HttpLease, Failure> {
+    ) -> Result<HttpLease, (Failure, Phase)> {
+        let other = |failure| (failure, Phase::Other);
         let mut request = Request::new(key, Identity::Https, owner);
         request.connect_timeout_ms = Some(connect_ms);
         request.allocation_timeout_ms = Some(allocation_ms);
@@ -123,14 +127,28 @@ impl HttpsPool {
             let mut host = self.host.lock().unwrap_or_else(|e| e.into_inner());
             let now = self.now();
             let mut cx = Context::from_waker(Waker::noop());
-            host.step(&mut cx, now).map_err(pool_failure)?;
-            let checkout = self.pool.checkout(request).map_err(pool_failure)?;
+            host.step(&mut cx, now)
+                .map_err(pool_failure)
+                .map_err(other)?;
+            let checkout = self
+                .pool
+                .checkout(request)
+                .map_err(pool_failure)
+                .map_err(other)?;
             // Both admission and immediate dispatch see one current clock.
             // A stale supervisor tick must not expire a fresh short allowance.
-            host.step(&mut cx, now).map_err(pool_failure)?;
+            host.step(&mut cx, now)
+                .map_err(pool_failure)
+                .map_err(other)?;
             checkout
         };
-        let lease = tokio::select! {result=checkout=>result.map_err(pool_failure)?,_=cancel.cancelled()=>return Err(https_connection::failure(ErrorCode::Cancelled))};
+        let lease = tokio::select! {
+            result = checkout => result.map_err(|error| {
+                let phase = setup_retry::phase_of(&error);
+                (pool_failure(error), phase)
+            })?,
+            _ = cancel.cancelled() => return Err(other(https_connection::failure(ErrorCode::Cancelled))),
+        };
         let (
             connection,
             reusable,
@@ -141,18 +159,24 @@ impl HttpsPool {
             reused,
         ) = {
             let mut host = self.host.lock().unwrap_or_else(|e| e.into_inner());
-            let reused = host.allocation_reused(&lease).map_err(pool_failure)?;
-            let resource: &mut HttpResource =
-                host.resource(&lease).map_err(pool_failure)?.inner_mut();
+            let reused = host
+                .allocation_reused(&lease)
+                .map_err(pool_failure)
+                .map_err(other)?;
+            let resource: &mut HttpResource = host
+                .resource(&lease)
+                .map_err(pool_failure)
+                .map_err(other)?
+                .inner_mut();
             if !resource.reusable() {
-                return Err(https_connection::failure(ErrorCode::Io));
+                return Err(other(https_connection::failure(ErrorCode::Io)));
             }
             resource.reusable.store(false, Ordering::Release);
             (
                 resource
                     .connection
                     .clone()
-                    .ok_or_else(|| https_connection::failure(ErrorCode::Io))?,
+                    .ok_or_else(|| other(https_connection::failure(ErrorCode::Io)))?,
                 resource.reusable.clone(),
                 resource.cancel.clone(),
                 resource.disposed.clone(),
@@ -172,7 +196,10 @@ impl HttpsPool {
                 reused,
             )
         };
-        let id = format!("https-{:?}", lease.connection().map_err(pool_failure)?);
+        let id = format!(
+            "https-{:?}",
+            lease.connection().map_err(pool_failure).map_err(other)?
+        );
         Ok(HttpLease {
             lease: Some(lease),
             connection: Some(connection),
