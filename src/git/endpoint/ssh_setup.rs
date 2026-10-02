@@ -45,6 +45,13 @@ impl Authenticated {
         })
     }
 
+    /// The same connection, pooled under `identity`: a URL password's open's
+    /// own identity, whichever credential authenticated it (TR2.18).
+    pub(crate) fn under(mut self, identity: Identity) -> Self {
+        self.identity = identity;
+        self
+    }
+
     pub(crate) fn new(
         mut connection: SshConnection,
         identity: Identity,

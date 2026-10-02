@@ -7,6 +7,7 @@ cfg_if::cfg_if! {
             ssh_handoff::Handoff,
             ssh_key_snapshot::Registry,
             ssh_network,
+            ssh_password::{self, Password},
             ssh_pool::Opening,
             ssh_setup::{Authenticated, Setup, SetupConnector},
             ssh_worker::Endpoint,
@@ -37,14 +38,20 @@ cfg_if::cfg_if! {
                         origin,
                         cleanup,
                         move |key: &Key, identity: &Identity, opening: Opening| -> io::Result<Setup> {
-                            let Opening { progress, url } = opening;
-                            // Lookup pins the already admitted snapshot. It performs no
-                            // file access; the path is never reopened during setup.
-                            let selected = match identity {
-                                Identity::Explicit(_) => Some(registry.lookup(key, identity)?),
-                                Identity::Ambient => None,
-                                Identity::Https => return Err(io::ErrorKind::InvalidInput.into()),
+                            let Opening { progress, url, selected: pinned } = opening;
+                            // A URL password's open has an identity of its own and
+                            // brings its own selected key, if any (TR2.18). Any
+                            // other selected key is found by its identity: lookup
+                            // pins the already admitted snapshot without file
+                            // access, and the path is never reopened during setup.
+                            let password = url.clone().filter(|url| url.password().is_some());
+                            let selected = match (identity, &password) {
+                                (Identity::Explicit(_), Some(_)) => pinned,
+                                (Identity::Explicit(_), None) => Some(registry.lookup(key, identity)?),
+                                (Identity::Ambient, None) => None,
+                                _ => return Err(io::ErrorKind::InvalidInput.into()),
                             };
+                            let requested = identity.clone();
                             let key = key.clone();
                             // The host as the open's URL wrote it, for a hashed
                             // known_hosts name (TR2.18); else the key's own.
@@ -61,21 +68,41 @@ cfg_if::cfg_if! {
                                 let rejected = || {
                                     progress.lock().unwrap_or_else(|e| e.into_inner()).authenticated = Some(false);
                                 };
-                                let (connection, trusted) = ssh_network::establish_written(
+                                let (mut connection, trusted) = ssh_network::establish_written(
                                     &key,
                                     &written,
                                     &known_hosts,
                                     &control,
                                 )?;
+                                let user = key.username.as_deref().ok_or(io::ErrorKind::InvalidInput)?;
+                                // libgit2 offers a URL's password before any key,
+                                // when the server offers password authentication.
+                                if let Some(secret) = password.as_ref().and_then(|url| url.password()) {
+                                    match ssh_password::authenticate(
+                                        connection, user, secret, &trusted, &control,
+                                        || offered(AuthMethod::None), rejected,
+                                    )? {
+                                        Password::Accepted(accepted) => {
+                                            let mut facts = progress.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                                            facts.authenticated = Some(true);
+                                            return Authenticated::new(accepted, requested, facts);
+                                        }
+                                        Password::Declined(declined) => connection = declined,
+                                    }
+                                }
                                 if let Some(selected) = selected {
-                                    return ssh_key_auth::authenticate_reporting(
+                                    let authenticated = ssh_key_auth::authenticate_reporting(
                                         connection, &trusted, selected, control,
                                         || offered(AuthMethod::SshKey), rejected,
                                     )
-                                    .and_then(Authenticated::selected);
+                                    .and_then(Authenticated::selected)?;
+                                    return Ok(if password.is_some() {
+                                        authenticated.under(requested)
+                                    } else {
+                                        authenticated
+                                    });
                                 }
                                 let socket = agent_socket.ok_or(io::ErrorKind::NotFound)?;
-                                let user = key.username.as_deref().ok_or(io::ErrorKind::InvalidInput)?;
                                 let connection = agent_auth::authenticate_reporting(
                                     connection,
                                     user,
@@ -86,7 +113,7 @@ cfg_if::cfg_if! {
                                 )?;
                                 Authenticated::new(
                                     connection,
-                                    Identity::Ambient,
+                                    requested,
                                     Facts {
                                         method: AuthMethod::SshAgent,
                                         authenticated: Some(true),

@@ -588,6 +588,7 @@ fn run<C>(
     let mut pending = Vec::<Pending>::new();
     let mut active = Vec::<Active>::new();
     let mut serial = 0_i64;
+    let mut passwords = 0_u64;
     let mut stopping_at = None;
     let session = format!("ssh-worker-{worker_id}");
     loop {
@@ -628,6 +629,7 @@ fn run<C>(
                 item.map(|p| Opening {
                     progress: p.request.progress.clone(),
                     url: p.request.url.clone(),
+                    selected: p.request.authority.clone(),
                 })
                 .unwrap_or_default()
             })
@@ -650,7 +652,7 @@ fn run<C>(
             break; // The owner transfers unfinished cleanup to the reserved supervisor slot.
         }
         let incoming = receiver.try_iter().take(32);
-        for request in ready.into_iter().chain(incoming) {
+        for mut request in ready.into_iter().chain(incoming) {
             if stopping_at.is_some() {
                 request.complete(Err(stopped()));
                 continue;
@@ -668,6 +670,21 @@ fn run<C>(
                 continue;
             };
             serial = next;
+            // A URL password authenticates its own open's connection only, as
+            // libgit2's does (TR2.18): the open gets an identity of its own,
+            // so no other open, with the password or without it, shares it.
+            if request
+                .url
+                .as_ref()
+                .is_some_and(|url| url.password().is_some())
+            {
+                let Some(next) = passwords.checked_add(1) else {
+                    request.complete(Err(io::Error::other("password identities exhausted")));
+                    continue;
+                };
+                passwords = next;
+                request.identity = Identity::Explicit(format!("url-password-{next}"));
+            }
             let mut policy = gwz_transport::pool::Request::new(
                 request.key.clone(),
                 request.identity.clone(),

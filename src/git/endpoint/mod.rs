@@ -16,6 +16,7 @@ pub(crate) mod ssh_key_container;
 pub(crate) mod ssh_key_snapshot;
 pub(crate) mod ssh_local;
 pub(crate) mod ssh_network;
+pub(crate) mod ssh_password;
 pub(crate) mod ssh_pool;
 pub(crate) mod ssh_pump;
 pub(crate) mod ssh_remote;
@@ -48,6 +49,7 @@ cfg_if::cfg_if! {
         pub(crate) mod https_opening;
         mod ssh_destination_tests;
         pub(crate) mod ssh_fixture;
+        pub(crate) mod ssh_password_fixture;
         mod ssh_pump_clock_tests;
         mod ssh_tests;
     }

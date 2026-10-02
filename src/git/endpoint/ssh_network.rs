@@ -314,7 +314,9 @@ cfg_if! {
                 Ok((connection, host_key))
             }
 
-            fn wait_session(connection: &mut SshConnection, control: &Control) -> io::Result<()> {
+            /// Waits within `control`'s bounds for the session's socket to be
+            /// ready in the directions libssh2 last blocked on.
+            pub(crate) fn wait_session(connection: &mut SshConnection, control: &Control) -> io::Result<()> {
                 let events = match connection.session().block_directions() {
                     BlockDirections::Inbound => libc::POLLIN,
                     BlockDirections::Outbound => libc::POLLOUT,
@@ -441,7 +443,7 @@ cfg_if! {
                 clean(io::Error::from(error))
             }
         }
-        pub(crate) use unix::establish_written;
+        pub(crate) use unix::{establish_written, wait_session};
         cfg_if! {
             if #[cfg(test)] {
                 pub(crate) use unix::{connect_addresses, establish, establish_inner, read_regular, timed_resolution, wait_step};

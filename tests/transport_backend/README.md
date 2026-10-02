@@ -6,7 +6,7 @@ suites (`src/git/endpoint/ssh_tests`, formerly the separate `tests/transport_ssh
 crate). It does not change production manifests or enable a released route.
 
 From the GWZ workspace root, using Rust 1.95.0, Git, OpenSSH's `/usr/sbin/sshd`,
-`ssh-keygen`, `ssh-agent` and `ssh-add`, `openssl`, `ps` and `kill`:
+`ssh-keygen`, `ssh-agent` and `ssh-add`, `openssl`, `ps`, `kill` and `python3`:
 
 ```sh
 python3 -B gwz-core/tests/transport_backend/prepare.py /tmp/gwz-backend-new
@@ -28,6 +28,11 @@ agent, trust store or private key. Ordinary builds retain native libgit2 routing
 and so does a candidate backend without a host context (TR2.11). HOME and
 SSH_AUTH_SOCK are read only by `SshEndpointConfig::from_environment`, when a
 runtime is built from it, as `with_local_transport` does.
+
+Stock `sshd` checks only system passwords, which no test may send, so the
+URL-password tests (TR2.18) run `password_sshd.py` instead: a loopback SSH
+server on Python's standard library alone that accepts one fixed test password
+and logs each authentication request without its password.
 
 Tests cover backend clone/fetch/tags/advertisement/manifest/push, push URL and
 rejection callbacks, progress, independent operation observations, shared pool

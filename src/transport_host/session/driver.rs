@@ -10,11 +10,13 @@ impl Session {
         observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
         facts: Arc<dyn Fn(&Facts) + Send + Sync>,
     ) -> io::Result<BlockingStream> {
-        let destination = Destination::parse(url)?.ok_or(io::ErrorKind::Unsupported)?;
+        let mut destination = Destination::parse(url)?.ok_or(io::ErrorKind::Unsupported)?;
         // What the URL holds beyond the protocol's destination (TR2.18): the
-        // host as written, when it is not the pool key's lowercased host.
-        let extras = (destination.written_host != destination.key.host)
-            .then(|| UrlExtras::new(destination.written_host.clone()));
+        // host as written, when it is not the pool key's lowercased host, and
+        // the password beside its user.
+        let password = destination.password.take();
+        let extras = (password.is_some() || destination.written_host != destination.key.host)
+            .then(|| UrlExtras::new(destination.written_host.clone(), password));
         let policy = if identity.mode == IdentityMode::ExplicitKey {
             AuthPolicy::SshExplicit
         } else {
@@ -114,6 +116,13 @@ impl Session {
             if state.closed {
                 return Err(protocol_failure(
                     gwz_transport::protocol::ErrorCode::CarrierLost,
+                ));
+            }
+            // A URL's password goes to an endpoint in this process only. One
+            // in another process could not be given it, so its open refuses.
+            if state.handoff.is_none() && extras.as_ref().is_some_and(|e| e.password().is_some()) {
+                return Err(protocol_failure(
+                    gwz_transport::protocol::ErrorCode::InvalidRequest,
                 ));
             }
             let owner = state

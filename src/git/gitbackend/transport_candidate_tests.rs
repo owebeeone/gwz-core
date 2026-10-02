@@ -8,6 +8,7 @@ mod drivers;
 mod host_context;
 mod known_hosts_case;
 mod url_parity;
+mod url_password;
 
 /// One transport runtime for a test, as `with_local_transport` builds one per
 /// command. Its endpoint trusts the fixture's host key.

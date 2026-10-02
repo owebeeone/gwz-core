@@ -9,6 +9,34 @@ use std::{
 fn config() -> SshEndpointConfig {
     SshEndpointConfig::fixture(std::path::PathBuf::from("/nonexistent-endpoint-home"), None)
 }
+/// TR2.18: a URL's password goes only to an endpoint in the driver's own
+/// process. The client placement's driver has none, so it refuses the open
+/// before anything is queued, and its error holds no part of the password.
+#[test]
+fn a_driver_with_no_endpoint_in_process_refuses_a_url_password() {
+    let (driver, _port) = session::Session::driver(3000, 3000, None).unwrap();
+    let error = driver
+        .open(
+            "request",
+            "operation",
+            "ssh://git:sentinel-pw@example.invalid/repository.git",
+            crate::git::endpoint::ssh_channel::GitService::UploadPack,
+            Default::default(),
+            Arc::new(|_, _| {}),
+            Arc::new(|_| {}),
+        )
+        .err()
+        .expect("the open is refused");
+    let failure = error
+        .get_ref()
+        .and_then(|cause| cause.downcast_ref::<session::SshOpenFailure>())
+        .expect("an open failure");
+    assert_eq!(
+        failure.0.code,
+        gwz_transport::protocol::ErrorCode::InvalidRequest
+    );
+    assert!(!format!("{error:?} {error}").contains("sentinel"));
+}
 #[test]
 fn request_installs_its_resolved_pool_capacity_before_bind() {
     let runtime = TransportRuntime::new(config()).unwrap();

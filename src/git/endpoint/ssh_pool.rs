@@ -1,6 +1,6 @@
 //! Physical ownership behind the transport pool's exclusive lease ledger.
 //! One endpoint worker drives this host and its timer independently of Git calls.
-use super::ssh_handoff::UrlExtras;
+use super::{ssh_handoff::UrlExtras, ssh_key_snapshot::Entry as Selected};
 use gwz_transport::{
     pool::{Action, Config, ConnectionId, Error, Identity, Key, Lease, Pool, PoolDriver},
     protocol::{Disposition, Effect, ErrorCode, Facts, Failure},
@@ -26,6 +26,9 @@ pub(crate) type Progress = Arc<Mutex<Facts>>;
 pub(crate) struct Opening {
     pub(crate) progress: Progress,
     pub(crate) url: Option<Arc<UrlExtras>>,
+    /// The open's selected key, which a URL password's open authenticates
+    /// with when the server does not take the password.
+    pub(crate) selected: Option<Arc<Selected>>,
 }
 
 /// Connection setup is nonblocking. An error returned by start owns no remaining
