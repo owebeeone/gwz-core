@@ -1,8 +1,10 @@
-# SSH password-helper setup clock — DRAFT, remediation round 1
+# SSH password-helper setup clock — DRAFT, remediation round 2
 
 2026-10-03. This corrects the complete draft reviewed at core `eb06fac24` under
-GwzTransportSshHelperClock-RemPlan.md. Both prior NO-GO verdicts remain controlling
-until the original reviewers close their findings at a newly settled tuple.
+GwzTransportSshHelperClock-RemPlan.md and the bounded second correction in
+GwzTransportSshHelperClock-RemPlan-2.md. Round1 closed the original findings; Consistency returned GO and Safety
+retained the bounded P2-3 refusal branch. This correction awaits both original
+reviewers at a newly settled tuple; implementation remains NO-GO meanwhile.
 The following interfaces and tests are proposals, not executed implementation.
 Do not implement this clock mechanism before root-relayed review GO.
 
@@ -47,7 +49,7 @@ The proposed generic methods are `prepare_local(kind, until)`,
 `begin_network_wait()`, `network_progress()`, and `terminate(reason)`.
 `kind` is Admission or Interaction, not a helper classification. Observe returns
 an immutable Alive snapshot or Terminal record with connection, phase and a
-neutral cause: NetworkAggregate, NetworkStall, LocalDeadline, Cancelled,
+neutral cause: NetworkAggregate, NetworkStall, LocalDeadline, PreparationDeadline, Cancelled,
 DriverLost, ResourceFailure, or Completed. A resource failure also retains its
 existing scalar code/effect/setup-cause, without secret or dynamic detail.
 Snapshots are advisory: irreversible expiry, cancellation, success admission
@@ -72,8 +74,12 @@ that token before publishing. Publication validates the token and current
 phase, then converts the same slot to PendingAcknowledgement, installs the
 target phase/deadline and notifies PoolHost AFTER unlocking. Dropping a prepared
 token releases its reservation; expiry/cancellation/disposal invalidates it.
-Its local deadline is finite, and observe discards an expired reservation
-without changing or extending the active Network clock. PoolHost acknowledges that exact connection/
+Its local deadline is finite. Observe discards its work reservation on expiry
+but retains the exact issued connection/generation/kind/deadline in that SAME
+bounded slot as ExpiredPrepared until token consumption/drop or active Terminal.
+It neither pauses nor extends the current active clock. No next preparation is
+issued while that token is still owned, so an expired token cannot be confused
+with a later generation. This replaces round1's unqualified discard wording. PoolHost acknowledges that exact connection/
 phase receipt through the authority. Before acknowledgement it again settles
 expiry/cancellation, and refuses an expired local phase. Core awaits this
 receipt outside locks; it starts no admission work, child or password offer
@@ -85,9 +91,10 @@ A stale receipt cannot acknowledge another generation.
 
 Waiting is bounded by the newly installed phase deadline, or by cancellation/
 driver loss/disposal. Local phases always have finite deadlines. A pending
-Network resume has a finite retained aggregate/stall deadline when enabled;
-when both are disabled it remains cancellation/driver-lifetime bounded, like
-existing disabled network waits. Authority observation itself completes expired
+Network resume is bounded by any LIVE retained aggregate/stall deadline.
+With no live deadline, including Disabled aggregate plus enabled-but-Inactive
+stall, it is cancellation/driver-lifetime bounded like existing disabled waits.
+Acknowledgement alone must not start an Inactive stall clock. Authority observation itself completes expired
 receipts; it does not require a functioning driver to notice expiry. The clock
 retains one waiter registration per pending receipt and one driver registration,
 replacing prior registrations rather than growing a queue. Notifications,
@@ -171,10 +178,35 @@ and paused network deadlines do not reduce it. Discovery, reads, parsing,
 verification and fill share it without resets. Core obtains a prepared token, installs the witness for its exact connection/
 phase ID BEFORE publication, then publishes and awaits acknowledgement. There
 is no visible local phase whose witness is still unassociated and no reporting
-wait for a core thread to finish association. A refused publication cannot
-become a helper expiry: it projects the prior immutable terminal record and
-ignores the unadmitted witness. Preparation consumes no pause or allowance
-extension. No core context lock is held while calling the authority or awaiting
+wait for a core thread to finish association. Publication has three complete typed refusal branches, settled under the
+existing authority/token protocol:
+
+1. `ActiveTerminal(record)`: active expiry/cancellation/resource failure already
+   won, including during the initial deadline settlement. Consume/invalidate
+   the preparation and return that immutable record. Core uses its admitted
+   phase witness only; the rejected preparation cannot relabel it.
+2. `PreparationExpired(record)`: the authority remains Alive, the token matches
+   its exact issued Prepared/ExpiredPrepared slot, and its captured preparation
+   deadline is due. Atomically consume that slot and commit Terminal with neutral
+   PreparationDeadline, the exact prepared connection/phase identity and no
+   active-phase timeout assertion. This is a failure to start the proposed phase,
+   not a claim that live Network/Admission expired. Core matches ONLY this
+   authority-validated identity to its originally captured witness, reporting
+   Timeout/Effect None/Allocation or Interaction and the original helper_budget_ms.
+   It releases any already-owned admissions under existing physical cleanup.
+   There is no admission/child work, missing-Git latch, renewed capture, retry or
+   wait for a previously nonexistent Terminal. For Interaction preparation this
+   applies equally while the old Admission remains live. Another consumer's
+   earlier active expiry/cancel still takes branch1, never this branch.
+3. `InvalidToken`: stale, foreign, forged or otherwise nonmatching token while
+   Alive. This refuses without assigning helper detail or altering a foreign
+   clock. Core's setup owner terminates/disposes ONLY its own connection with
+   scalar InvalidRequest/Effect None and reports the returned first terminal
+   record; if active expiry/cancellation wins that arbitration it is preserved.
+   No arbitrary unadmitted witness can supply timing provenance. The operation
+   settles boundedly without launch, latch, budget reset or a terminal wait.
+
+Preparation consumes no pause or allowance extension. No core context lock is held while calling the authority or awaiting
 acknowledgement.
 
 Extend generic pool Error with a neutral `SetupEnded` record containing full
@@ -187,7 +219,7 @@ interface change, not a transport wire or GWZ application schema change.
 
 Core `EndpointOpenFailure::capture` receives the connection's SetupContext.
 For SetupEnded it matches the exact connection/phase record, obtains the first
-core failure, and emits the existing Failure envelope. A LocalDeadline with a
+core failure (including the validated PreparationDeadline refusal above), and emits the existing Failure envelope. A LocalDeadline with a
 matching Allocation/Interaction witness yields Timeout, Effect None, its exact
 setup cause and helper_budget_ms. The ordinary network Aggregate/Stall path has
 NO helper detail. Helper-first failure publishes the same terminal phase through
@@ -255,8 +287,15 @@ claimed closed by this amendment.
 - Force pool-first, Control-first and helper-first Allocation/Interaction expiry:
   identical Timeout/Effect None/setup cause/exact helper_budget_ms, including
   1250ms and zero allocation; generic network timeout has no helper detail.
-  Expire/cancel between preparation, witness installation and publication;
-  an unadmitted witness never labels the winning network/cancellation outcome.
+  With aggregate/stall Disabled, prepare Allocation1ms, install witness, delay,
+  observe first, then publish: bounded validated preparation expiry reports that
+  original 1ms, no work/latch/reset or nonexistent-terminal wait. Repeat with a
+  later live Network deadline and with Interaction preparation expiring before
+  still-live Admission. Active expiry/cancel controls preserve their cause and
+  reject prepared helper detail. Stale/foreign tokens have no helper detail.
+- Disabled aggregate plus configured-but-Inactive stall: delay Network resume
+  acknowledgement beyond the configured interval, preserve Inactive, then start
+  stall timing only on the subsequent real network wait.
 - Trust consumes network; admission consumes allocation only; zero/free and
   saturated admission launch nothing. Helper outlasts original connect deadline
   but succeeds inside full allowance. Disabled network still bounds helper.
