@@ -4,6 +4,15 @@ Date: 2026-09-21. Status: accepted local worker checkpoint; production activatio
 Authority: operator instruction to proceed with endpoint wiring after the accepted
 [SshIntegration](GwzRemoteTransportSshIntegration.md) checkpoint. Platform and
 selected-source qualification remain deferred as one integrated batch.
+Erratum, 2026-10-02: destination admission no longer "decodes URL escapes once"
+as the next section says. TR2.16 replaced that with libgit2 1.9.7's exact
+parsing, 1.0.17's network path, in `src/git/endpoint/ssh_destination.rs`: a
+URL's path passes as written and is never decoded.
+Erratum, 2026-10-02: destination admission no longer "rejects credentials
+embedded in URLs" as the next section says. On the operator's decision of
+2026-10-02, TR2.18 uses a password beside the user in an `ssh://` URL as
+libgit2 does (`src/git/endpoint/ssh_password.rs`). The password reaches the
+endpoint in process only, never in a message (`src/git/endpoint/ssh_handoff.rs`).
 
 ## Boundary and sequence
 

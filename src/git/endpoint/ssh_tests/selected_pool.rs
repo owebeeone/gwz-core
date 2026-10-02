@@ -109,12 +109,16 @@ cfg_if::cfg_if! {
             let f=common::SshdFixture::new();let r=Registry::new();let calls=Arc::new(AtomicUsize::new(0));let invocations=Arc::new(AtomicUsize::new(0));
             let (started,entered)=mpsc::channel();let (release_tx,wait)=mpsc::channel();let release=Arc::new(Mutex::new(Some(wait)));let normal=Arc::new(Registry::start);let stalled=stalled_reader(started,release);
             let reader:Reader={let invocations=invocations.clone();let normal=normal.clone();let stalled=stalled.clone();Arc::new(move |registry,key,path,deadline,cleanup| {if invocations.fetch_add(1,Ordering::SeqCst)==0 {(normal)(registry,key,path,deadline,cleanup)} else {(stalled)(registry,key,path,deadline,cleanup)}})};
-            let short=Config { allocation_timeout_ms:100, connect_timeout_ms:100, interaction_timeout_ms:100, ..config() };
-            let endpoint=endpoint_with_reader_config(short.clone(),&f,r,calls.clone(),Arc::new(Mutex::new(None)),reader);let key=Key::ssh(&f.user,"127.0.0.1",f.port);let path=f.temp.path().join("client_ed25519");
-            let deadlines=attachment::deadlines(&short,1000);let (mut stream,_)=attachment::open(&endpoint,key.clone(),Some(path.clone()),ssh_channel::GitService::UploadPack,f.repository.to_str().unwrap(),deadlines.clone()).unwrap();
+            // Both opens have config()'s own budgets, which a loaded runner meets: the
+            // first must open, and only the shutdown may end the second, whose key read
+            // stalls until it is released.
+            let endpoint=endpoint_with_reader(&f,r,calls.clone(),Arc::new(Mutex::new(None)),reader);let key=Key::ssh(&f.user,"127.0.0.1",f.port);let path=f.temp.path().join("client_ed25519");
+            let deadlines=attachment::deadlines(&config(),1000);let (mut stream,_)=attachment::open(&endpoint,key.clone(),Some(path.clone()),ssh_channel::GitService::UploadPack,f.repository.to_str().unwrap(),deadlines.clone()).unwrap();
             let endpoint2=endpoint.clone();let second=std::thread::spawn(move || attachment::open(&endpoint2,key,Some(path),ssh_channel::GitService::UploadPack,"repo",deadlines));entered.recv_timeout(Duration::from_secs(3)).unwrap();
             stream.write_all(b"0000").unwrap();stream.end_write().unwrap();let mut bytes=Vec::new();stream.read_to_end(&mut bytes).unwrap();assert!(!bytes.is_empty());stream.close().unwrap();assert_eq!(calls.load(Ordering::SeqCst),1);
-            endpoint.shutdown();assert!(second.join().unwrap().is_err());release_tx.send(()).unwrap();
+            endpoint.shutdown();
+            let error=match second.join().unwrap() { Ok(_) => panic!("the stalled open opened"), Err(error) => error };
+            assert_eq!(error.kind(),io::ErrorKind::BrokenPipe,"the shutdown, not a deadline, ends the stalled open");release_tx.send(()).unwrap();
             let until=Instant::now()+Duration::from_secs(3);while !endpoint.shutdown_status().cleanup_complete {assert!(Instant::now()<until);std::thread::sleep(Duration::from_millis(1));}
         }
     }

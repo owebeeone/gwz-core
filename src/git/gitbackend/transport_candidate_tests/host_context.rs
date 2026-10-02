@@ -116,6 +116,11 @@ fn clone_then_fetch(
 /// directory and which sets `CHILD`, and asserts that the child ran exactly
 /// that test and passed.
 pub(super) fn run_in_child(module: &str, name: &str) {
+    run_in_child_with(module, name, &[]);
+}
+
+/// `run_in_child`, with the child's environment also holding `extra`.
+pub(super) fn run_in_child_with(module: &str, name: &str, extra: &[(&str, String)]) {
     let home = tempfile::TempDir::new().unwrap();
     let module = module.split_once("::").map_or(module, |(_, path)| path);
     let test = format!("{module}::{name}");
@@ -130,6 +135,9 @@ pub(super) fn run_in_child(module: &str, name: &str) {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);
         }
+    }
+    for (key, value) in extra {
+        command.env(key, value);
     }
     let output = command
         .args(["--exact", &test, "--nocapture", "--test-threads", "1"])

@@ -5,8 +5,9 @@ use super::{
     agent_job::{Cleanup, Job},
     ssh_admission::{Admissions, Reader},
     ssh_channel::{GitService, SshChannel},
+    ssh_handoff::{Handoff, UrlExtras},
     ssh_key_snapshot::{Entry, Registry},
-    ssh_pool::{Connector, PoolHost, Progress, Resource},
+    ssh_pool::{Connector, Opening, PoolHost, Progress, Resource},
     ssh_pump::SshPump,
     ssh_shutdown::{self, Status},
 };
@@ -70,6 +71,9 @@ struct Shared {
     origin: Instant,
     join: Mutex<Option<JoinHandle<()>>>,
     status: Status,
+    /// The handoff from which each open takes what its URL holds beyond its
+    /// destination, when a driver in this process deposited any (TR2.18).
+    handoff: Handoff,
 }
 impl Drop for Shared {
     fn drop(&mut self) {
@@ -113,6 +117,9 @@ pub(super) struct OpenRequest {
     /// Pins the admitted key snapshot, which the registry holds only weakly,
     /// until the open completes: the connector finds it there by identity.
     pub(super) authority: Option<Arc<Entry>>,
+    /// What the open's URL holds beyond its destination, which the setup of a
+    /// connection opened for it uses (TR2.18).
+    pub(super) url: Option<Arc<UrlExtras>>,
     pub(super) progress: Progress,
     pub(super) permit: Permit,
     pub(super) context: BridgeContext,
@@ -291,30 +298,29 @@ pub(crate) struct Endpoint {
     cleanup: Duration,
 }
 impl Endpoint {
-    pub(crate) fn with_registry<C>(
+    /// The endpoint. A driver in its process deposits each open's URL extras
+    /// in `handoff`, from which the open takes them (TR2.18).
+    pub(crate) fn with_handoff<C>(
         config: PoolConfig,
         registry: Registry,
         factory: impl FnOnce(Instant, Registry) -> C,
         io_timeout_ms: u64,
+        handoff: Handoff,
     ) -> io::Result<Self>
     where
         C: Connector + Send + 'static,
         C::Resource: ChannelResource,
     {
-        Self::with_reader(
-            config,
-            registry,
-            Arc::new(Registry::start),
-            factory,
-            io_timeout_ms,
-        )
+        let reader: Reader = Arc::new(Registry::start);
+        Self::build(config, registry, reader, factory, io_timeout_ms, handoff)
     }
-    pub(crate) fn with_reader<C>(
+    fn build<C>(
         config: PoolConfig,
         registry: Registry,
         reader: Reader,
         factory: impl FnOnce(Instant, Registry) -> C,
         io_timeout_ms: u64,
+        handoff: Handoff,
     ) -> io::Result<Self>
     where
         C: Connector + Send + 'static,
@@ -382,6 +388,7 @@ impl Endpoint {
                 origin,
                 join: Mutex::new(Some(join)),
                 status,
+                handoff,
             }),
             cleanup: Duration::from_millis(cleanup),
         })
@@ -493,6 +500,13 @@ impl Endpoint {
                     .ok_or(io::ErrorKind::InvalidInput)
             })
             .transpose()?;
+        // What the URL holds beyond the destination, which the driver
+        // deposited before this open could arrive: taken once, here.
+        let url = self
+            .shared
+            .handoff
+            .take(&context.session_id, context.stream_id)
+            .map(Arc::new);
         let request = OpenRequest {
             key,
             identity: Identity::Ambient,
@@ -502,6 +516,7 @@ impl Endpoint {
             reply: Some(reply),
             selected,
             authority: None,
+            url,
             progress: Progress::default(),
             cancelled,
             deadline: absolute.map(|at| at.duration_since(self.shared.origin).as_millis() as u64),
@@ -573,6 +588,7 @@ fn run<C>(
     let mut pending = Vec::<Pending>::new();
     let mut active = Vec::<Active>::new();
     let mut serial = 0_i64;
+    let mut passwords = 0_u64;
     let mut stopping_at = None;
     let session = format!("ssh-worker-{worker_id}");
     loop {
@@ -610,7 +626,12 @@ fn run<C>(
                     })
                     .unwrap_or(io_timeout_ms);
                 stall_ms.store(stall, Ordering::Relaxed);
-                item.map(|p| p.request.progress.clone()).unwrap_or_default()
+                item.map(|p| Opening {
+                    progress: p.request.progress.clone(),
+                    url: p.request.url.clone(),
+                    selected: p.request.authority.clone(),
+                })
+                .unwrap_or_default()
             })
             .is_err()
         {
@@ -631,7 +652,7 @@ fn run<C>(
             break; // The owner transfers unfinished cleanup to the reserved supervisor slot.
         }
         let incoming = receiver.try_iter().take(32);
-        for request in ready.into_iter().chain(incoming) {
+        for mut request in ready.into_iter().chain(incoming) {
             if stopping_at.is_some() {
                 request.complete(Err(stopped()));
                 continue;
@@ -649,6 +670,21 @@ fn run<C>(
                 continue;
             };
             serial = next;
+            // A URL password authenticates its own open's connection only, as
+            // libgit2's does (TR2.18): the open gets an identity of its own,
+            // so no other open, with the password or without it, shares it.
+            if request
+                .url
+                .as_ref()
+                .is_some_and(|url| url.password().is_some())
+            {
+                let Some(next) = passwords.checked_add(1) else {
+                    request.complete(Err(io::Error::other("password identities exhausted")));
+                    continue;
+                };
+                passwords = next;
+                request.identity = Identity::Explicit(format!("url-password-{next}"));
+            }
             let mut policy = gwz_transport::pool::Request::new(
                 request.key.clone(),
                 request.identity.clone(),
@@ -893,6 +929,33 @@ fn stopped() -> io::Error {
 cfg_if::cfg_if! {
     if #[cfg(test)] {
         impl Endpoint {
+            /// An endpoint whose opens no driver deposits extras for.
+            pub(crate) fn with_registry<C>(
+                config: PoolConfig,
+                registry: Registry,
+                factory: impl FnOnce(Instant, Registry) -> C,
+                io_timeout_ms: u64,
+            ) -> io::Result<Self>
+            where
+                C: Connector + Send + 'static,
+                C::Resource: ChannelResource,
+            {
+                Self::with_reader(config, registry, Arc::new(Registry::start), factory, io_timeout_ms)
+            }
+            /// `with_registry`, reading selected keys with `reader`.
+            pub(crate) fn with_reader<C>(
+                config: PoolConfig,
+                registry: Registry,
+                reader: Reader,
+                factory: impl FnOnce(Instant, Registry) -> C,
+                io_timeout_ms: u64,
+            ) -> io::Result<Self>
+            where
+                C: Connector + Send + 'static,
+                C::Resource: ChannelResource,
+            {
+                Self::build(config, registry, reader, factory, io_timeout_ms, Handoff::default())
+            }
             /// The worker's shutdown status, still readable once every clone
             /// of this endpoint is gone.
             pub(crate) fn shutdown_watch(&self) -> ssh_shutdown::ShutdownWatch {

@@ -4,6 +4,7 @@ use crate::git::endpoint::{
     shared_reservation::Authority,
     ssh_channel::GitService,
     ssh_destination::Destination,
+    ssh_handoff::{Handoff, UrlExtras},
     ssh_worker::ThreadWake,
     stream_io::BlockingStream,
 };
@@ -132,6 +133,9 @@ struct State {
     incoming: Option<Attachment>,
     io_timeout_ms: u64,
     connect_timeout_ms: u64,
+    /// A driver's handoff to the endpoint session in its process, when it
+    /// has one: each SSH open's URL extras go through it (TR2.18).
+    handoff: Option<Handoff>,
 }
 struct Event {
     wakes: Mutex<BTreeMap<u64, Waker>>,
@@ -302,15 +306,20 @@ impl Session {
             incoming: None,
             io_timeout_ms: 9000,
             connect_timeout_ms: 30_000,
+            handoff: None,
         }
     }
+    /// A driver session. `handoff` is shared with the endpoint session its
+    /// carrier reaches in this process, if any.
     pub(super) fn driver(
         io_timeout_ms: u64,
         connect_timeout_ms: u64,
+        handoff: Option<Handoff>,
     ) -> ModelResult<(Arc<Self>, TransportPort)> {
         let mut state = Self::empty();
         state.io_timeout_ms = io_timeout_ms;
         state.connect_timeout_ms = connect_timeout_ms;
+        state.handoff = handoff;
         let id = unique()?;
         let (owner, port) = Owner::new(Mux::initiator(&id, mux_config()).map_err(mux_error)?);
         state.owner = Some(owner);
@@ -320,12 +329,14 @@ impl Session {
         Ok((session.clone(), TransportPort(Arc::new(PortLease(session)))))
     }
     pub(super) fn endpoint(config: SshEndpointConfig) -> ModelResult<(Arc<Self>, TransportPort)> {
-        Self::endpoint_with_https(config, None)
+        Self::endpoint_with_https(config, None, Handoff::default())
     }
     /// An HTTPS endpoint takes the helper slots of the host that opens it.
+    /// `handoff` is shared with the driver session in this process, if any.
     pub(super) fn endpoint_with_https(
         config: SshEndpointConfig,
         https: Option<(HttpsEndpointConfig, HelperSlots)>,
+        handoff: Handoff,
     ) -> ModelResult<(Arc<Self>, TransportPort)> {
         let mut state = Self::empty();
         let id = unique()?;
@@ -341,6 +352,7 @@ impl Session {
             config.agent.clone(),
             config.io_timeout_ms,
             authority.clone(),
+            handoff,
         )
         .map_err(|_| unavailable("SSH endpoint construction failed"))?;
         if let Some((https, helper_slots)) = https {

@@ -30,6 +30,68 @@ fn spellings_share_a_pool_key_and_keep_their_paths() {
 }
 
 #[test]
+fn the_host_as_written_stays_beside_the_lowercased_key() {
+    for (url, written) in [
+        ("ssh://git@GitHost.Example:22/a", "GitHost.Example"),
+        ("SSH://git@GITHOST.example/a", "GITHOST.example"),
+        ("ssh://git@GitHost%2EExample/a", "GitHost.Example"),
+        ("git@GitHost.Example:a", "GitHost.Example"),
+        ("[GitHost.Example:22]:a", "GitHost.Example"),
+        ("ssh://git@[FE80::1]/a", "FE80::1"),
+    ] {
+        let target = Destination::parse(url).unwrap().unwrap();
+        assert_eq!(target.written_host, written, "{url}");
+        assert_eq!(target.key.host, written.to_ascii_lowercase(), "{url}");
+    }
+}
+
+#[test]
+fn a_password_beside_a_user_is_kept_as_libgit2_decodes_it() {
+    for (url, user, password) in [
+        ("ssh://u:pw@host/a", "u", &b"pw"[..]),
+        ("git+ssh://u:p%40w%3A%2F@host/a", "u", b"p@w:/"),
+        // The password follows the userinfo's last ':', and a user may hold '@'.
+        ("ssh://u:p:w@host/a", "u:p", b"w"),
+        ("ssh://a@b:pw@host/a", "a@b", b"pw"),
+        // Bytes, as libgit2 decodes them; libssh2 gets a C string.
+        ("ssh://u:%FF%FE@host/a", "u", b"\xff\xfe"),
+        ("ssh://u:p%00w@host/a", "u", b"p"),
+        ("ssh://u:%zz@host/a", "u", b"%zz"),
+    ] {
+        let target = Destination::parse(url).unwrap().unwrap();
+        assert_eq!(target.key, Key::ssh(user, "host", 22), "{url}");
+        assert_eq!(
+            target.password.as_ref().map(|p| p.bytes()),
+            Some(password),
+            "{url}"
+        );
+    }
+    // No user: libgit2 asks the callback for one and drops the password. No
+    // password: none is offered. An scp-like spelling has no password.
+    for url in [
+        "ssh://:pw@host/a",
+        "ssh://u:@host/a",
+        "ssh://u@host/a",
+        "us:pw@host:a",
+    ] {
+        let target = Destination::parse(url).unwrap().unwrap();
+        assert!(target.password.is_none(), "{url}");
+    }
+}
+
+#[test]
+fn no_debug_form_or_error_shows_a_password() {
+    let target = Destination::parse("ssh://u:sentinel@host/a")
+        .unwrap()
+        .unwrap();
+    assert!(!format!("{target:?}").contains("sentinel"));
+    for url in ["ssh://u:sentinel@host:0/a", "ssh://u:sentinel@[::1x]/a"] {
+        let error = Destination::parse(url).unwrap_err();
+        assert!(!format!("{error:?} {error}").contains("sentinel"), "{url}");
+    }
+}
+
+#[test]
 fn paths_pass_as_written_but_a_url_query_and_the_slash_before_a_tilde() {
     for (url, path) in [
         (
@@ -129,7 +191,8 @@ fn what_libgit2_refuses_or_cannot_resolve_is_refused() {
         "git@[::1:a",
         "host]:a",
         // The transport's bounds, which libgit2 does not have.
-        "ssh://u:sentinel@host/a",
+        "ssh://u:sentinel@host/a\n",
+        "ssh://u:sentinel@host:0/a",
         "ssh://host/a\n",
         "host:a\tb",
         "ssh://u%00@host/a",

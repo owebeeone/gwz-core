@@ -10,7 +10,13 @@ impl Session {
         observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
         facts: Arc<dyn Fn(&Facts) + Send + Sync>,
     ) -> io::Result<BlockingStream> {
-        let destination = Destination::parse(url)?.ok_or(io::ErrorKind::Unsupported)?;
+        let mut destination = Destination::parse(url)?.ok_or(io::ErrorKind::Unsupported)?;
+        // What the URL holds beyond the protocol's destination (TR2.18): the
+        // host as written, when it is not the pool key's lowercased host, and
+        // the password beside its user.
+        let password = destination.password.take();
+        let extras = (password.is_some() || destination.written_host != destination.key.host)
+            .then(|| UrlExtras::new(destination.written_host.clone(), password));
         let policy = if identity.mode == IdentityMode::ExplicitKey {
             AuthPolicy::SshExplicit
         } else {
@@ -36,6 +42,7 @@ impl Session {
             None,
             observe,
             facts,
+            extras,
         )
         .map_err(failure_io)
     }
@@ -77,8 +84,12 @@ impl Session {
             allocation_observer,
             observe,
             facts,
+            None,
         )
     }
+    /// Opens a stream. An SSH open's URL `extras` go to the endpoint session
+    /// through the handoff they share in this process, if they share one,
+    /// and are dropped otherwise (TR2.18).
     fn open_stream(
         &self,
         request: &str,
@@ -91,8 +102,12 @@ impl Session {
         allocation_observer: Option<Arc<dyn Fn(i64) + Send + Sync>>,
         observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
         facts: Arc<dyn Fn(&Facts) + Send + Sync>,
+        mut extras: Option<UrlExtras>,
     ) -> Result<BlockingStream, Failure> {
         let reply = Wait::new();
+        // Held until the open has its answer: dropping it drops whatever
+        // extras the endpoint never took.
+        let deposit;
         // A mux with no stream to spare is backpressure, not a failure: the
         // open waits for a stream to end, within its allocation deadline.
         let admit_until = allocation_until.unwrap_or_else(|| Instant::now() + ADMISSION);
@@ -101,6 +116,13 @@ impl Session {
             if state.closed {
                 return Err(protocol_failure(
                     gwz_transport::protocol::ErrorCode::CarrierLost,
+                ));
+            }
+            // A URL's password goes to an endpoint in this process only. One
+            // in another process could not be given it, so its open refuses.
+            if state.handoff.is_none() && extras.as_ref().is_some_and(|e| e.password().is_some()) {
+                return Err(protocol_failure(
+                    gwz_transport::protocol::ErrorCode::InvalidRequest,
                 ));
             }
             let owner = state
@@ -140,8 +162,17 @@ impl Session {
                 ),
                 receive_limits: binding.limits().clone(),
             };
-            let id = match owner.open(request, open) {
-                Ok(id) => id,
+            let opened = match &state.handoff {
+                Some(handoff) => handoff.open(binding.session_id(), &mut extras, || {
+                    owner.open(request, open)
+                }),
+                None => owner.open(request, open).map(|id| (id, None)),
+            };
+            let id = match opened {
+                Ok((id, queued)) => {
+                    deposit = queued;
+                    id
+                }
                 Err(mux::Error::Capacity | mux::Error::WouldBlock) => {
                     drop(state);
                     if Instant::now() >= admit_until {
@@ -197,7 +228,9 @@ impl Session {
             );
             break;
         }
-        match reply.get() {
+        let answer = reply.get();
+        drop(deposit);
+        match answer {
             Ok((stream, _)) => Ok(stream),
             Err(failure) => Err(failure),
         }
