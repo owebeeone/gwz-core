@@ -58,6 +58,19 @@ cfg_if::cfg_if! {
         }
 
         #[test]
+        fn carriage_return_boundaries_cannot_hide_a_second_or_encrypted_key() {
+            let plain = armor("OPENSSH PRIVATE KEY", &openssh(b"none", b"none", b""));
+            let encrypted = armor("ENCRYPTED PRIVATE KEY", &[1, 2, 3]);
+            for hidden in [&plain, &encrypted] {
+                let text = format!("ignored\r{}ignored\n{plain}", hidden.replace('\n', "\r"));
+                assert_eq!(check(text).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+            }
+            for ending in ["\r", "\n", "\r\n"] {
+                check(format!("ignored{ending}{}", plain.replace('\n', ending))).unwrap();
+            }
+        }
+
+        #[test]
         fn accepts_unencrypted_traditional_pkcs8_and_openssh_framing() {
             for label in ["RSA PRIVATE KEY", "DSA PRIVATE KEY", "EC PRIVATE KEY"] {
                 check(armor(label, &[1, 2, 3, 4])).unwrap();
@@ -100,6 +113,43 @@ cfg_if::cfg_if! {
             assert!(
                 check("-----BEGIN RSA PRIVATE KEY-----\n\n-----END RSA PRIVATE KEY-----\n".into()).is_err()
             );
+        }
+
+        #[test]
+        fn skips_text_and_other_blocks_around_one_unencrypted_key_as_libssh2_does() {
+            let key = armor("RSA PRIVATE KEY", &[1, 2, 3, 4]);
+            for text in [
+                format!("Bag Attributes\n    localKeyID: 01 02 03\nKey Attributes: <No Attributes>\n{key}"),
+                format!("{}{key}", armor("EC PARAMETERS", &[6, 8])),
+                format!("{key}{}", armor("CERTIFICATE", &[0x30, 0])),
+                format!("{key}trailing text\n"),
+            ] {
+                check(text.clone()).unwrap_or_else(|e| panic!("{text}: {e}"));
+            }
+            // PKCS#8 with its optional attributes, [0], after the key.
+            check(armor(
+                "PRIVATE KEY",
+                &[0x30, 0x09, 0x02, 1, 0, 0x30, 0, 0x04, 0, 0xa0, 0],
+            ))
+            .unwrap();
+        }
+
+        #[test]
+        fn still_refuses_encryption_a_header_or_a_second_key_anywhere_in_the_file() {
+            let key = armor("RSA PRIVATE KEY", &[1, 2, 3, 4]);
+            for text in [
+                format!("{}{key}", armor("ENCRYPTED PRIVATE KEY", &[1])),
+                format!("{key}{}", armor("ENCRYPTED PRIVATE KEY", &[1])),
+                // OpenSSL decrypts a block with a PEM header whatever its label.
+                format!("-----BEGIN CERTIFICATE-----\nProc-Type: 4,ENCRYPTED\nAQ==\n-----END CERTIFICATE-----\n{key}"),
+                format!("{key}{}", armor("OPENSSH PRIVATE KEY", &openssh(b"none", b"none", b""))),
+                format!("{key}{}", armor("ED448 PRIVATE KEY", &[1])),
+                format!("{key}-----BEGIN CERTIFICATE-----\nAQ==\n"),
+                format!("-----BEGIN CERTIFICATE-----\n{key}-----END CERTIFICATE-----\n"),
+                "Bag Attributes\n".to_owned(),
+            ] {
+                assert!(check(text.clone()).is_err(), "{text}");
+            }
         }
 
         #[test]

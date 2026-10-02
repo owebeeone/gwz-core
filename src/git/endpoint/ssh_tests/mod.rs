@@ -6,19 +6,29 @@
 //! worker and the placement endpoint through the attachment path production
 //! takes (`start_endpoint_open`); and native setup, trust, agent and selected
 //! key authentication against [`super::ssh_fixture`]'s loopback `sshd` and
-//! [`agent_fixture`]'s proxy agent. Running them needs Git, `/usr/sbin/sshd`,
-//! `ssh-keygen`, `ssh-agent`, `ssh-add`, `ps` and `kill`; none of them reads
-//! or changes the user's SSH configuration, keys, agent or `known_hosts`.
+//! [`agent_fixture`]'s proxy agent, and TR2.8's key types against
+//! [`key_fixture`]'s agent. Running them needs Git, `/usr/sbin/sshd`,
+//! `ssh-keygen`, `ssh-agent`, `ssh-add`, `ps`, `kill`, `python3` and
+//! `openssl`; none of them reads or changes the user's SSH configuration,
+//! keys, agent or `known_hosts`.
 mod agent_auth;
 mod agent_capacity;
 mod agent_client;
 mod agent_fixture;
+mod agent_keys;
 mod agent_wait;
 mod attachment;
 mod channel;
 mod cleanup_capacity;
 mod host_case;
 mod key_container;
+mod key_files;
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        mod key_fixture;
+    }
+}
+mod key_types;
 mod local_endpoint;
 mod max_startups;
 mod network;
@@ -30,6 +40,7 @@ mod pump;
 mod regression;
 mod remote_bridge;
 mod retry;
+mod rsa_sha1;
 mod selected_key;
 mod selected_pool;
 mod supervised;

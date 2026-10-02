@@ -3,7 +3,10 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::io;
 
 const MAX_TEXT: usize = 1 << 20;
-const PREFIX: usize = 128;
+/// Decoded bytes kept for the structure checks: room before the key for a
+/// PKCS#8 EC key's explicit curve parameters, which LibreSSL's `ssh-keygen`
+/// writes (TR2.8).
+const PREFIX: usize = 1024;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Label {
@@ -12,7 +15,6 @@ enum Label {
     Ec,
     Private,
     OpenSsh,
-    Encrypted,
 }
 
 fn invalid() -> io::Error {
@@ -50,54 +52,43 @@ fn line<'a>(
     if start > bytes.len() {
         return Ok(None);
     }
-    let end = checked_scan(&bytes[start..], control, |byte| byte == b'\n')?
-        .map_or(bytes.len(), |offset| start + offset);
-    let mut value = &bytes[start..end];
-    if value.last() == Some(&b'\r') {
-        value = &value[..value.len() - 1];
-    }
-    Ok(Some((
-        value,
-        (end < bytes.len()).then_some(end + 1).unwrap_or(end),
-    )))
+    // libssh2's in-memory PEM/OpenSSH reader treats both CR and LF as
+    // boundaries. Admission must see every block native parsing can select.
+    let end = checked_scan(&bytes[start..], control, |byte| {
+        matches!(byte, b'\r' | b'\n')
+    })?
+    .map_or(bytes.len(), |offset| start + offset);
+    let next = if bytes.get(end) == Some(&b'\r') && bytes.get(end + 1) == Some(&b'\n') {
+        end + 2
+    } else if end < bytes.len() {
+        end + 1
+    } else {
+        end
+    };
+    Ok(Some((&bytes[start..end], next)))
 }
 
-fn begin_label(line: &[u8]) -> Option<Label> {
-    let (prefix, suffix) = (b"-----BEGIN ", b"-----");
-    if line.len() < prefix.len() + suffix.len()
-        || !line.starts_with(prefix)
-        || !line.ends_with(suffix)
-    {
-        return None;
-    }
-    match &line[prefix.len()..line.len() - suffix.len()] {
-        b"RSA PRIVATE KEY" => Some(Label::Rsa),
-        b"DSA PRIVATE KEY" => Some(Label::Dsa),
-        b"EC PRIVATE KEY" => Some(Label::Ec),
-        b"PRIVATE KEY" => Some(Label::Private),
-        b"OPENSSH PRIVATE KEY" => Some(Label::OpenSsh),
-        b"ENCRYPTED PRIVATE KEY" => Some(Label::Encrypted),
-        _ => None,
-    }
+/// The label of an armor line, `-----BEGIN <label>-----` for `edge`
+/// `-----BEGIN ` or `-----END <label>-----` for `-----END `.
+fn armor<'a>(line: &'a [u8], edge: &[u8]) -> Option<&'a [u8]> {
+    line.strip_prefix(edge)?
+        .strip_suffix(b"-----")
+        .filter(|label| !label.is_empty())
 }
 
-fn end_label(line: &[u8], label: Label) -> bool {
-    let (prefix, suffix) = (b"-----END ", b"-----");
-    if line.len() < prefix.len() + suffix.len()
-        || !line.starts_with(prefix)
-        || !line.ends_with(suffix)
-    {
-        return false;
-    }
-    let value = &line[prefix.len()..line.len() - suffix.len()];
-    match label {
-        Label::Rsa => value == b"RSA PRIVATE KEY",
-        Label::Dsa => value == b"DSA PRIVATE KEY",
-        Label::Ec => value == b"EC PRIVATE KEY",
-        Label::Private => value == b"PRIVATE KEY",
-        Label::OpenSsh => value == b"OPENSSH PRIVATE KEY",
-        Label::Encrypted => value == b"ENCRYPTED PRIVATE KEY",
-    }
+/// The private key a block's label names, if any. Any other label ending in
+/// `PRIVATE KEY`, `ENCRYPTED PRIVATE KEY` among them, is refused: libssh2
+/// reads the file without a passphrase.
+fn key_label(label: &[u8]) -> io::Result<Option<Label>> {
+    Ok(Some(match label {
+        b"RSA PRIVATE KEY" => Label::Rsa,
+        b"DSA PRIVATE KEY" => Label::Dsa,
+        b"EC PRIVATE KEY" => Label::Ec,
+        b"PRIVATE KEY" => Label::Private,
+        b"OPENSSH PRIVATE KEY" => Label::OpenSsh,
+        _ if label.ends_with(b"PRIVATE KEY") => return Err(invalid()),
+        _ => return Ok(None),
+    }))
 }
 
 fn decode(
@@ -185,8 +176,9 @@ fn private_key(prefix: &[u8; PREFIX], total: usize) -> io::Result<()> {
     if algorithm != 0x30 || algorithm_end > PREFIX {
         return Err(invalid());
     }
-    let (key, key_end, _) = der_header(prefix, algorithm_end, total)?;
-    if key != 0x04 || key_end != outer {
+    // PKCS#8's optional attributes, and a v2 public key, may follow.
+    let (key, _, _) = der_header(prefix, algorithm_end, total)?;
+    if key != 0x04 {
         return Err(invalid());
     }
     Ok(())
@@ -224,6 +216,12 @@ fn openssh(prefix: &[u8; PREFIX], total: usize) -> io::Result<()> {
     Ok(())
 }
 
+/// Checks that `text` holds exactly one unencrypted private key, in a PEM or
+/// OpenSSH armor, before libssh2, which gets no passphrase, reads it. Text
+/// and other blocks around the key's, such as `openssl ecparam -genkey`'s
+/// `EC PARAMETERS`, are skipped, as OpenSSL's PEM reader and libssh2's
+/// OpenSSH reader skip them (TR2.8). No block may carry a PEM header, which
+/// OpenSSL decrypts whatever the block's label.
 pub(crate) fn check(text: &str, control: &agent_job::Control) -> io::Result<()> {
     if text.is_empty() || text.len() > MAX_TEXT {
         return Err(invalid());
@@ -233,35 +231,45 @@ pub(crate) fn check(text: &str, control: &agent_job::Control) -> io::Result<()> 
     if checked_scan(bytes, control, |byte| byte == 0)?.is_some() {
         return Err(invalid());
     }
-    let start = checked_scan(bytes, control, |byte| !whitespace(byte))?.unwrap_or(bytes.len());
-    let (begin, mut cursor) = line(bytes, start, control)?.ok_or_else(invalid)?;
-    let label = begin_label(begin).ok_or_else(invalid)?;
-    if label == Label::Encrypted {
-        return Err(invalid());
-    }
-    let body_start = cursor;
-    let body_end;
-    loop {
+    let mut key = None;
+    let mut block: Option<(&[u8], usize)> = None;
+    let mut cursor = 0;
+    while let Some((current, next)) = line(bytes, cursor, control)? {
         control.check()?;
-        let (current, next) = line(bytes, cursor, control)?.ok_or_else(invalid)?;
-        if end_label(current, label) {
-            body_end = cursor;
-            cursor = next;
-            break;
-        }
-        if current.starts_with(b"-----END ") || current.starts_with(b"-----BEGIN ") {
-            return Err(invalid());
+        match block {
+            None => {
+                if let Some(label) = armor(current, b"-----BEGIN ") {
+                    key_label(label)?;
+                    block = Some((label, next));
+                }
+            }
+            Some((label, start)) if armor(current, b"-----END ") == Some(label) => {
+                if let Some(kind) = key_label(label)?
+                    && key.replace((kind, start, cursor)).is_some()
+                {
+                    return Err(invalid());
+                }
+                block = None;
+            }
+            Some(_) => {
+                let base64 = |byte: u8| byte.is_ascii_alphanumeric() || b"+/=".contains(&byte);
+                if checked_scan(current, control, |byte| !base64(byte) && !whitespace(byte))?
+                    .is_some()
+                {
+                    return Err(invalid());
+                }
+            }
         }
         if next == cursor {
-            return Err(invalid());
+            break;
         }
         cursor = next;
     }
-    if checked_scan(&bytes[cursor..], control, |byte| !whitespace(byte))?.is_some() {
+    let (Some((label, start, end)), None) = (key, block) else {
         return Err(invalid());
-    }
+    };
     let mut prefix = [0; PREFIX];
-    let total = decode(&bytes[body_start..body_end], control, &mut prefix)?;
+    let total = decode(&bytes[start..end], control, &mut prefix)?;
     if total == 0 {
         return Err(invalid());
     }
@@ -269,7 +277,6 @@ pub(crate) fn check(text: &str, control: &agent_job::Control) -> io::Result<()> 
         Label::Rsa | Label::Dsa | Label::Ec => Ok(()),
         Label::Private => private_key(&prefix, total),
         Label::OpenSsh => openssh(&prefix, total),
-        Label::Encrypted => Err(invalid()),
     }
 }
 

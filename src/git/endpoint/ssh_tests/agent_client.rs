@@ -93,6 +93,7 @@ fn seeded_fragmentation_preserves_identity_and_signature_frames() {
         let mut replies = frame(identities);
         replies.extend(frame(signed));
         let mut job = Job::start(None, Duration::from_secs(1), move |control| {
+            let signature = signature.clone();
             let output = Arc::new(Mutex::new(Vec::new()));
             let mut agent = Agent::new(
                 Frag {
@@ -107,7 +108,7 @@ fn seeded_fragmentation_preserves_identity_and_signature_frames() {
                 agent.identities()?,
                 vec![b"key1".to_vec(), b"key2".to_vec()]
             );
-            assert_eq!(agent.sign(b"key1", b"payload", "ssh-ed25519")?, b"signed");
+            assert_eq!(agent.sign(b"key1", b"payload", 0)?, Some(signature));
             drop(agent);
             let mut expected = frame(vec![11]);
             let mut request = vec![13];
@@ -239,13 +240,15 @@ fn cleanup_deadline_wakes_a_pending_disposal_waiter() {
 }
 
 #[test]
-fn wrong_signature_algorithm_trailing_failure_and_oversized_input_are_refused() {
+fn failure_with_trailing_bytes_and_trailing_reply_bytes_are_refused() {
+    // The signature's algorithm and shape are agent_keys's to check.
     for response in [frame(vec![5, 1]), {
         let mut sig = vec![];
         string(&mut sig, b"ssh-rsa");
         string(&mut sig, b"secret-signature");
         let mut response = vec![14];
         string(&mut response, &sig);
+        response.extend_from_slice(b"secret");
         frame(response)
     }] {
         let mut job = Job::start(None, Duration::from_secs(1), move |control| {
@@ -259,10 +262,10 @@ fn wrong_signature_algorithm_trailing_failure_and_oversized_input_are_refused() 
                 },
                 control,
             );
-            let error = agent.sign(b"key", b"data", "rsa-sha2-512").unwrap_err();
+            let error = agent.sign(b"key", b"data", 4).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::InvalidData);
             assert!(!error.to_string().contains("secret"));
-            assert!(agent.sign(b"key", b"data", "rsa-sha2-512").is_err());
+            assert!(agent.sign(b"key", b"data", 4).is_err());
             Ok(())
         })
         .unwrap();
@@ -403,6 +406,7 @@ fn stalled_partial_request_write_is_cancelled_without_replay() {
 fn rsa_flags_are_explicit_and_oversized_sign_inputs_have_no_io() {
     for (method, flags) in [("rsa-sha2-256", 2_u32), ("rsa-sha2-512", 4_u32)] {
         let mut job = Job::start(None, Duration::from_secs(1), move |control| {
+            assert_eq!(crate::git::endpoint::agent_keys::flags(method), flags);
             let mut signature = vec![];
             string(&mut signature, method.as_bytes());
             string(&mut signature, b"sig");
@@ -418,7 +422,7 @@ fn rsa_flags_are_explicit_and_oversized_sign_inputs_have_no_io() {
                 },
                 control,
             );
-            agent.sign(b"key", b"data", method)?;
+            agent.sign(b"key", b"data", flags)?;
             assert!(output.lock().unwrap().ends_with(&flags.to_be_bytes()));
             Ok(())
         })
@@ -437,10 +441,7 @@ fn rsa_flags_are_explicit_and_oversized_sign_inputs_have_no_io() {
             control,
         );
         assert_eq!(
-            agent
-                .sign(b"key", &vec![0; 65537], "ssh-ed25519")
-                .unwrap_err()
-                .kind(),
+            agent.sign(b"key", &vec![0; 65537], 0).unwrap_err().kind(),
             io::ErrorKind::InvalidInput
         );
         assert!(output.lock().unwrap().is_empty());
@@ -468,7 +469,10 @@ fn expired_start_cannot_execute_setup_effects() {
 
 #[test]
 fn used_and_failed_agents_keep_channel_state_until_drop() {
-    for reply in [frame(vec![12, 0, 0, 0, 0]), frame(vec![99])] {
+    for (reply, used) in [
+        (frame(vec![12, 0, 0, 0, 0]), true),
+        (frame(vec![99]), false),
+    ] {
         let mut job = Job::start(None, Duration::from_secs(1), move |control| {
             let output = Arc::new(Mutex::new(Vec::new()));
             let closed = Arc::new(AtomicUsize::new(0));
@@ -484,9 +488,19 @@ fn used_and_failed_agents_keep_channel_state_until_drop() {
             let _ = agent.identities();
             assert!(agent.identities().is_err());
             assert_eq!(*output.lock().unwrap(), frame(vec![11]));
-            assert!(agent.sign(b"key", b"data", "ssh-rsa").is_err());
-            assert!(agent.sign(b"key", b"data", "ssh-ed25519").is_err());
-            assert_eq!(*output.lock().unwrap(), frame(vec![11]));
+            // A used agent sends its sign request, whose reply never comes,
+            // and fails; a failed agent sends nothing more.
+            assert!(agent.sign(b"key", b"data", 0).is_err());
+            assert!(agent.sign(b"key", b"data", 2).is_err());
+            let mut expected = frame(vec![11]);
+            if used {
+                let mut request = vec![13];
+                string(&mut request, b"key");
+                string(&mut request, b"data");
+                request.extend_from_slice(&0_u32.to_be_bytes());
+                expected.extend(frame(request));
+            }
+            assert_eq!(*output.lock().unwrap(), expected);
             drop(agent);
             assert_eq!(closed.load(Ordering::SeqCst), 1);
             Ok(())

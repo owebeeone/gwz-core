@@ -209,7 +209,7 @@ cfg_if::cfg_if! {
 
         #[test]
         fn malformed_signature_shape_and_algorithm_fail_without_second_sign_request() {
-            for (method, fault) in [("ssh-ed25519", 1), ("ssh-ed25519", 2), ("rsa-sha2-256", 1)] {
+            for (method, fault) in [("ssh-ed25519", 1), ("ssh-ed25519", 2), ("rsa-sha2-256", 1), ("rsa-sha2-512", 3), ("rsa-sha2-512", 4)] {
                 let fixture = support::Fixture::new(method, false);
                 fixture
                     .fault
