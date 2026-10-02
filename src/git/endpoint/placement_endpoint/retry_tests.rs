@@ -187,8 +187,10 @@ fn open(stream_id: i64, allocation_ms: i64) -> Envelope {
     gwz_transport::codec::admit(&envelope).unwrap();
     envelope
 }
-fn key() -> Key {
-    Key::ssh("git", "host", 22)
+/// The machine of every open here: one pool key, and the default identity
+/// their Opens name.
+fn key() -> RetryKey {
+    (Key::ssh("git", "host", 22), Identity::default())
 }
 /// One pass at `now`, keeping the open terminals it hands out.
 fn step(endpoint: &mut PlacementEndpoint, now: u64, terminals: &mut Vec<Envelope>) {

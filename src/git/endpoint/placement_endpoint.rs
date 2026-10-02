@@ -37,6 +37,21 @@ const MAX_REQUESTS: usize = 64;
 const MAX_QUEUED_INPUT: usize = 16;
 const MAX_OUTBOUND: usize = 64;
 type RequestKey = (String, i64);
+/// What a setup retry machine is kept for: an open's pool key and the identity
+/// its Open names. 1.0.17 authenticated each member on its own, and a
+/// workspace can name a different key for each remote (gwzSshIdentity), so
+/// one identity's refused key closes its own machine and leaves the members
+/// of the same host that authenticate otherwise to their own setups.
+type RetryKey = (Key, Identity);
+/// The retry machine `envelope`'s open, on `pool_key`, belongs to.
+fn retry_key(pool_key: &Key, envelope: &Envelope) -> RetryKey {
+    let identity = envelope
+        .open
+        .as_ref()
+        .map(|open| open.identity.clone())
+        .unwrap_or_default();
+    (pool_key.clone(), identity)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EndpointError {
@@ -104,9 +119,10 @@ pub(crate) struct PlacementEndpoint {
     faulted: bool,
     /// The host's waker, which each bridge wakes when it has a message.
     waker: Option<Waker>,
-    /// Each operation's setup retry machines, by pool key (the retry plan's
-    /// §5); an attempt's member is its request key.
-    retries: Operations<Key, RequestKey>,
+    /// Each operation's setup retry machines, by pool key and identity (the
+    /// retry plan's §5, and `RetryKey`); an attempt's member is its request
+    /// key.
+    retries: Operations<RetryKey, RequestKey>,
     jitter: Jitter,
 }
 impl Drop for PlacementEndpoint {

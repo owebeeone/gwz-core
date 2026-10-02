@@ -83,7 +83,9 @@ impl PlacementEndpoint {
                 open.abandoned = true;
                 open.cancelled
                     .store(true, std::sync::atomic::Ordering::Release);
-                self.retries.machine(&key.0, &open.pool_key).abandoned(&key);
+                self.retries
+                    .machine(&key.0, &retry_key(&open.pool_key, &open.envelope))
+                    .abandoned(&key);
                 state.terminal = true;
                 let message = envelope_for(
                     state,
@@ -176,7 +178,10 @@ impl PlacementEndpoint {
     fn admit(&mut self, mut queued: QueuedOpen, now: u64) -> Result<(), EndpointError> {
         let decision = self
             .retries
-            .machine(&queued.key.0, &queued.pool_key)
+            .machine(
+                &queued.key.0,
+                &retry_key(&queued.pool_key, &queued.envelope),
+            )
             .decide(now);
         match decision {
             // The key's recorded failure, without the facts of the setup
@@ -238,7 +243,9 @@ impl PlacementEndpoint {
         deadlines.allocation_ms = left.min(i64::MAX as u64) as i64;
         let attempt_deadline =
             deadline_from_open(&deadlines).map(|duration| now.saturating_add(duration));
-        self.retries.machine(&key.0, &pool_key).start(key.clone());
+        self.retries
+            .machine(&key.0, &retry_key(&pool_key, &envelope))
+            .start(key.clone());
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let context = BridgeContext {
             session_id: envelope.session_id.clone(),

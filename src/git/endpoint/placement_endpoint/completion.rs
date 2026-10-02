@@ -104,15 +104,15 @@ impl PlacementEndpoint {
                     open.abandoned = true;
                     open.cancelled
                         .store(true, std::sync::atomic::Ordering::Release);
-                    Some((open.key.clone(), open.pool_key.clone()))
+                    Some((open.key.clone(), retry_key(&open.pool_key, &open.envelope)))
                 } else {
                     None
                 }
             };
-            if let Some((key, pool_key)) = expired {
+            if let Some((key, machine)) = expired {
                 // The attempt ran out of its own time before its setup had an
                 // outcome: no verdict for the key.
-                self.retries.machine(&key.0, &pool_key).abandoned(&key);
+                self.retries.machine(&key.0, &machine).abandoned(&key);
                 self.fail_open(
                     &key,
                     Failure {
@@ -149,7 +149,7 @@ impl PlacementEndpoint {
                 Ok((attachment, mut opened)) => {
                     let admitted = self
                         .retries
-                        .machine(&job.key.0, &job.pool_key)
+                        .machine(&job.key.0, &retry_key(&job.pool_key, &job.envelope))
                         .succeeded(&job.key, !opened.reused);
                     if !admitted {
                         attachment.discard_after_use();
@@ -194,7 +194,8 @@ impl PlacementEndpoint {
         let (failure, phase) = open_failure(error);
         let verdict = setup_retry::classify(&failure, phase);
         let jitter = self.jitter.draw();
-        let outcome = self.retries.machine(&key.0, &pool_key).failed(
+        let machine = retry_key(&pool_key, &envelope);
+        let outcome = self.retries.machine(&key.0, &machine).failed(
             &key,
             verdict,
             failure.clone(),

@@ -1,12 +1,16 @@
 //! The setup retry machine on the endpoint production builds, against the
 //! fixture's sshd: a key whose setup succeeded and whose server then died
 //! spends its retries once for the whole operation (the retry plan's S3.1,
-//! as `--jobs 1` runs the operation's members one after another).
+//! as `--jobs 1` runs the operation's members one after another), and one
+//! identity's refused key closes only that identity's machine.
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
         use crate::git::endpoint::{
-            placement_endpoint::PlacementEndpoint, setup_retry::Jitter,
-            shared_reservation::Authority, ssh_fixture::SshdFixture, ssh_local,
+            placement_endpoint::PlacementEndpoint,
+            setup_retry::Jitter,
+            shared_reservation::Authority,
+            ssh_fixture::{SshdFixture, run_keygen},
+            ssh_local,
         };
         use gwz_transport::{
             pool::Config,
@@ -17,7 +21,7 @@ cfg_if::cfg_if! {
         };
         use std::{
             net::TcpListener,
-            path::PathBuf,
+            path::{Path, PathBuf},
             sync::{
                 Arc,
                 atomic::{AtomicUsize, Ordering},
@@ -29,7 +33,13 @@ cfg_if::cfg_if! {
 
         const OPERATION: &str = "operation";
 
+        /// Stream `stream_id`'s Open, with the key the fixture's server
+        /// authorizes.
         fn open(fixture: &SshdFixture, stream_id: i64) -> Envelope {
+            open_as(fixture, stream_id, &fixture.temp.path().join("client_ed25519"))
+        }
+        /// Stream `stream_id`'s Open, with the explicit key `key`.
+        fn open_as(fixture: &SshdFixture, stream_id: i64, key: &Path) -> Envelope {
             let envelope = Envelope {
                 version: 2,
                 session_id: "session".into(),
@@ -48,9 +58,7 @@ cfg_if::cfg_if! {
                     service: GitService::UploadPackExchange,
                     identity: Identity {
                         mode: IdentityMode::ExplicitKey,
-                        key_path: Some(
-                            fixture.temp.path().join("client_ed25519").to_str().unwrap().into(),
-                        ),
+                        key_path: Some(key.to_str().unwrap().into()),
                         path_base: None,
                     },
                     policy: AuthPolicy::SshExplicit,
@@ -160,6 +168,53 @@ cfg_if::cfg_if! {
                 assert_eq!(late.open_failed.as_ref().unwrap().code, ErrorCode::Io);
             }
             assert_eq!(accepted.load(Ordering::Acquire), 4);
+            placement.shutdown();
+        }
+
+        #[test]
+        fn one_identitys_refused_key_closes_only_its_own_machine_on_the_host() {
+            let fixture = SshdFixture::new();
+            // A key the server does not authorize, beside the one it does: a
+            // workspace can name either for a remote (gwzSshIdentity).
+            let stranger = fixture.temp.path().join("stranger_ed25519");
+            run_keygen(&stranger);
+            let endpoint = ssh_local::connect_with_authority(
+                Config::default(),
+                fixture.known_hosts.clone(),
+                None,
+                3_000,
+                Authority::new(256, 32),
+                Default::default(),
+            )
+            .unwrap();
+            let mut placement = PlacementEndpoint::new(
+                endpoint,
+                PathBuf::from("/tmp"),
+                "endpoint".into(),
+                "owner".into(),
+            )
+            .unwrap();
+            placement.set_jitter(Jitter::fixed(0));
+            let mut now = 0;
+            // The stranger's member is refused, which closes its identity's
+            // machine for the operation: its next member finishes the same way.
+            for stream_id in [1, 2] {
+                placement
+                    .accept(OPERATION.into(), open_as(&fixture, stream_id, &stranger))
+                    .unwrap();
+                let refused = reply(&mut placement, &mut now, stream_id);
+                assert_eq!(refused.kind, MessageKind::OpenFailed);
+                assert_eq!(
+                    refused.open_failed.as_ref().unwrap().code,
+                    ErrorCode::Authentication
+                );
+            }
+            // A member of the same host with the key the server takes still
+            // sets up and opens, as 1.0.17 authenticated each member on its
+            // own.
+            placement.accept(OPERATION.into(), open(&fixture, 3)).unwrap();
+            assert_eq!(reply(&mut placement, &mut now, 3).kind, MessageKind::Opened);
+            placement.accept(OPERATION.into(), cancel(3)).unwrap();
             placement.shutdown();
         }
     }
