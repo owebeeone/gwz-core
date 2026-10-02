@@ -228,10 +228,10 @@ impl Fixture {
     pub fn assert_tcp_closed(&self) {
         let mut guard = self.monitor.lock().unwrap();
         let socket = guard.as_mut().unwrap();
-        assert_eq!(
-            socket.read(&mut [0; 1]).unwrap(),
-            0,
-            "connection owner must shut down TCP before disposal ack"
+        let read = socket.read(&mut [0; 1]);
+        assert!(
+            reads_closed(&read),
+            "connection owner must shut down TCP before disposal ack: {read:?}"
         );
     }
     pub fn wait_closed(&self) {
@@ -256,6 +256,17 @@ impl Drop for Fixture {
                 result.unwrap();
             }
         }
+    }
+}
+/// Whether a read shows the socket's connection ended: EOF, as macOS reads
+/// it, or a reset, as Linux reads it. Linux resets a TCP connection whose
+/// socket, shut down for reading, receives more data, and a stream socket
+/// whose peer closes with bytes it never read, AF_UNIX included. A handle
+/// left open reads neither: the read times out, so each caller sets a timeout.
+pub fn reads_closed(read: &io::Result<usize>) -> bool {
+    match read {
+        Ok(count) => *count == 0,
+        Err(error) => error.kind() == io::ErrorKind::ConnectionReset,
     }
 }
 fn read_frame(stream: &mut UnixStream) -> Option<Vec<u8>> {
