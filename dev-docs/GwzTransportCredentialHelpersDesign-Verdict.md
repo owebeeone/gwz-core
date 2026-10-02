@@ -57,7 +57,9 @@ Revision 4 applies them. C10, the wire `Failure`'s missing detail, becomes OQ7.
 
 **Remediation rounds:** two, the cap. No reviewer labelled an architectural root cause.
 
-## Open for the operator
+## The operator's questions and answers
+
+The operator answered **all as recommended** on 2026-10-02. With OQ7 (1), the operator added that the detail field also carries TR2.1's attempt number.
 
 - **OQ1, HTTPS URLs with userinfo.** Recommended (b): the username goes only inside the encoded `url=` line, and a password stays refused.
 - **OQ2, Ctrl-C and the helper's process group.** Recommended (a): accept the cost now, and treat Ctrl-C as a cancellation in a later step.
