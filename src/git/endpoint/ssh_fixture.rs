@@ -41,7 +41,23 @@ impl SshdFixture {
         Self::new_mode(true)
     }
 
+    /// A server whose configuration starts with `extra`, which therefore
+    /// overrides the lines after it, since sshd keeps a keyword's first value.
+    /// It logs each authentication, at `VERBOSE`, to [`Self::log`]'s file.
+    pub(crate) fn with_config(extra: &str) -> Self {
+        Self::build(false, &format!("LogLevel VERBOSE\n{extra}"))
+    }
+
+    /// What a server made by [`Self::with_config`] has logged.
+    pub(crate) fn log(&self) -> String {
+        fs::read_to_string(self.temp.path().join("sshd.log")).unwrap_or_default()
+    }
+
     fn new_mode(debug: bool) -> Self {
+        Self::build(debug, "")
+    }
+
+    fn build(debug: bool, extra: &str) -> Self {
         assert!(
             Path::new("/usr/sbin/sshd").exists(),
             "native gate requires /usr/sbin/sshd; this is not a skipped qualification"
@@ -74,7 +90,7 @@ impl SshdFixture {
         // operation allows, 32 by default. OpenSSH's default MaxStartups drops
         // unauthenticated connections beyond 10, so this server takes more.
         let config_text = format!(
-            "Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\nPidFile none\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nChallengeResponseAuthentication no\nUsePAM no\nPermitRootLogin yes\nPubkeyAuthentication yes\nStrictModes no\nLogLevel ERROR\nMaxStartups 64\n",
+            "{extra}Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\nPidFile none\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nChallengeResponseAuthentication no\nUsePAM no\nPermitRootLogin yes\nPubkeyAuthentication yes\nStrictModes no\nLogLevel ERROR\nMaxStartups 64\n",
             host_key.display(),
             authorized.display(),
         );
@@ -86,6 +102,9 @@ impl SshdFixture {
         server.args(["-D", "-e"]);
         if debug {
             server.arg("-ddd");
+        }
+        if !extra.is_empty() {
+            server.arg("-E").arg(temp.path().join("sshd.log"));
         }
         let child = server
             .args(["-f"])

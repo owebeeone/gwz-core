@@ -94,8 +94,9 @@ impl Fixture {
             fault,
             monitor: Mutex::new(None),
         };
+        // ssh-agent binds its socket before it listens: wait until it accepts.
         let deadline = Instant::now() + Duration::from_secs(3);
-        while !real.exists() {
+        while UnixStream::connect(&real).is_err() {
             assert!(Instant::now() < deadline);
             thread::sleep(Duration::from_millis(2));
         }

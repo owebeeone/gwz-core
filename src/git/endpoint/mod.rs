@@ -3,6 +3,7 @@
 pub(crate) mod agent_auth;
 pub(crate) mod agent_client;
 pub(crate) mod agent_job;
+pub(crate) mod agent_keys;
 pub(crate) mod agent_socket;
 pub(crate) mod git_turns;
 pub(crate) mod placement_endpoint;

@@ -6,9 +6,13 @@ cfg_if::cfg_if! {
             use super::super::{
                 agent_client::{Agent, Channel},
                 agent_job::Control,
+                agent_keys::{self, KeyType, Signed},
                 ssh_connection::SshConnection,
             };
-            use libssh2_sys::{LIBSSH2_ERROR_AUTHENTICATION_FAILED, LIBSSH2_ERROR_EAGAIN, LIBSSH2_SESSION};
+            use libssh2_sys::{
+                LIBSSH2_ERROR_ALGO_UNSUPPORTED, LIBSSH2_ERROR_AUTHENTICATION_FAILED, LIBSSH2_ERROR_EAGAIN,
+                LIBSSH2_ERROR_METHOD_NONE, LIBSSH2_SESSION,
+            };
             use std::{
                 ffi::{CString, c_char, c_int, c_void},
                 io,
@@ -73,12 +77,19 @@ cfg_if::cfg_if! {
                 control.check()?;
                 for key in keys {
                     control.check()?;
+                    // A key of a type outside TR2.8's list is never offered.
+                    let Some(kind) = KeyType::of(&key) else {
+                        continue;
+                    };
                     let mut signer = Signer {
                         agent: &mut agent,
                         key: &key,
+                        kind,
                         user: user.as_bytes(),
                         control: &control,
-                        invoked: false,
+                        invoked: 0,
+                        downgraded: false,
+                        refused: false,
                         error: None,
                     };
                     // This stack owner and its key remain stable across every native EAGAIN.
@@ -107,7 +118,7 @@ cfg_if::cfg_if! {
                             return Err(error);
                         }
                         if rc == 0 {
-                            if !signer.invoked || !connection.session().authenticated() {
+                            if signer.invoked == 0 || !connection.session().authenticated() {
                                 return Err(io::ErrorKind::PermissionDenied.into());
                             }
                             drop(agent); // Agent handle and callback state cannot cross the handoff.
@@ -121,6 +132,16 @@ cfg_if::cfg_if! {
                             wait_eagain(&control, std::thread::sleep)?;
                         } else if rc == LIBSSH2_ERROR_AUTHENTICATION_FAILED {
                             break; // Server rejected this key; attempt the next listed identity once.
+                        } else if signer.refused || rc == LIBSSH2_ERROR_METHOD_NONE {
+                            // The agent declined to sign after the server
+                            // accepted the query, or libssh2 found no algorithm
+                            // the server lists for this key and sent nothing.
+                            // Either way the session awaits a new request: this
+                            // key fails and the next is tried, as in 1.0.17.
+                            // After METHOD_NONE libssh2 keeps this key's method,
+                            // so later keys fail too
+                            // (dev-docs/GwzTransportSshKeyTypes.md §3).
+                            break;
                         } else {
                             // PUBLICKEY_UNVERIFIED also hides packet/transport failures.
                             // Its origin is lost: terminate, never offer another identity.
@@ -152,9 +173,16 @@ cfg_if::cfg_if! {
             struct Signer<'a, C> {
                 agent: &'a mut Agent<C>,
                 key: &'a [u8],
+                kind: KeyType,
                 user: &'a [u8],
                 control: &'a Control,
-                invoked: bool,
+                /// Signatures libssh2 asked for: one per offer of this key.
+                invoked: u8,
+                /// The agent answered a `rsa-sha2-*` request with `ssh-rsa`,
+                /// which allows libssh2 one more offer, as `ssh-rsa`.
+                downgraded: bool,
+                /// The agent declined to sign.
+                refused: bool,
                 error: Option<io::Error>,
             }
             unsafe extern "C" fn sign<C: Channel>(
@@ -167,27 +195,28 @@ cfg_if::cfg_if! {
             ) -> c_int {
                 // SAFETY: pointers supplied by the pinned native API and our live Signer.
                 let signer = unsafe { &mut *((*context).cast::<Signer<'_, C>>()) };
-                let result = catch_unwind(AssertUnwindSafe(|| -> io::Result<Vec<u8>> {
+                let result = catch_unwind(AssertUnwindSafe(|| -> io::Result<Option<Signed>> {
                     signer.control.begin_wait()?;
-                    if signer.invoked || len == 0 || len > 65536 {
+                    if signer.invoked > u8::from(signer.downgraded) || len == 0 || len > 65536 {
                         return Err(io::ErrorKind::InvalidData.into());
                     }
-                    signer.invoked = true;
+                    signer.invoked += 1;
                     // SAFETY: native buffer lives for this callback; length bounded above.
                     let bytes = unsafe { slice::from_raw_parts(data, len) };
                     let method = method(bytes, signer.user, signer.key)?;
-                    if !matches!(method, "ssh-ed25519" | "rsa-sha2-256" | "rsa-sha2-512") {
-                        return Err(io::ErrorKind::Unsupported.into());
-                    }
-                    let signature = signer.agent.sign(signer.key, bytes, method)?;
-                    shape(method, signer.key, &signature)?;
+                    let algorithm = signer.kind.algorithm(method)?;
+                    let reply = signer.agent.sign(signer.key, bytes, agent_keys::flags(algorithm))?;
                     signer.control.complete_wait()?;
+                    let Some(reply) = reply else {
+                        return Ok(None);
+                    };
+                    let signed = signer.kind.signature(signer.key, method, algorithm, &reply)?;
                     signer.control.check()?;
-                    Ok(signature)
+                    Ok(Some(signed))
                 }))
                 .unwrap_or_else(|_| Err(io::ErrorKind::Other.into()));
                 match result {
-                    Ok(signature) => {
+                    Ok(Some(Signed::Signature(signature))) => {
                         // Session::new uses libssh2's default malloc/free (session.c).
                         // Unix libc is the same allocator; Windows is deliberately unadmitted.
                         // Never transfer a Rust Vec allocation into native ownership.
@@ -204,57 +233,31 @@ cfg_if::cfg_if! {
                         }
                         0 // libssh2 frees this signature on its success and failure paths.
                     }
+                    // RFC 8332's fallback, once per key, exactly as 1.0.17's
+                    // libssh2 takes it (dev-docs/GwzTransportSshKeyTypes.md
+                    // §3, case 3): libssh2 offers this key again as ssh-rsa.
+                    // No other answer returns ALGO_UNSUPPORTED, which would
+                    // retry under the key's default algorithm.
+                    Ok(Some(Signed::Downgraded)) if !signer.downgraded => {
+                        signer.downgraded = true;
+                        LIBSSH2_ERROR_ALGO_UNSUPPORTED
+                    }
+                    Ok(Some(Signed::Downgraded)) => {
+                        signer.error = Some(io::ErrorKind::InvalidData.into());
+                        -1
+                    }
+                    Ok(None) => {
+                        signer.refused = true;
+                        -1
+                    }
                     Err(error) => {
                         signer.error = Some(error);
                         -1
                     }
                 }
-                // Never return ALGO_UNSUPPORTED: libssh2 would retry with the key's
-                // default algorithm, potentially downgrading RSA to SHA-1.
-            }
-            fn shape(method: &str, mut key: &[u8], signature: &[u8]) -> io::Result<()> {
-                let kind = field(&mut key)?;
-                let valid = match method {
-                    "ssh-ed25519" => {
-                        kind == b"ssh-ed25519"
-                            && field(&mut key)?.len() == 32
-                            && key.is_empty()
-                            && signature.len() == 64
-                    }
-                    "rsa-sha2-256" | "rsa-sha2-512" => {
-                        if kind != b"ssh-rsa" || field(&mut key)?.is_empty() {
-                            return Err(io::ErrorKind::InvalidData.into());
-                        }
-                        let modulus = field(&mut key)?;
-                        let modulus = modulus.strip_prefix(&[0]).unwrap_or(modulus);
-                        key.is_empty() && !modulus.is_empty() && signature.len() == modulus.len()
-                    }
-                    _ => return Err(io::ErrorKind::Unsupported.into()),
-                };
-                if valid {
-                    Ok(())
-                } else {
-                    Err(io::ErrorKind::InvalidData.into())
-                }
-            }
-            fn field<'a>(input: &mut &'a [u8]) -> io::Result<&'a [u8]> {
-                if input.len() < 4 {
-                    return Err(io::ErrorKind::InvalidData.into());
-                }
-                let len = u32::from_be_bytes(
-                    input[..4]
-                        .try_into()
-                        .map_err(|_| io::ErrorKind::InvalidData)?,
-                ) as usize;
-                *input = &input[4..];
-                if len > input.len() {
-                    return Err(io::ErrorKind::InvalidData.into());
-                }
-                let (value, rest) = input.split_at(len);
-                *input = rest;
-                Ok(value)
             }
             fn method<'a>(mut input: &'a [u8], user: &[u8], key: &[u8]) -> io::Result<&'a str> {
+                use agent_keys::field;
                 let _session_id = field(&mut input)?;
                 if input.first() != Some(&50) {
                     return Err(io::ErrorKind::InvalidData.into());

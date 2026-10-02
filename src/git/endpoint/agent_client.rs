@@ -31,6 +31,9 @@ impl<C: Channel> Agent<C> {
         self.enumerated = true;
         let result = (|| {
             let bytes = self.exchange(&[11])?;
+            if bytes == [5] {
+                return Err(io::ErrorKind::PermissionDenied.into());
+            }
             let mut input = Input(&bytes);
             if input.byte()? != 12 {
                 return Err(invalid());
@@ -57,38 +60,36 @@ impl<C: Channel> Agent<C> {
         }
         result
     }
-    pub(crate) fn sign(&mut self, key: &[u8], data: &[u8], method: &str) -> io::Result<Vec<u8>> {
+    /// Asks the agent to sign `data` with `key` under `flags`, and returns
+    /// its signature blob, which agent_keys checks, or `None` when the agent
+    /// refuses. A refusal (an absent security key, a declined confirmation)
+    /// leaves the connection usable for the next key.
+    pub(crate) fn sign(
+        &mut self,
+        key: &[u8],
+        data: &[u8],
+        flags: u32,
+    ) -> io::Result<Option<Vec<u8>>> {
         let result = (|| {
-            let flags = match method {
-                "ssh-ed25519"
-                | "ecdsa-sha2-nistp256"
-                | "ecdsa-sha2-nistp384"
-                | "ecdsa-sha2-nistp521" => 0_u32,
-                "rsa-sha2-256" => 2,
-                "rsa-sha2-512" => 4,
-                _ => return Err(io::ErrorKind::Unsupported.into()),
-            };
             let mut request = vec![13];
             put(&mut request, key)?;
             put(&mut request, data)?;
             request.extend_from_slice(&flags.to_be_bytes());
             let bytes = self.exchange(&request)?;
+            if bytes == [5] {
+                return Ok(None);
+            }
             let mut response = Input(&bytes);
             if response.byte()? != 14 {
                 return Err(invalid());
             }
-            let mut signature = Input(response.string(BLOB + 128)?);
+            let signature = response.string(BLOB + 128)?;
             response.end()?;
-            if signature.string(128)? != method.as_bytes() {
+            if signature.is_empty() {
                 return Err(invalid());
             }
-            let raw = signature.string(BLOB)?;
-            if raw.is_empty() {
-                return Err(invalid());
-            }
-            signature.end()?;
             self.control.check()?;
-            Ok(raw.to_vec())
+            Ok(Some(signature.to_vec()))
         })();
         if result.is_err() {
             self.failed = true;
@@ -128,12 +129,9 @@ impl<C: Channel> Agent<C> {
         let mut response = vec![0; len];
         self.read_exact(&mut response)?;
         self.control.check()?;
-        if response[0] == 5 {
-            return Err(if response.len() == 1 {
-                io::ErrorKind::PermissionDenied.into()
-            } else {
-                invalid()
-            });
+        // SSH_AGENT_FAILURE is exactly one byte; each caller interprets it.
+        if response[0] == 5 && response.len() != 1 {
+            return Err(invalid());
         }
         Ok(response)
     }

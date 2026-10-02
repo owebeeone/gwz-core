@@ -5,13 +5,17 @@ Stock sshd checks only system passwords, so this test-only server accepts one
 fixed test password instead. It is written on Python's standard library
 alone, so a test needs no package and no network. It speaks only what libssh2
 needs: diffie-hellman-group14-sha256, an rsa-sha2-256 host key,
-chacha20-poly1305@openssh.com, password and RSA publickey authentication, and
-session channels whose exec request runs a Git command. It logs each
-authentication request, never a password, as one JSON object per line.
+chacha20-poly1305@openssh.com, password and RSA or DSA publickey
+authentication, and session channels whose exec request runs a Git command.
+It sends server-sig-algs (RFC 8308) only when its configuration names a value,
+so a test chooses whether the client has one and what it lists (TR2.8). It
+logs each authentication request, never a password, as one JSON object per
+line, a publickey request with its algorithm.
 
 Usage: password_sshd.py CONFIG. CONFIG is a JSON file:
   {"password": "...", "methods": ["password", "publickey"],
-   "authorized": ["<base64 RSA public key blob>", ...], "log": "<path>"}
+   "authorized": ["<base64 RSA or DSA public key blob>", ...], "log": "<path>",
+   "server_sig_algs": "<comma-separated algorithms>"}, the last optional.
 It listens on 127.0.0.1 at a port of its own, prints {"port": ...,
 "host_key": "ssh-rsa <base64>"} on one line, and serves until it is killed.
 """
@@ -46,6 +50,7 @@ DIGEST_INFO = {
     b"rsa-sha2-256": (hashlib.sha256, bytes.fromhex("3031300d060960864801650304020105000420")),
     b"rsa-sha2-512": (hashlib.sha512, bytes.fromhex("3051300d060960864801650304020305000440")),
 }
+ALGORITHMS = {*DIGEST_INFO, b"ssh-dss"}
 
 
 def u32(value: int) -> bytes:
@@ -257,6 +262,8 @@ class Connection:
             return material[:32], material[32:64]
 
         self.send_keys, self.recv_keys = key(b"D"), key(b"C")
+        if self.server.sig_algs is not None:
+            self.send(bytes([7]) + u32(1) + string(b"server-sig-algs") + string(self.server.sig_algs))
 
     def serve(self) -> None:
         try:
@@ -306,7 +313,8 @@ class Connection:
         elif method == b"publickey" and "publickey" in offered:
             signed, algorithm, blob = message.byte(), message.string(), message.string()
             entry["signed"] = bool(signed)
-            if blob in self.server.authorized and algorithm in DIGEST_INFO:
+            entry["algorithm"] = algorithm.decode("latin-1")
+            if blob in self.server.authorized and algorithm in ALGORITHMS:
                 if not signed:
                     self.server.log(entry)
                     self.send(bytes([60]) + string(algorithm) + string(blob))
@@ -324,7 +332,18 @@ class Connection:
 
 def verify(blob: bytes, algorithm: bytes, data: bytes, signature: Reader) -> bool:
     key = Reader(blob)
-    if key.string() != b"ssh-rsa" or signature.string() != algorithm:
+    kind = key.string()
+    if signature.string() != algorithm:
+        return False
+    if kind == b"ssh-dss" and algorithm == b"ssh-dss":
+        p, q, g, y = key.mpint(), key.mpint(), key.mpint(), key.mpint()
+        value = signature.string()
+        r, s = int.from_bytes(value[:20], "big"), int.from_bytes(value[20:], "big")
+        if len(value) != 40 or not (0 < r < q and 0 < s < q):
+            return False
+        w, digest = pow(s, -1, q), int.from_bytes(hashlib.sha1(data).digest(), "big")
+        return pow(g, digest * w % q, p) * pow(y, r * w % q, p) % p % q == r
+    if kind != b"ssh-rsa" or algorithm == b"ssh-dss":
         return False
     e, n = key.mpint(), key.mpint()
     length = (n.bit_length() + 7) // 8
@@ -425,6 +444,8 @@ class Server:
         self.methods = list(config["methods"])
         self.authorized = {base64.b64decode(blob) for blob in config.get("authorized", [])}
         self.log_path = config["log"]
+        sig_algs = config.get("server_sig_algs")
+        self.sig_algs = None if sig_algs is None else sig_algs.encode()
         self.log_lock = threading.Lock()
         self.n, self.e, self.d = rsa_key()
         self.host_blob = string(b"ssh-rsa") + mpint(self.e) + mpint(self.n)

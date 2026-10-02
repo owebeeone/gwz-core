@@ -3,8 +3,10 @@
 //! `python3`. Stock `sshd` checks only system passwords, which a test must
 //! never send, so this server, on Python's standard library alone, checks its
 //! own. It offers the methods a test names, `password` and `publickey` (RSA
-//! keys), runs each exec request's Git command, and logs each authentication
-//! request without its password. It stops and reaps its server on drop.
+//! or DSA keys), sends `server-sig-algs` only when a test names its value
+//! (TR2.8's SHA-1 rows), runs each exec request's Git command, and logs each
+//! authentication request without its password. It stops and reaps its server
+//! on drop.
 use std::{
     fs,
     io::{BufRead, BufReader},
@@ -48,6 +50,18 @@ impl PasswordSshd {
         methods: &[&str],
         authorized: &[String],
     ) -> Self {
+        Self::start_with(dir, password, methods, authorized, None)
+    }
+
+    /// [`Self::start`], with `server-sig-algs` sent as `sig_algs` names it,
+    /// or not at all for `None` (TR2.8). `authorized` may also hold DSA keys.
+    pub(crate) fn start_with(
+        dir: &Path,
+        password: &str,
+        methods: &[&str],
+        authorized: &[String],
+        sig_algs: Option<&str>,
+    ) -> Self {
         fs::create_dir_all(dir).unwrap();
         let script = dir.join("password_sshd.py");
         fs::write(&script, SERVER).unwrap();
@@ -61,12 +75,15 @@ impl PasswordSshd {
             })
             .collect();
         let config = dir.join("config.json");
-        let text = serde_json::json!({
+        let mut text = serde_json::json!({
             "password": password,
             "methods": methods,
             "authorized": blobs,
             "log": log,
         });
+        if let Some(sig_algs) = sig_algs {
+            text["server_sig_algs"] = sig_algs.into();
+        }
         fs::write(&config, text.to_string()).unwrap();
         let python = std::env::var_os(PYTHON).unwrap_or_else(|| "python3".into());
         let mut child = Command::new(python)
@@ -112,6 +129,24 @@ impl PasswordSshd {
                     (_, Some(false)) => format!("{method}:refused"),
                     _ => method.to_owned(),
                 }
+            })
+            .collect()
+    }
+
+    /// The publickey requests the server has seen, in order, each as its
+    /// algorithm and `query`, `accepted` or `refused`.
+    pub(crate) fn publickey_requests(&self) -> Vec<String> {
+        let text = fs::read_to_string(&self.log).unwrap_or_default();
+        text.lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .filter(|entry| entry["method"] == "publickey")
+            .map(|entry| {
+                let outcome = match (entry["signed"].as_bool(), entry["accepted"].as_bool()) {
+                    (Some(false), None) => "query",
+                    (_, Some(true)) => "accepted",
+                    _ => "refused",
+                };
+                format!("{}:{outcome}", entry["algorithm"].as_str().unwrap())
             })
             .collect()
     }

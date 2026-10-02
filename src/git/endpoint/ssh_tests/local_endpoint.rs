@@ -4,6 +4,7 @@ cfg_if::cfg_if! {
     if #[cfg(unix)] {
         use super::agent_fixture as support;
         use super::attachment;
+        use super::key_fixture::{self as keys, KeyAgent, Sign};
         use crate::git::endpoint::{
             agent_auth, agent_socket,
             shared_reservation::Authority,
@@ -364,6 +365,31 @@ cfg_if::cfg_if! {
             assert_eq!(failure.code, ErrorCode::Authentication);
             assert_eq!(failure.facts.unwrap().authenticated, Some(false));
             finish(&e);
+        }
+
+        #[test]
+        fn security_key_and_ecdsa_agent_keys_serve_an_exchange_through_the_endpoint() {
+            // TR2.8 end to end: the endpoint production builds authenticates
+            // with the agent's security key, or, the server refusing that,
+            // with its ECDSA key, and serves a Git exchange on the connection.
+            let f = common::SshdFixture::new();
+            let dir = tempfile::tempdir().unwrap();
+            let backing = keys::keygen(dir.path(), "backing", "ed25519", None);
+            let ecdsa = keys::keygen(dir.path(), "ecdsa", "ecdsa", Some(384));
+            let plain = keys::public(dir.path(), "backing");
+            let security = keys::security_key(&plain.1);
+            let p384 = keys::public(dir.path(), "ecdsa");
+            let listed = [Sign::Sk { key: &security.1, backing: &plain.1 }, Sign::Upstream(&p384.1)];
+            let agent = KeyAgent::start(dir.path(), &[&backing, &ecdsa], &listed, false);
+            for authorized in [&security, &p384] {
+                let line = format!("{} {}\n", authorized.0, authorized.1);
+                fs::write(f.temp.path().join("authorized_keys"), line).unwrap();
+                let e = endpoint(&f, Some(agent.path.clone()));
+                let opened = exchange(&e, &f, None).unwrap_or_else(|e| panic!("{}: {e}", authorized.0));
+                assert_eq!(opened.facts.method, AuthMethod::SshAgent);
+                finish(&e);
+            }
+            assert_eq!(agent.requests(), ["list", "sign:0:0", "list", "sign:1:0"]);
         }
     }
 }

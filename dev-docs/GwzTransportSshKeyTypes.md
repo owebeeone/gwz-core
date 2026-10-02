@@ -1,7 +1,8 @@
 # GWZ transport: the SSH key types and signature algorithms 1.0.17 uses
 
 Date: 2026-10-02. Status: TR2.8's list ([amendment 2](GwzTransportReleasePlanAmendment-2.md)
-§3.19), recorded before its code. TR2.8's tests evidence the transport's column.
+§3.19), recorded before its code; revision 2 adds the transport's TR2.8 column, which TR2.8's
+tests (§6) evidence, and §5's row that those tests found.
 
 ## 1. How 1.0.17 built and calls libssh2
 
@@ -92,26 +93,28 @@ pointer with the name, so they hold for every 28-byte method, which is only
 (`SSH_MSG_USERAUTH_PK_OK`); a key the server refuses moves the transport to the next key, as in
 1.0.17.
 
-| Agent key type | Algorithm | 1.0.17, macOS and Linux | 1.0.17, Windows | Transport at `bb67a826` |
-| --- | --- | --- | --- | --- |
-| `ssh-ed25519` | `ssh-ed25519` | yes | yes | yes |
-| `ecdsa-sha2-nistp256`, `-nistp384`, `-nistp521` | the same | yes | yes | ends the login (`agent_auth.rs:179-181`) |
-| `ssh-rsa` | `rsa-sha2-512`, `rsa-sha2-256` | yes, when `server-sig-algs` lists it | yes | yes |
-| `ssh-rsa` | `ssh-rsa` | yes, in §3's three cases | yes | ends the login: `ssh-rsa` is refused, and an `ssh-rsa` reply is malformed (`agent_client.rs:82-84`) |
-| `ssh-dss` | `ssh-dss` | yes, where the server accepts it | yes | ends the login |
-| `sk-ssh-ed25519@openssh.com`, `sk-ecdsa-sha2-nistp256@openssh.com` | the same | no: the agent signs (asking for the touch) and the server refuses the malformed signature (§2, item 5) | no | ends the login |
-| `ssh-ed25519-cert-v01@openssh.com`, `ecdsa-sha2-nistp*-cert-v01@openssh.com` | the base type | yes | yes | ends the login |
-| `ssh-rsa-cert-v01@openssh.com` | `rsa-sha2-*-cert-v01`, `ssh-rsa-cert-v01` | only `ssh-rsa-cert-v01`, where the server accepts it (§3) | only `ssh-rsa-cert-v01` | ends the login |
-| `sk-*-cert-v01@openssh.com` | the security key's | no, as the security key | no | ends the login |
-| `ssh-dss-cert-v01@openssh.com` | — | no: no `plain_method` entry, so the reply mismatches twice | no | ends the login |
-| any other, such as `ssh-xmss@openssh.com` | its type name | offered as is; the next key after a refusal | the same | offered; ends the login if the server accepts the query |
+| Agent key type | Algorithm | 1.0.17, macOS and Linux | 1.0.17, Windows | Transport at `bb67a826` | Transport, TR2.8 |
+| --- | --- | --- | --- | --- | --- |
+| `ssh-ed25519` | `ssh-ed25519` | yes | yes | yes | yes |
+| `ecdsa-sha2-nistp256`, `-nistp384`, `-nistp521` | the same | yes | yes | ends the login (`agent_auth.rs:179-181`) | yes |
+| `ssh-rsa` | `rsa-sha2-512`, `rsa-sha2-256` | yes, when `server-sig-algs` lists it | yes | yes | yes |
+| `ssh-rsa` | `ssh-rsa` | yes, in §3's three cases | yes | ends the login: `ssh-rsa` is refused, and an `ssh-rsa` reply is malformed (`agent_client.rs:82-84`) | yes, in §3's three cases |
+| `ssh-dss` | `ssh-dss` | yes, where the server accepts it | yes | ends the login | yes, where the server accepts it |
+| `sk-ssh-ed25519@openssh.com`, `sk-ecdsa-sha2-nistp256@openssh.com` | the same | no: the agent signs (asking for the touch) and the server refuses the malformed signature (§2, item 5) | no | ends the login | yes |
+| `ssh-ed25519-cert-v01@openssh.com`, `ecdsa-sha2-nistp*-cert-v01@openssh.com` | the base type | yes | yes | ends the login | yes |
+| `ssh-rsa-cert-v01@openssh.com` | `rsa-sha2-*-cert-v01`, `ssh-rsa-cert-v01` | only `ssh-rsa-cert-v01`, where the server accepts it (§3) | only `ssh-rsa-cert-v01` | ends the login | yes: `rsa-sha2-*` when `server-sig-algs` lists it, else as §3 |
+| `sk-*-cert-v01@openssh.com` | the security key's | no, as the security key | no | ends the login | yes |
+| `ssh-dss-cert-v01@openssh.com` | — | no: no `plain_method` entry, so the reply mismatches twice | no | ends the login | skipped, the next key tried |
+| any other, such as `ssh-xmss@openssh.com` | its type name | offered as is; the next key after a refusal | the same | offered; ends the login if the server accepts the query | skipped, the next key tried |
 
 And two outcomes that are not types:
 
 - **The agent refuses to sign** (a security key whose device is absent, a declined
-  confirmation): 1.0.17 tries the next key. The transport ends the login (`PermissionDenied`).
-- **`METHOD_NONE`** (§3): 1.0.17 reports an authentication failure. The transport ends the login
-  with an I/O error (`agent_auth.rs:124-128`).
+  confirmation): 1.0.17 tries the next key. The transport at `bb67a826` ends the login
+  (`PermissionDenied`); with TR2.8 it tries the next key.
+- **`METHOD_NONE`** (§3): 1.0.17 reports an authentication failure. The transport at `bb67a826`
+  ends the login with an I/O error (`agent_auth.rs:124-128`); with TR2.8 it reports an
+  authentication failure, the later keys failing as §3 says.
 
 Evidence: the macOS and Linux column is read from the source above and was observed with the
 installed 1.0.17 binary (`gwz 1.0.17`, Homebrew OpenSSL 3), cloning over SSH from a disposable
@@ -134,34 +137,70 @@ for every type (`openssl.c:4985-5092`, `:1238-1269`, `:2035-2066`, `:2674-2704`)
 reader and libssh2's OpenSSH reader both skip whatever surrounds the key's block
 (`pem.c:741-747`, `:815-827`).
 
-| File | 1.0.17, macOS and Linux | Transport at `bb67a826` |
-| --- | --- | --- |
-| RSA, ECDSA P-256, P-384, P-521: OpenSSH, PEM (`RSA PRIVATE KEY`, `EC PRIVATE KEY`), PKCS#8 | yes | yes |
-| Ed25519: OpenSSH | yes | yes |
-| Ed25519: PKCS#8 (`openssl genpkey`) | no: the public key is offered, then signing fails | yes |
-| text before the key's block (`openssl pkcs12 -nodes`'s "Bag Attributes") | yes | refused before any open (`ssh_key_container.rs:236-238`) |
-| another PEM block first (`openssl ecparam -genkey`'s `EC PARAMETERS`) | yes | refused |
-| a PEM block after the key's (a certificate) | yes | refused (`ssh_key_container.rs:260-262`) |
-| PKCS#8 with its optional attributes (`[0]`) | yes | refused (`ssh_key_container.rs:189`) |
-| encrypted, in any container | no: no passphrase is passed. An encrypted OpenSSH key fails (`pem.c:468-473`). For an encrypted PEM key OpenSSL's default callback asks the terminal while the public key is derived (`openssl.c:4666`), and the signing read passes a null passphrase to `passphrase_cb`, which takes its `strlen` (`openssl.c:1166-1168`, `:1228-1229`); read from the source, not run | refused before any open, as designed |
-| DSA; a security key's file | no: DSA is off (§1), and no host-key method signs for a security key (`hostkey.c:1346-1375`) | no, for the same reasons |
+| File | 1.0.17, macOS and Linux | Transport at `bb67a826` | Transport, TR2.8 |
+| --- | --- | --- | --- |
+| RSA, ECDSA P-256, P-384, P-521: OpenSSH, PEM (`RSA PRIVATE KEY`, `EC PRIVATE KEY`), PKCS#8 with a named curve | yes | yes | yes |
+| ECDSA: PKCS#8 with explicit curve parameters, as LibreSSL's `ssh-keygen -m PKCS8` writes | yes | refused: the parameters end past the 128 decoded bytes checked (`ssh_key_container.rs:6, 185`) | yes |
+| Ed25519: OpenSSH | yes | yes | yes |
+| Ed25519: PKCS#8 (`openssl genpkey`) | no: the public key is offered, then signing fails | yes | yes |
+| text before the key's block (`openssl pkcs12 -nodes`'s "Bag Attributes") | yes | refused before any open (`ssh_key_container.rs:236-238`) | yes |
+| another PEM block first (`openssl ecparam -genkey`'s `EC PARAMETERS`) | yes | refused | yes |
+| a PEM block after the key's (a certificate) | yes | refused (`ssh_key_container.rs:260-262`) | yes |
+| PKCS#8 with its optional attributes (`[0]`) | yes | refused (`ssh_key_container.rs:189`) | yes |
+| encrypted, in any container | no: no passphrase is passed. An encrypted OpenSSH key fails (`pem.c:468-473`). For an encrypted PEM key OpenSSL's default callback asks the terminal while the public key is derived (`openssl.c:4666`), and the signing read passes a null passphrase to `passphrase_cb`, which takes its `strlen` (`openssl.c:1166-1168`, `:1228-1229`); read from the source, not run | refused before any open, as designed | refused before any open |
+| DSA; a security key's file | no: DSA is off (§1), and no host-key method signs for a security key (`hostkey.c:1346-1375`) | no, for the same reasons | no |
 
-The four refused rows are gaps: 1.0.17 authenticates with each of them (RSA and ECDSA, observed),
-and the transport refuses the file before any connection opens.
+The five rows refused at `bb67a826` were gaps: 1.0.17 authenticates with each of them (observed,
+with RSA and ECDSA keys). The first revision of this list missed the explicit-parameter row, which
+TR2.8's tests found: ECDSA PKCS#8 files made by macOS's `ssh-keygen` carry explicit parameters.
 
-## 6. What TR2.8 changes
+## 6. What TR2.8 changes, and its tests
 
-- The transport signs with every type and algorithm of §4 that 1.0.17 uses, and also with the
-  security keys and certificates of the listed types that 1.0.17's libssh2 cannot use: an RSA
-  certificate with `rsa-sha2-*` whenever `server-sig-algs` lists it, and `ssh-rsa` exactly in
-  §3's cases. Its list is then at least 1.0.17's on every platform.
-- A key of a type outside the list is skipped without being offered, as the agent design's §5
+- **Every type 1.0.17 uses, and more.** `agent_keys.rs` lists the types of §4's TR2.8 column,
+  the algorithm each method asks the agent for, RFC 8332's flags, and each signature's shape,
+  which is checked before libssh2 sees it. A security key's signature string, flags and counter
+  go to libssh2 unframed, as it sends them. An RSA certificate asks for SHA-2, which 1.0.17's
+  `agent_sign` never does. The list is then at least 1.0.17's on every platform.
+  `agent_keys.rs` is platform-neutral; the signing bridge (`agent_auth.rs`) is still Unix-only,
+  so Windows takes the same list when Phase 4 qualifies its agent bridge.
+- **SHA-1 exactly as libssh2.** The method is still libssh2's: §3's cases 1 and 2 reach the
+  signer as `ssh-rsa`. For case 3 the signer returns `ALGO_UNSUPPORTED` once per key, and only
+  for an `ssh-rsa` answer to a `rsa-sha2-*` request, so libssh2 offers the key once more as
+  `ssh-rsa`. That second offer of one key is the only one.
+- **Skipped types.** A key of a type outside the list is never offered, as the agent design's §5
   now says, and the next key is tried. 1.0.17 offers such a key, and would sign with it if a
   server accepted its type; none of OpenSSH's default builds does.
-- An agent's refusal to sign fails that key only, and the next key is tried, as in 1.0.17.
-- `METHOD_NONE` fails the key as an authentication failure, as in 1.0.17; the later keys then
-  fail as §3 says.
-- The key-file container check accepts §5's four refused forms. It still refuses every
-  encrypted form, and any PEM header in any block, before libssh2 reads the file.
-- Amendment 1's route check, which would have sent such remotes down the native path before any
-  open, was never built, so no code goes with it.
+- **The agent's refusal** fails that key only, and the agent connection stays usable, so the
+  next key is tried, as in 1.0.17. A malformed reply still ends the login.
+- **`METHOD_NONE`** fails the key as an authentication failure, as in 1.0.17.
+- **Key files.** The container check accepts §5's five refused forms: text and other PEM
+  blocks around the key's are skipped, PKCS#8's optional fields after the key are allowed, and
+  the structure check reads 1024 decoded bytes. It still requires exactly one unencrypted key,
+  and refuses `ENCRYPTED PRIVATE KEY`, any other unknown `PRIVATE KEY` label, and a PEM header in
+  any block, which OpenSSL decrypts whatever the block's label.
+- **No route goes.** Amendment 1's route check, which would have sent such remotes down the
+  native path before any open, was never built.
+
+Tests, in `src/git/endpoint/ssh_tests/`, against a disposable OpenSSH `sshd` (`ssh_fixture.rs`,
+now with configuration lines and a log) or `password_sshd.py`, which now sends a test's
+`server-sig-algs`, or none, and verifies DSA:
+
+- `key_types.rs`: ECDSA of each curve; both security keys; a certificate of each type, RSA with
+  `rsa-sha2-512`, against an `sshd` that trusts a test user CA; DSA; a skipped DSA certificate and
+  `ssh-xmss@openssh.com` before a usable key; and a security key whose device is absent before
+  a usable key. Ed25519 and RSA with SHA-2 remain `agent_auth.rs`'s rows.
+- `rsa_sha1.rs`: §3's three cases; `rsa-sha2-*` whenever `server-sig-algs` lists it, first or
+  not; the key failing when it lists none of the three; and the later keys failing after that.
+- `local_endpoint.rs`: end to end, the endpoint production builds authenticates with a security
+  key, then with an ECDSA key, and serves a Git exchange on each connection.
+- `agent_keys.rs`: the list, each method's algorithm and flags, each signature's shape, the one
+  downgrade, and the agent's refusal, without a server.
+- `key_files.rs` and `key_container.rs`: §5's forms on the production path, and the refusals.
+
+The security keys sign through **the fixture's software authenticator**:
+`tests/transport_backend/key_agent.py`'s `sk` signer, driven by `ssh_tests/key_fixture.rs`. It
+builds what a FIDO authenticator signs (PROTOCOL.u2f: SHA-256 of the application, the flags with
+user presence set, a counter, SHA-256 of the data) and has a private `ssh-agent` sign it with
+the plain key that backs the security key, so its signature is the one a hardware key holding
+that private key would make. OpenSSH 10.3p1's own client authenticates with it. The manual row
+with a hardware key needs the operator's go and was not run.
