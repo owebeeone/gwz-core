@@ -6,7 +6,6 @@ pub(crate) enum ResponseAction {
     Success,
     Interim,
     Redirect,
-    Authenticate,
     Fail(ErrorCode),
 }
 pub(crate) fn advertisement(service: GitService) -> bool {
@@ -39,18 +38,13 @@ pub(crate) fn response_type(service: GitService) -> String {
         }
     )
 }
-pub(crate) fn classify(
-    status: u16,
-    service: GitService,
-    allow_auth_transition: bool,
-) -> ResponseAction {
+pub(crate) fn classify(status: u16, service: GitService) -> ResponseAction {
     use ResponseAction::*;
     match status {
         100 | 102 | 103 => Interim,
         200 => Success,
         301 | 302 | 303 | 307 | 308 if advertisement(service) => Redirect,
         300..=399 => Fail(ErrorCode::UnsupportedOperation),
-        401 | 404 if advertisement(service) && allow_auth_transition => Authenticate,
         401 | 407 => Fail(ErrorCode::Authentication),
         403 | 404 if advertisement(service) => Fail(ErrorCode::RepositoryRefused),
         400..=599 => Fail(ErrorCode::Io),

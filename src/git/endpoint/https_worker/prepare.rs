@@ -8,17 +8,6 @@ impl Client {
         budget: &mut Budget,
         challenge: &mut Option<ChallengeLease>,
     ) -> Result<Prepared, Failure> {
-        self.prepare_budget_inner(input, cancel, budget, challenge, true)
-            .await
-    }
-    pub(super) async fn prepare_budget_inner(
-        &self,
-        input: Input,
-        cancel: &CancellationToken,
-        budget: &mut Budget,
-        challenge: &mut Option<ChallengeLease>,
-        allow_transition: bool,
-    ) -> Result<Prepared, Failure> {
         let original = Destination::parse(&input.destination).map_err(failure)?;
         let original_base = original.base();
         if input.session.is_empty()
@@ -196,7 +185,7 @@ impl Client {
             if status == 401 && prepared.opened.facts.credential_offered {
                 prepared.opened.facts.authenticated = Some(false);
             }
-            match https_policy::classify(status, input.service, false) {
+            match https_policy::classify(status, input.service) {
                 ResponseAction::Success => {
                     validate_content(&response, input.service)
                         .map_err(|code| with_facts(code, Effect::None, &prepared.opened.facts))?;
@@ -252,8 +241,7 @@ impl Client {
                 }
                 ResponseAction::Fail(code) => {
                     let mut failed = with_facts(code, Effect::None, &prepared.opened.facts);
-                    let may_carry = allow_transition
-                        && input.policy == AuthPolicy::Anonymous
+                    let may_carry = input.policy == AuthPolicy::Anonymous
                         && self.auth.is_some()
                         && matches!(status, 401 | 404)
                         && matches!(
