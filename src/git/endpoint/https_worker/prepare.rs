@@ -1,0 +1,398 @@
+use super::*;
+
+impl Client {
+    pub(crate) async fn prepare_budget_for_transition(
+        &self,
+        input: Input,
+        cancel: &CancellationToken,
+        budget: &mut Budget,
+        challenge: &mut Option<ChallengeLease>,
+    ) -> Result<Prepared, Failure> {
+        self.prepare_budget_inner(input, cancel, budget, challenge, true)
+            .await
+    }
+    pub(super) async fn prepare_budget_inner(
+        &self,
+        input: Input,
+        cancel: &CancellationToken,
+        budget: &mut Budget,
+        challenge: &mut Option<ChallengeLease>,
+        allow_transition: bool,
+    ) -> Result<Prepared, Failure> {
+        let original = Destination::parse(&input.destination).map_err(failure)?;
+        let original_base = original.base();
+        if input.session.is_empty()
+            || input.session.len() > 128
+            || input.operation.is_empty()
+            || input.operation.len() > 128
+            || !matches!(input.policy, AuthPolicy::Anonymous | AuthPolicy::Gh)
+        {
+            return Err(failure(ErrorCode::InvalidRequest));
+        }
+        if cancel.is_cancelled() {
+            return Err(failure(ErrorCode::Cancelled));
+        }
+        // Continuations cannot do helper/connection work on an exhausted domain.
+        // Retained zero allowances are tombstones, never replaced by defaults.
+        if budget.allocation.is_zero()
+            || budget.cleanup.is_zero()
+            || (input.policy == AuthPolicy::Gh && budget.helper.is_zero())
+            || budget.connect.is_some_and(|remaining| remaining.is_zero())
+            || budget.network.is_some_and(|remaining| remaining.is_zero())
+        {
+            return Err(failure(ErrorCode::Timeout));
+        }
+        let started = Instant::now();
+        let mut slot = Some(acquire_slot(self.slots.clone(), budget.allocation, cancel).await?);
+        budget.allocation = budget.allocation.saturating_sub(started.elapsed());
+        let mut dependency = Some(self.operation(&input.operation).map_err(failure)?);
+        let key = RouteKey::new(&input.operation, &original.base(), input.service);
+        let mut destination = {
+            let mut routes = self.routes.lock().unwrap_or_else(|e| e.into_inner());
+            if https_policy::advertisement(input.service) {
+                routes.admit(key.clone()).map_err(failure)?;
+                original
+            } else {
+                Destination::parse(routes.get(&key).map_err(failure)?).map_err(failure)?
+            }
+        };
+        let mut hops = 0;
+        let mut credential_offered = false;
+        loop {
+            let mut authorization = None;
+            let mut facts = Facts::default();
+            facts.credential_offered = credential_offered;
+            if input.policy == AuthPolicy::Gh {
+                facts.method = AuthMethod::Gh;
+                let config = self
+                    .auth
+                    .as_ref()
+                    .ok_or_else(|| with_facts(ErrorCode::Authentication, Effect::None, &facts))?;
+                let started = Instant::now();
+                let _helper = acquire_slot(self.helpers.clone(), budget.helper, cancel)
+                    .await
+                    .map_err(|error| with_facts(error.code, Effect::None, &facts))?;
+                budget.helper = budget.helper.saturating_sub(started.elapsed());
+                let started = Instant::now();
+                let secret = https_auth::lookup_owned(
+                    &self.auth_owner,
+                    config,
+                    &destination,
+                    started + budget.helper,
+                    cancel,
+                )
+                .await
+                .map_err(|error| with_facts(error.code(), Effect::None, &facts))?;
+                budget.helper = budget.helper.saturating_sub(started.elapsed());
+                authorization = Some(secret.header());
+            }
+            if budget.connect.is_some_and(|remaining| remaining.is_zero())
+                || budget.network.is_some_and(|remaining| remaining.is_zero())
+                || budget.allocation.is_zero()
+            {
+                return Err(with_facts(ErrorCode::Timeout, Effect::None, &facts));
+            }
+            if challenge.as_ref().is_some_and(ChallengeLease::expired) {
+                *challenge = None;
+            }
+            let lease = if let Some(carried) = challenge.take() {
+                let mut carried = carried;
+                if let Some(mut lease) = carried.take_for(&destination, &input) {
+                    lease.reused = true;
+                    lease.connect_elapsed = Duration::ZERO;
+                    lease.allocation_elapsed = Duration::ZERO;
+                    lease
+                } else {
+                    return Err(with_facts(ErrorCode::Protocol, Effect::None, &facts));
+                }
+            } else {
+                self.pool
+                    .checkout(
+                        Key::https(destination.host(), destination.port()),
+                        Owner::new(&input.session, &input.operation),
+                        duration_ms(budget.allocation),
+                        budget.connect.map_or(0, duration_ms),
+                        cancel,
+                    )
+                    .await
+                    .map_err(|error| with_facts(error.code, error.effect, &facts))?
+            };
+            if let Some(remaining) = budget.connect.as_mut() {
+                *remaining = remaining.saturating_sub(lease.connect_elapsed);
+            }
+            budget.allocation = budget.allocation.saturating_sub(lease.allocation_elapsed);
+            let opened = Opened {
+                connection_id: lease.id.clone(),
+                reused: lease.reused,
+                endpoint_id: "https-endpoint".into(),
+                trust_owner: "endpoint-account".into(),
+                facts: facts.clone(),
+                receive_limits: gwz_transport::binding::default_limits(),
+            };
+            let mut prepared = Prepared {
+                opened,
+                lease: Some(lease),
+                response: None,
+                input: input.clone(),
+                destination: destination.clone(),
+                authorization,
+                _slot: slot.take().expect("admitted request slot"),
+                _operation: dependency.take().expect("operation dependency"),
+                protocol_error: Arc::new(AtomicBool::new(false)),
+                io_ms: budget.network.map_or(0, duration_ms),
+                cleanup_ms: duration_ms(budget.cleanup),
+            };
+            if !https_policy::advertisement(input.service) {
+                return Ok(prepared);
+            }
+            let (sender, body) = body_channel();
+            drop(sender);
+            let request = prepared.request(body)?;
+            let connection = prepared
+                .lease
+                .as_ref()
+                .unwrap()
+                .connection
+                .as_ref()
+                .unwrap()
+                .clone();
+            let mut guard = connection.lock().await;
+            prepared.opened.facts.credential_offered =
+                request.headers().contains_key(AUTHORIZATION) || credential_offered;
+            credential_offered = prepared.opened.facts.credential_offered;
+            let header_started = Instant::now();
+            let response = tokio::select! {
+                _=cancel.cancelled()=>return Err(with_facts(ErrorCode::Cancelled, Effect::None, &prepared.opened.facts)),
+                _=prepared.lease.as_ref().unwrap().cancel.cancelled()=>return Err(with_facts(if prepared.protocol_error.load(Ordering::Acquire){ErrorCode::Protocol}else{ErrorCode::Cancelled}, Effect::None, &prepared.opened.facts)),
+                result=async {
+                    match budget.network {
+                        Some(remaining) => tokio::time::timeout(remaining, guard.sender.send_request(request)).await.map_err(|_| failure(ErrorCode::Timeout)),
+                        None => Ok(guard.sender.send_request(request).await),
+                    }
+                }=>result.map_err(|error| with_facts(error.code, Effect::None, &prepared.opened.facts))?.map_err(|error| with_facts(classify_hyper_error(&error), Effect::None, &prepared.opened.facts))?,
+            };
+            if let Some(remaining) = budget.network.as_mut() {
+                *remaining = remaining.saturating_sub(header_started.elapsed());
+                if remaining.is_zero() {
+                    return Err(with_facts(
+                        ErrorCode::Timeout,
+                        Effect::None,
+                        &prepared.opened.facts,
+                    ));
+                }
+                prepared.io_ms = duration_ms(*remaining);
+            }
+            if prepared.protocol_error.load(Ordering::Acquire) {
+                return Err(with_facts(
+                    ErrorCode::Protocol,
+                    Effect::None,
+                    &prepared.opened.facts,
+                ));
+            }
+            drop(guard);
+            drop(connection);
+            let status = response.status().as_u16();
+            prepared.opened.facts.http_status = Some(status as i64);
+            if status == 401 && prepared.opened.facts.credential_offered {
+                prepared.opened.facts.authenticated = Some(false);
+            }
+            match https_policy::classify(status, input.service, false) {
+                ResponseAction::Success => {
+                    validate_content(&response, input.service)
+                        .map_err(|code| with_facts(code, Effect::None, &prepared.opened.facts))?;
+                    self.routes
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .install(&key, &destination.base())
+                        .map_err(|code| with_facts(code, Effect::None, &prepared.opened.facts))?;
+                    prepared.response = Some(response);
+                    return Ok(prepared);
+                }
+                ResponseAction::Redirect => {
+                    if hops == 5 {
+                        return Err(with_facts(
+                            ErrorCode::UnsupportedOperation,
+                            Effect::None,
+                            &prepared.opened.facts,
+                        ));
+                    }
+                    let mut values = response.headers().get_all(LOCATION).iter();
+                    let location =
+                        values.next().and_then(|v| v.to_str().ok()).ok_or_else(|| {
+                            with_facts(
+                                ErrorCode::InvalidRequest,
+                                Effect::None,
+                                &prepared.opened.facts,
+                            )
+                        })?;
+                    if values.next().is_some() {
+                        return Err(with_facts(
+                            ErrorCode::InvalidRequest,
+                            Effect::None,
+                            &prepared.opened.facts,
+                        ));
+                    }
+                    destination = destination
+                        .redirect(input.service, location)
+                        .map_err(|code| with_facts(code, Effect::None, &prepared.opened.facts))?;
+                    drop(response);
+                    // Keep admission across hops, but release physical capacity before acquiring again.
+                    let Prepared {
+                        _slot: returned_slot,
+                        _operation: returned_dependency,
+                        lease,
+                        ..
+                    } = prepared;
+                    lease.unwrap().finish(Disposition::Discarded)?;
+                    hops += 1;
+                    // Re-enter with the existing slot below rather than reacquiring one.
+                    slot = Some(returned_slot);
+                    dependency = Some(returned_dependency);
+                    continue;
+                }
+                ResponseAction::Fail(code) => {
+                    let mut failed = with_facts(code, Effect::None, &prepared.opened.facts);
+                    let may_carry = allow_transition
+                        && input.policy == AuthPolicy::Anonymous
+                        && self.auth.is_some()
+                        && matches!(status, 401 | 404)
+                        && matches!(
+                            code,
+                            ErrorCode::Authentication | ErrorCode::RepositoryRefused
+                        )
+                        && destination.base() == original_base;
+                    if may_carry {
+                        let connection = prepared
+                            .lease
+                            .as_ref()
+                            .unwrap()
+                            .connection
+                            .as_ref()
+                            .unwrap();
+                        match clean_challenge(
+                            response,
+                            connection,
+                            cancel,
+                            &prepared.lease.as_ref().unwrap().cancel,
+                            budget,
+                        )
+                        .await
+                        {
+                            Ok(true) => {
+                                *challenge = Some(ChallengeLease {
+                                    lease: prepared.lease.take(),
+                                    destination: destination.base(),
+                                    session: input.session.clone(),
+                                    operation: input.operation.clone(),
+                                    expires: Instant::now()
+                                        + budget.cleanup.min(Duration::from_secs(5)),
+                                });
+                                return Err(failed);
+                            }
+                            Ok(false) => {}
+                            Err(code) => failed.code = code,
+                        }
+                    } else {
+                        drop(response);
+                    }
+                    let lease = prepared.lease.take().unwrap();
+                    let disposed = lease.disposed.clone();
+                    lease.finish(Disposition::Discarded)?;
+                    // A retry must not overlap cleanup of its first attempt.
+                    let cleanup_started = Instant::now();
+                    let cleanup_until = cleanup_started + budget.cleanup;
+                    while !disposed.load(Ordering::Acquire) {
+                        if Instant::now() >= cleanup_until {
+                            failed.code = ErrorCode::Timeout;
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(2)).await;
+                    }
+                    budget.cleanup = budget.cleanup.saturating_sub(cleanup_started.elapsed());
+                    return Err(failed);
+                }
+                _ => {
+                    return Err(with_facts(
+                        ErrorCode::Protocol,
+                        Effect::None,
+                        &prepared.opened.facts,
+                    ));
+                }
+            }
+        }
+    }
+}
+fn duration_ms(duration: Duration) -> u64 {
+    duration
+        .as_millis()
+        .saturating_add(u128::from(duration.subsec_nanos() % 1_000_000 != 0))
+        .min(u64::MAX as u128) as u64
+}
+async fn clean_challenge(
+    mut response: Response<Incoming>,
+    connection: &Arc<tokio::sync::Mutex<https_connection::Connection>>,
+    cancel: &CancellationToken,
+    resource_cancel: &CancellationToken,
+    budget: &mut Budget,
+) -> Result<bool, ErrorCode> {
+    let keep_alive = response.headers().get_all(CONNECTION).iter().all(|value| {
+        value.to_str().is_ok_and(|text| {
+            !text
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("close"))
+        })
+    });
+    if !keep_alive {
+        return Ok(false);
+    }
+    let started = Instant::now();
+    let allowance = budget.cleanup.min(budget.network.unwrap_or(budget.cleanup));
+    let until = started + allowance;
+    let result = tokio::select! {
+        _ = cancel.cancelled() => Err(ErrorCode::Cancelled),
+        _ = resource_cancel.cancelled() => Err(ErrorCode::Cancelled),
+        result = tokio::time::timeout_at(until, async {
+            let mut size = 0usize;
+            while let Some(frame) = response.body_mut().frame().await {
+                let frame = frame.map_err(|_| ErrorCode::Protocol)?;
+                if let Some(data) = frame.data_ref() {
+                    size = size.saturating_add(data.len());
+                    if size > 64 * 1024 {
+                        return Ok(false);
+                    }
+                }
+            }
+            drop(response);
+            let mut guard = connection.lock().await;
+            Ok(guard.alive() && guard.sender.ready().await.is_ok() && guard.alive())
+        }) => result.map_err(|_| ErrorCode::Timeout)?,
+    };
+    let elapsed = started.elapsed();
+    budget.cleanup = budget.cleanup.saturating_sub(elapsed);
+    if let Some(remaining) = budget.network.as_mut() {
+        *remaining = remaining.saturating_sub(elapsed);
+    }
+    if cancel.is_cancelled() || resource_cancel.is_cancelled() {
+        return Err(ErrorCode::Cancelled);
+    }
+    if budget.cleanup.is_zero() || budget.network.is_some_and(|remaining| remaining.is_zero()) {
+        return Err(ErrorCode::Timeout);
+    }
+    result
+}
+async fn acquire_slot(
+    slots: Arc<Semaphore>,
+    allocation: Duration,
+    cancel: &CancellationToken,
+) -> Result<OwnedSemaphorePermit, Failure> {
+    if allocation.is_zero() {
+        return Err(failure(ErrorCode::Timeout));
+    }
+    tokio::select! {
+        _ = cancel.cancelled() => Err(failure(ErrorCode::Cancelled)),
+        result = tokio::time::timeout(allocation, slots.acquire_owned()) => {
+            result.map_err(|_| failure(ErrorCode::Timeout))?
+                .map_err(|_| failure(ErrorCode::Cancelled))
+        }
+    }
+}
