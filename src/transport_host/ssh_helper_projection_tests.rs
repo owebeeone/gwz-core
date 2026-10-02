@@ -2,6 +2,7 @@
 use super::https_tests::{endpoint_home, meta, repository};
 use super::*;
 mod workspace;
+mod enablement;
 use crate::git::{
     GitBackend,
     endpoint::{helper_script, https_auth, ssh_password_fixture::PasswordSshd},

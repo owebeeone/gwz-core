@@ -24,6 +24,7 @@ cfg_if::cfg_if! {
             if #[cfg(unix)] {
                 mod https_helper_projection_tests;
                 mod ssh_helper_projection_tests;
+                mod https_negotiate_projection_tests;
             }
         }
         mod https_compat_tests;

@@ -9,6 +9,8 @@ struct State {
     cancelled: usize,
     data: Vec<u8>,
     reply: Vec<u8>,
+    failure: Option<gwz_transport::protocol::Failure>,
+    failure_facts: Option<gwz_transport::protocol::Facts>,
 }
 struct Fake(Arc<Mutex<State>>);
 impl Read for Fake {
@@ -41,12 +43,59 @@ impl HalfClose for Fake {
         Ok(())
     }
     fn finish(&self) -> io::Result<()> {
-        self.0.lock().unwrap().closed += 1;
+        let mut state = self.0.lock().unwrap();
+        state.closed += 1;
+        if state.failure.is_some() { return Err(io::Error::other("stream terminal")); }
         Ok(())
     }
     fn cancel(&self) {
         self.0.lock().unwrap().cancelled += 1;
     }
+    fn retained_failure(&self) -> Option<gwz_transport::protocol::Failure> {
+        self.0.lock().unwrap().failure.clone()
+    }
+    fn retained_failure_facts(&self) -> Option<gwz_transport::protocol::Facts> {
+        self.0.lock().unwrap().failure_facts.clone()
+    }
+}
+
+#[test]
+fn rpc_reports_retained_close_failure_with_timing_and_retry_provenance() {
+    use gwz_transport::protocol::*;
+    let failure = Failure { code: ErrorCode::Timeout, effect: Effect::None,
+        setup_cause: Some(SetupFailureCause::Interaction),
+        detail: Some(Box::new(FailureDetail { helper_budget_ms: Some(1250),
+            retry_attempt: Some(RetryAttempt { attempt: 2, attempts: 3 }), ..Default::default() })), ..Default::default()
+    };
+    let facts = Facts { method: AuthMethod::Gh, ..Default::default() };
+    let state = Arc::new(Mutex::new(State { failure: Some(failure.clone()),
+        failure_facts: Some(facts.clone()), ..State::default() }));
+    let report = Arc::new(Mutex::new(None));
+    let received = report.clone();
+    let mut rpc = RpcIo::new(Fake(state.clone()), false);
+    rpc.report = Some(Arc::new(move |failed, service| { *received.lock().unwrap() = Some((failed, service)); }));
+    let error = rpc.read(&mut [0]).unwrap_err();
+    let typed = error.get_ref().unwrap().downcast_ref::<crate::transport_host::HttpsOpenFailure>().unwrap();
+    let mut derived = failure.clone();
+    derived.facts = Some(facts);
+    assert_eq!(typed.failure, derived);
+    assert_eq!(typed.model_error().unwrap().code, crate::model::ErrorCode::CredentialHelperTimeout);
+    assert_eq!(*report.lock().unwrap(), Some((derived, GitService::UploadPackExchange)));
+    assert_eq!(state.lock().unwrap().failure, Some(failure));
+}
+#[test]
+fn rpc_keeps_failed_facts_in_preference_to_later_close_facts() {
+    use gwz_transport::protocol::*;
+    let failure = Failure { code: ErrorCode::Authentication,
+        facts: Some(Facts { method: AuthMethod::Gh, authenticated: Some(false), ..Default::default() }),
+        ..Default::default() };
+    let state = Arc::new(Mutex::new(State { failure: Some(failure.clone()),
+        failure_facts: Some(Facts { method: AuthMethod::None, ..Default::default() }),
+        ..State::default() }));
+    let mut rpc = RpcIo::new(Fake(state), false);
+    let error = rpc.read(&mut [0]).unwrap_err();
+    let typed = error.get_ref().unwrap().downcast_ref::<crate::transport_host::HttpsOpenFailure>().unwrap();
+    assert_eq!(typed.failure, failure);
 }
 #[test]
 fn rpc_first_nonempty_read_ends_body_once_not_flush_or_empty_read() {

@@ -2,6 +2,7 @@ use super::super::agent_job::{Control, wall_clock};
 use super::*;
 use gwz_transport::pool::{Action, Config, Identity, Key, Owner, PoolMachine, Request};
 use std::sync::atomic::{AtomicU64, Ordering};
+mod publication;
 
 fn pool_fixture() -> (
     PoolMachine,
@@ -38,6 +39,30 @@ fn pool_fixture() -> (
 fn fixture() -> (Arc<AtomicU64>, Arc<SetupContext>) {
     let (_, _, now, context) = pool_fixture();
     (now, context)
+}
+
+#[tokio::test]
+async fn remediation_immediate_observer_gets_zero_allocation_detail() {
+    struct Observe {
+        context: Arc<SetupContext>,
+        answer: Mutex<Option<Failure>>,
+    }
+    impl std::task::Wake for Observe {
+        fn wake(self: Arc<Self>) { self.wake_by_ref(); }
+        fn wake_by_ref(self: &Arc<Self>) {
+            if let Observation::Terminal(record) = self.context.clock.observe().value {
+                *self.answer.lock().unwrap() = Some(self.context.failure(record));
+            }
+        }
+    }
+    let (_, context) = fixture();
+    let observer = Arc::new(Observe { context: context.clone(), answer: Mutex::new(None) });
+    context.clock.register_driver(Arc::new(std::task::Waker::from(observer.clone()))).deliver();
+    context.enter(LocalPhase::Admission, 0).await.unwrap_err();
+    let first = observer.answer.lock().unwrap().clone().expect("publication woke observer");
+    assert_eq!(first.detail.as_ref().and_then(|d| d.helper_budget_ms), Some(0));
+    let Observation::Terminal(record) = context.clock.observe().deliver() else { panic!("terminal"); };
+    assert_eq!(context.failure(record), first);
 }
 
 #[test]

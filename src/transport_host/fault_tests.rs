@@ -101,6 +101,7 @@ impl Harness {
                 "ssh://git@example.invalid/repository.git",
                 GitService::UploadPack,
                 Identity::default(),
+                true,
                 Arc::new(|_, _| {}),
                 facts,
             )
@@ -510,6 +511,7 @@ fn oversized_open_deadlines_fail_through_bound_session_without_stopping_progress
             "ssh://git@example.invalid/repo",
             GitService::UploadPack,
             Identity::default(),
+            true,
             Arc::new(|_, _| {}),
             Arc::new(|_| {}),
         ))

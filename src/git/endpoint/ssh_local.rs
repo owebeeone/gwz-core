@@ -48,20 +48,23 @@ cfg_if::cfg_if! {
                         cleanup,
                         move |key: &Key, identity: &Identity, opening: Opening| -> io::Result<Setup> {
                             let helper_opening = opening.clone();
-                            let Opening { progress, url, selected: pinned, .. } = opening;
+                            let Opening { progress, url, identity: selection, selected: pinned, .. } = opening;
+                            let selection = selection.as_ref().unwrap_or(identity);
+                            let helpers_allowed = url.as_ref().is_none_or(|url| url.helpers_allowed());
                             // A URL password's open has an identity of its own and
                             // brings its own selected key, if any (TR2.18). Any
                             // other selected key is found by its identity: lookup
                             // pins the already admitted snapshot without file
                             // access, and the path is never reopened during setup.
                             let password = url.clone().filter(|url| url.password().is_some());
-                            let selected = match (identity, &password) {
+                            let selected = match (selection, &password) {
                                 (Identity::Explicit(_), Some(_)) => pinned,
-                                (Identity::Explicit(_), None) => Some(registry.lookup(key, identity)?),
+                                (Identity::Explicit(_), None) => Some(registry.lookup(key, selection)?),
                                 (Identity::Ambient, None) => None,
                                 _ => return Err(io::ErrorKind::InvalidInput.into()),
                             };
                             let requested = identity.clone();
+                            let isolated = identity != selection;
                             let key = key.clone();
                             // The host as the open's URL wrote it, for a hashed
                             // known_hosts name (TR2.18); else the key's own.
@@ -107,13 +110,13 @@ cfg_if::cfg_if! {
                                         || offered(AuthMethod::SshKey), rejected,
                                     )
                                     .and_then(Authenticated::selected)?;
-                                    return Ok(if password.is_some() {
+                                    return Ok(if password.is_some() || isolated {
                                         authenticated.under(requested)
                                     } else {
                                         authenticated
                                     });
                                 }
-                                if let Some(helpers) = helpers
+                                if helpers_allowed && let Some(helpers) = helpers
                                     && ssh_password::password_only(&mut connection, user, &control)? {
                                         progress.lock().unwrap_or_else(|e| e.into_inner()).method = AuthMethod::Gh;
                                         let mut secret = helpers.lookup(&key, &helper_opening, &control)?;

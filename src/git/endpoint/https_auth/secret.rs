@@ -43,9 +43,10 @@ impl Secret {
         (std::ffi::CStr::from_bytes_with_nul(&self.username).expect("parsed username has no controls"), &self.password)
     }
     pub(crate) fn header(&self) -> SecretHeader {
-        let size = self.username.len() + self.password.len() + 1;
+        let username = self.username.strip_suffix(&[0]).unwrap_or(&self.username);
+        let size = username.len() + self.password.len() + 1;
         let mut credential = SecretBuffer(Vec::with_capacity(size));
-        credential.0.extend_from_slice(&self.username);
+        credential.0.extend_from_slice(username);
         credential.0.push(b':');
         credential.0.extend_from_slice(&self.password);
         let encoded_size = base64::encoded_len(size, true).expect("bounded credential");
@@ -107,5 +108,9 @@ pub(super) fn parse_secret(output: &[u8]) -> Result<Secret, AuthError> {
     if username.contains(&b':') {
         return Err(AuthError::UsernameColon);
     }
-    Ok(Secret { username: username.to_vec(), password: password.to_vec() })
+    // Allocate the SSH terminator slot before copying any credential bytes.
+    // ssh_parts never grows/releases a populated allocation.
+    let mut owned_username = Vec::with_capacity(username.len() + 1);
+    owned_username.extend_from_slice(username);
+    Ok(Secret { username: owned_username, password: password.to_vec() })
 }

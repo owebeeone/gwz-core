@@ -27,6 +27,8 @@ pub(crate) type Progress = Arc<Mutex<Facts>>;
 pub(crate) struct Opening {
     pub(crate) progress: Progress,
     pub(crate) url: Option<Arc<UrlExtras>>,
+    /// Authentication selection before private helper-policy pool isolation.
+    pub(crate) identity: Option<Identity>,
     /// The open's selected key, which a URL password's open authenticates
     /// with when the server does not take the password.
     pub(crate) selected: Option<Arc<Selected>>,

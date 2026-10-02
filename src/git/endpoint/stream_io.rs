@@ -25,6 +25,10 @@ impl BlockingStream {
         self.stream.retained_failure()
     }
 
+    pub(crate) fn retained_failure_facts(&self) -> Option<gwz_transport::protocol::Facts> {
+        self.stream.retained_failure_facts()
+    }
+
     /// Half-close outgoing bytes; incoming bytes remain readable.
     pub fn end_write(&self) -> io::Result<()> {
         wait(self.stream.end_write()).map_err(io_error)

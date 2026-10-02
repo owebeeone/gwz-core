@@ -56,14 +56,20 @@ impl Drop for UrlPassword {
 pub(crate) struct UrlExtras {
     host: String,
     password: Option<UrlPassword>,
+    helpers_allowed: bool,
 }
 
 impl UrlExtras {
     /// `host` is the destination's host as the URL wrote it, and `password`
     /// the password beside its user, which libgit2 uses.
     pub(crate) fn new(host: String, password: Option<UrlPassword>) -> Self {
-        Self { host, password }
+        Self { host, password, helpers_allowed: true }
     }
+    pub(crate) fn with_helpers(mut self, allowed: bool) -> Self {
+        self.helpers_allowed = allowed;
+        self
+    }
+    pub(crate) fn helpers_allowed(&self) -> bool { self.helpers_allowed }
 
     /// The host as the URL wrote it, which a hashed `known_hosts` name may hash.
     pub(crate) fn host(&self) -> &str {

@@ -1,7 +1,7 @@
-# Credential helper/context/code75/password implementation receipt — in progress
+# Credential helper/context/code75/password implementation receipt — review pending
 
-2026-10-03. Working source package, not implementation acceptance. Accepted
-context authority is core `aedfa862d7ce6c121ecbe4d65ac4900e2017fdde`;
+2026-10-03. Working source package, not implementation acceptance. Round-1
+correction receipts: [remediation record](GwzTransportCredentialHelpersRemediationRecord.md). Accepted context authority is core `aedfa862d7ce6c121ecbe4d65ac4900e2017fdde`;
 configuration-view adoption is core `edcab346745b896c14112bc8efdace87d91c50f1`.
 The v8 parser environment correction is preserved at core `646e3e1c`/evidence
 `662d8982` and remains subject to full implementation review. The actual
@@ -80,7 +80,7 @@ other handler behavior is unchanged.
 | TR2.22 terminal detail ownership and adapter classification | Implemented; retained-failure focused regression green, transport full suite green |
 | TR2.22 real fetch/push/private-clone M1/75 and E2BIG/M2 projection | GREEN actual operations: M1/75 remain visible; native E2BIG M2 projects fetch/push remote_rejected, private clone quiet; same-operation repaired route succeeds |
 | TR2.23 password-only helper parity and cancellation/clock provenance | Native endpoint and public typed consumer implemented; real SSH M1/75/M4/M10 backend and handler rows GREEN (final focused/affected gates below) |
-| Normal final gates and secret Code/State + combined Surface/aggregate acceptance | Normal gate GREEN; secret/Surface/aggregate acceptance OPEN; no final implementation GO |
+| Normal final gates and secret Code/State + combined Surface/aggregate acceptance | Prior full gates are pre-correction; round-1 affected gates are in the remediation record. Review acceptance OPEN; no implementation GO |
 
 ## Generator and split provenance
 

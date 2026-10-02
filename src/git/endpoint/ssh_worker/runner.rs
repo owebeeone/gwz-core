@@ -63,6 +63,7 @@ pub(super) fn run<C>(
                 item.map(|p| Opening {
                     progress: p.request.progress.clone(),
                     url: p.request.url.clone(),
+                    identity: Some(p.request.identity.clone()),
                     selected: p.request.authority.clone(),
                     setup_slot: p.request.setup_slot.clone(),
                     path: p.request.path.clone(),
@@ -124,9 +125,22 @@ pub(super) fn run<C>(
                 passwords = next;
                 request.identity = Identity::Explicit(format!("url-password-{next}"));
             }
+            // Disabled operations must not lease an enabled operation's
+            // helper-authenticated connection. Keep selection in Opening and
+            // partition only this endpoint's existing opaque pool identity.
+            let pool_identity = if request.url.as_ref().is_some_and(|url| !url.helpers_allowed()) {
+                Identity::Explicit(match &request.identity {
+                    Identity::Ambient => "helpers-disabled:ambient".into(),
+                    Identity::Explicit(token) => format!("helpers-disabled:explicit:{token}"),
+                    Identity::Https | Identity::HttpsScoped(_) => {
+                        request.complete(Err(io::ErrorKind::InvalidInput.into()));
+                        continue;
+                    }
+                })
+            } else { request.identity.clone() };
             let mut policy = gwz_transport::pool::Request::new(
                 request.key.clone(),
-                request.identity.clone(),
+                pool_identity,
                 Owner::new(&session, serial.to_string()),
             );
             let d = &request.context.deadlines;

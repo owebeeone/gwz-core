@@ -181,11 +181,8 @@ impl OpenRequest {
         if let Some(reply) = reply {
             let result = result.map_err(|error| {
                 let facts = progress.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                EndpointOpenFailure::capture(
-                    error,
-                    facts,
-                    setup_slot.lock().unwrap_or_else(|e| e.into_inner()).clone(),
-                )
+                let setup = setup_slot.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                EndpointOpenFailure::capture(error, facts, setup)
             });
             let _ = reply.send(result);
             // The bridge's owner polls for the reply between its passes.

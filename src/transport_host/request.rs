@@ -1,5 +1,6 @@
 use super::*;
 mod https_failure;
+mod ssh_opening;
 pub(crate) use https_failure::{HttpsAttemptReceipt, HttpsOpenFailure};
 use crate::git::endpoint::{setup_retry, ssh_channel::GitService, stream_io::BlockingStream};
 use gwz_session_host::{CancelRegistration, CancellationToken};
@@ -51,29 +52,6 @@ impl RequestContext {
         self.validate(&self.meta, &self.operation)?;
         self.session
             .check(&self.meta.request_id, identity(raw, &self.meta))
-    }
-    pub(crate) fn open(
-        &self,
-        url: &str,
-        service: GitService,
-        selected: Option<String>,
-        opened: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
-        facts: Arc<dyn Fn(&Facts) + Send + Sync>,
-    ) -> io::Result<BlockingStream> {
-        self.validate(&self.meta, &self.operation)
-            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "transport scope closed"))?;
-        self.session.open(
-            &self.meta.request_id,
-            &self.operation,
-            url,
-            service,
-            selected
-                .as_deref()
-                .map(|s| identity(s, &self.meta))
-                .unwrap_or_default(),
-            opened,
-            facts,
-        )
     }
     pub(crate) fn open_https_recording(
         &self,

@@ -52,9 +52,34 @@ platform/performance/selected-source release claim is authorized here.
 
 ## Next verdict
 
-Settle exact tuple and return the correction plus all reports and this combined
-plan to original Code/State/Surface reviewers. They re-trace original
-counterexamples, provide closure tables and classify any new architectural cause.
+The exact-winner regression exposed a final observe/terminate race when an
+independent resource terminal has identical scalar fields. Root approves one
+transport-neutral atomic `terminate_if_alive` result through the existing
+clock mutex: Ok(newly admitted) versus Err(existing), preserving the old
+terminate API and all expiry/cancellation/phase/lock policy. No new wire field
+or helper policy enters transport. The core publication owner associates detail
+only with an admitted result and resolves its pending association on unwind.
+
+This additive shared API changes the proof surface. Review-loop §5.5 requires:
+"Start a new numbered round with fresh reviewers instead, when remediation
+changed a shared interface". Therefore the corrected tuple receives fresh
+Code/State reviewers for remediation round1, with all original reports and this
+merged plan. They inspect the changed clock/consumer seam and re-trace original
+counterexamples with closure tables. Original reporters may cheaply verify their
+own sequences where needed. Surface continues its original reviewer, unchanged
+mechanism, and verifies its two help corrections. This is not another design
+object or a reset of the implementation remediation cap.
+
+Before settlement, root composed accepted MAIN Python a077 with generated75
+947ed through GWZ member merge `merge_op_20095_1790977756851_0001`, producing
+Py34398b6ace772a5d85191273086a17363a404a4d. The prior help WIP was preserved
+in coordinated stash_unix_ms_1790977722088 and hashed external backup; root
+reapplied only the P3 README/shared-help recipe correction. Accepted parser,
+settings and driver sources remain unchanged. Final review/receipts use this
+combined source, not an old lane help approximation.
+
+Settle the revised exact tuple, re-trace original counterexamples, provide
+closure tables and classify any new architectural cause.
 GO from every required axis permits the already-authorized GWZ member merge,
 then fresh combined CLI/core/Python integration gates. Source acceptance and
 macOS integration do not imply Windows or release GO.

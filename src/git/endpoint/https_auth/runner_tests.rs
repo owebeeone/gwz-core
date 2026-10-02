@@ -16,6 +16,19 @@ fn fake_git(script: &str) -> (tempfile::TempDir, Config) {
 }
 
 #[test]
+fn remediation_ssh_username_never_grows_a_populated_allocation() {
+    let mut secret = parse_secret(b"username=alice\npassword=token\n").unwrap();
+    let before = secret.username.as_ptr();
+    let capacity = secret.username.capacity();
+    assert!(capacity > secret.username.len(), "terminator space must precede the secret copy");
+    assert_eq!(secret.ssh_parts().0.to_bytes(), b"alice");
+    assert_eq!(secret.username.as_ptr(), before);
+    assert_eq!(secret.username.capacity(), capacity);
+    assert_eq!(secret.ssh_parts().0.to_bytes(), b"alice");
+    assert_eq!(secret.header(), "Basic YWxpY2U6dG9rZW4=");
+}
+
+#[test]
 fn configured_output_accepts_empty_fields_and_one_trailing_cr() {
     for output in [
         b"username=\npassword=\n".as_slice(),

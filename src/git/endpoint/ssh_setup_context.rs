@@ -7,7 +7,7 @@ use gwz_transport::{
 };
 use std::{
     io,
-    sync::{Arc, Mutex},
+    sync::{Arc, Condvar, Mutex},
     time::{Duration, Instant},
 };
 
@@ -21,12 +21,14 @@ struct Witness {
 struct State {
     witnesses: [Option<Witness>; 2],
     first: Option<(SetupTerminal, Failure)>,
+    publishing: bool,
 }
 pub(crate) struct SetupContext {
     pub(crate) clock: SetupClock,
     pub(crate) origin: Instant,
     connection: gwz_transport::pool::ConnectionId,
     state: Mutex<State>,
+    published: Condvar,
 }
 
 #[derive(Debug)]
@@ -45,6 +47,7 @@ impl SetupContext {
             origin,
             connection,
             state: Mutex::new(State::default()),
+            published: Condvar::new(),
         })
     }
     pub(crate) fn failure(&self, record: SetupTerminal) -> Failure {
@@ -56,6 +59,12 @@ impl SetupContext {
             };
         }
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        // A detailed publisher reserves its association before the clock can
+        // expose the terminal. Wait for that logical association only: no
+        // authority lock is held here and physical cleanup is independent.
+        while state.publishing {
+            state = self.published.wait(state).unwrap_or_else(|e| e.into_inner());
+        }
         if let Some((first, failed)) = &state.first
             && *first == record
         {
@@ -127,18 +136,9 @@ impl SetupContext {
         io::Error::new(kind, SetupEnded(record))
     }
     pub(crate) fn terminate_failure(&self, failed: Failure) -> io::Error {
-        let cause = SetupCause::ResourceFailure {
-            code: failed.code,
-            effect: failed.effect,
-            setup_cause: failed.setup_cause,
-        };
-        let record = self.clock.terminate(cause).deliver();
-        if record.cause == cause {
-            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            if state.first.is_none() {
-                state.first = Some((record, failed));
-            }
-        }
+        let mut publication = publication::Publication::new(self, failed);
+        let record = publication.commit();
+        drop(publication); // associate first, notify/wake outside both locks
         self.error(record)
     }
     pub(crate) async fn enter(&self, kind: LocalPhase, milliseconds: u64) -> io::Result<Instant> {
@@ -222,6 +222,8 @@ impl SetupContext {
         }
     }
 }
+
+mod publication;
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {

@@ -123,16 +123,7 @@ async fn lookup_url_until(
     };
     let parameters = super::view::prepare(&runner).await?;
     let request = SecretBuffer(format!("url={url}\n\n").into_bytes());
-    let output = runner
-        .run(
-            &["-c", "core.askPass=", "credential", "fill"],
-            &request.0,
-            Some(&parameters.0),
-            OUTPUT_LIMIT,
-            false,
-        )
-        .await?;
-    parse_secret(&output.0)
+    runner.run_secret(&request.0, &parameters.0).await
 }
 
 /// Writes the lookup request to the helper's input and closes it.

@@ -8,6 +8,7 @@ impl Session {
         url: &str,
         service: GitService,
         identity: Identity,
+        helpers_allowed: bool,
         observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
         facts: Arc<dyn Fn(&Facts) + Send + Sync>,
     ) -> io::Result<BlockingStream> {
@@ -16,8 +17,8 @@ impl Session {
         // host as written, when it is not the pool key's lowercased host, and
         // the password beside its user.
         let password = destination.password.take();
-        let extras = (password.is_some() || destination.written_host != destination.key.host)
-            .then(|| UrlExtras::new(destination.written_host.clone(), password));
+        let extras = (!helpers_allowed || password.is_some() || destination.written_host != destination.key.host)
+            .then(|| UrlExtras::new(destination.written_host.clone(), password).with_helpers(helpers_allowed));
         let policy = if identity.mode == IdentityMode::ExplicitKey {
             AuthPolicy::SshExplicit
         } else {
@@ -131,7 +132,7 @@ impl Session {
             }
             // A URL's password goes to an endpoint in this process only. One
             // in another process could not be given it, so its open refuses.
-            if state.handoff.is_none() && extras.as_ref().is_some_and(|e| e.password().is_some()) {
+            if state.handoff.is_none() && extras.as_ref().is_some_and(|e| e.password().is_some() || !e.helpers_allowed()) {
                 return Err(protocol_failure(
                     gwz_transport::protocol::ErrorCode::InvalidRequest,
                 ));

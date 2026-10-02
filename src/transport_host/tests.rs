@@ -22,6 +22,7 @@ fn a_driver_with_no_endpoint_in_process_refuses_a_url_password() {
             "ssh://git:sentinel-pw@example.invalid/repository.git",
             crate::git::endpoint::ssh_channel::GitService::UploadPack,
             Default::default(),
+            true,
             Arc::new(|_, _| {}),
             Arc::new(|_| {}),
         )

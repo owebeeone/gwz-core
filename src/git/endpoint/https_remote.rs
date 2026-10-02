@@ -24,9 +24,11 @@ pub(crate) trait HalfClose: Read + Write {
     fn finish(&self) -> io::Result<()>;
     fn cancel(&self);
     fn retained_failure(&self) -> Option<gwz_transport::protocol::Failure> { None }
+    fn retained_failure_facts(&self) -> Option<gwz_transport::protocol::Facts> { None }
 }
 impl HalfClose for BlockingStream {
     fn retained_failure(&self) -> Option<gwz_transport::protocol::Failure> { BlockingStream::retained_failure(self) }
+    fn retained_failure_facts(&self) -> Option<gwz_transport::protocol::Facts> { BlockingStream::retained_failure_facts(self) }
     fn end_write(&self) -> io::Result<()> {
         BlockingStream::end_write(self)
     }
@@ -61,7 +63,12 @@ impl<S: HalfClose> RpcIo<S> {
 }
 impl<S: HalfClose> RpcIo<S> {
     fn failure(&self, error: io::Error) -> io::Error {
-        let Some(failure) = self.stream.retained_failure() else { return error; };
+        let Some(mut failure) = self.stream.retained_failure() else { return error; };
+        // Closed carries its facts beside Failure. Enrich only this derived
+        // callback value; the stream's first admitted Failure stays unchanged.
+        if failure.facts.is_none() {
+            failure.facts = self.stream.retained_failure_facts();
+        }
         let service = if self.advertisement { GitService::UploadPackAdvertisement } else { GitService::UploadPackExchange };
         if let Some(report) = &self.report { report(failure.clone(), service); }
         let message = crate::transport_host::HttpsOpenFailure {

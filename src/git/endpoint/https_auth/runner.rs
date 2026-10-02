@@ -11,6 +11,10 @@ pub(super) struct Runner<'a> {
     pub(super) deadline: Instant,
     pub(super) setup: Option<&'a super::super::ssh_setup_context::SetupContext>,
 }
+struct ChildRequest<'a> {
+    args: &'a [&'a str], input: &'a [u8], parameters: Option<&'a [u8]>,
+    limit: usize, preparing: bool,
+}
 
 impl Runner<'_> {
     pub(super) fn check(&self) -> Result<(), AuthError> {
@@ -32,6 +36,18 @@ impl Runner<'_> {
         limit: usize,
         preparing: bool,
     ) -> Result<SecretBuffer, AuthError> {
+        self.run_finished(ChildRequest { args, input, parameters, limit, preparing }, Ok).await
+    }
+
+    pub(super) async fn run_secret(&self, input: &[u8], parameters: &[u8]) -> Result<Secret, AuthError> {
+        self.run_finished(ChildRequest {
+            args: &["-c", "core.askPass=", "credential", "fill"], input,
+            parameters: Some(parameters), limit: OUTPUT_LIMIT, preparing: false,
+        }, |output| self.parse_answer(&output.0, parse_secret)).await
+    }
+
+    async fn run_finished<T>(&self, request: ChildRequest<'_>, finish: impl FnOnce(SecretBuffer) -> Result<T, AuthError>) -> Result<T, AuthError> {
+        let ChildRequest { args, input, parameters, limit, preparing } = request;
         self.check()?;
         let mut command = Command::new(self.executable);
         command
@@ -129,12 +145,17 @@ impl Runner<'_> {
         drop(work);
         drop(completed);
         drop(drain);
+        // Child completion is not success admission. Parse the final answer
+        // and recheck the unchanged clock/cancellation while the job still
+        // owns its process group and both admission permits.
+        let result = self.admit_child_output(result).and_then(finish);
+        let result = self.admit_child_output(result);
         if result.is_ok() {
             job.complete_if_exited();
         } else {
             job.terminate().await?;
         }
-        result.map_err(|error| {
+        self.admit_child_output(result).map_err(|error| {
             if preparing
                 && matches!(
                     error,
@@ -149,6 +170,18 @@ impl Runner<'_> {
                 error
             }
         })
+    }
+
+    fn admit_child_output<T>(&self, result: Result<T, AuthError>) -> Result<T, AuthError> {
+        if result.is_ok() { self.check()?; }
+        result
+    }
+
+    pub(super) fn parse_answer(&self, output: &[u8], parse: impl FnOnce(&[u8]) -> Result<Secret, AuthError>) -> Result<Secret, AuthError> {
+        self.check()?;
+        let answer = parse(output);
+        self.check()?;
+        answer
     }
 }
 
@@ -182,3 +215,5 @@ async fn bounded_output<R: AsyncRead + Unpin>(
     }
     Ok(output)
 }
+
+cfg_if::cfg_if! { if #[cfg(test)] { mod tests; } }

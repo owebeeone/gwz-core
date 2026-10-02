@@ -58,6 +58,7 @@ cfg_if::cfg_if! {
             attempt: Option<TransportAttempt>,
             context: RequestContext,
             selected: Option<String>,
+            helpers_allowed: bool,
             report: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
             facts: Arc<dyn Fn(&Facts) + Send + Sync>,
         }
@@ -132,10 +133,11 @@ cfg_if::cfg_if! {
         }
         impl OpenStream for HostRoute {
             fn open(&self, url: &str, service: SshGitService) -> io::Result<super::super::endpoint::stream_io::BlockingStream> {
-                self.context.open(
+                self.context.open_with_helpers(
                     url,
                     service,
                     self.selected.clone(),
+                    self.helpers_allowed,
                     self.report.clone(),
                     self.facts.clone(),
                 ).inspect_err(|error| {
@@ -190,6 +192,7 @@ cfg_if::cfg_if! {
                 return;
             }
             let selected = identity.map(|i| i.path.to_string_lossy().into_owned());
+            let helpers_allowed = backend.credential_helpers == super::CredentialHelperPolicy::AllowConfigured;
             let attempt = attempt.cloned();
             callbacks.smart_transport(false, move |_| {
                 let facts_attempt = attempt.clone();
@@ -198,6 +201,7 @@ cfg_if::cfg_if! {
                     attempt: attempt.clone(),
                     context: context.clone(),
                     selected: selected.clone(),
+                    helpers_allowed,
                     report: Arc::new(move |stream_id, opened| {
                         if let Some(attempt) = &opened_attempt {
                             attempt.opened(stream_id, opened);
