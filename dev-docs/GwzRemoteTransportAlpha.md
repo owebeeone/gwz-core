@@ -1,5 +1,11 @@
 # Local macOS transport alpha
 
+**2026-10-02 source update (TR2.7):** main now accepts every `CERTIFICATE`
+block in the supplied CA bundle, adds those roots to platform trust, and
+refuses malformed or empty bundles before opening an endpoint. The single-root
+description below records the original alpha; it no longer describes current
+source. This merge does not rebuild the installed alpha or qualify platforms.
+
 2026-09-22. Operator authorized enabling HTTPS in the installed local alpha,
 while asking to conserve quota. This is a bounded candidate activation, not
 production/release qualification. Accepted at the tuple below after retained Code/State GO; installed as
