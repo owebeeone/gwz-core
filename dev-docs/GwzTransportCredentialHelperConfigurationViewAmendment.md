@@ -1,7 +1,11 @@
 # TR2.22 unconditional configuration view mechanism
 
-Date: 2026-10-03. Status: **round-1 corrected DRAFT; not accepted or implemented**.
-Root settles and independently reviews this mechanism before adoption. The
+Date: 2026-10-03. Status: **accepted at reviewed core `daeb4e17dd414ccdb670f9ab74333dd84ef0ba19`, root `054d1dddc345452a2285e74c31f5ea4c0b0d5360`, evidence `84fef16e6b225cf6668d4bbd4fb8c4678b649723`, transport `9f9f0dc4dd82e6329d6ce53e102a231e214ff673` after [Consistency-1](GwzTransportCredentialHelperConfigurationView-ReviewConsistency-1.md) and [Safety-1](GwzTransportCredentialHelperConfigurationView-ReviewSafety-1.md) reported GO. This accepts the mechanism only; implementation is pending.**
+The nonblocking Consistency P3-1 outcome-supersession clarification is folded
+into this adoption package below; it adds no decision beyond the reviewed M2 rule.
+Original reviewers performed the complete corrected-mechanism review and
+counterexample closure, following the operator's direction to use old reviewers.
+The
 accepted helper-context amendment remains separate and unchanged. No transport
 wire or public GWZ API is added here.
 
@@ -46,8 +50,9 @@ names the retrospectively indexed private evidence and its access requirement.
 Preserve TR1.6 §3.2's exclusion of **every** conditional include, its ordered
 system/global/XDG/GIT_CONFIG_* sources and legitimate unconditional includes.
 Preserve `git -c core.askPass= credential fill`, URL-only encoded input,
-terminal-prompt refusal, 120-second effective interaction limit and all helper
-result/parser/retry rules. A new process-lifetime flattened configuration view implements
+terminal-prompt refusal, 120-second effective interaction limit and helper
+result/parser/retry rules except the explicit controlled-environment E2BIG
+spawn-outcome exception below. A new process-lifetime flattened configuration view implements
 that existing policy; `--no-includes` is never applied to the final lookup as
 an alleged equivalent configuration.
 
@@ -224,11 +229,11 @@ are zeroized; unavoidable native Git and OS copies expire through child/handle
 ownership and are not claimed zeroized by Rust. At most 128 source-parse children,
 one initial discovery, one controlled ordered round-trip/origin verification
 and one fill are launched: 131 sequential children, all under one deadline.
-This is a proposal, not permission to mutate the protected dependencies.
+This accepted mechanism supplies no permission to mutate protected dependencies.
 
 ## Precise supersessions and product checks
 
-This DRAFT, if accepted, supersedes only TR1.6 §3.2's literal snapshot delta
+This accepted amendment supersedes TR1.6 §3.2's literal snapshot delta
 and “Nothing else is added” sentence for the controlled configuration variables
 named above; its cwd/no-local/every-conditional-include policy stands. It adds
 the bounded supervised read-only discovery/parse/verification commands and context-owned view
@@ -236,6 +241,14 @@ preparation before §3.1's otherwise unchanged final credential-fill command.
 It qualifies §3.3's lookup-start statement so the same interaction deadline
 covers all preparation, without extending clocks. It adds the explicit bounded process-lifetime configuration
 environment-copy ownership exception to §3.4, with no new diagnostic data.
+It also narrowly supersedes §4's M1 row/latch for a found Git that cannot
+start, and §11's corresponding M1 code and clone treatment: `ArgumentListTooLong`
+while spawning controlled verification or fill is Authentication/M2, with no
+missing-Git latch and existing M2 member treatment (`remote_rejected` for
+fetch/push; private clone members skipped). Missing or otherwise unexecutable
+Git still takes M1; no other spawn outcome changes. The integrated E2BIG test
+must prove no helper execution, no latch on a subsequent lookup and those
+boundary outcomes, with a missing/unexecutable-Git M1 control.
 The permanent process-spawn inventory must name discovery, explicit-file parses,
 controlled-origin verification and final fill;
 no native credential callback, CLI/Python schema or Windows mechanism changes.
@@ -256,8 +269,9 @@ configuration and no network/repository Git command. Repair/undo fixtures
 compare synthetic answers without printing them. Keep the executed hasconfig
 counterexample red until the adopted mechanism makes that real child green.
 
-Root must settle this single concrete mechanism and obtain independent review
-before any child configuration environment or view semantics are implemented.
+The root owner's adoption supplies authority to implement this exact mechanism;
+product implementation still requires its integrated regressions and independent
+settled-tree acceptance before release.
 The already accepted username/timing/fixed-cause implementation and existing
 lifecycle/secret work may proceed independently. This is a mechanism correction
 for one discovered scope gap, not an authentication-policy expansion.

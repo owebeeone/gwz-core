@@ -2,6 +2,10 @@
 
 Status: accepted
 
+## Credential configuration view (accepted 2026-10-03; implementation pending)
+
+The accepted [configuration-view amendment](GwzTransportCredentialHelperConfigurationViewAmendment.md) implements TR1.6's unconditional-only scope through supervised native Git discovery/stdin parsing and bounded process-lifetime configuration parameters. Its explicit HOME anchors, one deadline, child/worker ownership, byte roundtrip and controlled E2BIG exception govern this mechanism; it creates no named sensitive preparation files and adds no public API or Windows mechanism.
+
 ## Credential helper context (accepted 2026-10-03; implementation pending)
 
 The internal helper context uses the accepted [helper context amendment](GwzTransportCredentialHelperTimingAmendment.md), extending TR1.6 revision 4 with bounded helper timeout provenance, separate encoded HTTPS username carriage and a fixed malformed-output cause. Its exact supersessions, causal-neutral timeout text, scope-aware recovery and redaction rules control those details; the public application request/response API is unchanged.

@@ -1,5 +1,9 @@
 # GWZ Core Requirements
 
+## Credential configuration view (accepted 2026-10-03; implementation pending)
+
+Candidate configured-helper preparation MUST satisfy the accepted [configuration-view amendment](GwzTransportCredentialHelperConfigurationViewAmendment.md): unconditional-only ordered scope, explicit absolute include anchors or refusal, native byte-preserving parsing/verification, bounded process-lifetime parameters, no named sensitive preparation copies and one owned deadline. Controlled E2BIG MUST be Authentication/M2 without a missing-Git latch; ordinary missing/unexecutable Git retains M1. Implementation and release qualification remain separate.
+
 ## Credential helper context (accepted 2026-10-03; implementation pending)
 
 Candidate configured-helper context MUST satisfy the accepted [helper context amendment](GwzTransportCredentialHelperTimingAmendment.md): exact captured budgets, no inferred busy-helper cause, encoded account selection confined to helper input/private routing, fixed parser causes and scope-aware recovery. This acceptance supplies implementation authority only and does not qualify release or platform behavior.
