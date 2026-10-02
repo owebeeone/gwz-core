@@ -1,9 +1,7 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::thread;
+use std::sync::Mutex;
 
 use crate::model;
-use crate::runtime::clock::TimestampMs;
 
 use super::*;
 
@@ -43,27 +41,6 @@ pub enum ActionKind {
     Fetch,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PlannedAction {
-    Noop,
-    Clone,
-    Fetch,
-    FastForward,
-    Checkout,
-    InitRepo,
-    AddManifestMember,
-    WriteManifest,
-    WriteLock,
-    WriteSnapshot,
-    WriteTag,
-    Push,
-    Merge,
-    Rebase,
-    Reset,
-    DetachMember,
-    AttachMember,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationContext {
     pub operation_id: String,
@@ -72,30 +49,6 @@ pub struct OperationContext {
     pub action: ActionKind,
     pub dry_run: bool,
     pub attribution: Option<model::OperationAttribution>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OperationPlan {
-    pub operation_id: String,
-    pub action: ActionKind,
-    pub dry_run: bool,
-    pub members: Vec<MemberPlan>,
-}
-
-impl OperationPlan {
-    pub fn requires_mutation(&self) -> bool {
-        self.members.iter().any(|member| member.requires_mutation)
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct MemberPlan {
-    pub member_id: Option<model::MemberId>,
-    pub member_path: String,
-    pub source_kind: model::SourceKind,
-    pub action: PlannedAction,
-    pub requires_mutation: bool,
-    pub message: Option<String>,
 }
 
 pub enum OperationRequest {
@@ -226,160 +179,6 @@ impl OperationContext {
             dry_run: meta.dry_run.unwrap_or(false),
             attribution,
         })
-    }
-}
-
-pub struct ResponseBuilder;
-
-impl ResponseBuilder {
-    #[allow(
-        clippy::needless_update,
-        reason = "gwz_transport_candidate adds fields"
-    )]
-    pub fn accepted(context: &OperationContext, members: &[MemberPlan]) -> crate::ResponseEnvelope {
-        crate::ResponseEnvelope {
-            meta: crate::ResponseMeta {
-                transport: None,
-                request_id: context.request_id.clone(),
-                schema_version: context.schema_version.clone(),
-                action: context.action.into(),
-                aggregate_status: crate::AggregateStatus::Accepted,
-                operation_id: Some(context.operation_id.clone()),
-                message: None,
-                attribution: context.attribution.as_ref().map(Into::into),
-                ..Default::default()
-            },
-            members: members.iter().map(member_plan_to_protocol).collect(),
-            errors: Vec::new(),
-        }
-    }
-
-    pub fn result(
-        context: &OperationContext,
-        report: &ExecutionReport,
-        started_at_ms: TimestampMs,
-        finished_at_ms: TimestampMs,
-    ) -> crate::OperationResult {
-        let status = aggregate_status(report);
-        let members: Vec<_> = report
-            .members
-            .iter()
-            .map(member_execution_to_protocol)
-            .collect();
-        // A Partial result's member failures come first, then the operation's own.
-        let mut errors = partial_member_errors(status, &members);
-        errors.extend(report.errors.iter().map(operation_error_to_protocol));
-        crate::OperationResult {
-            transport: None,
-            operation_id: context.operation_id.clone(),
-            request_id: context.request_id.clone(),
-            action: context.action.into(),
-            aggregate_status: status,
-            started_at_ms: started_at_ms.0,
-            finished_at_ms: finished_at_ms.0,
-            members,
-            errors,
-            attribution: context.attribution.as_ref().map(Into::into),
-        }
-    }
-}
-
-impl OperationRuntime {
-    pub fn new(event_capacity: usize) -> Self {
-        Self {
-            records: Arc::new(Mutex::new(HashMap::new())),
-            event_capacity: event_capacity.max(2),
-        }
-    }
-
-    pub fn submit<F>(
-        &self,
-        context: OperationContext,
-        handler: F,
-    ) -> model::ModelResult<crate::ResponseEnvelope>
-    where
-        F: FnOnce(OperationContext, RuntimeEventSink) -> ExecutionReport + Send + 'static,
-    {
-        let record = Arc::new(OperationRecord::new(self.event_capacity));
-        self.records
-            .lock()
-            .expect("operation registry poisoned")
-            .insert(context.operation_id.clone(), Arc::clone(&record));
-
-        let accepted = ResponseBuilder::accepted(&context, &[]);
-        thread::spawn(move || {
-            let started_at_ms = now_ms();
-            let sink = RuntimeEventSink {
-                context: context.clone(),
-                record: Arc::clone(&record),
-            };
-            sink.emit(
-                crate::EventKind::OperationStarted,
-                crate::Severity::Info,
-                None,
-                None,
-                Some("operation started".to_owned()),
-            );
-            let report = handler(context.clone(), sink.clone());
-            sink.emit(
-                crate::EventKind::OperationFinished,
-                crate::Severity::Info,
-                None,
-                None,
-                Some("operation finished".to_owned()),
-            );
-            let result = ResponseBuilder::result(&context, &report, started_at_ms, now_ms());
-            record.complete(result);
-        });
-        Ok(accepted)
-    }
-
-    pub fn subscribe(&self, operation_id: &str) -> model::ModelResult<EventSubscription> {
-        Ok(EventSubscription {
-            record: self.record(operation_id)?,
-            next_sequence: 0,
-        })
-    }
-
-    pub fn try_result(
-        &self,
-        operation_id: &str,
-    ) -> model::ModelResult<Option<crate::OperationResult>> {
-        let record = self.record(operation_id)?;
-        Ok(record
-            .state
-            .lock()
-            .expect("operation record poisoned")
-            .result
-            .clone())
-    }
-
-    pub fn wait(&self, operation_id: &str) -> model::ModelResult<crate::OperationResult> {
-        let record = self.record(operation_id)?;
-        let mut state = record.state.lock().expect("operation record poisoned");
-        loop {
-            if let Some(result) = &state.result {
-                return Ok(result.clone());
-            }
-            state = record
-                .complete
-                .wait(state)
-                .expect("operation record poisoned");
-        }
-    }
-
-    pub(crate) fn record(&self, operation_id: &str) -> model::ModelResult<Arc<OperationRecord>> {
-        self.records
-            .lock()
-            .expect("operation registry poisoned")
-            .get(operation_id)
-            .cloned()
-            .ok_or_else(|| {
-                model::ModelError::new(
-                    model::ErrorCode::OperationNotFound,
-                    format!("operation {operation_id} not found"),
-                )
-            })
     }
 }
 
@@ -633,67 +432,6 @@ impl<'a> EventEmitter<'a> {
     }
 }
 
-#[derive(Clone)]
-pub struct RuntimeEventSink {
-    pub(crate) context: OperationContext,
-    pub(crate) record: Arc<OperationRecord>,
-}
-
-pub(crate) fn push_event(state: &mut OperationState, context: &OperationContext) {
-    if state.events.len() < state.event_capacity {
-        return;
-    }
-
-    state.events.clear();
-    let reset = crate::OperationEvent {
-        operation_id: context.operation_id.clone(),
-        request_id: context.request_id.clone(),
-        sequence: state.next_sequence,
-        timestamp_ms: now_ms().0,
-        kind: crate::EventKind::Reset,
-        severity: crate::Severity::Warn,
-        member_id: None,
-        member_path: None,
-        message: Some("event buffer overflow; history incomplete".to_owned()),
-        member: None,
-        error: None,
-        attribution: context.attribution.as_ref().map(Into::into),
-        target_kind: None,
-        progress: None,
-        merge_state: None,
-        merge_member: None,
-        artifact_path: None,
-    };
-    state.next_sequence += 1;
-    state.events.push_back(reset);
-}
-
-pub(crate) fn member_plan_to_protocol(member: &MemberPlan) -> crate::MemberResponse {
-    crate::MemberResponse {
-        member_id: member
-            .member_id
-            .as_ref()
-            .map(ToString::to_string)
-            .unwrap_or_default(),
-        member_path: member.member_path.clone(),
-        source_kind: member.source_kind.into(),
-        status: crate::MemberStatus::Planned,
-        error: None,
-        planned: Some(crate::PlannedChange {
-            action: member.action.into(),
-            from_ref: None,
-            to_ref: None,
-            message: member.message.clone(),
-        }),
-        state: None,
-        git_status: None,
-        target_kind: Some(crate::TargetKind::Member),
-        lock_match: None,
-        lock_difference_reasons: None,
-        url_resolution: None,
-    }
-}
-
 /// Build a standard `ResponseEnvelope` from request meta + an action. For **CLI-local** ops
 /// (e.g. `gwz forall`) that stamp their own envelope without a gwz-core handler — `gwz-core`
 /// itself never executes those, this just mints a consistent envelope.
@@ -759,30 +497,6 @@ impl From<ActionKind> for crate::ActionKind {
             ActionKind::CloneLocalWorkspace => Self::CloneLocalWorkspace,
             ActionKind::LocalFamily => Self::LocalFamily,
             ActionKind::RemoteIdentity => Self::RemoteIdentity,
-        }
-    }
-}
-
-impl From<PlannedAction> for crate::PlannedAction {
-    fn from(value: PlannedAction) -> Self {
-        match value {
-            PlannedAction::Noop => Self::Noop,
-            PlannedAction::Clone => Self::Clone,
-            PlannedAction::Fetch => Self::Fetch,
-            PlannedAction::FastForward => Self::FastForward,
-            PlannedAction::Checkout => Self::Checkout,
-            PlannedAction::InitRepo => Self::InitRepo,
-            PlannedAction::AddManifestMember => Self::AddManifestMember,
-            PlannedAction::WriteManifest => Self::WriteManifest,
-            PlannedAction::WriteLock => Self::WriteLock,
-            PlannedAction::WriteSnapshot => Self::WriteSnapshot,
-            PlannedAction::WriteTag => Self::WriteTag,
-            PlannedAction::Push => Self::Push,
-            PlannedAction::Merge => Self::Merge,
-            PlannedAction::Rebase => Self::Rebase,
-            PlannedAction::Reset => Self::Reset,
-            PlannedAction::DetachMember => Self::DetachMember,
-            PlannedAction::AttachMember => Self::AttachMember,
         }
     }
 }

@@ -86,8 +86,10 @@ materialize, pull, and push have event-aware variants or event parameters that
 emit `OperationEvent` records:
 
 - `operation_started` and `operation_finished`;
-- `member_started`, `member_progress`, and `member_finished`;
-- `reset` when an operation event buffer overflows in `OperationRuntime`.
+- `member_started`, `member_progress`, and `member_finished`.
+
+A handler delivers each event straight to the caller's `operation::EventSink`
+and keeps no history, so it never emits the protocol's `reset` event.
 
 Use `operation::NullSink` when an event sink is required but the caller does not
 need events.
