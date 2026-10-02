@@ -40,6 +40,17 @@ fn run_in_clean_child(test_name: &str) -> bool {
         .env("GIT_CONFIG_SYSTEM", root.join("missing-system-config"))
         .env("GIT_CONFIG_GLOBAL", root.join("missing-global-config"))
         .env("GIT_TERMINAL_PROMPT", "0")
+        // No automatic maintenance or gc. Since git 2.47 a commit ends by
+        // starting `git maintenance run --auto --detach`, and since git 2.55
+        // the detached run keeps objects/maintenance.lock after the commit has
+        // returned, until it has checked its tasks: a byte snapshot of the
+        // repository taken meanwhile holds the lock and a later one does not,
+        // and a local clone of the repository copies it.
+        .env("GIT_CONFIG_COUNT", "2")
+        .env("GIT_CONFIG_KEY_0", "maintenance.auto")
+        .env("GIT_CONFIG_VALUE_0", "false")
+        .env("GIT_CONFIG_KEY_1", "gc.auto")
+        .env("GIT_CONFIG_VALUE_1", "0")
         .env("GIT_AUTHOR_NAME", "Test Author")
         .env("GIT_AUTHOR_EMAIL", "test@example.com")
         .env("GIT_COMMITTER_NAME", "Test Author")
@@ -82,6 +93,29 @@ fn run_in_clean_child(test_name: &str) -> bool {
         "clean child omitted the selected test"
     );
     true
+}
+
+/// A clean child's `git commit` starts no automatic maintenance, so a test
+/// that compares a repository's bytes never races a detached maintenance run
+/// that still holds the repository's maintenance lock (`run_in_clean_child`).
+#[test]
+fn clean_child_commits_start_no_maintenance() {
+    if run_in_clean_child("clean_child_commits_start_no_maintenance") {
+        return;
+    }
+    let fixture = Fixture::new("clean-child-commit");
+    let trace = std::env::temp_dir().join("commit-trace.txt");
+    let status = Command::new("git")
+        .arg("-C")
+        .arg(fixture.path())
+        .env("GIT_TRACE", &trace)
+        .args(["commit", "--quiet", "--allow-empty", "-m", "traced"])
+        .status()
+        .unwrap();
+    assert!(status.success(), "traced commit failed with {status}");
+    let trace = fs::read_to_string(&trace).unwrap();
+    assert!(trace.contains("built-in: git commit"), "{trace}");
+    assert!(!trace.contains("git maintenance"), "{trace}");
 }
 
 #[test]

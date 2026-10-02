@@ -10,7 +10,7 @@ cfg_if::cfg_if! {
             ssh_channel::GitService,
             ssh_fixture as common,
             ssh_key_snapshot::Registry,
-            ssh_local, ssh_network, ssh_setup,
+            ssh_local, ssh_network, ssh_pool, ssh_setup,
             ssh_worker::{Endpoint, EndpointOpenFailure},
             stream_io::BlockingStream,
         };
@@ -37,7 +37,7 @@ cfg_if::cfg_if! {
         /// The endpoint as the transport host builds it, over `config`.
         fn connect(config: Config, known_hosts: PathBuf, agent: Option<PathBuf>, io_timeout_ms: u64) -> Endpoint {
             let authority = Authority::new(config.total, config.per_host);
-            ssh_local::connect_with_authority(config, known_hosts, agent, io_timeout_ms, authority).unwrap()
+            ssh_local::connect_with_authority(config, known_hosts, agent, io_timeout_ms, authority, Default::default()).unwrap()
         }
         fn endpoint(f: &common::SshdFixture, agent: Option<PathBuf>) -> Endpoint {
             connect(config(), f.known_hosts.clone(), agent, 3000)
@@ -169,6 +169,7 @@ cfg_if::cfg_if! {
                     None,
                     1000,
                     Authority::new(1, 1),
+                    Default::default(),
                 )
                 .is_err()
             );
@@ -287,7 +288,8 @@ cfg_if::cfg_if! {
                     ssh_setup::SetupConnector::reported(
                         origin,
                         Duration::from_millis(200),
-                        move |key, _, progress| {
+                        move |key, _, opening: ssh_pool::Opening| {
+                            let progress = opening.progress;
                             let key = key.clone();
                             let known = known.clone();
                             let socket = socket.clone();

@@ -158,14 +158,14 @@ mod unix {
             let (_dir, config, marker) = helper();
             let mut endpoint = Endpoint::new(https_connection::Config::default(), Some(config), gwz_transport::pool::Config::default()).unwrap();
             let client = endpoint.client.clone();
-            let task = tokio::spawn(async move { client.prepare(request(), &CancellationToken::new()).await });
+            let task = tokio::spawn(async move { client.prepare_budget_for_transition(request(), &CancellationToken::new(), &mut client.budget(), &mut None).await });
             started(&marker).await;
             let pending = endpoint.shutdown(Duration::from_secs(1)).await;
             assert!(task.is_finished() || pending != 0, "shutdown reported clean with active helper");
             let result = timeout(Duration::from_secs(2), task).await.expect("shutdown left helper alive").unwrap();
             assert!(matches!(result, Err(Failure { code: ErrorCode::Cancelled, .. })));
             let before = std::fs::read(&marker).unwrap();
-            let result = endpoint.client.prepare(request(), &CancellationToken::new()).await;
+            let result = endpoint.client.prepare_budget_for_transition(request(), &CancellationToken::new(), &mut endpoint.client.budget(), &mut None).await;
             assert!(matches!(result, Err(Failure { code: ErrorCode::Cancelled, .. })));
             assert_eq!(std::fs::read(&marker).unwrap(), before, "post-shutdown helper ran");
             assert_eq!(endpoint.shutdown(Duration::from_secs(1)).await, 0);
@@ -180,7 +180,7 @@ mod unix {
             let client = b.client.clone();
             let cancel = CancellationToken::new();
             let token = cancel.clone();
-            let task = tokio::spawn(async move { client.prepare(request(), &token).await });
+            let task = tokio::spawn(async move { client.prepare_budget_for_transition(request(), &token, &mut client.budget(), &mut None).await });
             started(&marker).await;
             assert_eq!(a.shutdown(Duration::from_millis(20)).await, 0);
             assert!(!task.is_finished(), "A shutdown touched B's helper");

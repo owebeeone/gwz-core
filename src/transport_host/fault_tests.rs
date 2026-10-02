@@ -38,7 +38,7 @@ struct Harness {
 
 impl Harness {
     fn new(requests: &[(&str, &str)]) -> Self {
-        let (session, host) = session::Session::driver(3000, 3000).expect("driver session");
+        let (session, host) = session::Session::driver(3000, 3000, None).expect("driver session");
         for (request, operation) in requests {
             session
                 .register(request, Some((*operation).into()))
@@ -489,7 +489,7 @@ fn oversized_open_deadlines_fail_through_bound_session_without_stopping_progress
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir(home.path().join(".ssh")).unwrap();
     std::fs::write(home.path().join(".ssh/known_hosts"), b"").unwrap();
-    let (driver, host) = session::Session::driver(3000, 3000).unwrap();
+    let (driver, host) = session::Session::driver(3000, 3000, None).unwrap();
     let (endpoint, client) =
         session::Session::endpoint(SshEndpointConfig::fixture(home.path().into(), None)).unwrap();
     driver

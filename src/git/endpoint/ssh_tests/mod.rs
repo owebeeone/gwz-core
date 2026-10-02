@@ -17,6 +17,7 @@ mod agent_wait;
 mod attachment;
 mod channel;
 mod cleanup_capacity;
+mod host_case;
 mod key_container;
 mod local_endpoint;
 mod max_startups;

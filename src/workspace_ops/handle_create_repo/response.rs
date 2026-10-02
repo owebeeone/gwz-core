@@ -42,7 +42,7 @@ pub(crate) fn response_envelope(
     aggregate_status: crate::AggregateStatus,
     members: Vec<crate::MemberResponse>,
 ) -> crate::ResponseEnvelope {
-    let errors = crate::operation::partial_member_errors(aggregate_status, &members);
+    let errors = copied_member_errors(aggregate_status, &members);
     crate::ResponseEnvelope {
         meta: crate::ResponseMeta {
             transport: None,
@@ -58,6 +58,37 @@ pub(crate) fn response_envelope(
         members,
         errors,
     }
+}
+
+/// The errors a `Partial`, `Failed` or `Rejected` result repeats in its
+/// top-level `errors` (TR2.3 for `Partial`, OD7; TR2.19 for the other two): a
+/// copy of the error of every member entry that failed or was refused, in
+/// member order, so a caller that reads only `errors` sees each failure. A
+/// skipped entry keeps its error to itself, and every other aggregate repeats
+/// none (gwz-cli docs/MachineOutput.md, "Failed, rejected and partial
+/// results").
+fn copied_member_errors(
+    aggregate_status: crate::AggregateStatus,
+    members: &[crate::MemberResponse],
+) -> Vec<crate::GwzError> {
+    if !matches!(
+        aggregate_status,
+        crate::AggregateStatus::Partial
+            | crate::AggregateStatus::Failed
+            | crate::AggregateStatus::Rejected
+    ) {
+        return Vec::new();
+    }
+    members
+        .iter()
+        .filter(|member| {
+            matches!(
+                member.status,
+                crate::MemberStatus::Failed | crate::MemberStatus::Rejected
+            )
+        })
+        .filter_map(|member| member.error.clone())
+        .collect()
 }
 
 pub(crate) fn path_slug(path: &str) -> ModelResult<String> {

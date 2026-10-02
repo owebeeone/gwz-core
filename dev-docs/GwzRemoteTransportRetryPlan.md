@@ -19,6 +19,12 @@ Amended 2026-10-02 by
 [`GwzTransportReleasePlanAmendment-2.md`](GwzTransportReleasePlanAmendment-2.md)
 revision 6. Its §4 sentence on what Closed stops, its §5 Cold state and two
 S3.1 test sentences read as that amendment's §3.20 (OD18) states.
+Amended 2026-10-02 by
+[`GwzTransportOffSwitchDesign.md`](GwzTransportOffSwitchDesign.md) (TR1.5).
+Its §1 table rows for `--jobs`, `--max-per-host` and the `--ssh-timeout` stall
+default, §7's stall-default sentence, S2.2's `unwrap_or(9)`, and §8's `--jobs`,
+`--max-per-host` and `--ssh-timeout` help and long help, with S1.1's and
+S2.2's help pins, read as that design's §6 and §10 state.
 
 ## 1. Outcome
 
@@ -501,3 +507,11 @@ The candidate amendment that stood here was withdrawn when the Python concurrenc
   reuse design's §9, which the 2026-09-28 entry made §5's Cold state for the
   transport host, is not amended. That design's next revision carries the first
   wave into it, and into the session plan's CS7.23, before CS7.23 starts.
+- 2026-10-02: amended by
+  [`GwzTransportOffSwitchDesign.md`](GwzTransportOffSwitchDesign.md), the
+  accepted TR1.5 design. With the native transport selected and the flags
+  omitted, `--jobs` defaults to 50, `--max-per-host` to 8 and `--ssh-timeout`
+  to 3, as in gwz 1.0. With gwz's transport the defaults stay 100, 32 and 9.
+  §1's rows, §7's stall-default sentence, S2.2's `unwrap_or(9)`, §8's three
+  helps and the S1.1 and S2.2 pins read as that design's §6 and §10 state.
+  TR2.5 moves the pins with them.

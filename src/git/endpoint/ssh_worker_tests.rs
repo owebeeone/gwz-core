@@ -67,6 +67,7 @@ fn queued_expiry_releases_admission_without_stopping_worker() {
                 reply: Some(reply),
                 selected: None,
                 authority: None,
+                url: None,
                 permit: Permit(permits.clone()),
                 context: BridgeContext {
                     session_id: "session".into(),

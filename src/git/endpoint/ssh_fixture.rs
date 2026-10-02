@@ -129,6 +129,36 @@ impl SshdFixture {
         panic!("temporary sshd did not become ready");
     }
 
+    /// This server's host key as a `known_hosts` line for `name` at `port`:
+    /// plain, or hashed as OpenSSH hashes a name, an HMAC-SHA1 keyed by a
+    /// salt of `[name]:port` exactly as given.
+    pub(crate) fn known_host(&self, name: &str, port: u16, hashed: bool) -> String {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        use sha1::{Digest, Sha1};
+        let line = fs::read_to_string(&self.known_hosts).unwrap();
+        let (_, key) = line.split_once(' ').unwrap();
+        let host = format!("[{name}]:{port}");
+        if !hashed {
+            return format!("{host} {key}");
+        }
+        let salt: [u8; 20] = std::array::from_fn(|i| (i as u8).wrapping_mul(37).wrapping_add(11));
+        let mut block = [0u8; 64];
+        block[..salt.len()].copy_from_slice(&salt);
+        let inner = Sha1::new()
+            .chain_update(block.map(|b| b ^ 0x36))
+            .chain_update(host.as_bytes())
+            .finalize();
+        let hash = Sha1::new()
+            .chain_update(block.map(|b| b ^ 0x5c))
+            .chain_update(inner)
+            .finalize();
+        format!(
+            "|1|{}|{} {key}",
+            STANDARD.encode(salt),
+            STANDARD.encode(hash)
+        )
+    }
+
     pub(crate) fn session(&mut self) -> SshConnection {
         self.session_with_retry(false)
     }

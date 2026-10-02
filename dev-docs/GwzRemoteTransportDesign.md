@@ -21,6 +21,13 @@ planned transport amendment.
 Amended 2026-09-28 by
 [`GwzConnectionReuseDesign.md`](../../dev-docs/GwzConnectionReuseDesign.md).
 This document remains authoritative only as amended for §7.1 and §7.2.
+Erratum, 2026-10-02: §3.3's "SSH password-bearing URLs also refuse" no longer
+holds. On the operator's decision of 2026-10-02, TR2.18 uses a password beside
+the user in an `ssh://` URL as 1.0.17's libgit2 does
+(`src/git/endpoint/ssh_password.rs`). The taut destination still has no
+password slot: the password reaches an endpoint in the driver's own process
+only, and a driver with no such endpoint refuses it
+(`src/git/endpoint/ssh_handoff.rs`).
 
 ## 1. Boundary and outcome
 

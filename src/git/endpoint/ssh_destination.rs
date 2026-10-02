@@ -1,21 +1,29 @@
 //! Side-effect-free SSH admission. Paths are operands, never shell commands.
 //! The grammar is libgit2's (1.9.7 `util/net.c` and `transports/ssh_libssh2.c`),
 //! 1.0.17's network path: a URL's path passes as written, never decoded.
+use super::ssh_handoff::UrlPassword;
 use gwz_transport::pool::Key;
 use std::{io, net::Ipv6Addr};
 
 #[derive(Debug)]
 pub(crate) struct Destination {
+    /// The pool key. Its host is the URL's, lowercased.
     pub(crate) key: Key,
+    /// The host as the URL wrote it, which a hashed `known_hosts` name may
+    /// hash, as libssh2 does for 1.0.17 (TR2.18).
+    pub(crate) written_host: String,
     pub(crate) path: String,
+    /// The password beside the URL's user, which libgit2 offers when the
+    /// server offers password authentication (TR2.18). A secret.
+    pub(crate) password: Option<UrlPassword>,
 }
-/// libgit2's parse: user, host, port ("" for the default) and path.
-type Parts<'a> = (Option<&'a str>, &'a str, &'a str, &'a str);
+/// libgit2's parse: user, password, host, port ("" for the default) and path.
+type Parts<'a> = (Option<&'a str>, Option<&'a str>, &'a str, &'a str, &'a str);
 impl Destination {
     /// None leaves a non-SSH URL on its existing native/local route. Once an SSH
     /// spelling is recognized, malformed input is an error, never a fallback.
     pub(crate) fn parse(input: &str) -> io::Result<Option<Self>> {
-        let ((user, host, port, path), escaped) =
+        let ((user, password, host, port, path), escaped) =
             if let Some((scheme, rest)) = input.split_once("://") {
                 if !["ssh", "git+ssh", "ssh+git"]
                     .iter()
@@ -39,6 +47,9 @@ impl Destination {
                 Ok(text.to_owned())
             }
         };
+        // libgit2 decodes a URL's password to bytes, as it decodes the user,
+        // and hands it to libssh2 as a C string.
+        let password = password.map(|password| UrlPassword::new(decode_bytes(password)));
         // libgit2 asks the credential callback for a missing or empty user,
         // and GWZ's callback answers "git".
         let user = match user {
@@ -82,7 +93,9 @@ impl Destination {
         }
         Ok(Some(Self {
             key: Key::ssh(user, host.to_ascii_lowercase(), port),
+            written_host: host,
             path: path.to_owned(),
+            password,
         }))
     }
 }
@@ -112,15 +125,22 @@ fn url(rest: &str) -> io::Result<Parts<'_>> {
         _ if host.contains(['[', ']', ':']) => return Err(invalid()),
         _ => host,
     };
-    // libgit2 authenticates with a URL's password when it has a user too; the
-    // transport has no password authentication, so it refuses that pair.
-    let user = match userinfo.map(|info| info.rsplit_once(':').unwrap_or((info, ""))) {
+    // The userinfo's password follows its last ':'. libgit2 uses a password
+    // only beside a user: with no user it asks the credential callback for
+    // one, and drops the password.
+    let (user, password) = match userinfo.map(|info| info.rsplit_once(':').unwrap_or((info, ""))) {
         Some((user, password)) if !user.is_empty() && !password.is_empty() => {
-            return Err(invalid());
+            (Some(user), Some(password))
         }
-        other => other.map(|(user, _)| user),
+        other => (other.map(|(user, _)| user), None),
     };
-    Ok((user, host, port, if path.is_empty() { "/" } else { path }))
+    Ok((
+        user,
+        password,
+        host,
+        port,
+        if path.is_empty() { "/" } else { path },
+    ))
 }
 /// A colon after a slash or a Windows drive designates a local path, as does
 /// input without a colon outside brackets. Unbalanced brackets name SSH.
@@ -215,7 +235,7 @@ fn scp(input: &str) -> io::Result<Parts<'_>> {
                 start = index;
                 At::Port
             }
-            (At::PathStart, _) => return Ok((user, host, port, rest())),
+            (At::PathStart, _) => return Ok((user, None, host, port, rest())),
             (unchanged, _) => unchanged,
         };
     }
@@ -233,9 +253,13 @@ fn has_at(text: &str) -> bool {
     text.find(['@', ':'])
         .is_some_and(|at| text.as_bytes()[at] == b'@')
 }
-/// libgit2's `git_str_decode_percent`: a '%' that does not start two hex
-/// digits stays as written.
 fn decode(input: &str) -> io::Result<String> {
+    String::from_utf8(decode_bytes(input)).map_err(|_| invalid())
+}
+/// libgit2's `git_str_decode_percent`: a '%' that does not start two hex
+/// digits stays as written. Decoding never grows, so the output is never
+/// reallocated, and no copy of a password is left unwiped.
+fn decode_bytes(input: &str) -> Vec<u8> {
     let bytes = input.as_bytes();
     let hex = |index: usize| bytes.get(index).and_then(|c| (*c as char).to_digit(16));
     let mut output = Vec::with_capacity(bytes.len());
@@ -252,5 +276,5 @@ fn decode(input: &str) -> io::Result<String> {
             }
         }
     }
-    String::from_utf8(output).map_err(|_| invalid())
+    output
 }

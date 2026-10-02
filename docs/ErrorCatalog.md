@@ -51,7 +51,10 @@
 | `import_incomplete` | The family merge's import stopped before the engine was entered: a fetch into a receiver or a receiver read failed, or the import was cancelled. The import refs created before the stop (`refs/gwz/local-imports/<transfer-id>`) are retained and named in the message; no merge record was opened. | Fix the cause the message names (the receiver's repository, permissions, disk), then retry: the next invocation mints a fresh transfer id. The retained refs are ordinary Git refs; gwz never prunes them. |
 
 Errors can appear as a returned `ModelError`, an operation-level `GwzError` in
-`ResponseEnvelope.errors`, or a member-scoped `MemberResponse.error`.
+`ResponseEnvelope.errors`, or a member-scoped `MemberResponse.error`. A
+`partial`, `failed` or `rejected` result also repeats the error of each failed
+or refused member in `ResponseEnvelope.errors`, ahead of the operation-level
+errors.
 
 ## Local Clone Family
 

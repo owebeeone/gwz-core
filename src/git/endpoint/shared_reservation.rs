@@ -94,7 +94,7 @@ impl<C: Connector> Connector for ReservedConnector<C> {
         key: &Key,
         identity: &Identity,
         deadline: Option<u64>,
-        progress: super::ssh_pool::Progress,
+        opening: super::ssh_pool::Opening,
     ) -> Result<Self::Resource, Failure> {
         let reservation = self
             .authority
@@ -105,7 +105,7 @@ impl<C: Connector> Connector for ReservedConnector<C> {
                 effect: Effect::None,
                 facts: None,
             })?;
-        match self.inner.start_reported(key, identity, deadline, progress) {
+        match self.inner.start_reported(key, identity, deadline, opening) {
             Ok(inner) => Ok(ReservedResource {
                 inner,
                 reservation: Some(reservation),

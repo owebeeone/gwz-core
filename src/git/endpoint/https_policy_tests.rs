@@ -2,34 +2,27 @@ use super::*;
 #[test]
 fn status_policy_never_replays_posts_or_network_failures() {
     for status in 100..=599 {
-        let action = classify(status, GitService::ReceivePackExchange, true);
-        assert!(!matches!(
-            action,
-            ResponseAction::Redirect | ResponseAction::Authenticate
-        ));
+        let action = classify(status, GitService::ReceivePackExchange);
+        assert!(!matches!(action, ResponseAction::Redirect));
         if status == 200 {
             assert_eq!(action, ResponseAction::Success);
         }
     }
     assert_eq!(
-        classify(401, GitService::UploadPackAdvertisement, true),
-        ResponseAction::Authenticate
+        classify(401, GitService::UploadPackAdvertisement),
+        ResponseAction::Fail(ErrorCode::Authentication)
     );
     assert_eq!(
-        classify(404, GitService::UploadPackAdvertisement, true),
-        ResponseAction::Authenticate
-    );
-    assert_eq!(
-        classify(404, GitService::UploadPackAdvertisement, false),
+        classify(404, GitService::UploadPackAdvertisement),
         ResponseAction::Fail(ErrorCode::RepositoryRefused)
     );
     assert_eq!(
-        classify(403, GitService::ReceivePackExchange, false),
+        classify(403, GitService::ReceivePackExchange),
         ResponseAction::Fail(ErrorCode::Io)
     );
     for status in [204, 206, 101, 199, 600] {
         assert_eq!(
-            classify(status, GitService::UploadPackAdvertisement, false),
+            classify(status, GitService::UploadPackAdvertisement),
             ResponseAction::Fail(ErrorCode::Protocol)
         );
     }

@@ -244,7 +244,7 @@ fn record_response(response: &Response<Incoming>, facts: &Mutex<Facts>) {
     }
 }
 fn check_response(response: &Response<Incoming>, service: GitService) -> Result<(), ErrorCode> {
-    match https_policy::classify(response.status().as_u16(), service, false) {
+    match https_policy::classify(response.status().as_u16(), service) {
         ResponseAction::Success => validate_content(response, service),
         ResponseAction::Fail(code) => Err(code),
         _ => Err(ErrorCode::Protocol),

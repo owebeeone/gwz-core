@@ -14,17 +14,17 @@ impl Client {
     ) -> (Result<Prepared, Failure>, FirstConnect) {
         let mut connect = FirstConnect::None;
         let result = self
-            .prepare_budget_inner(input, cancel, budget, challenge, true, &mut connect)
+            .run_attempt(input, cancel, budget, challenge, &mut connect)
             .await;
         (result, connect)
     }
-    pub(super) async fn prepare_budget_inner(
+    /// The attempt itself, which records its first connect in `connect`.
+    async fn run_attempt(
         &self,
         input: Input,
         cancel: &CancellationToken,
         budget: &mut Budget,
         challenge: &mut Option<ChallengeLease>,
-        allow_transition: bool,
         connect: &mut FirstConnect,
     ) -> Result<Prepared, Failure> {
         let original = Destination::parse(&input.destination).map_err(failure)?;
@@ -223,7 +223,7 @@ impl Client {
             if status == 401 && prepared.opened.facts.credential_offered {
                 prepared.opened.facts.authenticated = Some(false);
             }
-            match https_policy::classify(status, input.service, false) {
+            match https_policy::classify(status, input.service) {
                 ResponseAction::Success => {
                     validate_content(&response, input.service)
                         .map_err(|code| with_facts(code, Effect::None, &prepared.opened.facts))?;
@@ -279,8 +279,7 @@ impl Client {
                 }
                 ResponseAction::Fail(code) => {
                     let mut failed = with_facts(code, Effect::None, &prepared.opened.facts);
-                    let may_carry = allow_transition
-                        && input.policy == AuthPolicy::Anonymous
+                    let may_carry = input.policy == AuthPolicy::Anonymous
                         && self.auth.is_some()
                         && matches!(status, 401 | 404)
                         && matches!(

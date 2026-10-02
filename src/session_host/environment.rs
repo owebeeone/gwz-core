@@ -225,8 +225,8 @@ fn checked(name: Wiped, value: Wiped) -> Result<(Wiped, Wiped), &'static str> {
 }
 
 /// Overwrites a buffer's whole allocation, spare capacity included, keeping
-/// its length.
-fn overwrite<T: Copy + Default>(buffer: &mut Vec<T>) {
+/// its length. An SSH URL's password is wiped with it too (TR2.18).
+pub(crate) fn overwrite<T: Copy + Default>(buffer: &mut Vec<T>) {
     let start = buffer.as_mut_ptr();
     for offset in 0..buffer.capacity() {
         // SAFETY: `start` addresses `buffer`'s allocation of `capacity`

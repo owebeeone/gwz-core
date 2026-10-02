@@ -286,7 +286,8 @@ cfg_if::cfg_if! {
                         socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
                         let mut request = [0; 5]; socket.read_exact(&mut request).unwrap(); assert_eq!(request, [0,0,0,1,11]);
                         socket.write_all(&prefix).unwrap(); ready.send(()).unwrap();
-                        let mut byte = [0]; assert_eq!(socket.read(&mut byte).unwrap(), 0, "helper must close agent handle");
+                        // Linux resets the socket of a helper that closes with the prefix unread.
+                        let read = socket.read(&mut [0]); assert!(super::super::agent_fixture::reads_closed(&read), "helper must close agent handle: {read:?}");
                     });
                     let mut job = Job::start(None, Duration::from_secs(1), move |control| agent_socket::connect(&path, control)?.identities()).unwrap();
                     seen.recv_timeout(Duration::from_secs(3)).unwrap(); job.cancel();
