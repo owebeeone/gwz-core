@@ -1,5 +1,11 @@
 # GWZ Core Requirements
 
+Pending review: the bounded [SSPI process design](../../dev-docs/GwzSspiDesign.md)
+proposes Windows native authentication in a fresh contained worker, CLI self-exec
+and Python bundled worker. It is not authority until its scoped review GO, and
+does not activate Windows or change application/transport messages.
+
+
 ## SSH password-helper setup clock (accepted 2026-10-03; implementation pending)
 
 Candidate SSH password-helper setup MUST satisfy the accepted [SSH helper clock amendment](GwzTransportSshHelperClockAmendment.md): one shared expiry/transition authority, exact captured admission and interaction budgets, network aggregate/stall pause and resume, immutable first terminal cause, validated prepared-token refusal, exact core-owned helper provenance and retained cleanup ownership. Non-shared users retain their contracts. Implementation acceptance, platform qualification and release remain separate.

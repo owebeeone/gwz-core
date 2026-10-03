@@ -1,5 +1,11 @@
 # GWZ Core Design
 
+Pending review: the bounded [SSPI process design](../../dev-docs/GwzSspiDesign.md)
+proposes Windows native authentication in a fresh contained worker, CLI self-exec
+and Python bundled worker. It is not authority until its scoped review GO, and
+does not activate Windows or change application/transport messages.
+
+
 Status: accepted
 
 ## SSH password-helper setup clock (accepted 2026-10-03; implementation pending)
