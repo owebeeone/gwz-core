@@ -126,11 +126,33 @@ cfg_if::cfg_if! {
         pub(super) fn https_policy_for(
             policy: super::CredentialHelperPolicy,
         ) -> Option<AuthPolicy> {
+            https_policy_for_platform(policy, cfg!(windows))
+        }
+        fn https_policy_for_platform(policy: super::CredentialHelperPolicy, windows: bool) -> Option<AuthPolicy> {
+            if windows {
+                return Some(match policy {
+                    super::CredentialHelperPolicy::AllowConfigured => AuthPolicy::WindowsConfigured,
+                    super::CredentialHelperPolicy::Disabled => AuthPolicy::WindowsDefault,
+                });
+            }
             match policy {
                 super::CredentialHelperPolicy::AllowConfigured => None,
                 super::CredentialHelperPolicy::Disabled => Some(AuthPolicy::Anonymous),
             }
         }
+        cfg_if::cfg_if! { if #[cfg(test)] {
+            mod native_policy_tests {
+                use super::*;
+                #[test]
+                fn coarse_windows_helper_policy_preserves_explicit_anonymous_shape() {
+                    use super::super::super::CredentialHelperPolicy::{AllowConfigured, Disabled};
+                    assert_eq!(https_policy_for_platform(AllowConfigured, true), Some(AuthPolicy::WindowsConfigured));
+                    assert_eq!(https_policy_for_platform(Disabled, true), Some(AuthPolicy::WindowsDefault));
+                    assert_eq!(https_policy_for_platform(AllowConfigured, false), None);
+                    assert_eq!(https_policy_for_platform(Disabled, false), Some(AuthPolicy::Anonymous));
+                }
+            }
+        } }
         impl OpenStream for HostRoute {
             fn open(&self, url: &str, service: SshGitService) -> io::Result<super::super::endpoint::stream_io::BlockingStream> {
                 self.context.open_with_helpers(

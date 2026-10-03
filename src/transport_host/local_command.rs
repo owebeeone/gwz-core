@@ -13,6 +13,23 @@ pub fn with_local_transport<T>(
     operation: String,
     action: impl FnOnce(&Git2Backend) -> T,
 ) -> ModelResult<(T, CleanupReport)> {
+    run(meta, operation, None, action)
+}
+/// Uses the original caller captured by the installed CLI before member fanout.
+pub fn with_local_transport_native<T>(
+    meta: RequestMeta,
+    operation: String,
+    native: super::NativeCaller,
+    action: impl FnOnce(&Git2Backend) -> T,
+) -> ModelResult<(T, CleanupReport)> {
+    run(meta, operation, Some(native), action)
+}
+fn run<T>(
+    meta: RequestMeta,
+    operation: String,
+    native: Option<super::NativeCaller>,
+    action: impl FnOnce(&Git2Backend) -> T,
+) -> ModelResult<(T, CleanupReport)> {
     let executor = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -20,7 +37,12 @@ pub fn with_local_transport<T>(
     let (ssh, https) = environment_config()?;
     // The command is the driver: its host's HTTPS helper slots are created
     // once here and shared by the endpoints of the sessions it opens.
-    let runtime = TransportRuntime::with_https(ssh, https, HelperSlots::new())?;
+    let runtime = match native {
+        Some(caller) => {
+            TransportRuntime::with_https_native(ssh, https, HelperSlots::new(), caller)?
+        }
+        None => TransportRuntime::with_https(ssh, https, HelperSlots::new())?,
+    };
     let request = executor.block_on(runtime.request(meta, operation))?;
     let mut command = Command {
         executor,

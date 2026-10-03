@@ -32,6 +32,8 @@ fn budget_for_config(config: &pool::Config, io_timeout_ms: u64) -> Budget {
         network: (io_timeout_ms != 0).then(|| Duration::from_millis(io_timeout_ms)),
         cleanup: Duration::from_millis(config.cleanup_timeout_ms),
         redirect_hops: 0,
+        logical_deadline: None,
+        logical_started: false,
     }
 }
 impl Client {

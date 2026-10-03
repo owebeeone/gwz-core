@@ -154,6 +154,7 @@ pub(crate) struct Connection {
     pub(crate) sender: http1::SendRequest<RequestBody>,
     driver: JoinHandle<()>,
     pub(crate) progress: Arc<AtomicU64>,
+    pub(crate) binding: Option<gwz_sspi::SecretBytes>,
 }
 impl Connection {
     pub(crate) fn alive(&self) -> bool {
@@ -442,6 +443,18 @@ async fn connect(setup: Setup, key: Key) -> Result<Connection, Failure> {
         }
     }
     let io = super::https_handshake::handshake(&tls, &key.host, io).await?;
+    // Only the verified final origin TLS stream supplies CBT, after any proxy TLS.
+    let binding = io
+        .get_ref()
+        .tls_server_end_point()
+        .ok()
+        .flatten()
+        .and_then(|mut bytes| {
+            let binding = (!bytes.is_empty() && bytes.len() <= 65536)
+                .then(|| gwz_sspi::SecretBytes::new(&bytes));
+            crate::session_host::environment::overwrite(&mut bytes);
+            binding
+        });
     let progress = Arc::new(AtomicU64::new(0));
     let io = super::https_progress::Tracked {
         io,
@@ -460,6 +473,7 @@ async fn connect(setup: Setup, key: Key) -> Result<Connection, Failure> {
         sender,
         driver,
         progress,
+        binding,
     })
 }
 

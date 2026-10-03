@@ -1,11 +1,13 @@
 //! Candidate embedding ownership for endpoint placement. The host supplies message delivery.
 mod cancellable;
 mod endpoint_environment;
-mod https_endpoint;
 mod helper_failure;
+mod https_endpoint;
 mod local_command;
+pub use crate::git::endpoint::https_worker::native::NativeCaller;
 pub use cancellable::with_cancellable_local_transport;
-pub use local_command::with_local_transport;
+pub use cancellable::with_cancellable_local_transport_native;
+pub use local_command::{with_local_transport, with_local_transport_native};
 mod request;
 mod session;
 cfg_if::cfg_if! {
@@ -167,6 +169,21 @@ impl TransportRuntime {
         local: SshEndpointConfig,
         https: Option<(HttpsEndpointConfig, HelperSlots)>,
     ) -> ModelResult<Self> {
+        Self::build_native(local, https, None)
+    }
+    pub(crate) fn with_https_native(
+        local: SshEndpointConfig,
+        https: HttpsEndpointConfig,
+        slots: HelperSlots,
+        caller: NativeCaller,
+    ) -> ModelResult<Self> {
+        Self::build_native(local, Some((https, slots)), Some(caller))
+    }
+    fn build_native(
+        local: SshEndpointConfig,
+        https: Option<(HttpsEndpointConfig, HelperSlots)>,
+        native: Option<NativeCaller>,
+    ) -> ModelResult<Self> {
         let enabled = https.is_some();
         let io_timeout_ms = local.io_timeout_ms;
         let connect_timeout_ms = local.pool.connect_timeout_ms;
@@ -175,9 +192,15 @@ impl TransportRuntime {
         // The driver and the endpoint share this process, so each SSH open's
         // URL extras go from one to the other through this (TR2.18).
         let handoff = crate::git::endpoint::ssh_handoff::Handoff::default();
-        let (endpoint, peer_port) = Session::endpoint_with_https(local, https, handoff.clone())?;
-        let (driver, core_port) =
-            Session::driver_with_ssh_budgets(io_timeout_ms, connect_timeout_ms, Some(handoff), allocation_ms, interaction_ms)?;
+        let (endpoint, peer_port) =
+            Session::endpoint_with_https_native(local, https, handoff.clone(), native)?;
+        let (driver, core_port) = Session::driver_with_ssh_budgets(
+            io_timeout_ms,
+            connect_timeout_ms,
+            Some(handoff),
+            allocation_ms,
+            interaction_ms,
+        )?;
         let link = session::LocalLink::new(core_port, peer_port)?;
         Ok(Self(Arc::new(Mutex::new(RuntimeState {
             local: driver,

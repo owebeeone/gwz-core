@@ -35,9 +35,9 @@ mod passes;
 mod port;
 mod requests;
 mod wait;
+pub(crate) use driver::SshOpenFailure;
 pub(super) use local_link::LocalLink;
 use wait::Wait;
-pub(crate) use driver::SshOpenFailure;
 pub type Attachment = (String, Envelope);
 const CLEANUP: Duration = Duration::from_secs(5);
 const CHECK_MS: u64 = 120_000;
@@ -352,6 +352,14 @@ impl Session {
         https: Option<(HttpsEndpointConfig, HelperSlots)>,
         handoff: Handoff,
     ) -> ModelResult<(Arc<Self>, TransportPort)> {
+        Self::endpoint_with_https_native(config, https, handoff, None)
+    }
+    pub(super) fn endpoint_with_https_native(
+        config: SshEndpointConfig,
+        https: Option<(HttpsEndpointConfig, HelperSlots)>,
+        handoff: Handoff,
+        native: Option<NativeCaller>,
+    ) -> ModelResult<(Arc<Self>, TransportPort)> {
         let mut state = Self::empty();
         let id = unique()?;
         let authority = crate::git::endpoint::shared_reservation::Authority::new(
@@ -360,8 +368,14 @@ impl Session {
         );
         state.authority = Some(authority.clone());
         state.installed_capacity = Some(pool::Capacity::from(&config.pool));
-        let ssh_helpers = https.as_ref().and_then(|(https, slots)| https.auth.as_ref().map(|auth|
-            Arc::new(crate::git::endpoint::ssh_password_helpers::Helpers::new(auth.clone(), slots.clone()))));
+        let ssh_helpers = https.as_ref().and_then(|(https, slots)| {
+            https.auth.as_ref().map(|auth| {
+                Arc::new(crate::git::endpoint::ssh_password_helpers::Helpers::new(
+                    auth.clone(),
+                    slots.clone(),
+                ))
+            })
+        });
         let ssh = ssh_local::connect_with_helpers(
             config.pool.clone(),
             config.home.join(".ssh/known_hosts"),
@@ -373,13 +387,14 @@ impl Session {
         )
         .map_err(|_| unavailable("SSH endpoint construction failed"))?;
         if let Some((https, helper_slots)) = https {
-            state.https = Some(super::https_endpoint::HttpsEndpoint::new(
+            state.https = Some(super::https_endpoint::HttpsEndpoint::new_native(
                 https,
                 config.pool.clone(),
                 config.io_timeout_ms,
                 authority.clone(),
                 id.clone(),
                 helper_slots,
+                native,
             )?);
         }
         let https_enabled = state.https.is_some();
@@ -402,6 +417,8 @@ impl Session {
                     AuthPolicy::SshExplicit,
                     AuthPolicy::Anonymous,
                     AuthPolicy::Gh,
+                    AuthPolicy::WindowsConfigured,
+                    AuthPolicy::WindowsDefault,
                 ]
             } else {
                 vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit]

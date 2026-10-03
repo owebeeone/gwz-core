@@ -141,6 +141,7 @@ pub(crate) fn merged_facts(earlier: Option<Facts>, later: Option<Facts>) -> Opti
         key_fingerprint: later.key_fingerprint.or(earlier.key_fingerprint),
         http_status: later.http_status.or(earlier.http_status),
         ssh_exit_status: later.ssh_exit_status.or(earlier.ssh_exit_status),
+        native: later.native.or(earlier.native),
     })
 }
 

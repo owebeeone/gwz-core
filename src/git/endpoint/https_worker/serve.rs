@@ -3,7 +3,9 @@ use super::*;
 impl Prepared {
     fn reject_credential(&self, response: &Response<Incoming>) {
         if matches!(response.status().as_u16(), 401 | 403) {
-            if let Some(credential) = &self.credential { credential.rejected.store(true, Ordering::Release); }
+            if let Some(credential) = &self.credential {
+                credential.rejected.store(true, Ordering::Release);
+            }
         }
     }
     pub(crate) fn io_timeout_ms(&self) -> u64 {
@@ -92,6 +94,9 @@ impl Prepared {
             }
         };
         if let Err(mut code) = result {
+            if let Some(auth) = &self.native_route {
+                auth.revoke();
+            }
             if self.protocol_error.load(Ordering::Acquire) {
                 code = ErrorCode::Protocol;
             }
@@ -111,6 +116,12 @@ impl Prepared {
         facts: Arc<Mutex<Facts>>,
         possible: Arc<AtomicBool>,
     ) -> Result<(), ErrorCode> {
+        if let Some(auth) = &self.native_route {
+            if !auth.usable(self.lease.as_ref().unwrap()) {
+                auth.revoke();
+                return Err(ErrorCode::Authentication);
+            }
+        }
         let mut response = if let Some(response) = self.response.take() {
             response
         } else {
@@ -149,7 +160,7 @@ impl Prepared {
                 facts
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .credential_offered = request.headers().contains_key(AUTHORIZATION);
+                    .credential_offered |= request.headers().contains_key(AUTHORIZATION);
                 if self.input.service == GitService::ReceivePackExchange {
                     possible.store(true, Ordering::Release);
                 }

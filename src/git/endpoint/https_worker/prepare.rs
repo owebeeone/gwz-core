@@ -32,7 +32,13 @@ impl Client {
             || input.session.len() > 128
             || input.operation.is_empty()
             || input.operation.len() > 128
-            || !matches!(input.policy, AuthPolicy::Anonymous | AuthPolicy::Gh)
+            || !matches!(
+                input.policy,
+                AuthPolicy::Anonymous
+                    | AuthPolicy::Gh
+                    | AuthPolicy::WindowsConfigured
+                    | AuthPolicy::WindowsDefault
+            )
         {
             return Err(failure(ErrorCode::InvalidRequest));
         }
@@ -40,8 +46,15 @@ impl Client {
             return Err(failure(ErrorCode::Cancelled));
         }
         if input.policy == AuthPolicy::Gh && budget.allocation.as_millis() == 0 {
-            return Err(helper_timeout(https_auth::AuthError::AllocationTimeout,
-                &Facts { method: AuthMethod::Gh, ..Default::default() }, 0, 0));
+            return Err(helper_timeout(
+                https_auth::AuthError::AllocationTimeout,
+                &Facts {
+                    method: AuthMethod::Gh,
+                    ..Default::default()
+                },
+                0,
+                0,
+            ));
         }
         // Continuations cannot do helper/connection work on an exhausted domain.
         // Retained zero allowances are tombstones, never replaced by defaults.
@@ -63,28 +76,77 @@ impl Client {
             if https_policy::advertisement(input.service) {
                 routes.admit(key.clone()).map_err(failure)?;
                 if input.policy == AuthPolicy::Gh {
-                    routes.challenged(&key).map(Destination::parse).transpose().map_err(failure)?.unwrap_or(original)
-                } else { original }
+                    routes
+                        .challenged(&key)
+                        .map(Destination::parse)
+                        .transpose()
+                        .map_err(failure)?
+                        .unwrap_or(original)
+                } else {
+                    original
+                }
             } else {
                 Destination::parse(routes.get(&key).map_err(failure)?).map_err(failure)?
             }
         };
+        let native_policy = matches!(
+            input.policy,
+            AuthPolicy::WindowsConfigured | AuthPolicy::WindowsDefault
+        );
+        // Admission has finished; anchor once before any checkout/adoption.
+        if native_policy && !budget.logical_started {
+            budget.logical_started = true;
+            budget.logical_deadline = budget
+                .connect
+                .map(|duration| {
+                    Instant::now()
+                        .checked_add(duration)
+                        .ok_or(ErrorCode::InvalidRequest)
+                })
+                .transpose()
+                .map_err(failure)?;
+        }
+        let native_route = if !https_policy::advertisement(input.service) && native_policy {
+            self.routes
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .native_get(&key)
+        } else {
+            None
+        };
+        // A native service exchange requires the authenticated advertisement generation.
+        let basic_route = input.policy == AuthPolicy::WindowsConfigured
+            && self
+                .routes
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .basic_get(&key);
         let mut hops = 0;
         let mut credential_offered = false;
-        let mut answer_challenge = input.policy == AuthPolicy::Gh;
+        let mut answer_challenge = input.policy == AuthPolicy::Gh
+            || (!https_policy::advertisement(input.service) && basic_route);
         loop {
             let mut authorization = None;
-            let mut facts = Facts::default();
-            facts.credential_offered = credential_offered;
+            let mut facts = native_route
+                .as_ref()
+                .map_or_else(Facts::default, |auth| auth.facts.clone());
+            facts.credential_offered |= credential_offered;
             let credential = if answer_challenge {
                 facts.method = AuthMethod::Gh;
-                let credential = self.credential(&key, &destination, budget, cancel).await.map_err(|mut failed| {
-                    if let Some(facts) = failed.facts.as_mut() { facts.credential_offered |= credential_offered; }
-                    failed
-                })?;
+                let credential = self
+                    .credential(&key, &destination, budget, cancel)
+                    .await
+                    .map_err(|mut failed| {
+                        if let Some(facts) = failed.facts.as_mut() {
+                            facts.credential_offered |= credential_offered;
+                        }
+                        failed
+                    })?;
                 authorization = Some(credential.header());
                 Some(credential)
-            } else { None };
+            } else {
+                None
+            };
             if budget.connect.is_some_and(|remaining| remaining.is_zero())
                 || budget.network.is_some_and(|remaining| remaining.is_zero())
                 || budget.allocation.is_zero()
@@ -93,6 +155,13 @@ impl Client {
             }
             if challenge.as_ref().is_some_and(ChallengeLease::expired) {
                 *challenge = None;
+            }
+            if native_policy
+                && budget
+                    .logical_deadline
+                    .is_some_and(|until| Instant::now() >= until)
+            {
+                return Err(with_facts(ErrorCode::Timeout, Effect::None, &facts));
             }
             let lease = if let Some(carried) = challenge.take() {
                 let mut carried = carried;
@@ -109,33 +178,61 @@ impl Client {
                 // byte, so its connect alone is the open's setup, and only its
                 // failure keeps an origin a retry is decided by (§4).
                 let first = hops == 0;
-                let lease = self
-                    .pool
-                    .checkout_scoped(
-                        Key::https(destination.host(), destination.port()),
-                        Owner::new(&input.session, &input.operation),
-                        duration_ms(budget.allocation),
-                        budget.connect.map_or(0, duration_ms),
-                        cancel,
-                        credential.as_ref().map(|c| c.scope.as_str()),
-                    )
-                    .await
-                    .map_err(|(error, phase)| {
-                        let mut failed = with_facts(error.code, error.effect, &facts);
-                        if first {
-                            failed.setup_cause = error.setup_cause;
-                            if phase == Phase::Setup {
-                                *connect = FirstConnect::Failed;
-                            }
+                let checkout = self.pool.checkout_scoped(
+                    Key::https(destination.host(), destination.port()),
+                    Owner::new(&input.session, &input.operation),
+                    duration_ms(budget.allocation),
+                    budget.logical_deadline.map_or_else(
+                        || budget.connect.map_or(0, duration_ms),
+                        |until| duration_ms(until.saturating_duration_since(Instant::now())),
+                    ),
+                    cancel,
+                    credential
+                        .as_ref()
+                        .map(|c| c.scope.as_str())
+                        .or_else(|| native_route.as_ref().map(|auth| auth.scope.as_str())),
+                );
+                let checkout = match budget.logical_deadline {
+                    Some(until) => tokio::time::timeout_at(until, checkout)
+                        .await
+                        .unwrap_or_else(|_| Err((failure(ErrorCode::Timeout), Phase::Other))),
+                    None => checkout.await,
+                };
+                let lease = checkout.map_err(|(error, phase)| {
+                    let mut failed = with_facts(error.code, error.effect, &facts);
+                    if first {
+                        failed.setup_cause = error.setup_cause;
+                        if phase == Phase::Setup {
+                            *connect = FirstConnect::Failed;
                         }
-                        failed
-                    })?;
+                    }
+                    failed
+                })?;
                 if first && !lease.reused {
                     *connect = FirstConnect::Connected;
                 }
                 lease
             };
-            if let Some(credential) = &credential { lease.scope(&credential.scope)?; }
+            if native_policy
+                && budget
+                    .logical_deadline
+                    .is_some_and(|until| Instant::now() >= until)
+            {
+                return Err(with_facts(ErrorCode::Timeout, Effect::None, &facts));
+            }
+            if let Some(auth) = &native_route
+                && !auth.usable(&lease)
+            {
+                auth.revoke();
+                return Err(with_facts(
+                    ErrorCode::Authentication,
+                    Effect::None,
+                    &auth.facts,
+                ));
+            }
+            if let Some(credential) = &credential {
+                lease.scope(&credential.scope)?;
+            }
             if let Some(remaining) = budget.connect.as_mut() {
                 *remaining = remaining.saturating_sub(lease.connect_elapsed);
             }
@@ -156,7 +253,8 @@ impl Client {
                 destination: destination.clone(),
                 authorization,
                 credential,
-                _slot: slot.take().expect("admitted request slot"),
+                native_route: native_route.clone(),
+                _slot: slot.take(),
                 _operation: dependency.take().expect("operation dependency"),
                 protocol_error: Arc::new(AtomicBool::new(false)),
                 io_ms: budget.network.map_or(0, duration_ms),
@@ -178,11 +276,24 @@ impl Client {
                 .unwrap()
                 .clone();
             let mut guard = connection.lock().await;
+            if native_policy
+                && budget
+                    .logical_deadline
+                    .is_some_and(|until| Instant::now() >= until)
+            {
+                return Err(with_facts(
+                    ErrorCode::Timeout,
+                    Effect::None,
+                    &prepared.opened.facts,
+                ));
+            }
             let current_credential_offered = request.headers().contains_key(AUTHORIZATION);
-            prepared.opened.facts.credential_offered = current_credential_offered || credential_offered;
+            prepared.opened.facts.credential_offered =
+                current_credential_offered || credential_offered;
             credential_offered = prepared.opened.facts.credential_offered;
             let header_started = Instant::now();
-            let response = tokio::select! {
+            let mut response = tokio::select! {
+                _=async { match budget.logical_deadline { Some(until) => tokio::time::sleep_until(until).await, None => std::future::pending().await } }, if native_policy => return Err(with_facts(ErrorCode::Timeout, Effect::None, &prepared.opened.facts)),
                 _=cancel.cancelled()=>return Err(with_facts(ErrorCode::Cancelled, Effect::None, &prepared.opened.facts)),
                 _=prepared.lease.as_ref().unwrap().cancel.cancelled()=>return Err(with_facts(if prepared.protocol_error.load(Ordering::Acquire){ErrorCode::Protocol}else{ErrorCode::Cancelled}, Effect::None, &prepared.opened.facts)),
                 result=async {
@@ -212,10 +323,28 @@ impl Client {
             }
             drop(guard);
             drop(connection);
+            if native_policy && response.status() == 401 {
+                response = self
+                    .authenticate(&mut prepared, response, &key, budget, cancel)
+                    .await?;
+            }
+            if native_policy
+                && budget
+                    .logical_deadline
+                    .is_some_and(|until| Instant::now() >= until)
+            {
+                return Err(with_facts(
+                    ErrorCode::Timeout,
+                    Effect::None,
+                    &prepared.opened.facts,
+                ));
+            }
             let status = response.status().as_u16();
             prepared.opened.facts.http_status = Some(status as i64);
-            if matches!(status, 401 | 403) {
-                if let Some(credential) = &prepared.credential { credential.rejected.store(true, Ordering::Release); }
+            if matches!(status, 401 | 403)
+                && let Some(credential) = &prepared.credential
+            {
+                credential.rejected.store(true, Ordering::Release);
             }
             if status == 401 && current_credential_offered {
                 prepared.opened.facts.authenticated = Some(false);
@@ -233,7 +362,7 @@ impl Client {
                     return Ok(prepared);
                 }
                 ResponseAction::Redirect => {
-                    if budget.redirect_hops == 5 {
+                    if prepared.opened.facts.native.is_some() || budget.redirect_hops == 5 {
                         return Err(with_facts(
                             ErrorCode::UnsupportedOperation,
                             Effect::None,
@@ -272,20 +401,29 @@ impl Client {
                     budget.redirect_hops += 1;
                     answer_challenge = false;
                     // Re-enter with the existing slot below rather than reacquiring one.
-                    slot = Some(returned_slot);
+                    slot = returned_slot;
                     dependency = Some(returned_dependency);
                     continue;
                 }
                 ResponseAction::Fail(code) => {
                     let mut failed = with_facts(code, Effect::None, &prepared.opened.facts);
                     let (basic, schemes) = challenges::schemes(response.headers());
-                    let may_carry = self.auth.is_some() && status == 401 && basic
+                    let may_carry = self.auth.is_some()
+                        && status == 401
+                        && basic
                         && !current_credential_offered;
                     if status == 401 && !basic {
-                        failed.detail = Some(Box::new(FailureDetail { schemes: Some(schemes), ..Default::default() }));
+                        failed.detail = Some(Box::new(FailureDetail {
+                            schemes: Some(schemes),
+                            ..Default::default()
+                        }));
                     }
                     if may_carry {
-                        self.routes.lock().unwrap_or_else(|e| e.into_inner()).challenge(&key, &destination.base()).map_err(failure)?;
+                        self.routes
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .challenge(&key, &destination.base())
+                            .map_err(failure)?;
                     }
                     if may_carry {
                         let connection = prepared
@@ -314,9 +452,15 @@ impl Client {
                                         + budget.cleanup.min(Duration::from_secs(5)),
                                 });
                                 if input.policy == AuthPolicy::Gh {
-                                    let Prepared { _slot: returned_slot, _operation: returned_dependency, .. } = prepared;
-                                    slot = Some(returned_slot); dependency = Some(returned_dependency);
-                                    answer_challenge = true; continue;
+                                    let Prepared {
+                                        _slot: returned_slot,
+                                        _operation: returned_dependency,
+                                        ..
+                                    } = prepared;
+                                    slot = returned_slot;
+                                    dependency = Some(returned_dependency);
+                                    answer_challenge = true;
+                                    continue;
                                 }
                                 return Err(failed);
                             }
@@ -341,9 +485,15 @@ impl Client {
                     }
                     budget.cleanup = budget.cleanup.saturating_sub(cleanup_started.elapsed());
                     if may_carry && input.policy == AuthPolicy::Gh && failed.code == code {
-                        let Prepared { _slot: returned_slot, _operation: returned_dependency, .. } = prepared;
-                        slot = Some(returned_slot); dependency = Some(returned_dependency);
-                        answer_challenge = true; continue;
+                        let Prepared {
+                            _slot: returned_slot,
+                            _operation: returned_dependency,
+                            ..
+                        } = prepared;
+                        slot = returned_slot;
+                        dependency = Some(returned_dependency);
+                        answer_challenge = true;
+                        continue;
                     }
                     return Err(failed);
                 }
@@ -358,13 +508,15 @@ impl Client {
         }
     }
 }
-fn duration_ms(duration: Duration) -> u64 {
+pub(super) fn duration_ms(duration: Duration) -> u64 {
     duration
         .as_millis()
-        .saturating_add(u128::from(duration.subsec_nanos() % 1_000_000 != 0))
+        .saturating_add(u128::from(
+            !duration.subsec_nanos().is_multiple_of(1_000_000),
+        ))
         .min(u64::MAX as u128) as u64
 }
-async fn clean_challenge(
+pub(super) async fn clean_challenge(
     mut response: Response<Incoming>,
     connection: &Arc<tokio::sync::Mutex<https_connection::Connection>>,
     cancel: &CancellationToken,
@@ -417,7 +569,9 @@ async fn clean_challenge(
     result
 }
 pub(super) async fn acquire_helper_slot(
-    slots: Arc<Semaphore>, until: Instant, cancel: &CancellationToken,
+    slots: Arc<Semaphore>,
+    until: Instant,
+    cancel: &CancellationToken,
 ) -> Result<OwnedSemaphorePermit, https_auth::AuthError> {
     if Instant::now() >= until {
         return Err(https_auth::AuthError::AllocationTimeout);

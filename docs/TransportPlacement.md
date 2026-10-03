@@ -331,3 +331,33 @@ consuming that scope. Early `?` returns drop the owners and initiate cancellatio
 The explicit finish/shutdown path above is how callers obtain cleanup reports.
 To execute locally afterward, create/use a local scope with placement omitted;
 no client endpoint needs to be reinstalled.
+
+## Native HTTPS composition draft
+
+The candidate endpoint composes discovery and serial SSPI on one exclusive TLS
+lease. It anchors a finite positive logical Open deadline after admission and
+before checkout, retaining it through redirects, helper lookup, native rounds and
+reuse. Active HTTP I/O keeps its separate cumulative allowance. Zero connect
+allowance refuses native Begin; a positive expired logical deadline is Timeout.
+Nonempty initial Negotiate/NTLM tokens and Digest refuse before Begin, with
+NotStarted facts. Anonymous, configured Basic and SSH remain available when the
+native worker is unavailable. Typed Anonymous preserves credentials-disabled
+semantics. Windows coarse host helper policy selects WindowsConfigured or
+WindowsDefault at transport binding, before request construction.
+
+A native authenticated advertisement authorizes only its exact scoped physical
+lease generation. Replacement/loss refuses before the service POST; no POST auth
+challenge is replayed. Native authoritative Continue is retained independently of
+Complete, and authenticated success requires Complete plus valid remote acceptance.
+Pending native cleanup retains the operation dependency and endpoint capacity slot
+under the existing retained endpoint owner. That owner polls held Finish futures
+or record receipts until confirmed; Unknown remains charged, including evicted
+SSPI tombstones. No caller/runtime teardown or remote success proves cleanup.
+
+Detailed source, scheme, selected mechanism and authority live in transport Facts.
+The existing application observation projection has no SSPI method variant and
+retains Unknown for this method; that lossy projection proves neither native
+selection nor native Complete. Its success flag follows independently validated
+remote authentication. Native secret copies and dependency limits are described in
+[CallerValues.md](../../gwz-sspi/docs/CallerValues.md).
+Windows activation and installed provider/CBT/runtime qualification remain gated.

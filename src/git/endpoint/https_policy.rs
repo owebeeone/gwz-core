@@ -84,12 +84,25 @@ impl Routes {
             if self.routes.len() >= self.capacity {
                 return Err(ErrorCode::Capacity);
             }
-            self.routes.insert(key, Route { pinned: None, challenge: None, answers: Arc::new(Default::default()) });
+            self.routes.insert(
+                key,
+                Route {
+                    pinned: None,
+                    challenge: None,
+                    answers: Arc::new(Default::default()),
+                    native: None,
+                    basic: false,
+                },
+            );
         }
         Ok(())
     }
     pub(crate) fn install(&mut self, key: &RouteKey, base: &str) -> Result<(), ErrorCode> {
-        let slot = &mut self.routes.get_mut(key).ok_or(ErrorCode::InvalidRequest)?.pinned;
+        let slot = &mut self
+            .routes
+            .get_mut(key)
+            .ok_or(ErrorCode::InvalidRequest)?
+            .pinned;
         if let Some(pinned) = slot {
             if pinned != base {
                 return Err(ErrorCode::Protocol);
@@ -115,13 +128,51 @@ struct Route {
     pinned: Option<String>,
     challenge: Option<String>,
     answers: Arc<super::https_worker::credentials::Answers>,
+    native: Option<Arc<super::https_worker::native::Authenticated>>,
+    basic: bool,
 }
 impl Routes {
-    pub(crate) fn answers(&self, key: &RouteKey) -> Result<Arc<super::https_worker::credentials::Answers>, ErrorCode> {
-        self.routes.get(key).map(|r| r.answers.clone()).ok_or(ErrorCode::InvalidRequest)
+    pub(crate) fn basic_install(&mut self, key: &RouteKey) -> Result<(), ErrorCode> {
+        self.routes
+            .get_mut(key)
+            .ok_or(ErrorCode::InvalidRequest)?
+            .basic = true;
+        Ok(())
+    }
+    pub(crate) fn basic_get(&self, key: &RouteKey) -> bool {
+        self.routes.get(key).is_some_and(|route| route.basic)
+    }
+    pub(crate) fn native_install(
+        &mut self,
+        key: &RouteKey,
+        authenticated: Arc<super::https_worker::native::Authenticated>,
+    ) -> Result<(), ErrorCode> {
+        self.routes
+            .get_mut(key)
+            .ok_or(ErrorCode::InvalidRequest)?
+            .native = Some(authenticated);
+        Ok(())
+    }
+    pub(crate) fn native_get(
+        &self,
+        key: &RouteKey,
+    ) -> Option<Arc<super::https_worker::native::Authenticated>> {
+        self.routes.get(key).and_then(|route| route.native.clone())
+    }
+    pub(crate) fn answers(
+        &self,
+        key: &RouteKey,
+    ) -> Result<Arc<super::https_worker::credentials::Answers>, ErrorCode> {
+        self.routes
+            .get(key)
+            .map(|r| r.answers.clone())
+            .ok_or(ErrorCode::InvalidRequest)
     }
     pub(crate) fn challenge(&mut self, key: &RouteKey, base: &str) -> Result<(), ErrorCode> {
-        self.routes.get_mut(key).ok_or(ErrorCode::InvalidRequest)?.challenge = Some(base.into());
+        self.routes
+            .get_mut(key)
+            .ok_or(ErrorCode::InvalidRequest)?
+            .challenge = Some(base.into());
         Ok(())
     }
     pub(crate) fn challenged(&self, key: &RouteKey) -> Option<&str> {
@@ -130,7 +181,11 @@ impl Routes {
     pub(crate) fn missing_git(&self, key: &RouteKey) -> Option<gwz_transport::protocol::Failure> {
         self.missing.get(&key.operation).cloned()
     }
-    pub(crate) fn latch_missing_git(&mut self, key: &RouteKey, failure: gwz_transport::protocol::Failure) {
+    pub(crate) fn latch_missing_git(
+        &mut self,
+        key: &RouteKey,
+        failure: gwz_transport::protocol::Failure,
+    ) {
         self.missing.entry(key.operation.clone()).or_insert(failure);
     }
 }

@@ -73,6 +73,7 @@ manifest = anchor_dependency_paths((core / "Cargo.toml").read_text(), core)
 manifest = replace_once(manifest, 'members = ["crates/*"]\n', '')
 extra = '\n'.join([
     'gwz-transport = { path = ' + json.dumps(str(root / "gwz-transport")) + ' }',
+    'gwz-sspi = { path = ' + json.dumps(str(root / "gwz-sspi")) + ' }',
     'base64 = "=0.22.1"', 'socket2 = "=0.6.4"',
     'ssh2 = "=0.9.6"', 'libssh2-sys = "=0.3.3"',
     'tokio = { version = "=1.53.1", features = ["rt", "net", "time", "sync", "macros", "process", "io-util"] }',

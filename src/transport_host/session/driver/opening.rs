@@ -17,8 +17,13 @@ impl Session {
         // host as written, when it is not the pool key's lowercased host, and
         // the password beside its user.
         let password = destination.password.take();
-        let extras = (!helpers_allowed || password.is_some() || destination.written_host != destination.key.host)
-            .then(|| UrlExtras::new(destination.written_host.clone(), password).with_helpers(helpers_allowed));
+        let extras = (!helpers_allowed
+            || password.is_some()
+            || destination.written_host != destination.key.host)
+            .then(|| {
+                UrlExtras::new(destination.written_host.clone(), password)
+                    .with_helpers(helpers_allowed)
+            });
         let policy = if identity.mode == IdentityMode::ExplicitKey {
             AuthPolicy::SshExplicit
         } else {
@@ -80,7 +85,10 @@ impl Session {
             },
             service,
             Identity {
-                mode: if policy == AuthPolicy::Gh {
+                mode: if matches!(
+                    policy,
+                    AuthPolicy::Gh | AuthPolicy::WindowsConfigured | AuthPolicy::WindowsDefault
+                ) {
                     IdentityMode::Ambient
                 } else {
                     IdentityMode::CredentialsDisabled
@@ -120,8 +128,15 @@ impl Session {
         // open waits for a stream to end, within its allocation deadline.
         let ssh = destination.scheme == Scheme::Ssh;
         let allocation_allowance = if ssh {
-            Duration::from_millis(self.state.lock().unwrap_or_else(|e| e.into_inner()).ssh_allocation_ms)
-        } else { ADMISSION };
+            Duration::from_millis(
+                self.state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .ssh_allocation_ms,
+            )
+        } else {
+            ADMISSION
+        };
         let admit_until = allocation_until.unwrap_or_else(|| Instant::now() + allocation_allowance);
         loop {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -132,7 +147,11 @@ impl Session {
             }
             // A URL's password goes to an endpoint in this process only. One
             // in another process could not be given it, so its open refuses.
-            if state.handoff.is_none() && extras.as_ref().is_some_and(|e| e.password().is_some() || !e.helpers_allowed()) {
+            if state.handoff.is_none()
+                && extras
+                    .as_ref()
+                    .is_some_and(|e| e.password().is_some() || !e.helpers_allowed())
+            {
                 return Err(protocol_failure(
                     gwz_transport::protocol::ErrorCode::InvalidRequest,
                 ));
@@ -158,8 +177,11 @@ impl Session {
                 }
                 None => 30_000,
             };
-            let mut deadlines = network_deadlines(state.io_timeout_ms, state.connect_timeout_ms, allocation_ms);
-            if ssh { deadlines.interaction_ms = state.ssh_interaction_ms as i64; }
+            let mut deadlines =
+                network_deadlines(state.io_timeout_ms, state.connect_timeout_ms, allocation_ms);
+            if ssh {
+                deadlines.interaction_ms = state.ssh_interaction_ms as i64;
+            }
             let open = Open {
                 endpoint_id: binding.endpoint_id().into(),
                 operation_id: operation.into(),

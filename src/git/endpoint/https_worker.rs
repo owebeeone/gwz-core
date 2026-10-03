@@ -34,8 +34,9 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 mod budget;
-pub(crate) mod credentials;
 mod challenges;
+pub(crate) mod credentials;
+pub(crate) mod native;
 mod prepare;
 mod serve;
 
@@ -57,6 +58,8 @@ pub(crate) struct Client {
     config: pool::Config,
     io_timeout_ms: u64,
     auth_owner: https_auth::AuthOwner,
+    native: Option<native::NativeCaller>,
+    native_cleanup: native::Cleanup,
     operations: super::https_operation::Operations,
     ids: Arc<gwz_ids::IdSource>,
 }
@@ -88,6 +91,8 @@ impl Endpoint {
             operations,
             ids: Arc::new(crate::operation_context::new_id_source()),
             auth_owner: https_auth::AuthOwner::new(helper_slots),
+            native: None,
+            native_cleanup: Arc::new(Mutex::new(Vec::new())),
             config,
             io_timeout_ms,
         };
@@ -114,7 +119,7 @@ impl Endpoint {
         // cannot report a false zero during that transfer.
         let active = 64 - self.client.slots.available_permits();
         let helpers = self.client.auth_owner.pending_cleanup_count();
-        active + helpers + physical
+        active + helpers + physical + native::reap(&self.client.native_cleanup)
     }
 }
 impl Drop for Endpoint {
@@ -133,7 +138,8 @@ pub(crate) struct Prepared {
     destination: Destination,
     authorization: Option<https_auth::SecretHeader>,
     credential: Option<Arc<credentials::Credential>>,
-    _slot: OwnedSemaphorePermit,
+    native_route: Option<Arc<native::Authenticated>>,
+    _slot: Option<OwnedSemaphorePermit>,
     _operation: super::https_operation::Dependency,
     protocol_error: Arc<AtomicBool>,
     io_ms: u64,
@@ -204,17 +210,23 @@ pub(crate) struct Budget {
     network: Option<Duration>,
     cleanup: Duration,
     redirect_hops: usize,
+    logical_deadline: Option<Instant>,
+    logical_started: bool,
 }
 impl Client {
     pub(crate) fn pool(&self) -> &pool::Pool {
         &self.pool.pool
     }
     pub(crate) fn pending_cleanup(&self) -> usize {
-        self.auth_owner.pending_cleanup_count() + self.pool.pool.counts().closing
+        self.auth_owner.pending_cleanup_count()
+            + native::reap(&self.native_cleanup)
+            + self.pool.pool.counts().closing
     }
 
     pub(crate) async fn reap_cleanup(&self, limit: Duration) -> usize {
-        self.auth_owner.reap_pending(Instant::now() + limit).await + self.pool.pool.counts().closing
+        self.auth_owner.reap_pending(Instant::now() + limit).await
+            + native::reap(&self.native_cleanup)
+            + self.pool.pool.counts().closing
     }
 
     pub(crate) fn finish_operation(&self, operation: &str) {
@@ -247,9 +259,7 @@ fn helper_failure(error: https_auth::AuthError, facts: &Facts) -> Failure {
     failure.setup_cause = match error {
         https_auth::AuthError::Timeout => Some(SetupFailureCause::Interaction),
         https_auth::AuthError::AllocationTimeout => Some(SetupFailureCause::Allocation),
-        https_auth::AuthError::MissingExecutable => {
-            Some(SetupFailureCause::NotFound)
-        }
+        https_auth::AuthError::MissingExecutable => Some(SetupFailureCause::NotFound),
         _ => None,
     };
     use gwz_transport::protocol::{FailureDetail, HelperFailureCause};
@@ -277,7 +287,12 @@ fn helper_failure(error: https_auth::AuthError, facts: &Facts) -> Failure {
     failure
 }
 
-pub(super) fn helper_timeout(error: https_auth::AuthError, facts: &Facts, allocation_ms: i64, interaction_ms: i64) -> Failure {
+pub(super) fn helper_timeout(
+    error: https_auth::AuthError,
+    facts: &Facts,
+    allocation_ms: i64,
+    interaction_ms: i64,
+) -> Failure {
     let mut failed = helper_failure(error, facts);
     let allowance = match error {
         https_auth::AuthError::AllocationTimeout => Some(allocation_ms),
@@ -285,7 +300,10 @@ pub(super) fn helper_timeout(error: https_auth::AuthError, facts: &Facts, alloca
         _ => None,
     };
     if let Some(allowance) = allowance {
-        failed.detail = Some(Box::new(FailureDetail { helper_budget_ms: Some(allowance), ..Default::default() }));
+        failed.detail = Some(Box::new(FailureDetail {
+            helper_budget_ms: Some(allowance),
+            ..Default::default()
+        }));
     }
     failed
 }

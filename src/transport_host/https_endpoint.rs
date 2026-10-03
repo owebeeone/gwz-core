@@ -1,6 +1,6 @@
 //! Private HTTPS side of the existing placement session. The synchronous host
 //! only admits messages and polls completion; an owned runtime drives HTTP.
-use super::{Arc, Duration, HttpsEndpointConfig, ModelResult, pool, unavailable};
+use super::{Arc, Duration, HttpsEndpointConfig, ModelResult, NativeCaller, pool, unavailable};
 use crate::git::endpoint::{
     https_auth::HelperSlots,
     https_policy,
@@ -24,8 +24,8 @@ use std::{
 use tokio::{runtime::Handle, sync::oneshot, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
-mod retry;
 mod poll;
+mod retry;
 use retry::{Held, Retries};
 
 type Key = (String, i64);
@@ -84,6 +84,7 @@ impl HttpsEndpoint {
     pub(super) fn pool(&self) -> &pool::Pool {
         self.client.pool()
     }
+    cfg_if::cfg_if! { if #[cfg(test)] {
     pub(super) fn new(
         config: HttpsEndpointConfig,
         pool: pool::Config,
@@ -91,6 +92,18 @@ impl HttpsEndpoint {
         authority: Authority,
         endpoint: String,
         helper_slots: HelperSlots,
+    ) -> ModelResult<Self> {
+        Self::new_native(config, pool, io_ms, authority, endpoint, helper_slots, None)
+    }
+    } }
+    pub(super) fn new_native(
+        config: HttpsEndpointConfig,
+        pool: pool::Config,
+        io_ms: u64,
+        authority: Authority,
+        endpoint: String,
+        helper_slots: HelperSlots,
+        native: Option<NativeCaller>,
     ) -> ModelResult<Self> {
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let (shutdown, stop) = oneshot::channel();
@@ -106,6 +119,7 @@ impl HttpsEndpoint {
                     Ok(endpoint) => endpoint,
                     Err(_) => { let _ = ready_tx.send(Err(())); return; }
                 };
+                if let Some(native) = native { endpoint.client.set_native(native); }
                 if ready_tx.send(Ok((endpoint.client.clone(), Handle::current()))).is_err() { return; }
                 tokio::pin!(stop);
                 loop {
@@ -350,7 +364,11 @@ impl Drop for HttpsEndpoint {
 fn retry_key(open: &Open) -> String {
     format!(
         "{:?}|{}|{}|{}|{:?}",
-        open.service, open.destination.host, open.destination.port, open.destination.path, open.destination.https_username
+        open.service,
+        open.destination.host,
+        open.destination.port,
+        open.destination.path,
+        open.destination.https_username
     )
 }
 

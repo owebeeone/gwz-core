@@ -47,6 +47,18 @@ pub fn with_cancellable_local_transport<T>(
     run(meta, operation, environment, token, action, &|_| {})
 }
 
+/// Uses provenance captured at the native Python entry before GIL detach/submission.
+pub fn with_cancellable_local_transport_native<T>(
+    meta: RequestMeta,
+    operation: String,
+    environment: &EnvironmentSnapshot,
+    token: &CancellationToken,
+    native: Option<super::NativeCaller>,
+    action: impl FnOnce(&Git2Backend) -> T,
+) -> (ModelResult<T>, CleanupReport) {
+    run_native(meta, operation, environment, token, native, action, &|_| {})
+}
+
 /// The points at which `run` calls its observer. The public entry observes
 /// nothing; a test cancels the token or injects a panic at one of them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,10 +82,21 @@ pub(super) fn run<T>(
     action: impl FnOnce(&Git2Backend) -> T,
     observe: &dyn Fn(Step),
 ) -> (ModelResult<T>, CleanupReport) {
+    run_native(meta, operation, environment, token, None, action, observe)
+}
+fn run_native<T>(
+    meta: RequestMeta,
+    operation: String,
+    environment: &EnvironmentSnapshot,
+    token: &CancellationToken,
+    native: Option<super::NativeCaller>,
+    action: impl FnOnce(&Git2Backend) -> T,
+    observe: &dyn Fn(Step),
+) -> (ModelResult<T>, CleanupReport) {
     if token.is_cancelled() {
         return (Err(Refused::Cancelled.into()), CleanupReport::default());
     }
-    let owned = match catch_unwind(AssertUnwindSafe(|| Owned::build(environment))) {
+    let owned = match catch_unwind(AssertUnwindSafe(|| Owned::build(environment, native))) {
         Ok(Ok(owned)) => owned,
         Ok(Err(error)) => return (Err(error), CleanupReport::default()),
         Err(_) => return (Err(panicked("setup")), unknown_cleanup()),
@@ -137,7 +160,10 @@ impl Closed {
 }
 
 impl Owned {
-    fn build(environment: &EnvironmentSnapshot) -> ModelResult<Self> {
+    fn build(
+        environment: &EnvironmentSnapshot,
+        native: Option<super::NativeCaller>,
+    ) -> ModelResult<Self> {
         let (ssh, https) = endpoint_environment::endpoint_config(environment)?;
         let executor = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -145,7 +171,12 @@ impl Owned {
             .map_err(|_| unavailable("local transport executor unavailable"))?;
         // The entry is the driver: its HTTPS helper slots are created once
         // here and shared by the endpoints of the sessions it opens.
-        let runtime = TransportRuntime::with_https(ssh, https, HelperSlots::new())?;
+        let runtime = match native {
+            Some(caller) => {
+                TransportRuntime::with_https_native(ssh, https, HelperSlots::new(), caller)?
+            }
+            None => TransportRuntime::with_https(ssh, https, HelperSlots::new())?,
+        };
         Ok(Self { executor, runtime })
     }
 
