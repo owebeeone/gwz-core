@@ -27,7 +27,8 @@ impl HttpsOpenFailure {
         } else if self.failure.code == ErrorCode::Unavailable && facts.method == AuthMethod::Gh {
             crate::model::ErrorCode::ExternalToolMissing
         } else if self.failure.code == ErrorCode::Authentication {
-            if facts.authenticated == Some(false)
+            if facts.method == AuthMethod::Sspi
+                || facts.authenticated == Some(false)
                 || self
                     .failure
                     .detail

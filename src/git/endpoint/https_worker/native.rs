@@ -311,6 +311,10 @@ pub struct NativeCaller {
     port: Result<Arc<dyn Port>, gwz_sspi::ErrorKind>,
 }
 impl NativeCaller {
+    cfg_if::cfg_if! { if #[cfg(test)] {
+        pub(crate) fn refused_for_test(kind: gwz_sspi::ErrorKind) -> Self { Self { port: Err(kind) } }
+    } }
+
     pub fn capture(supervisor: &Result<Arc<gwz_sspi::Supervisor>, gwz_sspi::ErrorKind>) -> Self {
         let port = supervisor
             .as_ref()
@@ -463,19 +467,31 @@ pub(super) struct Pending {
     _operation: super::super::https_operation::Dependency,
     _slot: OwnedSemaphorePermit,
 }
-pub(super) type Cleanup = Arc<Mutex<Vec<Pending>>>;
+#[derive(Default)]
+pub(super) struct CleanupState {
+    records: Vec<Pending>,
+    checking: usize,
+}
+pub(super) type Cleanup = Arc<Mutex<CleanupState>>;
 pub(super) fn reap(owner: &Cleanup) -> usize {
     // Metadata checks and final dependency drops occur outside the owner lock.
-    let records = std::mem::take(&mut *owner.lock().unwrap_or_else(|p| p.into_inner()));
+    let (records, claimed) = {
+        let mut state = owner.lock().unwrap_or_else(|p| p.into_inner());
+        let records = std::mem::take(&mut state.records);
+        let claimed = records.len();
+        state.checking += claimed;
+        (records, claimed)
+    };
     let mut pending = Vec::new();
     for record in records {
         if !record.probe.confirmed() {
             pending.push(record);
         }
     }
-    let mut records = owner.lock().unwrap_or_else(|p| p.into_inner());
-    records.extend(pending);
-    records.len()
+    let mut state = owner.lock().unwrap_or_else(|p| p.into_inner());
+    state.records.extend(pending);
+    state.checking -= claimed;
+    state.records.len() + state.checking
 }
 // The owned Finish stays pollable after its enclosing task disappears. Poll and
 // receipt checks happen outside this shared holder's lock; the endpoint reaper
@@ -538,7 +554,107 @@ impl Probe for Finishing {
         confirmed
     }
 }
+// Start owns registration/launch/Hello even after enclosing preparation Drop.
+// Late conversations are cancelled; no publication is available to the reaper.
+struct StartState {
+    work: Option<Work<'static, Result<Box<dyn Session>, BridgeError>>>,
+    outcome: Option<Result<Box<dyn Session>, BridgeError>>,
+    cleanup: Option<Box<dyn Probe>>,
+    disposing: bool,
+    disposed: bool,
+}
+#[derive(Clone)]
+struct Starting(Arc<Mutex<StartState>>);
+impl Starting {
+    fn new(work: Work<'static, Result<Box<dyn Session>, BridgeError>>) -> Self {
+        Self(Arc::new(Mutex::new(StartState {
+            work: Some(work),
+            outcome: None,
+            cleanup: None,
+            disposing: false,
+            disposed: false,
+        })))
+    }
+    fn advance(&self, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), ErrorCode>> {
+        let work = self.0.lock().unwrap_or_else(|p| p.into_inner()).work.take();
+        if let Some(mut work) = work {
+            let result = work.as_mut().poll(cx);
+            let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+            match result {
+                std::task::Poll::Pending => state.work = Some(work),
+                std::task::Poll::Ready(outcome) => state.outcome = Some(outcome),
+            }
+        }
+        let state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        match &state.outcome {
+            Some(Ok(_)) => std::task::Poll::Ready(Ok(())),
+            Some(Err(error)) => std::task::Poll::Ready(Err(error.code)),
+            None => std::task::Poll::Pending,
+        }
+    }
+    fn take_session(&self) -> Box<dyn Session> {
+        match self
+            .0
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .outcome
+            .take()
+        {
+            Some(Ok(session)) => session,
+            _ => unreachable!("Start admitted a session"),
+        }
+    }
+}
+impl std::future::Future for Starting {
+    type Output = Result<(), ErrorCode>;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        self.advance(cx)
+    }
+}
+impl Probe for Starting {
+    fn confirmed(&self) -> bool {
+        let _ = self.advance(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+        let outcome = {
+            let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+            if state.disposing {
+                return false;
+            }
+            let outcome = state.outcome.take();
+            if outcome.is_some() {
+                state.disposing = true;
+            }
+            outcome
+        };
+        if let Some(outcome) = outcome {
+            let cleanup = match outcome {
+                Ok(session) => session.cancel(),
+                Err(error) => error.pending,
+            };
+            let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+            state.cleanup = cleanup;
+            state.disposing = false;
+            state.disposed = true;
+        }
+        let (disposed, cleanup) = {
+            let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+            if state.disposing {
+                return false;
+            }
+            state.disposing = true;
+            (state.disposed, state.cleanup.take())
+        };
+        let confirmed = disposed && cleanup.as_ref().is_none_or(|probe| probe.confirmed());
+        let mut state = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        state.cleanup = cleanup;
+        state.disposing = false;
+        confirmed
+    }
+}
 struct Guard {
+    starting: Option<Starting>,
     session: Option<Box<dyn Session>>,
     finishing: Option<Finishing>,
     cancellation: gwz_sspi::Cancellation,
@@ -554,6 +670,7 @@ impl Guard {
             self.cleanup
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
+                .records
                 .push(Pending {
                     probe,
                     _operation: operation,
@@ -565,6 +682,9 @@ impl Guard {
 impl Drop for Guard {
     fn drop(&mut self) {
         self.cancellation.cancel();
+        if let Some(starting) = self.starting.take() {
+            self.retain(Some(Box::new(starting)));
+        }
         if let Some(session) = self.session.take() {
             self.retain(session.cancel());
         }
@@ -774,6 +894,7 @@ impl Client {
             digest: None,
         };
         let mut guard = Guard {
+            starting: None,
             session: None,
             finishing: None,
             cancellation: gwz_sspi::Cancellation::new(),
@@ -781,21 +902,19 @@ impl Client {
             operation: Some(self.operation(&prepared.input.operation).map_err(failure)?),
             slot: prepared._slot.take(),
         };
-        // A cancelled Start is still awaited for its retained record receipt.
-        let start = port.start(request, until, guard.cancellation.clone());
-        tokio::pin!(start);
+        let starting = Starting::new(port.start(request, until, guard.cancellation.clone()));
+        guard.starting = Some(starting.clone());
         let result = tokio::select! {
-            result = &mut start => result,
-            _ = cancel.cancelled() => { guard.cancellation.cancel(); start.await },
-            _ = prepared.lease.as_ref().unwrap().cancel.cancelled() => { guard.cancellation.cancel(); start.await },
+            result = starting => result,
+            _ = cancel.cancelled() => Err(ErrorCode::Cancelled),
+            _ = prepared.lease.as_ref().unwrap().cancel.cancelled() => Err(ErrorCode::Cancelled),
+            _ = tokio::time::sleep_until(until) => Err(ErrorCode::Timeout),
         };
-        match result {
-            Ok(session) => guard.session = Some(session),
-            Err(error) => {
-                guard.retain(error.pending);
-                return Err(with_facts(error.code, Effect::None, &history.facts));
-            }
+        if let Err(code) = result {
+            return Err(with_facts(code, Effect::None, &history.facts));
         }
+        guard.session = Some(guard.starting.as_ref().unwrap().take_session());
+        guard.starting = None;
         let scope = self.ids.unique().to_string();
         prepared.lease.as_ref().unwrap().scope(&scope)?;
         let mut challenge = None;
@@ -1048,6 +1167,163 @@ mod tests {
         let port = Arc::new(FakePort { complete, starts: Arc::new(AtomicUsize::new(0)), steps: Arc::new(AtomicUsize::new(0)), finishes: Arc::new(AtomicUsize::new(0)),
             cleanup: Arc::new(AtomicUsize::new(cleanup)), deadlines: Arc::new(Mutex::new(Vec::new())) });
         (NativeCaller { port: Ok(port.clone()) }, port)
+    }
+    fn real_request_validation(request: &gwz_sspi::AuthRequest) -> bool {
+        use std::io::Read;
+        use std::os::unix::process::CommandExt;
+        assert!(matches!(request.package, gwz_sspi::Package::Ntlm));
+        assert!(matches!(request.identity, gwz_sspi::Identity::CurrentLogon));
+        assert_eq!(request.target.as_str(), "HTTP/localhost");
+        assert!(request.digest.is_none()); assert!(request.token_limit.raw_bytes() > 0);
+        let source = std::fs::canonicalize(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")).unwrap();
+        let manifest = source.parent().unwrap().parent().unwrap().join("gwz-sspi/Cargo.toml");
+        let target = std::env::var_os("CARGO_TARGET_DIR").map(std::path::PathBuf::from).expect("external target required");
+        assert!(!target.starts_with(source.parent().unwrap().parent().unwrap()));
+        let mut command = std::process::Command::new("cargo");
+        command.args(["+1.95.0", "test", "--manifest-path"]).arg(manifest)
+            .args(["--lib", "--locked", "--offline", "composition_request_validator_fixture", "--", "--nocapture", "--test-threads=1"])
+            .env("CARGO_TARGET_DIR", target.parent().unwrap().join("sspi-validator"))
+            .env("GWZ_SSPI_TEST_COMPOSITION_CBT", request.channel_binding.as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>())
+            .stdout(std::process::Stdio::piped()).process_group(0);
+        let mut child = command.spawn().unwrap(); let until = std::time::Instant::now() + Duration::from_secs(30);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() { break status; }
+            if std::time::Instant::now() >= until {
+                let _ = std::process::Command::new("/bin/kill").args(["-KILL", &format!("-{}", child.id())]).status();
+                let _ = child.wait(); panic!("real SSPI validator fixture exceeded bound");
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        assert!(status.success(), "validator fixture build/execution failed");
+        let mut output = String::new(); child.stdout.take().unwrap().take(8192).read_to_string(&mut output).unwrap();
+        let admitted = output.matches("gwz-sspi-private-validator:admit").count();
+        let refused = output.matches("gwz-sspi-private-validator:refuse").count();
+        assert_eq!(admitted + refused, 1, "missing or ambiguous real-validator receipt"); admitted == 1
+    }
+    struct ValidatorPort(Arc<FakePort>);
+    impl Port for ValidatorPort {
+        fn start(&self, request: gwz_sspi::AuthRequest, deadline: Instant, cancel: gwz_sspi::Cancellation) -> Work<'static, Result<Box<dyn Session>, BridgeError>> {
+            if !real_request_validation(&request) { return Box::pin(async { Err(BridgeError { code: ErrorCode::InvalidRequest, pending: None }) }); }
+            self.0.start(request, deadline, cancel)
+        }
+    }
+    #[test]
+    fn production_tls_binding_crosses_real_sspi_request_validator() {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            use crate::git::endpoint::https_fixture::{Server, input, response};
+            let server = Server::start(Arc::new(|request| Box::pin(async move {
+                let mut r = response(if request.headers().contains_key(AUTHORIZATION) { 200 } else { 401 }, GitService::UploadPackAdvertisement, Bytes::new());
+                if r.status() == 401 { r.headers_mut().insert(WWW_AUTHENTICATE, "NTLM".parse().unwrap()); } r
+            }))).await;
+            let mut endpoint = Endpoint::new(server.config(), None, pool::Config::default()).unwrap();
+            let (_, port) = fake(true, 2); endpoint.client.set_native(NativeCaller { port: Ok(Arc::new(ValidatorPort(port))) });
+            let mut request = input(&server, GitService::UploadPackAdvertisement); request.policy = AuthPolicy::WindowsDefault;
+            let (prepared, _) = endpoint.client.prepare_attempt(request, &CancellationToken::new(), &mut endpoint.client.budget(), &mut None).await;
+            assert_eq!(prepared.unwrap().opened.facts.authenticated, Some(true));
+        });
+    }
+    #[test]
+    fn production_binding_shapes_are_admitted_or_refused_by_real_validator() {
+        let request = |binding| gwz_sspi::AuthRequest {
+            package: gwz_sspi::Package::Ntlm, target: gwz_sspi::SecretText::new("HTTP/localhost").unwrap(),
+            identity: gwz_sspi::Identity::CurrentLogon, channel_binding: binding,
+            token_limit: gwz_sspi::TokenLimit::new(1024).unwrap(), digest: None,
+        };
+        for length in [32, 48, 64] {
+            let mut digest = vec![0x41; length];
+            let binding = https_auth::SecretHeader::channel_binding_digest(&mut digest).unwrap();
+            assert!(digest.iter().all(|byte| *byte == 0));
+            assert!(real_request_validation(&request(binding)));
+            assert!(!real_request_validation(&request(gwz_sspi::SecretBytes::new(&vec![0x41; length]))));
+        }
+        let mut malformed = b"xls-server-end-point:".to_vec(); malformed.extend([0x41; 32]);
+        assert!(!real_request_validation(&request(gwz_sspi::SecretBytes::new(&malformed))));
+        for length in [0, 31, 33, 47, 49, 63, 65] {
+            let mut digest = vec![0x41; length];
+            assert!(https_auth::SecretHeader::channel_binding_digest(&mut digest).is_none());
+            assert!(digest.iter().all(|byte| *byte == 0));
+        }
+    }
+    struct HeldStart { entered: Arc<AtomicUsize>, gate: Arc<AtomicUsize>, cleanup: Arc<AtomicUsize>, registered: bool, steps: Arc<AtomicUsize> }
+    impl Port for HeldStart {
+        fn start(&self, _: gwz_sspi::AuthRequest, _: Instant, cancel: gwz_sspi::Cancellation) -> Work<'static, Result<Box<dyn Session>, BridgeError>> {
+            let entered = self.entered.clone(); let gate = self.gate.clone(); let cleanup = self.cleanup.clone(); let registered = self.registered; let steps = self.steps.clone();
+            Box::pin(async move {
+                entered.store(1, Ordering::Release);
+                while gate.load(Ordering::Acquire) == 0 { tokio::time::sleep(Duration::from_millis(1)).await; }
+                assert!(cancel.is_cancelled());
+                if !registered { return Err(BridgeError { code: ErrorCode::Cancelled, pending: None }); }
+                Ok(Box::new(FakeSession { complete: true, steps, finishes: Arc::new(AtomicUsize::new(0)), cleanup }) as Box<dyn Session>)
+            })
+        }
+    }
+    #[test]
+    fn production_abort_pending_start_retains_registration_and_pre_registration_owners() {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+            use crate::git::endpoint::https_fixture::{Server, input, response};
+            for registered in [false, true] {
+                let server = Server::start(Arc::new(|_| Box::pin(async {
+                    let mut r = response(401, GitService::UploadPackAdvertisement, Bytes::new()); r.headers_mut().insert(WWW_AUTHENTICATE, "NTLM".parse().unwrap()); r
+                }))).await;
+                let mut endpoint = Endpoint::new(server.config(), None, pool::Config::default()).unwrap();
+                let port = Arc::new(HeldStart { entered: Arc::new(AtomicUsize::new(0)), gate: Arc::new(AtomicUsize::new(0)), cleanup: Arc::new(AtomicUsize::new(0)), registered, steps: Arc::new(AtomicUsize::new(0)) });
+                endpoint.client.set_native(NativeCaller { port: Ok(port.clone()) });
+                let mut request = input(&server, GitService::UploadPackAdvertisement); request.policy = AuthPolicy::WindowsDefault;
+                let client = endpoint.client.clone(); let task = tokio::spawn(async move { client.prepare_attempt(request, &CancellationToken::new(), &mut client.budget(), &mut None).await });
+                while port.entered.load(Ordering::Acquire) == 0 { tokio::task::yield_now().await; }
+                task.abort(); assert!(matches!(task.await, Err(error) if error.is_cancelled()));
+                assert!(endpoint.client.pending_cleanup() >= 1);
+                assert_eq!(endpoint.client.native_cleanup.lock().unwrap().records.len(), 1); assert_eq!(endpoint.client.slots.available_permits(), 63);
+                endpoint.client.finish_operation("operation"); assert!(endpoint.client.operation("operation").is_err());
+                port.gate.store(1, Ordering::Release); tokio::time::sleep(Duration::from_millis(2)).await;
+                if registered {
+                    assert!(endpoint.client.pending_cleanup() >= 1);
+                assert_eq!(endpoint.client.native_cleanup.lock().unwrap().records.len(), 1);
+                    port.cleanup.store(1, Ordering::Release); assert!(endpoint.client.pending_cleanup() >= 1);
+                assert_eq!(endpoint.client.native_cleanup.lock().unwrap().records.len(), 1);
+                    port.cleanup.store(2, Ordering::Release);
+                }
+                let until = Instant::now() + Duration::from_secs(1);
+                while endpoint.client.pending_cleanup() != 0 {
+                    assert!(Instant::now() < until, "physical and native cleanup must settle");
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                } assert_eq!(endpoint.client.slots.available_permits(), 64);
+                assert!(endpoint.client.operation("operation").is_ok()); assert_eq!(port.steps.load(Ordering::Acquire), 0);
+            }
+        });
+    }
+    struct PausedProbe { entered: Arc<std::sync::Barrier>, resume: Arc<std::sync::Barrier>, status: Arc<AtomicUsize>, first: AtomicUsize }
+    impl Probe for PausedProbe {
+        fn confirmed(&self) -> bool { if self.first.fetch_add(1, Ordering::Relaxed) == 0 { self.entered.wait(); self.resume.wait(); } self.status.load(Ordering::Acquire) == 2 }
+    }
+    #[test]
+    fn production_cleanup_count_covers_claimed_records_and_concurrent_insertion() {
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap(); let _entered_runtime = runtime.enter();
+        for status in [0, 1, 2] {
+            let endpoint = Endpoint::new(https_connection::Config::default(), None, pool::Config::default()).unwrap();
+            let entered = Arc::new(std::sync::Barrier::new(2)); let resume = Arc::new(std::sync::Barrier::new(2));
+            let proof = Arc::new(AtomicUsize::new(status));
+            endpoint.client.native_cleanup.lock().unwrap().records.push(Pending { probe: Box::new(PausedProbe { entered: entered.clone(), resume: resume.clone(), status: proof.clone(), first: AtomicUsize::new(0) }),
+                _operation: endpoint.client.operation("operation").unwrap(), _slot: endpoint.client.slots.clone().try_acquire_owned().unwrap() });
+            let client = endpoint.client.clone(); let reaper = std::thread::spawn(move || client.pending_cleanup()); entered.wait();
+            endpoint.client.finish_operation("operation"); assert!(endpoint.client.operation("operation").is_err());
+            let claimed_count = endpoint.client.pending_cleanup();
+            let second = Arc::new(AtomicUsize::new(0));
+            endpoint.client.native_cleanup.lock().unwrap().records.push(Pending { probe: Box::new(FakeProbe(second.clone())),
+                _operation: endpoint.client.operation("second").unwrap(), _slot: endpoint.client.slots.clone().try_acquire_owned().unwrap() });
+            let inserted_count = endpoint.client.pending_cleanup(); resume.wait();
+            let final_count = reaper.join().unwrap();
+            assert_eq!(claimed_count, 1, "claimed work remains counted status={status}");
+            assert_eq!(inserted_count, 2); assert_eq!(final_count, if status == 2 { 1 } else { 2 });
+            assert_eq!(endpoint.client.slots.available_permits(), if status == 2 { 63 } else { 62 });
+            assert_eq!(endpoint.client.operation("operation").is_ok(), status == 2);
+            endpoint.client.finish_operation("second");
+            proof.store(2, Ordering::Release); second.store(2, Ordering::Release);
+            assert_eq!(endpoint.client.pending_cleanup(), 0);
+            assert_eq!(endpoint.client.slots.available_permits(), 64);
+            assert!(endpoint.client.operation("operation").is_ok());
+            assert!(endpoint.client.operation("second").is_ok());
+        }
     }
     #[test]
     fn production_remote_complete_and_cleanup_ownership_are_independent() {

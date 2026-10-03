@@ -18,16 +18,29 @@ cfg_if::cfg_if! {
             sync::{Arc, Mutex},
         };
 
-        /// The host context of the operation a backend serves, if any. Only a
-        /// host context reaches the transport (amendment 2's TR2.11): a backend
-        /// without one, `Git2Backend::new()`'s, takes libgit2's native route
-        /// for SSH and HTTPS alike, and constructs no transport endpoint.
-        #[derive(Clone, Default)]
-        pub(crate) struct Runtime(Option<RequestContext>);
+        // The host context of the operation a backend serves, if any. Only a
+        // host context reaches the transport (amendment 2's TR2.11): a backend
+        // without one, `Git2Backend::new()`'s, takes libgit2's native route
+        // for SSH and HTTPS alike, and constructs no transport endpoint.
+        cfg_if::cfg_if! {
+            if #[cfg(test)] {
+                #[derive(Clone, Default)] pub(crate) struct Runtime(Option<RequestContext>, bool);
+            } else {
+                #[derive(Clone, Default)] pub(crate) struct Runtime(Option<RequestContext>);
+            }
+        }
 
         impl Runtime {
             pub(crate) fn with_host_context(&self, context: RequestContext) -> Self {
-                Self(Some(context))
+                cfg_if::cfg_if! { if #[cfg(test)] { Self(Some(context), self.1) } else { Self(Some(context)) } }
+            }
+            cfg_if::cfg_if! { if #[cfg(test)] {
+                pub(crate) fn with_windows_policy_for_test(mut self) -> Self { self.1 = true; self }
+            } }
+            fn https_policy(&self, policy: super::CredentialHelperPolicy) -> Option<AuthPolicy> {
+                cfg_if::cfg_if! { if #[cfg(test)] {
+                    https_policy_for_platform(policy, cfg!(windows) || self.1)
+                } else { https_policy_for(policy) } }
             }
             pub(crate) fn host_context(&self) -> Option<RequestContext> {
                 self.0.clone()
@@ -185,7 +198,7 @@ cfg_if::cfg_if! {
                 return;
             };
             if is_https_remote(url) {
-                let policy = https_policy_for(backend.credential_helpers);
+                let policy = backend.ssh.https_policy(backend.credential_helpers);
                 let attempt = attempt.cloned();
                 let facts_attempt = attempt.clone();
                 let opened_attempt = attempt.clone();

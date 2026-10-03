@@ -92,7 +92,7 @@ impl Endpoint {
             ids: Arc::new(crate::operation_context::new_id_source()),
             auth_owner: https_auth::AuthOwner::new(helper_slots),
             native: None,
-            native_cleanup: Arc::new(Mutex::new(Vec::new())),
+            native_cleanup: Arc::new(Mutex::new(native::CleanupState::default())),
             config,
             io_timeout_ms,
         };

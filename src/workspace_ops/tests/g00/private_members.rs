@@ -318,3 +318,45 @@ fn workspace_clone_with_only_inaccessible_private_members_succeeds_quietly() {
     assert!(!target.join("repos/app").exists());
     assert!(!format!("{response:?} {:?}", events.take()).contains("mem_app"));
 }
+
+cfg_if::cfg_if! { if #[cfg(all(unix, gwz_transport_candidate))] {
+#[test]
+fn private_materialize_keeps_production_native_identity_refusal_visible() {
+    use crate::git::endpoint::https_fixture::{Server, response};
+    use crate::git::endpoint::https_auth::HelperSlots;
+    use crate::transport_host::{TransportRuntime, SshEndpointConfig, HttpsEndpointConfig, NativeCaller};
+    use gwz_transport::protocol::GitService;
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
+        let root = TempDir::new("private-native-refusal");
+        handle_create_workspace(create_workspace_request(root.path()), "create").unwrap();
+        let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0)); let requests = seen.clone();
+        let server = Server::start(Arc::new(move |request| {
+            requests.fetch_add(1, Ordering::Relaxed); assert!(!request.headers().contains_key("Authorization"));
+            Box::pin(async {
+                let mut r = response(401, GitService::UploadPackAdvertisement, "");
+                r.headers_mut().insert("WWW-Authenticate", "NTLM".parse().unwrap()); r
+            })
+        })).await;
+        write_materialize_fixture(root.path(), &server.url, &"0".repeat(40));
+        let mut manifest = read_manifest(root.path()).unwrap(); manifest.members[0].private = true;
+        crate::artifact::write_manifest(root.path(), &manifest).unwrap();
+        let before = fs::read(root.path().join("gwz.conf/gwz.lock.yml")).unwrap();
+        let home = root.path().join("endpoint-home"); fs::create_dir_all(home.join(".ssh")).unwrap(); fs::write(home.join(".ssh/known_hosts"), "").unwrap();
+        let runtime = TransportRuntime::with_https_native(SshEndpointConfig::fixture(home, None), HttpsEndpointConfig { tls: server.config(), auth: None },
+            HelperSlots::new(), NativeCaller::refused_for_test(gwz_sspi::ErrorKind::IdentityMismatch)).unwrap();
+        let mut input = materialize_lock_request(false);
+        input.meta.transport = Some(crate::TransportOptions { placement: Some(crate::TransportPlacement::Local), ..Default::default() });
+        let held = runtime.request(input.meta.clone(), "materialize".into()).await.unwrap();
+        let mut backend = held.backend().clone();
+        backend.credential_helpers = crate::git::CredentialHelperPolicy::Disabled;
+        backend.ssh = backend.ssh.with_windows_policy_for_test();
+        let path = root.path().to_owned(); let events = Arc::new(CollectingSink::default()); let output = events.clone();
+        let result = tokio::task::spawn_blocking(move || handle_materialize(&backend, &path, input, "materialize", &*output)).await.unwrap();
+        assert!(result.is_err(), "local native refusal must not become quiet private skip");
+        let error = result.err().unwrap(); assert_eq!(error.code, ErrorCode::GitCommandFailed);
+        assert_eq!(seen.load(Ordering::Acquire), 1); assert_eq!(fs::read(root.path().join("gwz.conf/gwz.lock.yml")).unwrap(), before);
+        assert!(!root.path().join("repos/app").exists());
+        drop(held); runtime.shutdown().await;
+    });
+}
+} }

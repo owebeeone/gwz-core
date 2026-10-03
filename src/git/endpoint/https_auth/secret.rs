@@ -45,6 +45,19 @@ impl SecretHeader {
         }
     } }
 
+    pub(crate) fn channel_binding_digest(digest: &mut Vec<u8>) -> Option<gwz_sspi::SecretBytes> {
+        let binding = if matches!(digest.len(), 32 | 48 | 64) {
+            const PREFIX: &[u8] = b"tls-server-end-point:";
+            let mut owner = Self::owned(SecretBuffer(vec![0; PREFIX.len() + digest.len()]));
+            owner.0.0[..PREFIX.len()].copy_from_slice(PREFIX);
+            owner.0.0[PREFIX.len()..].copy_from_slice(digest);
+            Some(gwz_sspi::SecretBytes::new(owner.as_bytes()))
+        } else {
+            None
+        };
+        overwrite(digest);
+        binding
+    }
     pub(crate) fn from_bytes(source: &[u8]) -> Self {
         let mut owner = Self::owned(SecretBuffer(vec![0; source.len()]));
         owner.0.0.copy_from_slice(source);

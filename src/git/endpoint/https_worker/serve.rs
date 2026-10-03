@@ -116,11 +116,11 @@ impl Prepared {
         facts: Arc<Mutex<Facts>>,
         possible: Arc<AtomicBool>,
     ) -> Result<(), ErrorCode> {
-        if let Some(auth) = &self.native_route {
-            if !auth.usable(self.lease.as_ref().unwrap()) {
-                auth.revoke();
-                return Err(ErrorCode::Authentication);
-            }
+        if let Some(auth) = &self.native_route
+            && !auth.usable(self.lease.as_ref().unwrap())
+        {
+            auth.revoke();
+            return Err(ErrorCode::Authentication);
         }
         let mut response = if let Some(response) = self.response.take() {
             response

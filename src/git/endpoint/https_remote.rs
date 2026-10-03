@@ -23,12 +23,20 @@ pub(crate) trait HalfClose: Read + Write {
     fn end_write(&self) -> io::Result<()>;
     fn finish(&self) -> io::Result<()>;
     fn cancel(&self);
-    fn retained_failure(&self) -> Option<gwz_transport::protocol::Failure> { None }
-    fn retained_failure_facts(&self) -> Option<gwz_transport::protocol::Facts> { None }
+    fn retained_failure(&self) -> Option<gwz_transport::protocol::Failure> {
+        None
+    }
+    fn retained_failure_facts(&self) -> Option<gwz_transport::protocol::Facts> {
+        None
+    }
 }
 impl HalfClose for BlockingStream {
-    fn retained_failure(&self) -> Option<gwz_transport::protocol::Failure> { BlockingStream::retained_failure(self) }
-    fn retained_failure_facts(&self) -> Option<gwz_transport::protocol::Facts> { BlockingStream::retained_failure_facts(self) }
+    fn retained_failure(&self) -> Option<gwz_transport::protocol::Failure> {
+        BlockingStream::retained_failure(self)
+    }
+    fn retained_failure_facts(&self) -> Option<gwz_transport::protocol::Facts> {
+        BlockingStream::retained_failure_facts(self)
+    }
     fn end_write(&self) -> io::Result<()> {
         BlockingStream::end_write(self)
     }
@@ -63,17 +71,29 @@ impl<S: HalfClose> RpcIo<S> {
 }
 impl<S: HalfClose> RpcIo<S> {
     fn failure(&self, error: io::Error) -> io::Error {
-        let Some(mut failure) = self.stream.retained_failure() else { return error; };
+        let Some(mut failure) = self.stream.retained_failure() else {
+            return error;
+        };
         // Closed carries its facts beside Failure. Enrich only this derived
         // callback value; the stream's first admitted Failure stays unchanged.
         if failure.facts.is_none() {
             failure.facts = self.stream.retained_failure_facts();
         }
-        let service = if self.advertisement { GitService::UploadPackAdvertisement } else { GitService::UploadPackExchange };
-        if let Some(report) = &self.report { report(failure.clone(), service); }
+        let service = if self.advertisement {
+            GitService::UploadPackAdvertisement
+        } else {
+            GitService::UploadPackExchange
+        };
+        if let Some(report) = &self.report {
+            report(failure.clone(), service);
+        }
         let message = crate::transport_host::HttpsOpenFailure {
-            failure, anonymous: None, attempts: None, service: Some(service),
-            helpers_disabled: false, cli_hint: true,
+            failure,
+            anonymous: None,
+            attempts: None,
+            service: Some(service),
+            helpers_disabled: false,
+            cli_hint: true,
         };
         io::Error::new(error.kind(), message)
     }
@@ -181,7 +201,9 @@ impl SmartSubtransport for Remote {
             .map_err(|error| map_open_error(error, service))?;
         let mut rpc = RpcIo::new(stream, advertisement);
         let endpoint = self.endpoint.clone();
-        rpc.report = Some(Arc::new(move |failure, _| endpoint.report_failure(failure, service)));
+        rpc.report = Some(Arc::new(move |failure, _| {
+            endpoint.report_failure(failure, service)
+        }));
         *active = Arc::downgrade(&rpc.alive);
         Ok(Box::new(rpc))
     }
@@ -217,15 +239,29 @@ fn map_open_error(error: io::Error, service: GitService) -> git2::Error {
     let code = if failure.helper_timeout() {
         git2::ErrorCode::Timeout
     } else if failure.failure.code == gwz_transport::protocol::ErrorCode::Unavailable
-        && failure.failure.facts.as_ref().is_some_and(|f| f.method == gwz_transport::protocol::AuthMethod::Gh) {
+        && failure
+            .failure
+            .facts
+            .as_ref()
+            .is_some_and(|f| f.method == gwz_transport::protocol::AuthMethod::Gh)
+    {
         git2::ErrorCode::NotFound
     } else if failure.failure.code == gwz_transport::protocol::ErrorCode::Authentication
-        && !failure.failure.facts.as_ref().is_some_and(|f| f.authenticated == Some(false))
-        && !failure.failure.detail.as_ref().and_then(|d| d.schemes.as_ref()).is_some_and(|schemes| schemes.iter().any(|s| s.eq_ignore_ascii_case("Negotiate"))) {
+        && !failure.failure.facts.as_ref().is_some_and(|f| {
+            f.method == gwz_transport::protocol::AuthMethod::Sspi || f.authenticated == Some(false)
+        })
+        && !failure
+            .failure
+            .detail
+            .as_ref()
+            .and_then(|d| d.schemes.as_ref())
+            .is_some_and(|schemes| schemes.iter().any(|s| s.eq_ignore_ascii_case("Negotiate")))
+    {
         git2::ErrorCode::Auth
-    } else { git2::ErrorCode::GenericError };
+    } else {
+        git2::ErrorCode::GenericError
+    };
     git2::Error::new(code, git2::ErrorClass::Http, failure.reason())
-
 }
 
 fn is_repository_refused(

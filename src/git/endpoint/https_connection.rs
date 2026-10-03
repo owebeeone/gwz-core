@@ -449,12 +449,7 @@ async fn connect(setup: Setup, key: Key) -> Result<Connection, Failure> {
         .tls_server_end_point()
         .ok()
         .flatten()
-        .and_then(|mut bytes| {
-            let binding = (!bytes.is_empty() && bytes.len() <= 65536)
-                .then(|| gwz_sspi::SecretBytes::new(&bytes));
-            crate::session_host::environment::overwrite(&mut bytes);
-            binding
-        });
+        .and_then(|mut bytes| super::https_auth::SecretHeader::channel_binding_digest(&mut bytes));
     let progress = Arc::new(AtomicU64::new(0));
     let io = super::https_progress::Tracked {
         io,

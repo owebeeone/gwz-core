@@ -23,8 +23,8 @@ gwz_transport_candidate  src/git/gitbackend.rs  fn with_transport
 gwz_transport_candidate  src/git/gitbackend.rs  mod transport_candidate_tests
 gwz_transport_candidate  src/git/gitbackend.rs  use transport_support::server_timeout_ms as transport_timeout_ms
 gwz_transport_candidate  src/git/gitbackend/backend.rs  fn with_host_context
+gwz_transport_candidate  src/git/gitbackend/transport_binding.rs  impl Runtime
 gwz_transport_candidate  src/git/gitbackend/transport_binding.rs  mod https_transport_binding_tests
-gwz_transport_candidate  src/git/gitbackend/transport_binding.rs  struct Runtime
 gwz_transport_candidate  src/git/gitbackend/transport_observations.rs  fn failed
 gwz_transport_candidate  src/git/gitbackend/transport_observations.rs  fn opened
 gwz_transport_candidate  src/git/gitbackend/transport_observations.rs  mod https_tests
@@ -39,4 +39,5 @@ gwz_transport_candidate  src/lib.rs  use gwz_transport::cbor
 gwz_transport_candidate  src/protocol/mod.rs  mod generated
 gwz_transport_candidate  src/workspace_ops/merge/validate.rs  fn max_retries_is_refused_like_every_policy_field_merge_does_not_act_on
 gwz_transport_candidate  src/workspace_ops/merge/validate.rs  fn validate_common_meta
+gwz_transport_candidate  src/workspace_ops/tests/g00/private_members.rs  fn private_materialize_keeps_production_native_identity_refusal_visible
 gwz_transport_candidate  tests/protocol.rs  fn merge_request_and_response_round_trip_reserved_lifecycle_shape
