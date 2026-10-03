@@ -1,5 +1,25 @@
 # GWZ Core Requirements
 
+## HTTPS SSPI composition (accepted contract, 2026-10-04; implementation pending)
+
+Native-capable candidate HTTPS MUST implement the accepted
+[composition amendment](../../dev-docs/GwzSspiHttpsCompositionDesign-DRAFT.md), at
+the [reviewed tuple](../../dev-docs/GwzSspiHttpsCompositionAcceptance.md). It MUST
+retain one finite positive logical Open setup deadline captured before physical
+checkout/adoption through helper work and native rounds without reset, pause or
+extension; effective zero MUST refuse native selection before publication.
+Anonymous, existing Basic and SSH zero behavior, active HTTP I/O accounting and
+retry eligibility remain separate. Host contexts MUST retain the original caller
+capture before fanout/submission and share the issuing Supervisor's capacity.
+Native policy/facts MUST be taut-defined and capability-admitted on profiles 2/3;
+mechanism authority MUST NOT imply native Complete or remote success. Verified
+final-origin CBT and one exclusive physical lease MUST bind every round. Failure
+MUST revoke publication, retire authenticated routes and retain both cleanup
+owners. No new application carrier or process owner is authorized. Production
+Windows guards MUST remain until separate qualification/activation. These clauses
+supersede the older boundary-only statement below only within the amendment's
+scope; implementation and release acceptance remain separate gates.
+
 Accepted bounded amendment: the [SSPI process design](../../dev-docs/GwzSspiDesign.md)
 revision 2 has Consistency/Safety/Surface GO on the exact tuple recorded in
 [acceptance](../../dev-docs/GwzSspiAcceptance.md). It specifies Windows native

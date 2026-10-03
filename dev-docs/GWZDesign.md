@@ -1,5 +1,25 @@
 # GWZ Core Design
 
+## HTTPS SSPI composition (accepted contract, 2026-10-04; implementation pending)
+
+The accepted [composition amendment](../../dev-docs/GwzSspiHttpsCompositionDesign-DRAFT.md)
+and [exact review acceptance](../../dev-docs/GwzSspiHttpsCompositionAcceptance.md)
+govern the native HTTPS remainder of SSPI step 4b. Core carries one positive
+logical Open setup deadline from before checkout/adoption through discovery,
+helper work and native rounds without reset, pause or extension. Native selection
+at effective zero refuses before Begin or credential publication; anonymous,
+existing Basic and SSH zero behavior is unchanged. Active HTTP I/O accounting and
+pre-byte retry eligibility remain separate. Original caller capture travels from
+the actual CLI/Python entry through existing in-process contexts; no new carrier
+or process owner is introduced. Taut defines the native policy/facts additions
+for profiles 2/3, preserving mechanism authority separately from native Complete
+and remote acceptance. Native rounds use one exclusive physical HTTPS lease and
+its verified final-origin CBT. Failure revokes publication, retires authenticated
+routes and retains both cleanup owners. Existing activation guards remain until
+separate Windows qualification; this is implementation authority, not runtime or
+release acceptance. The older boundary-only paragraph below is superseded solely
+for the changes specified by this amendment.
+
 Accepted bounded amendment: the [SSPI process design](../../dev-docs/GwzSspiDesign.md)
 revision 2 has Consistency/Safety/Surface GO on the exact tuple recorded in
 [acceptance](../../dev-docs/GwzSspiAcceptance.md). It specifies Windows native
