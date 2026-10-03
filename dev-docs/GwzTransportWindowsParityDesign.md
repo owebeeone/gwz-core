@@ -19,8 +19,9 @@ historical observations, not current MAIN authority. MAIN's accepted helper
 [timing](GwzTransportCredentialHelperTimingAmendment.md),
 [configuration view](GwzTransportCredentialHelperConfigurationViewAmendment.md)
 and [SSH clock](GwzTransportSshHelperClockAmendment.md) control their domains.
-The pending [SSPI mechanism design](../../dev-docs/GwzSspiDesign.md) replaces
-only the following clauses, if its bounded review reaches GO:
+The accepted [SSPI mechanism design](../../dev-docs/GwzSspiDesign.md) replaces
+only the following clauses. Its bounded GO tuple and reports are recorded in
+[acceptance](../../dev-docs/GwzSspiAcceptance.md); full Windows remains NO-GO:
 
 - §2: SSPI work runs in an owned fresh process supervised under the existing
   Control deadline; configuration capture remains in core. No in-process native

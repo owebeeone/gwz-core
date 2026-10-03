@@ -1,7 +1,7 @@
 # Windows authentication and proxy settings
 
 2026-10-03 MAIN import: original experimental records and provisional clauses
-remain historical/DRAFT. Full Windows NO-GO persists. The separate pending
+remain historical/DRAFT. Full Windows NO-GO persists. The separately accepted
 [SSPI-only design](../../dev-docs/GwzSspiDesign.md) has its own mechanism review;
 it does not accept these whole-platform dispositions, guide or proof rows.
 Read SSPI lifetime claims through Windows parity's explicit SSPI-only amendment.
