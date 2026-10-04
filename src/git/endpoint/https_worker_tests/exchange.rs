@@ -363,3 +363,49 @@ fn native_git_clone_fetch_and_push_use_https_rpc_messages() {
             assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
         });
 }
+
+/// Git stops reading an advertisement at its flush packet, so the initiator can
+/// close while the response is still streaming. From the initiator's Close the
+/// stream refuses I/O-state reports (its Close owns a separate cleanup deadline),
+/// which the SSH pump honours; the worker must finish that close cleanly rather
+/// than fail the stream with Io.
+#[test]
+fn a_close_while_the_response_streams_completes_cleanly() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            // Far beyond the stream's send buffer and window, so most of the
+            // response is still unsent when the Close arrives.
+            let body = bytes::Bytes::from(vec![b'x'; 4 << 20]);
+            let server = Server::start(Arc::new(move |_| {
+                let body = body.clone();
+                Box::pin(async move { response(200, GitService::UploadPackAdvertisement, body) })
+            }))
+            .await;
+            let mut endpoint = Endpoint::new(
+                server.config(),
+                None,
+                gwz_transport::pool::Config::default(),
+            )
+            .unwrap();
+            let prepared = endpoint
+                .client
+                .prepare_budget_for_transition(
+                    input(&server, GitService::UploadPackAdvertisement),
+                    &CancellationToken::new(),
+                    &mut endpoint.client.budget(),
+                    &mut None,
+                )
+                .await
+                .unwrap();
+            let (stream, task) = attach(prepared);
+            let mut first = [0; 1];
+            assert_eq!(stream.read(&mut first).await.unwrap(), 1);
+            stream.end_write().await.unwrap();
+            stream.close().await.unwrap();
+            task.await.unwrap();
+            assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
+        });
+}

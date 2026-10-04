@@ -131,15 +131,13 @@ impl Prepared {
             let producer = async {
                 let mut buffer = vec![0; 16384];
                 loop {
-                    peer.set_io_state(IoState::Backpressure)
-                        .map_err(|_| ErrorCode::Io)?;
+                    report(peer.set_io_state(IoState::Backpressure), |_| ErrorCode::Io)?;
                     let n = stream.read(&mut buffer).await.map_err(stream_code)?;
                     if n == 0 {
-                        peer.set_io_state(IoState::Network).map_err(stream_code)?;
+                        report(peer.set_io_state(IoState::Network), stream_code)?;
                         break;
                     }
-                    peer.set_io_state(IoState::Network)
-                        .map_err(|_| ErrorCode::Io)?;
+                    report(peer.set_io_state(IoState::Network), |_| ErrorCode::Io)?;
                     tx.send(Ok(Bytes::copy_from_slice(&buffer[..n])))
                         .await
                         .map_err(|_| ErrorCode::Io)?;
@@ -197,23 +195,21 @@ impl Prepared {
         record_response(&response, &facts);
         check_response(&response, self.input.service)?;
         loop {
-            peer.set_io_state(IoState::Network).map_err(stream_code)?;
+            report(peer.set_io_state(IoState::Network), stream_code)?;
             let Some(frame) = response.body_mut().frame().await else {
                 break;
             };
             let frame = frame.map_err(|_| ErrorCode::Protocol)?;
             if let Ok(data) = frame.into_data() {
-                peer.record_io_progress(data.len()).map_err(stream_code)?;
-                peer.set_io_state(IoState::Backpressure)
-                    .map_err(stream_code)?;
+                report(peer.record_io_progress(data.len()), stream_code)?;
+                report(peer.set_io_state(IoState::Backpressure), stream_code)?;
                 for chunk in data.chunks(16384) {
                     stream.write_all(chunk).await.map_err(stream_code)?;
                 }
             }
         }
         drop(response);
-        peer.set_io_state(IoState::Backpressure)
-            .map_err(stream_code)?;
+        report(peer.set_io_state(IoState::Backpressure), stream_code)?;
         stream.end_write().await.map_err(stream_code)?;
         // GET has no body; wait for the peer's explicit EndWrite before close.
         if https_policy::advertisement(self.input.service) {
@@ -270,6 +266,19 @@ fn check_response(response: &Response<Incoming>, service: GitService) -> Result<
         ResponseAction::Success => validate_content(response, service),
         ResponseAction::Fail(code) => Err(code),
         _ => Err(ErrorCode::Protocol),
+    }
+}
+/// An I/O-state or progress report. From the initiator's Close the stream
+/// refuses these with `WrongState`, because Close owns a separate cleanup
+/// deadline; as for the SSH pump, that refusal is not a failure, and the worker
+/// goes on to complete the close.
+fn report(
+    result: Result<(), gwz_transport::stream::Error>,
+    code: impl FnOnce(gwz_transport::stream::Error) -> ErrorCode,
+) -> Result<(), ErrorCode> {
+    match result {
+        Ok(()) | Err(gwz_transport::stream::Error::WrongState) => Ok(()),
+        Err(error) => Err(code(error)),
     }
 }
 fn stream_code(error: gwz_transport::stream::Error) -> ErrorCode {
