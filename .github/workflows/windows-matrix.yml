@@ -23,6 +23,9 @@ jobs:
         shell: bash
         run: bash .github/checkout-git2-rs.sh
       - name: Install Rust toolchain
+        # bash, not the default PowerShell, which fails a step only on its last
+        # command's exit status.
+        shell: bash
         run: |
           rustup toolchain install 1.95.0 --profile minimal
           rustup default 1.95.0
@@ -71,6 +74,9 @@ jobs:
         shell: bash
         run: bash .github/checkout-git2-rs.sh
       - name: Install Rust toolchain
+        # bash, not the default PowerShell, which fails a step only on its last
+        # command's exit status.
+        shell: bash
         run: |
           rustup toolchain install 1.95.0 --profile minimal
           rustup default 1.95.0
