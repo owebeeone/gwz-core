@@ -47,7 +47,8 @@ reservation), `copy_failed` (64), `source_drift` (65) and
 install, the row and directory retained); `docs/ErrorCatalog.md` carries
 the causes and recoveries. LCM1.2 (lane C, 2026-09-06) adds two more for
 the family merge's import outcomes: `pairing_mismatch` (67, the two
-workspaces are no longer the same shape; refused before any fetch) and
+workspaces cannot be paired, as narrowed on 2026-10-04 below; refused before
+any fetch) and
 `import_incomplete` (68, the import stopped before the engine was entered;
 the retained import refs are named). LCM2.1/LCM2.2 (lane C, 2026-09-06)
 adds three for ordinary disposal: `unwaived_hazard` (69, a known hazard
@@ -99,6 +100,17 @@ a dispose is answered by the index that operation left. `wait_seconds` of 0,
 or absent, is the unchanged behaviour: one attempt, then `Busy`. The family
 wrapper clears the field before delegating to the merge engine, which takes
 its own workspace locks and never sees it.
+
+A member only the receiving workspace's lock records (operator ruling
+2026-10-04; gwz-dev `dev-docs/GwzLaneIssues.md` L11) -- typically one
+registered after the lane was cloned -- changes no wire item. Reached only
+through the default selection or `@all`, it is left out of the import and of
+the delegated merge: it is never a `MergeRepoSummary` participant, and the
+import summary in `ResponseMeta.message` names it `<path> (<id>): not in
+source lane; unchanged`. A selection that names it by id or path is
+`pairing_mismatch` (67) before any fetch. A member only the source lane
+records, the same id at different recorded paths and the same id with a
+different `source_id` still refuse `pairing_mismatch` whatever the selection.
 
 GwzOpenDecisions D3 (2026-09-18) makes an `ls` listing answer for the
 filesystem, and adds one optional field: `MemberEntry.note` (tag 6).

@@ -1,6 +1,20 @@
 # GWZ Core Requirements
 
 
+## Family merge: members only the receiver records (2026-10-04)
+
+The amendment of the same name in `GWZDesign.md` refines the pairing behind
+REQ-164's paired receivers. A family merge MUST NOT refuse because the
+receiving workspace's lock records a member the source lane's lock does not.
+When the selection reaches such a member only through the default or `@all`,
+the merge MUST leave it out of the import and of the coordinated merge, MUST
+NOT create an import ref in it or change its HEAD, worktree or lock row, MUST
+NOT let recovery depend on it, and MUST report it as not in the source lane
+and unchanged. A selection that names it MUST refuse with `pairing_mismatch`
+before any fetch, naming the member. A member only the source lane records,
+and a paired member recorded at different paths or with a different
+`source_id`, MUST still refuse with `pairing_mismatch` before any fetch.
+
 ## Windows HTTPS qualification boundary (accepted contract, 2026-10-04)
 
 [WH1 design](../../dev-docs/GwzWindowsHttpsIntegrationDesign-DRAFT.md) and its

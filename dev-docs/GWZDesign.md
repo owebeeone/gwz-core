@@ -1,6 +1,28 @@
 # GWZ Core Design
 
 
+## Family merge: members only the receiver records (2026-10-04)
+
+The operator's ruling of 2026-10-04 ("this is a bug, it should allow
+merging"; gwz-dev `dev-docs/GwzLaneIssues.md` L11 and the amendment to
+`dev-docs/GwzLocalCloneDesign.md` §6) narrows the family merge's set mismatch.
+A member only the receiving workspace's lock records, typically one registered
+after the lane was cloned, has nothing to import. When only a set selector
+reached it (the verb's default, or `@all`), the wrapper drops it from the
+import's selection and adds it to the delegated request's `exclude_targets`, so
+the engine neither plans it nor looks for an import ref in it. Its HEAD,
+worktree, refs and lock row stay as they were; the merge record never lists
+it, so status, continue, abort and gc never visit it. The import summary in
+`meta.message` names it `<path> (<id>): not in source lane; unchanged`. A
+selection that names it by id or path cannot be served: `pairing_mismatch`
+before any fetch, naming the member and saying the source lane has no such
+member. A member only the source lane records, and the same id at different
+recorded paths or with a different `source_id`, still refuse
+`pairing_mismatch` whatever was selected. `gwz_local_import::pair_participants`
+reports a receiver-only member only when it is selected, and
+`target_selection` owns the selector reading (`named_merge_members`,
+`merge_selection_excluding`).
+
 ## Windows HTTPS qualification boundary (accepted contract, 2026-10-04)
 
 [WH1 design](../../dev-docs/GwzWindowsHttpsIntegrationDesign-DRAFT.md) and its
@@ -2145,7 +2167,7 @@ deferred; `--keep` detaches).
 | `LocalMemberState` | `creating`=0, `ready`=1, `disposing`=2 (mirrors `gwz_family_model::MemberState`) |
 | `LocalObservedState` | `ready`=0, `incomplete`=1, `interrupted_disposal`=2, `missing`=3, `pointer_removed`=4, `mismatched`=5, `malformed`=6, `unobserved`=7 (mirrors `gwz_family_model::ListState` in declaration order; `unobserved` is the model's "core supplied no observation for this row", never a guess) |
 | `GwzErrorCode.unknown_local` | 62: the family-only merge miss — `gwz merge --remote <name>` named no ready family member (absent, reserved such as `origin`, or creating/disposing); the state detail travels in the message; never a Git-remote fallback (operator ruling 2026-09-05, design §6/§7, §11 item 13). Pull/push keep `missing_remote` for a token that is neither a ready member nor a Git remote |
-| `GwzErrorCode.pairing_mismatch` | 67: `gwz merge --remote <name>` found the two workspaces no longer the same shape — a lock member id on one side only, the same id at different recorded paths or with a different `source_id`, a selected `@root` with no root to pair (design §6); refused before any fetch, nothing written (LCM1.2, lane C, 2026-09-06) |
+| `GwzErrorCode.pairing_mismatch` | 67: `gwz merge --remote <name>` cannot pair the two workspaces — a lock member id only the source lane records, a member only this workspace records that the selection names, the same id at different recorded paths or with a different `source_id`, a selected `@root` with no root to pair (design §6); refused before any fetch, nothing written (LCM1.2, lane C, 2026-09-06; narrowed 2026-10-04 by the family-merge amendment at the top of this document: a receiver-only member the selection does not name is left out and reported, not refused) |
 | `GwzErrorCode.import_incomplete` | 68: the family merge's import stopped before the engine was entered — a fetch or receiver read failed, or the import was cancelled; the import refs created before the stop are retained and named, no record was opened, a retry mints a fresh transfer id (LCM1.2) |
 | `GwzErrorCode.unwaived_hazard` | 69: ordinary `gwz local dispose <name>` found one or more known hazards `--force` did not name — an open merge or unfinished native operation (`open-merge`), uncommitted, untracked, ignored, suppressed or stashed work (`dirty`), or history preserved whole in no surviving family repository (`unpreserved-history`; design §5, §5.1); the message lists every finding per repository; refused before `disposing`, nothing removed (LCM2.2, lane C, 2026-09-06) |
 | `GwzErrorCode.unknown_evidence` | 70: the deletion tree's work or history evidence could not be established — an unreadable path or store, an unsupported index flag, an uninterpretable layout or coordination record (a gwz stash record, undecoded in this build), a verifier limit; refused before `disposing`, nothing removed, and no force name waives it (design §5.1); `--keep` still detaches (LCM2.1) |

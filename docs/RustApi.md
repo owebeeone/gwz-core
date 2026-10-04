@@ -87,10 +87,16 @@ into one fresh `refs/gwz/local-imports/<transfer-id>` per receiver,
 verifies the received vector (`gwz_local_import::prepare_import`), then
 clears the selector, sets that ref as `source_ref` and calls
 `handle_merge_with_events` exactly once, still under the family lock and
-holding no receiver workspace lock. The response is the engine's, with the
-import summarised in `meta.message` when the engine left it empty; an
-engine refusal after the import carries the retained refs after its own
-message. The import outcomes are `pairing_mismatch` (67) and
+holding no receiver workspace lock. A member only the receiving lock
+records (operator ruling 2026-10-04) is left out of the import and, as an
+added exclusion, of the delegated selection when only the default or
+`@all` reached it, and refuses `pairing_mismatch` before any fetch when the
+selection names it. The response is the engine's, with the import
+summarised in `meta.message` when the engine left it empty -- every member
+only the receiving lock records named there as `<path> (<id>): not in
+source lane; unchanged`; an engine refusal after the import carries the
+retained refs after its own message. The import outcomes are
+`pairing_mismatch` (67) and
 `import_incomplete` (68), plus `merge_validation_failed`, `path_collision`
 and `source_drift` reused (`docs/ErrorCatalog.md`, "Local Clone Family").
 Since LCM2.1/LCM2.2 (lane C, 2026-09-06) ordinary `gwz local dispose

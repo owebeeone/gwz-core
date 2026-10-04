@@ -126,13 +126,15 @@ fn import_ref_names_live_in_the_retained_namespace() {
 
 // --- pairing: decided before the transport is touched at all -------------
 
-/// Design §6: pairing is by member id, and a set mismatch — an id one
-/// workspace has and the other does not, in either direction — refuses the
-/// whole operation, aggregating both directions, with no fetch.
+/// Design §6: pairing is by member id, and a set mismatch refuses the whole
+/// operation, aggregating both directions, with no fetch: an id only the
+/// source records (whatever was selected), and a selected receiver the
+/// source does not record. An unselected id only the receiver records is no
+/// mismatch (operator ruling 2026-10-04): `mem_doc` is not reported.
 #[test]
 fn a_member_set_mismatch_refuses_aggregating_before_any_transport_call() {
     let mut transport = transport();
-    let mut request = request(vec![member("mem_app")]);
+    let mut request = request(vec![member("mem_app"), member("mem_lib")]);
     request.sources.retain(|participant| {
         participant.key != member("mem_lib") && participant.key != member("mem_doc")
     });
@@ -146,8 +148,8 @@ fn a_member_set_mismatch_refuses_aggregating_before_any_transport_call() {
     };
     assert_eq!(
         missing,
-        &vec![member("mem_doc"), member("mem_extra"), member("mem_lib")],
-        "both directions are reported at once, not just the selected one"
+        &vec![member("mem_extra"), member("mem_lib")],
+        "both directions are reported at once; the unselected receiver-only one is not"
     );
     assert!(moved.is_empty());
     assert!(error.effects().is_empty());
@@ -155,6 +157,53 @@ fn a_member_set_mismatch_refuses_aggregating_before_any_transport_call() {
         transport.calls().is_empty(),
         "a pairing refusal happens before the first transport call"
     );
+}
+
+/// Operator ruling 2026-10-04: a member only the receiving workspace
+/// records has nothing to import. Unselected, it takes no part: the import
+/// succeeds for the paired selection and no transport call names it.
+/// Selected, the selection cannot be served: it is unpaired, before any
+/// transport call.
+#[test]
+fn a_member_only_the_receiver_records_takes_no_part_unless_selected() {
+    let mut paired = request(vec![RepoKey::Root, member("mem_app"), member("mem_doc")]);
+    paired
+        .receivers
+        .push(Participant::new(member("mem_new"), "new", "/D/new"));
+
+    {
+        let mut transport = transport();
+        let imported = prepare_import(&paired, &mut transport, &NeverCancelled).unwrap();
+        assert_eq!(
+            imported
+                .vector
+                .iter()
+                .map(|commit| commit.key.clone())
+                .collect::<Vec<_>>(),
+            vec![RepoKey::Root, member("mem_app"), member("mem_doc")]
+        );
+        assert!(!transport.calls().is_empty());
+        assert!(
+            transport
+                .calls()
+                .iter()
+                .all(|call| !format!("{call:?}").contains("/D/new")),
+            "{:?}",
+            transport.calls()
+        );
+    }
+
+    let mut transport = transport();
+    let mut selected = paired.clone();
+    selected.selected.push(member("mem_new"));
+    assert_eq!(
+        prepare_import(&selected, &mut transport, &NeverCancelled).unwrap_err(),
+        ImportError::PairingIncomplete {
+            missing: vec![member("mem_new")],
+            moved: Vec::new(),
+        }
+    );
+    assert!(transport.calls().is_empty());
 }
 
 /// Path is not the key, but the same id at two different recorded paths is

@@ -13,17 +13,20 @@
 //!    the open-merge envelope, so a start the engine would refuse before
 //!    planning is refused before any fetch;
 //! 5. under the family lock only: the locked family view re-resolved, the
-//!    source workspace's lock read, every selected participant paired by
-//!    lock member id (the root separately, root with root), source ids
-//!    captured, fetched through [`super::transport::BackendLocalTransport`]
-//!    into one fresh `refs/gwz/local-imports/<transfer-id>` in every paired
-//!    receiver, and the received vector verified
-//!    (`gwz_local_import::prepare_import`);
-//! 6. clear the selector, set the common import ref as `source_ref`, and call
-//!    the public [`crate::workspace_ops::handle_merge_with_events`] once. The
-//!    engine takes its own locks; the wrapper holds only the family lock,
-//!    across the import and the delegation (design §3.2), and preholds no
-//!    receiver workspace lock.
+//!    source workspace's lock read, a member only the receiving lock records
+//!    refused if the selection names it and otherwise left out of the import
+//!    and the merge (design §6, operator ruling 2026-10-04), every selected
+//!    participant paired by lock member id (the root separately, root with
+//!    root), source ids captured, fetched through
+//!    [`super::transport::BackendLocalTransport`] into one fresh
+//!    `refs/gwz/local-imports/<transfer-id>` in every paired receiver, and the
+//!    received vector verified (`gwz_local_import::prepare_import`);
+//! 6. clear the selector, set the common import ref as `source_ref`, exclude
+//!    the receiver-only members left out in step 5, and call the public
+//!    [`crate::workspace_ops::handle_merge_with_events`] once. The engine
+//!    takes its own locks; the wrapper holds only the family lock, across the
+//!    import and the delegation (design §3.2), and preholds no receiver
+//!    workspace lock.
 //!
 //! LCM1.2 (lane C, 2026-09-06): steps 5-6 run for real. Step 4 is
 //! [`resolve_family_merge`]: on an observed view, a token that names no
@@ -69,8 +72,8 @@ use crate::git::MergeAuthorityBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{EventEmitter, EventSink, OperationRequest};
 use crate::workspace_ops::{
-    SelectedTarget, assert_workspace_id, handle_merge_with_events, open_merge_probe,
-    resolve_merge_targets, resolve_request_workspace_root,
+    SelectedTarget, assert_workspace_id, handle_merge_with_events, merge_selection_excluding,
+    named_merge_members, open_merge_probe, resolve_merge_targets, resolve_request_workspace_root,
 };
 
 /// Step 4: resolve the family selector against the observed family
@@ -174,6 +177,72 @@ pub(crate) fn identity_mismatches(
             }
         })
         .collect()
+}
+
+/// Members only the receiving workspace's lock records, as `(id, path)` in
+/// lock order. The source lane has no such member, so a family merge has
+/// nothing to import into them and leaves them exactly as they are (design
+/// §6, operator ruling 2026-10-04).
+fn receiver_only_members<'a>(
+    receiver: &'a LockArtifact,
+    source: &LockArtifact,
+) -> Vec<(&'a str, &'a str)> {
+    receiver
+        .members
+        .iter()
+        .filter(|(id, _)| !source.members.contains_key(*id))
+        .map(|(id, entry)| (id.as_str(), entry.path.as_str()))
+        .collect()
+}
+
+/// A member named for a message the way merge output names a participant:
+/// `<path> (<id>)`.
+fn describe_member((id, path): &(&str, &str)) -> String {
+    format!("{path} ({id})")
+}
+
+/// Step 5's selection against the source lane's lock (design §6, operator
+/// ruling 2026-10-04): a member only this workspace records has nothing to
+/// import. One the selection `named` cannot be served and refuses, before any
+/// fetch; one only a set selector reached (the default, `@all`) leaves the
+/// import and, by the returned ids, the merge.
+fn without_receiver_only(
+    what: &str,
+    source: &BoundMember,
+    named: &[&crate::artifact::ManifestMember],
+    selected: Vec<RepoKey>,
+    receiver_only: &[(&str, &str)],
+) -> ModelResult<(Vec<RepoKey>, Vec<String>)> {
+    let mut kept = Vec::with_capacity(selected.len());
+    let mut left_out = Vec::new();
+    let mut unservable = Vec::new();
+    for key in selected {
+        let only = match &key {
+            RepoKey::Member { id } => receiver_only.iter().find(|(only, _)| only == id),
+            RepoKey::Root => None,
+        };
+        match only {
+            None => kept.push(key),
+            Some(member) if named.iter().any(|named| named.id == member.0) => {
+                unservable.push(describe_member(member));
+            }
+            Some((id, _)) => left_out.push((*id).to_owned()),
+        }
+    }
+    if !unservable.is_empty() {
+        return Err(ModelError::new(
+            ErrorCode::PairingMismatch,
+            format!(
+                "{what}: {} {} selected, but the source lane `{}` has no such member; a member \
+                 only this workspace records has nothing to import, so leave it out of the \
+                 selection; refused before any fetch; nothing was written",
+                unservable.join(", "),
+                if unservable.len() == 1 { "is" } else { "are" },
+                source.name
+            ),
+        ));
+    }
+    Ok((kept, left_out))
 }
 
 /// A retained import ref, named for a message: `<key> <ref> = <id>`.
@@ -313,6 +382,14 @@ fn prepare<B: MergeAuthorityBackend>(
             ),
         )
     })?;
+    let receiver_only = receiver_only_members(&receiver_lock, &source_lock);
+    let (selected, left_out) = without_receiver_only(
+        &what,
+        &bound,
+        &named_merge_members(&manifest, request.meta.selection.as_ref())?,
+        selected,
+        &receiver_only,
+    )?;
     let transfer = mint_transfer_id()?;
     let import_ref = transfer.import_ref();
     let import_request = ImportRequest {
@@ -348,8 +425,14 @@ fn prepare<B: MergeAuthorityBackend>(
         .map_err(|error| refuse(&error))?;
 
     // Step 6's request: the selector cleared, the common import ref as
-    // `source_ref`; everything else exactly as the driver sent it.
+    // `source_ref`, and the receiver-only members a set selector reached
+    // excluded as they were from the import; everything else exactly as the
+    // driver sent it.
     let projected = crate::MergeRequest {
+        meta: crate::RequestMeta {
+            selection: merge_selection_excluding(request.meta.selection.as_ref(), &left_out),
+            ..request.meta.clone()
+        },
         local_source_name: None,
         // The wait was for the family lock, which this wrapper holds and the
         // engine never takes; the engine refuses the field outright.
@@ -357,7 +440,7 @@ fn prepare<B: MergeAuthorityBackend>(
         source_ref: Some(imported.import_ref.clone()),
         ..request.clone()
     };
-    let summary = summary(&bound, &import_request.selector, &imported);
+    let summary = summary(&bound, &import_request.selector, &imported, &receiver_only);
     let retained = retained_clause(&effects_of(&imported));
     Ok(Prepared {
         session,
@@ -381,8 +464,14 @@ fn effects_of(imported: &ImportedSource) -> Vec<ImportEffect> {
 }
 
 /// One line for the response envelope: the source, the selector, the
-/// import name and every receiver's captured id.
-fn summary(source: &BoundMember, selector: &SourceSelector, imported: &ImportedSource) -> String {
+/// import name, every receiver's captured id, and every member only the
+/// receiving workspace records, which the merge left as it was.
+fn summary(
+    source: &BoundMember,
+    selector: &SourceSelector,
+    imported: &ImportedSource,
+    receiver_only: &[(&str, &str)],
+) -> String {
     let ids: Vec<String> = imported
         .vector
         .iter()
@@ -396,6 +485,12 @@ fn summary(source: &BoundMember, selector: &SourceSelector, imported: &ImportedS
         imported.import_ref,
         ids.join(", ")
     );
+    for member in receiver_only {
+        message.push_str(&format!(
+            "; {}: not in source lane; unchanged",
+            describe_member(member)
+        ));
+    }
     if !imported
         .vector
         .iter()

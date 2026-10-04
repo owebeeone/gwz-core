@@ -102,6 +102,37 @@ pub(crate) fn resolve_merge_targets<'a>(
     resolve_action_targets(manifest, selection, crate::ActionKind::Merge)
 }
 
+/// The members a merge selection names one by one, by member id or path,
+/// rather than reaching them through `@all` or `@default`; exclusions are not
+/// applied. A family merge refuses a named member the source lane does not
+/// record, and leaves out one only a set selector reached (design §6).
+pub(crate) fn named_merge_members<'a>(
+    manifest: &'a ManifestArtifact,
+    selection: Option<&crate::Selection>,
+) -> ModelResult<Vec<&'a ManifestMember>> {
+    NormalizedSelection::from_protocol(selection)
+        .include
+        .iter()
+        .filter(|token| !token.starts_with('@'))
+        .map(|token| resolve_member_token(manifest, token))
+        .collect()
+}
+
+/// `selection` with `member_ids` excluded as well. The common resolver applies
+/// exclusions after includes, so this selects what `selection` selected less
+/// those members; with no ids it is `selection` unchanged.
+pub(crate) fn merge_selection_excluding(
+    selection: Option<&crate::Selection>,
+    member_ids: &[String],
+) -> Option<crate::Selection> {
+    if member_ids.is_empty() {
+        return selection.cloned();
+    }
+    let mut narrowed = selection.cloned().unwrap_or_default();
+    narrowed.exclude_targets.extend(member_ids.iter().cloned());
+    Some(narrowed)
+}
+
 pub(crate) fn resolve_locked_action_selection(
     manifest: &ManifestArtifact,
     lock: &crate::artifact::LockArtifact,
@@ -684,6 +715,51 @@ mod tests {
             ),
             vec!["@root"]
         );
+    }
+
+    /// A family merge refuses a member its selection names and leaves out one
+    /// only `@all` or `@default` reached (design §6); the narrowed selection is
+    /// what the engine then resolves.
+    #[test]
+    fn named_merge_members_are_literal_tokens_and_exclusion_narrows_any_selection() {
+        let manifest = manifest();
+        let named = |selection: &crate::Selection| {
+            named_merge_members(&manifest, Some(selection))
+                .unwrap()
+                .iter()
+                .map(|member| member.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert!(named_merge_members(&manifest, None).unwrap().is_empty());
+        assert!(named(&make_selection(true, &["@root", "@default"], &["mem_app"])).is_empty());
+        assert_eq!(
+            named(&make_selection(
+                false,
+                &["@all", "mem_app", "repos/lib"],
+                &[]
+            )),
+            ["mem_app", "mem_lib"]
+        );
+
+        assert_eq!(merge_selection_excluding(None, &[]), None);
+        let excluded = ["mem_lib".to_owned()];
+        for (selection, expected) in [
+            (None, vec!["@root", "mem_app"]),
+            (
+                Some(make_selection(false, &["@all"], &["@root"])),
+                vec!["mem_app"],
+            ),
+            (
+                Some(make_selection(false, &["@root", "mem_app"], &[])),
+                vec!["@root", "mem_app"],
+            ),
+        ] {
+            let narrowed = merge_selection_excluding(selection.as_ref(), &excluded);
+            assert_eq!(
+                keys(&resolve_merge_targets(&manifest, narrowed.as_ref()).unwrap()),
+                expected
+            );
+        }
     }
 
     #[test]

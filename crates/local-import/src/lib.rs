@@ -196,8 +196,9 @@ pub enum ImportError {
     /// every selected participant; structurally carries no effect because
     /// it is decided before the first transport call.
     PairingIncomplete {
-        /// Member ids present on exactly one side (missing or extra), and
-        /// a selected `@root` with no root on the other side.
+        /// Member ids only the source records, selected member ids only the
+        /// receiver records, and a selected `@root` with no root on the
+        /// other side.
         missing: Vec<RepoKey>,
         /// Ids both locks record, at different paths.
         moved: Vec<MovedMember>,
@@ -411,8 +412,11 @@ fn index_by_key(participants: &[Participant]) -> Result<BTreeMap<&RepoKey, &Part
 /// every set mismatch (design §6). Pure: it makes no transport call, so a
 /// refusal here structurally cannot have touched a repository.
 ///
-/// A selected `@root` pairs with the source workspace's root repository and
-/// takes no part in the member-set comparison.
+/// A member only the source records is a mismatch whatever was selected; a
+/// member only the receiving workspace records is one only when selected,
+/// and otherwise takes no part. A selected `@root` pairs with the source
+/// workspace's root repository and takes no part in the member-set
+/// comparison.
 pub fn pair_participants(request: &ImportRequest) -> Result<Vec<Pairing>, ImportError> {
     if request.selected.is_empty() {
         return Err(ImportError::InvalidRequest {
@@ -441,10 +445,12 @@ pub fn pair_participants(request: &ImportRequest) -> Result<Vec<Pairing>, Import
         }
     }
 
-    // The member sets must correspond as sets, whatever this verb selected:
-    // a member the other workspace does not have (or has under another id)
-    // means the two workspaces are no longer the same shape, and design §6
-    // refuses the whole operation rather than importing the overlap.
+    // Every member the source records must have its receiver, whatever this
+    // verb selected: the source holds work this workspace cannot take, and
+    // design §6 refuses the whole operation rather than importing the
+    // overlap. A member only the receiving workspace records has nothing to
+    // import and takes no part, unless it was selected (operator ruling
+    // 2026-10-04): then the selection cannot be served.
     let mut missing: Vec<RepoKey> = Vec::new();
     let mut moved: Vec<MovedMember> = Vec::new();
     for (key, receiver) in &receivers {
@@ -452,7 +458,11 @@ pub fn pair_participants(request: &ImportRequest) -> Result<Vec<Pairing>, Import
             continue;
         }
         match sources.get(*key) {
-            None => missing.push((*key).clone()),
+            None => {
+                if request.selected.contains(*key) {
+                    missing.push((*key).clone());
+                }
+            }
             Some(source) => {
                 if lock_path_key(&receiver.relative_path) != lock_path_key(&source.relative_path) {
                     moved.push(MovedMember {
