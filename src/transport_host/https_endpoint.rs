@@ -551,4 +551,5 @@ cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
     #[path = "https_cancel_mux_tests.rs"]
     mod https_cancel_mux_tests;
     mod retry_tests;
+    mod stale_action_tests;
 } }

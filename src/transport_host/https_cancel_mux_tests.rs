@@ -10,7 +10,7 @@ use std::{
     time::Duration,
 };
 
-fn small_limits() -> Limits {
+pub(super) fn small_limits() -> Limits {
     let mut limits = binding::default_limits();
     limits.queued_frames = 4;
     limits.control_reserve_frames = 2;
@@ -48,7 +48,7 @@ fn mux_pair() -> (mux::Mux, mux::Mux, Limits) {
     (endpoint, initiator, limits)
 }
 
-fn open_for(destination: &HttpsDestination, limits: &Limits) -> Open {
+pub(super) fn open_for(destination: &HttpsDestination, limits: &Limits) -> Open {
     Open {
         endpoint_id: "endpoint".into(),
         operation_id: "operation".into(),

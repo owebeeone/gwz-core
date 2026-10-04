@@ -50,6 +50,10 @@ impl Session {
                         }
                     };
                     let (request, message) = item;
+                    // An Open's scheme picks its engine; a stream's later actions
+                    // go where the stream is. Without an SSH engine every stream
+                    // is HTTPS, whose accept, like the SSH engine's, takes an
+                    // action for a retired or unknown stream as no work.
                     let https = message
                         .open
                         .as_ref()
@@ -57,7 +61,12 @@ impl Session {
                         || state
                             .https
                             .as_ref()
-                            .is_some_and(|e| e.owns(&request, message.stream_id));
+                            .is_some_and(|e| e.owns(&request, message.stream_id))
+                        || (state.engine.is_none()
+                            && !matches!(
+                                message.kind,
+                                MessageKind::Open | MessageKind::CheckIdentity
+                            ));
                     if state.endpoint_config.is_some() {
                         let result = if https {
                             state
