@@ -3,7 +3,7 @@
   "owner-package": "gwz-transport",
   "owner-name": "gwz-transport",
   "owner-version": "0.1.0",
-  "owner-schema-sha256": "205c19ab8c9ae538f7707b7734ad13278485b877bb177544c412ad275edbc939",
+  "owner-schema-sha256": "c5667a0d23197d1ac155c2cc5a95573ea0aee0b77b439f66512115f527353490",
   "rustfmt": "rustfmt 1.9.0-stable (ac68faa20c 2026-05-25)",
   "rust-module": "gwz_transport::protocol"
 }

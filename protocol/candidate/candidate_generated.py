@@ -36,6 +36,8 @@ class AuthPolicy(Enum):
     gh = 4
     ssh_ambient = 1
     ssh_explicit = 2
+    windows_configured = 5
+    windows_default = 6
 
 class GitService(Enum):
     receive_pack_advertisement = 3
@@ -95,6 +97,25 @@ class AuthMethod(Enum):
     none = 1
     ssh_agent = 2
     ssh_key = 3
+    sspi = 5
+
+class NativeSource(Enum):
+    configured = 1
+    current_logon = 2
+
+class NativeScheme(Enum):
+    digest = 3
+    negotiate = 1
+    ntlm = 2
+
+class NativeObservation(Enum):
+    not_started = 1
+    selected = 3
+    unresolved = 2
+
+class NativeMechanism(Enum):
+    kerberos = 1
+    ntlm = 2
 
 class TransportPlacement(Enum):
     local = 1
@@ -722,6 +743,14 @@ class RemoteCheck(Enum):
     always = 1
 
 @dataclass(slots=True)
+class NativeFacts:
+    source: NativeSource
+    scheme: NativeScheme
+    observation: NativeObservation
+    mechanism: NativeMechanism | None
+    authoritative: bool
+
+@dataclass(slots=True)
 class Limits:
     encoded_frame: int
     data_payload: int
@@ -827,6 +856,7 @@ class Facts:
     key_fingerprint: str | None
     http_status: int | None
     ssh_exit_status: int | None
+    native: NativeFacts | None
 
 @dataclass(slots=True)
 class Opened:
