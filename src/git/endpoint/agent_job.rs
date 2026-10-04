@@ -220,6 +220,7 @@ impl<T: Send + 'static> Job<T> {
             spawn,
         )
     }
+    cfg_if::cfg_if! { if #[cfg(unix)] {
     pub(crate) fn start_setup(
         setup: Arc<super::ssh_setup_context::SetupContext>,
         cleanup: Duration,
@@ -243,6 +244,7 @@ impl<T: Send + 'static> Job<T> {
             |name, body| thread::Builder::new().name(name.into()).spawn(body),
         )
     }
+    } }
     fn start_control(
         control: Arc<Control>,
         work: impl FnOnce(Arc<Control>) -> io::Result<T> + Send + 'static,

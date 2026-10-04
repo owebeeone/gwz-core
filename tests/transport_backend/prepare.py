@@ -84,6 +84,7 @@ extra = '\n'.join([
     'native-tls = "=0.2.18"', 'tokio-native-tls = "=0.3.1"',
 
 ])
+manifest = replace_once(manifest, '"Win32_Globalization"', '"Win32_Globalization", "Win32_Networking_WinHttp"')
 manifest = replace_once(manifest, '[dependencies]\n', '[dependencies]\n' + extra + '\n')
 manifest = replace_once(manifest, '[dev-dependencies]\n', '[dev-dependencies]\npyo3 = { version = "=0.28.3", features = ["auto-initialize"] }\n')
 # gwz-core names the git2-rs fork (gwz-git2) directly, with its vendored

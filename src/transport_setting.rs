@@ -280,7 +280,7 @@ fn last_value(file: &Path) -> Result<Option<Found>, git2::Error> {
 }
 
 cfg_if::cfg_if! {
-    if #[cfg(test)] {
+    if #[cfg(all(test, unix))] {
         mod tests;
     }
 }

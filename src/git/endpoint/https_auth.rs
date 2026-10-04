@@ -4,26 +4,18 @@
 //! output and child lifetime are all bounded by this module; no credential
 //! bytes leave the endpoint adapter.
 
-use super::https_destination::Destination;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use std::{
-    ffi::{OsStr, OsString},
-    fmt, io,
-    path::PathBuf,
-    sync::atomic::{AtomicUsize, Ordering},
-    sync::{Arc, Mutex},
-    time::Duration,
-};
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    process::{Child, Command},
-    time::{Instant, sleep_until, timeout},
-};
-use tokio_util::sync::CancellationToken;
-
-const OUTPUT_LIMIT: usize = 16 * 1024;
-const CLEANUP_GRACE: Duration = Duration::from_millis(500);
+use std::{ffi::OsString, fmt, io, path::PathBuf, sync::Arc};
+use tokio::sync::Semaphore;
+cfg_if::cfg_if! { if #[cfg(unix)] {
+    use super::https_destination::Destination;
+    use std::{ffi::OsStr, sync::{atomic::{AtomicUsize, Ordering}, Mutex}, time::Duration};
+    use tokio::sync::OwnedSemaphorePermit;
+    use tokio::{io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt}, process::{Child, Command}, time::{Instant, sleep_until, timeout}};
+    use tokio_util::sync::CancellationToken;
+    const OUTPUT_LIMIT: usize = 16 * 1024;
+    const CLEANUP_GRACE: Duration = Duration::from_millis(500);
+} }
 /// Live helper processes one host admits, retained unreaped children included.
 const HELPER_SLOTS: usize = 8;
 
@@ -61,7 +53,9 @@ impl fmt::Display for AuthError {
             Self::SpawnFailed => "HTTPS credential helper could not be started",
             Self::Io => "HTTPS credential helper process wait failed",
             Self::Pipe(_) => "HTTPS credential helper pipe failed",
-            Self::ControlCharacter => "HTTPS credential helper credential holds a control character",
+            Self::ControlCharacter => {
+                "HTTPS credential helper credential holds a control character"
+            }
             Self::UsernameColon => "HTTPS credential helper username holds a colon",
             Self::NotUtf8 => "HTTPS credential helper output is not UTF-8",
             Self::MissingNewline => "HTTPS credential helper output has no final newline",
@@ -86,11 +80,16 @@ impl AuthError {
         use gwz_transport::protocol::ErrorCode;
         match self {
             Self::MissingExecutable | Self::SpawnFailed => ErrorCode::Unavailable,
-            Self::Pipe(_) | Self::ControlCharacter | Self::UsernameColon
-            | Self::NotUtf8 | Self::MissingNewline | Self::MissingCredential
+            Self::Pipe(_)
+            | Self::ControlCharacter
+            | Self::UsernameColon
+            | Self::NotUtf8
+            | Self::MissingNewline
+            | Self::MissingCredential
             | Self::MalformedOutput
             | Self::OutputTooLarge
-            | Self::HelperRejected | Self::ConfigurationRefused => ErrorCode::Authentication,
+            | Self::HelperRejected
+            | Self::ConfigurationRefused => ErrorCode::Authentication,
             Self::Timeout | Self::AllocationTimeout => ErrorCode::Timeout,
             Self::Cancelled => ErrorCode::Cancelled,
             Self::Io | Self::CleanupPending => ErrorCode::Io,
@@ -98,22 +97,30 @@ impl AuthError {
     }
 }
 
-mod executable;
-mod owner;
 mod secret;
-mod lookup;
-mod runner;
-mod view;
-mod file_worker;
-
-pub(crate) use owner::{AuthOwner, HelperSlots};
 pub(crate) use secret::{Secret, SecretHeader};
-pub(crate) use lookup::{lookup_until, lookup_setup, LookupAdmission};
-use owner::{ActiveGuard, HelperJob};
-use secret::{parse_secret, SecretBuffer};
-
+/// Real host helper admission ledger; Windows qualification never acquires it.
+#[derive(Clone)]
+pub(crate) struct HelperSlots(pub(super) Arc<Semaphore>);
+impl HelperSlots {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(Semaphore::new(HELPER_SLOTS)))
+    }
+}
+cfg_if::cfg_if! { if #[cfg(unix)] {
+    mod executable;
+    mod owner;
+    mod lookup;
+    mod runner;
+    mod view;
+    mod file_worker;
+    pub(crate) use owner::AuthOwner;
+    pub(crate) use lookup::{lookup_until, lookup_setup, LookupAdmission};
+    use owner::{ActiveGuard, HelperJob};
+    use secret::{parse_secret, SecretBuffer};
+} }
 cfg_if::cfg_if! {
-    if #[cfg(test)] {
+    if #[cfg(all(test, unix))] {
         use lookup::{write_request, lookup_owned, lookup_with_budget};
         use owner::PendingChild;
         mod test_support;

@@ -27,6 +27,7 @@ impl Helpers {
             endpoint: Arc::new(Semaphore::new(8)),
         }
     }
+    cfg_if::cfg_if! { if #[cfg(unix)] {
     pub(crate) fn lookup(
         &self,
         key: &Key,
@@ -136,6 +137,11 @@ impl Helpers {
         )
         .await
     }
+    } else {
+        pub(crate) fn lookup(&self, _: &Key, _: &Opening, _: &Control) -> io::Result<https_auth::Secret> {
+            Err(io::ErrorKind::Unsupported.into())
+        }
+    } }
 }
 cfg_if::cfg_if! {
     if #[cfg(test)] {

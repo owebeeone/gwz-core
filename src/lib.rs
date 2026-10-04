@@ -54,7 +54,7 @@ pub mod model;
 pub mod operation;
 pub mod protocol;
 cfg_if::cfg_if! {
-    if #[cfg(all(unix, gwz_transport_candidate))] {
+    if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
         pub mod transport_host;
     }
 }
@@ -78,7 +78,7 @@ pub mod transport_scope;
 // rule (a), on Linux and macOS until 1.1.0 S4.5 opens the transport's Windows
 // sites.
 cfg_if::cfg_if! {
-    if #[cfg(all(unix, gwz_transport_candidate))] {
+    if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
         pub mod transport_setting;
     }
 }
@@ -126,3 +126,8 @@ mod tests {
         assert_eq!(version(), env!("CARGO_PKG_VERSION"));
     }
 }
+
+// Qualification artifacts must never silently select another platform/route.
+cfg_if::cfg_if! { if #[cfg(all(gwz_windows_https_qualification, not(all(windows, gwz_transport_candidate))))] {
+    compile_error!("gwz_windows_https_qualification requires Windows and gwz_transport_candidate");
+} }

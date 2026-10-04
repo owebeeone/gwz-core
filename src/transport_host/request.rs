@@ -1,10 +1,10 @@
 use super::*;
 mod https_failure;
 mod ssh_opening;
-pub(crate) use https_failure::{HttpsAttemptReceipt, HttpsOpenFailure};
 use crate::git::endpoint::{setup_retry, ssh_channel::GitService, stream_io::BlockingStream};
 use gwz_session_host::{CancelRegistration, CancellationToken};
 use gwz_transport::protocol::{Facts, Opened};
+pub(crate) use https_failure::{HttpsAttemptReceipt, HttpsOpenFailure};
 use std::{
     io,
     sync::atomic::{AtomicBool, Ordering},
@@ -88,7 +88,9 @@ impl RequestContext {
         use gwz_transport::protocol::{AuthPolicy, Effect, ErrorCode, Failure};
         let early = |code| {
             io::Error::other(HttpsOpenFailure {
-                    service: Some(service), helpers_disabled: policy == Some(AuthPolicy::Anonymous), cli_hint: self.is_cli(),
+                service: Some(service),
+                helpers_disabled: policy == Some(AuthPolicy::Anonymous),
+                cli_hint: self.is_cli(),
                 failure: Failure {
                     detail: None,
                     setup_cause: None,
@@ -123,7 +125,9 @@ impl RequestContext {
                 .map_err(|_| early(ErrorCode::Cancelled))?;
             if std::time::Instant::now() >= until {
                 return Err(io::Error::other(HttpsOpenFailure {
-                    service: Some(service), helpers_disabled: policy == Some(AuthPolicy::Anonymous), cli_hint: self.is_cli(),
+                    service: Some(service),
+                    helpers_disabled: policy == Some(AuthPolicy::Anonymous),
+                    cli_hint: self.is_cli(),
                     failure: setup_retry::allocation_timeout(),
                     anonymous: None,
                     attempts: None,
@@ -174,10 +178,11 @@ impl RequestContext {
                 if matches!(
                     failure.code,
                     ErrorCode::Authentication | ErrorCode::RepositoryRefused
-                ) && failure.detail.as_ref().is_none_or(|d| d.schemes.is_none()) && failure
-                    .facts
-                    .as_ref()
-                    .is_some_and(|f| matches!(f.http_status, Some(401)))
+                ) && failure.detail.as_ref().is_none_or(|d| d.schemes.is_none())
+                    && failure
+                        .facts
+                        .as_ref()
+                        .is_some_and(|f| matches!(f.http_status, Some(401)))
                 {
                     anonymous = Some(HttpsAttemptReceipt {
                         failure: failure.clone(),
@@ -222,7 +227,9 @@ impl RequestContext {
                 }
                 let attempts = setup_retry::reported_attempt(&failure);
                 Err(io::Error::other(HttpsOpenFailure {
-                    service: Some(service), helpers_disabled: policy == Some(AuthPolicy::Anonymous), cli_hint: self.is_cli(),
+                    service: Some(service),
+                    helpers_disabled: policy == Some(AuthPolicy::Anonymous),
+                    cli_hint: self.is_cli(),
                     failure,
                     anonymous,
                     attempts,
@@ -435,7 +442,9 @@ cfg_if::cfg_if! {
             }
         }
 
-        #[path = "https_budget_gate_tests.rs"]
-        mod https_budget_gate_tests;
+        cfg_if::cfg_if! { if #[cfg(unix)] {
+            #[path = "https_budget_gate_tests.rs"]
+            mod https_budget_gate_tests;
+        } }
     }
 }

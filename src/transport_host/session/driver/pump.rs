@@ -58,7 +58,7 @@ impl Session {
                             .https
                             .as_ref()
                             .is_some_and(|e| e.owns(&request, message.stream_id));
-                    if state.engine.is_some() {
+                    if state.endpoint_config.is_some() {
                         let result = if https {
                             state
                                 .https
@@ -69,8 +69,8 @@ impl Session {
                             state
                                 .engine
                                 .as_mut()
-                                .expect("endpoint")
-                                .accept(request.clone(), message.clone())
+                                .ok_or(EndpointError::InvalidRequest)
+                                .and_then(|engine| engine.accept(request.clone(), message.clone()))
                         };
                         match result {
                             Ok(()) => moved = true,

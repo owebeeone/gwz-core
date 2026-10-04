@@ -1,6 +1,6 @@
 //! Candidate-only synchronous command embedding for the local alpha.
 use super::{
-    CleanupReport, HelperSlots, HttpsEndpointConfig, SshEndpointConfig, TransportRequest,
+    CleanupReport, EndpointSettings, HelperSlots, HttpsEndpointConfig, TransportRequest,
     TransportRuntime, endpoint_environment, unavailable,
 };
 use crate::session_host::EnvironmentSnapshot;
@@ -34,7 +34,7 @@ fn run<T>(
         .enable_all()
         .build()
         .map_err(|_| unavailable("local transport executor unavailable"))?;
-    let (ssh, https) = environment_config()?;
+    let (ssh, https) = environment_config(native.as_ref())?;
     // The command is the driver: its host's HTTPS helper slots are created
     // once here and shared by the endpoints of the sessions it opens.
     let runtime = match native {
@@ -55,9 +55,14 @@ fn run<T>(
 }
 /// The command's endpoint configuration, from the process environment as it
 /// stands at the command's start: the command's environment snapshot.
-fn environment_config() -> ModelResult<(SshEndpointConfig, HttpsEndpointConfig)> {
+fn environment_config(
+    native: Option<&super::NativeCaller>,
+) -> ModelResult<(EndpointSettings, HttpsEndpointConfig)> {
     let environment = EnvironmentSnapshot::from_os_pairs(std::env::vars_os())?;
-    endpoint_environment::endpoint_config(&environment)
+    let direct = native
+        .map(super::NativeCaller::qualification_direct)
+        .unwrap_or_else(endpoint_environment::capture_qualification_proxy);
+    endpoint_environment::endpoint_config_native(&environment, direct)
 }
 struct Command {
     executor: tokio::runtime::Runtime,

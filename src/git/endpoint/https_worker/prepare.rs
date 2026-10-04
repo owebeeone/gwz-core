@@ -27,6 +27,16 @@ impl Client {
         challenge: &mut Option<ChallengeLease>,
         connect: &mut FirstConnect,
     ) -> Result<Prepared, Failure> {
+        if cfg!(all(
+            windows,
+            gwz_transport_candidate,
+            gwz_windows_https_qualification
+        )) && !matches!(
+            input.policy,
+            AuthPolicy::Anonymous | AuthPolicy::WindowsDefault
+        ) {
+            return Err(failure(ErrorCode::UnsupportedOperation));
+        }
         let original = Destination::parse(&input.destination).map_err(failure)?;
         if input.session.is_empty()
             || input.session.len() > 128

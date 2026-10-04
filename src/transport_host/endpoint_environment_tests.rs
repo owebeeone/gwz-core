@@ -52,8 +52,8 @@ fn the_endpoint_configuration_comes_from_the_snapshot() {
         ("NO_PROXY", OsStr::new("internal.example, .corp.example")),
     ]);
     let (ssh, https) = endpoint_config(&environment).unwrap();
-    assert_eq!(ssh.home, home);
-    assert_eq!(ssh.agent, Some(agent));
+    assert_eq!(ssh.ssh.as_ref().unwrap().home, home);
+    assert_eq!(ssh.ssh.as_ref().unwrap().agent, Some(agent));
     let der = |roots: &[native_tls::Certificate]| -> Vec<Vec<u8>> {
         roots.iter().map(|root| root.to_der().unwrap()).collect()
     };

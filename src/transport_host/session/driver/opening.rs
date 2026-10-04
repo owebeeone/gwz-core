@@ -12,6 +12,18 @@ impl Session {
         observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
         facts: Arc<dyn Fn(&Facts) + Send + Sync>,
     ) -> io::Result<BlockingStream> {
+        let absent_ssh = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state.engine.is_none() && state.endpoint_config.is_some()
+        };
+        if cfg!(all(
+            windows,
+            gwz_transport_candidate,
+            gwz_windows_https_qualification
+        )) || absent_ssh
+        {
+            return Err(io::ErrorKind::Unsupported.into());
+        }
         let mut destination = Destination::parse(url)?.ok_or(io::ErrorKind::Unsupported)?;
         // What the URL holds beyond the protocol's destination (TR2.18): the
         // host as written, when it is not the pool key's lowercased host, and
@@ -69,6 +81,16 @@ impl Session {
         observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
         facts: Arc<dyn Fn(&Facts) + Send + Sync>,
     ) -> Result<BlockingStream, Failure> {
+        if cfg!(all(
+            windows,
+            gwz_transport_candidate,
+            gwz_windows_https_qualification
+        )) && !matches!(policy, AuthPolicy::Anonymous | AuthPolicy::WindowsDefault)
+        {
+            return Err(protocol_failure(
+                gwz_transport::protocol::ErrorCode::UnsupportedOperation,
+            ));
+        }
         let destination = crate::git::endpoint::https_destination::Destination::parse(url)
             .map_err(protocol_failure)?;
         self.open_stream(

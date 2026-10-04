@@ -137,7 +137,7 @@ impl HttpsOpenFailure {
                 );
             }
             if self.helpers_disabled {
-                return "The server asked for an HTTPS credential, and credential helpers are off for this operation: the program running gwz built it with `Git2Backend::without_credential_helpers()`, in gwz-core's Rust API; the gwz CLI and gwz-py never do. Build it with `Git2Backend::new()` to use your helpers.".into();
+                return "The server asked for an HTTPS credential, and credential helpers are off for this operation: the program running gwz built it with `Git2Backend::without_credential_helpers()`, in gwz-core's Rust API; the gwz CLI and gwz-py do so only in Windows HTTPS qualification builds. Build it with `Git2Backend::new()` to use your helpers.".into();
             }
         }
         let mut reason = format!("HTTPS endpoint request failed: {:?}", self.failure.code);

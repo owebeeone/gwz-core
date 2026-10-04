@@ -280,8 +280,10 @@ cfg_if::cfg_if! {
                 self.opens.len()
             }
         }
-        #[path = "placement_endpoint_tests.rs"]
-        mod check_tests;
+        cfg_if::cfg_if! { if #[cfg(unix)] {
+            #[path = "placement_endpoint_tests.rs"]
+            mod check_tests;
+        } }
         mod retry_tests;
     }
 }

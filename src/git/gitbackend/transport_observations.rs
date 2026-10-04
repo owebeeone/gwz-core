@@ -20,7 +20,11 @@ impl PartialEq for TransportObservations {
 impl Eq for TransportObservations {}
 
 #[derive(Clone, Debug)]
-pub(crate) struct TransportAttempt(Arc<Mutex<crate::TransportObservation>>, Arc<AtomicBool>, Arc<Mutex<Option<crate::model::ModelError>>>);
+pub(crate) struct TransportAttempt(
+    Arc<Mutex<crate::TransportObservation>>,
+    Arc<AtomicBool>,
+    Arc<Mutex<Option<crate::model::ModelError>>>,
+);
 
 impl TransportObservations {
     pub fn snapshot(&self) -> Vec<crate::TransportObservation> {
@@ -83,7 +87,11 @@ impl TransportObservations {
             public_key_fingerprint: None,
             ..Default::default()
         };
-        let attempt = TransportAttempt(Arc::new(Mutex::new(row)), Arc::new(AtomicBool::new(false)), Arc::new(Mutex::new(None)));
+        let attempt = TransportAttempt(
+            Arc::new(Mutex::new(row)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(None)),
+        );
         self.rows
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -96,13 +104,13 @@ impl TransportAttempt {
     pub(crate) fn error(&self) -> Option<crate::model::ModelError> {
         self.2.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
-    cfg_if::cfg_if! { if #[cfg(all(unix, gwz_transport_candidate))] {
+    cfg_if::cfg_if! { if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
         pub(crate) fn failed(&self, error: crate::model::ModelError) {
             self.2.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(error);
         }
     } }
     cfg_if::cfg_if! {
-        if #[cfg(all(unix, gwz_transport_candidate))] {
+        if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
             pub(crate) fn opened(&self, stream_id: i64, opened: &gwz_transport::protocol::Opened) {
                 let mut row = self.0.lock().unwrap_or_else(|e| e.into_inner());
                 row.endpoint_id = Some(opened.endpoint_id.clone());

@@ -126,6 +126,7 @@ impl Endpoint {
         selected: PathBuf,
         deadline: Option<Instant>,
     ) -> io::Result<Job<()>> {
+        cfg_if::cfg_if! { if #[cfg(unix)] {
         Job::start(deadline, self.cleanup, move |control| {
             control.check()?;
             use std::os::unix::fs::OpenOptionsExt;
@@ -145,7 +146,12 @@ impl Endpoint {
             }
             Ok(())
         })
+        } else {
+            let _ = (selected, deadline);
+            Err(io::ErrorKind::Unsupported.into())
+        } }
     }
+
     pub(crate) fn pending_requests(&self) -> usize {
         self.shared.outstanding.load(Ordering::Acquire)
     }

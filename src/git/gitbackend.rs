@@ -62,7 +62,7 @@ pub(crate) use transport_support::identity::{
 };
 pub use transport_support::{configure_server_timeout_ms, set_server_timeout_ms};
 cfg_if::cfg_if! {
-    if #[cfg(all(unix, gwz_transport_candidate))] {
+    if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
         pub(crate) use transport_support::server_timeout_ms as transport_timeout_ms;
     }
 }
@@ -219,9 +219,14 @@ impl GitBackend for Git2Backend {
         start: &Path,
         options: Option<&crate::TransportOptions>,
     ) -> ModelResult<Option<Self>> {
+        cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
+            if self.ssh.host_context().is_some() && transport_support::identity::has_options(options) {
+                return Err(ModelError::new(ErrorCode::UnsupportedOperation, "SSH identity selection is unavailable in Windows HTTPS qualification"));
+            }
+        } }
         let empty = crate::TransportOptions::default();
         cfg_if::cfg_if! {
-            if #[cfg(all(unix, gwz_transport_candidate))] {
+            if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
                 if options.is_some_and(|value| {
                     value.placement == Some(crate::TransportPlacement::Cli)
                         && !self.ssh.is_cli_context()
@@ -236,7 +241,7 @@ impl GitBackend for Git2Backend {
         let identities;
         if self.ssh.is_cli_context() {
             cfg_if::cfg_if! {
-                if #[cfg(all(unix, gwz_transport_candidate))] {
+                if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
                     identities = transport_support::identity::Selection::from_options_cli(
                         options.unwrap_or(&empty),
                     )?;

@@ -172,10 +172,13 @@ fn shutdown_reports_blocked_physical_disposal_then_eventual_zero() {
         "cleanup snapshot must retain physical work"
     );
     released.store(true, Ordering::Release);
-    let report = crate::transport_host::driver_tests::block_on(session.cleanup());
+    let report = block_on(session.cleanup());
     assert_eq!(report.pending_local_work, 0);
 }
 
+// This fixture constructs the real Unix SSH endpoint. The disposal test above
+// uses portable pool resources and remains available on Windows.
+cfg_if::cfg_if! { if #[cfg(unix)] {
 #[test]
 fn completed_request_retirement_cannot_expire_the_shared_session() {
     use crate::transport_host::{SshEndpointConfig, TransportRuntime};
@@ -194,14 +197,14 @@ fn completed_request_retirement_cannot_expire_the_shared_session() {
         }),
         ..Default::default()
     };
-    let request = crate::transport_host::driver_tests::block_on(
+    let request = block_on(
         runtime.request(request_meta("retired"), "fetch".into()),
     )
     .unwrap();
     let session = request.context.session.clone();
     let endpoint = runtime.0.lock().unwrap().local_endpoint.clone();
     assert_eq!(
-        crate::transport_host::driver_tests::block_on(request.finish()).pending_local_work,
+        block_on(request.finish()).pending_local_work,
         0
     );
     for side in [&session, &endpoint] {
@@ -222,16 +225,37 @@ fn completed_request_retirement_cannot_expire_the_shared_session() {
         !session.is_closed(),
         "completed retirement killed the shared session"
     );
-    let next = crate::transport_host::driver_tests::block_on(
+    let next = block_on(
         runtime.request(request_meta("next"), "fetch".into()),
     )
     .unwrap();
     assert_eq!(
-        crate::transport_host::driver_tests::block_on(next.finish()).pending_local_work,
+        block_on(next.finish()).pending_local_work,
         0
     );
     assert_eq!(
-        crate::transport_host::driver_tests::block_on(runtime.shutdown()).pending_local_work,
+        block_on(runtime.shutdown()).pending_local_work,
         0
     );
+}
+
+} }
+
+/// Poll portable session cleanup with a finite fixture deadline.
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    let mut future = std::pin::pin!(future);
+    let mut context = Context::from_waker(std::task::Waker::noop());
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match future.as_mut().poll(&mut context) {
+            Poll::Ready(value) => return value,
+            Poll::Pending => {
+                assert!(
+                    Instant::now() < deadline,
+                    "session cleanup exceeded fixture deadline"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+    }
 }

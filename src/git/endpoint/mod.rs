@@ -18,12 +18,11 @@ pub(crate) mod ssh_key_container;
 pub(crate) mod ssh_key_snapshot;
 pub(crate) mod ssh_local;
 pub(crate) mod ssh_network;
-pub(crate) mod ssh_password;
+cfg_if::cfg_if! { if #[cfg(unix)] { pub(crate) mod ssh_password; pub(crate) mod ssh_setup; } }
 pub(crate) mod ssh_password_helpers;
 pub(crate) mod ssh_pool;
 pub(crate) mod ssh_pump;
 pub(crate) mod ssh_remote;
-pub(crate) mod ssh_setup;
 pub(crate) mod ssh_setup_context;
 pub(crate) mod ssh_shutdown;
 pub(crate) mod ssh_worker;
@@ -44,7 +43,7 @@ pub(crate) mod shared_reservation;
 pub(crate) mod https_operation;
 
 cfg_if::cfg_if! {
-    if #[cfg(test)] {
+    if #[cfg(all(test, unix))] {
         mod budget_wait_tests;
         mod git_turns_tests;
         pub(crate) mod helper_script;

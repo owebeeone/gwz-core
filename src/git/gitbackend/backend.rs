@@ -61,7 +61,7 @@ impl Git2Backend {
     }
 
     cfg_if::cfg_if! {
-        if #[cfg(all(unix, gwz_transport_candidate))] {
+        if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
             pub(crate) fn with_host_context(&self, context: crate::transport_host::RequestContext) -> Self {
                 let mut backend = self.clone();
                 backend.ssh = backend.ssh.with_host_context(context);

@@ -80,7 +80,7 @@ impl Selection {
     // Candidate CLI placement keeps identity paths opaque to core. The
     // endpoint owns path parsing, expansion and file checks.
     cfg_if::cfg_if! {
-        if #[cfg(all(unix, gwz_transport_candidate))] {
+        if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
             pub(crate) fn from_options_cli(options: &crate::TransportOptions) -> ModelResult<Self> {
         let default = options
             .default_identity
@@ -130,7 +130,7 @@ impl Selection {
     // driver starts. This includes an overridden default, so a malformed or
     // unavailable path cannot be hidden by remote selection.
     cfg_if::cfg_if! {
-        if #[cfg(all(unix, gwz_transport_candidate))] {
+        if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
             pub(crate) fn validate_endpoint_files(
                 &self,
                 backend: &super::super::Git2Backend,
@@ -219,6 +219,11 @@ pub(crate) fn for_remote(
     remote: Option<&str>,
     url: &str,
 ) -> ModelResult<Option<SelectedIdentity>> {
+    cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
+        if backend.ssh.host_context().is_some() && !super::super::transport_binding::is_https_remote(url) {
+            return Err(ModelError::new(ErrorCode::UnsupportedOperation, "Windows HTTPS qualification supports only HTTPS remotes"));
+        }
+    } }
     let key = (
         repo.map(|repo| repo.path().to_path_buf()),
         remote.map(str::to_owned),

@@ -309,11 +309,16 @@ impl History {
 #[derive(Clone)]
 pub struct NativeCaller {
     port: Result<Arc<dyn Port>, gwz_sspi::ErrorKind>,
+    qualification_direct: Option<bool>,
 }
 impl NativeCaller {
     cfg_if::cfg_if! { if #[cfg(test)] {
-        pub(crate) fn refused_for_test(kind: gwz_sspi::ErrorKind) -> Self { Self { port: Err(kind) } }
+        pub(crate) fn refused_for_test(kind: gwz_sspi::ErrorKind) -> Self { Self { port: Err(kind), qualification_direct: None } }
     } }
+
+    pub(crate) fn qualification_direct(&self) -> Option<bool> {
+        self.qualification_direct
+    }
 
     pub fn capture(supervisor: &Result<Arc<gwz_sspi::Supervisor>, gwz_sspi::ErrorKind>) -> Self {
         let port = supervisor
@@ -330,7 +335,12 @@ impl NativeCaller {
                     })
                     .map_err(|error| error.kind())
             });
-        Self { port }
+        let qualification_direct =
+            crate::transport_host::endpoint_environment::capture_qualification_proxy();
+        Self {
+            port,
+            qualification_direct,
+        }
     }
 }
 type Work<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
@@ -1113,7 +1123,7 @@ impl Client {
     }
 }
 
-cfg_if::cfg_if! { if #[cfg(test)] {
+cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
 mod tests {
     use super::*;
     use hyper::header::{HeaderMap, WWW_AUTHENTICATE};
@@ -1166,7 +1176,7 @@ mod tests {
     fn fake(complete: bool, cleanup: usize) -> (NativeCaller, Arc<FakePort>) {
         let port = Arc::new(FakePort { complete, starts: Arc::new(AtomicUsize::new(0)), steps: Arc::new(AtomicUsize::new(0)), finishes: Arc::new(AtomicUsize::new(0)),
             cleanup: Arc::new(AtomicUsize::new(cleanup)), deadlines: Arc::new(Mutex::new(Vec::new())) });
-        (NativeCaller { port: Ok(port.clone()) }, port)
+        (NativeCaller { port: Ok(port.clone()), qualification_direct: None }, port)
     }
     fn real_request_validation(request: &gwz_sspi::AuthRequest) -> bool {
         use std::io::Read;
@@ -1216,7 +1226,7 @@ mod tests {
                 if r.status() == 401 { r.headers_mut().insert(WWW_AUTHENTICATE, "NTLM".parse().unwrap()); } r
             }))).await;
             let mut endpoint = Endpoint::new(server.config(), None, pool::Config::default()).unwrap();
-            let (_, port) = fake(true, 2); endpoint.client.set_native(NativeCaller { port: Ok(Arc::new(ValidatorPort(port))) });
+            let (_, port) = fake(true, 2); endpoint.client.set_native(NativeCaller { port: Ok(Arc::new(ValidatorPort(port))), qualification_direct: None });
             let mut request = input(&server, GitService::UploadPackAdvertisement); request.policy = AuthPolicy::WindowsDefault;
             let (prepared, _) = endpoint.client.prepare_attempt(request, &CancellationToken::new(), &mut endpoint.client.budget(), &mut None).await;
             assert_eq!(prepared.unwrap().opened.facts.authenticated, Some(true));
@@ -1267,7 +1277,7 @@ mod tests {
                 }))).await;
                 let mut endpoint = Endpoint::new(server.config(), None, pool::Config::default()).unwrap();
                 let port = Arc::new(HeldStart { entered: Arc::new(AtomicUsize::new(0)), gate: Arc::new(AtomicUsize::new(0)), cleanup: Arc::new(AtomicUsize::new(0)), registered, steps: Arc::new(AtomicUsize::new(0)) });
-                endpoint.client.set_native(NativeCaller { port: Ok(port.clone()) });
+                endpoint.client.set_native(NativeCaller { port: Ok(port.clone()), qualification_direct: None });
                 let mut request = input(&server, GitService::UploadPackAdvertisement); request.policy = AuthPolicy::WindowsDefault;
                 let client = endpoint.client.clone(); let task = tokio::spawn(async move { client.prepare_attempt(request, &CancellationToken::new(), &mut client.budget(), &mut None).await });
                 while port.entered.load(Ordering::Acquire) == 0 { tokio::task::yield_now().await; }

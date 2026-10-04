@@ -1,17 +1,6 @@
 //! Process and retained-child ownership for one endpoint.
 use super::*;
 
-/// One host context's HTTPS helper slots, shared by every endpoint its driver
-/// opens (GwzCoreSessionDesign §5.6): the driver creates them once and hands
-/// them to each endpoint's `AuthOwner`. A standalone endpoint is its own host.
-#[derive(Clone)]
-pub(crate) struct HelperSlots(pub(super) Arc<Semaphore>);
-
-impl HelperSlots {
-    pub(crate) fn new() -> Self {
-        Self(Arc::new(Semaphore::new(HELPER_SLOTS)))
-    }
-}
 cfg_if::cfg_if! {
     if #[cfg(test)] {
         impl HelperSlots {

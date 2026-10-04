@@ -415,7 +415,7 @@ fn cancelled_open(envelope: &Envelope, facts: Option<Facts>) -> Envelope {
     }
 }
 
-cfg_if::cfg_if! { if #[cfg(test)] {
+cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
     #[path = "cancellation_tests.rs"]
     mod cancellation_tests;
     #[path = "https_cancel_mux_tests.rs"]

@@ -7,26 +7,23 @@
 //! entry from the snapshot its caller passes, and `with_local_transport` from
 //! the process environment it captures once, at its command's start.
 //!
-//! **The Windows seam.** The SSH home, the agent and the HTTPS proxy differ by
-//! platform, so each comes from the `platform` module below. This file is
-//! compiled on Unix only, with the rest of `transport_host`, and its one arm is
-//! Unix's. TR1.8 (amendment 2 §3.5) designs the Windows arm: the SSH home in
-//! libgit2's order, `HOME`, then `HOMEDRIVE` plus `HOMEPATH`, then
-//! `USERPROFILE`; a visible Pageant window as the agent source before the pipe
-//! `SSH_AUTH_SOCK` names, or the OpenSSH agent's default pipe; and WinHTTP's
-//! default proxy configuration, read once per runtime beside the snapshot,
-//! with the precedence TR1.8 states over the environment's proxy. S4.4, TR4.8
-//! and TR4.9 write it as a sibling `mod platform` in the `cfg_if!` below when
-//! S4.5 opens `transport_host` to Windows. Until then the `else` arm fails a
-//! build that reaches it.
+//! Unix uses its captured environment proxy settings. Windows WH1 admits only
+//! a verified WinHTTP DIRECT snapshot captured on the original caller entry.
+//! It has no SSH settings and never derives a HOME or agent for HTTPS.
 
-use super::{HttpsEndpointConfig, SshEndpointConfig, apply_native_timeout, invalid};
-use crate::git::endpoint::{ca_bundle, https_auth, https_connection};
+use super::{EndpointSettings, HttpsEndpointConfig, apply_native_timeout, invalid};
+use crate::git::endpoint::{ca_bundle, https_connection};
 use crate::model::ModelResult;
 use crate::session_host::EnvironmentSnapshot;
 use gwz_transport::pool;
-use std::{ffi::OsString, path::PathBuf};
+use std::ffi::OsString;
+cfg_if::cfg_if! { if #[cfg(unix)] {
+    use super::SshSettings;
+    use crate::git::endpoint::https_auth;
+    use std::path::PathBuf;
+} }
 
+cfg_if::cfg_if! { if #[cfg(test)] {
 /// The SSH and HTTPS endpoint configuration of one runtime, from
 /// `environment`.
 ///
@@ -38,35 +35,52 @@ use std::{ffi::OsString, path::PathBuf};
 /// sets; it is read once, here, as the runtime starts.
 pub(super) fn endpoint_config(
     environment: &EnvironmentSnapshot,
-) -> ModelResult<(SshEndpointConfig, HttpsEndpointConfig)> {
+) -> ModelResult<(EndpointSettings, HttpsEndpointConfig)> {
+    endpoint_config_native(environment, capture_qualification_proxy())
+}
+
+} }
+pub(super) fn endpoint_config_native(
+    environment: &EnvironmentSnapshot,
+    direct: Option<bool>,
+) -> ModelResult<(EndpointSettings, HttpsEndpointConfig)> {
+    if cfg!(all(
+        windows,
+        gwz_transport_candidate,
+        gwz_windows_https_qualification
+    )) && direct != Some(true)
+    {
+        return Err(super::unsupported(
+            "Windows HTTPS qualification requires verified WinHTTP DIRECT",
+        ));
+    }
     let tls = tls_config(environment)?;
-    let home =
-        platform::ssh_home(environment).ok_or_else(|| invalid("endpoint HOME is unavailable"))?;
+    let ssh = {
+        cfg_if::cfg_if! { if #[cfg(unix)] {
+            Some(SshSettings {
+                home: platform::ssh_home(environment).ok_or_else(|| invalid("endpoint HOME is unavailable"))?,
+                agent: platform::agent(environment),
+            })
+        } else { None } }
+    };
     let timeout = crate::git::transport_timeout_ms();
     let mut pool = pool::Config::default();
     apply_native_timeout(&mut pool, timeout);
-    let ssh = SshEndpointConfig {
-        home,
-        agent: platform::agent(environment),
+    let local = EndpointSettings {
+        ssh,
         pool,
         io_timeout_ms: timeout,
     };
-    // The helper is spawned with env_clear() and exactly these entries.
-    let environment = environment
-        .entries()
-        .map(|(name, value)| (name.to_owned(), value.to_owned()))
-        .collect();
-    let auth = https_auth::Config {
-        executable: PathBuf::from("git"),
-        environment,
+    let auth = {
+        cfg_if::cfg_if! { if #[cfg(unix)] {
+            // The Unix helper is spawned with env_clear and exactly this snapshot.
+            Some(https_auth::Config {
+                executable: PathBuf::from("git"),
+                environment: environment.entries().map(|(name, value)| (name.to_owned(), value.to_owned())).collect(),
+            })
+        } else { None } }
     };
-    Ok((
-        ssh,
-        HttpsEndpointConfig {
-            tls,
-            auth: Some(auth),
-        },
-    ))
+    Ok((local, HttpsEndpointConfig { tls, auth }))
 }
 
 /// The value of the first of `names` that is set and not empty, under the
@@ -98,14 +112,15 @@ fn tls_config(environment: &EnvironmentSnapshot) -> ModelResult<https_connection
             ca_bundle::Refusal::NoCertificate => invalid("endpoint CA file has no certificate"),
         })?;
     }
-    platform::proxy(environment, &mut config)?;
+    cfg_if::cfg_if! { if #[cfg(unix)] { platform::proxy(environment, &mut config)?; } }
     config
         .validate()
         .map_err(|_| invalid("unsupported endpoint TLS/proxy configuration"))?;
     Ok(config)
 }
 
-/// The proxy and the bypass list that the environment's variables name.
+cfg_if::cfg_if! { if #[cfg(unix)] {
+/// The proxy and bypass list named in the captured Unix environment.
 fn environment_proxy(
     environment: &EnvironmentSnapshot,
     config: &mut https_connection::Config,
@@ -156,6 +171,8 @@ fn environment_proxy(
     Ok(())
 }
 
+} }
+
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
         /// Unix: the snapshot's variables alone.
@@ -183,10 +200,42 @@ cfg_if::cfg_if! {
                 environment_proxy(environment, config)
             }
         }
-    } else {
-        compile_error!(
-            "transport_host::endpoint_environment has no Windows arm yet: TR1.8 designs it, \
-             and S4.4, TR4.8 and TR4.9 write it as a sibling `mod platform` here"
-        );
-    }
+    } else if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
+        mod platform {
+            use windows_sys::Win32::Foundation::GlobalFree;
+            use windows_sys::Win32::Networking::WinHttp::{WinHttpGetDefaultProxyConfiguration, WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_PROXY_INFO};
+            pub(super) fn direct() -> bool {
+                // SAFETY: initialized exclusive output. Every returned allocation,
+                // including partial failure outputs, is disposed below.
+                let mut info: WINHTTP_PROXY_INFO = unsafe { std::mem::zeroed() };
+                let ok = unsafe { WinHttpGetDefaultProxyConfiguration(&mut info) };
+                let direct = verified_direct(ok != 0, info.dwAccessType, !info.lpszProxy.is_null(), !info.lpszProxyBypass.is_null());
+                for pointer in [info.lpszProxy, info.lpszProxyBypass] {
+                    if !pointer.is_null() {
+                        // SAFETY: WinHTTP returns storage allocated for GlobalFree.
+                        unsafe { GlobalFree(pointer.cast()); }
+                    }
+                }
+                direct
+            }
+            pub(super) fn verified_direct(ok: bool, access: u32, named: bool, bypass: bool) -> bool {
+                ok && access == WINHTTP_ACCESS_TYPE_NO_PROXY && !named && !bypass
+            }
+            cfg_if::cfg_if! { if #[cfg(test)] {
+                #[test]
+                fn only_verified_direct_without_named_outputs_is_admitted() {
+                    assert!(verified_direct(true, WINHTTP_ACCESS_TYPE_NO_PROXY, false, false));
+                    assert!(!verified_direct(false, WINHTTP_ACCESS_TYPE_NO_PROXY, false, false));
+                    assert!(!verified_direct(true, 3, false, false));
+                    assert!(!verified_direct(true, WINHTTP_ACCESS_TYPE_NO_PROXY, true, false));
+                    assert!(!verified_direct(true, WINHTTP_ACCESS_TYPE_NO_PROXY, false, true));
+                }
+            } }
+        }
+    } else { compile_error!("unsupported transport endpoint platform"); }
+}
+
+/// Read once at original entry beside the environment; never on HTTP worker poll.
+pub(crate) fn capture_qualification_proxy() -> Option<bool> {
+    cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] { Some(platform::direct()) } else { None } }
 }

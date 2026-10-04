@@ -6,7 +6,7 @@ use super::{
 };
 
 cfg_if::cfg_if! {
-    if #[cfg(all(unix, gwz_transport_candidate))] {
+    if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
         use crate::git::endpoint::{
             https_remote, https_remote::OpenRpc, ssh_channel::GitService as SshGitService,
             ssh_destination::Destination, ssh_remote::OpenStream, ssh_remote::RemoteTransport,
@@ -36,6 +36,7 @@ cfg_if::cfg_if! {
             }
             cfg_if::cfg_if! { if #[cfg(test)] {
                 pub(crate) fn with_windows_policy_for_test(mut self) -> Self { self.1 = true; self }
+                pub(crate) fn https_policy_for_test(&self, policy: super::CredentialHelperPolicy) -> Option<AuthPolicy> { self.https_policy(policy) }
             } }
             fn https_policy(&self, policy: super::CredentialHelperPolicy) -> Option<AuthPolicy> {
                 cfg_if::cfg_if! { if #[cfg(test)] {
@@ -223,6 +224,12 @@ cfg_if::cfg_if! {
                 https_remote::install(callbacks, Arc::new(route));
                 return;
             }
+            cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
+                callbacks.smart_transport(false, |_| -> Result<RemoteTransport, git2::Error> {
+                    Err(git2::Error::new(git2::ErrorCode::Invalid, git2::ErrorClass::Net, "Windows HTTPS qualification supports only HTTPS remotes"))
+                });
+                return;
+            } }
             if matches!(Destination::parse(url), Ok(None)) {
                 return;
             }

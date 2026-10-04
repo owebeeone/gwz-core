@@ -1,6 +1,6 @@
 //! Candidate embedding ownership for endpoint placement. The host supplies message delivery.
 mod cancellable;
-mod endpoint_environment;
+pub(crate) mod endpoint_environment;
 mod helper_failure;
 mod https_endpoint;
 mod local_command;
@@ -10,8 +10,9 @@ pub use cancellable::with_cancellable_local_transport_native;
 pub use local_command::{with_local_transport, with_local_transport_native};
 mod request;
 mod session;
+cfg_if::cfg_if! { if #[cfg(test)] { mod qualification_tests; } }
 cfg_if::cfg_if! {
-    if #[cfg(test)] {
+    if #[cfg(all(test, unix))] {
         mod tests;
         mod driver_tests;
         mod close_tests;
@@ -37,7 +38,8 @@ cfg_if::cfg_if! {
         mod ca_bundle_tests;
     }
 }
-use crate::git::endpoint::{https_auth::HelperSlots, ssh_local};
+use crate::git::endpoint::https_auth::HelperSlots;
+cfg_if::cfg_if! { if #[cfg(unix)] { use crate::git::endpoint::ssh_local; } }
 use crate::{
     RequestMeta, TransportCapabilitiesRequest, TransportCapabilitiesResponse, TransportPlacement,
     git::Git2Backend,
@@ -81,6 +83,9 @@ pub struct SshEndpointConfig {
 }
 impl SshEndpointConfig {
     pub fn from_environment() -> ModelResult<Self> {
+        cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
+            return Err(unsupported("SSH configuration is unavailable in Windows HTTPS qualification"));
+        } else {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
@@ -97,6 +102,7 @@ impl SshEndpointConfig {
             pool,
             io_timeout_ms: timeout,
         })
+        } }
     }
     cfg_if::cfg_if! {
         if #[cfg(test)] {
@@ -117,6 +123,30 @@ impl SshEndpointConfig {
                 self.pool.connect_timeout_ms = connect_timeout_ms;
                 self
             }
+        }
+    }
+}
+/// Runtime budgets do not imply an SSH engine or a HOME requirement.
+#[derive(Clone)]
+pub(super) struct EndpointSettings {
+    ssh: Option<SshSettings>,
+    pool: pool::Config,
+    io_timeout_ms: u64,
+}
+#[derive(Clone)]
+pub(super) struct SshSettings {
+    home: PathBuf,
+    agent: Option<PathBuf>,
+}
+impl From<SshEndpointConfig> for EndpointSettings {
+    fn from(config: SshEndpointConfig) -> Self {
+        Self {
+            ssh: Some(SshSettings {
+                home: config.home,
+                agent: config.agent,
+            }),
+            pool: config.pool,
+            io_timeout_ms: config.io_timeout_ms,
         }
     }
 }
@@ -159,28 +189,28 @@ impl TransportRuntime {
     /// `helper_slots` are the HTTPS helper slots of the host whose driver
     /// builds this runtime; its sessions' endpoints share them.
     pub(crate) fn with_https(
-        local: SshEndpointConfig,
+        local: impl Into<EndpointSettings>,
         https: HttpsEndpointConfig,
         helper_slots: HelperSlots,
     ) -> ModelResult<Self> {
         Self::build(local, Some((https, helper_slots)))
     }
     fn build(
-        local: SshEndpointConfig,
+        local: impl Into<EndpointSettings>,
         https: Option<(HttpsEndpointConfig, HelperSlots)>,
     ) -> ModelResult<Self> {
-        Self::build_native(local, https, None)
+        Self::build_native(local.into(), https, None)
     }
     pub(crate) fn with_https_native(
-        local: SshEndpointConfig,
+        local: impl Into<EndpointSettings>,
         https: HttpsEndpointConfig,
         slots: HelperSlots,
         caller: NativeCaller,
     ) -> ModelResult<Self> {
-        Self::build_native(local, Some((https, slots)), Some(caller))
+        Self::build_native(local.into(), Some((https, slots)), Some(caller))
     }
     fn build_native(
-        local: SshEndpointConfig,
+        local: EndpointSettings,
         https: Option<(HttpsEndpointConfig, HelperSlots)>,
         native: Option<NativeCaller>,
     ) -> ModelResult<Self> {
@@ -242,25 +272,49 @@ impl TransportRuntime {
             placements.push(TransportPlacement::Cli);
         }
         Ok(TransportCapabilitiesResponse {
-            file_identity: true,
-            exact_agent_identity: true,
+            file_identity: !cfg!(all(
+                windows,
+                gwz_transport_candidate,
+                gwz_windows_https_qualification
+            )),
+            exact_agent_identity: !cfg!(all(
+                windows,
+                gwz_transport_candidate,
+                gwz_windows_https_qualification
+            )),
             message_versions: Some(vec![2]),
             placements: Some(placements),
-            schemes: Some(if state.https {
-                vec![Scheme::Ssh, Scheme::Https]
-            } else {
-                vec![Scheme::Ssh]
-            }),
-            auth_policies: Some(if state.https {
-                vec![
-                    AuthPolicy::SshAmbient,
-                    AuthPolicy::SshExplicit,
-                    AuthPolicy::Anonymous,
-                    AuthPolicy::Gh,
-                ]
-            } else {
-                vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit]
-            }),
+            schemes: Some(
+                if cfg!(all(
+                    windows,
+                    gwz_transport_candidate,
+                    gwz_windows_https_qualification
+                )) {
+                    vec![Scheme::Https]
+                } else if state.https {
+                    vec![Scheme::Ssh, Scheme::Https]
+                } else {
+                    vec![Scheme::Ssh]
+                },
+            ),
+            auth_policies: Some(
+                if cfg!(all(
+                    windows,
+                    gwz_transport_candidate,
+                    gwz_windows_https_qualification
+                )) {
+                    vec![AuthPolicy::Anonymous, AuthPolicy::WindowsDefault]
+                } else if state.https {
+                    vec![
+                        AuthPolicy::SshAmbient,
+                        AuthPolicy::SshExplicit,
+                        AuthPolicy::Anonymous,
+                        AuthPolicy::Gh,
+                    ]
+                } else {
+                    vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit]
+                },
+            ),
             message_limits: Some(session::limits()),
         })
     }
@@ -356,7 +410,11 @@ impl TransportRuntime {
             .session
             .begin(&guard.context.meta.request_id)?;
         guard.context.session.ready().await?;
-        guard.backend = Some(Git2Backend::new().with_host_context(guard.context.clone()));
+        cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
+            guard.backend = Some(Git2Backend::without_credential_helpers().with_host_context(guard.context.clone()));
+        } else {
+            guard.backend = Some(Git2Backend::new().with_host_context(guard.context.clone()));
+        } }
         Ok(guard)
     }
     pub async fn remove_cli(&self) -> CleanupReport {

@@ -280,7 +280,7 @@ pub(crate) fn remote_credential(
 }
 
 cfg_if::cfg_if! {
-    if #[cfg(all(unix, gwz_transport_candidate))] {
+    if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
         pub(crate) fn server_timeout_ms() -> u64 {
             TIMEOUT_STATE
                 .lock()

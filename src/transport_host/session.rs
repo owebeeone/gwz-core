@@ -352,10 +352,10 @@ impl Session {
         https: Option<(HttpsEndpointConfig, HelperSlots)>,
         handoff: Handoff,
     ) -> ModelResult<(Arc<Self>, TransportPort)> {
-        Self::endpoint_with_https_native(config, https, handoff, None)
+        Self::endpoint_with_https_native(config.into(), https, handoff, None)
     }
     pub(super) fn endpoint_with_https_native(
-        config: SshEndpointConfig,
+        config: EndpointSettings,
         https: Option<(HttpsEndpointConfig, HelperSlots)>,
         handoff: Handoff,
         native: Option<NativeCaller>,
@@ -368,6 +368,8 @@ impl Session {
         );
         state.authority = Some(authority.clone());
         state.installed_capacity = Some(pool::Capacity::from(&config.pool));
+        cfg_if::cfg_if! { if #[cfg(unix)] {
+            if let Some(ssh_settings) = config.ssh {
         let ssh_helpers = https.as_ref().and_then(|(https, slots)| {
             https.auth.as_ref().map(|auth| {
                 Arc::new(crate::git::endpoint::ssh_password_helpers::Helpers::new(
@@ -378,14 +380,20 @@ impl Session {
         });
         let ssh = ssh_local::connect_with_helpers(
             config.pool.clone(),
-            config.home.join(".ssh/known_hosts"),
-            config.agent.clone(),
+            ssh_settings.home.join(".ssh/known_hosts"),
+            ssh_settings.agent.clone(),
             config.io_timeout_ms,
             authority.clone(),
             handoff,
             ssh_helpers,
         )
         .map_err(|_| unavailable("SSH endpoint construction failed"))?;
+        state.engine = Some(
+            PlacementEndpoint::new(ssh, ssh_settings.home, id.clone(), id.clone())
+                .map_err(|_| unavailable("endpoint supervisor unavailable"))?,
+        );
+            }
+        } }
         if let Some((https, helper_slots)) = https {
             state.https = Some(super::https_endpoint::HttpsEndpoint::new_native(
                 https,
@@ -398,20 +406,28 @@ impl Session {
             )?);
         }
         let https_enabled = state.https.is_some();
-        state.engine = Some(
-            PlacementEndpoint::new(ssh, config.home, id.clone(), id.clone())
-                .map_err(|_| unavailable("endpoint supervisor unavailable"))?,
-        );
         state.endpoint_config = Some(binding::EndpointConfig {
             endpoint_id: id.clone(),
             trust_owner: id,
             role: EndpointRole::Driver,
-            schemes: if https_enabled {
+            schemes: if cfg!(all(
+                windows,
+                gwz_transport_candidate,
+                gwz_windows_https_qualification
+            )) {
+                vec![Scheme::Https]
+            } else if https_enabled {
                 vec![Scheme::Ssh, Scheme::Https]
             } else {
                 vec![Scheme::Ssh]
             },
-            policies: if https_enabled {
+            policies: if cfg!(all(
+                windows,
+                gwz_transport_candidate,
+                gwz_windows_https_qualification
+            )) {
+                vec![AuthPolicy::Anonymous, AuthPolicy::WindowsDefault]
+            } else if https_enabled {
                 vec![
                     AuthPolicy::SshAmbient,
                     AuthPolicy::SshExplicit,
@@ -468,3 +484,12 @@ struct PortLease(Arc<Session>);
 pub struct TransportPort(Arc<PortLease>);
 
 cfg_if::cfg_if! { if #[cfg(test)] { #[path="cleanup_tests.rs"] mod cleanup_tests; } }
+
+cfg_if::cfg_if! { if #[cfg(test)] {
+    impl Session {
+        pub(super) fn endpoint_offer_for_test(&self) -> (bool, binding::EndpointConfig) {
+            let state = self.state.lock().unwrap();
+            (state.engine.is_some(), state.endpoint_config.clone().unwrap())
+        }
+    }
+} }

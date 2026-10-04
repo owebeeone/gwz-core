@@ -57,6 +57,7 @@ pub(crate) struct Client {
     routes: Arc<Mutex<Routes>>,
     config: pool::Config,
     io_timeout_ms: u64,
+    #[cfg(unix)]
     auth_owner: https_auth::AuthOwner,
     native: Option<native::NativeCaller>,
     native_cleanup: native::Cleanup,
@@ -79,6 +80,10 @@ impl Endpoint {
         if io_timeout_ms > i32::MAX as u64 {
             return Err(failure(ErrorCode::InvalidRequest));
         }
+        cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
+            if auth.is_some() { return Err(failure(ErrorCode::UnsupportedOperation)); }
+            drop(helper_slots);
+        } }
         let pool = RunningPool::with_authority(config.clone(), tls, authority)?;
         let routes = Arc::new(Mutex::new(Routes::new(64)));
         let operations = super::https_operation::Operations::new(routes.clone());
@@ -90,6 +95,7 @@ impl Endpoint {
             routes,
             operations,
             ids: Arc::new(crate::operation_context::new_id_source()),
+            #[cfg(unix)]
             auth_owner: https_auth::AuthOwner::new(helper_slots),
             native: None,
             native_cleanup: Arc::new(Mutex::new(native::CleanupState::default())),
@@ -104,12 +110,12 @@ impl Endpoint {
         // slot through helper/network work and through the resulting stream.
         self.client.slots.close();
         self.client.helpers.close();
-        self.client.auth_owner.cancel();
+        cfg_if::cfg_if! { if #[cfg(unix)] { self.client.auth_owner.cancel(); } }
         self.client.pool.pool.shutdown();
         while self.client.slots.available_permits() != 64 && Instant::now() < until {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
-        self.client.auth_owner.reap_pending(until).await;
+        cfg_if::cfg_if! { if #[cfg(unix)] { self.client.auth_owner.reap_pending(until).await; } }
         let physical = self
             .pool
             .shutdown(until.saturating_duration_since(Instant::now()))
@@ -118,7 +124,7 @@ impl Endpoint {
         // its slot. This read order can overcount a racing completion, but
         // cannot report a false zero during that transfer.
         let active = 64 - self.client.slots.available_permits();
-        let helpers = self.client.auth_owner.pending_cleanup_count();
+        let helpers = self.client.helper_pending();
         active + helpers + physical + native::reap(&self.client.native_cleanup)
     }
 }
@@ -126,7 +132,7 @@ impl Drop for Endpoint {
     fn drop(&mut self) {
         self.client.slots.close();
         self.client.helpers.close();
-        self.client.auth_owner.cancel();
+        cfg_if::cfg_if! { if #[cfg(unix)] { self.client.auth_owner.cancel(); } }
         self.client.pool.pool.shutdown();
     }
 }
@@ -217,16 +223,18 @@ impl Client {
     pub(crate) fn pool(&self) -> &pool::Pool {
         &self.pool.pool
     }
+    fn helper_pending(&self) -> usize {
+        cfg_if::cfg_if! { if #[cfg(unix)] { self.auth_owner.pending_cleanup_count() } else { 0 } }
+    }
     pub(crate) fn pending_cleanup(&self) -> usize {
-        self.auth_owner.pending_cleanup_count()
-            + native::reap(&self.native_cleanup)
-            + self.pool.pool.counts().closing
+        self.helper_pending() + native::reap(&self.native_cleanup) + self.pool.pool.counts().closing
     }
 
     pub(crate) async fn reap_cleanup(&self, limit: Duration) -> usize {
-        self.auth_owner.reap_pending(Instant::now() + limit).await
-            + native::reap(&self.native_cleanup)
-            + self.pool.pool.counts().closing
+        cfg_if::cfg_if! { if #[cfg(unix)] {
+            self.auth_owner.reap_pending(Instant::now() + limit).await;
+        } }
+        self.helper_pending() + native::reap(&self.native_cleanup) + self.pool.pool.counts().closing
     }
 
     pub(crate) fn finish_operation(&self, operation: &str) {
@@ -332,9 +340,9 @@ fn validate_content(response: &Response<Incoming>, service: GitService) -> Resul
     }
     Ok(())
 }
-cfg_if::cfg_if! { if #[cfg(test)] { #[path="https_worker_tests.rs"] mod tests; } }
-cfg_if::cfg_if! { if #[cfg(test)] { #[path="https_budget_tests.rs"] mod budget_tests; } }
-cfg_if::cfg_if! { if #[cfg(test)] { mod retry_tests; mod helper_budget_tests; mod credential_tests; } }
+cfg_if::cfg_if! { if #[cfg(all(test, unix))] { #[path="https_worker_tests.rs"] mod tests; } }
+cfg_if::cfg_if! { if #[cfg(all(test, unix))] { #[path="https_budget_tests.rs"] mod budget_tests; } }
+cfg_if::cfg_if! { if #[cfg(all(test, unix))] { mod retry_tests; mod helper_budget_tests; mod credential_tests; } }
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
