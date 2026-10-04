@@ -168,6 +168,12 @@ jobs:
         # gwz-core.
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
+          # Only places the tests' nested gwz-sspi validator build outside every
+          # checkout: src/git/endpoint/https_worker/native/tests.rs requires an
+          # external CARGO_TARGET_DIR and builds ../gwz-sspi in its parent's
+          # sspi-validator. run_tests.py passes --target-dir to each of its own
+          # cargo runs, so the suites still build into the cached candidate-target.
+          CARGO_TARGET_DIR: ${{ runner.temp }}/candidate-tests/target
         run: |
           set -o pipefail
           python scripts/run_tests.py --skip-cfg-sibling gwz-cli --no-fail-fast \
