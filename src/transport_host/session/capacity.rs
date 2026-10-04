@@ -205,32 +205,27 @@ impl Session {
             if has_non_idle_lease(&state) {
                 return Err(unavailable("transport capacity is active"));
             }
-            let ssh = state
-                .engine
-                .as_ref()
-                .ok_or_else(|| unavailable("SSH endpoint unavailable"))?;
+            let ssh = state.engine.as_ref().map(|engine| engine.pool().clone());
             let https = state.https.as_ref().map(|endpoint| endpoint.pool().clone());
-            mutation.armed = true;
-            if let Some(https) = &https {
-                ssh.pool()
-                    .install_capacity_pair(https, capacity)
-                    .map_err(|_| unavailable("transport capacity is active"))?;
-            } else {
-                ssh.pool()
-                    .install_capacity(capacity)
-                    .map_err(|_| unavailable("transport capacity is active"))?;
+            let authority = state
+                .authority
+                .clone()
+                .ok_or_else(|| unavailable("shared capacity unavailable"))?;
+            if ssh.is_none() && https.is_none() {
+                return Err(unsupported("transport endpoint has no physical pool"));
             }
-            ssh.set_request_capacity(capacity.max_requests);
-            let ssh_pool = ssh.pool().clone();
+            mutation.armed = true;
+            match (&ssh, &https) {
+                (Some(ssh), Some(https)) => ssh.install_capacity_pair(https, capacity),
+                (Some(pool), None) | (None, Some(pool)) => pool.install_capacity(capacity),
+                (None, None) => unreachable!("physical pool checked before mutation"),
+            }
+            .map_err(|_| unavailable("transport capacity is active"))?;
+            if let Some(engine) = &state.engine {
+                engine.set_request_capacity(capacity.max_requests);
+            }
             state.installed_capacity = None;
-            (
-                ssh_pool,
-                https,
-                state
-                    .authority
-                    .clone()
-                    .ok_or_else(|| unavailable("shared capacity unavailable"))?,
-            )
+            (ssh, https, authority)
         };
         let listener = self.listener();
         let retired = poll_fn(|cx| {
@@ -240,7 +235,7 @@ impl Session {
             if self.test_hooks.should_hold_retirement() {
                 return Poll::Pending;
             }
-            if ssh.counts().closing == 0
+            if ssh.as_ref().is_none_or(|pool| pool.counts().closing == 0)
                 && https.as_ref().is_none_or(|pool| pool.counts().closing == 0)
             {
                 return Poll::Ready(Ok(()));

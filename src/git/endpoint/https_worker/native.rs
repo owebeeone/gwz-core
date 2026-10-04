@@ -717,7 +717,7 @@ impl Authenticated {
             && self.generation == lease.id
             && !lease.cancel.is_cancelled()
     }
-    pub(super) fn revoke(&self) {
+    pub(crate) fn revoke(&self) {
         self.revoked.store(true, Ordering::Release);
         self.pool.retire_https_scope(&self.scope);
     }
@@ -1124,6 +1124,12 @@ impl Client {
 }
 
 cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+    pub(crate) fn publication_fixture() -> NativeCaller { tests::publication_caller() }
+    impl Authenticated {
+        pub(crate) fn revoked_for_test(&self) -> bool { self.revoked.load(Ordering::Acquire) }
+    }
+} }
+cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
 mod tests {
     use super::*;
     use hyper::header::{HeaderMap, WWW_AUTHENTICATE};
@@ -1178,6 +1184,7 @@ mod tests {
             cleanup: Arc::new(AtomicUsize::new(cleanup)), deadlines: Arc::new(Mutex::new(Vec::new())) });
         (NativeCaller { port: Ok(port.clone()), qualification_direct: None }, port)
     }
+    pub(super) fn publication_caller() -> NativeCaller { fake(true, 2).0 }
     fn real_request_validation(request: &gwz_sspi::AuthRequest) -> bool {
         use std::io::Read;
         use std::os::unix::process::CommandExt;

@@ -155,6 +155,19 @@ pub(crate) struct Prepared {
     discard: bool,
 }
 impl Prepared {
+    pub(crate) fn native_publication_route(&self) -> Option<Arc<native::Authenticated>> {
+        self.native_route.clone()
+    }
+    pub(crate) fn revoke_native_route(&self) {
+        if let Some(route) = &self.native_route {
+            route.revoke();
+        }
+    }
+    cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+        pub(crate) fn publication_resources_for_test(&self) -> (Arc<native::Authenticated>, Arc<tokio::sync::Mutex<https_connection::Connection>>) {
+            (self.native_route.clone().unwrap(), self.lease.as_ref().unwrap().connection.clone().unwrap())
+        }
+    } }
     /// A setup its key's retry machine does not admit for reuse: one from a
     /// generation the key has left (the retry plan's §4).
     pub(crate) fn discard_after_use(&mut self) {
@@ -218,6 +231,11 @@ pub(crate) struct Budget {
     redirect_hops: usize,
     logical_deadline: Option<Instant>,
     logical_started: bool,
+}
+impl Budget {
+    pub(crate) fn publication_deadline(&self) -> Option<Instant> {
+        self.logical_deadline
+    }
 }
 impl Client {
     pub(crate) fn pool(&self) -> &pool::Pool {

@@ -1,7 +1,11 @@
 use super::*;
 
 impl HttpsEndpoint {
-    pub(in crate::transport_host) fn step(&mut self, now: u64, cx: &mut Context<'_>) -> Result<(), EndpointError> {
+    pub(in crate::transport_host) fn step(
+        &mut self,
+        now: u64,
+        cx: &mut Context<'_>,
+    ) -> Result<(), EndpointError> {
         self.now_ms = self.now_ms.max(now);
         for operation in self.operations.values_mut() {
             for retry in operation.retries.values_mut() {
@@ -20,18 +24,29 @@ impl HttpsEndpoint {
                     entry.preparing = None;
                     let (mut result, connect, mut retry) =
                         result.map_err(|_| EndpointError::Protocol)?;
-                    if entry.cancel.is_cancelled() && result.is_ok() {
-                        let facts = result
-                            .as_ref()
-                            .ok()
-                            .map(|prepared| prepared.opened.facts.clone());
-                        result = Err(Failure {
-                            detail: None,
-                            setup_cause: None,
-                            code: ErrorCode::Cancelled,
-                            effect: Effect::None,
-                            facts,
-                        });
+                    entry.publication_deadline = retry.budget.publication_deadline();
+                    if let Ok(prepared) = &result {
+                        let code = if entry.cancel.is_cancelled() {
+                            Some(ErrorCode::Cancelled)
+                        } else if publication_expired(
+                            entry.publication_deadline,
+                            tokio::time::Instant::now(),
+                        ) {
+                            Some(ErrorCode::Timeout)
+                        } else {
+                            None
+                        };
+                        if let Some(code) = code {
+                            let facts = Some(prepared.opened.facts.clone());
+                            prepared.revoke_native_route();
+                            result = Err(Failure {
+                                detail: None,
+                                setup_cause: None,
+                                code,
+                                effect: Effect::None,
+                                facts,
+                            });
+                        }
                     }
                     if self.shutting_down || entry.retired {
                         drop(result);
@@ -63,6 +78,7 @@ impl HttpsEndpoint {
                     };
                     match result {
                         Ok(mut prepared) => {
+                            entry.publication_route = prepared.native_publication_route();
                             prepared.opened.endpoint_id = self.endpoint.clone();
                             prepared.opened.trust_owner = self.trust_owner.clone();
                             let limits = entry
@@ -92,9 +108,11 @@ impl HttpsEndpoint {
                                 Stream::new(config).map_err(|_| EndpointError::Protocol)?;
                             let peer = Arc::new(peer);
                             peer.advance(now);
-                            if https_policy::advertisement(
-                                entry.envelope.open.as_ref().expect("Open").service,
-                            ) {
+                            if entry.publication_deadline.is_none()
+                                && https_policy::advertisement(
+                                    entry.envelope.open.as_ref().expect("Open").service,
+                                )
+                            {
                                 entry.serving = Some(self.runtime.spawn(prepared.serve(
                                     stream.clone(),
                                     peer.clone(),
@@ -168,7 +186,10 @@ impl HttpsEndpoint {
         });
         Ok(())
     }
-    pub(in crate::transport_host) fn take_outbound(&mut self, cx: &mut Context<'_>) -> Option<Outbound> {
+    pub(in crate::transport_host) fn take_outbound(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Option<Outbound> {
         let keys: Vec<_> = self
             .entries
             .keys()

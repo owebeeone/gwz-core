@@ -184,7 +184,11 @@ impl Drop for RuntimeState {
 pub struct TransportRuntime(Arc<Mutex<RuntimeState>>);
 impl TransportRuntime {
     pub fn new(local: SshEndpointConfig) -> ModelResult<Self> {
+        cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
+            return Err(unsupported("SSH-only runtime is unavailable in Windows HTTPS qualification"));
+        } else {
         Self::build(local, None)
+        } }
     }
     /// `helper_slots` are the HTTPS helper slots of the host whose driver
     /// builds this runtime; its sessions' endpoints share them.
@@ -214,6 +218,11 @@ impl TransportRuntime {
         https: Option<(HttpsEndpointConfig, HelperSlots)>,
         native: Option<NativeCaller>,
     ) -> ModelResult<Self> {
+        cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
+            if https.is_none() {
+                return Err(unsupported("HTTPS engine is required in Windows HTTPS qualification"));
+            }
+        } }
         let enabled = https.is_some();
         let io_timeout_ms = local.io_timeout_ms;
         let connect_timeout_ms = local.pool.connect_timeout_ms;
@@ -267,6 +276,11 @@ impl TransportRuntime {
         if state.closed {
             return Err(unavailable("transport runtime is closed"));
         }
+        cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
+            if !state.https {
+                return Err(unsupported("HTTPS engine is unavailable in Windows HTTPS qualification"));
+            }
+        } }
         let mut placements = vec![TransportPlacement::Local];
         if state.cli.as_ref().is_some_and(|s| !s.is_closed()) {
             placements.push(TransportPlacement::Cli);

@@ -234,12 +234,17 @@ cfg_if::cfg_if! {
 impl Session {
     cfg_if::cfg_if! { if #[cfg(test)] {
         pub(super) fn capacity_for_test(&self) -> Option<pool::Capacity> {
-            self.state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .engine
-                .as_ref()
-                .map(|engine| engine.pool().capacity())
+            let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.engine.as_ref().map(|engine| engine.pool().capacity())
+                .or_else(|| state.https.as_ref().map(|endpoint| endpoint.pool().capacity()))
+        }
+        cfg_if::cfg_if! { if #[cfg(unix)] {
+            pub(super) fn https_client_for_test(&self) -> crate::git::endpoint::https_worker::Client {
+                self.state.lock().unwrap_or_else(|error| error.into_inner()).https.as_ref().unwrap().client_for_test()
+            }
+        } }
+        pub(super) fn authority_for_test(&self) -> crate::git::endpoint::shared_reservation::Authority {
+            self.state.lock().unwrap_or_else(|error| error.into_inner()).authority.clone().unwrap()
         }
         pub(super) fn ssh_counts_for_test(&self) -> Option<pool::Counts> {
             self.state
@@ -360,6 +365,11 @@ impl Session {
         handoff: Handoff,
         native: Option<NativeCaller>,
     ) -> ModelResult<(Arc<Self>, TransportPort)> {
+        cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
+            if https.is_none() {
+                return Err(unsupported("HTTPS engine is required in Windows HTTPS qualification"));
+            }
+        } }
         let mut state = Self::empty();
         let id = unique()?;
         let authority = crate::git::endpoint::shared_reservation::Authority::new(

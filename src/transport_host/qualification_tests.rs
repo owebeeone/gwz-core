@@ -150,3 +150,136 @@ cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_htt
         });
     }
 } }
+
+fn https_only_runtime() -> TransportRuntime {
+    TransportRuntime::build_native(
+        EndpointSettings {
+            ssh: None,
+            pool: pool::Config::default(),
+            io_timeout_ms: 3000,
+        },
+        Some((
+            HttpsEndpointConfig {
+                tls: Default::default(),
+                auth: None,
+            },
+            HelperSlots::new(),
+        )),
+        None,
+    )
+    .unwrap()
+}
+fn capacity_meta(id: &str, limit: i64) -> RequestMeta {
+    let mut value = meta(id);
+    value.policy = Some(crate::OperationPolicy {
+        max_connections_per_host: Some(limit),
+        ..Default::default()
+    });
+    value
+}
+#[test]
+fn https_only_capacity_first_later_and_incompatible_overlap_use_the_actual_owner() {
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    executor.block_on(async {
+        let runtime = https_only_runtime();
+        let endpoint = runtime.0.lock().unwrap().local_endpoint.clone();
+        let first = runtime
+            .request(capacity_meta("capacity-first", 1), "first".into())
+            .await
+            .unwrap();
+        assert_eq!(endpoint.capacity_for_test().unwrap().per_host, 1);
+        let authority = endpoint.authority_for_test();
+        let reservation = authority.try_reserve("example.invalid").unwrap();
+        assert!(authority.try_reserve("example.invalid").is_none());
+        drop(reservation);
+        let error = runtime
+            .request(capacity_meta("capacity-next", 2), "overlap".into())
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.code,
+            crate::model::ErrorCode::TransportCapacityConflict
+        );
+        first.finish().await;
+        let next = runtime
+            .request(capacity_meta("capacity-next", 2), "next".into())
+            .await
+            .unwrap();
+        assert_eq!(endpoint.capacity_for_test().unwrap().per_host, 2);
+        let one = authority.try_reserve("example.invalid").unwrap();
+        let two = authority.try_reserve("example.invalid").unwrap();
+        assert!(authority.try_reserve("example.invalid").is_none());
+        drop((one, two));
+        next.finish().await;
+        assert_eq!(runtime.shutdown().await.pending_local_work, 0);
+    });
+}
+#[test]
+fn https_only_cancelled_capacity_retirement_closes_the_mutated_generation() {
+    use std::{
+        future::Future,
+        task::{Context, Poll, Waker},
+    };
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    executor.block_on(async {
+        let runtime = https_only_runtime();
+        let endpoint = runtime.0.lock().unwrap().local_endpoint.clone();
+        endpoint.hold_retirement_for_test();
+        let mut request =
+            Box::pin(runtime.request(capacity_meta("capacity-cancel", 1), "cancel".into()));
+        let mut cx = Context::from_waker(Waker::noop());
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !endpoint.retirement_waiting_for_test() {
+            match request.as_mut().poll(&mut cx) {
+                Poll::Pending => {}
+                Poll::Ready(Err(error)) => {
+                    panic!("capacity installation failed before retirement: {error:?}")
+                }
+                Poll::Ready(Ok(_)) => panic!("held retirement unexpectedly completed"),
+            }
+            assert!(std::time::Instant::now() < deadline);
+            tokio::task::yield_now().await;
+        }
+        drop(request);
+        assert!(endpoint.is_closed());
+        assert!(
+            runtime
+                .request(meta("after-cancel"), "after".into())
+                .await
+                .is_err()
+        );
+        assert_eq!(runtime.shutdown().await.pending_local_work, 0);
+    });
+}
+cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
+    #[test]
+    fn qualification_direct_and_shared_no_https_constructors_refuse_before_owners_start() {
+        let config = SshEndpointConfig::fixture(std::path::PathBuf::from("C:/ordinary-home"), None);
+        let failure = TransportRuntime::new(config.clone()).err().expect("SSH-only runtime must refuse");
+        assert_eq!(failure.code, crate::model::ErrorCode::UnsupportedOperation);
+        let failure = TransportRuntime::build_native(config.clone().into(), None, None).err().expect("shared runtime boundary must refuse");
+        assert_eq!(failure.code, crate::model::ErrorCode::UnsupportedOperation);
+        let failure = Session::endpoint_with_https_native(config.into(), None, crate::git::endpoint::ssh_handoff::Handoff::default(), None).err().expect("shared endpoint boundary must refuse");
+        assert_eq!(failure.code, crate::model::ErrorCode::UnsupportedOperation);
+    }
+} else if #[cfg(unix)] {
+    #[test]
+    fn unix_public_ssh_constructor_retains_its_engine_and_defaults() {
+        let executor = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        executor.block_on(async {
+            let home = tempfile::tempdir().unwrap();
+            let runtime = TransportRuntime::new(SshEndpointConfig::fixture(home.path().to_path_buf(), None)).unwrap();
+            let endpoint = runtime.0.lock().unwrap().local_endpoint.clone();
+            assert!(endpoint.endpoint_offer_for_test().0);
+            assert_eq!(endpoint.capacity_for_test(), Some(pool::Capacity::from(&pool::Config::default())));
+            assert_eq!(runtime.shutdown().await.pending_local_work, 0);
+        });
+    }
+} }

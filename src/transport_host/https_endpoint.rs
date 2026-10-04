@@ -40,6 +40,9 @@ struct Entry {
     prepared: Option<Prepared>,
     handoff: bool,
     opening_published: bool,
+    /// Native authentication's fixed D survives preparation and mux backpressure.
+    publication_deadline: Option<tokio::time::Instant>,
+    publication_route: Option<Arc<crate::git::endpoint::https_worker::native::Authenticated>>,
     // Retain the application half until its terminal message is drained.
     stream: Option<Stream>,
     peer: Option<Arc<MessageEndpoint>>,
@@ -81,6 +84,9 @@ pub(super) struct HttpsEndpoint {
     now_ms: u64,
 }
 impl HttpsEndpoint {
+    cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+        pub(in crate::transport_host) fn client_for_test(&self) -> Client { self.client.clone() }
+    } }
     pub(super) fn pool(&self) -> &pool::Pool {
         self.client.pool()
     }
@@ -277,6 +283,8 @@ impl HttpsEndpoint {
                 prepared: None,
                 handoff: false,
                 opening_published: false,
+                publication_deadline: None,
+                publication_route: None,
                 stream: None,
                 peer: None,
                 next: None,
@@ -294,13 +302,32 @@ impl HttpsEndpoint {
     // receipt is not publication; only successful mux send linearizes Opened.
     pub(super) fn before_handoff(&mut self, request: &str, message: &mut Envelope) {
         if let Some(entry) = self.entries.get_mut(&(request.into(), message.stream_id)) {
-            if message.kind == MessageKind::Opened && entry.cancel.is_cancelled() {
-                let facts = message.opened.as_ref().map(|opened| opened.facts.clone());
-                *message = cancelled_open(&entry.envelope, facts);
-                entry.output = None;
-                entry.prepared = None;
-                entry.handoff = false;
-                entry.retired = true;
+            if message.kind == MessageKind::Opened {
+                let code = if entry.cancel.is_cancelled() {
+                    Some(ErrorCode::Cancelled)
+                } else if publication_expired(
+                    entry.publication_deadline,
+                    tokio::time::Instant::now(),
+                ) {
+                    Some(ErrorCode::Timeout)
+                } else {
+                    None
+                };
+                if let Some(code) = code {
+                    let facts = message.opened.as_ref().map(|opened| opened.facts.clone());
+                    *message = failed_open(&entry.envelope, code, facts);
+                    entry.cancel.cancel();
+                    if let Some(route) = &entry.publication_route {
+                        route.revoke();
+                    }
+                    entry.output = None;
+                    entry.prepared = None;
+                    entry.handoff = false;
+                    entry.retired = true;
+                    if let Some(peer) = &entry.peer {
+                        peer.disconnect();
+                    }
+                }
             }
         }
     }
@@ -308,6 +335,16 @@ impl HttpsEndpoint {
         if message.kind == MessageKind::Opened {
             if let Some(entry) = self.entries.get_mut(&(request.into(), message.stream_id)) {
                 entry.opening_published = true;
+                if entry.publication_deadline.is_some()
+                    && https_policy::advertisement(
+                        entry.envelope.open.as_ref().expect("Open").service,
+                    )
+                    && entry.prepared.is_some()
+                {
+                    entry.handoff = true;
+                }
+                entry.publication_deadline = None;
+                entry.publication_route = None;
             }
         }
     }
@@ -398,7 +435,13 @@ fn cancel_entry(entry: &mut Entry) {
     // Retain preparing/serving handles. Their owners settle cancellation and
     // physical disposal; after handoff the HTTP task owns terminal effects.
 }
+fn publication_expired(deadline: Option<tokio::time::Instant>, now: tokio::time::Instant) -> bool {
+    deadline.is_some_and(|until| now >= until)
+}
 fn cancelled_open(envelope: &Envelope, facts: Option<Facts>) -> Envelope {
+    failed_open(envelope, ErrorCode::Cancelled, facts)
+}
+fn failed_open(envelope: &Envelope, code: ErrorCode, facts: Option<Facts>) -> Envelope {
     Envelope {
         version: envelope.version,
         session_id: envelope.session_id.clone(),
@@ -407,7 +450,7 @@ fn cancelled_open(envelope: &Envelope, facts: Option<Facts>) -> Envelope {
         open_failed: Some(Failure {
             detail: None,
             setup_cause: None,
-            code: ErrorCode::Cancelled,
+            code,
             effect: Effect::None,
             facts,
         }),
