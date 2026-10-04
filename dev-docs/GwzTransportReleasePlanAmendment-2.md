@@ -1,6 +1,6 @@
 # GWZ transport release plan — amendment 2: 1.1.0 ships the transport on three platforms; the session host, reuse and the server move to 1.2.0
 
-Date: 2026-10-01; revisions 4–6, 2026-10-02. Status: **accepted at SHA-256 `c5850e52227e9f27e7c989c417ea262d6f749e312593af3cbbc7baeeda468509` after [Consistency-2](GwzTransportReleasePlanAmendment-2-ReviewConsistency-2.md) and [Safety-2](GwzTransportReleasePlanAmendment-2-ReviewSafety-2.md) reported GO; this accepts the amendment text only**.
+Date: 2026-10-01; revisions 4–6, 2026-10-02; revision 7, 2026-10-05. Status: **accepted at SHA-256 `c5850e52227e9f27e7c989c417ea262d6f749e312593af3cbbc7baeeda468509` after [Consistency-2](GwzTransportReleasePlanAmendment-2-ReviewConsistency-2.md) and [Safety-2](GwzTransportReleasePlanAmendment-2-ReviewSafety-2.md) reported GO; this accepts the amendment text only**.
 - This status sentence was added after that GO.
 - So were the corrections the reviewers cleared without a further round: Consistency-2's P3-A, P3-B and P3-C, and Safety-2's P3-10 and P3-11. The [verdict](GwzTransportReleasePlanAmendment-2-Verdict.md) records them.
 - Revision 1 applied [remediation plan 1](GwzTransportReleasePlanAmendment-2-RemPlan.md) after revision 0's reviews: [Consistency](GwzTransportReleasePlanAmendment-2-ReviewConsistency.md) and [Safety](GwzTransportReleasePlanAmendment-2-ReviewSafety.md), both NO-GO.
@@ -9,6 +9,7 @@ Date: 2026-10-01; revisions 4–6, 2026-10-02. Status: **accepted at SHA-256 `c5
 - On 2026-10-01 the operator decided OD15 under OD13's parity: the transport itself does what 1.0.17's native path does on Windows, and no native route stands in for it. Revision 4 applies it, with OD16's shape following it (§3.14), three Windows steps (TR4.8–TR4.10), and the server design's and session plan's sentences it changes (§3.18). It is skim-reviewed only, as revision 3 was ([skim review 2](GwzTransportReleasePlanAmendment-2-ReviewSkim-2.md) and its [re-check](GwzTransportReleasePlanAmendment-2-ReviewSkim-3.md)), because TR1.8's and TR4.10's own dual reviews carry the Windows designs.
 - On 2026-10-02 the operator decided three more: OD16's unbounded alternative, so the transport offers the logon session's default credentials to any host that asks, as 1.0.17 does; and OD10 and OD11 reversed, so the transport itself runs the user's configured credential helpers and signs with every agent key type 1.0.17 uses. Revision 5 applies them (§3.19). It is skim-reviewed only, as revisions 3 and 4 were.
 - Revision 6 records what Phase 2's implementation added (TR2.13–TR2.22 and the split of `placement_endpoint.rs`), the operator's decisions of 2026-10-02 on its follow-ups, and OD18, the cold start (§3.20). It is skim-reviewed only, as revisions 3–5 were.
+- **Revision 7 is a DRAFT, not yet reviewed.** It records three changes the program checkpoint's entries of 2026-10-05 owe this amendment: TR3.3's thirteen crates.io names become fourteen with gwz-sspi, Phase 10 step 2's mechanism for gwz-transport (Gearu, published by Trusted Publishing), and gwz-sspi's place in the publication order (§3.21). The acceptance above covers revision 2's text only, as it did for revisions 3–6. Revision 7's review route is not chosen here. Its open items are listed in §3.21.
 - OD17 is taken only if TR8.1 (1.1.0) misses.
 - Acceptance authorizes no implementation, commit, tag, push or publish.
 
@@ -29,7 +30,7 @@ This amendment controls the [transport release plan](GwzTransportReleasePlan.md)
 - `gwz-core/dev-docs/GwzRemoteTransportRetryPlan.md`: its §4 sentence on what Closed stops, its §5 Cold state and two S3.1 test sentences (§3.20, OD18).
 - `gwz-py/dev-docs/GwzPyPerOperationTransportDesign.md`: the Python design that the 1.1.0 amendment's S6.2 and S6.3 call "S1.1's revision" (§3.17).
 - `dev-docs/GwzCoreSessionPlan.md`: §1.1, §2.3's G2, §2.4's candidate-build sentence, §3.0's definition of an **Ordinary path** step, §5.3's row for S6.2's release pins, CS5.3's files, CS6.5's two sentences on the lazy endpoint's read, CS7.24, §5.4's `transport_binding.rs` row, Phase 6's preamble sentence on the lazy endpoint's debt entry, and its mentions of gwz-py's `native/src/transport_session.rs` (§3.15); CS8.1's and CS8.18's sentences on the logon session, CS8.18's logon-session test row, and CS8.19's Pageant clause (§3.18); CS8.3's routing rule, its test rows and dependencies, and the sketch's two CS8.3 edges (§3.19); CS3.4's transport half (§3.15, §3.19).
-- `dev-docs/GwzCoreSessionCrateMap.md`: its sentence on when candidate crates are published (line 25), and the ruling on the thirteen crates.io names (lines 156 and 199), which TR3.3 applies (§3.16).
+- `dev-docs/GwzCoreSessionCrateMap.md`: its sentence on when candidate crates are published (line 25), and the ruling on the thirteen crates.io names (lines 156 and 199), which TR3.3 applies (§3.16). From revision 7, its count of names reads fourteen with gwz-sspi (§3.21).
 - `dev-docs/GwzConnectionReuseDesign.md`: its open item on network operations without a binding (line 377) is decided for 1.1.0 by TR2.11; its supersessions of the retry plan, the HTTPS design and `SshEndpointConfig::from_environment` take effect with its steps in 1.2.0 (§3.1). §3.19 changes its two key-type sentences (lines 120 and 385).
 - `dev-docs/GwzCoreServerDesign.md`: its rule "One agent source per session" says "This rule governs the transport", so it governs 1.1.0's in-process transport, whose release now precedes the server's (§3.9). Under OD15, that rule's Pageant bullet changes, and on Windows the logon session joins every session's must-match rows (§3.18). Under OD10's and OD11's reversal, its routed native operations go (§3.19).
 
@@ -200,7 +201,7 @@ Phase 5's milestone (line 344), Phase 6's (line 352) and Phase 7's (line 367) ar
     - a source test, in each product repository's own CI, that the switch's sites equal that repository's inventory file (§3.13, rule (a));
     - a workflow-text test that the candidate job has both legs until S7.1 (1.1.0);
     - `check_process_globals.py` lists a `debt` entry planted under `cfg(gwz_session_candidate)`.
-- **TR3.3: the crates.io names** *(under 100 lines, plus the operator's registry steps)*.
+- **TR3.3: the crates.io names** *(under 100 lines, plus the operator's registry steps)*. From revision 7, the thirteen names read fourteen with gwz-sspi, and its exit and order change as §3.21 states.
   - The operator's ruling of 2026-09-28 stands: the thirteen names the crate map lists are registered together, just before release preparation. For 1.1.0, that is before its Phase 10.
   - Its registry steps precede TR3.2's removal of gwz-core's bootstrap publish workflow and the revocation of its token.
   - In 1.1.0, the four ordinary crates on main, `gwz-ids`, `gwz-session-channel`, `gwz-session-contract` and `gwz-session-host`, publish real versions through gwz-core's release workflow, as it publishes the other internal crates. gwz-transport, already bootstrapped, is released by Phase 10 (1.1.0) step 2. The other names stay placeholders until 1.2.0 publishes them.
@@ -302,7 +303,7 @@ Phase 5's milestone (line 344), Phase 6's (line 352) and Phase 7's (line 367) ar
 ### 3.12 Phase 10 (lines 446–463)
 
 - **1.1.0's run:**
-  - It applies with 1.1.0's version. TR3.3 and TR3.4 are further prerequisites.
+  - It applies with 1.1.0's version. TR3.3 and TR3.4 are further prerequisites. From revision 7, step 2's mechanism, a new step ahead of step 6 for gwz-sspi, and the order of steps 6 and 7 read as §3.21 states.
   - **A Windows precondition.** Before step 5's gwz-core tag, `windows-matrix.yml` is dispatched on the release commit and passes, and the checkpoint records the run.
   - **Line 458:** 1.1.0's gwz-transport release includes TR2.4's feature, and TR2.9's change if it lands there. The plan's Phase 6 (reuse) transport changes go in 1.2.0's.
   - **Line 459 and step 7:** gwz-py is released with its per-operation transport. Its wheels use TR3.4's pins, with gwz-core at `=1.1.0`. The 1.1.0 amendment's §3.6 step-7 sentence applies as written.
@@ -560,15 +561,100 @@ Phase 2's implementation found defects and dead code the plan did not foresee. T
 
 **Reuse design (1.2.0).** Its §9 (line 200), which the retry plan's 2026-09-28 amendment makes §5's Cold state for the transport host, and the session plan's CS7.23 still say that only new setups wait for "the one probe". This revision does not amend them. The reuse design's next revision carries OD18's first wave into its §9 and CS7.23 before CS7.23 starts, as §3.19 leaves that revision the presence-key question.
 
+### 3.21 The crates.io names, gwz-transport's release mechanism and the publication order (revision 7)
+
+**Status: DRAFT, not yet reviewed.** This section records three changes that the program checkpoint's entries of 2026-10-05 say this amendment owes (the checkpoint's [entry on gwz-transport](../../dev-docs/CurrentProgramCheckpoint.md) says "amendment 2's revision 7 records this as Phase 10 step 2's mechanism", and its entry on gwz-sspi says the fourteenth name "is owed in amendment 2's revision 7"). It records no new operator decision. Where the checkpoint leaves a point unsettled, the point is listed as open at the end of the section. Nothing here authorizes an implementation, a commit, a tag, a push or a publish.
+
+**A. TR3.3: thirteen names become fourteen with gwz-sspi.**
+
+*Source:* the checkpoint's entry "gwz-sspi registered on crates.io, trusted publishing only, 2026-10-05"; root `97b57f7d`, and its correction in root `c6c427c9`; gwz-sspi `4a24d94` and `8078278`.
+
+- **Why.** gwz-cli's release publishes to crates.io (cargo-dist's `publish-crate` job), and gwz-cli requires `gwz-sspi =0.1.0`, which was on no registry.
+- **What was done.** The operator ran gwz-sspi's bootstrap workflow once, with a token (run 37207954643). The placeholder `gwz-sspi 0.0.0-bootstrap.1`, a prerelease with no implementation and no dependencies, which no ordinary version requirement selects, has been on crates.io since 2026-10-04 14:05 UTC. The operator then deleted the secret and set the crate to trusted publishing only: owner owebeeone, repository gwz-sspi, workflow `release.yml`. The publishing workflow is named `release.yml`, as in gwz-core and gwz-cli.
+- **What stays.** The real crate keeps `publish = false`. gwz-sspi's `release_checks.py` refuses to publish until its reviewed activation, after implementation acceptance and Windows qualification (gwz-sspi's `RELEASE.md`).
+- **The ruling of 2026-09-28 is unchanged for the thirteen names the crate map lists.** gwz-sspi is not on that list: it was registered on its own, early, for the reason above, and not "together, just before release preparation". This revision records that fact. It does not rule on whether the "together" rule is to be read as covering it, because the checkpoint records no such ruling.
+
+Old text, TR3.3's first sub-bullet:
+> The operator's ruling of 2026-09-28 stands: the thirteen names the crate map lists are registered together, just before release preparation. For 1.1.0, that is before its Phase 10.
+
+New text:
+> The operator's ruling of 2026-09-28 stands for the thirteen names the crate map lists: they are registered together, just before release preparation. For 1.1.0, that is before its Phase 10. A fourteenth name, `gwz-sspi`, was registered on its own on 2026-10-04 (§3.21), so TR3.3's registry steps cover thirteen names to register and one already registered.
+
+Old text, TR3.3's third sub-bullet, last two sentences:
+> gwz-transport, already bootstrapped, is released by Phase 10 (1.1.0) step 2. The other names stay placeholders until 1.2.0 publishes them.
+
+New text:
+> gwz-transport, already bootstrapped, is released by Phase 10 (1.1.0) step 2. `gwz-sspi`, already bootstrapped, publishes its real 0.1.0 at its reviewed activation, which Phase 10 (1.1.0) needs before step 6 (§3.21, part C). The other names stay placeholders until 1.2.0 publishes them.
+
+Old text, TR3.3's exit:
+> **Exit:** the thirteen names visible on crates.io, with trusted publishers configured for the workflows that publish them, recorded in the checkpoint before Phase 10 (1.1.0).
+
+New text:
+> **Exit:** the fourteen names visible on crates.io, with trusted publishers configured for the workflows that publish them, recorded in the checkpoint before Phase 10 (1.1.0).
+
+State of the exit at this revision, from the checkpoint:
+- gwz-sspi: visible (placeholder). Trusted publisher configured, with the environment unconfirmed (open item O1).
+- gwz-transport: visible (bootstrapped before this amendment). Trusted publisher configured by the operator on 2026-10-05: owner owebeeone (GitHub ID 366621, verified), repository gwz-transport, workflow `release.yml`, and no environment, by the operator's choice ("no crates-io environment"). The checkpoint says this covers TR3.3's exit for gwz-transport.
+- The other twelve names: this revision records nothing about them, because the checkpoint's entries it draws on say nothing.
+
+The crate map's sentence that reads "Thirteen names need their one-time bootstrap ([CrateBootstrapHowTo.md](CrateBootstrapHowTo.md)): the six ordinary crates, the six candidate crates and gwz-transport." (its line 164 as the file stands at this draft) reads, with this amendment: "Fourteen names need their one-time bootstrap, …: the six ordinary crates, the six candidate crates, gwz-transport and gwz-sspi. gwz-sspi's was run by its own workflow (`bootstrap-crate.yml`)." The crate map's decision 3, "When to bootstrap the thirteen crates.io names: decided 2026-09-28", and its dated review rows stay as written, as the record of the decision.
+
+**B. Phase 10 step 2: gwz-transport releases with Gearu, by Trusted Publishing.**
+
+*Source:* the checkpoint's entry "gwz-transport releases with Gearu, 2026-10-05"; gwz-transport `2c12922e` and `ff6083b`; root `977b795c` and `e124244d`.
+
+Step 2 of Phase 10 (1.1.0), as the 1.1.0 plan's Phase 8 left it and §3.12 and the plan's Phase 10 bullets amend it, already reads "`gwz-transport`. `gearu release <version> --push --github-release`", and "Step 2's gwz-transport release includes … TR2.4's feature" (§3.12 adds TR2.9's change if it lands there). Those sentences are unchanged. This revision adds the mechanism step 2 runs, which gwz-transport now carries:
+
+- **The operator's decision (2026-10-05):** "use gearu for gwz-transport too - core, cli and py need a dependency check that gearu lacks". gwz-core, gwz-cli and gwz-py keep `scripts/release.py`, so steps 5, 6 and 7 are unchanged in mechanism.
+- **Configuration.** `gearu init` added its managed sections to gwz-transport's `AGENTS.md` and `RELEASE.md`. `gearu.toml` takes the version from `Cargo.toml`, regenerates the lock offline (safe, because gwz-transport has no dependencies), and runs `scripts/release_checks.py` under `{repo}/.release-venv`, which holds the pinned taut-proto release that `regen.py` requires.
+- **`scripts/release_checks.py`** has two stages, with six unit tests:
+  - a candidate stage, which runs the contracts job's gates;
+  - an exact stage, which packages the release commit, because `cargo package` refuses Gearu's uncommitted candidate.
+
+  It refuses while `publish = false` stands, because 0.1.0 is Phase 10's step 2. The 1.1.0 plan's S2.1 holds that `publish = false` remains until the package's release commit.
+- **Publication.** `.github/workflows/release.yml` runs on a published GitHub Release, reruns both stages on the tag, then publishes through crates.io Trusted Publishing only, in no GitHub environment (`ff6083b`). The operator chose no environment. `2c12922e`'s own message names `crates-io`, which `ff6083b` then removes, because the publisher the operator configured names none.
+- **Operator step before step 2.** Create the release venv once, as gwz-transport's `RELEASE.md` says.
+- **Verified** (per the checkpoint): both stages passed end to end on a copy with the guard lifted (12 script tests, 4 generated artifacts, formatting, both suites, 81 files packaged), and `gearu plan 0.1.0` accepts the configuration. Those runs were on a copy, not on the release commit.
+
+Old text, the plan's Phase 10 bullet (the 1.1.0 plan's step 1 sentence it replaces):
+> Step 1's sentence "The first publish of each new name uses the operator-held token from S2.3" is replaced: each name publishes through its trusted publisher (Phase 3).
+
+New text: this bullet stands. It now also applies to gwz-transport's step 2 as the paragraph above states, and `gwz-sspi`'s publisher is named in part A.
+
+**C. The publication order: gwz-sspi 0.1.0 first, for gwz-cli.**
+
+*Source:* the checkpoint's entry on gwz-sspi ("gwz-cli's crates.io publication of 1.1.0 waits on gwz-sspi 0.1.0"; "gwz-cli now requires gwz-sspi `=0.1.0`"). The `gwz-sspi` pin in `gwz-cli/Cargo.toml` and `gwz-cli/scripts/release.py`, which rewrites it to the registry form `gwz-sspi = "=0.1.0"`, were read for this draft.
+
+Old text, Phase 10 (1.1.0) steps 5 to 7, as the 1.1.0 plan's Phase 8 left them and the plan's Phase 10 adopts them:
+> Product repositories, each with the existing release script, tag `v1.1.0`. Each waits until the previous product crate is visible. Pins are registry versions, not git pins and not sibling paths.
+>
+> 5. `gwz-core`: `scripts/release.py v1.1.0 --push`. The release commit pins `gwz-transport` and the new `git2` API crate by the versions just published. Internal gwz-core crates bump the way the 1.0.12 script bumped them.
+> 6. `gwz-cli`: `scripts/release.py v1.1.0 --push`. The `release` branch pin becomes `gwz-core = "=1.1.0"`.
+> 7. `gwz-py`: `scripts/release.py v1.1.0 --push`, after `gwz-core` 1.1.0 and the binding's publishing step (step 2 or step 3) are on their registries. Wheels use the pins S6.2 wrote into `RELEASE.md`.
+
+New text. Steps 5 and 7 and the opening paragraph are unchanged; a step is added after step 5, and step 6 gains one sentence:
+> 5a. `gwz-sspi`: its reviewed activation lifts `publish = false`, then `gearu release 0.1.0 --push --github-release` (its `RELEASE.md`'s order), published by `release.yml` through Trusted Publishing. It depends on no other repository of this release (its dependencies are `zeroize` and, on Windows, `windows-sys`, both from crates.io), so it can also run earlier, beside steps 1 and 2. Its position is fixed only by step 6: 0.1.0 must be visible on crates.io before step 6.
+> 6. `gwz-cli`: `scripts/release.py v1.1.0 --push`. The `release` branch pin becomes `gwz-core = "=1.1.0"`. It also waits until `gwz-sspi` 0.1.0 is visible on crates.io: the release branch's `gwz-sspi = "=0.1.0"` resolves from the registry, and cargo-dist's `publish-crate` job publishes gwz-cli to crates.io.
+
+Step 5a is a new prerequisite of Phase 10 (1.1.0): the activation and its review (gwz-sspi's `RELEASE.md`: after implementation acceptance and Windows qualification) must be done first. Whether the activation's review is a dual review, and when it happens, are not decided here (open item O3). This revision adds no step to the plan's other phases. Its row in the plan's sketch is step 5a ── step 6.
+
+**Open at this revision:**
+
+- **O1. gwz-sspi's trusted-publisher environment.** The checkpoint's correction of 2026-10-05: the setup steps asked for environment `crates-io`, and gwz-sspi's `release.yml` runs in it, but the operator has not confirmed that the publisher names it. If the publisher names none, publishing still works, but gwz-sspi's `RELEASE.md` overstates the restriction. TR3.3's exit records the answer. gwz-transport's case is settled (no environment).
+- **O2. gwz-py's wait on gwz-sspi.** The checkpoint names only gwz-cli. gwz-py's `Cargo.toml` has the same `gwz-sspi = { path = "../gwz-sspi", version = "=0.1.0" }` dependency, and its `scripts/release.py` rewrites it to `"=0.1.0"` from the registry, so step 7 appears to wait on 0.1.0 too. The checkpoint's follow-up also says gwz-cli's manual platform gate and release workflows, and gwz-py's `publish.yml`, have no gwz-sspi checkout yet. This revision does not change step 7. A later revision, or the lane owner, settles both.
+- **O3. gwz-sspi 0.1.0's activation.** Its review route and date are not in the checkpoint. 1.1.0's Phase 10 cannot reach step 6 without it.
+- **O4. Whether the "together" registration ruling covers gwz-sspi** (part A). The checkpoint records no ruling.
+- **O5. Owed to this revision by older checkpoint entries, and not drafted here.** Entries of 2026-10-02 say amendment 2's "next revision" carries: TR2.23, credential helpers for an SSH server that offers only `password`, reusing TR1.6's lookup after its GO (a parity gap found in TR2.18); a consumer-build row in S7.3 (1.1.0) for TR1.5's OQ4; an erratum to the retry plan's §8 for the `--ssh-timeout` help text; and the TR1.6 design's items C2 (what "one validated discovery redirect" means), C3 (texts outside §3.19's list, with status lines on those documents) and C7 (TR2.22's reading of TR2.2's fixes). Each is a decision or a text of its own, and the checkpoint does not word them. They need their own revision, or the lane owner's instruction to include them here.
+
 ## 4. Affected tests and evidence
 
 - **Phase 2:** TR2.9's to TR2.12's tests, including TR2.12's two CI legs and each repository's inventory test; 1.1.0 S6.1's and S6.3's tests, with the design's §3 rows (§3.17); TR2.8's key-type and signature tests, and TR2.2's tests under TR1.6's helper design (§3.19); and TR2.6's review of them.
 - **Phase 2, from revision 6:** the tests of TR2.13–TR2.22 and of S6.2's follow-ups, inside their steps; OD18's first-wave and `MaxStartups` rows in TR2.1; TR2.21's CI jobs.
-- **Phase 3:** TR3.4's tests; TR3.3's registry record.
+- **Phase 3:** TR3.4's tests; TR3.3's registry record, which from revision 7 covers fourteen names (§3.21).
 - **Phase 4:** TR4.6's job, 1.1.0 S4.2–S4.5's tests on dabeest, TR4.8–TR4.10's tests against TR1.8's Pageant, proxy and `Negotiate` fixtures, TR1.8's `HOME`-unset rows and its macOS and Linux 1.0.17 rows, TR4.10's review, and TR4.7's review.
 - **Phase 8:** TR8.1 (1.1.0) on macOS and Linux, and TR8.4 on dabeest, both against 1.0.17, with their off-switch rows, and S5.5 (1.1.0)'s repeat; S5.6's cells for the behaviours TR1.8 designs.
 - **Phase 9:** the completeness check for `gwz_transport_candidate` and the inventory check for `gwz_session_candidate` at S7.1 (1.1.0); the completeness check for `gwz_session_candidate` at S7.1 (1.2.0); S7.3 (1.1.0)'s route checks, gwz-py's transport-route rows, the native-route row of a caller without a host context, and the absence checks.
-- **Phase 10:** the Windows precondition's run, and the post-release check's rows.
+- **Phase 10:** the Windows precondition's run, and the post-release check's rows. From revision 7: gwz-transport's `release_checks.py` stages, which `release.yml` reruns on the tag, and the check that gwz-sspi 0.1.0 is visible on crates.io before steps 6 and 7 (§3.21).
 - **Evidence rules.** §2's redaction and live-account rules apply to every new row. TR1.8's 1.0.17 rows and the live fetches of TR8.1 and TR8.4 need the operator's go.
 
 ## 5. Review and application
@@ -579,7 +665,7 @@ Phase 2's implementation found defects and dead code the plan did not foresee. T
   - **`GwzTransportReleasePlanAmendment.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for the release each of its sections belongs to, and, from revision 5, for its OD11 texts (§3.19)."
   - **`GwzV110PlanAmendment.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for its §3.4 (Phase 6) and its §3.5 and §3.6 sentences on gwz-py, in 1.1.0's run."
   - **`GwzCoreSessionPlan.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for §1.1, §2.3's G2, §2.4's candidate-build sentence, §3.0's marker, S6.2's release pins in §5.3 and CS5.3, its mentions of gwz-py's `TransportSession`, and the lazy endpoint's retirement in CS6.5, CS7.24, §5.4 and Phase 6's preamble, and, from revision 4, CS8.1's and CS8.18's sentences on the logon session, CS8.18's logon-session test row, and CS8.19's Pageant clause, and, from revision 5, CS8.3's routing rule and CS3.4's transport half (§3.15, §3.19)."
-  - **`GwzCoreSessionCrateMap.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for the release its candidate crates are published in."
+  - **`GwzCoreSessionCrateMap.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for the release its candidate crates are published in, and, from revision 7, its count of crates.io names (§3.21)."
   - **`GwzConnectionReuseDesign.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for its open item on network operations without a binding, in 1.1.0, the release its supersessions take effect in, and, from revision 5, its key-type sentences (§3.19)."
   - **`GwzCoreServerDesign.md`'s status** gains: "Amended <date of GO> by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for the release from which its rule "One agent source per session" governs the in-process transport, and, from revision 4, every sentence on Pageant and on the Windows logon session that §3.18 lists, and, from revision 5, the routed native operations §3.19 removes."
   - **`GwzRemoteTransportSshAgentDesign.md`'s status** gains, from revision 5: "Amended 2026-10-02 by `GwzTransportReleasePlanAmendment-2.md`. This document remains authoritative only as amended for its §5 fixture sentence (that amendment's §3.19)."
@@ -629,3 +715,4 @@ Phase 2's implementation found defects and dead code the plan did not foresee. T
 - 2026-10-02: the [second re-check](GwzTransportReleasePlanAmendment-2-ReviewSkim-6.md) reported **GO**: P2-6, P3-4, P3-5 and P3-6 are closed, with no new issue. Revision 5 carries a skim-review GO, not a dual-review GO.
 - 2026-10-02: revision 6. It records the steps Phase 2's implementation added: TR2.13 throughput, TR2.14 open admission without job permits, TR2.15 the dead blocking SSH path, TR2.16 SSH destination parity, TR2.17 prompt cancel, TR2.18 SSH parity follow-ups, TR2.19 the widened error contract and dead API, TR2.20 HTTPS tests onto the production mode, TR2.21 gwz-py's candidate CI, TR2.22 credential helpers after TR1.6, and the split of `placement_endpoint.rs`. It also records S6.2's follow-ups, the operator's decisions of 2026-10-02, OD18 (the cold start's first wave in parallel, amending the retry plan's §4 sentence on what Closed stops, its §5 Cold state and two S3.1 sentences) and decision 14's known limitation (§3.20). §1, §4 and §5 follow. It is skim-reviewed only.
 - 2026-10-02: [skim review 7](GwzTransportReleasePlanAmendment-2-ReviewSkim-7.md) reported **GO** on revision 6 (`32c6ae18…`), with eight P3s and no P0–P2. Six are applied as given. P3-1 is applied with one sentence reworded: the first wave is bounded, but it lacks the equivalent safety that the retry plan's Safety `[P2-4]` asked of another mechanism, and the operator accepts the difference for parity. P3-7 is applied in part: the boundary between TR2.2 and TR2.22 is added, and the change to line 507's edge is disputed, since revision 5 already removes that edge. The same reviewer's [re-check](GwzTransportReleasePlanAmendment-2-ReviewSkim-8.md) (`0ac4f118…`) reported **GO**: all eight are closed and the dispute is upheld. Its two new P3s are applied: a wave setup still in flight when the key turns Healthy is governed by Healthy's rules, and §3.10 runs TR8.1 (1.1.0) and TR8.4 after TR2.1. Revision 6 carries a skim-review GO, not a dual-review GO.
+- 2026-10-05: revision 7, a **DRAFT, not yet reviewed**. It records what the program checkpoint's entries of 2026-10-05 owe this amendment (§3.21): TR3.3's thirteen crates.io names become fourteen with gwz-sspi (registered on 2026-10-04 as a placeholder, trusted publishing only, its real crate still gated), with TR3.3's exit and the crate map's count following; Phase 10 step 2's mechanism for gwz-transport, which releases with Gearu (`gearu.toml`, and `release_checks.py`'s candidate and exact stages) and publishes through `release.yml` by Trusted Publishing with no GitHub environment, while gwz-core, gwz-cli and gwz-py keep `scripts/release.py`; and a new step 5a for `gwz-sspi` 0.1.0, which must be visible before gwz-cli's step 6. §1, §3.12's and TR3.3's pointers, §4 and §5's crate-map status follow. Open: gwz-sspi's publisher environment (O1), gwz-py's wait on gwz-sspi (O2), gwz-sspi 0.1.0's activation (O3), the "together" ruling (O4), and the items older entries owe a "next revision" (O5).
