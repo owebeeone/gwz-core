@@ -427,6 +427,235 @@ fn native_publication_deadline_equality_is_expired() {
     ));
     assert!(!publication_expired(None, deadline));
 }
+
+/// State P2-3 through the endpoint Session's own pump and mux Owner. The actual
+/// worker prepares before D. The pump's check before the mux lock reads D−ε and
+/// the decision under the lock reads `in_lock(D)`, as when the pump waits for
+/// the lock across D. Each reading records whether the session's mux mutex was
+/// held while it was taken. The test plays the driver with an initiator mux,
+/// reads every message the endpoint publishes, and holds a real connection
+/// reference so that physical disposal cannot settle early.
+async fn session_publication_case(in_lock: fn(tokio::time::Instant) -> tokio::time::Instant) {
+    use crate::git::endpoint::{
+        https_fixture::{Server, response},
+        https_worker::native,
+        ssh_handoff::Handoff,
+    };
+    use crate::transport_host::{
+        EndpointSettings,
+        session::{self, Session},
+    };
+    use std::{future::Future, pin::pin, sync::Mutex};
+    // The authenticated response waits until the test has taken the attempt,
+    // so no pass can collect it first.
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let (gate, signal) = (release.clone(), reached.clone());
+    let server = Server::start(Arc::new(move |request| {
+        let (gate, signal) = (gate.clone(), signal.clone());
+        Box::pin(async move {
+            let authorized = request.headers().contains_key("authorization");
+            if authorized {
+                signal.notify_one();
+                drop(gate.acquire().await);
+            }
+            let mut reply = response(
+                if authorized { 200 } else { 401 },
+                GitService::UploadPackAdvertisement,
+                bytes::Bytes::from_static(b"ok"),
+            );
+            if !authorized {
+                reply
+                    .headers_mut()
+                    .insert("www-authenticate", "NTLM".parse().unwrap());
+            }
+            reply
+        })
+    }))
+    .await;
+    let destination = HttpsDestination::parse(&server.url).unwrap();
+    let mut pool_config = pool::Config::default();
+    pool_config.total = 1;
+    pool_config.per_host = 1;
+    let (endpoint, port) = Session::endpoint_with_https_native(
+        EndpointSettings {
+            ssh: None,
+            pool: pool_config,
+            io_timeout_ms: 3000,
+        },
+        Some((
+            HttpsEndpointConfig {
+                tls: server.config(),
+                auth: None,
+            },
+            HelperSlots::new(),
+        )),
+        Handoff::default(),
+        Some(native::publication_fixture()),
+    )
+    .unwrap();
+    endpoint.register("target", None).unwrap();
+    let mut initiator = mux::Mux::initiator(
+        "publication",
+        mux::Config {
+            limits: session::limits(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    initiator
+        .register("target", Some("operation".into()))
+        .unwrap();
+    initiator.begin("target").unwrap();
+    port.deliver(initiator.next_message().unwrap())
+        .await
+        .unwrap();
+    initiator
+        .receive(&port.next_message().await.unwrap().unwrap())
+        .unwrap();
+    let binding = initiator.binding().unwrap();
+    let mut open = open_for(&destination, binding.limits());
+    open.endpoint_id = binding.endpoint_id().into();
+    open.policy = AuthPolicy::WindowsDefault;
+    open.identity.mode = IdentityMode::Ambient;
+    let stream_id = initiator.open("target", open).unwrap();
+    port.deliver(initiator.next_message().unwrap())
+        .await
+        .unwrap();
+
+    reached.notified().await;
+    let key = (String::from("target"), stream_id);
+    let task = endpoint.with_https_for_test(|https| {
+        https
+            .entries
+            .get_mut(&key)
+            .unwrap()
+            .preparing
+            .take()
+            .unwrap()
+    });
+    release.add_permits(1);
+    let attempt = task.await.unwrap();
+    let prepared = attempt
+        .0
+        .as_ref()
+        .expect("real native preparation before D");
+    assert_eq!(prepared.opened.facts.authenticated, Some(true));
+    let (route, connection) = prepared.publication_resources_for_test();
+    let until = attempt.2.budget.publication_deadline().unwrap();
+    assert!(tokio::time::Instant::now() < until);
+    let script = [until - Duration::from_nanos(1), in_lock(until)];
+    // Another call on the session's mux owner finishes within 100 ms unless
+    // the reading's thread holds the mux mutex.
+    let owner = endpoint.mux_owner_for_test();
+    let readings = Arc::new(Mutex::new(Vec::new()));
+    let taken = readings.clone();
+    endpoint.with_https_for_test(|https| {
+        https.clock = Clock(Some(Arc::new(move || {
+            let (other, (done, finished)) = (owner.clone(), std::sync::mpsc::channel());
+            std::thread::spawn(move || {
+                other.phase();
+                let _ = done.send(());
+            });
+            let held = finished.recv_timeout(Duration::from_millis(100)).is_err();
+            let mut taken = taken.lock().unwrap();
+            taken.push(held);
+            script[(taken.len() - 1).min(script.len() - 1)]
+        })));
+        let preparing = https.runtime.spawn(async move { attempt });
+        https.entries.get_mut(&key).unwrap().preparing = Some(preparing);
+    });
+    let (request, published) = port.next_message().await.unwrap().unwrap();
+    assert_eq!(
+        (request.as_str(), published.stream_id),
+        ("target", stream_id)
+    );
+    let authority = endpoint.authority_for_test();
+    if in_lock(until) < until {
+        assert_eq!(published.kind, MessageKind::Opened);
+        assert!(!route.revoked_for_test());
+    } else {
+        assert_eq!(
+            published.kind,
+            MessageKind::OpenFailed,
+            "late native Open must never publish"
+        );
+        let failure = published.open_failed.as_ref().unwrap();
+        assert_eq!(failure.code, ErrorCode::Timeout);
+        assert_eq!(failure.effect, Effect::None);
+        assert_eq!(failure.facts.as_ref().unwrap().authenticated, Some(true));
+        assert_eq!(
+            *readings.lock().unwrap(),
+            [false, true],
+            "D−ε before the mux lock, then the decision under it"
+        );
+        assert!(
+            route.revoked_for_test(),
+            "authenticated generation must be revoked"
+        );
+        assert_eq!(authority.counts(destination.host()), (1, 1));
+        assert!(
+            authority.try_reserve(destination.host()).is_none(),
+            "undisposed connection remains charged"
+        );
+        // That terminal is the stream's only one: its entry retires and the
+        // pump runs on with nothing more to publish.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        while !endpoint.with_https_for_test(|https| https.entries.is_empty()) {
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        let passes = endpoint.pumps_for_test();
+        while endpoint.pumps_for_test() < passes + 2 {
+            assert!(tokio::time::Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(pin!(port.next_message()).poll(&mut cx).is_pending());
+    }
+    initiator.receive(&(request, published.clone())).unwrap();
+    assert_eq!(initiator.next_action().unwrap().1.kind, published.kind);
+    assert!(initiator.next_action().is_none());
+    endpoint.close();
+    assert_eq!(authority.counts(destination.host()), (1, 1));
+    drop(connection);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while authority.counts(destination.host()) != (0, 0) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "physical cleanup did not complete"
+        );
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+}
+#[test]
+fn native_publication_session_crossing_d_before_the_mux_lock_times_out() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(session_publication_case(|until| {
+            until + Duration::from_millis(1)
+        }));
+}
+#[test]
+fn native_publication_session_exact_d_under_the_mux_lock_is_expired() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(session_publication_case(|until| until));
+}
+#[test]
+fn native_publication_session_before_d_across_the_mux_lock_is_published() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(session_publication_case(|until| {
+            until - Duration::from_nanos(1)
+        }));
+}
 #[test]
 fn https_only_capacity_replacement_waits_for_actual_physical_disposal() {
     use crate::git::endpoint::{

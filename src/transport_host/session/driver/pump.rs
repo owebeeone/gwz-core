@@ -183,12 +183,41 @@ impl Session {
                     if let Some(engine) = &mut state.https {
                         engine.before_handoff(&item.0, &mut item.1);
                     }
-                    match owner.send(&item.0, &item.1) {
-                        Ok(()) => {
+                    // A native Opened is decided again under the mux lock that
+                    // would queue it: this pass can wait for that lock across D
+                    // after the check above. Lock order: this session's state,
+                    // the mux, then the open's cancellation and the clock.
+                    let check = state
+                        .https
+                        .as_ref()
+                        .and_then(|engine| engine.publication_check(&item.0, &item.1));
+                    let sent = match check {
+                        Some(check) => {
+                            let mut refusal = None;
+                            owner
+                                .send_if(&item.0, &item.1, || {
+                                    refusal = check.refusal();
+                                    refusal.is_none()
+                                })
+                                .map(|_| refusal)
+                        }
+                        None => owner.send(&item.0, &item.1).map(|()| None),
+                    };
+                    match sent {
+                        Ok(None) => {
                             moved = true;
                             if let Some(engine) = &mut state.https {
                                 engine.handed_off(&item.0, &item.1);
                             }
+                        }
+                        Ok(Some(code)) => {
+                            // Refused under the lock, so nothing was queued. Its
+                            // failure goes out next, as any terminal does.
+                            moved = true;
+                            if let Some(engine) = &mut state.https {
+                                engine.refuse_publication(&item.0, &mut item.1, code);
+                            }
+                            state.pending = Some(item);
                         }
                         Err(mux::Error::WouldBlock) => {
                             state.pending = Some(item);

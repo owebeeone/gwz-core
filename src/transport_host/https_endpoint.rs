@@ -82,6 +82,8 @@ pub(super) struct HttpsEndpoint {
     retries: Retries,
     /// The latest time `step` was given, in its clock.
     now_ms: u64,
+    /// The monotonic clock the publication checks read around the mux lock.
+    clock: Clock,
 }
 impl HttpsEndpoint {
     cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
@@ -159,6 +161,7 @@ impl HttpsEndpoint {
             last_outbound: None,
             retries: Retries::new(),
             now_ms: 0,
+            clock: Clock::monotonic(),
         })
     }
     /// The operation's `--max-retries`, which its admission installs before
@@ -300,35 +303,48 @@ impl HttpsEndpoint {
     }
     // Called on every retry of the host's pending outbound slot. Taking a
     // receipt is not publication; only successful mux send linearizes Opened.
+    // This check is an early exit: `publication_check` decides again under
+    // the mux lock.
     pub(super) fn before_handoff(&mut self, request: &str, message: &mut Envelope) {
+        if message.kind != MessageKind::Opened {
+            return;
+        }
         if let Some(entry) = self.entries.get_mut(&(request.into(), message.stream_id)) {
-            if message.kind == MessageKind::Opened {
-                let code = if entry.cancel.is_cancelled() {
-                    Some(ErrorCode::Cancelled)
-                } else if publication_expired(
-                    entry.publication_deadline,
-                    tokio::time::Instant::now(),
-                ) {
-                    Some(ErrorCode::Timeout)
-                } else {
-                    None
-                };
-                if let Some(code) = code {
-                    let facts = message.opened.as_ref().map(|opened| opened.facts.clone());
-                    *message = failed_open(&entry.envelope, code, facts);
-                    entry.cancel.cancel();
-                    if let Some(route) = &entry.publication_route {
-                        route.revoke();
-                    }
-                    entry.output = None;
-                    entry.prepared = None;
-                    entry.handoff = false;
-                    entry.retired = true;
-                    if let Some(peer) = &entry.peer {
-                        peer.disconnect();
-                    }
-                }
+            if let Some(code) =
+                publication_refusal(&entry.cancel, entry.publication_deadline, &self.clock)
+            {
+                fail_publication(entry, message, code);
             }
+        }
+    }
+    /// The final check of an Opened that carries native D, for the pump to
+    /// run under the mux lock that would queue it (`Owner::send_if`): time
+    /// can pass between `before_handoff` and that lock. None for any other
+    /// message, which the pump sends as before.
+    pub(super) fn publication_check(
+        &self,
+        request: &str,
+        message: &Envelope,
+    ) -> Option<PublicationCheck> {
+        if message.kind != MessageKind::Opened {
+            return None;
+        }
+        let entry = self.entries.get(&(request.into(), message.stream_id))?;
+        Some(PublicationCheck {
+            deadline: entry.publication_deadline?,
+            cancel: entry.cancel.clone(),
+            clock: self.clock.clone(),
+        })
+    }
+    /// After a refusal under the mux lock: the failure `before_handoff` makes.
+    pub(super) fn refuse_publication(
+        &mut self,
+        request: &str,
+        message: &mut Envelope,
+        code: ErrorCode,
+    ) {
+        if let Some(entry) = self.entries.get_mut(&(request.into(), message.stream_id)) {
+            fail_publication(entry, message, code);
         }
     }
     pub(super) fn handed_off(&mut self, request: &str, message: &Envelope) {
@@ -438,6 +454,77 @@ fn cancel_entry(entry: &mut Entry) {
 fn publication_expired(deadline: Option<tokio::time::Instant>, now: tokio::time::Instant) -> bool {
     deadline.is_some_and(|until| now >= until)
 }
+/// A native Opened's final check (`HttpsEndpoint::publication_check`).
+pub(super) struct PublicationCheck {
+    deadline: tokio::time::Instant,
+    cancel: CancellationToken,
+    clock: Clock,
+}
+impl PublicationCheck {
+    /// Why the Opened may not publish, read now.
+    pub(super) fn refusal(self) -> Option<ErrorCode> {
+        publication_refusal(&self.cancel, Some(self.deadline), &self.clock)
+    }
+}
+/// The open's cancellation first, then a fresh clock reading against D, at
+/// which the Opened has expired.
+fn publication_refusal(
+    cancel: &CancellationToken,
+    deadline: Option<tokio::time::Instant>,
+    clock: &Clock,
+) -> Option<ErrorCode> {
+    if cancel.is_cancelled() {
+        Some(ErrorCode::Cancelled)
+    } else if publication_expired(deadline, clock.now()) {
+        Some(ErrorCode::Timeout)
+    } else {
+        None
+    }
+}
+/// Replaces an Opened that must not publish with its open's one terminal
+/// failure. The facts it observed stay; the authenticated route is revoked and
+/// prepared ownership discarded, while physical and native cleanup stay
+/// charged to their owners until disposal.
+fn fail_publication(entry: &mut Entry, message: &mut Envelope, code: ErrorCode) {
+    let facts = message.opened.as_ref().map(|opened| opened.facts.clone());
+    *message = failed_open(&entry.envelope, code, facts);
+    entry.cancel.cancel();
+    if let Some(route) = &entry.publication_route {
+        route.revoke();
+    }
+    entry.output = None;
+    entry.prepared = None;
+    entry.handoff = false;
+    entry.retired = true;
+    if let Some(peer) = &entry.peer {
+        peer.disconnect();
+    }
+}
+cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+    /// tokio's monotonic clock, or the readings a test scripts in its place.
+    #[derive(Clone)]
+    struct Clock(Option<Arc<dyn Fn() -> tokio::time::Instant + Send + Sync>>);
+    impl Clock {
+        fn monotonic() -> Self {
+            Self(None)
+        }
+        fn now(&self) -> tokio::time::Instant {
+            self.0.as_ref().map_or_else(tokio::time::Instant::now, |read| read())
+        }
+    }
+} else {
+    /// tokio's monotonic clock.
+    #[derive(Clone)]
+    struct Clock;
+    impl Clock {
+        fn monotonic() -> Self {
+            Self
+        }
+        fn now(&self) -> tokio::time::Instant {
+            tokio::time::Instant::now()
+        }
+    }
+} }
 fn cancelled_open(envelope: &Envelope, facts: Option<Facts>) -> Envelope {
     failed_open(envelope, ErrorCode::Cancelled, facts)
 }

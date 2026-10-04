@@ -242,6 +242,15 @@ impl Session {
             pub(super) fn https_client_for_test(&self) -> crate::git::endpoint::https_worker::Client {
                 self.state.lock().unwrap_or_else(|error| error.into_inner()).https.as_ref().unwrap().client_for_test()
             }
+            /// Runs `f` on the HTTPS endpoint under the session lock, which a
+            /// pass holds throughout: between passes.
+            pub(super) fn with_https_for_test<T>(&self, f: impl FnOnce(&mut super::https_endpoint::HttpsEndpoint) -> T) -> T {
+                f(self.state.lock().unwrap_or_else(|error| error.into_inner()).https.as_mut().unwrap())
+            }
+            /// The mux owner this session's pump sends through.
+            pub(super) fn mux_owner_for_test(&self) -> Owner {
+                self.state.lock().unwrap_or_else(|error| error.into_inner()).owner.clone().unwrap()
+            }
         } }
         pub(super) fn authority_for_test(&self) -> crate::git::endpoint::shared_reservation::Authority {
             self.state.lock().unwrap_or_else(|error| error.into_inner()).authority.clone().unwrap()
