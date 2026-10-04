@@ -1,5 +1,23 @@
 # GWZ Core Requirements
 
+
+## Windows HTTPS qualification boundary (accepted contract, 2026-10-04)
+
+[WH1 design](../../dev-docs/GwzWindowsHttpsIntegrationDesign-DRAFT.md) and its
+[acceptance](../../dev-docs/GwzWindowsHttpsIntegrationAcceptance.md) permit the
+existing endpoint and original CLI/Python caller route only under
+`all(windows, gwz_transport_candidate, gwz_windows_https_qualification)` in
+qualification artifacts. HTTPS with Anonymous/WindowsDefault and native DIRECT
+proxy configuration is the admitted subset. SSH and configured/Gh helpers are
+absent and refuse before effects. Shared request construction in
+`TransportRuntime::open_request` uses the existing Disabled backend constructor
+with its unchanged host context in this predicate only; no caller flag/API/schema
+is added. Private budgets are separated from optional SSH settings, with no fake
+HOME. Ordinary/candidate-only Windows and Unix behavior remain unchanged. Fixed
+D, caller provenance, final-origin CBT, real cleanup charges and no effects replay
+remain governed by accepted SSPI composition. This is implementation authority,
+not live qualification, activation or full Windows release acceptance.
+
 ## HTTPS SSPI composition (accepted contract, 2026-10-04; implementation pending)
 
 Native-capable candidate HTTPS MUST implement the accepted
