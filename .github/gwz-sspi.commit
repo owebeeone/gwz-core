@@ -1,0 +1,7 @@
+# The gwz-sspi commit the transport candidate job checks out beside gwz-core
+# (.github/workflows/transport-candidate.yml). The candidate manifest that
+# tests/transport_backend/prepare.py makes names gwz-sspi by path, beside
+# gwz-core. Bump rule: a gwz-core commit whose candidate build needs a newer
+# gwz-sspi moves this pin in the same commit, to a gwz-sspi commit already on
+# its main. The job reads the first 40-hex line.
+c5afd08cc6965b2bd24aa0c22b9f829ded087e8f

@@ -15,9 +15,9 @@ on:
 # third-party crates, and the suites run against it. This job runs that build's
 # suites, the candidate and consumer generators' checks, the candidate's Python
 # tests and the consumer's archive proof on every change, against the
-# gwz-transport and gwz-py commits .github/gwz-transport.commit and
-# .github/gwz-py.commit pin, and the taut-proto release the candidate generator
-# pins (installed, and checked out at its tag).
+# gwz-transport, gwz-py and gwz-sspi commits .github/gwz-transport.commit,
+# .github/gwz-py.commit and .github/gwz-sspi.commit pin, and the taut-proto
+# release the candidate generator pins (installed, and checked out at its tag).
 jobs:
   candidate:
     name: Candidate build suites
@@ -36,8 +36,8 @@ jobs:
             rustflags: --cfg gwz_transport_candidate --cfg gwz_session_candidate
     defaults:
       run:
-        # gwz-core, gwz-transport, gwz-py, taut and git2-rs are checked out
-        # side by side, as a workspace has them; every command runs in gwz-core.
+        # gwz-core, gwz-transport, gwz-py, gwz-sspi, taut and git2-rs are checked
+        # out side by side, as a workspace has them; every command runs in gwz-core.
         working-directory: gwz-core
         shell: bash
     steps:
@@ -50,10 +50,11 @@ jobs:
         # `gwz-git2`), at the commit gwz-core's .github/git2-rs.commit pins.
         run: bash .github/checkout-git2-rs.sh
       - id: pins
-        name: Read the gwz-transport and gwz-py commits and the taut release the candidate builds against
+        name: Read the gwz-transport, gwz-py and gwz-sspi commits and the taut release the candidate builds against
         run: |
           echo "gwz-transport=$(grep -m1 -E '^[0-9a-f]{40}$' .github/gwz-transport.commit)" >> "$GITHUB_OUTPUT"
           echo "gwz-py=$(grep -m1 -E '^[0-9a-f]{40}$' .github/gwz-py.commit)" >> "$GITHUB_OUTPUT"
+          echo "gwz-sspi=$(grep -m1 -E '^[0-9a-f]{40}$' .github/gwz-sspi.commit)" >> "$GITHUB_OUTPUT"
           release="$(jq -r '."taut-proto"' protocol/candidate/candidate-generator.json)"
           echo "taut-proto=$release" >> "$GITHUB_OUTPUT"
           echo "taut=v$release" >> "$GITHUB_OUTPUT"
@@ -75,6 +76,16 @@ jobs:
           path: gwz-py
           persist-credentials: false
           fetch-depth: 0
+      - name: Check out gwz-sspi at its pin, beside gwz-core
+        # The candidate manifest (tests/transport_backend/prepare.py) names
+        # gwz-sspi by path, beside gwz-core.
+        uses: actions/checkout@v6
+        with:
+          repository: owebeeone/gwz-sspi
+          ref: ${{ steps.pins.outputs.gwz-sspi }}
+          path: gwz-sspi
+          persist-credentials: false
+          fetch-depth: 0
       - name: Check out taut at the release tag, beside gwz-core
         # The candidate's tests read taut's source from the workspace's taut
         # checkout, which a workspace keeps at the tag of the pinned release
@@ -90,9 +101,10 @@ jobs:
         env:
           TRANSPORT_PIN: ${{ steps.pins.outputs.gwz-transport }}
           PY_PIN: ${{ steps.pins.outputs.gwz-py }}
+          SSPI_PIN: ${{ steps.pins.outputs.gwz-sspi }}
         run: |
           status=0
-          for pinned in "gwz-transport $TRANSPORT_PIN" "gwz-py $PY_PIN"; do
+          for pinned in "gwz-transport $TRANSPORT_PIN" "gwz-py $PY_PIN" "gwz-sspi $SSPI_PIN"; do
             set -- $pinned
             if ! git -C "../$1" merge-base --is-ancestor "$2" origin/main; then
               echo "::error::.github/$1.commit $2 is not on $1's main; push $1 first"
