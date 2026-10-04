@@ -778,7 +778,7 @@ class Dispositions(unittest.TestCase):
         extraction = "CS7.1, the candidate crates' extraction (IdSource)"
         # NEXT_ID and NEXT_SESSION left with TR2.15 (test_the_dead_https_helper_state_is_gone).
         expected = [
-            (core, 'src/git/endpoint/ssh_worker.rs', 'static', 'NEXT_WORKER', extraction),
+            (core, 'src/git/endpoint/ssh_worker/endpoint.rs', 'static', 'NEXT_WORKER', extraction),
             (core, 'src/transport_host/session.rs', 'static', 'SERIAL', extraction),
             (transport, 'src/pool/machine.rs', 'static', 'NEXT_POOL',
              'CS7.2–CS7.6 (the pool takes its ID from its host)'),
