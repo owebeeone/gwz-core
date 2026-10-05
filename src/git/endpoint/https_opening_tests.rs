@@ -16,17 +16,34 @@ fn runtime() -> tokio::runtime::Runtime {
 #[test]
 fn open_carries_encoded_account_and_refuses_decoded_controls_before_admission() {
     runtime().block_on(async {
-        let mut endpoint = Endpoint::new(https_connection::Config::default(), None, Default::default()).unwrap();
-        let mut input = Input { destination: "https://a%3Ab@example.test/repo.git".into(),
-            service: GitService::UploadPackAdvertisement, policy: AuthPolicy::Anonymous,
-            session: "session".into(), operation: "operation".into() };
+        let mut endpoint = Endpoint::new(
+            https_connection::Config::default(),
+            None,
+            Default::default(),
+        )
+        .unwrap();
+        let mut input = Input {
+            destination: "https://a%3Ab@example.test/repo.git".into(),
+            service: GitService::UploadPackAdvertisement,
+            policy: AuthPolicy::Anonymous,
+            session: "session".into(),
+            operation: "operation".into(),
+        };
         let open = open_for(&endpoint.client, &input).unwrap();
         assert_eq!(open.destination.https_username.as_deref(), Some("a%3Ab"));
         assert!(open.destination.ssh_username.is_none());
         let destination = HttpsDestination::parse(&input.destination).unwrap();
-        assert_eq!(destination.request(GitService::UploadPackAdvertisement).as_str(), "https://example.test/repo.git/info/refs?service=git-upload-pack");
+        assert_eq!(
+            destination
+                .request(GitService::UploadPackAdvertisement)
+                .as_str(),
+            "https://example.test/repo.git/info/refs?service=git-upload-pack"
+        );
         assert!(!format!("{:?}", open.destination).contains("a%3Ab"));
-        for url in ["https://a%0Ab@example.test/repo.git", "https://account@example.test/repo%0D.git"] {
+        for url in [
+            "https://a%0Ab@example.test/repo.git",
+            "https://account@example.test/repo%0D.git",
+        ] {
             input.destination = url.into();
             assert!(open_for(&endpoint.client, &input).is_err());
         }

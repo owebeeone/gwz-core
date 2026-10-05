@@ -66,9 +66,12 @@ pub(crate) fn write_helper_script(path: &Path, body: &str) {
 /// A Git-fill fixture still uses native Git for the adopted read-only config
 /// commands. Its root configuration is empty and independent of the host.
 pub(crate) fn write_git_fixture(path: &Path, body: &str) {
-    write_helper_script(path, &format!(
-        "if [ \"$1\" = config ]; then\n GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null /usr/bin/git \"$@\"\n exit \"$?\"\nfi\n{body}"
-    ));
+    write_helper_script(
+        path,
+        &format!(
+            "if [ \"$1\" = config ]; then\n GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null /usr/bin/git \"$@\"\n exit \"$?\"\nfi\n{body}"
+        ),
+    );
 }
 
 cfg_if::cfg_if! {

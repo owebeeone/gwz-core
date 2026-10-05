@@ -28,8 +28,7 @@ fn run(test: impl Future<Output = ()>) {
 }
 use std::future::Future;
 
-
-mod auth_receipts;
 mod admission;
+mod auth_receipts;
 mod cancellation;
 mod route_policy;

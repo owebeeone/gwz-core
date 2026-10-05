@@ -107,7 +107,9 @@ pub(crate) fn response(
     body: impl Into<Bytes>,
 ) -> Response<Full<Bytes>> {
     let mut builder = Response::builder();
-    if status == 401 { builder = builder.header("WWW-Authenticate", "Basic realm=\"fixture\""); }
+    if status == 401 {
+        builder = builder.header("WWW-Authenticate", "Basic realm=\"fixture\"");
+    }
     builder
         .status(status)
         .header("Content-Type", https_policy::response_type(service))

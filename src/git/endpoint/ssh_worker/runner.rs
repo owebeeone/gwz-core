@@ -128,7 +128,11 @@ pub(super) fn run<C>(
             // Disabled operations must not lease an enabled operation's
             // helper-authenticated connection. Keep selection in Opening and
             // partition only this endpoint's existing opaque pool identity.
-            let pool_identity = if request.url.as_ref().is_some_and(|url| !url.helpers_allowed()) {
+            let pool_identity = if request
+                .url
+                .as_ref()
+                .is_some_and(|url| !url.helpers_allowed())
+            {
                 Identity::Explicit(match &request.identity {
                     Identity::Ambient => "helpers-disabled:ambient".into(),
                     Identity::Explicit(token) => format!("helpers-disabled:explicit:{token}"),
@@ -137,7 +141,9 @@ pub(super) fn run<C>(
                         continue;
                     }
                 })
-            } else { request.identity.clone() };
+            } else {
+                request.identity.clone()
+            };
             let mut policy = gwz_transport::pool::Request::new(
                 request.key.clone(),
                 pool_identity,

@@ -11,23 +11,34 @@ fn input() -> Input {
 }
 
 fn endpoint(config: https_auth::Config) -> Endpoint {
-    Endpoint::new(https_connection::Config::default(), Some(config), pool::Config::default()).unwrap()
+    Endpoint::new(
+        https_connection::Config::default(),
+        Some(config),
+        pool::Config::default(),
+    )
+    .unwrap()
 }
 
 fn assert_timing(failed: &Failure, cause: SetupFailureCause, milliseconds: i64) {
     assert_eq!(failed.code, ErrorCode::Timeout);
     assert_eq!(failed.effect, Effect::None);
     assert_eq!(failed.setup_cause, Some(cause));
-    assert_eq!(failed.detail.as_ref().unwrap().helper_budget_ms, Some(milliseconds));
+    assert_eq!(
+        failed.detail.as_ref().unwrap().helper_budget_ms,
+        Some(milliseconds)
+    );
     assert!(failed.detail.as_ref().unwrap().helper_cause.is_none());
-    assert_eq!(gwz_transport::codec::admit(&Envelope {
-        version: 2,
-        session_id: "helper-budget".into(),
-        stream_id: 1,
-        kind: MessageKind::OpenFailed,
-        open_failed: Some(failed.clone()),
-        ..Default::default()
-    }), Ok(()));
+    assert_eq!(
+        gwz_transport::codec::admit(&Envelope {
+            version: 2,
+            session_id: "helper-budget".into(),
+            stream_id: 1,
+            kind: MessageKind::OpenFailed,
+            open_failed: Some(failed.clone()),
+            ..Default::default()
+        }),
+        Ok(())
+    );
 }
 
 #[tokio::test]
@@ -39,7 +50,10 @@ async fn zero_and_submillisecond_allocation_with_free_slots_has_truthful_provena
     for remaining in [Duration::ZERO, Duration::from_nanos(999_999)] {
         let mut budget = endpoint.client.budget();
         budget.allocation = remaining;
-        let (result, _) = endpoint.client.prepare_attempt(input(), &CancellationToken::new(), &mut budget, &mut None).await;
+        let (result, _) = endpoint
+            .client
+            .prepare_attempt(input(), &CancellationToken::new(), &mut budget, &mut None)
+            .await;
         assert_timing(&result.err().unwrap(), SetupFailureCause::Allocation, 0);
         assert_eq!(endpoint.client.helpers.available_permits(), 8);
         assert_eq!(endpoint.client.auth_owner.active_count(), 0);
@@ -53,10 +67,19 @@ async fn endpoint_helper_saturation_reports_original_captured_allocation() {
         executable: "/missing-fixture-git".into(),
         environment: Vec::new(),
     });
-    let held = endpoint.client.helpers.clone().acquire_many_owned(8).await.unwrap();
+    let held = endpoint
+        .client
+        .helpers
+        .clone()
+        .acquire_many_owned(8)
+        .await
+        .unwrap();
     let mut budget = endpoint.client.budget();
     budget.allocation = Duration::from_millis(75);
-    let (result, _) = endpoint.client.prepare_attempt(input(), &CancellationToken::new(), &mut budget, &mut None).await;
+    let (result, _) = endpoint
+        .client
+        .prepare_attempt(input(), &CancellationToken::new(), &mut budget, &mut None)
+        .await;
     let failed = result.err().unwrap();
     let captured = failed.detail.as_ref().unwrap().helper_budget_ms.unwrap();
     assert!((1..=75).contains(&captured));

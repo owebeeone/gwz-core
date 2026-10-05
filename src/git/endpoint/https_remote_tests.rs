@@ -45,7 +45,9 @@ impl HalfClose for Fake {
     fn finish(&self) -> io::Result<()> {
         let mut state = self.0.lock().unwrap();
         state.closed += 1;
-        if state.failure.is_some() { return Err(io::Error::other("stream terminal")); }
+        if state.failure.is_some() {
+            return Err(io::Error::other("stream terminal"));
+        }
         Ok(())
     }
     fn cancel(&self) {
@@ -62,39 +64,81 @@ impl HalfClose for Fake {
 #[test]
 fn rpc_reports_retained_close_failure_with_timing_and_retry_provenance() {
     use gwz_transport::protocol::*;
-    let failure = Failure { code: ErrorCode::Timeout, effect: Effect::None,
+    let failure = Failure {
+        code: ErrorCode::Timeout,
+        effect: Effect::None,
         setup_cause: Some(SetupFailureCause::Interaction),
-        detail: Some(Box::new(FailureDetail { helper_budget_ms: Some(1250),
-            retry_attempt: Some(RetryAttempt { attempt: 2, attempts: 3 }), ..Default::default() })), ..Default::default()
+        detail: Some(Box::new(FailureDetail {
+            helper_budget_ms: Some(1250),
+            retry_attempt: Some(RetryAttempt {
+                attempt: 2,
+                attempts: 3,
+            }),
+            ..Default::default()
+        })),
+        ..Default::default()
     };
-    let facts = Facts { method: AuthMethod::Gh, ..Default::default() };
-    let state = Arc::new(Mutex::new(State { failure: Some(failure.clone()),
-        failure_facts: Some(facts.clone()), ..State::default() }));
+    let facts = Facts {
+        method: AuthMethod::Gh,
+        ..Default::default()
+    };
+    let state = Arc::new(Mutex::new(State {
+        failure: Some(failure.clone()),
+        failure_facts: Some(facts.clone()),
+        ..State::default()
+    }));
     let report = Arc::new(Mutex::new(None));
     let received = report.clone();
     let mut rpc = RpcIo::new(Fake(state.clone()), false);
-    rpc.report = Some(Arc::new(move |failed, service| { *received.lock().unwrap() = Some((failed, service)); }));
+    rpc.report = Some(Arc::new(move |failed, service| {
+        *received.lock().unwrap() = Some((failed, service));
+    }));
     let error = rpc.read(&mut [0]).unwrap_err();
-    let typed = error.get_ref().unwrap().downcast_ref::<crate::transport_host::HttpsOpenFailure>().unwrap();
+    let typed = error
+        .get_ref()
+        .unwrap()
+        .downcast_ref::<crate::transport_host::HttpsOpenFailure>()
+        .unwrap();
     let mut derived = failure.clone();
     derived.facts = Some(facts);
     assert_eq!(typed.failure, derived);
-    assert_eq!(typed.model_error().unwrap().code, crate::model::ErrorCode::CredentialHelperTimeout);
-    assert_eq!(*report.lock().unwrap(), Some((derived, GitService::UploadPackExchange)));
+    assert_eq!(
+        typed.model_error().unwrap().code,
+        crate::model::ErrorCode::CredentialHelperTimeout
+    );
+    assert_eq!(
+        *report.lock().unwrap(),
+        Some((derived, GitService::UploadPackExchange))
+    );
     assert_eq!(state.lock().unwrap().failure, Some(failure));
 }
 #[test]
 fn rpc_keeps_failed_facts_in_preference_to_later_close_facts() {
     use gwz_transport::protocol::*;
-    let failure = Failure { code: ErrorCode::Authentication,
-        facts: Some(Facts { method: AuthMethod::Gh, authenticated: Some(false), ..Default::default() }),
-        ..Default::default() };
-    let state = Arc::new(Mutex::new(State { failure: Some(failure.clone()),
-        failure_facts: Some(Facts { method: AuthMethod::None, ..Default::default() }),
-        ..State::default() }));
+    let failure = Failure {
+        code: ErrorCode::Authentication,
+        facts: Some(Facts {
+            method: AuthMethod::Gh,
+            authenticated: Some(false),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let state = Arc::new(Mutex::new(State {
+        failure: Some(failure.clone()),
+        failure_facts: Some(Facts {
+            method: AuthMethod::None,
+            ..Default::default()
+        }),
+        ..State::default()
+    }));
     let mut rpc = RpcIo::new(Fake(state), false);
     let error = rpc.read(&mut [0]).unwrap_err();
-    let typed = error.get_ref().unwrap().downcast_ref::<crate::transport_host::HttpsOpenFailure>().unwrap();
+    let typed = error
+        .get_ref()
+        .unwrap()
+        .downcast_ref::<crate::transport_host::HttpsOpenFailure>()
+        .unwrap();
     assert_eq!(typed.failure, failure);
 }
 #[test]
@@ -144,7 +188,9 @@ fn open_failure(
     authenticated: Option<bool>,
 ) -> git2::Error {
     let failure = crate::transport_host::HttpsOpenFailure {
-            service: None, helpers_disabled: false, cli_hint: true,
+        service: None,
+        helpers_disabled: false,
+        cli_hint: true,
         failure: gwz_transport::protocol::Failure {
             detail: None,
             setup_cause: None,
@@ -168,7 +214,9 @@ fn a_failed_open_names_a_timeouts_origin_and_the_attempt_it_ended() {
     use gwz_transport::protocol::SetupFailureCause;
     let message = |setup_cause, attempts| {
         let failure = crate::transport_host::HttpsOpenFailure {
-            service: None, helpers_disabled: false, cli_hint: true,
+            service: None,
+            helpers_disabled: false,
+            cli_hint: true,
             failure: gwz_transport::protocol::Failure {
                 detail: None,
                 setup_cause,
@@ -244,7 +292,9 @@ fn helper_timeout_keeps_public_code_75_without_reclassifying_general_timeouts() 
     use gwz_transport::protocol::*;
     for budget in [None, Some(1_250)] {
         let failure = crate::transport_host::HttpsOpenFailure {
-            service: None, helpers_disabled: false, cli_hint: true,
+            service: None,
+            helpers_disabled: false,
+            cli_hint: true,
             failure: Failure {
                 code: ErrorCode::Timeout,
                 effect: Effect::None,

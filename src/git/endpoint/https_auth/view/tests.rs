@@ -126,7 +126,10 @@ async fn native_view_keeps_null_empty_escapes_bytes_and_repeated_scope_occurrenc
     assert_eq!(
         entries
             .iter()
-            .filter(|e| e.name.0 == b"credential.helper" && e.value.as_ref().is_some_and(|v| v.0.is_empty() || v.0 == helper_path.as_os_str().as_bytes()))
+            .filter(|e| e.name.0 == b"credential.helper"
+                && e.value
+                    .as_ref()
+                    .is_some_and(|v| v.0.is_empty() || v.0 == helper_path.as_os_str().as_bytes()))
             .count(),
         4
     );
@@ -220,14 +223,19 @@ async fn initial_discovery_fifo_is_deadline_bounded_and_releases_both_admissions
     let mut allocation = Duration::from_secs(1);
     let until = started + allocation;
     let error = super::super::lookup::lookup_until(
-        &owner, &config(home.path(), &global),
+        &owner,
+        &config(home.path(), &global),
         &Destination::parse("https://example.test/repo").unwrap(),
-        &mut allocation, Duration::from_millis(150), &CancellationToken::new(),
+        &mut allocation,
+        Duration::from_millis(150),
+        &CancellationToken::new(),
         super::super::lookup::LookupAdmission {
             until,
             endpoint_slot: Some(endpoints.clone().acquire_owned().await.unwrap()),
         },
-    ).await.err();
+    )
+    .await
+    .err();
     assert_eq!(error, Some(AuthError::Timeout));
     assert!(started.elapsed() < Duration::from_secs(2));
     assert_eq!(owner.pending_cleanup_count(), 0);
@@ -245,31 +253,57 @@ async fn controlled_stdin_parse_does_not_preread_fifo_and_core_refuses_it() {
     let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
     // SAFETY: the test owns this absent fixture path and passes a valid C string.
     assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
-    let source = format!("[include]\n path = {}\n[spike]\n null\n empty =\n", fifo.display());
+    let source = format!(
+        "[include]\n path = {}\n[spike]\n null\n empty =\n",
+        fifo.display()
+    );
     fs::write(&global, &source).unwrap();
     let config = config(home.path(), &global);
     let owner = AuthOwner::new(HelperSlots::new());
     let permits = Arc::new(super::super::owner::AdmissionPermits {
-        _helper_slot: owner.inner.helper_slots.0.clone().acquire_owned().await.unwrap(),
+        _helper_slot: owner
+            .inner
+            .helper_slots
+            .0
+            .clone()
+            .acquire_owned()
+            .await
+            .unwrap(),
         _endpoint_slot: None,
     });
     let cancelled = CancellationToken::new();
     let runner = super::super::runner::Runner {
-        owner: &owner, config: &config, executable: Path::new("/usr/bin/git"), permits,
-        cancelled: &cancelled, deadline: Instant::now() + Duration::from_secs(2),
+        owner: &owner,
+        config: &config,
+        executable: Path::new("/usr/bin/git"),
+        permits,
+        cancelled: &cancelled,
+        deadline: Instant::now() + Duration::from_secs(2),
         setup: None,
     };
-    let raw = runner.run(
-        &["config", "--no-includes", "--null", "--file", "-", "--list"],
-        source.as_bytes(), Some(&[]), PREPARATION_LIMIT, true,
-    ).await.unwrap();
+    let raw = runner
+        .run(
+            &["config", "--no-includes", "--null", "--file", "-", "--list"],
+            source.as_bytes(),
+            Some(&[]),
+            PREPARATION_LIMIT,
+            true,
+        )
+        .await
+        .unwrap();
     let entries = entries(&raw.0).unwrap();
     assert_eq!(entries.len(), 3);
     assert!(entries[1].value.is_none());
     assert!(entries[2].value.as_ref().unwrap().0.is_empty());
-    assert_eq!(super::super::file_worker::read(
-        &runner, SecretBuffer(fifo.as_os_str().as_bytes().to_vec()),
-    ).await.err(), Some(AuthError::ConfigurationRefused));
+    assert_eq!(
+        super::super::file_worker::read(
+            &runner,
+            SecretBuffer(fifo.as_os_str().as_bytes().to_vec()),
+        )
+        .await
+        .err(),
+        Some(AuthError::ConfigurationRefused)
+    );
     drop(runner);
     assert_eq!(owner.pending_cleanup_count(), 0);
     assert_eq!(owner.inner.helper_slots.0.available_permits(), HELPER_SLOTS);

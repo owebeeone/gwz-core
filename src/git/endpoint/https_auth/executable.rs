@@ -8,8 +8,12 @@ pub(super) fn resolve(config: &Config) -> Result<PathBuf, AuthError> {
     if config.executable.as_os_str().is_empty() || config.executable.components().count() != 1 {
         return Err(AuthError::MissingExecutable);
     }
-    let path = config.environment.iter().find(|(name, _)| name == OsStr::new("PATH"))
-        .map(|(_, value)| value).ok_or(AuthError::MissingExecutable)?;
+    let path = config
+        .environment
+        .iter()
+        .find(|(name, _)| name == OsStr::new("PATH"))
+        .map(|(_, value)| value)
+        .ok_or(AuthError::MissingExecutable)?;
     for directory in std::env::split_paths(path) {
         if !directory.is_absolute() {
             continue;

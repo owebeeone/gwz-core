@@ -9,8 +9,14 @@ pub(super) fn has_decoded_control(value: &str) -> bool {
     while cursor < bytes.len() {
         let byte = if bytes[cursor] == b'%' && cursor + 2 < bytes.len() {
             match (hex(bytes[cursor + 1]), hex(bytes[cursor + 2])) {
-                (Some(a), Some(b)) => { cursor += 3; a * 16 + b }
-                _ => { cursor += 1; b'%' }
+                (Some(a), Some(b)) => {
+                    cursor += 3;
+                    a * 16 + b
+                }
+                _ => {
+                    cursor += 1;
+                    b'%'
+                }
             }
         } else {
             let byte = bytes[cursor];
@@ -26,8 +32,13 @@ pub(super) fn has_decoded_control(value: &str) -> bool {
         utf8[used] = byte;
         used += 1;
         match std::str::from_utf8(&utf8[..used]) {
-            Ok(text) => { unicode_control |= text.chars().any(char::is_control); used = 0; }
-            Err(error) if error.error_len().is_some() || used == 4 => { invalid = true; }
+            Ok(text) => {
+                unicode_control |= text.chars().any(char::is_control);
+                used = 0;
+            }
+            Err(error) if error.error_len().is_some() || used == 4 => {
+                invalid = true;
+            }
             Err(_) => {}
         }
     }

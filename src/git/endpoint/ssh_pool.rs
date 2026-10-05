@@ -266,7 +266,9 @@ impl<C: Connector> PoolHost<C> {
                                 effect: Effect::None,
                                 ..Default::default()
                             })?;
-                        clock.register_driver(Arc::new(cx.waker().clone())).deliver();
+                        clock
+                            .register_driver(Arc::new(cx.waker().clone()))
+                            .deliver();
                         reported.setup = Some(SetupContext::new(clock, origin));
                         *reported
                             .setup_slot

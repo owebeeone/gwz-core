@@ -63,7 +63,10 @@ impl SetupContext {
         // expose the terminal. Wait for that logical association only: no
         // authority lock is held here and physical cleanup is independent.
         while state.publishing {
-            state = self.published.wait(state).unwrap_or_else(|e| e.into_inner());
+            state = self
+                .published
+                .wait(state)
+                .unwrap_or_else(|e| e.into_inner());
         }
         if let Some((first, failed)) = &state.first
             && *first == record

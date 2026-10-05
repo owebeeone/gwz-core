@@ -15,11 +15,15 @@ pub(crate) struct Destination {
 
 impl std::fmt::Debug for Destination {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("Destination")
+        formatter
+            .debug_struct("Destination")
             .field("host", &self.host())
             .field("port", &self.port())
             .field("path", &self.url.path())
-            .field("https_username", &(!self.url.username().is_empty()).then_some("<redacted>"))
+            .field(
+                "https_username",
+                &(!self.url.username().is_empty()).then_some("<redacted>"),
+            )
             .finish()
     }
 }
@@ -83,8 +87,12 @@ impl Destination {
 
     pub(crate) fn request(&self, service: GitService) -> Url {
         let mut request = self.selected_request(service);
-        request.set_username("").expect("HTTPS URL supports removing userinfo");
-        request.set_password(None).expect("HTTPS URL supports removing password");
+        request
+            .set_username("")
+            .expect("HTTPS URL supports removing userinfo");
+        request
+            .set_password(None)
+            .expect("HTTPS URL supports removing password");
         request
     }
 
@@ -174,7 +182,9 @@ fn ambiguous_authority(input: &str) -> bool {
     rest.is_some_and(|rest| {
         let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
         let authority = &rest[..end];
-        let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+        let host = authority
+            .rsplit_once('@')
+            .map_or(authority, |(_, host)| host);
         authority.contains('\\') || host.contains('%')
     })
 }

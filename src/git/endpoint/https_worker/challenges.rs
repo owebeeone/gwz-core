@@ -13,14 +13,21 @@ pub(super) fn schemes(headers: &HeaderMap) -> (bool, Vec<String>) {
             if !quoted && (byte == Some(b',') || byte.is_none()) {
                 let segment = &bytes[start..i];
                 let segment = segment.trim_ascii();
-                let n = segment.iter().take_while(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(b)).count();
+                let n = segment
+                    .iter()
+                    .take_while(|b| b.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(b))
+                    .count();
                 if n > 0 && segment.get(n).is_none_or(|b| b.is_ascii_whitespace()) {
                     let token = std::str::from_utf8(&segment[..n]).expect("ASCII token");
                     basic |= token.eq_ignore_ascii_case("Basic");
-                    if !tokens.iter().any(|s: &String| s.eq_ignore_ascii_case(token)) {
+                    if !tokens
+                        .iter()
+                        .any(|s: &String| s.eq_ignore_ascii_case(token))
+                    {
                         let bounded = token[..token.len().min(32)].to_owned();
-                        if tokens.len() < 4 { tokens.push(bounded); }
-                        else if token.eq_ignore_ascii_case("Negotiate") {
+                        if tokens.len() < 4 {
+                            tokens.push(bounded);
+                        } else if token.eq_ignore_ascii_case("Negotiate") {
                             // This token affects private-repository classification.
                             // Preserve it within the existing four-token contract.
                             tokens[3] = bounded;
@@ -29,9 +36,13 @@ pub(super) fn schemes(headers: &HeaderMap) -> (bool, Vec<String>) {
                 }
                 start = i + 1;
             }
-            if escaped { escaped = false; }
-            else if quoted && byte == Some(b'\\') { escaped = true; }
-            else if byte == Some(b'"') { quoted = !quoted; }
+            if escaped {
+                escaped = false;
+            } else if quoted && byte == Some(b'\\') {
+                escaped = true;
+            } else if byte == Some(b'"') {
+                quoted = !quoted;
+            }
         }
     }
     (basic, tokens)

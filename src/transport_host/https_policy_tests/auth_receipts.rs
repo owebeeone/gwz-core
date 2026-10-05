@@ -159,8 +159,14 @@ fn no_helper_after_anonymous_refusal_preserves_first_receipt_without_suppression
             .downcast_ref::<HttpsOpenFailure>()
             .unwrap();
         assert!(receipt.anonymous.is_none());
-        assert_eq!(receipt.failure.facts.as_ref().unwrap().http_status, Some(404));
-        assert_eq!(receipt.failure.facts.as_ref().unwrap().method, AuthMethod::None);
+        assert_eq!(
+            receipt.failure.facts.as_ref().unwrap().http_status,
+            Some(404)
+        );
+        assert_eq!(
+            receipt.failure.facts.as_ref().unwrap().method,
+            AuthMethod::None
+        );
         assert_eq!(receipt.failure.code, TransportError::RepositoryRefused);
         assert!(!failure.to_string().contains("private body sentinel"));
         assert_eq!(request.finish().await.pending_local_work, 0);
@@ -199,7 +205,10 @@ fn only_final_https_repository_refusal_enters_private_member_suppression() {
         .unwrap();
         for (name, status) in [
             ("forbidden", crate::model::ErrorCode::RemoteRejected),
-            ("authentication", crate::model::ErrorCode::ExternalToolMissing),
+            (
+                "authentication",
+                crate::model::ErrorCode::ExternalToolMissing,
+            ),
         ] {
             let request = runtime.request(meta(name), "clone".into()).await.unwrap();
             let backend = request.backend().clone();

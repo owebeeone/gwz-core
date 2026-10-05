@@ -477,7 +477,9 @@ fn perform_push(
         None => remote_handle.push(&plan.refspecs, Some(&mut options)),
     };
     pushed.map_err(|error| {
-        if let Some(error) = attempt.error() { return error; }
+        if let Some(error) = attempt.error() {
+            return error;
+        }
         if error.code() == git2::ErrorCode::NotFastForward {
             ModelError::new(ErrorCode::RemoteRejected, error.message())
         } else {

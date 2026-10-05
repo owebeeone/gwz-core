@@ -46,18 +46,40 @@ impl SshOpenFailure {
         if let Some(reason) = crate::transport_host::helper_failure::timeout_reason(&self.0) {
             return Some(reason);
         }
-        if self.0.code == ErrorCode::Unavailable && self.0.effect == Effect::None
-            && self.0.facts.as_ref().is_some_and(|facts| facts.method == AuthMethod::Gh) {
-            let what = if self.0.setup_cause == Some(SetupFailureCause::NotFound) { "found no `git`" } else { "could not start the `git` it found" };
-            let hint = if cli_hint { "run with --transport native to use libgit2's native transport, as gwz 1.0 did" } else { "set GWZ_TRANSPORT=native to use libgit2's native transport, as gwz 1.0 did" };
-            return Some(format!("SSH authentication needs `git` on PATH: gwz runs `git credential fill` to ask your credential helpers, and {what}. Install or repair git, or {hint}."));
+        if self.0.code == ErrorCode::Unavailable
+            && self.0.effect == Effect::None
+            && self
+                .0
+                .facts
+                .as_ref()
+                .is_some_and(|facts| facts.method == AuthMethod::Gh)
+        {
+            let what = if self.0.setup_cause == Some(SetupFailureCause::NotFound) {
+                "found no `git`"
+            } else {
+                "could not start the `git` it found"
+            };
+            let hint = if cli_hint {
+                "run with --transport native to use libgit2's native transport, as gwz 1.0 did"
+            } else {
+                "set GWZ_TRANSPORT=native to use libgit2's native transport, as gwz 1.0 did"
+            };
+            return Some(format!(
+                "SSH authentication needs `git` on PATH: gwz runs `git credential fill` to ask your credential helpers, and {what}. Install or repair git, or {hint}."
+            ));
         }
         None
     }
     pub(crate) fn model_error(&self, cli_hint: bool) -> Option<crate::model::ModelError> {
         let mut message = self.helper_reason(cli_hint)?;
-        if let Some((attempt, attempts)) = self.1 { message.push_str(&format!(" (attempt {attempt} of {attempts})")); }
-        let code = if self.0.code == gwz_transport::protocol::ErrorCode::Timeout { crate::model::ErrorCode::CredentialHelperTimeout } else { crate::model::ErrorCode::ExternalToolMissing };
+        if let Some((attempt, attempts)) = self.1 {
+            message.push_str(&format!(" (attempt {attempt} of {attempts})"));
+        }
+        let code = if self.0.code == gwz_transport::protocol::ErrorCode::Timeout {
+            crate::model::ErrorCode::CredentialHelperTimeout
+        } else {
+            crate::model::ErrorCode::ExternalToolMissing
+        };
         Some(crate::model::ModelError::new(code, message))
     }
 }

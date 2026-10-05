@@ -12,8 +12,11 @@ pub(super) struct Runner<'a> {
     pub(super) setup: Option<&'a super::super::ssh_setup_context::SetupContext>,
 }
 struct ChildRequest<'a> {
-    args: &'a [&'a str], input: &'a [u8], parameters: Option<&'a [u8]>,
-    limit: usize, preparing: bool,
+    args: &'a [&'a str],
+    input: &'a [u8],
+    parameters: Option<&'a [u8]>,
+    limit: usize,
+    preparing: bool,
 }
 
 impl Runner<'_> {
@@ -22,7 +25,9 @@ impl Runner<'_> {
     }
 
     fn check_with_now(&self, now: impl FnOnce() -> Instant) -> Result<(), AuthError> {
-        if self.setup.is_some_and(|setup| setup.check().is_err()) { return Err(AuthError::Cancelled); }
+        if self.setup.is_some_and(|setup| setup.check().is_err()) {
+            return Err(AuthError::Cancelled);
+        }
         if self.cancelled.is_cancelled() || self.owner.inner.cancelled.is_cancelled() {
             return Err(AuthError::Cancelled);
         }
@@ -40,18 +45,49 @@ impl Runner<'_> {
         limit: usize,
         preparing: bool,
     ) -> Result<SecretBuffer, AuthError> {
-        self.run_finished(ChildRequest { args, input, parameters, limit, preparing }, Ok).await
+        self.run_finished(
+            ChildRequest {
+                args,
+                input,
+                parameters,
+                limit,
+                preparing,
+            },
+            Ok,
+        )
+        .await
     }
 
-    pub(super) async fn run_secret(&self, input: &[u8], parameters: &[u8]) -> Result<Secret, AuthError> {
-        self.run_finished(ChildRequest {
-            args: &["-c", "core.askPass=", "credential", "fill"], input,
-            parameters: Some(parameters), limit: OUTPUT_LIMIT, preparing: false,
-        }, |output| self.parse_answer(&output.0, parse_secret)).await
+    pub(super) async fn run_secret(
+        &self,
+        input: &[u8],
+        parameters: &[u8],
+    ) -> Result<Secret, AuthError> {
+        self.run_finished(
+            ChildRequest {
+                args: &["-c", "core.askPass=", "credential", "fill"],
+                input,
+                parameters: Some(parameters),
+                limit: OUTPUT_LIMIT,
+                preparing: false,
+            },
+            |output| self.parse_answer(&output.0, parse_secret),
+        )
+        .await
     }
 
-    async fn run_finished<T>(&self, request: ChildRequest<'_>, finish: impl FnOnce(SecretBuffer) -> Result<T, AuthError>) -> Result<T, AuthError> {
-        let ChildRequest { args, input, parameters, limit, preparing } = request;
+    async fn run_finished<T>(
+        &self,
+        request: ChildRequest<'_>,
+        finish: impl FnOnce(SecretBuffer) -> Result<T, AuthError>,
+    ) -> Result<T, AuthError> {
+        let ChildRequest {
+            args,
+            input,
+            parameters,
+            limit,
+            preparing,
+        } = request;
         self.check()?;
         let mut command = Command::new(self.executable);
         command
@@ -94,7 +130,9 @@ impl Runner<'_> {
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .env("GIT_CONFIG_NOSYSTEM", "1")
                 .env("GIT_CONFIG_PARAMETERS", OsStr::from_bytes(parameters));
-            if parameters.is_empty() { command.env_remove("GIT_CONFIG_PARAMETERS"); }
+            if parameters.is_empty() {
+                command.env_remove("GIT_CONFIG_PARAMETERS");
+            }
         }
         lookup::configure_process_group(&mut command);
         self.check()?;
@@ -153,21 +191,23 @@ impl Runner<'_> {
         // and recheck the unchanged clock/cancellation while the job still
         // owns its process group and both admission permits.
         let result = self.admit_child_output(result).and_then(finish);
-        self.finish_job(&mut job, result, |result| self.admit_child_output(result)).await.map_err(|error| {
-            if preparing
-                && matches!(
-                    error,
-                    AuthError::HelperRejected
-                        | AuthError::OutputTooLarge
-                        | AuthError::Pipe(_)
-                        | AuthError::Io
-                )
-            {
-                AuthError::ConfigurationRefused
-            } else {
-                error
-            }
-        })
+        self.finish_job(&mut job, result, |result| self.admit_child_output(result))
+            .await
+            .map_err(|error| {
+                if preparing
+                    && matches!(
+                        error,
+                        AuthError::HelperRejected
+                            | AuthError::OutputTooLarge
+                            | AuthError::Pipe(_)
+                            | AuthError::Io
+                    )
+                {
+                    AuthError::ConfigurationRefused
+                } else {
+                    error
+                }
+            })
     }
 
     async fn finish_job<T>(
@@ -189,11 +229,17 @@ impl Runner<'_> {
     }
 
     fn admit_child_output<T>(&self, result: Result<T, AuthError>) -> Result<T, AuthError> {
-        if result.is_ok() { self.check()?; }
+        if result.is_ok() {
+            self.check()?;
+        }
         result
     }
 
-    pub(super) fn parse_answer(&self, output: &[u8], parse: impl FnOnce(&[u8]) -> Result<Secret, AuthError>) -> Result<Secret, AuthError> {
+    pub(super) fn parse_answer(
+        &self,
+        output: &[u8],
+        parse: impl FnOnce(&[u8]) -> Result<Secret, AuthError>,
+    ) -> Result<Secret, AuthError> {
         self.check()?;
         let answer = parse(output);
         self.check()?;

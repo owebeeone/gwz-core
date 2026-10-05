@@ -125,8 +125,13 @@ impl HttpsPool {
         }
     }
     pub(crate) async fn checkout_scoped(
-        &self, key: Key, owner: Owner, allocation_ms: u64, connect_ms: u64,
-        cancel: &CancellationToken, scope: Option<&str>,
+        &self,
+        key: Key,
+        owner: Owner,
+        allocation_ms: u64,
+        connect_ms: u64,
+        cancel: &CancellationToken,
+        scope: Option<&str>,
     ) -> Result<HttpLease, (Failure, Phase)> {
         let other = |failure| (failure, Phase::Other);
         let identity = scope.map_or(Identity::Https, |scope| Identity::HttpsScoped(scope.into()));
@@ -239,8 +244,11 @@ pub(crate) struct HttpLease {
 }
 impl HttpLease {
     pub(crate) fn scope(&self, scope: &str) -> Result<(), Failure> {
-        self.lease.as_ref().ok_or_else(|| https_connection::failure(ErrorCode::Protocol))?
-            .scope_https(scope).map_err(pool_failure)
+        self.lease
+            .as_ref()
+            .ok_or_else(|| https_connection::failure(ErrorCode::Protocol))?
+            .scope_https(scope)
+            .map_err(pool_failure)
     }
     pub(crate) fn finish(mut self, disposition: Disposition) -> Result<(), Failure> {
         self.connection = None;
