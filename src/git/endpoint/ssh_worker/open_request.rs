@@ -130,21 +130,42 @@ impl OpenRequest {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .clone();
-            let error = setup
-                .as_ref()
-                .and_then(|context| match context.clock.observe().deliver() {
-                    gwz_transport::pool::Observation::Terminal(record) => Some(io::Error::other(
-                        gwz_transport::pool::Error::SetupEnded(record),
-                    )),
-                    _ => None,
-                })
-                .unwrap_or_else(|| kind.into());
+            let error = Self::expiry_error(setup.as_ref(), kind);
             let _ = reply.send(Err(EndpointOpenFailure::capture(error, facts, setup)));
             // The bridge's owner polls for the reply between its passes.
             if let Some(waker) = &self.context.waker {
                 waker.wake_by_ref();
             }
         }
+    }
+
+    /// What ends an expired request: its setup's own terminal, which names a
+    /// cancellation or a budget, else `kind`.
+    fn expiry_error(
+        setup: Option<&Arc<ssh_setup_context::SetupContext>>,
+        kind: io::ErrorKind,
+    ) -> io::Error {
+        setup
+            .and_then(|context| match context.clock.observe().deliver() {
+                gwz_transport::pool::Observation::Terminal(record) => Some(io::Error::other(
+                    gwz_transport::pool::Error::SetupEnded(record),
+                )),
+                _ => None,
+            })
+            .unwrap_or_else(|| kind.into())
+    }
+
+    /// Completes a request that `expired` found expired, with the same failure
+    /// `reject` gives it: whichever pass of the worker sees a cancellation
+    /// first, the open fails as cancelled, not as `kind`.
+    pub(in crate::git::endpoint) fn complete_expired(self, kind: io::ErrorKind) {
+        let setup = self
+            .setup_slot
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let error = Self::expiry_error(setup.as_ref(), kind);
+        self.complete(Err(error));
     }
 
     pub(in crate::git::endpoint) fn expired(&self, now: u64) -> bool {

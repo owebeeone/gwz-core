@@ -64,8 +64,12 @@ cfg_if::cfg_if! {
             let threads:Vec<_>=(0..6).map(|_| {let endpoint=endpoint.clone();let key=key.clone();let path=path.clone();let repo=f.repository.clone();std::thread::spawn(move || {
                 let (stream,opened)=attachment::open(&endpoint,key,Some(path),ssh_channel::GitService::UploadPack,repo.to_str().unwrap(),attachment::deadlines(&config(),1000)).unwrap();exchange(stream);opened
             })}).collect();
+            // Each open's pool request is made when its admission is interned, after a duplicate
+            // snapshot's reservation is dropped: six pool requests mean every admission is over.
+            // The shutdown status's admission count is only sampled once per worker pass, before
+            // it takes new requests in, so it reads 0 while admissions are still running.
             let until=Instant::now()+Duration::from_secs(3);
-            while calls.load(Ordering::SeqCst)==0 || endpoint.pending_requests()!=6 || endpoint.shutdown_status().pending_admissions!=0 {assert!(Instant::now()<until);std::thread::sleep(Duration::from_millis(1));}
+            while calls.load(Ordering::SeqCst)==0 || endpoint.pool().outstanding_requests()!=6 {assert!(Instant::now()<until);std::thread::sleep(Duration::from_millis(1));}
             assert_eq!(calls.load(Ordering::SeqCst),1);assert_eq!(r.usage().0,1);release.send(()).unwrap();
             let results:Vec<Opened>=threads.into_iter().map(|t|t.join().unwrap()).collect();
             assert!(results.iter().all(|o|o.connection_id==results[0].connection_id && o.facts.method==AuthMethod::SshKey && o.facts.authenticated==Some(true)));

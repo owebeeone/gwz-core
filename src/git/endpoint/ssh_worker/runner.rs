@@ -156,7 +156,7 @@ pub(super) fn run<C>(
         while index < pending.len() {
             if pending[index].request.expired(now) {
                 let item = pending.swap_remove(index);
-                item.request.complete(Err(io::ErrorKind::TimedOut.into()));
+                item.request.complete_expired(io::ErrorKind::TimedOut);
                 continue;
             }
             let ready = pin!(&mut pending[index].checkout).poll(&mut cx);

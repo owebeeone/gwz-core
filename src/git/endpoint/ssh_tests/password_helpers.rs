@@ -126,7 +126,9 @@ fn run_fault(
             )
             .unwrap();
         let until = Instant::now() + Duration::from_secs(3);
-        while !marker.exists() {
+        // The helper's shell creates the marker before it writes its PID into it, in
+        // one write; a cancel that kills it between the two leaves an empty marker.
+        while !fs::read_to_string(&marker).is_ok_and(|pid| !pid.is_empty()) {
             assert!(Instant::now() < until);
             std::thread::sleep(Duration::from_millis(1));
         }
