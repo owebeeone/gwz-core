@@ -52,7 +52,10 @@ One bounded endpoint runtime drives sockets, connection futures, stream pumps,
 helper pipes, cancellation and pool timers. No thread per request or socket.
 Blocking host facilities (DNS/system trust access) run in bounded owned jobs;
 a timeout does not imply the underlying call stopped. Retain their accounting
-until completion; saturation refuses admission. Runtime teardown never waits
+until completion; saturation refuses admission. (Amended 2026-10-06, operator:
+capacity is a throttle, not an error. Saturation refuses to start a job, and
+the connection waits for a slot within its connect deadline. It never fails a
+member with `Capacity`. Adaptive limits are designed separately.) Runtime teardown never waits
 unboundedly for these jobs. Use the existing SSH job-ownership discipline,
 without putting HTTP work on the SSH agent worker.
 

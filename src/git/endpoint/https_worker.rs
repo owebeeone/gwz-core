@@ -360,7 +360,7 @@ fn validate_content(response: &Response<Incoming>, service: GitService) -> Resul
 }
 cfg_if::cfg_if! { if #[cfg(all(test, unix))] { #[path="https_worker_tests.rs"] mod tests; } }
 cfg_if::cfg_if! { if #[cfg(all(test, unix))] { #[path="https_budget_tests.rs"] mod budget_tests; } }
-cfg_if::cfg_if! { if #[cfg(all(test, unix))] { mod retry_tests; mod helper_budget_tests; mod credential_tests; } }
+cfg_if::cfg_if! { if #[cfg(all(test, unix))] { mod retry_tests; mod helper_budget_tests; mod credential_tests; mod setup_slot_tests; } }
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {

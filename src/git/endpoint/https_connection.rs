@@ -22,13 +22,13 @@ use std::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
-    sync::{Mutex, Semaphore, mpsc},
+    sync::{AcquireError, Mutex, OwnedSemaphorePermit, Semaphore, mpsc},
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
@@ -161,8 +161,14 @@ impl Connection {
         !self.driver.is_finished()
     }
 }
+/// A connection's setup, queued for one of the connector's setup slots.
+struct QueuedSetup {
+    slot: Pin<Box<dyn Future<Output = Result<OwnedSemaphorePermit, AcquireError>> + Send>>,
+    config: Config,
+}
 pub(crate) struct HttpResource {
     identity: Identity,
+    queued: Option<QueuedSetup>,
     setup: Option<Job<Setup>>,
     connecting: Option<JoinHandle<Result<Connection, Failure>>>,
     pub(crate) connection: Option<Arc<Mutex<Connection>>>,
@@ -183,6 +189,8 @@ struct Setup {
 pub(crate) struct HttpConnector {
     pub(crate) config: Config,
     pub(crate) epoch: Instant,
+    /// Bounds the blocking resolver and TLS-configuration jobs. A connection
+    /// past them waits for a slot (`HttpResource::poll_slot`); it is not refused.
     pub(crate) setup_slots: Arc<Semaphore>,
 }
 impl Connector for HttpConnector {
@@ -197,23 +205,64 @@ impl Connector for HttpConnector {
         if key.scheme != Scheme::Https {
             return Err(failure(ErrorCode::UnsupportedOperation));
         }
-        let permit = self
-            .setup_slots
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| failure(ErrorCode::Capacity))?;
-        let config = self.config.clone();
-        let key_copy = key.clone();
         let deadline = deadline.and_then(|ms| self.epoch.checked_add(Duration::from_millis(ms)));
-        let setup = Job::start(deadline, Duration::from_secs(5), move |control| {
+        let mut resource = HttpResource {
+            identity: identity.clone(),
+            queued: Some(QueuedSetup {
+                slot: Box::pin(self.setup_slots.clone().acquire_owned()),
+                config: self.config.clone(),
+            }),
+            setup: None,
+            connecting: None,
+            connection: None,
+            reusable: Arc::new(AtomicBool::new(false)),
+            cancel: CancellationToken::new(),
+            driver_abort: None,
+            deadline,
+            key: key.clone(),
+            disposed: Arc::new(AtomicBool::new(false)),
+            connect_elapsed: Duration::ZERO,
+            connect_started: Instant::now(),
+        };
+        // Queue now, in the pool's order, and start at once when a slot is free.
+        if let Poll::Ready(Err(failed)) =
+            resource.poll_slot(&mut Context::from_waker(Waker::noop()))
+        {
+            return Err(failed);
+        }
+        Ok(resource)
+    }
+}
+impl HttpResource {
+    /// Starts the setup job once one of the connector's setup slots is free.
+    /// The slots bound the blocking resolver and TLS-configuration jobs, not
+    /// the connections: a connection past them waits here, within its connect
+    /// deadline, and the pool's per-host and total ceilings decide how many
+    /// connections exist.
+    fn poll_slot(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Failure>> {
+        let Some(queued) = &mut self.queued else {
+            return Poll::Ready(Ok(()));
+        };
+        if self.deadline.is_some_and(|at| Instant::now() >= at) {
+            return Poll::Ready(Err(Failure {
+                setup_cause: Some(SetupFailureCause::Aggregate),
+                ..failure(ErrorCode::Timeout)
+            }));
+        }
+        let permit = match queued.slot.as_mut().poll(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Ok(permit)) => permit,
+            Poll::Ready(Err(_)) => return Poll::Ready(Err(failure(ErrorCode::Cancelled))),
+        };
+        let config = self.queued.take().expect("queued setup").config;
+        let key = self.key.clone();
+        let setup = Job::start(self.deadline, Duration::from_secs(5), move |control| {
             let _permit = permit;
             control.check()?;
-            let proxy = config.proxy_for(&key_copy.host);
+            let proxy = config.proxy_for(&key.host);
             let (host, port) = proxy
                 .as_ref()
-                .map_or((key_copy.host.as_str(), key_copy.port), |p| {
-                    (p.host.as_str(), p.port)
-                });
+                .map_or((key.host.as_str(), key.port), |p| (p.host.as_str(), p.port));
             let addresses = (host, port).to_socket_addrs()?.take(16).collect::<Vec<_>>();
             control.check()?;
             let mut builder = native_tls::TlsConnector::builder();
@@ -228,24 +277,18 @@ impl Connector for HttpConnector {
             })
         })
         .map_err(|_| failure(ErrorCode::Capacity))?;
-        Ok(HttpResource {
-            identity: identity.clone(),
-            setup: Some(setup),
-            connecting: None,
-            connection: None,
-            reusable: Arc::new(AtomicBool::new(false)),
-            cancel: CancellationToken::new(),
-            driver_abort: None,
-            deadline,
-            key: key.clone(),
-            disposed: Arc::new(AtomicBool::new(false)),
-            connect_elapsed: Duration::ZERO,
-            connect_started: Instant::now(),
-        })
+        self.setup = Some(setup);
+        Poll::Ready(Ok(()))
     }
 }
 impl Resource for HttpResource {
     fn poll_connected(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Identity>, Failure>> {
+        if let Poll::Ready(Err(failed)) = self.poll_slot(cx) {
+            return Poll::Ready(Err(failed));
+        }
+        if self.queued.is_some() {
+            return Poll::Pending;
+        }
         if let Some(setup) = &mut self.setup {
             let result = match setup.poll_result(cx) {
                 Poll::Pending => return Poll::Pending,
@@ -301,6 +344,7 @@ impl Resource for HttpResource {
     fn poll_dispose(&mut self, cx: &mut Context<'_>, _force: bool) -> Poll<io::Result<()>> {
         self.cancel.cancel();
         self.reusable.store(false, Ordering::Release);
+        self.queued = None;
         if let Some(job) = &mut self.setup {
             match job.poll_disposed(cx) {
                 Poll::Pending => return Poll::Pending,
