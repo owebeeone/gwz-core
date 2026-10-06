@@ -39,6 +39,7 @@ pub(crate) mod https_progress;
 pub(crate) mod https_remote;
 pub(crate) mod https_worker;
 pub(crate) mod shared_reservation;
+pub(crate) mod shutdown_watch;
 
 pub(crate) mod https_operation;
 

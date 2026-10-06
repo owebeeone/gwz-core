@@ -9,6 +9,7 @@ use crate::git::endpoint::{
     },
     placement_endpoint::{EndpointError, Outbound},
     shared_reservation::Authority,
+    shutdown_watch::Watch,
 };
 use gwz_transport::{
     protocol::*,
@@ -72,6 +73,8 @@ pub(super) struct HttpsEndpoint {
     runtime: Handle,
     shutdown: Option<oneshot::Sender<()>>,
     stopped: Arc<AtomicBool>,
+    /// Woken when the endpoint's thread has ended and `stopped` is set.
+    watch: Watch,
     entries: BTreeMap<Key, Entry>,
     operations: BTreeMap<String, Operation>,
     endpoint: String,
@@ -117,6 +120,8 @@ impl HttpsEndpoint {
         let (shutdown, stop) = oneshot::channel();
         let stopped = Arc::new(AtomicBool::new(false));
         let finished = stopped.clone();
+        let watch = Watch::default();
+        let ended = watch.clone();
         std::thread::Builder::new().name("gwz-https".into()).spawn(move || {
             let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
                 Ok(runtime) => runtime,
@@ -142,6 +147,7 @@ impl HttpsEndpoint {
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 }
                 finished.store(true, Ordering::Release);
+                ended.notify();
             });
         }).map_err(|_| unavailable("HTTPS supervisor unavailable"))?;
         let (client, runtime) = ready_rx
@@ -153,6 +159,7 @@ impl HttpsEndpoint {
             runtime,
             shutdown: Some(shutdown),
             stopped,
+            watch,
             entries: BTreeMap::new(),
             operations: BTreeMap::new(),
             trust_owner: endpoint.clone(),
@@ -552,4 +559,5 @@ cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
     mod https_cancel_mux_tests;
     mod retry_tests;
     mod stale_action_tests;
+    mod wake_tests;
 } }

@@ -179,6 +179,7 @@ impl PlacementEndpoint {
     pub(crate) fn step(&mut self, now_ms: u64, cx: &mut Context<'_>) -> Result<(), EndpointError> {
         self.now_ms = self.now_ms.max(now_ms);
         self.waker = Some(cx.waker().clone());
+        self.endpoint.watch_shutdown(cx.waker());
         let now_ms = self.now_ms;
         self.finish_checks(now_ms, cx);
         self.finish_opens(now_ms);

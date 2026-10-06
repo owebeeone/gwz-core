@@ -1,6 +1,7 @@
 //! Bounded worker termination with retained physical-pool cleanup.
 use super::{
     agent_job::Cleanup,
+    shutdown_watch::Watch,
     ssh_admission::Admissions,
     ssh_pool::{Connector, PoolHost},
 };
@@ -53,6 +54,7 @@ pub(crate) fn manage<C>(
     mut admissions: Admissions,
     pool: Pool,
     status: Status,
+    watch: Watch,
     retention: Cleanup,
     origin: Instant,
     run: impl FnOnce(&mut PoolHost<C>, &mut Admissions),
@@ -73,9 +75,13 @@ pub(crate) fn manage<C>(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .cleanup_complete = true;
+        watch.notify();
         return;
     }
     fail(&status, io::ErrorKind::TimedOut);
+    // The retained cleanup runs on the supervisor's cadence; what the worker's
+    // end left pending is already in the status.
+    watch.notify();
     retention.retain(move || {
         let mut cx = Context::from_waker(Waker::noop());
         if host
@@ -97,6 +103,7 @@ pub(crate) fn manage<C>(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .cleanup_complete = true;
+            watch.notify();
             true
         } else {
             false

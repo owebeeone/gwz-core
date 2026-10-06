@@ -34,12 +34,16 @@ mod local_link;
 mod passes;
 mod port;
 mod requests;
+cfg_if::cfg_if! { if #[cfg(all(test, unix))] { mod wake_tests; } }
 mod wait;
 pub(crate) use driver::SshOpenFailure;
 pub(super) use local_link::LocalLink;
 use wait::Wait;
 pub type Attachment = (String, Envelope);
 const CLEANUP: Duration = Duration::from_secs(5);
+/// How long the placement thread parks when a pass moved nothing: the longest
+/// it can miss a deadline. Whatever gives a pass work wakes it before that.
+const PARK: Duration = Duration::from_millis(5);
 const CHECK_MS: u64 = 120_000;
 pub(super) fn limits() -> Limits {
     let mut limits = binding::default_limits();
@@ -196,6 +200,8 @@ cfg_if::cfg_if! {
             waiting_retirement: AtomicBool,
             hold_pump: AtomicBool,
             pumps: std::sync::atomic::AtomicUsize,
+            park_ms: AtomicU64,
+            passes: std::sync::atomic::AtomicUsize,
         }
         impl TestHooks {
             fn new() -> Self {
@@ -204,7 +210,17 @@ cfg_if::cfg_if! {
                     waiting_retirement: AtomicBool::new(false),
                     hold_pump: AtomicBool::new(false),
                     pumps: std::sync::atomic::AtomicUsize::new(0),
+                    park_ms: AtomicU64::new(PARK.as_millis() as u64),
+                    passes: std::sync::atomic::AtomicUsize::new(0),
                 }
+            }
+            /// How long the placement thread parks when a pass moved nothing.
+            fn park(&self) -> Duration {
+                Duration::from_millis(self.park_ms.load(Ordering::Acquire))
+            }
+            /// A pass is done and the placement thread is about to park.
+            fn passed(&self) {
+                self.passes.fetch_add(1, Ordering::AcqRel);
             }
             fn should_hold_pump(&self) -> bool {
                 self.hold_pump.load(Ordering::Acquire)
@@ -225,6 +241,8 @@ cfg_if::cfg_if! {
         struct TestHooks;
         impl TestHooks {
             fn new() -> Self { Self }
+            fn park(&self) -> Duration { PARK }
+            fn passed(&self) {}
             fn should_hold_retirement(&self) -> bool { false }
             fn should_hold_pump(&self) -> bool { false }
             fn pumped(&self) {}
@@ -293,6 +311,15 @@ impl Session {
         }
         pub(super) fn pumps_for_test(&self) -> usize {
             self.test_hooks.pumps.load(Ordering::Acquire)
+        }
+        /// Makes the placement thread park for `park` between passes that
+        /// moved nothing, so that a test can tell a wake from the timeout.
+        pub(super) fn park_for_test(&self, park: Duration) {
+            self.test_hooks.park_ms.store(park.as_millis() as u64, Ordering::Release);
+        }
+        /// The passes the placement thread has finished.
+        pub(super) fn passes_for_test(&self) -> usize {
+            self.test_hooks.passes.load(Ordering::Acquire)
         }
         pub(super) fn hold_retirement_for_test(&self) {
             self.test_hooks.hold_retirement.store(true, Ordering::Release);

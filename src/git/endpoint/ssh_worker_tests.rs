@@ -273,3 +273,83 @@ fn an_open_cancelled_while_connecting_fails_cancelled_whichever_pass_sees_it() {
         .failure;
     assert_eq!(failure.code, ErrorCode::Cancelled);
 }
+
+fn bridge_context() -> BridgeContext {
+    BridgeContext {
+        session_id: "session".into(),
+        stream_id: 1,
+        version: 2,
+        limits: gwz_transport::binding::default_limits(),
+        deadlines: Deadlines {
+            allocation_ms: 1_000,
+            connect_ms: 1_000,
+            io_ms: 1_000,
+            interaction_ms: 1_000,
+            cleanup_ms: 1_000,
+        },
+        waker: None,
+    }
+}
+
+/// The pump relays the server's output into the endpoint end of the bridged
+/// stream and reads from it only to take the client's input, which a fetch's
+/// advertisement never is: nothing forces a send, so what the pump writes must
+/// not wait out a coalescing window to reach Git (TR8.1: 100 ms per command).
+#[test]
+fn the_endpoint_end_sends_what_the_pump_writes_without_a_coalescing_window() {
+    let (stream, endpoint) = Stream::new(stream_config(&bridge_context(), Side::Endpoint)).unwrap();
+    endpoint.advance(0);
+    let mut cx = Context::from_waker(Waker::noop());
+    let advertisement = b"001e# service=git-upload-pack\n";
+    assert!(matches!(
+        pin!(stream.write(advertisement)).poll(&mut cx),
+        Poll::Ready(Ok(count)) if count == advertisement.len()
+    ));
+    // No time passes: the message is there at once, not at a batch deadline.
+    match pin!(endpoint.next_message()).poll(&mut cx) {
+        Poll::Ready(Ok(Some(message))) => {
+            assert_eq!(message.kind, gwz_transport::protocol::MessageKind::Data);
+            assert_eq!(message.data.unwrap().payload, advertisement);
+        }
+        other => panic!("the written bytes were held back: {other:?}"),
+    }
+}
+
+/// Counts the times it is woken.
+#[derive(Default)]
+struct Wakes(AtomicUsize);
+impl Wake for Wakes {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// A placement session parks between passes and learns that the worker has
+/// ended, and its cleanup with it, only by being woken or by its next timer
+/// tick, which is up to 5 ms of each command's shutdown (TR8.1).
+#[test]
+fn the_worker_wakes_its_watcher_when_its_shutdown_has_settled() {
+    let endpoint = Endpoint::with_registry(
+        PoolConfig::default(),
+        Registry::new(),
+        |_, _| Refuse(Arc::default()),
+        100,
+    )
+    .unwrap();
+    let wakes = Arc::new(Wakes::default());
+    endpoint.watch_shutdown(&Waker::from(wakes.clone()));
+    let status = endpoint.shutdown_watch();
+    endpoint.shutdown();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while wakes.0.load(Ordering::SeqCst) == 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the worker ended and did not wake its watcher"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+    assert!(
+        status.status().cleanup_complete,
+        "the watcher was woken before the worker's cleanup was complete"
+    );
+}

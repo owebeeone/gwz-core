@@ -48,6 +48,8 @@ impl Endpoint {
         let worker_stop = stop.clone();
         let status = Status::default();
         let worker_status = status.clone();
+        let watch = Watch::default();
+        let worker_watch = watch.clone();
         let client_pool = pool.clone();
         let join = thread::Builder::new()
             .name("gwz-ssh-endpoint".into())
@@ -59,6 +61,7 @@ impl Endpoint {
                     Admissions::new(registry, reader, origin, cleanup),
                     pool,
                     worker_status,
+                    worker_watch,
                     retention,
                     origin,
                     |host, admissions| {
@@ -90,6 +93,7 @@ impl Endpoint {
                 origin,
                 join: Mutex::new(Some(join)),
                 status,
+                watch,
                 handoff,
             }),
             cleanup: Duration::from_millis(cleanup),
@@ -236,6 +240,12 @@ impl Endpoint {
         }
         self.shared.worker.unpark();
         Ok(PendingOpen { reply: result })
+    }
+    /// Has `waker` woken when the worker has ended and its shutdown status
+    /// has settled, as a watcher with work of its own to do after (a placement
+    /// session that waits for the worker's cleanup to close).
+    pub(crate) fn watch_shutdown(&self, waker: &Waker) {
+        self.shared.watch.register(waker);
     }
     pub(crate) fn shutdown_status(&self) -> ShutdownStatus {
         *self.shared.status.lock().unwrap_or_else(|e| e.into_inner())

@@ -27,12 +27,14 @@ impl Session {
                             && state.https.as_ref().is_none_or(|e| e.pending() == 0)
                     };
                     session.event.signal();
+                    let park = session.test_hooks.park();
+                    session.test_hooks.passed();
                     drop(session);
                     if done {
                         break;
                     }
                     if !moved {
-                        thread::park_timeout(Duration::from_millis(5));
+                        thread::park_timeout(park);
                     }
                 }
             })

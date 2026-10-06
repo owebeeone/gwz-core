@@ -329,5 +329,82 @@ cfg_if::cfg_if! {
             paused.resume();
         }
 
+        /// A wait for the server's reply ends when the reply arrives. A sleep
+        /// of a control quantum (20 ms) instead puts that much on every
+        /// exchange of a login (a query and a signed request per key), which
+        /// is every command of TR8.1's fetch, where it was a tenth of the gap
+        /// to 1.0.17. A loopback server answers a request in a few
+        /// milliseconds, so the shortest wait, from a native call that returned
+        /// EAGAIN to the next call, over several logins is far below a quantum
+        /// unless one is slept: then no wait is under 20 ms.
+        #[test]
+        fn a_wait_for_the_server_ends_when_it_replies_not_after_a_quantum() {
+            let mut shortest = Duration::MAX;
+            for _ in 0..5 {
+                // The fixture's agent serves one connection.
+                let fixture = support::Fixture::new("ssh-ed25519", false);
+                let (connection, host) = fixture.prepared("ssh-ed25519");
+                let control = agent_job::Control::scripted(
+                    None,
+                    Duration::ZERO,
+                    Duration::from_secs(5),
+                    agent_job::wall_clock(),
+                );
+                let path = fixture.path.clone();
+                let user = fixture.ssh.user.clone();
+                let mut waiting: Option<Instant> = None;
+                let connection = agent_auth::observed_authenticate(
+                    connection,
+                    &user,
+                    &host,
+                    control.clone(),
+                    || agent_socket::connect(&path, control),
+                    |_, rc| {
+                        let now = Instant::now();
+                        if let Some(since) = waiting.take() {
+                            shortest = shortest.min(now - since);
+                        }
+                        if rc == libssh2_sys::LIBSSH2_ERROR_EAGAIN {
+                            waiting = Some(now);
+                        }
+                    },
+                )
+                .unwrap();
+                drop(connection);
+            }
+            println!("shortest wait for the server in a login: {shortest:?}");
+            assert!(
+                shortest < Duration::from_millis(10),
+                "no wait for the server ended in under {shortest:?}: a quantum is slept, not the server awaited"
+            );
+        }
+
+        /// The stall clock still runs while a login waits on a server that
+        /// never replies: readiness, not sleeping, is what completes a wait.
+        #[test]
+        fn a_login_against_a_silent_server_expires_as_a_stall() {
+            use agent_job::{TimeoutReason, timeout_reason};
+            let fixture = support::Fixture::new("ssh-ed25519", false);
+            let (connection, host) = fixture.prepared("ssh-ed25519");
+            let mut paused = common::pause_process_tree(fixture.ssh.child.id());
+            let path = fixture.path.clone();
+            let user = fixture.ssh.user.clone();
+            let mut job = Job::start_timed(
+                Some(Instant::now() + Duration::from_secs(5)),
+                Duration::from_millis(300),
+                Duration::from_secs(1),
+                agent_job::wall_clock(),
+                move |control| {
+                    agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || {
+                        agent_socket::connect(&path, control)
+                    }, || {}, || {})
+                },
+            )
+            .unwrap();
+            let error = finish(&mut job).err().unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            assert_eq!(timeout_reason(&error), Some(TimeoutReason::Stall));
+            paused.resume();
+        }
     }
 }

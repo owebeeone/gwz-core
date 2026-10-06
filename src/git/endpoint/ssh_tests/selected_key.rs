@@ -183,6 +183,40 @@ cfg_if::cfg_if! {
                 assert_eq!(r.usage(), (0, 0));
             }
         }
+        /// A selected key's login waits for the server's replies, not for a
+        /// quantum (20 ms) at each: it takes two exchanges, which a slept
+        /// quantum makes 40 ms at the least (47 ms measured); awaiting the
+        /// server takes about 18 ms, most of it signing and sshd's checks.
+        #[test]
+        fn a_selected_key_login_waits_for_the_server_not_for_a_quantum() {
+            let f = common::SshdFixture::new();
+            let key = Key::ssh(&f.user, "127.0.0.1", f.port);
+            let r = Registry::new();
+            let path = f.temp.path().join("client_ed25519");
+            let entry = load(&r, key.clone(), &path).unwrap();
+            let mut fastest = Duration::MAX;
+            for _ in 0..5 {
+                let (key, known, pin) = (key.clone(), f.known_hosts.clone(), entry.clone());
+                let mut job = Job::start(
+                    Some(Instant::now() + Duration::from_secs(5)),
+                    Duration::from_secs(1),
+                    move |c| {
+                        let (conn, host) = ssh_network::establish(&key, &known, &c)?;
+                        let started = Instant::now();
+                        let verified = ssh_key_auth::authenticate_reporting(conn, &host, pin, c, || {}, || {})?;
+                        drop(verified);
+                        Ok(started.elapsed())
+                    },
+                )
+                .unwrap();
+                fastest = fastest.min(finish(&mut job).unwrap());
+            }
+            println!("fastest selected-key login: {fastest:?}");
+            assert!(
+                fastest < Duration::from_millis(35),
+                "no login took under {fastest:?}: a quantum is slept, not the server awaited"
+            );
+        }
         #[test]
         fn malformed_unencrypted_material_is_not_native_proof() {
             let f = common::SshdFixture::new();

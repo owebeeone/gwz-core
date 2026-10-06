@@ -1,5 +1,7 @@
 //! In-memory explicit-key authentication; no agent, path reopen or fallback.
-use super::{agent_job::Control, ssh_connection::SshConnection, ssh_key_snapshot::Entry};
+use super::{
+    agent_job::Control, ssh_connection::SshConnection, ssh_key_snapshot::Entry, ssh_network,
+};
 use std::{io, sync::Arc};
 /// The connection is destroyed before its snapshot pin on every rejected handoff.
 pub(crate) struct Verified {
@@ -59,7 +61,9 @@ cfg_if::cfg_if! {
                     Err(error)
                         if error.code() == ssh2::ErrorCode::Session(libssh2_sys::LIBSSH2_ERROR_EAGAIN) =>
                     {
-                        std::thread::sleep(control.quantum()?);
+                        // A wait on the server's reply: it ends when the socket is
+                        // ready, within the control's quantum, stall and aggregate bounds.
+                        ssh_network::wait_session(&mut owner.connection, &control)?;
                     }
                     Err(error)
                         if error.code()

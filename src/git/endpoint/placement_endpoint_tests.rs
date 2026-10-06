@@ -439,3 +439,32 @@ fn open_ceiling_keeps_half_the_job_budget_for_the_setups_that_opens_start() {
     assert_eq!(ceiling(3, 1_000), 3);
     assert_eq!(ceiling(1_000, 2), 2);
 }
+
+/// Whoever steps the endpoint is the one its worker wakes at the end of the
+/// worker's shutdown: the host's placement thread, which closes the session
+/// once the endpoint has nothing pending.
+#[test]
+fn stepping_the_endpoint_has_its_worker_wake_the_stepper_when_the_shutdown_settles() {
+    struct Wakes(std::sync::atomic::AtomicUsize);
+    impl std::task::Wake for Wakes {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let mut endpoint = fixture();
+    let wakes = Arc::new(Wakes(Default::default()));
+    let waker = std::task::Waker::from(wakes.clone());
+    endpoint.step(0, &mut Context::from_waker(&waker)).unwrap();
+    let before = wakes.0.load(std::sync::atomic::Ordering::SeqCst);
+    endpoint.shutdown();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !endpoint.endpoint.shutdown_status().cleanup_complete
+        || wakes.0.load(std::sync::atomic::Ordering::SeqCst) == before
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the worker's shutdown settled without waking the stepper"
+        );
+        thread::sleep(Duration::from_millis(1));
+    }
+}

@@ -7,6 +7,7 @@ impl HttpsEndpoint {
         cx: &mut Context<'_>,
     ) -> Result<(), EndpointError> {
         self.now_ms = self.now_ms.max(now);
+        self.watch.register(cx.waker());
         for operation in self.operations.values_mut() {
             for retry in operation.retries.values_mut() {
                 if retry

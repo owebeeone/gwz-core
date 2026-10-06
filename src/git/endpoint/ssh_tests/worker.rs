@@ -7,11 +7,14 @@ use crate::git::endpoint::{
     ssh_key_snapshot::Registry,
     ssh_pool::{Connector, Resource},
     ssh_pump::SshPump,
+    ssh_remote::{OpenStream, RemoteTransport},
     ssh_worker::{ChannelResource, Endpoint},
+    stream_io::BlockingStream,
 };
+use git2::{PushOptions, RemoteCallbacks, Repository, Signature};
 use gwz_transport::{
     pool::{Config as PoolConfig, Identity, Key},
-    protocol::{Effect, ErrorCode, Failure},
+    protocol::{Deadlines, Effect, ErrorCode, Failure},
     stream::{MessageEndpoint, Stream},
 };
 use std::{
@@ -428,5 +431,88 @@ fn failed_active_service_does_not_stop_another_active_stream() {
     let mut header = [0; 4];
     healthy.read_exact(&mut header).unwrap();
     assert!(header.iter().all(u8::is_ascii_hexdigit));
+    endpoint.shutdown();
+}
+
+/// Opens every Git stream on one repository of the fixture through the
+/// worker, as the placement endpoint's attachment path does.
+struct WorkerStreams {
+    endpoint: Endpoint,
+    key: Key,
+    repository: String,
+    deadlines: Deadlines,
+}
+impl OpenStream for WorkerStreams {
+    fn open(&self, _: &str, service: GitService) -> io::Result<BlockingStream> {
+        attachment::open(
+            &self.endpoint,
+            self.key.clone(),
+            None,
+            service,
+            &self.repository,
+            self.deadlines.clone(),
+        )
+        .map(|(stream, _)| stream)
+    }
+}
+
+/// A commit of `len` bytes that no pack compresses.
+fn incompressible_commit(repo: &Repository, len: usize) -> git2::Oid {
+    let mut state = 0x9e37_79b9_u32;
+    let data: Vec<u8> = (0..len)
+        .map(|_| {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (state >> 24) as u8
+        })
+        .collect();
+    let blob = repo.blob(&data).unwrap();
+    let mut builder = repo.treebuilder(None).unwrap();
+    builder.insert("payload", blob, 0o100644).unwrap();
+    let tree = repo.find_tree(builder.write().unwrap()).unwrap();
+    let signature = Signature::now("fixture", "fixture@example.invalid").unwrap();
+    repo.set_head("refs/heads/main").unwrap();
+    repo.commit(Some("HEAD"), &signature, &signature, "payload", &tree, &[])
+        .unwrap()
+}
+
+/// A push streams its pack to the server and then reads only the server's
+/// report: the worker's endpoint end must neither lose nor stall what
+/// follows the pack, whatever its coalescing. The time is printed for the
+/// before and after of TR8.1's change to that end (TR8.1, 2026-10-07).
+#[test]
+fn a_large_push_through_the_worker_delivers_its_pack_and_the_servers_report() {
+    let mut fixture = common::SshdFixture::new();
+    let session = authenticated(&mut fixture);
+    let endpoint = endpoint(
+        config(1),
+        NativeConnector {
+            sessions: vec![session],
+        },
+        10_000,
+    );
+    let streams = Arc::new(WorkerStreams {
+        key: key(&fixture),
+        repository: fixture.repository.to_str().unwrap().to_owned(),
+        deadlines: attachment::deadlines(&config(1), 10_000),
+        endpoint: endpoint.clone(),
+    });
+    let source = Repository::init(fixture.temp.path().join("source")).unwrap();
+    let pushed = incompressible_commit(&source, 4 * 1024 * 1024);
+    let mut remote = source.remote_anonymous("ssh://worker/repository").unwrap();
+    let mut callbacks = RemoteCallbacks::new();
+    callbacks.smart_transport(false, move |_| Ok(RemoteTransport::new(streams.clone())));
+    let mut options = PushOptions::new();
+    options.remote_callbacks(callbacks);
+    let started = std::time::Instant::now();
+    remote
+        .push(&["refs/heads/main:refs/heads/main"], Some(&mut options))
+        .unwrap();
+    println!("push of 4 MiB through the worker: {:?}", started.elapsed());
+    remote.disconnect().unwrap();
+    let served = Repository::open_bare(&fixture.repository).unwrap();
+    assert_eq!(
+        served.find_reference("refs/heads/main").unwrap().target(),
+        Some(pushed)
+    );
     endpoint.shutdown();
 }

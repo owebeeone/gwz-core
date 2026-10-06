@@ -101,6 +101,9 @@ impl Session {
                 });
             }
         }
+        drop(state);
+        // The placement pass that publishes the result must not wait out its park.
+        self.wake();
     }
     pub(in crate::transport_host) async fn finish(&self, request: &str) -> CleanupReport {
         self.seal(request);

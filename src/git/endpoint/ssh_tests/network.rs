@@ -131,28 +131,6 @@ cfg_if::cfg_if! {
         }
 
         #[test]
-        fn production_agent_eagain_sleep_does_not_reset_stall() {
-            use agent_job::{Control, ManualClock, TimeoutReason, timeout_reason};
-            let clock = ManualClock::new();
-            let aggregate = clock.now() + Duration::from_secs(10);
-            let control = Control::scripted(
-                Some(aggregate),
-                Duration::from_secs(1),
-                Duration::from_secs(5),
-                clock.clock(),
-            );
-            for _ in 0..2 {
-                agent_auth::wait_eagain(&control, |_| clock.advance(Duration::from_millis(400)))
-                    .unwrap();
-            }
-            let error = agent_auth::wait_eagain(&control, |_| {
-                clock.advance(Duration::from_millis(200));
-            })
-            .unwrap_err();
-            assert!(clock.now() < aggregate);
-            assert_eq!(timeout_reason(&error), Some(TimeoutReason::Stall));
-        }
-        #[test]
         fn fresh_network_setup_authenticates_and_reuses_in_the_shared_pool() {
             let fixture = support::Fixture::new("ssh-ed25519", false);
             let known = fixture.ssh.known_hosts.clone();

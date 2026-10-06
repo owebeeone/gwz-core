@@ -15,6 +15,9 @@ impl Session {
         Self::close_state(&mut state);
         drop(state);
         self.event.signal();
+        // The placement pass that retires what the close left must not wait
+        // out its park.
+        self.wake();
     }
     pub(super) fn close_state(state: &mut State) {
         state.closed = true;

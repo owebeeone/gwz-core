@@ -4,6 +4,7 @@
 use super::{
     agent_job::{Cleanup, Job},
     setup_retry::{self, Phase},
+    shutdown_watch::Watch,
     ssh_admission::{Admissions, Reader},
     ssh_channel::{GitService, SshChannel},
     ssh_handoff::{Handoff, UrlExtras},
@@ -72,6 +73,7 @@ struct Shared {
     origin: Instant,
     join: Mutex<Option<JoinHandle<()>>>,
     status: Status,
+    watch: Watch,
     /// The handoff from which each open takes what its URL holds beyond its
     /// destination, when a driver in this process deposited any (TR2.18).
     handoff: Handoff,
@@ -197,6 +199,30 @@ impl Drop for StopOnExit {
         self.0.store(true, Ordering::Release);
     }
 }
+/// The configuration of one end of an open's bridged stream.
+fn stream_config(context: &BridgeContext, side: Side) -> StreamConfig {
+    let mut config = StreamConfig::new(&context.session_id, context.stream_id, side);
+    config.profile_version = 2;
+    let limits = &context.limits;
+    config.receive_limits = limits.clone();
+    config.peer_limits = limits.clone();
+    config.receive_window = (limits.receive_window as usize).min(65_536);
+    config.peer_receive_window = (limits.receive_window as usize).min(65_536);
+    config.max_payload = (limits.data_payload as usize).min(16_384);
+    let d = &context.deadlines;
+    config.io_timeout_ms = d.io_ms as u64;
+    config.interaction_budget_ms = d.interaction_ms as u64;
+    config.close_timeout_ms = d.cleanup_ms as u64;
+    if side == Side::Endpoint {
+        // The pump reads from this end only to take the client's input, so
+        // while it relays the server's reply nothing forces a send: left to
+        // the default batch window, an advertisement waits it out (100 ms)
+        // before it reaches Git. The bridge is in-process, so there is
+        // nothing to coalesce for.
+        config.coalesce_delay_ms = 0;
+    }
+    config
+}
 fn attach<C: Connector>(
     host: &mut PoolHost<C>,
     lease: Lease,
@@ -212,21 +238,7 @@ where
         return Err(io::ErrorKind::TimedOut.into());
     }
     let context = &request.context;
-    let config = |side| {
-        let mut config = StreamConfig::new(&context.session_id, context.stream_id, side);
-        config.profile_version = 2;
-        let limits = &context.limits;
-        config.receive_limits = limits.clone();
-        config.peer_limits = limits.clone();
-        config.receive_window = (limits.receive_window as usize).min(65_536);
-        config.peer_receive_window = (limits.receive_window as usize).min(65_536);
-        config.max_payload = (limits.data_payload as usize).min(16_384);
-        let d = &context.deadlines;
-        config.io_timeout_ms = d.io_ms as u64;
-        config.interaction_budget_ms = d.interaction_ms as u64;
-        config.close_timeout_ms = d.cleanup_ms as u64;
-        config
-    };
+    let config = |side| stream_config(context, side);
     let (client, peer) = Stream::new(config(Side::Initiator)).map_err(io::Error::other)?;
     let (stream, endpoint) = Stream::new(config(Side::Endpoint)).map_err(io::Error::other)?;
     peer.advance(now);

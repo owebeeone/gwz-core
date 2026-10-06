@@ -8,6 +8,7 @@ cfg_if::cfg_if! {
                 agent_job::Control,
                 agent_keys::{self, KeyType, Signed},
                 ssh_connection::SshConnection,
+                ssh_network,
             };
             use libssh2_sys::{
                 LIBSSH2_ERROR_ALGO_UNSUPPORTED, LIBSSH2_ERROR_AUTHENTICATION_FAILED, LIBSSH2_ERROR_EAGAIN,
@@ -127,9 +128,10 @@ cfg_if::cfg_if! {
                             return Ok(connection);
                         }
                         if rc == LIBSSH2_ERROR_EAGAIN {
-                            // Bounded polling fallback: no hidden blocking native agent calls.
-                            // Sleep is not a completion; the stall keeps running.
-                            wait_eagain(&control, std::thread::sleep)?;
+                            // A wait on the server's reply, which ends when the
+                            // session's socket is ready, within the control's quantum,
+                            // stall and aggregate bounds. The agent's own waits are in `sign`.
+                            ssh_network::wait_session(&mut connection, &control)?;
                         } else if rc == LIBSSH2_ERROR_AUTHENTICATION_FAILED {
                             break; // Server rejected this key; attempt the next listed identity once.
                         } else if signer.refused || rc == LIBSSH2_ERROR_METHOD_NONE {
@@ -150,15 +152,6 @@ cfg_if::cfg_if! {
                     }
                 }
                 Err(io::ErrorKind::PermissionDenied.into())
-            }
-            pub(crate) fn wait_eagain(
-                control: &Control,
-                pause: impl FnOnce(std::time::Duration),
-            ) -> io::Result<()> {
-                control.begin_wait()?;
-                let duration = control.quantum()?;
-                pause(duration);
-                control.check()
             }
             cfg_if::cfg_if! {
                 if #[cfg(test)] {
@@ -280,11 +273,6 @@ cfg_if::cfg_if! {
             }
         }
         pub(crate) use unix::authenticate_reporting;
-        cfg_if::cfg_if! {
-            if #[cfg(test)] {
-                pub(crate) use unix::wait_eagain;
-            }
-        }
         cfg_if::cfg_if! {
             if #[cfg(test)] { pub(crate) use unix::observed_authenticate; }
         }
