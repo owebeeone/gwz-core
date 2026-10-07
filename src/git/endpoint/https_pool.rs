@@ -120,10 +120,15 @@ impl HttpsPool {
         connect_ms: u64,
         cancel: &CancellationToken,
     ) -> Result<HttpLease, (Failure, Phase)> {
-        self.checkout_scoped(key, owner, allocation_ms, connect_ms, cancel, None).await
+        self.checkout_scoped(key, owner, allocation_ms, connect_ms, cancel, None, false)
+            .await
     }
         }
     }
+    /// Leases a connection for `key`, a new one when `fresh`. A reused
+    /// connection found dead before any byte is released, and the checkout is
+    /// made once more, fresh (dev-docs/GwzTransportIdleLossDesign.md §6.1).
+    #[allow(clippy::too_many_arguments)] // One pool request's fields, and its cancellation.
     pub(crate) async fn checkout_scoped(
         &self,
         key: Key,
@@ -132,13 +137,37 @@ impl HttpsPool {
         connect_ms: u64,
         cancel: &CancellationToken,
         scope: Option<&str>,
+        fresh: bool,
     ) -> Result<HttpLease, (Failure, Phase)> {
-        let other = |failure| (failure, Phase::Other);
+        let started = Instant::now();
         let identity = scope.map_or(Identity::Https, |scope| Identity::HttpsScoped(scope.into()));
         let mut request = Request::new(key, identity, owner);
         request.connect_timeout_ms = Some(connect_ms);
         request.allocation_timeout_ms = Some(allocation_ms);
-        let started = Instant::now();
+        request.fresh = fresh;
+        let lease = self.lease(request.clone(), cancel).await?;
+        match self.adopt(lease, started)? {
+            Adopted::Lease(lease) => Ok(lease),
+            Adopted::Dead => {
+                // A fresh request never gets a reused connection, so this
+                // second lease cannot be Dead.
+                request.fresh = true;
+                let remaining = allocation_ms.saturating_sub(started.elapsed().as_millis() as u64);
+                request.allocation_timeout_ms = Some(remaining.max(1));
+                let lease = self.lease(request, cancel).await?;
+                match self.adopt(lease, started)? {
+                    Adopted::Lease(lease) => Ok(lease),
+                    Adopted::Dead => Err((https_connection::failure(ErrorCode::Io), Phase::Other)),
+                }
+            }
+        }
+    }
+    async fn lease(
+        &self,
+        request: Request,
+        cancel: &CancellationToken,
+    ) -> Result<Lease, (Failure, Phase)> {
+        let other = |failure| (failure, Phase::Other);
         let checkout = {
             let mut host = self.host.lock().unwrap_or_else(|e| e.into_inner());
             let now = self.now();
@@ -158,13 +187,22 @@ impl HttpsPool {
                 .map_err(other)?;
             checkout
         };
-        let lease = tokio::select! {
+        tokio::select! {
             result = checkout => result.map_err(|error| {
                 let phase = setup_retry::phase_of(&error);
                 (pool_failure(error), phase)
-            })?,
-            _ = cancel.cancelled() => return Err(other(https_connection::failure(ErrorCode::Cancelled))),
-        };
+            }),
+            _ = cancel.cancelled() => Err(other(https_connection::failure(ErrorCode::Cancelled))),
+        }
+    }
+    /// Takes `lease`'s connection for one exchange, unless it was reused and
+    /// is already dead: then it is released and the caller asks again, fresh.
+    pub(crate) fn adopt(
+        &self,
+        lease: Lease,
+        started: Instant,
+    ) -> Result<Adopted, (Failure, Phase)> {
+        let other = |failure| (failure, Phase::Other);
         let (
             connection,
             reusable,
@@ -175,6 +213,16 @@ impl HttpsPool {
             reused,
         ) = {
             let mut host = self.host.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(reused) = host.lost(&lease) {
+                host.release(lease, Disposition::Discarded)
+                    .map_err(pool_failure)
+                    .map_err(other)?;
+                return if reused {
+                    Ok(Adopted::Dead)
+                } else {
+                    Err(other(https_connection::failure(ErrorCode::Io)))
+                };
+            }
             let reused = host
                 .allocation_reused(&lease)
                 .map_err(pool_failure)
@@ -185,7 +233,14 @@ impl HttpsPool {
                 .map_err(other)?
                 .inner_mut();
             if !resource.reusable() {
-                return Err(other(https_connection::failure(ErrorCode::Io)));
+                host.release(lease, Disposition::Discarded)
+                    .map_err(pool_failure)
+                    .map_err(other)?;
+                return if reused {
+                    Ok(Adopted::Dead)
+                } else {
+                    Err(other(https_connection::failure(ErrorCode::Io)))
+                };
             }
             resource.reusable.store(false, Ordering::Release);
             (
@@ -216,7 +271,7 @@ impl HttpsPool {
             "https-{:?}",
             lease.connection().map_err(pool_failure).map_err(other)?
         );
-        Ok(HttpLease {
+        Ok(Adopted::Lease(HttpLease {
             lease: Some(lease),
             connection: Some(connection),
             host: self.host.clone(),
@@ -227,8 +282,14 @@ impl HttpsPool {
             allocation_elapsed,
             id,
             reused,
-        })
+        }))
     }
+}
+/// What a lease turned out to be (`HttpsPool::adopt`).
+pub(crate) enum Adopted {
+    Lease(HttpLease),
+    /// A reused connection found dead before any byte; already released.
+    Dead,
 }
 pub(crate) struct HttpLease {
     lease: Option<Lease>,
@@ -281,6 +342,11 @@ fn pool_failure(error: pool::Error) -> Failure {
     Failure {
         setup_cause,
         ..https_connection::failure(code)
+    }
+}
+cfg_if::cfg_if! {
+    if #[cfg(all(test, unix))] {
+        mod idle_tests;
     }
 }
 cfg_if::cfg_if! {

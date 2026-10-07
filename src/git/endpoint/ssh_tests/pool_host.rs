@@ -23,6 +23,8 @@ struct State {
     fail_connect: bool,
     fail_dispose: bool,
     forced: usize,
+    /// The peer closed the connection while the resource was idle.
+    lost: bool,
 }
 struct Fake(Arc<Mutex<State>>, bool);
 struct Factory(Arc<Mutex<State>>);
@@ -70,6 +72,13 @@ impl Resource for Fake {
     }
     fn reusable(&self) -> bool {
         self.0.lock().unwrap().reusable
+    }
+    fn poll_idle_lost(&mut self, _: &mut Context<'_>) -> Poll<()> {
+        if self.0.lock().unwrap().lost {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
     }
 }
 impl Drop for Fake {
@@ -241,5 +250,73 @@ fn exact_connect_deadline_beats_ready_and_disposal_error_keeps_capacity() {
     assert_eq!(state.lock().unwrap().disposed, 1);
     pool.shutdown();
     tick(&mut host, 10_012);
+    assert!(host.shutdown_complete());
+}
+
+/// One idle connection, its lease released reusable.
+fn idle(pool: &Pool, host: &mut PoolHost<Factory>) -> gwz_transport::pool::ConnectionId {
+    let mut first = pool.checkout(request("one")).unwrap();
+    tick(host, 10_000);
+    let lease = take(&mut first);
+    let id = lease.connection().unwrap();
+    host.release(lease, Disposition::Reusable).unwrap();
+    assert_eq!(pool.counts().idle, 1);
+    id
+}
+
+#[test]
+fn idle_loss_is_disposed_then_reported_and_frees_the_slot() {
+    let (pool, mut host, state) = setup();
+    idle(&pool, &mut host);
+    state.lock().unwrap().lost = true;
+    tick(&mut host, 10_001);
+    // Disposal has not finished: the pool still counts the connection.
+    assert_eq!(state.lock().unwrap().disposed, 0);
+    assert_eq!(pool.counts().total(), 1);
+    state.lock().unwrap().finish_close = true;
+    tick(&mut host, 10_002);
+    assert_eq!(state.lock().unwrap().disposed, 1);
+    assert_eq!(pool.counts().total(), 0);
+    assert_eq!(host.physical_count(), 0);
+    state.lock().unwrap().lost = false;
+    let mut next = pool.checkout(request("two")).unwrap();
+    tick(&mut host, 10_003);
+    let lease = take(&mut next);
+    assert!(!host.allocation_reused(&lease).unwrap());
+    assert_eq!(state.lock().unwrap().opens, 2);
+}
+
+#[test]
+fn a_checkout_that_won_keeps_a_lost_tombstone_until_its_lease_is_released() {
+    let (pool, mut host, state) = setup();
+    let id = idle(&pool, &mut host);
+    let mut next = pool.checkout(request("two")).unwrap();
+    let lease = take(&mut next);
+    assert_eq!(lease.connection().unwrap(), id);
+    {
+        let mut state = state.lock().unwrap();
+        state.lost = true;
+        state.finish_close = true;
+    }
+    tick(&mut host, 10_001);
+    assert_eq!(state.lock().unwrap().disposed, 1);
+    assert_eq!(pool.counts().leased, 1);
+    assert_eq!(host.physical_count(), 1);
+    assert!(matches!(
+        host.resource(&lease),
+        Err(gwz_transport::pool::Error::WrongState)
+    ));
+    assert!(matches!(
+        host.allocation_reused(&lease),
+        Err(gwz_transport::pool::Error::WrongState)
+    ));
+    host.release(lease, Disposition::Reusable).unwrap();
+    assert_eq!(pool.counts().closing, 1);
+    tick(&mut host, 10_002);
+    assert_eq!(pool.counts().total(), 0);
+    assert_eq!(host.physical_count(), 0);
+    assert_eq!(state.lock().unwrap().disposed, 1);
+    pool.shutdown();
+    tick(&mut host, 10_003);
     assert!(host.shutdown_complete());
 }

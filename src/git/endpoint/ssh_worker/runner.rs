@@ -153,8 +153,12 @@ pub(super) fn run<C>(
             policy.allocation_timeout_ms = Some(d.allocation_ms as u64);
             policy.connect_timeout_ms = Some(d.connect_ms as u64);
             policy.interaction_timeout_ms = Some(d.interaction_ms as u64);
-            match pool.checkout_until(policy, request.deadline) {
-                Ok(checkout) => pending.push(Pending { checkout, request }),
+            match pool.checkout_until(policy.clone(), request.deadline) {
+                Ok(checkout) => pending.push(Pending {
+                    checkout,
+                    request,
+                    policy,
+                }),
                 Err(error) => request.complete(Err(io::Error::other(error))),
             }
         }
@@ -170,36 +174,70 @@ pub(super) fn run<C>(
                 Poll::Pending => index += 1,
                 Poll::Ready(result) => {
                     let item = pending.swap_remove(index);
-                    let result = result.map_err(io::Error::other).and_then(|lease| {
-                        attach(host, lease, &item.request, &session, now, &mut active)
-                    });
-                    item.request.complete(result);
+                    let unserved = match result {
+                        Ok(lease) => attach(
+                            host,
+                            lease,
+                            item.request,
+                            item.policy,
+                            &session,
+                            now,
+                            &mut active,
+                        ),
+                        Err(error) => Some(Unserved::Failed(item.request, io::Error::other(error))),
+                    };
+                    if let Some(unserved) = unserved {
+                        unserved.settle(&pool, &mut pending);
+                    }
                 }
             }
         }
         let mut index = 0;
         while index < active.len() {
             let exchange = &mut active[index];
+            if exchange.held.as_ref().is_some_and(Held::cancelled) {
+                let mut exchange = active.swap_remove(index);
+                let held = exchange.held.take().expect("held open");
+                release(host, exchange, Disposition::Discarded);
+                held.cancel();
+                continue;
+            }
             let discard = exchange.discard.load(Ordering::Acquire);
-            let disposition = match host.resource(exchange.lease.as_ref().expect("active lease")) {
-                Ok(resource) => {
-                    let result = match resource.pump() {
-                        Some(pump) => transfer(pump, exchange, &mut cx, now),
-                        None => Err(()),
-                    };
-                    match result {
-                        Ok(false) => None,
-                        Ok(true) if !discard && resource.reclaim() => Some(Disposition::Reusable),
-                        _ => Some(Disposition::Discarded),
+            let mut opened = false;
+            let (disposition, failed) =
+                match host.resource(exchange.lease.as_ref().expect("active lease")) {
+                    Ok(resource) => {
+                        let result = match resource.pump() {
+                            Some(pump) => {
+                                let result = transfer(pump, exchange, &mut cx, now);
+                                opened = pump.opened();
+                                result
+                            }
+                            None => Err(()),
+                        };
+                        match result {
+                            Ok(false) => (None, false),
+                            Ok(true) if !discard && resource.reclaim() => {
+                                (Some(Disposition::Reusable), false)
+                            }
+                            Ok(true) => (Some(Disposition::Discarded), false),
+                            Err(()) => (Some(Disposition::Discarded), true),
+                        }
                     }
-                }
-                Err(_) => Some(Disposition::Discarded),
-            };
+                    Err(_) => (Some(Disposition::Discarded), true),
+                };
+            if opened && let Some(held) = exchange.held.take() {
+                held.reply();
+            }
             if let Some(disposition) = disposition {
-                let exchange = active.swap_remove(index);
+                let mut exchange = active.swap_remove(index);
+                let held = exchange.held.take();
                 // Active owns a disconnect guard, so consume its lease through
                 // a separate release helper after detaching that guard below.
                 release(host, exchange, disposition);
+                if let Some(held) = held {
+                    held.unserved(failed).settle(&pool, &mut pending);
+                }
             } else {
                 index += 1;
             }

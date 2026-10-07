@@ -28,7 +28,7 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::TcpStream,
-    sync::{AcquireError, Mutex, OwnedSemaphorePermit, Semaphore, mpsc},
+    sync::{AcquireError, Mutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot},
     task::JoinHandle,
 };
 use tokio_util::sync::CancellationToken;
@@ -153,6 +153,9 @@ type Socket = Box<dyn Io>;
 pub(crate) struct Connection {
     pub(crate) sender: http1::SendRequest<RequestBody>,
     driver: JoinHandle<()>,
+    /// Closed when the driver ends: Hyper reads the idle socket itself and
+    /// ends on EOF, a reset or unexpected bytes. Taken by the resource.
+    ended: Option<oneshot::Receiver<()>>,
     pub(crate) progress: Arc<AtomicU64>,
     pub(crate) binding: Option<gwz_sspi::SecretBytes>,
 }
@@ -180,6 +183,9 @@ pub(crate) struct HttpResource {
     pub(crate) disposed: Arc<AtomicBool>,
     pub(crate) connect_elapsed: Duration,
     pub(crate) connect_started: Instant,
+    /// The connection's driver end (`Connection::ended`), until it is seen.
+    ended: Option<oneshot::Receiver<()>>,
+    driver_ended: bool,
 }
 struct Setup {
     addresses: Vec<SocketAddr>,
@@ -223,6 +229,8 @@ impl Connector for HttpConnector {
             disposed: Arc::new(AtomicBool::new(false)),
             connect_elapsed: Duration::ZERO,
             connect_started: Instant::now(),
+            ended: None,
+            driver_ended: false,
         };
         // Queue now, in the pool's order, and start at once when a slot is free.
         if let Poll::Ready(Err(failed)) =
@@ -325,11 +333,12 @@ impl Resource for HttpResource {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(result) => {
                     self.connecting = None;
-                    let connection = match result {
+                    let mut connection = match result {
                         Ok(Ok(c)) => c,
                         Ok(Err(e)) => return Poll::Ready(Err(e)),
                         Err(_) => return Poll::Ready(Err(failure(ErrorCode::Io))),
                     };
+                    self.ended = connection.ended.take();
                     self.connect_elapsed = self.connect_started.elapsed();
                     self.driver_abort = Some(connection.driver.abort_handle());
                     self.connection = Some(Arc::new(Mutex::new(connection)));
@@ -392,6 +401,21 @@ impl Resource for HttpResource {
                 .driver_abort
                 .as_ref()
                 .is_some_and(|task| !task.is_finished())
+    }
+    /// Idle is the `reusable` flag: cleared when a lease adopts the
+    /// connection, set again only by a reusable release.
+    fn poll_idle_lost(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        if let Some(ended) = &mut self.ended
+            && Pin::new(ended).poll(cx).is_ready()
+        {
+            self.ended = None;
+            self.driver_ended = true;
+        }
+        if self.driver_ended && self.connection.is_some() && self.reusable.load(Ordering::Acquire) {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
     }
 }
 impl Drop for HttpResource {
@@ -505,12 +529,16 @@ async fn connect(setup: Setup, key: Key) -> Result<Connection, Failure> {
         .handshake(TokioIo::new(io))
         .await
         .map_err(|_| failure(ErrorCode::Protocol))?;
+    let (end, ended) = oneshot::channel();
     let driver = tokio::spawn(async move {
+        // Dropped when the task ends, aborted or not.
+        let _end: oneshot::Sender<()> = end;
         let _ = driver.await;
     });
     Ok(Connection {
         sender,
         driver,
+        ended: Some(ended),
         progress,
         binding,
     })

@@ -200,37 +200,48 @@ impl SshdFixture {
     }
 
     pub(crate) fn try_session(&mut self) -> io::Result<SshConnection> {
-        let stream = TcpStream::connect(("127.0.0.1", self.port))?;
-        let mut connection = SshConnection::new(stream)?;
-        {
-            let session = connection.session();
-            session.set_timeout(5_000);
-            session.handshake()?;
-            let (key, _) = session
-                .host_key()
-                .ok_or_else(|| io::Error::other("sshd did not provide a host key"))?;
-            let key = key.to_owned();
-            let mut known = session.known_hosts()?;
-            known.read_file(&self.known_hosts, KnownHostFileKind::OpenSSH)?;
-            if !matches!(
-                known.check_port("127.0.0.1", self.port, &key),
-                CheckResult::Match
-            ) {
-                return Err(io::Error::other("temporary host key did not match"));
-            }
-            session.userauth_pubkey_file(
-                &self.user,
-                None,
-                &self.temp.path().join("client_ed25519"),
-                None,
-            )?;
-            if !session.authenticated() {
-                return Err(io::Error::other("temporary SSH authentication failed"));
-            }
-        }
-        connection.set_nonblocking()?;
+        let connection = self.dialer(self.port)()?;
         self.authenticated_sessions += 1;
         Ok(connection)
+    }
+
+    /// Opens an authenticated, nonblocking session through `port`, which may
+    /// be a proxy in front of this server: the host key checked is this
+    /// server's own.
+    pub(crate) fn dialer(
+        &self,
+        port: u16,
+    ) -> impl Fn() -> io::Result<SshConnection> + Send + Sync + 'static {
+        let (server_port, user, known_hosts) =
+            (self.port, self.user.clone(), self.known_hosts.clone());
+        let key = self.temp.path().join("client_ed25519");
+        move || {
+            let stream = TcpStream::connect(("127.0.0.1", port))?;
+            let mut connection = SshConnection::new(stream)?;
+            {
+                let session = connection.session();
+                session.set_timeout(5_000);
+                session.handshake()?;
+                let (host_key, _) = session
+                    .host_key()
+                    .ok_or_else(|| io::Error::other("sshd did not provide a host key"))?;
+                let host_key = host_key.to_owned();
+                let mut known = session.known_hosts()?;
+                known.read_file(&known_hosts, KnownHostFileKind::OpenSSH)?;
+                if !matches!(
+                    known.check_port("127.0.0.1", server_port, &host_key),
+                    CheckResult::Match
+                ) {
+                    return Err(io::Error::other("temporary host key did not match"));
+                }
+                session.userauth_pubkey_file(&user, None, &key, None)?;
+                if !session.authenticated() {
+                    return Err(io::Error::other("temporary SSH authentication failed"));
+                }
+            }
+            connection.set_nonblocking()?;
+            Ok(connection)
+        }
     }
 }
 

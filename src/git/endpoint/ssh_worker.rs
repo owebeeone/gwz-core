@@ -173,6 +173,8 @@ pub(crate) struct Endpoint {
 struct Pending {
     checkout: Checkout,
     request: OpenRequest,
+    /// What the checkout asked the pool for; a retry asks it again, fresh.
+    policy: gwz_transport::pool::Request,
 }
 struct Active {
     lease: Option<Lease>,
@@ -187,6 +189,8 @@ struct Active {
     bridge_terminal_delivered: bool,
     bridge_waker: Option<Waker>,
     discard: Arc<AtomicBool>,
+    /// The open's reply, until the channel is open.
+    held: Option<Held>,
 }
 impl Drop for Active {
     fn drop(&mut self) {
@@ -223,77 +227,106 @@ fn stream_config(context: &BridgeContext, side: Side) -> StreamConfig {
     }
     config
 }
+/// Leases `lease` to `request`'s exchange. Its reply is held with the
+/// exchange until the channel is open (`held`); a reused lease whose
+/// connection was found dead hands the request back (`Unserved::Dead`).
 fn attach<C: Connector>(
     host: &mut PoolHost<C>,
     lease: Lease,
-    request: &OpenRequest,
+    request: OpenRequest,
+    policy: gwz_transport::pool::Request,
     session: &str,
     now: u64,
     active: &mut Vec<Active>,
-) -> OpenOutcome
+) -> Option<Unserved>
 where
     C::Resource: ChannelResource,
 {
+    let failed = |request, error| Unserved::Failed(request, error);
+    if let Some(reused) = host.lost(&lease) {
+        let _ = host.release(lease, Disposition::Discarded);
+        return Some(if reused {
+            Unserved::Dead(request, policy)
+        } else {
+            failed(request, io::ErrorKind::ConnectionReset.into())
+        });
+    }
     if request.expired(now) {
-        return Err(io::ErrorKind::TimedOut.into());
+        return Some(failed(request, io::ErrorKind::TimedOut.into()));
     }
     let context = &request.context;
     let config = |side| stream_config(context, side);
-    let (client, peer) = Stream::new(config(Side::Initiator)).map_err(io::Error::other)?;
-    let (stream, endpoint) = Stream::new(config(Side::Endpoint)).map_err(io::Error::other)?;
+    let streams = Stream::new(config(Side::Initiator))
+        .and_then(|initiator| Ok((initiator, Stream::new(config(Side::Endpoint))?)));
+    let ((client, peer), (stream, endpoint)) = match streams {
+        Ok(streams) => streams,
+        Err(error) => return Some(failed(request, io::Error::other(error))),
+    };
     peer.advance(now);
     endpoint.advance(now);
-    let connection_id = format!(
-        "{session}-{}",
-        lease.connection().map_err(io::Error::other)?.sequence()
-    );
-    let reused = host.allocation_reused(&lease).map_err(io::Error::other)?;
-    let resource = host.resource(&lease).map_err(io::Error::other)?;
-    let (_, mut facts) = resource.observation();
-    if reused {
-        facts.credential_offered = false;
-    }
-    *request.progress.lock().unwrap_or_else(|e| e.into_inner()) = facts.clone();
-    resource.start_exchange(stream, endpoint, request.service, &request.path)?;
-    if resource.pump().is_none() {
-        return Err(io::Error::other("resource did not install a channel pump"));
-    }
+    let started = (|| {
+        let connection_id = format!(
+            "{session}-{}",
+            lease.connection().map_err(io::Error::other)?.sequence()
+        );
+        let reused = host.allocation_reused(&lease).map_err(io::Error::other)?;
+        let resource = host.resource(&lease).map_err(io::Error::other)?;
+        let (_, mut facts) = resource.observation();
+        if reused {
+            facts.credential_offered = false;
+        }
+        *request.progress.lock().unwrap_or_else(|e| e.into_inner()) = facts.clone();
+        resource.start_exchange(stream, endpoint, request.service, &request.path)?;
+        if resource.pump().is_none() {
+            return Err(io::Error::other("resource did not install a channel pump"));
+        }
+        Ok((connection_id, reused, facts))
+    })();
+    let (connection_id, reused, facts) = match started {
+        Ok(started) => started,
+        Err(error) => return Some(failed(request, error)),
+    };
     let (inbound, worker_inbound) = mpsc::sync_channel(16);
     let (worker_outbound, outbound) = mpsc::sync_channel(16);
     let cancelled = Arc::new(AtomicBool::new(false));
     let discard = Arc::new(AtomicBool::new(false));
+    let attachment = EndpointAttachment {
+        owner: client,
+        inbound,
+        outbound,
+        cancelled: cancelled.clone(),
+        discard: discard.clone(),
+        worker: thread::current(),
+    };
+    let opened = Opened {
+        connection_id,
+        reused,
+        endpoint_id: session.into(),
+        trust_owner: session.into(),
+        facts,
+        receive_limits: config(Side::Endpoint).receive_limits,
+    };
     active.push(Active {
         lease: Some(lease),
         peer,
         bridge_inbound: worker_inbound,
         bridge_outbound: worker_outbound,
-        bridge_cancelled: cancelled.clone(),
+        bridge_cancelled: cancelled,
         bridge_pending: None,
         bridge_session: context.session_id.clone(),
         bridge_stream_id: context.stream_id,
         bridge_version: context.version,
         bridge_terminal_delivered: false,
         bridge_waker: context.waker.clone(),
-        discard: discard.clone(),
-    });
-    Ok((
-        EndpointAttachment {
-            owner: client,
-            inbound,
-            outbound,
-            cancelled,
-            discard,
-            worker: thread::current(),
-        },
-        Opened {
-            connection_id,
+        discard,
+        held: Some(Held {
+            request,
+            policy,
             reused,
-            endpoint_id: session.into(),
-            trust_owner: session.into(),
-            facts,
-            receive_limits: config(Side::Endpoint).receive_limits,
-        },
-    ))
+            reply: (attachment, opened),
+        }),
+    });
+    None
 }
 fn transfer(
     pump: &mut SshPump<SshChannel>,
@@ -420,6 +453,9 @@ pub(crate) use open_request::EndpointOpenFailure;
 pub(super) use open_request::{OpenOutcome, OpenRequest};
 
 mod endpoint;
+
+mod held;
+use held::{Held, Unserved};
 
 mod runner;
 use runner::run;

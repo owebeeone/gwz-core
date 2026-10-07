@@ -1,6 +1,7 @@
 //! Bounded setup ownership for one authenticated SSH connection.
 use super::{
     agent_job::{self, Job, TimeoutReason, timeout_reason},
+    idle_watch::{IdleReactor, IdleSocket},
     ssh_channel::{GitService, SshChannel},
     ssh_connection::SshConnection,
     ssh_key_auth::Verified,
@@ -76,6 +77,8 @@ pub(crate) struct SetupConnector {
     cleanup: Duration,
     stall_ms: u64,
     factory: Factory,
+    /// Watches this connector's idle sessions; started by the first connect.
+    idle: Option<Arc<IdleReactor>>,
 }
 impl SetupConnector {
     pub(crate) fn reported(
@@ -88,7 +91,17 @@ impl SetupConnector {
             cleanup,
             stall_ms: 0,
             factory: Box::new(factory),
+            idle: None,
         }
+    }
+
+    fn idle_reactor(&mut self) -> io::Result<Arc<IdleReactor>> {
+        if let Some(reactor) = &self.idle {
+            return Ok(reactor.clone());
+        }
+        let reactor = IdleReactor::start()?;
+        self.idle = Some(reactor.clone());
+        Ok(reactor)
     }
 }
 impl Connector for SetupConnector {
@@ -119,6 +132,7 @@ impl Connector for SetupConnector {
         deadline: Option<u64>,
         opening: Opening,
     ) -> Result<Self::Resource, Failure> {
+        let idle = self.idle_reactor().map_err(|error| failure(error.kind()))?;
         let progress = opening.progress.clone();
         let setup_context = opening.setup.clone();
         let deadline = deadline
@@ -152,6 +166,8 @@ impl Connector for SetupConnector {
             authority: None,
             progress,
             setup_context,
+            idle,
+            watch: None,
         })
     }
 }
@@ -173,6 +189,9 @@ pub(crate) struct NativeResource {
     authority: Option<Arc<Entry>>,
     progress: Progress,
     setup_context: Option<Arc<SetupContext>>,
+    idle: Arc<IdleReactor>,
+    /// The idle session's socket watch, only while `State::Idle`.
+    watch: Option<IdleSocket>,
 }
 impl Resource for NativeResource {
     fn poll_connected(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Identity>, Failure>> {
@@ -277,6 +296,24 @@ impl Resource for NativeResource {
     fn reusable(&self) -> bool {
         matches!(self.state, State::Idle(_))
     }
+    fn poll_idle_lost(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        let State::Idle(authenticated) = &self.state else {
+            self.watch = None;
+            return Poll::Pending;
+        };
+        if self.watch.is_none() {
+            let watch = authenticated
+                .connection
+                .watch_socket()
+                .and_then(|socket| IdleSocket::watch(&self.idle, socket));
+            match watch {
+                Ok(watch) => self.watch = Some(watch),
+                // A session that cannot be watched is not kept idle.
+                Err(_) => return Poll::Ready(()),
+            }
+        }
+        self.watch.as_ref().expect("idle watch").poll_lost(cx)
+    }
 }
 impl ChannelResource for NativeResource {
     fn start_exchange(
@@ -286,6 +323,8 @@ impl ChannelResource for NativeResource {
         service: GitService,
         path: &str,
     ) -> io::Result<()> {
+        // The exchange owns the socket's reads from here.
+        self.watch = None;
         let state = mem::replace(&mut self.state, State::Disposed);
         match state {
             State::Idle(authenticated) => {

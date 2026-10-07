@@ -75,6 +75,13 @@ pub(crate) trait Resource {
     fn poll_dispose(&mut self, cx: &mut Context<'_>, force: bool) -> Poll<io::Result<()>>;
     /// True only for an idle authenticated session after complete channel cleanup.
     fn reusable(&self) -> bool;
+    /// Ready when the peer has closed, reset, or sent unsolicited bytes on
+    /// this connection while it is idle; Pending registers `cx`. Never
+    /// consumes bytes, and is Pending whenever an exchange owns the I/O
+    /// (dev-docs/GwzTransportIdleLossDesign.md §4).
+    fn poll_idle_lost(&mut self, _cx: &mut Context<'_>) -> Poll<()> {
+        Poll::Pending
+    }
 }
 
 enum Phase {
@@ -83,7 +90,12 @@ enum Phase {
     Disposing {
         connect_failure: Option<Failure>,
         force: bool,
+        /// The peer closed it while idle: report `idle_closed`, not `closed`.
+        idle_lost: bool,
     },
+    /// Disposed after idle loss, but a checkout had already leased it: kept
+    /// until the lease is released and the pool's Close arrives.
+    Lost,
 }
 struct Entry<R> {
     resource: R,
@@ -136,6 +148,15 @@ impl<C: Connector> PoolHost<C> {
         Ok(&mut entry.resource)
     }
 
+    /// Whether the lease's connection was found closed while idle and is
+    /// already disposed, a checkout having won the race with the loss (§4 of
+    /// dev-docs/GwzTransportIdleLossDesign.md): `Some(reused)`, true when an
+    /// earlier lease had used it.
+    pub(crate) fn lost(&self, lease: &Lease) -> Option<bool> {
+        let entry = self.entries.get(&lease.connection().ok()?)?;
+        matches!(entry.phase, Phase::Lost).then_some(entry.used)
+    }
+
     pub(crate) fn allocation_reused(&mut self, lease: &Lease) -> Result<bool, Error> {
         let entry = self
             .entries
@@ -148,6 +169,10 @@ impl<C: Connector> PoolHost<C> {
     }
 
     pub(crate) fn release(&mut self, lease: Lease, disposition: Disposition) -> Result<(), Error> {
+        let entry = self.entries.get(&lease.connection()?).ok_or(Error::Stale)?;
+        if matches!(entry.phase, Phase::Lost) {
+            return lease.release(Disposition::Discarded);
+        }
         let reusable = self.resource(&lease)?.reusable();
         if disposition == Disposition::Reusable && !reusable {
             // Lease Drop schedules discard; capacity remains reserved.
@@ -190,6 +215,14 @@ impl<C: Connector> PoolHost<C> {
         for id in ids {
             let _ = self.driver.service_setup_clock(id, cx.waker());
             let entry = self.entries.get_mut(&id).expect("worker-owned entry");
+            // Disposed in this same pass: the pool still counts it Idle.
+            if matches!(entry.phase, Phase::Ready) && entry.resource.poll_idle_lost(cx).is_ready() {
+                entry.phase = Phase::Disposing {
+                    connect_failure: None,
+                    force: false,
+                    idle_lost: true,
+                };
+            }
             match &mut entry.phase {
                 Phase::Connecting => match entry.resource.poll_connected(cx) {
                     Poll::Ready(Ok(identity)) => {
@@ -200,6 +233,7 @@ impl<C: Connector> PoolHost<C> {
                         entry.phase = Phase::Disposing {
                             connect_failure: Some(failure),
                             force: false,
+                            idle_lost: false,
                         };
                     }
                     Poll::Pending => {}
@@ -207,8 +241,22 @@ impl<C: Connector> PoolHost<C> {
                 Phase::Disposing {
                     connect_failure,
                     force,
+                    idle_lost,
                 } => {
                     match entry.resource.poll_dispose(cx, *force) {
+                        Poll::Ready(Ok(())) if *idle_lost => {
+                            // Destruction precedes the capacity acknowledgement.
+                            // A checkout that won keeps the lease: its exchange
+                            // finds the entry Lost, and its release and the
+                            // pool's Close end it.
+                            match self.driver.idle_closed(id) {
+                                Ok(()) => {
+                                    self.entries.remove(&id);
+                                }
+                                Err(Error::WrongState) => entry.phase = Phase::Lost,
+                                Err(error) => return Err(error),
+                            }
+                        }
                         Poll::Ready(Ok(())) => {
                             let failure = connect_failure.clone();
                             // Destruction precedes the capacity acknowledgement.
@@ -228,7 +276,7 @@ impl<C: Connector> PoolHost<C> {
                         Poll::Pending => {}
                     }
                 }
-                Phase::Ready => {}
+                Phase::Ready | Phase::Lost => {}
             }
         }
         self.actions(cx, &mut opening)
@@ -326,6 +374,7 @@ impl<C: Connector> PoolHost<C> {
                                     effect: Effect::None,
                                 }),
                                 force,
+                                idle_lost: false,
                             };
                         }
                     }
@@ -333,9 +382,12 @@ impl<C: Connector> PoolHost<C> {
                 Action::Close { connection, .. } | Action::Abort { connection } => {
                     let force = matches!(action, Action::Abort { .. });
                     let entry = self.entries.get_mut(&connection).ok_or(Error::Stale)?;
+                    // Also after idle loss: the pool's Close is acknowledged
+                    // with `closed`, never a second `idle_closed`.
                     entry.phase = Phase::Disposing {
                         connect_failure: None,
                         force,
+                        idle_lost: false,
                     };
                 }
             }

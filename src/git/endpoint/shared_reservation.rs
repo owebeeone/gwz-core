@@ -143,6 +143,10 @@ impl<R: Resource> Resource for ReservedResource<R> {
     fn reusable(&self) -> bool {
         self.inner.reusable()
     }
+
+    fn poll_idle_lost(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        self.inner.poll_idle_lost(cx)
+    }
 }
 
 impl<R: ChannelResource> ChannelResource for ReservedResource<R> {
@@ -311,6 +315,9 @@ mod tests {
         fn reusable(&self) -> bool {
             false
         }
+        fn poll_idle_lost(&mut self, _cx: &mut Context<'_>) -> Poll<()> {
+            Poll::Ready(())
+        }
     }
     impl ChannelResource for FakeResource {
         fn observation(&self) -> (bool, gwz_transport::protocol::Facts) {
@@ -413,6 +420,22 @@ mod tests {
         assert!(authority.try_reserve("host").is_none());
         drop(ssh);
         assert!(authority.try_reserve("host").is_some());
+    }
+
+    #[test]
+    fn idle_loss_reaches_the_host_through_the_reservation() {
+        let mut connector = ReservedConnector::new(
+            FakeConnector {
+                dispose_pending: false,
+                fail: false,
+            },
+            Authority::new(1, 1),
+        );
+        let mut resource = connector
+            .start(&Key::ssh("git", "github.example", 22), &Identity::Ambient, None)
+            .unwrap();
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(resource.poll_idle_lost(&mut cx).is_ready());
     }
 
     #[test]

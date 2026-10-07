@@ -21,6 +21,7 @@ mod attachment;
 mod channel;
 mod cleanup_capacity;
 mod host_case;
+mod idle_loss;
 mod key_container;
 mod key_files;
 cfg_if::cfg_if! {

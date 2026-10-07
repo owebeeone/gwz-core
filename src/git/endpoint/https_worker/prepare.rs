@@ -133,6 +133,10 @@ impl Client {
                 .basic_get(&key);
         let mut hops = 0;
         let mut credential_offered = false;
+        // The next checkout must open a new connection: a reused one died
+        // before this hop's request was started (§6.1 (b) of
+        // dev-docs/GwzTransportIdleLossDesign.md).
+        let mut fresh = false;
         let mut answer_challenge = input.policy == AuthPolicy::Gh
             || (!https_policy::advertisement(input.service) && basic_route);
         loop {
@@ -201,6 +205,7 @@ impl Client {
                         .as_ref()
                         .map(|c| c.scope.as_str())
                         .or_else(|| native_route.as_ref().map(|auth| auth.scope.as_str())),
+                    std::mem::take(&mut fresh),
                 );
                 let checkout = match budget.logical_deadline {
                     Some(until) => tokio::time::timeout_at(until, checkout)
@@ -298,20 +303,58 @@ impl Client {
                 ));
             }
             let current_credential_offered = request.headers().contains_key(AUTHORIZATION);
+            let offered_before = credential_offered;
             prepared.opened.facts.credential_offered =
                 current_credential_offered || credential_offered;
             credential_offered = prepared.opened.facts.credential_offered;
             let header_started = Instant::now();
-            let mut response = tokio::select! {
+            let sent = tokio::select! {
                 _=async { match budget.logical_deadline { Some(until) => tokio::time::sleep_until(until).await, None => std::future::pending().await } }, if native_policy => return Err(with_facts(ErrorCode::Timeout, Effect::None, &prepared.opened.facts)),
                 _=cancel.cancelled()=>return Err(with_facts(ErrorCode::Cancelled, Effect::None, &prepared.opened.facts)),
                 _=prepared.lease.as_ref().unwrap().cancel.cancelled()=>return Err(with_facts(if prepared.protocol_error.load(Ordering::Acquire){ErrorCode::Protocol}else{ErrorCode::Cancelled}, Effect::None, &prepared.opened.facts)),
                 result=async {
                     match budget.network {
-                        Some(remaining) => tokio::time::timeout(remaining, guard.sender.send_request(request)).await.map_err(|_| failure(ErrorCode::Timeout)),
-                        None => Ok(guard.sender.send_request(request).await),
+                        Some(remaining) => tokio::time::timeout(remaining, send_request(&mut guard.sender, request)).await.map_err(|_| failure(ErrorCode::Timeout)),
+                        None => Ok(send_request(&mut guard.sender, request).await),
                     }
-                }=>result.map_err(|error| with_facts(error.code, Effect::None, &prepared.opened.facts))?.map_err(|error| with_facts(classify_hyper_error(&error), Effect::None, &prepared.opened.facts))?,
+                }=>result.map_err(|error| with_facts(error.code, Effect::None, &prepared.opened.facts))?,
+            };
+            let mut response = match sent {
+                Ok(response) => response,
+                Err(SendFailure::NotStarted) if prepared.opened.reused => {
+                    // Nothing reached the server: discard the connection and
+                    // ask for a new one, with this attempt's slot and budget.
+                    // Only a reused lease qualifies and the next one is
+                    // fresh, so a request is retried at most once.
+                    drop(guard);
+                    drop(connection);
+                    let Prepared {
+                        _slot: returned_slot,
+                        _operation: returned_dependency,
+                        lease,
+                        ..
+                    } = prepared;
+                    lease.unwrap().finish(Disposition::Discarded)?;
+                    slot = returned_slot;
+                    dependency = Some(returned_dependency);
+                    credential_offered = offered_before;
+                    fresh = true;
+                    continue;
+                }
+                Err(SendFailure::NotStarted) => {
+                    return Err(with_facts(
+                        ErrorCode::Io,
+                        Effect::None,
+                        &prepared.opened.facts,
+                    ));
+                }
+                Err(SendFailure::Sent(error)) => {
+                    return Err(with_facts(
+                        classify_hyper_error(&error),
+                        Effect::None,
+                        &prepared.opened.facts,
+                    ));
+                }
             };
             if let Some(remaining) = budget.network.as_mut() {
                 *remaining = remaining.saturating_sub(header_started.elapsed());

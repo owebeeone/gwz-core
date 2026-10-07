@@ -334,6 +334,26 @@ pub(super) fn helper_timeout(
     failed
 }
 
+/// How a request on a connection failed.
+pub(super) enum SendFailure {
+    /// Hyper never started writing it: the connection had already closed.
+    NotStarted,
+    Sent(hyper::Error),
+}
+/// Sends `request`, telling a request Hyper never started from one it wrote
+/// (dev-docs/GwzTransportIdleLossDesign.md §6.1 (b)).
+pub(super) async fn send_request(
+    sender: &mut hyper::client::conn::http1::SendRequest<RequestBody>,
+    request: Request<RequestBody>,
+) -> Result<Response<Incoming>, SendFailure> {
+    sender.try_send_request(request).await.map_err(|mut error| {
+        if error.take_message().is_some() {
+            SendFailure::NotStarted
+        } else {
+            SendFailure::Sent(error.into_error())
+        }
+    })
+}
 fn classify_hyper_error(error: &hyper::Error) -> ErrorCode {
     if error.is_parse() {
         ErrorCode::Protocol

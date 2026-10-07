@@ -138,6 +138,11 @@ impl<C: ChannelIo> SshPump<C> {
     pub(crate) fn set_facts(&mut self, facts: Facts) {
         self.facts = facts;
     }
+    /// The channel is open and its command accepted. Until then no Git byte
+    /// has been written to it.
+    pub(crate) fn opened(&self) -> bool {
+        self.opened
+    }
     pub(crate) fn deliver(&mut self, message: Envelope) -> Result<(), PumpError> {
         let payload = if message.kind == MessageKind::Data {
             let data = message.data.as_ref().ok_or(PumpError::Invariant)?;

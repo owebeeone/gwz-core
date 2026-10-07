@@ -33,6 +33,12 @@ impl SshConnection {
         &self.session
     }
 
+    /// A duplicate of the socket, for watching it while the session is idle.
+    /// Shutdown through either handle ends both.
+    pub(super) fn watch_socket(&self) -> io::Result<TcpStream> {
+        self.socket.try_clone()
+    }
+
     /// Shutdown affects both socket handles. Afterward native EOF/close attempts
     /// see termination instead of a peer that can indefinitely return EAGAIN.
     pub(super) fn terminate(&self) -> io::Result<()> {
