@@ -18,6 +18,8 @@ on:
 # gwz-transport, gwz-py and gwz-sspi commits .github/gwz-transport.commit,
 # .github/gwz-py.commit and .github/gwz-sspi.commit pin, and the taut-proto
 # release the candidate generator pins (installed, and checked out at its tag).
+# The second job, candidate-windows, builds and tests the Windows HTTPS
+# qualification shape of the same candidate (TR4.6).
 jobs:
   candidate:
     name: Candidate build suites
@@ -202,3 +204,187 @@ jobs:
             --archive "$archive" \
             --archive-sha256 "$(sha256sum "$archive" | cut -d' ' -f1)" \
             --source-revision "$(git -C ../gwz-transport rev-parse HEAD)"
+
+  # TR4.6 (dev-docs/GwzTransportReleasePlanAmendment-2.md §3.5): the candidate on
+  # Windows, on every push to main and every pull request. On Windows the
+  # candidate is HTTPS only and exists only under the qualification switch
+  # (`--cfg gwz_windows_https_qualification`, src/lib.rs), so that is the one
+  # candidate shape this job builds. Every step runs under bash: a multi-line
+  # PowerShell step fails only on its last command's exit status.
+  candidate-windows:
+    name: Candidate build on Windows (HTTPS qualification)
+    runs-on: windows-2022
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+    defaults:
+      run:
+        working-directory: gwz-core
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          path: gwz-core
+          persist-credentials: false
+      - name: Check out git2-rs beside gwz-core
+        # The checkout is CRLF on this image (system core.autocrlf=true); the
+        # script and the .commit files read the same, since Git for Windows'
+        # bash and grep drop the CR.
+        run: bash .github/checkout-git2-rs.sh
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: pins
+        name: Read the gwz-transport, gwz-py and gwz-sspi commits and the taut release the candidate builds against
+        # tr -d '\r': Python prints CRLF on Windows, and bash keeps the CR.
+        run: |
+          pin() { grep -m1 -E '^[0-9a-f]{40}$' ".github/$1.commit" | tr -d '\r'; }
+          echo "gwz-transport=$(pin gwz-transport)" >> "$GITHUB_OUTPUT"
+          echo "gwz-py=$(pin gwz-py)" >> "$GITHUB_OUTPUT"
+          echo "gwz-sspi=$(pin gwz-sspi)" >> "$GITHUB_OUTPUT"
+          release="$(python -c "import json; print(json.load(open('protocol/candidate/candidate-generator.json'))['taut-proto'])" | tr -d '\r')"
+          echo "taut-proto=$release" >> "$GITHUB_OUTPUT"
+          echo "taut=v$release" >> "$GITHUB_OUTPUT"
+      - name: Check out gwz-transport at its pin, beside gwz-core
+        uses: actions/checkout@v6
+        with:
+          repository: owebeeone/gwz-transport
+          ref: ${{ steps.pins.outputs.gwz-transport }}
+          path: gwz-transport
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check out gwz-py at its pin, beside gwz-core
+        uses: actions/checkout@v6
+        with:
+          repository: owebeeone/gwz-py
+          ref: ${{ steps.pins.outputs.gwz-py }}
+          path: gwz-py
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check out gwz-sspi at its pin, beside gwz-core
+        uses: actions/checkout@v6
+        with:
+          repository: owebeeone/gwz-sspi
+          ref: ${{ steps.pins.outputs.gwz-sspi }}
+          path: gwz-sspi
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check out taut at the release tag, beside gwz-core
+        uses: actions/checkout@v6
+        with:
+          repository: owebeeone/taut
+          ref: ${{ steps.pins.outputs.taut }}
+          path: taut
+          persist-credentials: false
+      - name: The pinned commits are on their repositories' main
+        env:
+          TRANSPORT_PIN: ${{ steps.pins.outputs.gwz-transport }}
+          PY_PIN: ${{ steps.pins.outputs.gwz-py }}
+          SSPI_PIN: ${{ steps.pins.outputs.gwz-sspi }}
+        run: |
+          status=0
+          for pinned in "gwz-transport $TRANSPORT_PIN" "gwz-py $PY_PIN" "gwz-sspi $SSPI_PIN"; do
+            set -- $pinned
+            if ! git -C "../$1" merge-base --is-ancestor "$2" origin/main; then
+              echo "::error::.github/$1.commit $2 is not on $1's main; push $1 first"
+              status=1
+            fi
+          done
+          exit $status
+      - name: Install the Rust toolchain
+        # gwz-core's own (rust-toolchain.toml); the other legs' 1.96.0 is the
+        # consumer generator's rustfmt, which this job does not run.
+        run: |
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+          rustc --version
+      - name: Install taut-proto
+        # The generators accept only the pinned release, from this interpreter's
+        # site-packages. The Python tests and the generator checks run on the
+        # Linux legs, whose checkouts keep checked-in artifacts byte-exact;
+        # this image's CRLF checkouts of gwz-transport and taut do not.
+        env:
+          RELEASE: ${{ steps.pins.outputs.taut-proto }}
+        run: python -m pip install --upgrade pip "taut-proto==$RELEASE"
+      - name: Prepare the candidate build
+        run: |
+          python tests/transport_backend/prepare.py "$RUNNER_TEMP/candidate"
+          cargo metadata --format-version 1 --manifest-path "$RUNNER_TEMP/candidate/Cargo.toml" > /dev/null
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gwz-core -> ../candidate-target
+          cache-on-failure: true
+          key: windows-qualification
+      - name: Library check, ordinary build
+        # WH1's library checks (GwzWindowsHttpsIntegrationImplementationAcceptance.md):
+        # the source tree still builds on Windows without the candidate
+        # switches and with the transport switch alone, which keep their earlier
+        # Windows route.
+        env:
+          RUSTFLAGS: ""
+        run: |
+          cargo check --locked --lib --manifest-path "$RUNNER_TEMP/candidate/Cargo.toml" --target-dir "$GITHUB_WORKSPACE/candidate-target"
+      - name: Library check, transport switch without the qualification switch
+        env:
+          RUSTFLAGS: --cfg gwz_transport_candidate
+        run: |
+          cargo check --locked --lib --manifest-path "$RUNNER_TEMP/candidate/Cargo.toml" --target-dir "$GITHUB_WORKSPACE/candidate-target"
+      - name: The qualification switch alone is refused
+        # src/lib.rs: the switch requires Windows and the transport switch.
+        env:
+          RUSTFLAGS: --cfg gwz_windows_https_qualification
+        run: |
+          status=0
+          cargo check --locked --lib --manifest-path "$RUNNER_TEMP/candidate/Cargo.toml" --target-dir "$GITHUB_WORKSPACE/candidate-target" 2> "$RUNNER_TEMP/illegal.log" || status=$?
+          if [ "$status" -eq 0 ] || ! grep -q 'gwz_windows_https_qualification requires Windows and gwz_transport_candidate' "$RUNNER_TEMP/illegal.log"; then
+            echo "::error::the qualification switch alone must fail to compile with its own message (cargo exit $status)"
+            tail -n 30 "$RUNNER_TEMP/illegal.log"
+            exit 1
+          fi
+      - name: Qualification tests
+        # WH1's five (src/transport_host/qualification_tests.rs). A filter that
+        # matches nothing passes, so the count is checked.
+        env:
+          RUSTFLAGS: --cfg gwz_transport_candidate --cfg gwz_windows_https_qualification
+        run: |
+          set -o pipefail
+          cargo test --locked --lib --manifest-path "$RUNNER_TEMP/candidate/Cargo.toml" --target-dir "$GITHUB_WORKSPACE/candidate-target" qualification_tests:: -- --nocapture 2>&1 | tee "$RUNNER_TEMP/qualification.log"
+          passed="$(sed -n -E 's/^test result: ok\. ([0-9]+) passed.*/\1/p' "$RUNNER_TEMP/qualification.log" | tr -d '\r')"
+          if [ "${passed:-0}" -lt 5 ]; then
+            echo "::error::expected WH1's 5 qualification tests, ran ${passed:-0}"
+            exit 1
+          fi
+      - id: suites
+        name: Run the candidate build's library suites
+        # run_tests.py runs the source checks (conditional compilation among
+        # them) and the library tests against the fake and the real Git backend,
+        # as the Linux legs do, but --lib: the integration targets run in the
+        # next step. gwz-cli is not checked out, so the conditional-compilation
+        # check covers gwz-core and gwz-py and prints SKIPPED GATE for gwz-cli.
+        env:
+          RUSTFLAGS: --cfg gwz_transport_candidate --cfg gwz_windows_https_qualification
+        run: |
+          set -o pipefail
+          python scripts/run_tests.py --skip-cfg-sibling gwz-cli --no-fail-fast --lib \
+            --manifest-path="$RUNNER_TEMP/candidate/Cargo.toml" \
+            --target-dir="$GITHUB_WORKSPACE/candidate-target" 2>&1 | tee "$RUNNER_TEMP/candidate.log"
+      - name: Integration targets
+        # Not publish_workflow: it reads .github and scripts through `../` from
+        # tests/, which the candidate directory's symlinked tests/ resolves on
+        # Linux and not on Windows, where `..` is collapsed before the lookup.
+        if: ${{ !cancelled() }}
+        env:
+          RUSTFLAGS: --cfg gwz_transport_candidate --cfg gwz_windows_https_qualification
+          GWZ_TEST_GIT: real
+        run: |
+          set -o pipefail
+          cargo test --locked --no-fail-fast --manifest-path "$RUNNER_TEMP/candidate/Cargo.toml" --target-dir "$GITHUB_WORKSPACE/candidate-target" \
+            --test protocol --test transport_placement_guide --test native_libgit2 --test rename --test diff_render_spike 2>&1 | tee "$RUNNER_TEMP/integration.log"
+      - name: Summarize failures
+        if: always()
+        run: |
+          echo '== failure names =='
+          cat "$RUNNER_TEMP/candidate.log" "$RUNNER_TEMP/integration.log" 2>/dev/null | grep -E '^test .* \.\.\. FAILED' | sort || true
+          echo '== results =='
+          cat "$RUNNER_TEMP/candidate.log" "$RUNNER_TEMP/integration.log" 2>/dev/null | grep -E '^test result' || true
