@@ -3,36 +3,50 @@ name: Windows matrix
 permissions:
   contents: read
 
+# TR4.6 (dev-docs/GwzTransportReleasePlanAmendment-2.md §3.5): gwz-core's
+# ordinary build and ordinary suites on Windows, on every push to main and every
+# pull request. The candidate's Windows job is `candidate-windows` in
+# transport-candidate.yml; gwz-cli's is `windows` in its own ci.yml. Dispatch
+# stays, to run a branch that has no pull request.
 on:
+  pull_request:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 env:
   GWZ_TEST_GIT: real
+  CARGO_INCREMENTAL: "0"
 
 jobs:
   matrix:
     name: Full suite on Windows
     runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        # Every step runs under bash: the default PowerShell fails a multi-line
+        # step only on its last command's exit status.
+        shell: bash
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
       - name: Check out git2-rs beside gwz-core
         # gwz-core builds against the git2-rs fork by path (`../git2-rs`, package
-        # `gwz-git2`), at the commit .github/git2-rs.commit pins.
-        shell: bash
+        # `gwz-git2`), at the commit .github/git2-rs.commit pins. The checkout is
+        # CRLF on this image (system core.autocrlf=true); the script reads the
+        # same, since Git for Windows' bash and grep drop the CR.
         run: bash .github/checkout-git2-rs.sh
       - name: Install Rust toolchain
-        # bash, not the default PowerShell, which fails a step only on its last
-        # command's exit status.
-        shell: bash
         run: |
           rustup toolchain install 1.95.0 --profile minimal
           rustup default 1.95.0
+          rustc --version
       - name: Install Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.x"
+          python-version: "3.12"
       - name: Install taut-proto
         # The protocol-currency tests regenerate via the taut generator;
         # mirror release.yml's pinned install so Windows keeps that signal.
@@ -40,29 +54,34 @@ jobs:
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
         with:
-          # The suite step exits red while the burn-down tail exists; still
-          # save the cache so later runs and probe branches start warm.
+          # A red suite still saves the cache, so the next run starts warm.
           cache-on-failure: true
       - name: Run the complete test suite
-        shell: bash
-        # gwz-core alone is checked out, so gwz-transport's process-global
-        # check is skipped (SKIPPED GATE); the checked-artifact boundary job
-        # runs it (GwzCoreSessionDesign §5.7). The conditional-compilation
-        # check likewise skips gwz-cli and gwz-py, which this job does not
-        # check out (GwzCoreSessionPlan CS1.7).
-        run: python scripts/run_tests.py --skip-transport-globals --skip-cfg-siblings --no-fail-fast 2>&1 | tee windows-matrix.log || true
+        # The source checks, then the library tests against the fake and the real
+        # Git backend, then the integration targets (scripts/run_tests.py). The
+        # step's status is run_tests.py's: it exits nonzero on a failed source
+        # check, a build error or a failed test, and --no-fail-fast only keeps
+        # the later test targets running after a failed one. gwz-core alone is
+        # checked out, so gwz-transport's process-global check is skipped
+        # (SKIPPED GATE); the checked-artifact boundary job runs it
+        # (GwzCoreSessionDesign §5.7). The conditional-compilation check covers
+        # gwz-core and skips gwz-cli and gwz-py (GwzCoreSessionPlan CS1.7);
+        # gwz-cli's Windows job runs it over gwz-cli.
+        run: python scripts/run_tests.py --skip-transport-globals --skip-cfg-siblings --no-fail-fast 2>&1 | tee windows-matrix.log
       - name: Summarize failures
-        shell: bash
+        if: ${{ !cancelled() }}
         run: |
           echo '== failure names =='
           grep -E '^test .* \.\.\. FAILED' windows-matrix.log | sort || true
           echo '== results =='
-          grep -E '^test result' windows-matrix.log
-          if grep -qE '^test result: FAILED' windows-matrix.log; then exit 1; fi
+          grep -E '^test result' windows-matrix.log || true
 
-  # Exercise native Git behavior under the runner's CRLF configuration.
+  # Exercise native Git behavior under the runner's CRLF configuration. By
+  # dispatch only: `matrix` above already runs git::tests, and everything else,
+  # under the image's own core.autocrlf=true on every push and pull request.
   crlf-sentinel:
     name: CRLF class sentinel (un-pinned host)
+    if: ${{ github.event_name == 'workflow_dispatch' }}
     runs-on: windows-2022
     steps:
       - uses: actions/checkout@v6

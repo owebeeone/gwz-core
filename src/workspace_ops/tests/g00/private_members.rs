@@ -24,6 +24,10 @@ impl RefusingServer {
             while !worker_stop.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        // The listener is nonblocking, and on Windows the
+                        // streams it accepts are too: the read timeout below
+                        // applies only to a blocking stream.
+                        stream.set_nonblocking(false).unwrap();
                         stream
                             .set_read_timeout(Some(Duration::from_secs(2)))
                             .unwrap();
@@ -68,6 +72,36 @@ impl Drop for RefusingServer {
         self.stop.store(true, Ordering::Relaxed);
         self.worker.take().unwrap().join().unwrap();
     }
+}
+
+/// A client connects first and sends its request later, as a loaded machine
+/// delivers it. The server must wait for the request, up to its read timeout,
+/// and answer it: a listener in nonblocking mode hands out streams that
+/// inherit the mode on Windows (not on macOS or Linux), where a read that
+/// finds nothing yet fails with `WouldBlock` instead of waiting, and a server
+/// that takes that for the end of the request answers without reading it and
+/// resets the connection (the clone's "invalid or unrecognized response").
+#[test]
+fn the_refusing_server_waits_for_a_request_that_follows_the_connection() {
+    let server = RefusingServer::new(403);
+    let address = server
+        .url
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap()
+        .to_owned();
+    let mut client = std::net::TcpStream::connect(&address).unwrap();
+    thread::sleep(Duration::from_millis(300));
+    client
+        .write_all(b"GET /private.git/info/refs HTTP/1.1\r\nHost: fixture\r\n\r\n")
+        .unwrap();
+    let mut response = String::new();
+    client.read_to_string(&mut response).unwrap();
+    assert!(
+        response.starts_with("HTTP/1.1 403 Refused\r\n"),
+        "{response:?}"
+    );
 }
 
 #[test]

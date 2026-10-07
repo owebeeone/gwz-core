@@ -1,6 +1,7 @@
 const RELEASE_WORKFLOW: &str = include_str!("../.github/workflows/release.yml");
 const CHECKED_ARTIFACT_WORKFLOW: &str =
     include_str!("../.github/workflows/checked-artifact-boundary.yml");
+const WINDOWS_MATRIX_WORKFLOW: &str = include_str!("../.github/workflows/windows-matrix.yml");
 
 #[test]
 fn release_workflow_tests_linux_and_windows() {
@@ -123,6 +124,41 @@ fn checked_artifact_boundary_runs_before_merge_and_on_main_push() {
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains("python-version: \"3.11\""));
     assert!(CHECKED_ARTIFACT_WORKFLOW.contains(
         "CLIPPY_CONF_DIR=\"$PWD/scripts/checks/filesystem_lints\" cargo clippy --no-deps --all-targets --all-features -- -D warnings"
+    ));
+}
+
+#[test]
+fn windows_matrix_runs_the_ordinary_suite_on_every_push_and_pull_request() {
+    // TR4.6 (dev-docs/GwzTransportReleasePlanAmendment-2.md §3.5): gwz-core's
+    // ordinary build and ordinary suites, with the conditional-compilation
+    // check, on Windows on every push to main and every pull request. The
+    // workflow stays dispatchable.
+    let has_line = |expected: &str| {
+        WINDOWS_MATRIX_WORKFLOW
+            .lines()
+            .any(|line| line.trim() == expected)
+    };
+    assert!(has_line("pull_request:"));
+    assert!(has_line("push:"));
+    assert!(has_line("branches: [main]"));
+    assert!(has_line("workflow_dispatch:"));
+    assert!(has_line("runs-on: windows-2022"));
+    assert!(has_line("shell: bash"));
+    assert!(has_line("rustup default 1.95.0"));
+    assert!(has_line("GWZ_TEST_GIT: real"));
+    assert!(has_line(
+        "run: python scripts/run_tests.py --skip-transport-globals --skip-cfg-siblings --no-fail-fast 2>&1 | tee windows-matrix.log"
+    ));
+    // The suite's own status is the step's: nothing swallows it.
+    assert!(
+        WINDOWS_MATRIX_WORKFLOW
+            .lines()
+            .filter(|line| line.contains("run_tests.py"))
+            .all(|line| !line.contains("|| true"))
+    );
+    // The CRLF sentinel stays a dispatch-only job.
+    assert!(has_line(
+        "if: ${{ github.event_name == 'workflow_dispatch' }}"
     ));
 }
 
