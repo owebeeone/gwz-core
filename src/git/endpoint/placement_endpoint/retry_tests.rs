@@ -137,7 +137,9 @@ fn scripted_endpoint(
             9_000,
         )
         .unwrap(),
-        PathBuf::from("/tmp"),
+        // An absolute path on every platform: `/tmp` has no drive on Windows, so
+        // `PlacementEndpoint::new` refuses it as not absolute.
+        std::env::temp_dir(),
         "endpoint".into(),
         "owner".into(),
     )
