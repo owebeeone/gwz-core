@@ -351,3 +351,35 @@ fn an_open_the_per_host_limit_holds_runs_out_of_allocation() {
         shut(&mut endpoint).await;
     });
 }
+
+/// A new request's registration finds the endpoint's table of operations full
+/// of operations that still have dependents: the open waits for one to retire,
+/// as it waits for a stream, and is never refused with `Capacity` (§7.4).
+#[test]
+fn a_new_operation_waits_while_the_operation_table_is_full_and_is_then_admitted() {
+    runtime().block_on(async {
+        let server = fixture::Server::start(Arc::new(|_| {
+            Box::pin(async { fixture::response(200, GitService::UploadPackAdvertisement, "ok") })
+        }))
+        .await;
+        let port = port(&server);
+        let mut endpoint = endpoint(server.config(), 8, 3);
+        let held: Vec<_> = (0..64)
+            .map(|n| endpoint.client.operation(&format!("held-{n}")).unwrap())
+            .collect();
+        assert_eq!(
+            endpoint.accept("request".into(), open(1, port, 30_000)),
+            Err(EndpointError::WouldBlock),
+            "a full table of operations must make the open wait"
+        );
+        endpoint.client.finish_operation("held-0");
+        drop(held);
+        endpoint
+            .accept("request".into(), open(1, port, 30_000))
+            .expect("the freed place admits the open");
+        let published = settle(&mut endpoint, 0).await;
+        assert_eq!(published.len(), 1);
+        assert_eq!(published[0].kind, MessageKind::Opened);
+        shut(&mut endpoint).await;
+    });
+}

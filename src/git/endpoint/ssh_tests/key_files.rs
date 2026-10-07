@@ -45,7 +45,7 @@ cfg_if::cfg_if! {
             let loaded = finish(&mut registry.start(key.clone(), path.into(), None, Duration::from_secs(1))?)?;
             let entry = registry.intern(loaded, || Ok(()))?;
             let known = server.known_hosts.clone();
-            let mut job = Job::start(
+            let mut job = Job::start_isolated(
                 Some(Instant::now() + Duration::from_secs(10)),
                 Duration::from_secs(1),
                 move |control| {

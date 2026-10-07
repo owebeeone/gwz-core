@@ -73,7 +73,7 @@ cfg_if::cfg_if! {
             assert_eq!(r.reserve().err().unwrap().kind(), io::ErrorKind::WouldBlock);
             let (started, seen) = mpsc::channel();
             let (release, blocked) = mpsc::channel();
-            let job = Job::start(None, Duration::from_secs(1), move |c| {
+            let job = Job::start_isolated(None, Duration::from_secs(1), move |c| {
                 permit.test_read(Key::ssh("u", "h", 22), &c, |buf, _| {
                     started.send(()).unwrap();
                     blocked.recv().unwrap();
@@ -151,7 +151,7 @@ cfg_if::cfg_if! {
                 fs::write(&path, "replaced").unwrap();
                 let known = f.known_hosts.clone();
                 let pin = entry.clone();
-                let mut job = Job::start(
+                let mut job = Job::start_isolated(
                     Some(Instant::now() + Duration::from_secs(5)),
                     Duration::from_secs(1),
                     move |c| {
@@ -197,7 +197,7 @@ cfg_if::cfg_if! {
             let mut fastest = Duration::MAX;
             for _ in 0..5 {
                 let (key, known, pin) = (key.clone(), f.known_hosts.clone(), entry.clone());
-                let mut job = Job::start(
+                let mut job = Job::start_isolated(
                     Some(Instant::now() + Duration::from_secs(5)),
                     Duration::from_secs(1),
                     move |c| {
@@ -227,7 +227,7 @@ cfg_if::cfg_if! {
             let entry = load(&r, key.clone(), &path).unwrap();
             let pin = entry.clone();
             let known = f.known_hosts.clone();
-            let mut job = Job::start(
+            let mut job = Job::start_isolated(
                 Some(Instant::now() + Duration::from_secs(3)),
                 Duration::from_secs(1),
                 move |c| {
@@ -334,7 +334,7 @@ cfg_if::cfg_if! {
                 let key = Key::ssh(&f.user, "127.0.0.1", f.port);
                 let entry = load(&r, key.clone(), &selected).unwrap();
                 let known = f.known_hosts.clone();
-                let mut job = Job::start(
+                let mut job = Job::start_isolated(
                     Some(Instant::now() + Duration::from_secs(5)),
                     Duration::from_secs(1),
                     move |c| {
@@ -361,7 +361,7 @@ cfg_if::cfg_if! {
                 if !wrong_host {
                     fs::write(f.temp.path().join("authorized_keys"), "").unwrap();
                 }
-                let mut job = Job::start(
+                let mut job = Job::start_isolated(
                     Some(Instant::now() + Duration::from_secs(3)),
                     Duration::from_secs(1),
                     move |c| {
@@ -391,14 +391,14 @@ cfg_if::cfg_if! {
                 let pin = entry.clone();
                 let known = f.known_hosts.clone();
                 let (conn, host) = finish(
-                    &mut Job::start(None, Duration::from_secs(1), move |c| {
+                    &mut Job::start_isolated(None, Duration::from_secs(1), move |c| {
                         ssh_network::establish(&key, &known, &c)
                     })
                     .unwrap(),
                 )
                 .unwrap();
                 let mut paused = common::pause_process_tree(f.child.id());
-                let mut job = Job::start(
+                let mut job = Job::start_isolated(
                     timed.then(|| Instant::now() + Duration::from_millis(150)),
                     Duration::from_secs(1),
                     move |c| ssh_key_auth::authenticate_reporting(conn, &host, pin, c, || {}, || {}),
@@ -457,7 +457,7 @@ cfg_if::cfg_if! {
             let calls = Arc::new(AtomicUsize::new(0));
             let count = calls.clone();
             let mut owner = Some((conn, host, entry.clone()));
-            let mut connector = ssh_setup::SetupConnector::reported(
+            let mut connector = ssh_setup::SetupConnector::isolated(
                 Instant::now(),
                 Duration::from_secs(1),
                 move |_: &Key, _: &gwz_transport::pool::Identity, _| {
@@ -650,7 +650,7 @@ cfg_if::cfg_if! {
                 let key = Key::ssh(&f.user, "127.0.0.1", f.port);
                 let known = f.known_hosts.clone();
                 let result = load(&r, key.clone(), &path).and_then(|entry| {
-                    finish(&mut Job::start(
+                    finish(&mut Job::start_isolated(
                         Some(Instant::now() + Duration::from_secs(3)),
                         Duration::from_secs(1),
                         move |c| {

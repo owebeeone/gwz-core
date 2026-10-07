@@ -35,7 +35,7 @@ impl std::fmt::Display for OpenFailure {
 impl std::error::Error for OpenFailure {}
 pub(crate) struct LocalRpc {
     client: Client,
-    dependency: Result<super::https_operation::Dependency, ErrorCode>,
+    dependency: Result<super::https_operation::Dependency, super::https_operation::Refusal>,
     runtime: Handle,
     session: String,
     operation: String,
@@ -85,10 +85,14 @@ impl LocalRpc {
 }
 impl OpenRpc for LocalRpc {
     fn open(&self, url: &str, service: GitService) -> io::Result<BlockingStream> {
-        if let Err(code) = &self.dependency {
-            return Err(io::Error::other(format!(
-                "HTTPS operation unavailable: {code:?}"
-            )));
+        if let Err(refusal) = &self.dependency {
+            return Err(match refusal {
+                // The fixture composition has no queue to wait in.
+                super::https_operation::Refusal::WouldBlock => {
+                    io::Error::from(io::ErrorKind::WouldBlock)
+                }
+                other => io::Error::other(format!("HTTPS operation unavailable: {other:?}")),
+            });
         }
         let cancel = CancellationToken::new();
         *self.current.lock().map_err(|_| io::ErrorKind::Other)? = Some(cancel.clone());

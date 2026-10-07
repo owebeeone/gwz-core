@@ -74,7 +74,7 @@ impl EndpointOpenFailure {
                 Effect::None,
                 Some(SetupFailureCause::Interaction),
             ),
-            Some(PoolError::Capacity | PoolError::WouldBlock) => {
+            Some(PoolError::Capacity | PoolError::WouldBlock | PoolError::LocalWaitExpired) => {
                 (ErrorCode::Capacity, Effect::None, None)
             }
             Some(PoolError::Cancelled) => (ErrorCode::Cancelled, Effect::None, None),

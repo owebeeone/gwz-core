@@ -65,8 +65,16 @@ impl Client {
             }
             return Ok(credential);
         }
+        // One discovery reaches at most six destinations (the original and
+        // five redirects), so a route holds more only when a server sends
+        // later discoveries of one repository elsewhere. That is a refusal of
+        // the server's redirects, like the hop limit, never a local capacity.
         if answers.len() >= 6 {
-            return Err(failure(ErrorCode::Capacity));
+            return Err(with_facts(
+                ErrorCode::UnsupportedOperation,
+                Effect::None,
+                &facts,
+            ));
         }
         if let Some(failed) = self
             .routes

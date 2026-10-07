@@ -47,7 +47,7 @@ impl Case {
             config(),
             Registry::new(),
             move |origin, _| {
-                SetupConnector::reported(origin, Duration::from_millis(500), move |_, _, _| {
+                SetupConnector::isolated(origin, Duration::from_millis(500), move |_, _, _| {
                     let (dial, armed) = (dial.clone(), armed.clone());
                     let setup: Setup = Box::new(move |_| {
                         let connection = dial()?;

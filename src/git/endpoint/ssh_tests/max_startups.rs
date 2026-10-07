@@ -38,7 +38,7 @@ cfg_if::cfg_if! {
         /// Runs the production network setup for `key` in a supervised job,
         /// as the SSH connector does, and returns how it ended.
         fn establish(key: Key, known_hosts: PathBuf) -> io::Result<()> {
-            let mut job = Job::start(
+            let mut job = Job::start_isolated(
                 Some(Instant::now() + Duration::from_secs(10)),
                 Duration::from_secs(1),
                 move |control| ssh_network::establish(&key, &known_hosts, &control).map(|_| ()),

@@ -736,7 +736,12 @@ class Dispositions(unittest.TestCase):
         # 24 -> 23 (2026-10-02): the lazy endpoint's HOME and SSH_AUTH_SOCK reads
         # left, below.
         # 23 -> 19 (2026-10-02): TR2.15's dead HTTPS state left, below.
-        self.assertEqual(len(core), 19)
+        # 19 -> 15 (2026-10-07): agent_job's COUNT, CLEANUPS, HUB and INIT left;
+        # the 64-job budget, its waiters and the reaper are the host's
+        # `Supervisor` now (adaptive concurrency design §7.5, OQ9).
+        for name in ('COUNT', 'CLEANUPS', 'HUB', 'INIT'):
+            self.assertNotIn(('src/git/endpoint/agent_job.rs', 'static', name), core)
+        self.assertEqual(len(core), 15)
 
     def test_the_dead_https_helper_state_is_gone(self):
         # Transport release plan amendment 2's TR2.15: nothing read the orphaned

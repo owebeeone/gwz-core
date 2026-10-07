@@ -220,3 +220,49 @@ async fn unsupported_or_absent_challenge_scheme_never_runs_helper_or_exposes_rea
         assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
     }
 }
+
+/// A route's answers are keyed by destination, and a discovery's redirects are
+/// bounded at five hops, so one discovery adds at most six. A server that
+/// redirects the same repository's later discoveries elsewhere adds more, so
+/// the bound is reachable; it is a refusal of that server's redirects, as the
+/// hop limit is, and never a local `Capacity`.
+#[tokio::test]
+async fn a_seventh_destination_on_one_route_is_unsupported_and_never_capacity() {
+    use crate::git::endpoint::https_policy::RouteKey;
+    let dir = tempfile::tempdir().unwrap();
+    let counter = dir.path().join("count");
+    let config = fake_git(&dir.path().join("git"), &counter);
+    let mut endpoint = Endpoint::new(
+        https_connection::Config::default(),
+        Some(config),
+        pool::Config::default(),
+    )
+    .unwrap();
+    let key = RouteKey::new(
+        "operation",
+        "https://origin.invalid/repo",
+        GitService::UploadPackAdvertisement,
+    );
+    endpoint.client.routes.lock().unwrap().admit(key.clone());
+    let mut outcomes = Vec::new();
+    for hop in 0..7 {
+        let destination = Destination::parse(&format!("https://hop-{hop}.invalid/repo")).unwrap();
+        outcomes.push(
+            endpoint
+                .client
+                .credential(
+                    &key,
+                    &destination,
+                    &mut endpoint.client.budget(),
+                    &CancellationToken::new(),
+                )
+                .await,
+        );
+    }
+    assert!(outcomes[..6].iter().all(|outcome| outcome.is_ok()));
+    let refused = outcomes[6].as_ref().err().expect("the seventh is refused");
+    assert_ne!(refused.code, ErrorCode::Capacity);
+    assert_eq!(refused.code, ErrorCode::UnsupportedOperation);
+    assert_eq!(fs::read_to_string(counter).unwrap().lines().count(), 6);
+    assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
+}

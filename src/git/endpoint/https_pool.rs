@@ -41,12 +41,23 @@ impl RunningPool {
         authority: Authority,
     ) -> Result<Self, Failure> {
         tls.validate()?;
-        let epoch = Instant::now();
-        let connector = HttpConnector {
+        let supervisor = authority.supervisor().clone();
+        Self::with_connector(config, authority, move |epoch| HttpConnector {
             config: tls,
             epoch,
             setup_slots: Arc::new(Semaphore::new(8)),
-        };
+            supervisor,
+        })
+    }
+    /// The pool over the connector `connector` makes, given the pool's epoch,
+    /// which the connector's deadlines are measured from.
+    pub(crate) fn with_connector(
+        config: pool::Config,
+        authority: Authority,
+        connector: impl FnOnce(Instant) -> HttpConnector,
+    ) -> Result<Self, Failure> {
+        let epoch = Instant::now();
+        let connector = connector(epoch);
         let (pool, host) = PoolHost::new(config, ReservedConnector::new(connector, authority), 0)
             .map_err(|_| https_connection::failure(ErrorCode::InvalidRequest))?;
         let client = HttpsPool {
@@ -231,7 +242,8 @@ impl HttpsPool {
                 .resource(&lease)
                 .map_err(pool_failure)
                 .map_err(other)?
-                .inner_mut();
+                .inner_mut()
+                .ok_or_else(|| other(https_connection::failure(ErrorCode::Io)))?;
             if !resource.reusable() {
                 host.release(lease, Disposition::Discarded)
                     .map_err(pool_failure)
@@ -329,7 +341,9 @@ impl HttpLease {
 fn pool_failure(error: pool::Error) -> Failure {
     use pool::Error;
     let (code, setup_cause) = match error {
-        Error::Capacity => (ErrorCode::Capacity, None),
+        // The pool's own limit, or a wait on a local budget that outlasted the
+        // open's allocation: this host's failure, with no cause of a server's.
+        Error::Capacity | Error::LocalWaitExpired => (ErrorCode::Capacity, None),
         Error::AllocationTimeout => (ErrorCode::Timeout, Some(SetupFailureCause::Allocation)),
         Error::ConnectTimeout => (ErrorCode::Timeout, Some(SetupFailureCause::Aggregate)),
         Error::InteractionTimeout => (ErrorCode::Timeout, Some(SetupFailureCause::Interaction)),
@@ -346,6 +360,7 @@ fn pool_failure(error: pool::Error) -> Failure {
 }
 cfg_if::cfg_if! {
     if #[cfg(all(test, unix))] {
+        mod idle_budget_tests;
         mod idle_tests;
     }
 }

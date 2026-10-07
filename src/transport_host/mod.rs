@@ -23,6 +23,7 @@ cfg_if::cfg_if! {
         mod message_embedding_tests;
         mod https_tests;
         mod https_policy_tests;
+        mod https_route_scale_tests;
         cfg_if::cfg_if! {
             if #[cfg(unix)] {
                 mod https_helper_projection_tests;

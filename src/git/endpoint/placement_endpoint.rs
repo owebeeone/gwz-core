@@ -232,7 +232,7 @@ fn request_state(envelope: &Envelope) -> Request {
     }
 }
 /// The most opens in flight across every host: the pool's total and request
-/// ceilings, the endpoint's `MAX_REQUESTS`, and half the process-wide budget
+/// ceilings, the endpoint's `MAX_REQUESTS`, and half the host's budget
 /// of supervised jobs. An open holds no job while it waits for the worker and
 /// runs one at a time, its key read or its setup, so the other half stays for
 /// identity checks and for other endpoints.

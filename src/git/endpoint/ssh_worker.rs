@@ -2,7 +2,7 @@
 //! open is submitted without waiting, and its reply is an
 //! [`EndpointAttachment`] that the placement endpoint drives.
 use super::{
-    agent_job::{Cleanup, Job},
+    agent_job::{Cleanup, Job, Supervisor},
     setup_retry::{self, Phase},
     shutdown_watch::Watch,
     ssh_admission::{Admissions, Reader},
@@ -77,6 +77,8 @@ struct Shared {
     /// The handoff from which each open takes what its URL holds beyond its
     /// destination, when a driver in this process deposited any (TR2.18).
     handoff: Handoff,
+    /// The host's job budget, which this endpoint's identity checks draw on.
+    supervisor: Supervisor,
 }
 impl Drop for Shared {
     fn drop(&mut self) {

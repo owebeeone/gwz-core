@@ -66,36 +66,29 @@ impl RouteKey {
         }
     }
 }
+/// The write-once routes of an endpoint's operations, one per (operation,
+/// original URL, receive). A route is held until its whole operation finishes
+/// and is never counted against a limit: a remote that discovered it has gone
+/// before the exchange that needs it (adaptive concurrency design §7.2, F7).
 pub(crate) struct Routes {
-    capacity: usize,
     routes: BTreeMap<RouteKey, Route>,
     missing: BTreeMap<String, gwz_transport::protocol::Failure>,
 }
 impl Routes {
-    pub(crate) fn new(capacity: usize) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            capacity,
             routes: BTreeMap::new(),
             missing: BTreeMap::new(),
         }
     }
-    pub(crate) fn admit(&mut self, key: RouteKey) -> Result<(), ErrorCode> {
-        if !self.routes.contains_key(&key) {
-            if self.routes.len() >= self.capacity {
-                return Err(ErrorCode::Capacity);
-            }
-            self.routes.insert(
-                key,
-                Route {
-                    pinned: None,
-                    challenge: None,
-                    answers: Arc::new(Default::default()),
-                    native: None,
-                    basic: false,
-                },
-            );
-        }
-        Ok(())
+    pub(crate) fn admit(&mut self, key: RouteKey) {
+        self.routes.entry(key).or_insert_with(|| Route {
+            pinned: None,
+            challenge: None,
+            answers: Arc::new(Default::default()),
+            native: None,
+            basic: false,
+        });
     }
     pub(crate) fn install(&mut self, key: &RouteKey, base: &str) -> Result<(), ErrorCode> {
         let slot = &mut self
@@ -118,6 +111,11 @@ impl Routes {
             .and_then(|route| route.pinned.as_deref())
             .ok_or(ErrorCode::InvalidRequest)
     }
+    cfg_if::cfg_if! { if #[cfg(test)] {
+        pub(crate) fn len(&self) -> usize {
+            self.routes.len()
+        }
+    } }
     pub(crate) fn finish(&mut self, operation: &str) {
         self.routes.retain(|key, _| key.operation != operation);
         self.missing.remove(operation);

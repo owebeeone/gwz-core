@@ -309,7 +309,7 @@ fn a_refusal_is_none_and_leaves_the_agent_usable_for_the_next_key() {
     .concat();
     replies.extend_from_slice(&(signed.len() as u32).to_be_bytes());
     replies.extend(signed);
-    let mut job = Job::start(None, Duration::from_secs(1), move |control| {
+    let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| {
         let mut agent = Agent::new(Script(Cursor::new(replies)), control);
         assert_eq!(agent.sign(b"absent", b"data", 0)?, None);
         assert!(agent.sign(b"present", b"data", 0)?.is_some());

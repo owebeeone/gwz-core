@@ -79,12 +79,17 @@ impl Client {
         let started = Instant::now();
         let mut slot = Some(acquire_slot(self.slots.clone(), budget.allocation, cancel).await?);
         budget.allocation = budget.allocation.saturating_sub(started.elapsed());
-        let mut dependency = Some(self.operation(&input.operation).map_err(failure)?);
+        let started = Instant::now();
+        let mut dependency = Some(
+            self.operation_within(&input.operation, budget.allocation, cancel)
+                .await?,
+        );
+        budget.allocation = budget.allocation.saturating_sub(started.elapsed());
         let key = RouteKey::new(&input.operation, &original.base(), input.service);
         let mut destination = {
             let mut routes = self.routes.lock().unwrap_or_else(|e| e.into_inner());
             if https_policy::advertisement(input.service) {
-                routes.admit(key.clone()).map_err(failure)?;
+                routes.admit(key.clone());
                 if input.policy == AuthPolicy::Gh {
                     routes
                         .challenged(&key)

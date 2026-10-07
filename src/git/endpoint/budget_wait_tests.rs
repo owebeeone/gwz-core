@@ -1,10 +1,10 @@
 //! A full budget makes an open or an identity check wait, never fail.
 //!
 //! Many opens at once can fill two budgets that each open's setup draws on:
-//! the process-wide supervised jobs and the key registry's reservations. A
+//! the host's supervised jobs and the key registry's reservations. A
 //! request that finds either full waits for it, within its own deadline. These
-//! tests fill each budget on purpose; the supervised jobs belong to the whole
-//! process, so that test fills them in a child process of its own.
+//! tests fill each budget on purpose; the supervised jobs belong to the
+//! endpoint's host, so that test fills its own supervisor's.
 use super::{
     agent_job::{self, Job},
     placement_endpoint::{EndpointError, PlacementEndpoint},
@@ -35,7 +35,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-const CHILD: &str = "GWZ_TEST_FULL_JOB_BUDGET";
 const PATIENCE: Duration = Duration::from_secs(5);
 
 /// Counts its setups and refuses each one, with no thread and no job.
@@ -151,43 +150,14 @@ fn a_selected_key_open_waits_for_a_key_reservation() {
 
 #[test]
 fn a_full_job_budget_leaves_opens_running_and_checks_waiting() {
-    let path = module_path!();
-    let test = format!(
-        "{}::full_job_budget_child",
-        path.split_once("::").map_or(path, |(_, rest)| rest)
-    );
-    let output = Command::new(std::env::current_exe().unwrap())
-        .env(CHILD, "1")
-        .args([
-            "--ignored",
-            "--exact",
-            &test,
-            "--nocapture",
-            "--test-threads=1",
-        ])
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success(),
-        "{stdout}{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(stdout.contains(&format!("test {test} ... ok")), "{stdout}");
-}
-
-#[test]
-#[ignore = "the child process of the full job budget test, which takes every supervised job"]
-fn full_job_budget_child() {
-    if std::env::var_os(CHILD).is_none() {
-        return;
-    }
+    let registry = Registry::new();
+    let supervisor = registry.supervisor();
     // Every supervised job is taken until released, as other setups can take them.
     let gate = Arc::new((Mutex::new(false), Condvar::new()));
     let mut held = Vec::new();
     while held.len() <= agent_job::LIMIT {
         let gate = gate.clone();
-        let job = Job::start(None, PATIENCE, move |_| {
+        let job = Job::start(&supervisor, None, PATIENCE, move |_| {
             let (released, changed) = &*gate;
             let mut released = released.lock().unwrap();
             while !*released {
@@ -209,7 +179,7 @@ fn full_job_budget_child() {
     let mut endpoint = PlacementEndpoint::new(
         Endpoint::with_registry(
             Config::default(),
-            Registry::new(),
+            registry,
             move |_, _| Counted(counted),
             1_000,
         )

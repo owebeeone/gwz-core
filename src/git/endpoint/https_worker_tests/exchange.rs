@@ -409,3 +409,81 @@ fn a_close_while_the_response_streams_completes_cleanly() {
             assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
         });
 }
+
+/// F7 (adaptive concurrency design §7.2): why a route outlives the stream that
+/// pinned it. Nothing of the discovery is alive when the exchange opens, and the
+/// endpoint cannot tell which remote either belongs to, so the route is held
+/// by its operation. Releasing it when its last dependent ends would send the
+/// exchange to `InvalidRequest`, as the second half shows.
+#[test]
+fn a_route_is_held_by_its_operation_after_the_discovery_that_pinned_it_has_gone() {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let server = Server::start(Arc::new(|request| {
+                Box::pin(async move {
+                    if request.method() == "GET" {
+                        response(200, GitService::UploadPackAdvertisement, "advertisement")
+                    } else {
+                        let data = request.into_body().collect().await.unwrap().to_bytes();
+                        response(200, GitService::UploadPackExchange, data)
+                    }
+                })
+            }))
+            .await;
+            let mut endpoint = Endpoint::new(
+                server.config(),
+                None,
+                gwz_transport::pool::Config::default(),
+            )
+            .unwrap();
+            let discovery = endpoint
+                .client
+                .prepare_budget_for_transition(
+                    input(&server, GitService::UploadPackAdvertisement),
+                    &CancellationToken::new(),
+                    &mut endpoint.client.budget(),
+                    &mut None,
+                )
+                .await
+                .unwrap();
+            let (stream, task) = attach(discovery);
+            stream.end_write().await.unwrap();
+            let mut buffer = [0; 64];
+            while stream.read(&mut buffer).await.unwrap() != 0 {}
+            stream.close().await.unwrap();
+            task.await.unwrap();
+            // The discovery, its stream and its dependency are gone; its route
+            // is not.
+            assert_eq!(endpoint.client.route_count_for_test(), 1);
+            let exchange = endpoint
+                .client
+                .prepare_budget_for_transition(
+                    input(&server, GitService::UploadPackExchange),
+                    &CancellationToken::new(),
+                    &mut endpoint.client.budget(),
+                    &mut None,
+                )
+                .await
+                .expect("the exchange finds the route its discovery pinned");
+            drop(exchange);
+            // What a release at the last dependent would have done.
+            endpoint.client.finish_operation("operation");
+            assert_eq!(endpoint.client.route_count_for_test(), 0);
+            let refused = endpoint
+                .client
+                .prepare_budget_for_transition(
+                    input(&server, GitService::UploadPackExchange),
+                    &CancellationToken::new(),
+                    &mut endpoint.client.budget(),
+                    &mut None,
+                )
+                .await
+                .err()
+                .expect("an exchange with no route refuses before transmission");
+            assert_eq!(refused.code, ErrorCode::InvalidRequest);
+            assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
+        });
+}

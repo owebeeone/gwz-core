@@ -28,7 +28,8 @@ impl Endpoint {
         C: Connector + Send + 'static,
         C::Resource: ChannelResource,
     {
-        let retention = Cleanup::reserve()?;
+        let supervisor = registry.supervisor();
+        let retention = Cleanup::reserve(&supervisor)?;
         let origin = Instant::now();
         let connector = factory(origin, registry.clone());
         if io_timeout_ms > i32::MAX as u64 {
@@ -95,6 +96,7 @@ impl Endpoint {
                 status,
                 watch,
                 handoff,
+                supervisor,
             }),
             cleanup: Duration::from_millis(cleanup),
         })
@@ -131,7 +133,7 @@ impl Endpoint {
         deadline: Option<Instant>,
     ) -> io::Result<Job<()>> {
         cfg_if::cfg_if! { if #[cfg(unix)] {
-        Job::start(deadline, self.cleanup, move |control| {
+        Job::start(&self.shared.supervisor, deadline, self.cleanup, move |control| {
             control.check()?;
             use std::os::unix::fs::OpenOptionsExt;
             // O_NONBLOCK prevents special files (including a replaced FIFO) from

@@ -1,6 +1,6 @@
 //! Endpoint-owned TLS and a single Hyper HTTP/1 connection; no secondary pool.
 use super::{
-    agent_job::Job,
+    agent_job::{Job, Place, Supervisor},
     ssh_pool::{Connector, Resource},
 };
 use bytes::Bytes;
@@ -167,11 +167,14 @@ impl Connection {
 /// A connection's setup, queued for one of the connector's setup slots.
 struct QueuedSetup {
     slot: Pin<Box<dyn Future<Output = Result<OwnedSemaphorePermit, AcquireError>> + Send>>,
+    /// The setup slot once taken, kept while the host's job budget is full.
+    taken: Option<OwnedSemaphorePermit>,
     config: Config,
 }
 pub(crate) struct HttpResource {
     identity: Identity,
     queued: Option<QueuedSetup>,
+    supervisor: Supervisor,
     setup: Option<Job<Setup>>,
     connecting: Option<JoinHandle<Result<Connection, Failure>>>,
     pub(crate) connection: Option<Arc<Mutex<Connection>>>,
@@ -179,6 +182,10 @@ pub(crate) struct HttpResource {
     pub(crate) cancel: CancellationToken,
     driver_abort: Option<tokio::task::AbortHandle>,
     deadline: Option<Instant>,
+    /// The network time the setup has once it starts: the time spent waiting
+    /// on a local budget was not the network's (`waiting_locally`).
+    network_budget: Option<Duration>,
+    waited: bool,
     key: Key,
     pub(crate) disposed: Arc<AtomicBool>,
     pub(crate) connect_elapsed: Duration,
@@ -198,9 +205,14 @@ pub(crate) struct HttpConnector {
     /// Bounds the blocking resolver and TLS-configuration jobs. A connection
     /// past them waits for a slot (`HttpResource::poll_slot`); it is not refused.
     pub(crate) setup_slots: Arc<Semaphore>,
+    /// The host's job budget, which this connector's setup jobs draw on.
+    pub(crate) supervisor: Supervisor,
 }
 impl Connector for HttpConnector {
     type Resource = HttpResource;
+    fn now_ms(&self) -> Option<u64> {
+        Some(self.epoch.elapsed().as_millis().min(u64::MAX as u128) as u64)
+    }
     fn start(
         &mut self,
         key: &Key,
@@ -214,8 +226,10 @@ impl Connector for HttpConnector {
         let deadline = deadline.and_then(|ms| self.epoch.checked_add(Duration::from_millis(ms)));
         let mut resource = HttpResource {
             identity: identity.clone(),
+            supervisor: self.supervisor.clone(),
             queued: Some(QueuedSetup {
                 slot: Box::pin(self.setup_slots.clone().acquire_owned()),
+                taken: None,
                 config: self.config.clone(),
             }),
             setup: None,
@@ -224,6 +238,8 @@ impl Connector for HttpConnector {
             reusable: Arc::new(AtomicBool::new(false)),
             cancel: CancellationToken::new(),
             driver_abort: None,
+            network_budget: deadline.map(|at| at.saturating_duration_since(Instant::now())),
+            waited: false,
             deadline,
             key: key.clone(),
             disposed: Arc::new(AtomicBool::new(false)),
@@ -251,39 +267,64 @@ impl HttpResource {
         let Some(queued) = &mut self.queued else {
             return Poll::Ready(Ok(()));
         };
-        if self.deadline.is_some_and(|at| Instant::now() >= at) {
-            return Poll::Ready(Err(Failure {
-                setup_cause: Some(SetupFailureCause::Aggregate),
-                ..failure(ErrorCode::Timeout)
-            }));
-        }
-        let permit = match queued.slot.as_mut().poll(cx) {
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready(Ok(permit)) => permit,
-            Poll::Ready(Err(_)) => return Poll::Ready(Err(failure(ErrorCode::Cancelled))),
+        let permit = match queued.taken.take() {
+            Some(permit) => permit,
+            None => match queued.slot.as_mut().poll(cx) {
+                Poll::Pending => {
+                    self.waited = true;
+                    return Poll::Pending;
+                }
+                Poll::Ready(Ok(permit)) => permit,
+                Poll::Ready(Err(_)) => return Poll::Ready(Err(failure(ErrorCode::Cancelled))),
+            },
+        };
+        // The setup job also needs a place in the host's job budget, which
+        // other setups, abandoned ones among them, can take. A full budget is
+        // backpressure: the connection keeps its slot and waits for a place,
+        // woken when one is returned, within the same deadline.
+        let reservation = match self.supervisor.reserve(cx.waker()) {
+            Ok(reservation) => reservation,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                queued.taken = Some(permit);
+                self.waited = true;
+                return Poll::Pending;
+            }
+            Err(_) => return Poll::Ready(Err(failure(ErrorCode::Capacity))),
         };
         let config = self.queued.take().expect("queued setup").config;
         let key = self.key.clone();
-        let setup = Job::start(self.deadline, Duration::from_secs(5), move |control| {
-            let _permit = permit;
-            control.check()?;
-            let proxy = config.proxy_for(&key.host);
-            let (host, port) = proxy
-                .as_ref()
-                .map_or((key.host.as_str(), key.port), |p| (p.host.as_str(), p.port));
-            let addresses = (host, port).to_socket_addrs()?.take(16).collect::<Vec<_>>();
-            control.check()?;
-            let mut builder = native_tls::TlsConnector::builder();
-            for root in config.ca_roots {
-                builder.add_root_certificate(root);
-            }
-            let tls = builder.build().map_err(|_| io::ErrorKind::InvalidInput)?;
-            Ok(Setup {
-                addresses,
-                tls,
-                proxy,
-            })
-        })
+        if self.waited {
+            // The wait was local: the setup, and the connect that follows it,
+            // have the network time they would have had without it.
+            let now = Instant::now();
+            self.connect_started = now;
+            self.deadline = self.network_budget.map(|budget| now + budget);
+        }
+        let setup = Job::start_in(
+            Place::Reserved(reservation),
+            self.deadline,
+            Duration::from_secs(5),
+            move |control| {
+                let _permit = permit;
+                control.check()?;
+                let proxy = config.proxy_for(&key.host);
+                let (host, port) = proxy
+                    .as_ref()
+                    .map_or((key.host.as_str(), key.port), |p| (p.host.as_str(), p.port));
+                let addresses = (host, port).to_socket_addrs()?.take(16).collect::<Vec<_>>();
+                control.check()?;
+                let mut builder = native_tls::TlsConnector::builder();
+                for root in config.ca_roots {
+                    builder.add_root_certificate(root);
+                }
+                let tls = builder.build().map_err(|_| io::ErrorKind::InvalidInput)?;
+                Ok(Setup {
+                    addresses,
+                    tls,
+                    proxy,
+                })
+            },
+        )
         .map_err(|_| failure(ErrorCode::Capacity))?;
         self.setup = Some(setup);
         Poll::Ready(Ok(()))
@@ -349,6 +390,9 @@ impl Resource for HttpResource {
         // HTTPS proves the TLS resource identity, not an authenticated account.
         // The generic pool requires this proof before admitting idle reuse.
         Poll::Ready(Ok(Some(self.identity.clone())))
+    }
+    fn waiting_locally(&self) -> bool {
+        self.queued.is_some()
     }
     fn poll_dispose(&mut self, cx: &mut Context<'_>, _force: bool) -> Poll<io::Result<()>> {
         self.cancel.cancel();

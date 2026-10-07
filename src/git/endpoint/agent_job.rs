@@ -1,23 +1,16 @@
-//! Bounded process-local ownership of setup threads, including abandoned jobs.
+//! Bounded ownership of setup threads, including abandoned jobs, by one host's `Supervisor`.
 use gwz_transport::protocol::SetupFailureCause;
 use std::{
     fmt, io,
-    sync::{
-        Arc, Mutex, OnceLock,
-        atomic::{AtomicUsize, Ordering},
-    },
-    task::{Context, Poll, Waker},
+    sync::{Arc, Mutex},
+    task::{Context, Poll},
     thread::{self, JoinHandle, Thread},
     time::{Duration, Instant},
 };
 pub(super) const LIMIT: usize = 64;
-static COUNT: AtomicUsize = AtomicUsize::new(0);
-struct Permit;
-impl Drop for Permit {
-    fn drop(&mut self) {
-        COUNT.fetch_sub(1, Ordering::AcqRel);
-    }
-}
+mod supervisor;
+use supervisor::{CleanupPermit, Permit};
+pub(crate) use supervisor::{Reservation, Supervisor};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TimeoutReason {
     Stall,
@@ -132,81 +125,58 @@ impl<T: Send + 'static> Reap for Entry<T> {
         done
     }
 }
-struct Hub {
-    entries: Arc<Mutex<Vec<Box<dyn Reap>>>>,
-    worker: Thread,
-    _join: JoinHandle<()>,
-}
-impl Hub {
-    fn global(
-        spawn: &mut impl FnMut(&str, Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
-    ) -> io::Result<&'static Self> {
-        static HUB: OnceLock<Hub> = OnceLock::new();
-        static INIT: Mutex<()> = Mutex::new(());
-        if let Some(hub) = HUB.get() {
-            return Ok(hub);
-        }
-        let _init = INIT.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(hub) = HUB.get() {
-            return Ok(hub);
-        }
-        let hub = {
-            let entries = Arc::new(Mutex::new(Vec::<Box<dyn Reap>>::new()));
-            let shared = entries.clone();
-            let join = spawn(
-                "gwz-setup-reaper",
-                Box::new(move || {
-                    loop {
-                        let mut batch =
-                            std::mem::take(&mut *shared.lock().unwrap_or_else(|e| e.into_inner()));
-                        batch.retain_mut(|entry| !entry.reap());
-                        shared
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .append(&mut batch);
-                        if shared.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
-                            thread::park();
-                        } else {
-                            thread::park_timeout(Duration::from_millis(20));
-                        }
-                    }
-                }),
-            )?;
-            Self {
-                entries,
-                worker: join.thread().clone(),
-                _join: join,
-            }
-        };
-        Ok(HUB.get_or_init(|| hub))
-    }
-}
 /// T must have bounded, non-panicking destruction (the native connection owner
 /// terminates its socket before destruction). No native session clones allowed.
 pub(crate) struct Job<T: Send + 'static> {
     cell: Arc<Cell<T>>,
-    hub: &'static Hub,
+    worker: Thread,
+}
+/// Where a job's place in the budget comes from.
+pub(crate) enum Place<'a> {
+    /// Take one now, `WouldBlock` when the supervisor's budget is full.
+    Take(&'a Supervisor),
+    /// A place taken ahead (`Supervisor::reserve`).
+    Reserved(Reservation),
 }
 impl<T: Send + 'static> Job<T> {
     pub(crate) fn start(
+        supervisor: &Supervisor,
         deadline: Option<Instant>,
         cleanup: Duration,
         work: impl FnOnce(Arc<Control>) -> io::Result<T> + Send + 'static,
     ) -> io::Result<Self> {
-        Self::start_timed(deadline, Duration::ZERO, cleanup, wall_clock(), work)
+        Self::start_in(Place::Take(supervisor), deadline, cleanup, work)
+    }
+    /// `start` on a given place.
+    pub(crate) fn start_in(
+        place: Place<'_>,
+        deadline: Option<Instant>,
+        cleanup: Duration,
+        work: impl FnOnce(Arc<Control>) -> io::Result<T> + Send + 'static,
+    ) -> io::Result<Self> {
+        Self::start_timed(place, deadline, Duration::ZERO, cleanup, wall_clock(), work)
     }
     pub(crate) fn start_timed(
+        place: Place<'_>,
         aggregate: Option<Instant>,
         stall: Duration,
         cleanup: Duration,
         clock: Arc<dyn Fn() -> Instant + Send + Sync>,
         work: impl FnOnce(Arc<Control>) -> io::Result<T> + Send + 'static,
     ) -> io::Result<Self> {
-        Self::start_inner(aggregate, stall, cleanup, clock, work, |name, body| {
-            thread::Builder::new().name(name.into()).spawn(body)
-        })
+        Self::start_inner(
+            place,
+            aggregate,
+            stall,
+            cleanup,
+            clock,
+            work,
+            |name, body| thread::Builder::new().name(name.into()).spawn(body),
+        )
     }
+    #[allow(clippy::too_many_arguments)]
     fn start_inner(
+        place: Place<'_>,
         aggregate: Option<Instant>,
         stall: Duration,
         cleanup: Duration,
@@ -215,6 +185,7 @@ impl<T: Send + 'static> Job<T> {
         spawn: impl FnMut(&str, Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
     ) -> io::Result<Self> {
         Self::start_control(
+            place,
             Arc::new(Control::new(aggregate, stall, cleanup, clock)),
             work,
             spawn,
@@ -222,12 +193,14 @@ impl<T: Send + 'static> Job<T> {
     }
     cfg_if::cfg_if! { if #[cfg(unix)] {
     pub(crate) fn start_setup(
+        place: Place<'_>,
         setup: Arc<super::ssh_setup_context::SetupContext>,
         cleanup: Duration,
         work: impl FnOnce(Arc<Control>) -> io::Result<T> + Send + 'static,
     ) -> io::Result<Self> {
         let control = Arc::new(Control::new_shared(setup.clone(), cleanup, wall_clock()));
         Self::start_control(
+            place,
             control,
             move |control| {
                 work(control).map_err(|error| {
@@ -246,24 +219,27 @@ impl<T: Send + 'static> Job<T> {
     }
     } }
     fn start_control(
+        place: Place<'_>,
         control: Arc<Control>,
         work: impl FnOnce(Arc<Control>) -> io::Result<T> + Send + 'static,
         mut spawn: impl FnMut(&str, Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
     ) -> io::Result<Self> {
-        let hub = Hub::global(&mut spawn)?;
-        COUNT
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < LIMIT).then_some(n + 1)
-            })
-            .map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))?;
-        let permit = Permit;
+        let (supervisor, reservation) = match place {
+            Place::Take(supervisor) => (supervisor.clone(), None),
+            Place::Reserved(reservation) => (reservation.supervisor().clone(), Some(reservation)),
+        };
+        let worker = supervisor.reaper(&mut spawn)?;
+        let permit = match reservation {
+            Some(Reservation(permit)) => permit,
+            None => supervisor.take()?,
+        };
         let cell = Arc::new(Cell {
             control: control.clone(),
             result: Mutex::new(None),
             permit: Mutex::new(Some(permit)),
         });
         let target = cell.clone();
-        let wake = hub.worker.clone();
+        let wake = worker.clone();
         let join = spawn(
             "gwz-agent-setup",
             Box::new(move || {
@@ -277,19 +253,21 @@ impl<T: Send + 'static> Job<T> {
                 wake.unpark();
             }),
         )?;
-        hub.entries
+        supervisor
+            .shared
+            .entries
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(Box::new(Entry {
                 cell: cell.clone(),
                 join: Some(join),
             }));
-        hub.worker.unpark();
-        Ok(Self { cell, hub })
+        worker.unpark();
+        Ok(Self { cell, worker })
     }
     pub(crate) fn cancel(&self) {
         self.cell.control.cancel();
-        self.hub.worker.unpark();
+        self.worker.unpark();
     }
     pub(crate) fn poll_result(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<T>> {
         let control = &self.cell.control;
@@ -298,7 +276,7 @@ impl<T: Send + 'static> Job<T> {
         control.update(&mut state);
         state.waker = Some(cx.waker().clone());
         if !state.joined || (state.failure.is_some() && !state.consumed) {
-            self.hub.worker.unpark();
+            self.worker.unpark();
             return Poll::Pending;
         }
         if let Some(error) = state.failure {
@@ -314,7 +292,7 @@ impl<T: Send + 'static> Job<T> {
         state.consumed = true;
         drop(state);
         self.cell.release();
-        self.hub.worker.unpark();
+        self.worker.unpark();
         Poll::Ready(result)
     }
     /// Error means cleanup is overdue and still owned, never a disposal ack.
@@ -347,29 +325,19 @@ impl<T: Send + 'static> Drop for Job<T> {
 
 // Each active endpoint reserves its eventual cleanup record before spawning.
 // Retaining a stopped pool never allocates another thread or another permit.
-static CLEANUPS: AtomicUsize = AtomicUsize::new(0);
-struct CleanupPermit;
-impl Drop for CleanupPermit {
-    fn drop(&mut self) {
-        CLEANUPS.fetch_sub(1, Ordering::AcqRel);
-    }
-}
 pub(crate) struct Cleanup {
-    hub: &'static Hub,
+    supervisor: Supervisor,
+    worker: Thread,
     permit: CleanupPermit,
 }
 impl Cleanup {
-    pub(crate) fn reserve() -> io::Result<Self> {
-        let hub =
-            Hub::global(&mut |name, body| thread::Builder::new().name(name.into()).spawn(body))?;
-        CLEANUPS
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < LIMIT).then_some(n + 1)
-            })
-            .map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))?;
+    pub(crate) fn reserve(supervisor: &Supervisor) -> io::Result<Self> {
+        let worker = supervisor.reaper_spawn()?;
+        let permit = supervisor.take_cleanup()?;
         Ok(Self {
-            hub,
-            permit: CleanupPermit,
+            supervisor: supervisor.clone(),
+            worker,
+            permit,
         })
     }
     /// Poll must be bounded; true means physical cleanup and ledger closure.
@@ -393,7 +361,8 @@ impl Cleanup {
                 }
             }
         }
-        self.hub
+        self.supervisor
+            .shared
             .entries
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -402,7 +371,7 @@ impl Cleanup {
                 _permit: self.permit,
                 poisoned: false,
             }));
-        self.hub.worker.unpark();
+        self.worker.unpark();
     }
 }
 

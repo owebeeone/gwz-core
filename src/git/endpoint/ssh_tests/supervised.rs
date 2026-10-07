@@ -50,7 +50,7 @@ fn endpoint(
         config,
         Registry::new(),
         move |origin, _| {
-            SetupConnector::reported(origin, cleanup, move |key, identity, _| {
+            SetupConnector::isolated(origin, cleanup, move |key, identity, _| {
                 factory(key, identity)
             })
         },
@@ -165,7 +165,7 @@ fn connector_deadline_keeps_original_origin_and_refuses_expired_effects() {
     };
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = calls.clone();
-    let mut connector = SetupConnector::reported(
+    let mut connector = SetupConnector::isolated(
         Instant::now() - Duration::from_secs(1),
         Duration::from_millis(10),
         move |_: &Key, _: &Identity, _| -> io::Result<Setup> {

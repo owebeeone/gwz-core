@@ -46,12 +46,22 @@ cfg_if::cfg_if! {
             /// Starts a job whose threads `spawn` creates, so a test can make
             /// thread creation fail deterministically.
             pub(crate) fn start_with(
+                supervisor: &Supervisor,
                 deadline: Option<Instant>,
                 cleanup: Duration,
                 work: impl FnOnce(Arc<Control>) -> io::Result<T> + Send + 'static,
                 spawn: impl FnMut(&str, Box<dyn FnOnce() + Send>) -> io::Result<JoinHandle<()>>,
             ) -> io::Result<Self> {
-                Self::start_inner(deadline, Duration::ZERO, cleanup, wall_clock(), work, spawn)
+                Self::start_inner(Place::Take(supervisor), deadline, Duration::ZERO, cleanup, wall_clock(), work, spawn)
+            }
+            /// Starts a job on a job budget of its own, for a test that is not
+            /// about the budget.
+            pub(crate) fn start_isolated(
+                deadline: Option<Instant>,
+                cleanup: Duration,
+                work: impl FnOnce(Arc<Control>) -> io::Result<T> + Send + 'static,
+            ) -> io::Result<Self> {
+                Self::start(&Supervisor::new(), deadline, cleanup, work)
             }
         }
 

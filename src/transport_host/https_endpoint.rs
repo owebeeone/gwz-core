@@ -3,6 +3,7 @@
 use super::{Arc, Duration, HttpsEndpointConfig, ModelResult, NativeCaller, pool, unavailable};
 use crate::git::endpoint::{
     https_auth::HelperSlots,
+    https_operation::Refusal,
     https_policy,
     https_worker::{
         Budget, ChallengeLease, Client, Endpoint as HttpEndpoint, FirstConnect, Input, Prepared,
@@ -247,7 +248,13 @@ impl HttpsEndpoint {
             let guard = self
                 .client
                 .operation(&name)
-                .map_err(|_| EndpointError::Capacity)?;
+                .map_err(|refusal| match refusal {
+                    // The table is full of operations that still have dependents:
+                    // the open waits, as it waits for a stream.
+                    Refusal::WouldBlock => EndpointError::WouldBlock,
+                    // A name made for this request is never sealed already.
+                    Refusal::Sealed => EndpointError::InvalidRequest,
+                })?;
             self.operations.insert(
                 request.clone(),
                 Operation {

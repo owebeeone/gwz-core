@@ -1,6 +1,6 @@
 //! Bounded setup ownership for one authenticated SSH connection.
 use super::{
-    agent_job::{self, Job, TimeoutReason, timeout_reason},
+    agent_job::{self, Job, Place, Supervisor, TimeoutReason, timeout_reason},
     idle_watch::{IdleReactor, IdleSocket},
     ssh_channel::{GitService, SshChannel},
     ssh_connection::SshConnection,
@@ -19,7 +19,7 @@ use gwz_transport::{
 use std::{
     io, mem,
     sync::Arc,
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
 
@@ -75,6 +75,8 @@ type Factory = Box<dyn FnMut(&Key, &Identity, Opening) -> io::Result<Setup> + Se
 pub(crate) struct SetupConnector {
     origin: Instant,
     cleanup: Duration,
+    /// The host's job budget, which this connector's setups draw on.
+    supervisor: Supervisor,
     stall_ms: u64,
     factory: Factory,
     /// Watches this connector's idle sessions; started by the first connect.
@@ -84,11 +86,13 @@ impl SetupConnector {
     pub(crate) fn reported(
         origin: Instant,
         cleanup: Duration,
+        supervisor: Supervisor,
         factory: impl FnMut(&Key, &Identity, Opening) -> io::Result<Setup> + Send + 'static,
     ) -> Self {
         Self {
             origin,
             cleanup,
+            supervisor,
             stall_ms: 0,
             factory: Box::new(factory),
             idle: None,
@@ -104,6 +108,19 @@ impl SetupConnector {
         Ok(reactor)
     }
 }
+cfg_if::cfg_if! { if #[cfg(test)] {
+impl SetupConnector {
+    /// A connector on a job budget of its own, for a test that is not about
+    /// the budget.
+    pub(crate) fn isolated(
+        origin: Instant,
+        cleanup: Duration,
+        factory: impl FnMut(&Key, &Identity, Opening) -> io::Result<Setup> + Send + 'static,
+    ) -> Self {
+        Self::reported(origin, cleanup, Supervisor::new(), factory)
+    }
+}
+} }
 impl Connector for SetupConnector {
     type Resource = NativeResource;
     fn setup_clock_source(&self) -> Option<(Instant, Arc<dyn Fn() -> u64 + Send + Sync>)> {
@@ -116,6 +133,9 @@ impl Connector for SetupConnector {
 
     fn set_stall_ms(&mut self, stall_ms: u64) {
         self.stall_ms = stall_ms;
+    }
+    fn now_ms(&self) -> Option<u64> {
+        Some(self.origin.elapsed().as_millis().min(u64::MAX as u128) as u64)
     }
     fn start(
         &mut self,
@@ -145,33 +165,46 @@ impl Connector for SetupConnector {
             .transpose()?;
         let setup =
             (self.factory)(key, identity, opening).map_err(|error| failure(error.kind()))?;
-        let requested = identity.clone();
-        let job = if let Some(context) = &setup_context {
-            Job::start_setup(context.clone(), self.cleanup, setup)
-        } else {
-            Job::start_timed(
-                deadline,
-                Duration::from_millis(self.stall_ms),
-                self.cleanup,
-                agent_job::wall_clock(),
+        let mut resource = NativeResource {
+            state: State::Waiting(Box::new(Deferred {
                 setup,
-            )
-        }
-        .map_err(|error| failure(error.kind()))?;
-        Ok(NativeResource {
-            state: State::Connecting(job),
-            requested,
+                setup_context: setup_context.clone(),
+                stall: Duration::from_millis(self.stall_ms),
+                cleanup: self.cleanup,
+                supervisor: self.supervisor.clone(),
+            })),
+            requested: identity.clone(),
             exchanges: 0,
+            network_budget: deadline.map(|at| at.saturating_duration_since(Instant::now())),
+            waited: false,
             deadline,
             authority: None,
             progress,
             setup_context,
             idle,
             watch: None,
-        })
+        };
+        // The setup starts at once when the host's job budget has a place.
+        // When it is full the setup waits for one, with its work in hand: a
+        // full budget is backpressure, never the open's failure.
+        if let Poll::Ready(Err(failed)) =
+            resource.poll_start(&mut Context::from_waker(Waker::noop()))
+        {
+            return Err(failed);
+        }
+        Ok(resource)
     }
 }
+/// A setup that has not started, for want of a place in the job budget.
+struct Deferred {
+    setup: Setup,
+    setup_context: Option<Arc<SetupContext>>,
+    stall: Duration,
+    cleanup: Duration,
+    supervisor: Supervisor,
+}
 enum State {
+    Waiting(Box<Deferred>),
     Connecting(Job<Authenticated>),
     Idle(Authenticated),
     Active {
@@ -186,6 +219,10 @@ pub(crate) struct NativeResource {
     requested: Identity,
     exchanges: u64,
     deadline: Option<Instant>,
+    /// The network time the setup has once it starts: the time spent waiting
+    /// on the job budget was not the network's.
+    network_budget: Option<Duration>,
+    waited: bool,
     authority: Option<Arc<Entry>>,
     progress: Progress,
     setup_context: Option<Arc<SetupContext>>,
@@ -193,8 +230,68 @@ pub(crate) struct NativeResource {
     /// The idle session's socket watch, only while `State::Idle`.
     watch: Option<IdleSocket>,
 }
+impl NativeResource {
+    /// Starts the setup's job once the job budget has a place for it. Until
+    /// then the setup reports that it waits locally (`waiting_locally`): the
+    /// pool leaves the wait to the open's allocation, and the connect clock
+    /// runs from what it had left when the wait ends.
+    fn poll_start(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Failure>> {
+        let State::Waiting(_) = &self.state else {
+            return Poll::Ready(Ok(()));
+        };
+        let State::Waiting(deferred) = &self.state else {
+            unreachable!("checked above");
+        };
+        let reservation = match deferred.supervisor.reserve(cx.waker()) {
+            Ok(reservation) => reservation,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                self.waited = true;
+                return Poll::Pending;
+            }
+            Err(error) => return Poll::Ready(Err(failure(error.kind()))),
+        };
+        let State::Waiting(deferred) = mem::replace(&mut self.state, State::Disposed) else {
+            unreachable!("checked above");
+        };
+        if self.waited {
+            self.deadline = self.network_budget.map(|budget| Instant::now() + budget);
+        }
+        let Deferred {
+            setup,
+            setup_context,
+            stall,
+            cleanup,
+            supervisor: _,
+        } = *deferred;
+        let job = if let Some(context) = &setup_context {
+            Job::start_setup(
+                Place::Reserved(reservation),
+                context.clone(),
+                cleanup,
+                setup,
+            )
+        } else {
+            Job::start_timed(
+                Place::Reserved(reservation),
+                self.deadline,
+                stall,
+                cleanup,
+                agent_job::wall_clock(),
+                setup,
+            )
+        }
+        .map_err(|error| failure(error.kind()))?;
+        self.state = State::Connecting(job);
+        Poll::Ready(Ok(()))
+    }
+}
 impl Resource for NativeResource {
     fn poll_connected(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<Identity>, Failure>> {
+        match self.poll_start(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Err(failed)) => return Poll::Ready(Err(failed)),
+            Poll::Ready(Ok(())) => {}
+        }
         let state = mem::replace(&mut self.state, State::Disposed);
         match state {
             State::Connecting(mut job) => match job.poll_result(cx) {
@@ -241,6 +338,9 @@ impl Resource for NativeResource {
             }
         }
     }
+    fn waiting_locally(&self) -> bool {
+        matches!(self.state, State::Waiting(_))
+    }
     fn poll_dispose(&mut self, cx: &mut Context<'_>, force: bool) -> Poll<io::Result<()>> {
         let state = mem::replace(&mut self.state, State::Disposed);
         match state {
@@ -255,6 +355,8 @@ impl Resource for NativeResource {
                     Poll::Ready(Err(error))
                 }
             },
+            // Nothing was started, so nothing is owed.
+            State::Waiting(_) => Poll::Ready(Ok(())),
             State::Idle(authenticated) => {
                 drop(authenticated);
                 Poll::Ready(Ok(()))

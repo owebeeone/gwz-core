@@ -47,6 +47,7 @@ cfg_if::cfg_if! {
     if #[cfg(all(test, unix))] {
         mod budget_wait_tests;
         pub(crate) mod cut_proxy;
+        mod job_budget_wait_tests;
         mod git_turns_tests;
         pub(crate) mod helper_script;
         pub(crate) mod https_fixture;

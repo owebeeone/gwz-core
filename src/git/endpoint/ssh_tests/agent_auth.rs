@@ -30,7 +30,7 @@ cfg_if::cfg_if! {
                 let (connection, host) = fixture.prepared(method);
                 let path = fixture.path.clone();
                 let user = fixture.ssh.user.clone();
-                let mut job = Job::start(
+                let mut job = Job::start_isolated(
                     Some(Instant::now() + Duration::from_secs(3)),
                     Duration::from_secs(1),
                     move |control| {
@@ -63,7 +63,7 @@ cfg_if::cfg_if! {
             host[0] ^= 1;
             let path = fixture.path.clone();
             let user = fixture.ssh.user.clone();
-            let mut job = Job::start(None, Duration::from_secs(1), move |control| {
+            let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| {
                 agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || {
                     agent_socket::connect(&path, control)
                 }, || {}, || {})
@@ -84,7 +84,7 @@ cfg_if::cfg_if! {
                 let path = fixture.path.clone();
                 let user = fixture.ssh.user.clone();
                 let deadline = timed.then(|| Instant::now() + Duration::from_millis(800));
-                let mut job = Job::start(deadline, Duration::from_secs(1), move |control| {
+                let mut job = Job::start_isolated(deadline, Duration::from_secs(1), move |control| {
                     agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || {
                         agent_socket::connect(&path, control)
                     }, || {}, || {})
@@ -135,7 +135,7 @@ cfg_if::cfg_if! {
             let (connection, host) = fixture.prepared("ssh-ed25519");
             let path = fixture.path.clone();
             let user = fixture.ssh.user.clone();
-            let mut job = Job::start(
+            let mut job = Job::start_isolated(
                 Some(Instant::now() + Duration::from_secs(3)),
                 Duration::from_secs(1),
                 move |control| {
@@ -188,7 +188,7 @@ cfg_if::cfg_if! {
             let socket = std::os::unix::net::UnixStream::connect(&fixture.path).unwrap();
             socket.set_nonblocking(true).unwrap();
             let user = fixture.ssh.user.clone();
-            let mut job = Job::start(
+            let mut job = Job::start_isolated(
                 Some(Instant::now() + Duration::from_secs(3)),
                 Duration::from_secs(1),
                 move |control| {
@@ -217,7 +217,7 @@ cfg_if::cfg_if! {
                 let (connection, host) = fixture.prepared(method);
                 let path = fixture.path.clone();
                 let user = fixture.ssh.user.clone();
-                let mut job = Job::start(
+                let mut job = Job::start_isolated(
                     Some(Instant::now() + Duration::from_secs(3)),
                     Duration::from_secs(1),
                     move |control| {
@@ -244,7 +244,7 @@ cfg_if::cfg_if! {
                 let mut paused = common::pause_process_tree(fixture.ssh.child.id());
                 let path = fixture.path.clone();
                 let user = fixture.ssh.user.clone();
-                let mut job = Job::start(None, Duration::from_secs(1), move |control| {
+                let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| {
                     agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || {
                         agent_socket::connect(&path, control)
                     }, || {}, || {})
@@ -287,7 +287,7 @@ cfg_if::cfg_if! {
             let path = fixture.path.clone();
             let user = fixture.ssh.user.clone();
             let mut disconnected = false;
-            let mut job = Job::start(
+            let mut job = Job::start_isolated(
                 Some(Instant::now() + Duration::from_secs(3)),
                 Duration::from_secs(1),
                 move |control| {
@@ -390,6 +390,7 @@ cfg_if::cfg_if! {
             let path = fixture.path.clone();
             let user = fixture.ssh.user.clone();
             let mut job = Job::start_timed(
+                agent_job::Place::Take(&agent_job::Supervisor::new()),
                 Some(Instant::now() + Duration::from_secs(5)),
                 Duration::from_millis(300),
                 Duration::from_secs(1),

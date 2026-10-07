@@ -6,24 +6,17 @@ use std::{
     },
     time::{Duration, Instant},
 };
-/// Fills the process-wide cleanup budget, so it runs in a child of its own.
+/// Fills a host's cleanup budget.
 #[test]
 fn retained_cleanup_slots_are_bounded_and_progress_without_live_helpers() {
-    super::in_child(
-        module_path!(),
-        "retained_cleanup_slots_are_bounded_and_progress_without_live_helpers_in_child",
-    );
-}
-#[test]
-#[ignore = "runs in a child process of its own; see ssh_tests::in_child"]
-fn retained_cleanup_slots_are_bounded_and_progress_without_live_helpers_in_child() {
+    let supervisor = agent_job::Supervisor::new();
     let ready = Arc::new(AtomicBool::new(false));
     let complete = Arc::new(AtomicUsize::new(0));
     let slots: Vec<_> = (0..64)
-        .map(|_| agent_job::Cleanup::reserve().unwrap())
+        .map(|_| agent_job::Cleanup::reserve(&supervisor).unwrap())
         .collect();
     assert!(
-        matches!(agent_job::Cleanup::reserve(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
+        matches!(agent_job::Cleanup::reserve(&supervisor), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
     );
     for slot in slots {
         let ready = ready.clone();
@@ -38,7 +31,7 @@ fn retained_cleanup_slots_are_bounded_and_progress_without_live_helpers_in_child
         });
     }
     assert!(
-        matches!(agent_job::Cleanup::reserve(), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
+        matches!(agent_job::Cleanup::reserve(&supervisor), Err(e) if e.kind() == std::io::ErrorKind::WouldBlock)
     );
     std::thread::sleep(Duration::from_millis(60));
     ready.store(true, Ordering::SeqCst); // no helper and no unpark
@@ -50,7 +43,7 @@ fn retained_cleanup_slots_are_bounded_and_progress_without_live_helpers_in_child
     // The last callback can publish completion immediately before its permit
     // is dropped. Wait for that destruction rather than racing the callback.
     loop {
-        match agent_job::Cleanup::reserve() {
+        match agent_job::Cleanup::reserve(&supervisor) {
             Ok(_next) => break,
             Err(error) => {
                 assert_eq!(error.kind(), std::io::ErrorKind::WouldBlock);

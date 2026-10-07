@@ -1,4 +1,5 @@
 use super::*;
+use std::task::Waker;
 #[derive(Clone, Copy)]
 pub(super) struct Fail {
     pub(super) kind: io::ErrorKind,

@@ -21,7 +21,7 @@ cfg_if::cfg_if! {
         fn endpoint_with_reader_config(c:Config,f:&common::SshdFixture,r:Registry,calls:Arc<AtomicUsize>,barrier:Arc<Mutex<Option<Receiver<()>>>>,reader:Reader) -> Endpoint {
             let known=f.known_hosts.clone();
             Endpoint::with_reader(c,r,reader,move |origin,registry| {
-                ssh_setup::SetupConnector::reported(origin,Duration::from_millis(50),move |key:&Key,identity:&Identity,_| ->io::Result<ssh_setup::Setup> {
+                ssh_setup::SetupConnector::isolated(origin,Duration::from_millis(50),move |key:&Key,identity:&Identity,_| ->io::Result<ssh_setup::Setup> {
                     let pin=registry.lookup(key,identity)?;let key=key.clone();let known=known.clone();let barrier=barrier.clone();let calls=calls.clone();
                     Ok(Box::new(move |c| {
                         calls.fetch_add(1,Ordering::SeqCst);
@@ -43,7 +43,7 @@ cfg_if::cfg_if! {
                 let reservation=registry.reserve()?;
                 let started=started.clone();
                 let release=release.lock().unwrap().take().ok_or_else(|| io::Error::from(io::ErrorKind::Other))?;
-                Ok(Job::start(deadline,cleanup,move |control| {
+                Ok(Job::start_isolated(deadline,cleanup,move |control| {
                     started.send(()).map_err(|_| io::ErrorKind::BrokenPipe)?;
                     release.recv().map_err(|_| io::ErrorKind::BrokenPipe)?;
                     let bytes=fs::read(path)?;

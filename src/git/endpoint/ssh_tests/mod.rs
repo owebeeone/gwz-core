@@ -22,6 +22,7 @@ mod channel;
 mod cleanup_capacity;
 mod host_case;
 mod idle_loss;
+mod idle_loss_budget;
 mod key_container;
 mod key_files;
 cfg_if::cfg_if! {
@@ -47,35 +48,3 @@ mod selected_pool;
 mod supervised;
 mod worker;
 cfg_if::cfg_if! { if #[cfg(unix)] { mod password_helpers; } }
-
-/// Runs `test`, an ignored test of `module`, alone in a child of this test
-/// binary, and asserts that the child ran exactly that test and passed. The
-/// supervised-job and cleanup budgets in `agent_job` are process-wide, so a
-/// test that fills them, or that must be the first to start their supervisor,
-/// needs a process no other test shares.
-fn in_child(module: &str, test: &str) {
-    let module = module.split_once("::").map_or(module, |(_, path)| path);
-    let test = format!("{module}::{test}");
-    let output = std::process::Command::new(std::env::current_exe().unwrap())
-        .args([
-            "--exact",
-            &test,
-            "--ignored",
-            "--nocapture",
-            "--test-threads",
-            "1",
-        ])
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "the child failed:\nstdout={stdout}\nstderr={stderr}"
-    );
-    assert_eq!(
-        stdout.matches(&format!("test {test} ... ok")).count(),
-        1,
-        "the child did not run exactly one test: {stdout}"
-    );
-}

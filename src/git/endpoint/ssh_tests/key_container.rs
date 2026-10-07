@@ -28,7 +28,7 @@ cfg_if::cfg_if! {
         }
 
         fn check(text: String) -> io::Result<()> {
-            let mut job = Job::start(
+            let mut job = Job::start_isolated(
                 Some(Instant::now() + Duration::from_secs(2)),
                 Duration::from_secs(1),
                 move |control| ssh_key_container::check(&text, &control),
@@ -194,7 +194,7 @@ cfg_if::cfg_if! {
         fn cancellation_is_observed_while_scanning_bounded_chunks() {
             let (started, seen) = mpsc::channel();
             let text = armor("RSA PRIVATE KEY", &[1u8; 700_000]);
-            let mut job = Job::start(None, Duration::from_secs(1), move |control| {
+            let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| {
                 started.send(()).unwrap();
                 ssh_key_container::check(&text, &control)
             })
@@ -215,7 +215,7 @@ cfg_if::cfg_if! {
             let observed = Arc::new(AtomicUsize::new(0));
             let worker_observed = Arc::clone(&observed);
             let input = vec![b'a'; 1_048_000];
-            let mut job = Job::start(None, Duration::from_secs(1), move |control| {
+            let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| {
                 let result = ssh_key_container::scan_for_test(&input, &control, |_| {
                     let count = worker_observed.fetch_add(1, Ordering::AcqRel) + 1;
                     if count == 128 {

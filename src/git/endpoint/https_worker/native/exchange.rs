@@ -224,7 +224,12 @@ impl Client {
             finishing: None,
             cancellation: gwz_sspi::Cancellation::new(),
             cleanup: self.native_cleanup.clone(),
-            operation: Some(self.operation(&prepared.input.operation).map_err(failure)?),
+            // A further dependent of an operation the preparation already
+            // holds, so only a sealed operation refuses it.
+            operation: Some(
+                self.operation(&prepared.input.operation)
+                    .map_err(|refusal| failure(refusal.code()))?,
+            ),
             slot: prepared._slot.take(),
         };
         let starting = Starting::new(port.start(request, until, guard.cancellation.clone()));

@@ -40,7 +40,7 @@ cfg_if::cfg_if! {
         }
         fn establish(key: Key, path: PathBuf) -> io::Result<(SshConnection, Vec<u8>)> {
             finish(
-                &mut Job::start(
+                &mut Job::start_isolated(
                     Some(Instant::now() + Duration::from_secs(3)),
                     Duration::from_secs(1),
                     move |c| ssh_network::establish(&key, &path, &c),
@@ -60,6 +60,7 @@ cfg_if::cfg_if! {
             let aggregate = start + Duration::from_secs(10);
             let advancing = clock.clone();
             let mut job = Job::start_timed(
+                agent_job::Place::Take(&agent_job::Supervisor::new()),
                 Some(aggregate),
                 Duration::from_secs(1),
                 Duration::from_secs(5),
@@ -93,6 +94,7 @@ cfg_if::cfg_if! {
             let aggregate = clock.now() + Duration::from_secs(10);
             let advancing = clock.clone();
             let mut job = Job::start_timed(
+                agent_job::Place::Take(&agent_job::Supervisor::new()),
                 Some(aggregate),
                 Duration::from_secs(1),
                 Duration::from_secs(5),
@@ -146,7 +148,7 @@ cfg_if::cfg_if! {
                 config,
                 ssh_key_snapshot::Registry::new(),
                 move |origin, _| {
-                    ssh_setup::SetupConnector::reported(
+                    ssh_setup::SetupConnector::isolated(
                         origin,
                         Duration::from_secs(1),
                         move |key: &Key, identity: &Identity, _| -> io::Result<ssh_setup::Setup> {
@@ -233,7 +235,7 @@ cfg_if::cfg_if! {
                 let observed = reached.clone();
                 let key = key(&f);
                 let result = finish(
-                    &mut Job::start(
+                    &mut Job::start_isolated(
                         Some(Instant::now() + Duration::from_secs(2)),
                         Duration::from_secs(1),
                         move |c| {
@@ -305,7 +307,7 @@ cfg_if::cfg_if! {
                     Some(Instant::now() + Duration::from_millis(200))
                 };
                 let key = Key::ssh("git", "127.0.0.1", port);
-                let mut job = Job::start(deadline, Duration::from_secs(1), move |c| {
+                let mut job = Job::start_isolated(deadline, Duration::from_secs(1), move |c| {
                     ssh_network::establish(&key, &known, &c)
                 })
                 .unwrap();
@@ -563,7 +565,7 @@ cfg_if::cfg_if! {
                 let load_started = started.clone();
                 let resolved = Arc::new(AtomicBool::new(false));
                 let observed = resolved.clone();
-                let mut job = Job::start(None, Duration::from_millis(10), move |c| {
+                let mut job = Job::start_isolated(None, Duration::from_millis(10), move |c| {
                     ssh_network::establish_with(
                         &key,
                         &known,
@@ -624,7 +626,7 @@ cfg_if::cfg_if! {
             let dead_address = dead.local_addr().unwrap();
             drop(dead);
             let live = ("127.0.0.1".parse::<std::net::IpAddr>().unwrap(), f.port).into();
-            let mut job = Job::start(
+            let mut job = Job::start_isolated(
                 Some(Instant::now() + Duration::from_secs(3)),
                 Duration::from_secs(1),
                 move |c| {
@@ -651,7 +653,7 @@ cfg_if::cfg_if! {
             let key = key(&f);
             let known = f.known_hosts.clone();
             let text = fs::read_to_string(&known).unwrap();
-            let mut job = Job::start(
+            let mut job = Job::start_isolated(
                 Some(Instant::now() + Duration::from_secs(2)),
                 Duration::from_secs(1),
                 move |c| {
@@ -677,7 +679,7 @@ cfg_if::cfg_if! {
                 let live = peer.local_addr().unwrap();
                 let attempts = Arc::new(AtomicUsize::new(0));
                 let observed = attempts.clone();
-                let mut job = Job::start(
+                let mut job = Job::start_isolated(
                     Some(Instant::now() + Duration::from_secs(3)),
                     Duration::from_secs(1),
                     move |c| {
@@ -706,7 +708,7 @@ cfg_if::cfg_if! {
                 let attempts = Arc::new(AtomicUsize::new(0));
                 let observed = attempts.clone();
                 let expiry = Instant::now() + Duration::from_millis(200);
-                let mut job = Job::start(
+                let mut job = Job::start_isolated(
                     if cancel { None } else { Some(expiry) },
                     Duration::from_secs(1),
                     move |c| {
@@ -764,7 +766,7 @@ cfg_if::cfg_if! {
             let known = fixture.ssh.known_hosts.clone();
             let text = fs::read_to_string(&known).unwrap();
             let path = fixture.path.clone();
-            let mut job = Job::start(
+            let mut job = Job::start_isolated(
                 Some(Instant::now() + Duration::from_secs(3)),
                 Duration::from_secs(1),
                 move |c| {
@@ -805,7 +807,7 @@ cfg_if::cfg_if! {
                 let path = f.known_hosts.clone();
                 let resolved = Arc::new(AtomicBool::new(false));
                 let observed = resolved.clone();
-                let mut job = Job::start(
+                let mut job = Job::start_isolated(
                     Some(Instant::now() + Duration::from_secs(3)),
                     Duration::from_secs(1),
                     move |c| {

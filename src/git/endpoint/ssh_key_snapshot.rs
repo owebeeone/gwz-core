@@ -1,6 +1,6 @@
 //! Endpoint-local selected authority. Secret owners deliberately have no Debug.
 use super::{
-    agent_job::{Control, Job},
+    agent_job::{Control, Job, Supervisor},
     ssh_key_container,
 };
 use gwz_transport::pool::{Identity, Key};
@@ -22,6 +22,8 @@ struct State {
     key_cap: usize,
     next: u64,
     entries: Vec<Weak<Entry>>,
+    /// The host's job budget, which this registry's key reads draw on.
+    supervisor: Supervisor,
 }
 pub(crate) struct Reservation {
     registry: Registry,
@@ -42,10 +44,21 @@ pub(crate) struct Entry {
     token: String,
 }
 impl Registry {
-    pub(crate) fn new() -> Self {
-        Self::limits(64, 16 << 20, MAX_KEY)
+    cfg_if::cfg_if! { if #[cfg(test)] {
+        /// A registry with a job budget of its own.
+        pub(crate) fn new() -> Self {
+            Self::with_supervisor(Supervisor::new())
+        }
+    } }
+    /// A registry whose key reads, and the endpoint that holds it, share
+    /// `supervisor`'s job budget.
+    pub(crate) fn with_supervisor(supervisor: Supervisor) -> Self {
+        Self::limits(64, 16 << 20, MAX_KEY, supervisor)
     }
-    fn limits(max_slots: usize, max_bytes: usize, key_cap: usize) -> Self {
+    pub(crate) fn supervisor(&self) -> Supervisor {
+        self.0.lock().unwrap().supervisor.clone()
+    }
+    fn limits(max_slots: usize, max_bytes: usize, key_cap: usize, supervisor: Supervisor) -> Self {
         Self(Arc::new(Mutex::new(State {
             slots: 0,
             bytes: 0,
@@ -54,6 +67,7 @@ impl Registry {
             key_cap,
             next: 0,
             entries: Vec::new(),
+            supervisor,
         })))
     }
     pub(crate) fn lookup(&self, key: &Key, identity: &Identity) -> io::Result<Arc<Entry>> {
@@ -89,7 +103,7 @@ impl Registry {
         cleanup: Duration,
     ) -> io::Result<Job<Loaded>> {
         let permit = self.reserve()?;
-        Job::start(deadline, cleanup, move |control| {
+        Job::start(&self.supervisor(), deadline, cleanup, move |control| {
             permit.read(key, path, &control)
         })
     }
@@ -210,7 +224,7 @@ fn clean(error: io::Error) -> io::Error {
 cfg_if::cfg_if! {
     if #[cfg(test)] {
         impl Registry {
-            pub(crate) fn with_limits(slots: usize, bytes: usize, cap: usize) -> Self { Self::limits(slots, bytes, cap) }
+            pub(crate) fn with_limits(slots: usize, bytes: usize, cap: usize) -> Self { Self::limits(slots, bytes, cap, Supervisor::new()) }
             pub(crate) fn usage(&self) -> (usize, usize) { let state = self.0.lock().unwrap(); (state.slots, state.bytes) }
         }
         impl Reservation {

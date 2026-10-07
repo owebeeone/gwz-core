@@ -2,44 +2,14 @@
 //! not at the reaper's next sweep, and the reaper returns the permit of a
 //! result nobody takes.
 //!
-//! The permits and the reaper are the process's, so the test runs in a child
-//! process of its own, where no other job takes a permit.
+//! The permits and the reaper are the supervisor's, so the test has one of
+//! its own and no other job takes a permit from it.
 
 use super::*;
 use std::{
-    process::Command,
     sync::Condvar,
     task::{Context, Poll, Waker},
 };
-
-const CHILD: &str = "GWZ_TEST_PROMPT_PERMIT";
-
-#[test]
-fn a_taken_result_frees_its_permit_at_once() {
-    let path = module_path!();
-    let test = format!(
-        "{}::taken_result_child",
-        path.split_once("::").map_or(path, |(_, rest)| rest)
-    );
-    let output = Command::new(std::env::current_exe().unwrap())
-        .env(CHILD, "1")
-        .args([
-            "--ignored",
-            "--exact",
-            &test,
-            "--nocapture",
-            "--test-threads=1",
-        ])
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        output.status.success(),
-        "{stdout}{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(stdout.contains(&format!("test {test} ... ok")), "{stdout}");
-}
 
 /// Opens the gate it holds when dropped, however the test ends.
 struct Release(Arc<(Mutex<bool>, Condvar)>);
@@ -63,25 +33,19 @@ fn wait_result<T: Send + 'static>(job: &mut Job<T>) -> io::Result<T> {
     }
 }
 
-fn permits() -> usize {
-    COUNT.load(Ordering::Acquire)
-}
-
 #[test]
-#[ignore = "the child process of the prompt permit test, which holds the process's reaper"]
-fn taken_result_child() {
-    if std::env::var_os(CHILD).is_none() {
-        return;
-    }
+fn a_taken_result_frees_its_permit_at_once() {
+    let supervisor = Supervisor::new();
+    let permits = || supervisor.taken();
     // A retained cleanup holds the reaper, from the sweep that joins the
     // job's thread, until the gate opens: that sweep cannot also dispose of
     // the job, so only taking its result can free its permit.
     let gate = Arc::new((Mutex::new(false), Condvar::new()));
     let release = Release(gate.clone());
-    let mut job = Job::start(None, Duration::from_secs(5), |_| Ok(7)).unwrap();
+    let mut job = Job::start(&supervisor, None, Duration::from_secs(5), |_| Ok(7)).unwrap();
     assert_eq!(permits(), 1);
     let cell = job.cell.clone();
-    Cleanup::reserve().unwrap().retain(move || {
+    Cleanup::reserve(&supervisor).unwrap().retain(move || {
         let state = cell.control.state.lock();
         if !state.unwrap_or_else(|e| e.into_inner()).joined {
             return false;
@@ -99,7 +63,7 @@ fn taken_result_child() {
 
     // A result nobody takes: the reaper disposes of it, and returns its
     // permit then.
-    let job = Job::start(None, Duration::from_secs(5), |_| Ok(8)).unwrap();
+    let job = Job::start(&supervisor, None, Duration::from_secs(5), |_| Ok(8)).unwrap();
     assert_eq!(permits(), 1);
     drop(job);
     let deadline = Instant::now() + Duration::from_secs(5);
@@ -110,4 +74,56 @@ fn taken_result_child() {
         );
         thread::sleep(Duration::from_millis(1));
     }
+}
+
+/// The budget belongs to the host that made the supervisor (OQ9): a full
+/// budget in one host leaves another's untouched, and every clone of a
+/// supervisor, the handle its endpoints hold, shares one budget.
+#[test]
+fn a_budget_is_per_supervisor_and_clones_share_it() {
+    let first = Supervisor::new();
+    let second = Supervisor::new();
+    let shared = first.clone();
+    let waker = Waker::noop();
+    let held: Vec<_> = (0..LIMIT)
+        .map(|_| first.reserve(waker).expect("a place"))
+        .collect();
+    assert_eq!(first.taken(), LIMIT);
+    assert!(matches!(
+        shared.reserve(waker),
+        Err(error) if error.kind() == io::ErrorKind::WouldBlock
+    ));
+    assert_eq!(second.taken(), 0);
+    let other = second
+        .reserve(waker)
+        .expect("another host's budget is free");
+    assert_eq!(second.taken(), 1);
+    drop(other);
+    drop(held);
+    assert_eq!(first.taken(), 0);
+    assert!(shared.reserve(waker).is_ok());
+}
+
+/// A setup waiting for a place is woken by the release that frees one, and
+/// only by a release in its own host.
+#[test]
+fn a_released_place_wakes_only_its_own_supervisors_waiters() {
+    struct Count(std::sync::atomic::AtomicUsize);
+    impl std::task::Wake for Count {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let first = Supervisor::new();
+    let second = Supervisor::new();
+    let held: Vec<_> = (0..LIMIT)
+        .map(|_| first.reserve(Waker::noop()).unwrap())
+        .collect();
+    let woken = Arc::new(Count(std::sync::atomic::AtomicUsize::new(0)));
+    let waker = Waker::from(woken.clone());
+    assert!(first.reserve(&waker).is_err());
+    drop(second.reserve(Waker::noop()).unwrap());
+    assert_eq!(woken.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+    drop(held);
+    assert_eq!(woken.0.load(std::sync::atomic::Ordering::SeqCst), 1);
 }

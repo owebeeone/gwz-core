@@ -14,20 +14,15 @@ impl Drop for Owned {
         self.0.fetch_add(1, Ordering::SeqCst);
     }
 }
-/// Starts the process-wide supervisor and fills the job budget, so it runs in
-/// a child of its own.
+/// A host's supervisor and its 64-job budget: the first reaper creation
+/// fails, concurrent retries publish exactly one, and abandoned jobs count
+/// against the budget until joined and disposed of.
 #[test]
-fn global_capacity_counts_abandoned_helpers_until_join_and_disposal() {
-    super::in_child(
-        module_path!(),
-        "global_capacity_counts_abandoned_helpers_until_join_and_disposal_in_child",
-    );
-}
-#[test]
-#[ignore = "runs in a child process of its own; see ssh_tests::in_child"]
-fn global_capacity_counts_abandoned_helpers_until_join_and_disposal_in_child() {
+fn capacity_counts_abandoned_helpers_until_join_and_disposal() {
+    let supervisor = agent_job::Supervisor::new();
     // The first supervisor creation fails; concurrent retries publish exactly one hub.
     let failed = Job::start_with(
+        &supervisor,
         None,
         Duration::from_secs(1),
         |_| Ok(()),
@@ -43,9 +38,11 @@ fn global_capacity_counts_abandoned_helpers_until_join_and_disposal_in_child() {
     for _ in 0..8 {
         let supervisors = supervisors.clone();
         let barrier = barrier.clone();
+        let supervisor = supervisor.clone();
         callers.push(std::thread::spawn(move || {
             barrier.wait();
             let mut job = Job::start_with(
+                &supervisor,
                 None,
                 Duration::from_secs(1),
                 |_| Ok(()),
@@ -78,6 +75,7 @@ fn global_capacity_counts_abandoned_helpers_until_join_and_disposal_in_child() {
     for _ in 0..65 {
         let invoked = invoked.clone();
         let failed = Job::start_with(
+            &supervisor,
             None,
             Duration::from_secs(1),
             move |_| {
@@ -102,7 +100,7 @@ fn global_capacity_counts_abandoned_helpers_until_join_and_disposal_in_child() {
             let gate = gate.clone();
             let disposed = disposed.clone();
             let started = started.clone();
-            match Job::start(None, Duration::from_millis(10), move |_| {
+            match Job::start(&supervisor, None, Duration::from_millis(10), move |_| {
                 started.send(()).unwrap();
                 let (lock, ready) = &*gate;
                 let mut open = lock.lock().unwrap();
@@ -128,7 +126,7 @@ fn global_capacity_counts_abandoned_helpers_until_join_and_disposal_in_child() {
     }
     let full = || {
         assert!(
-            matches!(Job::start(None, Duration::from_secs(1), |_| Ok(())), Err(e) if e.kind() == io::ErrorKind::WouldBlock)
+            matches!(Job::start(&supervisor, None, Duration::from_secs(1), |_| Ok(())), Err(e) if e.kind() == io::ErrorKind::WouldBlock)
         )
     };
     let checks = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -150,7 +148,7 @@ fn global_capacity_counts_abandoned_helpers_until_join_and_disposal_in_child() {
     }
     // Fresh facade access can allocate after the old jobs have been reaped.
     let mut next = loop {
-        match Job::start(None, Duration::from_secs(1), |_| Ok(())) {
+        match Job::start(&supervisor, None, Duration::from_secs(1), |_| Ok(())) {
             Ok(job) => break job,
             Err(e) => {
                 assert_eq!(e.kind(), io::ErrorKind::WouldBlock);

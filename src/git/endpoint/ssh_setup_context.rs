@@ -102,6 +102,10 @@ impl SetupContext {
                     SetupFailureCause::Stall
                 });
             }
+            // The setup's own wait for a local budget (a job place, a shared
+            // reservation) ran out the open's allocation: a local failure with
+            // no server cause, which the retry classifier returns.
+            SetupCause::LocalWaitExpired => failed.code = ErrorCode::Capacity,
             SetupCause::Cancelled => failed.code = ErrorCode::Cancelled,
             SetupCause::DriverLost => failed.code = ErrorCode::CarrierLost,
             SetupCause::ResourceFailure {
@@ -133,6 +137,7 @@ impl SetupContext {
             | SetupCause::NetworkStall
             | SetupCause::LocalDeadline
             | SetupCause::PreparationDeadline => io::ErrorKind::TimedOut,
+            SetupCause::LocalWaitExpired => io::ErrorKind::WouldBlock,
             SetupCause::Cancelled | SetupCause::DriverLost => io::ErrorKind::ConnectionAborted,
             _ => io::ErrorKind::Other,
         };
@@ -148,6 +153,9 @@ impl SetupContext {
         let cause = match kind {
             LocalPhase::Admission => SetupFailureCause::Allocation,
             LocalPhase::Interaction => SetupFailureCause::Interaction,
+            // A wait on a local budget is entered by the pool on the resource's
+            // report, never by a setup.
+            LocalPhase::Wait => return Err(self.invalid()),
         };
         if milliseconds == 0 && kind == LocalPhase::Admission {
             return Err(self.terminate_failure(Failure {

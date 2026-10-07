@@ -85,7 +85,7 @@ impl Endpoint {
             drop(helper_slots);
         } }
         let pool = RunningPool::with_authority(config.clone(), tls, authority)?;
-        let routes = Arc::new(Mutex::new(Routes::new(64)));
+        let routes = Arc::new(Mutex::new(Routes::new()));
         let operations = super::https_operation::Operations::new(routes.clone());
         let client = Client {
             pool: pool.client.clone(),
@@ -255,14 +255,50 @@ impl Client {
         self.helper_pending() + native::reap(&self.native_cleanup) + self.pool.pool.counts().closing
     }
 
+    cfg_if::cfg_if! { if #[cfg(test)] {
+        /// The routes the endpoint holds now, across its operations.
+        pub(crate) fn route_count_for_test(&self) -> usize {
+            self.routes.lock().unwrap_or_else(|e| e.into_inner()).len()
+        }
+    } }
     pub(crate) fn finish_operation(&self, operation: &str) {
         self.operations.finish(operation);
     }
     pub(crate) fn operation(
         &self,
         operation: &str,
-    ) -> Result<super::https_operation::Dependency, ErrorCode> {
+    ) -> Result<super::https_operation::Dependency, super::https_operation::Refusal> {
         self.operations.acquire(operation)
+    }
+    /// A dependent of `operation`, waiting while the table is full of
+    /// operations that still have dependents, as a stream waits for its place.
+    /// The wait ends with the caller's allocation, which is its own failure
+    /// (`setup_retry::allocation_timeout`), or with its cancellation.
+    async fn operation_within(
+        &self,
+        operation: &str,
+        allocation: Duration,
+        cancel: &CancellationToken,
+    ) -> Result<super::https_operation::Dependency, Failure> {
+        use super::https_operation::Refusal;
+        let until = Instant::now() + allocation;
+        loop {
+            let freed = self.operations.freed().notified();
+            tokio::pin!(freed);
+            freed.as_mut().enable();
+            match self.operation(operation) {
+                Ok(dependency) => return Ok(dependency),
+                Err(refusal @ Refusal::Sealed) => return Err(failure(refusal.code())),
+                Err(Refusal::WouldBlock) => {}
+            }
+            tokio::select! {
+                _ = cancel.cancelled() => return Err(failure(ErrorCode::Cancelled)),
+                _ = tokio::time::timeout_at(until, &mut freed) => {}
+            }
+            if Instant::now() >= until {
+                return Err(setup_retry::allocation_timeout());
+            }
+        }
     }
 }
 

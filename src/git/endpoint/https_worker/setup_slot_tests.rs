@@ -45,6 +45,7 @@ fn connector_with_held_slot(
         config: server.config(),
         epoch: deadline_epoch,
         setup_slots: slots.clone(),
+        supervisor: crate::git::endpoint::agent_job::Supervisor::new(),
     };
     (connector, slots, held)
 }
@@ -85,23 +86,79 @@ fn a_connection_past_the_setup_slots_waits_for_one_instead_of_failing() {
     });
 }
 
+/// F4: a connection waiting for a setup slot has sent nothing to the server, so
+/// its wait is local. It reports that it waits (`waiting_locally`), the pool
+/// pauses its connect clock, and the open's allocation alone bounds it, ending
+/// as a local failure (`job_budget_wait_tests`, `Budget::SetupSlot`).
 #[test]
-fn a_connection_waiting_for_a_setup_slot_times_out_at_its_connect_deadline() {
+fn a_connection_waiting_for_a_setup_slot_reports_a_local_wait() {
     runtime().block_on(async {
         let server = server().await;
-        let (mut connector, _slots, _held) =
+        let (mut connector, _slots, held) =
             connector_with_held_slot(&server, std::time::Instant::now());
         let mut resource = connector
             .start(&key_of(&server), &pool::Identity::Https, Some(40))
             .unwrap();
         let mut cx = Context::from_waker(Waker::noop());
         assert!(matches!(resource.poll_connected(&mut cx), Poll::Pending));
+        assert!(resource.waiting_locally());
+        // Past its connect deadline the resource itself still waits: the pool,
+        // not the resource, ends a wait, at the allocation.
         tokio::time::sleep(Duration::from_millis(80)).await;
-        let Poll::Ready(Err(failed)) = resource.poll_connected(&mut cx) else {
-            panic!("a connection still waiting at its deadline must fail");
+        assert!(matches!(resource.poll_connected(&mut cx), Poll::Pending));
+        drop(held);
+        let until = Instant::now() + Duration::from_secs(10);
+        while resource.waiting_locally() {
+            let _ = resource.poll_connected(&mut cx);
+            assert!(Instant::now() < until);
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert!(!resource.waiting_locally());
+    });
+}
+
+/// Case 13's last row: one setup slot, 32 connections, and every connection
+/// connects, each taking the slot in its turn.
+#[test]
+fn thirty_two_connections_through_one_setup_slot_all_connect() {
+    runtime().block_on(async {
+        let server = server().await;
+        let slots = Arc::new(Semaphore::new(1));
+        let mut connector = HttpConnector {
+            config: server.config(),
+            epoch: std::time::Instant::now(),
+            setup_slots: slots.clone(),
+            supervisor: crate::git::endpoint::agent_job::Supervisor::new(),
         };
-        assert_eq!(failed.code, ErrorCode::Timeout);
-        assert_eq!(failed.setup_cause, Some(SetupFailureCause::Aggregate));
+        let mut resources: Vec<_> = (0..32)
+            .map(|_| {
+                connector
+                    .start(&key_of(&server), &pool::Identity::Https, None)
+                    .expect("a busy setup slot queues the connection; it is not refused")
+            })
+            .collect();
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut connected = [false; 32];
+        let until = Instant::now() + Duration::from_secs(20);
+        while connected.iter().any(|done| !done) {
+            assert!(Instant::now() < until, "not every connection connected");
+            for (index, resource) in resources.iter_mut().enumerate() {
+                if !connected[index]
+                    && let Poll::Ready(result) = resource.poll_connected(&mut cx)
+                {
+                    result.expect("a queued connection connects");
+                    connected[index] = true;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert_eq!(server.connections.load(Ordering::SeqCst), 32);
+        for resource in &mut resources {
+            while resource.poll_dispose(&mut cx, false).is_pending() {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        }
+        assert_eq!(slots.available_permits(), 1);
     });
 }
 

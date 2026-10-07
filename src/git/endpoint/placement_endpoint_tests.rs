@@ -55,7 +55,7 @@ fn blocked_check_times_out_before_physical_disposal() {
     let mut endpoint = fixture();
     let (entered_tx, entered_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel();
-    let job = Job::start(None, Duration::from_millis(1), move |_| {
+    let job = Job::start_isolated(None, Duration::from_millis(1), move |_| {
         entered_tx.send(()).unwrap();
         release_rx.recv().unwrap();
         Ok(())

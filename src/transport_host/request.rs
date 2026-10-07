@@ -112,10 +112,11 @@ impl RequestContext {
             .map_err(early)?
             .base();
         let route = {
+            // One entry per canonical URL, kept until the request ends: it is a
+            // key and two enums, and `mode` guards "policy is fixed for this
+            // request/route", so it is never evicted and never counted against
+            // a limit (adaptive concurrency design §7.1).
             let mut routes = self.https_routes.lock().unwrap_or_else(|e| e.into_inner());
-            if routes.len() >= 64 && !routes.contains_key(&canonical) {
-                return Err(early(ErrorCode::Capacity));
-            }
             routes.entry(canonical.clone()).or_default().clone()
         };
         // Serialize only opening, not stream exchange. The gate covers the full

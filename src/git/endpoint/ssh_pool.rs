@@ -50,6 +50,12 @@ pub(crate) trait Connector {
     ) -> Option<(std::time::Instant, Arc<dyn Fn() -> u64 + Send + Sync>)> {
         None
     }
+    /// Milliseconds on the clock this connector's connect deadlines are
+    /// measured in, when it can say. A start that waited on a local budget
+    /// shifts its deadline by the time it waited.
+    fn now_ms(&self) -> Option<u64> {
+        None
+    }
     fn start(
         &mut self,
         key: &Key,
@@ -82,6 +88,13 @@ pub(crate) trait Resource {
     fn poll_idle_lost(&mut self, _cx: &mut Context<'_>) -> Poll<()> {
         Poll::Pending
     }
+    /// True while the connecting resource waits on a local budget (a job
+    /// place, a shared reservation, a setup slot) before any network work. The
+    /// host tells the pool, which pauses the connect clock for the wait and
+    /// lets only the open's allocation bound it. A state, not a code.
+    fn waiting_locally(&self) -> bool {
+        false
+    }
 }
 
 enum Phase {
@@ -101,6 +114,8 @@ struct Entry<R> {
     resource: R,
     phase: Phase,
     used: bool,
+    /// Whether the pool has been told that the resource waits locally.
+    waiting: bool,
     _setup: Option<Arc<SetupContext>>,
 }
 pub(crate) struct PoolHost<C: Connector> {
@@ -224,20 +239,36 @@ impl<C: Connector> PoolHost<C> {
                 };
             }
             match &mut entry.phase {
-                Phase::Connecting => match entry.resource.poll_connected(cx) {
-                    Poll::Ready(Ok(identity)) => {
-                        entry.phase = Phase::Ready;
-                        self.driver.connected(id, Ok(identity))?;
-                    }
-                    Poll::Ready(Err(failure)) => {
-                        entry.phase = Phase::Disposing {
-                            connect_failure: Some(failure),
-                            force: false,
-                            idle_lost: false,
+                Phase::Connecting => {
+                    let polled = entry.resource.poll_connected(cx);
+                    // The pool is told the resource's state, as it changes: a
+                    // wait on a local budget is bounded by the open's
+                    // allocation and is not the network's time. A refusal
+                    // means the request has already ended.
+                    let waiting = polled.is_pending() && entry.resource.waiting_locally();
+                    if waiting != entry.waiting {
+                        entry.waiting = waiting;
+                        let _ = if waiting {
+                            self.driver.begin_local_wait(id)
+                        } else {
+                            self.driver.end_local_wait(id)
                         };
                     }
-                    Poll::Pending => {}
-                },
+                    match polled {
+                        Poll::Ready(Ok(identity)) => {
+                            entry.phase = Phase::Ready;
+                            self.driver.connected(id, Ok(identity))?;
+                        }
+                        Poll::Ready(Err(failure)) => {
+                            entry.phase = Phase::Disposing {
+                                connect_failure: Some(failure),
+                                force: false,
+                                idle_lost: false,
+                            };
+                        }
+                        Poll::Pending => {}
+                    }
+                }
                 Phase::Disposing {
                     connect_failure,
                     force,
@@ -352,6 +383,7 @@ impl<C: Connector> PoolHost<C> {
                                     resource,
                                     phase: Phase::Connecting,
                                     used: false,
+                                    waiting: false,
                                     _setup: setup,
                                 },
                             );

@@ -92,7 +92,7 @@ fn seeded_fragmentation_preserves_identity_and_signature_frames() {
         string(&mut signed, &signature);
         let mut replies = frame(identities);
         replies.extend(frame(signed));
-        let mut job = Job::start(None, Duration::from_secs(1), move |control| {
+        let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| {
             let signature = signature.clone();
             let output = Arc::new(Mutex::new(Vec::new()));
             let mut agent = Agent::new(
@@ -133,7 +133,7 @@ fn malformed_agent_frames_fail_without_payload_diagnostics() {
         frame(vec![99]),
         vec![0, 0, 0, 6, 12],
     ] {
-        let mut job = Job::start(None, Duration::from_secs(1), move |control| {
+        let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| {
             let output = Arc::new(Mutex::new(Vec::new()));
             Agent::new(
                 Frag {
@@ -162,7 +162,7 @@ fn cancellation_discards_late_success_and_disposal_requires_join() {
     let observed = dropped.clone();
     let (send, receive) = std::sync::mpsc::channel();
     let (started, running) = std::sync::mpsc::channel();
-    let mut job = Job::start(None, Duration::from_millis(10), move |_| {
+    let mut job = Job::start_isolated(None, Duration::from_millis(10), move |_| {
         started.send(()).unwrap();
         receive.recv().unwrap();
         Ok(Owned(observed))
@@ -190,12 +190,12 @@ fn cancellation_discards_late_success_and_disposal_requires_join() {
 }
 #[test]
 fn helper_panic_and_exact_deadline_fail_closed() {
-    let mut panic_job = Job::<()>::start(None, Duration::from_secs(1), |_| {
+    let mut panic_job = Job::<()>::start_isolated(None, Duration::from_secs(1), |_| {
         panic!("injected helper panic")
     })
     .unwrap();
     assert!(finish(&mut panic_job).is_err());
-    let mut late = Job::start(Some(Instant::now()), Duration::from_secs(1), |control| {
+    let mut late = Job::start_isolated(Some(Instant::now()), Duration::from_secs(1), |control| {
         control.check()?;
         Ok(())
     })
@@ -217,7 +217,7 @@ fn cleanup_deadline_wakes_a_pending_disposal_waiter() {
     let wakes = Arc::new(WakeCount(AtomicUsize::new(0)));
     let (send, receive) = std::sync::mpsc::channel();
     let (started, running) = std::sync::mpsc::channel();
-    let mut job = Job::start(None, Duration::from_millis(10), move |_| {
+    let mut job = Job::start_isolated(None, Duration::from_millis(10), move |_| {
         started.send(()).unwrap();
         receive.recv().unwrap();
         Ok(())
@@ -251,7 +251,7 @@ fn failure_with_trailing_bytes_and_trailing_reply_bytes_are_refused() {
         response.extend_from_slice(b"secret");
         frame(response)
     }] {
-        let mut job = Job::start(None, Duration::from_secs(1), move |control| {
+        let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| {
             let output = Arc::new(Mutex::new(Vec::new()));
             let mut agent = Agent::new(
                 Frag {
@@ -292,7 +292,7 @@ cfg_if::cfg_if! {
                         // Linux resets the socket of a helper that closes with the prefix unread.
                         let read = socket.read(&mut [0]); assert!(super::super::agent_fixture::reads_closed(&read), "helper must close agent handle: {read:?}");
                     });
-                    let mut job = Job::start(None, Duration::from_secs(1), move |control| agent_socket::connect(&path, control)?.identities()).unwrap();
+                    let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| agent_socket::connect(&path, control)?.identities()).unwrap();
                     seen.recv_timeout(Duration::from_secs(3)).unwrap(); job.cancel();
                     assert_eq!(finish(&mut job).unwrap_err().kind(), io::ErrorKind::ConnectionAborted);
                     peer.join().unwrap();
@@ -308,13 +308,13 @@ cfg_if::cfg_if! {
                     let mut request = [0; 5]; socket.read_exact(&mut request).unwrap();
                     let mut byte = [0]; assert_eq!(socket.read(&mut byte).unwrap(), 0);
                 });
-                let mut job = Job::start(Some(Instant::now() + Duration::from_millis(200)), Duration::from_secs(1), move |control| agent_socket::connect(&path, control)?.identities()).unwrap();
+                let mut job = Job::start_isolated(Some(Instant::now() + Duration::from_millis(200)), Duration::from_secs(1), move |control| agent_socket::connect(&path, control)?.identities()).unwrap();
                 assert_eq!(finish(&mut job).unwrap_err().kind(), io::ErrorKind::TimedOut); peer.join().unwrap();
             }
             #[test]
             fn unavailable_agent_is_redacted() {
                 let temp = tempfile::tempdir().unwrap(); let path = temp.path().join("sentinel-agent-missing");
-                let mut job = Job::start(None, Duration::from_secs(1), move |control| { let _ = agent_socket::connect(&path, control)?; Ok(()) }).unwrap();
+                let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| { let _ = agent_socket::connect(&path, control)?; Ok(()) }).unwrap();
                 let error = finish(&mut job).unwrap_err(); assert!(!error.to_string().contains("sentinel"));
             }
             #[test]
@@ -334,7 +334,7 @@ cfg_if::cfg_if! {
                 }
                 assert!(filled, "fixture could not fill native backlog within its bound");
                 let connected = Arc::new(AtomicUsize::new(0)); let flag = connected.clone();
-                let mut job = Job::start(None, Duration::from_secs(1), move |control| {
+                let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| {
                     let _agent = agent_socket::connect(&path, control)?; flag.store(1, Ordering::SeqCst); Ok(())
                 }).unwrap();
                 std::thread::sleep(Duration::from_millis(60));
@@ -386,7 +386,7 @@ fn stalled_partial_request_write_is_cancelled_without_replay() {
     }
     let accepted = Arc::new(AtomicUsize::new(0));
     let count = accepted.clone();
-    let mut job = Job::start(None, Duration::from_secs(1), move |control| {
+    let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| {
         Agent::new(Blocked { accepted: count }, control).identities()
     })
     .unwrap();
@@ -405,7 +405,7 @@ fn stalled_partial_request_write_is_cancelled_without_replay() {
 #[test]
 fn rsa_flags_are_explicit_and_oversized_sign_inputs_have_no_io() {
     for (method, flags) in [("rsa-sha2-256", 2_u32), ("rsa-sha2-512", 4_u32)] {
-        let mut job = Job::start(None, Duration::from_secs(1), move |control| {
+        let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| {
             assert_eq!(crate::git::endpoint::agent_keys::flags(method), flags);
             let mut signature = vec![];
             string(&mut signature, method.as_bytes());
@@ -429,7 +429,7 @@ fn rsa_flags_are_explicit_and_oversized_sign_inputs_have_no_io() {
         .unwrap();
         finish(&mut job).unwrap();
     }
-    let mut job = Job::start(None, Duration::from_secs(1), |control| {
+    let mut job = Job::start_isolated(None, Duration::from_secs(1), |control| {
         let output = Arc::new(Mutex::new(Vec::new()));
         let mut agent = Agent::new(
             Frag {
@@ -455,7 +455,7 @@ fn rsa_flags_are_explicit_and_oversized_sign_inputs_have_no_io() {
 fn expired_start_cannot_execute_setup_effects() {
     let calls = Arc::new(AtomicUsize::new(0));
     let observed = calls.clone();
-    let mut job = Job::start(Some(Instant::now()), Duration::from_secs(1), move |_| {
+    let mut job = Job::start_isolated(Some(Instant::now()), Duration::from_secs(1), move |_| {
         observed.fetch_add(1, Ordering::SeqCst);
         Ok(())
     })
@@ -473,7 +473,7 @@ fn used_and_failed_agents_keep_channel_state_until_drop() {
         (frame(vec![12, 0, 0, 0, 0]), true),
         (frame(vec![99]), false),
     ] {
-        let mut job = Job::start(None, Duration::from_secs(1), move |control| {
+        let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| {
             let output = Arc::new(Mutex::new(Vec::new()));
             let closed = Arc::new(AtomicUsize::new(0));
             let mut agent = Agent::new(
@@ -525,6 +525,7 @@ fn cancellation_at_publication_and_join_discards_once_but_claim_transfers_owner(
         let (exit, allow_exit) = std::sync::mpsc::channel();
         let mut boundary = Some((published, allow_exit));
         let mut job = Job::start_with(
+            &agent_job::Supervisor::new(),
             None,
             Duration::from_secs(2),
             move |_| Ok(Owned(observed)),
@@ -577,7 +578,8 @@ fn cancellation_at_publication_and_join_discards_once_but_claim_transfers_owner(
     }
     let dropped = Arc::new(AtomicUsize::new(0));
     let observed = dropped.clone();
-    let mut job = Job::start(None, Duration::from_secs(1), move |_| Ok(Owned(observed))).unwrap();
+    let mut job =
+        Job::start_isolated(None, Duration::from_secs(1), move |_| Ok(Owned(observed))).unwrap();
     let owned = finish(&mut job).unwrap();
     drop(job);
     assert_eq!(dropped.load(Ordering::SeqCst), 0);

@@ -25,7 +25,7 @@ cfg_if::cfg_if! {
             let address = SocketAddr::from(([127, 0, 0, 1], f.port));
             let written = written.to_owned();
             let path = f.temp.path().join("unused_known_hosts");
-            let mut job = Job::start(
+            let mut job = Job::start_isolated(
                 Some(Instant::now() + Duration::from_secs(5)),
                 Duration::from_secs(1),
                 move |control| {

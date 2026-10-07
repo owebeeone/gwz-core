@@ -9,4 +9,4 @@
 # already on its main. This is not the process-global allowlist's
 # reconciled_commit, which records the commit that list was last reconciled
 # against. The job reads the first 40-hex line.
-d0be15a8f76071a0a7e23ef39fd39678bada05fe
+9eef731eb3b7e8cd8cd70f66c7456a97eb157410

@@ -292,7 +292,7 @@ pub(crate) fn authenticate(
 ) -> io::Result<()> {
     let key = Key::ssh(user, "127.0.0.1", port);
     let (known, agent, user) = (known_hosts.to_owned(), agent.to_owned(), user.to_owned());
-    let mut job = Job::start(
+    let mut job = Job::start_isolated(
         Some(Instant::now() + Duration::from_secs(20)),
         Duration::from_secs(1),
         move |control| {

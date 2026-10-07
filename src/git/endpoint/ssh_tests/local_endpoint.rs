@@ -286,7 +286,7 @@ cfg_if::cfg_if! {
                 config.clone(),
                 Registry::new(),
                 move |origin, _| {
-                    ssh_setup::SetupConnector::reported(
+                    ssh_setup::SetupConnector::isolated(
                         origin,
                         Duration::from_millis(200),
                         move |key, _, opening: ssh_pool::Opening| {

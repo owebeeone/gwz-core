@@ -41,11 +41,12 @@ cfg_if::cfg_if! {
             let cleanup = Duration::from_millis(config.cleanup_timeout_ms);
             Endpoint::with_handoff(
                 config,
-                Registry::new(),
+                Registry::with_supervisor(authority.supervisor().clone()),
                 move |origin, registry| {
                     ReservedConnector::new(SetupConnector::reported(
                         origin,
                         cleanup,
+                        registry.supervisor(),
                         move |key: &Key, identity: &Identity, opening: Opening| -> io::Result<Setup> {
                             let helper_opening = opening.clone();
                             let Opening { progress, url, identity: selection, selected: pinned, .. } = opening;
