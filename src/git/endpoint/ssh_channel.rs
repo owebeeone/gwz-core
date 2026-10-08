@@ -135,12 +135,38 @@ impl SshChannel {
             }
             self.phase = Phase::Close;
         }
+        self.close_and_wait(false)
+    }
+
+    /// Close at once, the client being done, without waiting for the server's
+    /// EOF. What the server has sent is read off and dropped, and only its
+    /// CHANNEL_CLOSE is awaited. The status says nothing about the exchange:
+    /// the server may have been stopped by the client's close.
+    pub fn finish_early(&mut self) -> io::Result<i32> {
+        if self.phase == Phase::Active {
+            if !self.sent_eof {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            self.phase = Phase::Close;
+        }
+        let status = self.close_and_wait(true)?;
+        self.stdout_eof = true;
+        self.stderr_eof = true;
+        Ok(status)
+    }
+
+    fn close_and_wait(&mut self, discard: bool) -> io::Result<i32> {
         if self.phase == Phase::Close {
             let result = self.channel.as_mut().expect("closing channel").close();
             self.native(result)?;
             self.phase = Phase::WaitClose;
         }
         if self.phase == Phase::WaitClose {
+            // libssh2 allows wait_close only once the server's EOF or CLOSE has
+            // been read, and reading is what moves it off the socket.
+            if discard && !self.discard_unread() {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
             let result = self.channel.as_mut().expect("closing channel").wait_close();
             self.native(result)?;
             let result = self.channel.as_ref().expect("closed channel").exit_status();
@@ -155,6 +181,16 @@ impl SshChannel {
                 "channel is not active",
             ))
         }
+    }
+
+    /// Read off and drop what the server sent. True once its EOF has arrived
+    /// and nothing is left unread.
+    fn discard_unread(&mut self) -> bool {
+        let channel = self.channel.as_mut().expect("closing channel");
+        let mut sink = [0_u8; 4096];
+        while matches!(channel.read(&mut sink), Ok(count) if count > 0) {}
+        while matches!(channel.stderr().read(&mut sink), Ok(count) if count > 0) {}
+        channel.eof()
     }
 
     /// Recover the connection only after complete cleanup; Err retains ownership.
@@ -180,7 +216,14 @@ impl SshChannel {
         if self.is_disposed() {
             return Ok(());
         }
+        // A close already under way waits for the server's CHANNEL_CLOSE. A
+        // second one would wait for a packet that may never come, so the
+        // exchange is ended locally instead, as a force does.
+        let closing = matches!(self.phase, Phase::Close | Phase::WaitClose);
         self.abort();
+        if closing {
+            return self.force_dispose();
+        }
         if let Some(channel) = self.channel.as_mut() {
             let result = channel.close();
             if let Err(error) = self.native(result) {

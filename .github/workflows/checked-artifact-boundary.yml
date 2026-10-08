@@ -104,7 +104,7 @@ jobs:
           python scripts/checks/check_cfg_boundaries.py --skip-repo gwz-cli --skip-repo gwz-py
           # TR2.12, rule (a): gwz-core's candidate switch sites equal its inventory.
           python scripts/checks/check_candidate_switches.py
-          python -m unittest scripts/checks/test_check_filesystem_boundary.py scripts/checks/test_run_tests_filesystem_mode.py scripts/checks/test_run_tests_transport_globals.py scripts/checks/test_check_process_globals.py scripts/checks/test_check_cfg_boundaries.py scripts/checks/test_check_candidate_switches.py
+          python -m unittest scripts/checks/test_check_filesystem_boundary.py scripts/checks/test_run_tests_filesystem_mode.py scripts/checks/test_run_tests_transport_globals.py scripts/checks/test_run_tests_transport_pin.py scripts/checks/test_check_process_globals.py scripts/checks/test_check_cfg_boundaries.py scripts/checks/test_check_candidate_switches.py
           python -m unittest scripts/checks/test_release_boundary.py -v
           # The release script's internal-version bump (plan S1.5) and the
           # crates.io publisher the release workflow runs (S2.1). This job

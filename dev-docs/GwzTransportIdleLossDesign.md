@@ -60,7 +60,9 @@ Citations are to gwz-core `db0f8447` and gwz-transport `ff6083b`.
    **fresh** connection, charged no attempt by the key's retry machine.
 3. Never retried: a POST whose body may have been read from Git; a push or any
    exchange after a Git byte was written; a fresh connection's failure; a second
-   failure of the same open. Those keep today's handling.
+   failure of the same open. Those keep today's handling. "The same open" is the
+   whole open, across its attempts: a retry already used by an earlier attempt of
+   the open, whose connection a 401 challenge carries into the next, is used.
 
 ## 3. The pool: one addition
 
@@ -157,7 +159,13 @@ outside this task (§9).
 - The retry never reaches `RetryMachines::settle`: no attempt is charged, no
   strike recorded. A fresh connect at hop 0 is the open's setup, so its success
   or failure is the `FirstConnect` the key learns, as for any first connect.
-- Once only: the retry is fresh, and only a reused lease qualifies.
+- Once only, per open: the retry is fresh, and only a reused lease qualifies.
+  The open's one retry is recorded on the lease it produces (`HttpLease::retried`),
+  which a 401 carry keeps into the next attempt, and in a `retried` flag of the
+  attempt. An open that has retried fails with `Io` where a second dead lease
+  (at lease, or a GET not started) would have been retried again: a dead lease
+  followed by a challenge carry is one retry, not two (P3-3 of
+  `GwzTransportIdleLossDesign-ReviewState.md`).
 
 ### 6.2 SSH
 
@@ -177,10 +185,28 @@ outside this task (§9).
   `ErrorCode::Io`, `Phase::Other`, as the stream failure reports today).
 - An exchange that ends before the reply without a pump failure (its stream's
   I/O deadline) completes the open with `TimedOut`. A held open that is
-  cancelled is released `Discarded` and completes as `Cancelled`. Its
-  allocation deadline no longer applies once it holds a lease (it did not
-  before either, when the reply went out at once), and its stream's I/O
-  deadline bounds the wait for the channel.
+  cancelled is released `Discarded` and completes as `Cancelled`.
+- **The deadline over the held wait and the retry** is the open's attempt
+  deadline: allocation plus connect plus interaction
+  (`placement_endpoint/admission.rs::deadline_from_open`, also the worker's
+  `request.deadline`). It bounds the wait for the channel and the fresh retry's
+  new checkout. At that deadline the placement abandons the open as `Timeout`
+  (`completion.rs::finish_opens`) and its held session, possibly a healthy one,
+  is discarded. Before this change the reply went out at once, so that deadline
+  could not fire after a lease. The exchange's stream I/O deadline bounds the
+  wait for the channel too, from inside (P3-5).
+- **Accepted limitation (P3-4).** A fresh retry is served by the pool after
+  every other compatible waiter: a released connection goes to the earliest
+  compatible non-fresh waiter (`gwz-transport:src/pool/allocation.rs::schedule`'s
+  reuse loop skips a fresh request), and a fresh request gets a slot only from
+  the creation loop (room) or the eviction loop (an idle entry nobody else took).
+  Under sustained compatible demand on a busy key the retry waits until no such
+  waiter remains, and is bounded by its allocation deadline, where it fails with
+  `AllocationTimeout` as a request on a saturated key does. Before this change
+  the member failed outright, so it is not a regression. Not changed here: the
+  alternative, letting an earlier fresh waiter claim an idle entry ahead of later
+  non-fresh waiters, is a pool scheduling rule and belongs to a change of
+  gwz-transport that has a contention test of its own.
 
 ## 7. What the adaptive design gains
 
@@ -226,7 +252,21 @@ assertion, or for a new function by not compiling), except where noted.
   started, and one the peer received as sent, against hyper itself.
 - `https_pool/idle_tests.rs`: the dead-lease race forced (the pool leases the
   idle connection, then the proxy cuts it, then the host finds it `Lost`):
-  `adopt` reports it dead and the next checkout is fresh.
+  `adopt` reports it dead and the next checkout is fresh. Through
+  `checkout_scoped`, with two idle connections of which the older is dead and
+  its disposal pending (something holds it): the retry is a new connection (a
+  third), is marked `retried`, and the other idle connection stays idle; with
+  `may_retry` false the dead lease fails with `Io` and opens nothing. Removing
+  `request.fresh = true` fails the first (P3-2).
+- `ssh_tests/idle_loss.rs`, two idle sessions: both die at their channel open;
+  the open leases one, and its retry is a third session while the other stays
+  idle. Removing `policy.fresh = true` fails it (P3-2).
+- `ssh_tests/pool_host.rs`: a lease taken while a lost connection's disposal is
+  still pending (`Disposing { idle_lost: true }`) is known lost (`lost()`), is
+  never reusable, and its release is a discard (P3-1).
+- `https_worker_tests/pool.rs`: a carried lease found dead is retried once on a
+  new connection; when the open has retried already it fails with `Io`
+  and opens none (P3-3).
 - Not forced end to end: §6.1 (b), a GET found not started on a lease that was
   alive when adopted. The window is between `adopt` and Hyper's write, which
   no fixture opens on demand; the classification and the loop are covered by

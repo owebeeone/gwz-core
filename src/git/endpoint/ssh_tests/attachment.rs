@@ -102,6 +102,16 @@ pub(super) fn open(
 /// Carries an attachment's messages from a thread of its own, as the driver
 /// session and the mux do, and returns the initiator's end as a stream.
 pub(super) fn drive(attachment: EndpointAttachment, context: &BridgeContext) -> BlockingStream {
+    drive_then(attachment, context, drop)
+}
+
+/// [`drive`], where `after` takes the attachment once the worker has handed
+/// over the exchange's terminal message, in place of dropping it.
+pub(super) fn drive_then(
+    attachment: EndpointAttachment,
+    context: &BridgeContext,
+    after: impl FnOnce(EndpointAttachment) + Send + 'static,
+) -> BlockingStream {
     // The same profile the worker gives the endpoint's end.
     let limits = &context.limits;
     let mut config = StreamConfig::new(&context.session_id, context.stream_id, Side::Initiator);
@@ -115,7 +125,7 @@ pub(super) fn drive(attachment: EndpointAttachment, context: &BridgeContext) -> 
     let peer = Arc::new(peer);
     thread::Builder::new()
         .name("gwz-test-attachment".into())
-        .spawn(move || carry(attachment, peer))
+        .spawn(move || carry(attachment, peer, after))
         .expect("attachment thread");
     BlockingStream::new(stream)
 }
@@ -124,7 +134,11 @@ type NextMessage = Pin<Box<dyn Future<Output = Result<Option<Envelope>, Error>> 
 
 /// Moves messages both ways until the worker ends the exchange or drops the
 /// bridge, or the initiator fails.
-fn carry(attachment: EndpointAttachment, peer: Arc<MessageEndpoint>) {
+fn carry(
+    attachment: EndpointAttachment,
+    peer: Arc<MessageEndpoint>,
+    after: impl FnOnce(EndpointAttachment),
+) {
     let origin = Instant::now();
     let until = origin + Duration::from_secs(120);
     let waker = Waker::from(Arc::new(ThreadWake(thread::current())));
@@ -142,7 +156,8 @@ fn carry(attachment: EndpointAttachment, peer: Arc<MessageEndpoint>) {
                         matches!(message.kind, MessageKind::Closed | MessageKind::Failed);
                     let _ = peer.deliver(message);
                     if terminal {
-                        // The worker released the exchange when it handed this over.
+                        // The worker may still be closing the connection.
+                        after(attachment);
                         return;
                     }
                     moved = true;

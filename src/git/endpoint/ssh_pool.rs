@@ -110,6 +110,19 @@ enum Phase {
     /// until the lease is released and the pool's Close arrives.
     Lost,
 }
+impl Phase {
+    /// The peer closed the connection while it was idle: disposed, or being.
+    fn is_lost(&self) -> bool {
+        matches!(
+            self,
+            Phase::Lost
+                | Phase::Disposing {
+                    idle_lost: true,
+                    ..
+                }
+        )
+    }
+}
 struct Entry<R> {
     resource: R,
     phase: Phase,
@@ -173,13 +186,14 @@ impl<C: Connector> PoolHost<C> {
         Ok(&mut entry.resource)
     }
 
-    /// Whether the lease's connection was found closed while idle and is
-    /// already disposed, a checkout having won the race with the loss (§4 of
+    /// Whether the lease's connection was found closed while idle, a checkout
+    /// having won the race with the loss (§4 of
     /// dev-docs/GwzTransportIdleLossDesign.md): `Some(reused)`, true when an
-    /// earlier lease had used it.
+    /// earlier lease had used it. Its disposal may still be pending: the pool
+    /// counts it Idle until that ends, and the connection is lost all the same.
     pub(crate) fn lost(&self, lease: &Lease) -> Option<bool> {
         let entry = self.entries.get(&lease.connection().ok()?)?;
-        matches!(entry.phase, Phase::Lost).then_some(entry.used)
+        entry.phase.is_lost().then_some(entry.used)
     }
 
     pub(crate) fn allocation_reused(&mut self, lease: &Lease) -> Result<bool, Error> {
@@ -207,7 +221,7 @@ impl<C: Connector> PoolHost<C> {
 
     fn release_lease(&mut self, lease: Lease, disposition: Disposition) -> Result<(), Error> {
         let entry = self.entries.get(&lease.connection()?).ok_or(Error::Stale)?;
-        if matches!(entry.phase, Phase::Lost) {
+        if entry.phase.is_lost() {
             return lease.release(Disposition::Discarded);
         }
         let reusable = self.resource(&lease)?.reusable();

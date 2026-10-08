@@ -39,10 +39,18 @@ pub(super) struct Scan {
 /// The blocks of `pem` whose label is one of `labels`. Text outside the
 /// blocks is ignored, as is a block of any other label.
 pub(super) fn scan(pem: &[u8], labels: &[&str]) -> Scan {
+    scan_spans(pem, labels).0
+}
+
+/// [`scan`], with where each block's text lies in `pem`, from its BEGIN line
+/// to the end of its END line.
+pub(super) fn scan_spans(pem: &[u8], labels: &[&str]) -> (Scan, Vec<std::ops::Range<usize>>) {
     const BEGIN: &[u8] = b"-----BEGIN ";
     const DASHES: &[u8] = b"-----";
     let mut blocks = Vec::new();
-    let mut open: Option<(Vec<u8>, Vec<u8>)> = None;
+    let mut spans = Vec::new();
+    let offset = |line: &[u8]| line.as_ptr() as usize - pem.as_ptr() as usize;
+    let mut open: Option<(Vec<u8>, Vec<u8>, usize)> = None;
     for line in pem.split(|byte| *byte == b'\n').map(<[u8]>::trim_ascii) {
         match open.as_mut() {
             None => {
@@ -55,26 +63,28 @@ pub(super) fn scan(pem: &[u8], labels: &[&str]) -> Scan {
                     let mut end = b"-----END ".to_vec();
                     end.extend_from_slice(label);
                     end.extend_from_slice(DASHES);
-                    open = Some((end, Vec::new()));
+                    open = Some((end, Vec::new(), offset(line)));
                 }
             }
-            Some((end, _)) if line == end.as_slice() => {
-                if let Some((_, body)) = open.take() {
+            Some((end, ..)) if line == end.as_slice() => {
+                if let Some((_, body, start)) = open.take() {
+                    spans.push(start..offset(line) + line.len());
                     blocks.push(match STANDARD.decode(body.as_slice()) {
                         Ok(der) => Block::Der(der),
                         Err(_) => Block::NotBase64,
                     });
                 }
             }
-            Some((_, body)) => {
+            Some((_, body, _)) => {
                 body.extend(line.iter().filter(|byte| !byte.is_ascii_whitespace()));
             }
         }
     }
-    Scan {
+    let scan = Scan {
         blocks,
         unterminated: open.is_some(),
-    }
+    };
+    (scan, spans)
 }
 
 /// Every certificate in `pem`, the CA file's content, in the file's order.

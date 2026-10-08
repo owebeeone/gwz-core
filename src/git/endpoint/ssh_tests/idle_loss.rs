@@ -24,10 +24,14 @@ use std::{
 };
 
 fn config() -> Config {
+    sessions(2)
+}
+/// Room for `count` sessions.
+fn sessions(count: usize) -> Config {
     Config {
-        total: 2,
-        per_host: 2,
-        per_user_host: 2,
+        total: count,
+        per_host: count,
+        per_user_host: count,
         ..Config::default()
     }
 }
@@ -39,12 +43,15 @@ struct Case {
 impl Case {
     /// `arm_new`: each new session dies when it first sends after its setup.
     fn new(arm_new: bool) -> Self {
+        Self::with_config(arm_new, config())
+    }
+    fn with_config(arm_new: bool, config: Config) -> Self {
         let fixture = SshdFixture::new();
         let proxy = Arc::new(CutProxy::start(fixture.port));
         let dial = Arc::new(fixture.dialer(proxy.port));
         let armed = proxy.clone();
         let endpoint = Endpoint::with_registry(
-            config(),
+            config,
             Registry::new(),
             move |origin, _| {
                 SetupConnector::isolated(origin, Duration::from_millis(500), move |_, _, _| {
@@ -138,6 +145,48 @@ fn a_reused_session_dying_at_its_channel_open_is_replaced_by_a_fresh_one() {
     assert!(!opened.reused);
     assert!(opened.facts.credential_offered);
     assert_eq!(case.proxy.connections(), 2);
+}
+
+/// Two idle sessions, both of which die at their channel open: the open that
+/// leases one is retried on a fresh connection, which never leases the other
+/// idle one (P3-2 of the idle-loss State review). Were the retry not fresh, it
+/// would lease the second dead session and use it up.
+#[test]
+fn the_retry_after_a_dead_lease_is_fresh_and_leaves_another_idle_session_alone() {
+    let case = Case::with_config(false, sessions(3));
+    // Two exchanges at once, so that the pool opens two sessions.
+    let repository = case.fixture.repository.to_str().unwrap();
+    let mut both = Vec::new();
+    for _ in 0..2 {
+        both.push(
+            attachment::open(
+                &case.endpoint,
+                case.key(),
+                None,
+                GitService::UploadPack,
+                repository,
+                attachment::deadlines(&sessions(3), 5_000),
+            )
+            .unwrap(),
+        );
+    }
+    for (mut stream, _) in both {
+        let mut advertisement = Vec::new();
+        stream.write_all(b"0000").unwrap();
+        stream.end_write().unwrap();
+        stream.read_to_end(&mut advertisement).unwrap();
+        stream.close().unwrap();
+    }
+    case.wait_for("both sessions are idle", |case| {
+        case.endpoint.pool().counts().idle == 2
+    });
+    case.proxy.arm_existing();
+    let opened = case.exchange().unwrap();
+    assert!(!opened.reused);
+    assert_eq!(case.proxy.connections(), 3);
+    case.wait_for("the new session is idle beside the untouched one", |case| {
+        case.endpoint.pool().counts().idle == 2
+    });
 }
 
 #[test]

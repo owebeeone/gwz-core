@@ -179,14 +179,25 @@ impl HttpsPool {
         connect_ms: u64,
         cancel: &CancellationToken,
     ) -> Result<HttpLease, (Failure, Phase)> {
-        self.checkout_scoped(key, owner, allocation_ms, connect_ms, cancel, None, false)
-            .await
+        self.checkout_scoped(
+            key,
+            owner,
+            allocation_ms,
+            connect_ms,
+            cancel,
+            None,
+            false,
+            true,
+        )
+        .await
     }
         }
     }
     /// Leases a connection for `key`, a new one when `fresh`. A reused
     /// connection found dead before any byte is released, and the checkout is
-    /// made once more, fresh (dev-docs/GwzTransportIdleLossDesign.md §6.1).
+    /// made once more, fresh (dev-docs/GwzTransportIdleLossDesign.md §6.1),
+    /// when `may_retry`: an open retries once, so one that has retried already
+    /// fails instead. A lease from such a retry says so (`retried`).
     #[allow(clippy::too_many_arguments)] // One pool request's fields, and its cancellation.
     pub(crate) async fn checkout_scoped(
         &self,
@@ -197,6 +208,7 @@ impl HttpsPool {
         cancel: &CancellationToken,
         scope: Option<&str>,
         fresh: bool,
+        may_retry: bool,
     ) -> Result<HttpLease, (Failure, Phase)> {
         let started = Instant::now();
         let identity = scope.map_or(Identity::Https, |scope| Identity::HttpsScoped(scope.into()));
@@ -206,7 +218,13 @@ impl HttpsPool {
         request.fresh = fresh;
         let lease = self.lease(request.clone(), cancel).await?;
         match self.adopt(lease, started)? {
-            Adopted::Lease(lease) => Ok(lease),
+            Adopted::Lease(mut lease) => {
+                lease.retried = fresh;
+                Ok(lease)
+            }
+            Adopted::Dead if !may_retry => {
+                Err((https_connection::failure(ErrorCode::Io), Phase::Other))
+            }
             Adopted::Dead => {
                 // A fresh request never gets a reused connection, so this
                 // second lease cannot be Dead.
@@ -215,7 +233,10 @@ impl HttpsPool {
                 request.allocation_timeout_ms = Some(remaining.max(1));
                 let lease = self.lease(request, cancel).await?;
                 match self.adopt(lease, started)? {
-                    Adopted::Lease(lease) => Ok(lease),
+                    Adopted::Lease(mut lease) => {
+                        lease.retried = true;
+                        Ok(lease)
+                    }
                     Adopted::Dead => Err((https_connection::failure(ErrorCode::Io), Phase::Other)),
                 }
             }
@@ -349,6 +370,7 @@ impl HttpsPool {
             allocation_elapsed,
             id,
             reused,
+            retried: false,
         }))
     }
 }
@@ -371,6 +393,9 @@ pub(crate) struct HttpLease {
     pub(crate) allocation_elapsed: Duration,
     pub(crate) id: String,
     pub(crate) reused: bool,
+    /// This lease is its open's one retry: a reused connection was found dead
+    /// before a byte was written. The open is not retried again.
+    pub(crate) retried: bool,
 }
 impl HttpLease {
     pub(crate) fn scope(&self, scope: &str) -> Result<(), Failure> {

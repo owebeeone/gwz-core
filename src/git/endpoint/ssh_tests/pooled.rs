@@ -121,6 +121,8 @@ struct Pending {
 struct Active {
     lease: Lease,
     peer: MessageEndpoint,
+    /// The member has its terminal; the channel's close goes on.
+    closing: bool,
 }
 
 impl Harness {
@@ -232,7 +234,11 @@ impl Harness {
                                     .map_err(|e| e.to_string())?;
                                     resource.pump =
                                         Some(SshPump::new(stream, endpoint, channel, 4096, 4096));
-                                    active.push(Active { lease, peer });
+                                    active.push(Active {
+                                        lease,
+                                        peer,
+                                        closing: false,
+                                    });
                                     let _ =
                                         pending.open.reply.send(Ok(BlockingStream::new(client)));
                                 }
@@ -250,27 +256,39 @@ impl Harness {
                     }
                     let resource = host.resource(&exchange.lease).map_err(|e| e.to_string())?;
                     let pump = resource.pump.as_mut().unwrap();
-                    for _ in 0..8 {
-                        let message = match pin!(exchange.peer.next_message()).poll(&mut cx) {
-                            Poll::Ready(Ok(Some(message))) => message,
-                            Poll::Ready(Err(error)) => return Err(error.to_string()),
-                            _ => break,
-                        };
-                        pump.deliver(message)
-                            .map_err(|error| format!("deliver: {error:?}"))?;
-                    }
-                    pump.tick(&mut cx, now)
-                        .map_err(|e| format!("pump: {e:?}"))?;
-                    for _ in 0..8 {
-                        match pump.poll_next_message(&mut cx) {
-                            Poll::Ready(Ok(Some(message))) => {
-                                exchange.peer.deliver(message).map_err(|e| e.to_string())?
-                            }
-                            Poll::Ready(Err(error)) => return Err(error.to_string()),
-                            _ => break,
+                    if !exchange.closing {
+                        for _ in 0..8 {
+                            let message = match pin!(exchange.peer.next_message()).poll(&mut cx) {
+                                Poll::Ready(Ok(Some(message))) => message,
+                                Poll::Ready(Err(error)) => return Err(error.to_string()),
+                                _ => break,
+                            };
+                            pump.deliver(message)
+                                .map_err(|error| format!("deliver: {error:?}"))?;
                         }
                     }
-                    if pump.stream_stats().terminal {
+                    // A close that fails after the member's terminal retires the
+                    // pump, and the connection is discarded, as the worker does.
+                    if let Err(error) = pump.tick(&mut cx, now)
+                        && !exchange.closing
+                    {
+                        return Err(format!("pump: {error:?}"));
+                    }
+                    if !exchange.closing {
+                        for _ in 0..8 {
+                            match pump.poll_next_message(&mut cx) {
+                                Poll::Ready(Ok(Some(message))) => {
+                                    exchange.peer.deliver(message).map_err(|e| e.to_string())?
+                                }
+                                Poll::Ready(Err(error)) => return Err(error.to_string()),
+                                _ => break,
+                            }
+                        }
+                    }
+                    exchange.closing |= pump.stream_stats().terminal;
+                    // The member's terminal does not end the exchange: the
+                    // channel's close does, or the pump's retirement.
+                    if exchange.closing && (pump.finished() || pump.retired()) {
                         let disposition = match resource.pump.take().unwrap().into_owner() {
                             Ok(session) => {
                                 resource.idle = Some(session);

@@ -286,6 +286,46 @@ fn idle_loss_is_disposed_then_reported_and_frees_the_slot() {
     assert_eq!(state.lock().unwrap().opens, 2);
 }
 
+/// A connection the host found lost, whose disposal is still pending, is
+/// known lost to a checkout that leases it meanwhile: the pool counts it Idle
+/// until the disposal ends (P3-1 of the idle-loss State review).
+#[test]
+fn a_lease_taken_while_a_lost_connections_disposal_is_pending_is_known_lost() {
+    let (pool, mut host, state) = setup();
+    // An exchange used the connection before it went idle.
+    let mut first = pool.checkout(request("one")).unwrap();
+    tick(&mut host, 10_000);
+    let lease = take(&mut first);
+    let id = lease.connection().unwrap();
+    assert!(!host.allocation_reused(&lease).unwrap());
+    host.release(lease, Disposition::Reusable).unwrap();
+    assert_eq!(pool.counts().idle, 1);
+    {
+        let mut state = state.lock().unwrap();
+        state.lost = true;
+        state.finish_close = false;
+    }
+    tick(&mut host, 10_001);
+    assert_eq!(state.lock().unwrap().disposed, 0);
+    let mut next = pool.checkout(request("two")).unwrap();
+    tick(&mut host, 10_002);
+    let lease = take(&mut next);
+    assert_eq!(lease.connection().unwrap(), id);
+    assert_eq!(host.lost(&lease), Some(true));
+    assert!(matches!(
+        host.allocation_reused(&lease),
+        Err(gwz_transport::pool::Error::WrongState)
+    ));
+    // Never reusable, whatever the exchange says: a release is a discard.
+    host.release(lease, Disposition::Reusable).unwrap();
+    state.lock().unwrap().finish_close = true;
+    tick(&mut host, 10_003);
+    tick(&mut host, 10_004);
+    assert_eq!(pool.counts().total(), 0);
+    assert_eq!(host.physical_count(), 0);
+    assert_eq!(state.lock().unwrap().disposed, 1);
+}
+
 #[test]
 fn a_checkout_that_won_keeps_a_lost_tombstone_until_its_lease_is_released() {
     let (pool, mut host, state) = setup();

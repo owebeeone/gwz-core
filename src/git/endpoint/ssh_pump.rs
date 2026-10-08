@@ -21,6 +21,10 @@ pub(crate) trait ChannelIo {
     fn read_stderr(&mut self, output: &mut [u8]) -> io::Result<usize>;
     fn send_eof(&mut self) -> io::Result<()>;
     fn finish(&mut self) -> io::Result<i32>;
+    /// Close at once, the client being done, without the server's EOF: what the
+    /// server sends meanwhile is read off and dropped, and only its CHANNEL_CLOSE
+    /// is awaited. The status says nothing about the exchange.
+    fn finish_early(&mut self) -> io::Result<i32>;
     fn abort(&mut self);
     fn poll_dispose(&mut self) -> io::Result<()>;
     fn force_dispose(&mut self) -> io::Result<()>;
@@ -47,6 +51,9 @@ impl ChannelIo for SshChannel {
     }
     fn finish(&mut self) -> io::Result<i32> {
         Self::finish(self)
+    }
+    fn finish_early(&mut self) -> io::Result<i32> {
+        Self::finish_early(self)
     }
     fn abort(&mut self) {
         Self::abort(self)
@@ -85,6 +92,8 @@ pub(crate) struct SshPump<C: ChannelIo> {
     stdout_eof: bool,
     stderr_eof: bool,
     finished: bool,
+    /// The exchange only reads (upload-pack): the member's Close ends it.
+    fetch: bool,
     close_received: bool,
     close_completed: bool,
     closed_drained: bool,
@@ -120,6 +129,7 @@ impl<C: ChannelIo> SshPump<C> {
             stdout_eof: false,
             stderr_eof: false,
             finished: false,
+            fetch: false,
             close_received: false,
             close_completed: false,
             closed_drained: false,
@@ -129,11 +139,22 @@ impl<C: ChannelIo> SshPump<C> {
             turns: GitTurns::untracked(),
         }
     }
-    /// Read the exchange's pkt-line framing, so that the stall clock pauses
-    /// while the server waits for the client (GwzRemoteTransportDesign §10.1).
-    /// Without it every live moment is `Network`.
-    pub(crate) fn track_turns(&mut self, service: GitService) {
+    /// Say which Git service the exchange runs. The pump reads its pkt-line
+    /// framing, so that the stall clock pauses while the server waits for the
+    /// client (GwzRemoteTransportDesign §10.1); without it every live moment is
+    /// `Network`. A fetch is also final at the member's Close, where a push is
+    /// final at the server's EOF (GwzTransportSshBackgroundCloseDesign §3).
+    pub(crate) fn set_service(&mut self, service: GitService) {
         self.turns = GitTurns::new(service);
+        self.fetch = matches!(service, GitService::UploadPack);
+    }
+    /// The channel's close is complete: the connection can be reclaimed.
+    pub(crate) fn finished(&self) -> bool {
+        self.finished
+    }
+    /// The channel was abandoned: the connection cannot be reclaimed.
+    pub(crate) fn retired(&self) -> bool {
+        self.invalidated
     }
     pub(crate) fn set_facts(&mut self, facts: Facts) {
         self.facts = facts;
@@ -214,7 +235,7 @@ impl<C: ChannelIo> SshPump<C> {
         self.forward.clear();
         self.reverse.clear();
         self.invalidated = true;
-        self.channel.abort();
+        // The channel aborts itself, after it has read which close is under way.
         self.channel.poll_dispose()
     }
     pub(crate) fn force_dispose(&mut self) -> io::Result<()> {
@@ -267,8 +288,13 @@ impl<C: ChannelIo> SshPump<C> {
             Poll::Pending => Err(PumpError::Invariant),
         }
     }
+    /// A fetch's member has closed and the client's EOF has gone to the server:
+    /// the result is final, and the server's reply is no longer wanted.
+    fn closing_early(&self) -> bool {
+        self.fetch && self.close_received && self.end_sent
+    }
     fn read_reverse(&mut self) -> Result<(), PumpError> {
-        if self.reverse.len() >= self.mirror_cap || self.stdout_eof {
+        if self.reverse.len() >= self.mirror_cap || self.stdout_eof || self.closing_early() {
             return Ok(());
         }
         let mut bytes = vec![0; self.mirror_cap - self.reverse.len()];
@@ -289,9 +315,15 @@ impl<C: ChannelIo> SshPump<C> {
         Ok(())
     }
     fn write_reverse(&mut self, cx: &mut Context<'_>) -> Result<(), PumpError> {
+        let early = self.closing_early();
+        if early {
+            // What the server has not yet sent, and what the member has not
+            // read, is dropped: the stream ends without it.
+            self.reverse.clear();
+        }
         if self.reverse.is_empty() {
-            if self.stdout_eof && self.stderr_eof && !self.reverse_end_sent {
-                if !self.saw_stdout && !self.stderr_truncated {
+            if (early || self.stdout_eof && self.stderr_eof) && !self.reverse_end_sent {
+                if !early && !self.saw_stdout && !self.stderr_truncated {
                     let message = String::from_utf8_lossy(&self.stderr)
                         .trim()
                         .to_ascii_lowercase();
@@ -340,7 +372,7 @@ impl<C: ChannelIo> SshPump<C> {
         Ok(())
     }
     fn drain_stderr(&mut self) -> Result<(), PumpError> {
-        if self.stderr_eof {
+        if self.stderr_eof || self.closing_early() {
             return Ok(());
         }
         let mut bytes = [0; 256];
@@ -366,31 +398,54 @@ impl<C: ChannelIo> SshPump<C> {
         }
         Ok(())
     }
+    /// Closes the channel once the exchange is over on the server's side too:
+    /// at its EOF, or, for a fetch whose member has closed, at once. The close
+    /// goes on after the member has its Closed, off the member's path.
     fn finish_request(&mut self) -> Result<(), PumpError> {
+        if self.finished {
+            return Ok(());
+        }
+        if self.closing_early() {
+            // After an early close the server may have been stopped by the
+            // client's close, so its status says nothing about the connection.
+            return match self.channel.finish_early() {
+                Ok(_) => {
+                    self.finished = true;
+                    Ok(())
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(()),
+                Err(_) => Err(PumpError::Io),
+            };
+        }
         if !(self.end_sent && self.stdout_eof && self.stderr_eof && self.reverse_end_sent) {
             return Ok(());
         }
-        if !self.finished {
-            match self.channel.finish() {
-                Ok(0) => self.finished = true,
-                Ok(_) => return Err(PumpError::Invariant),
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
-                Err(_) => return Err(PumpError::Io),
-            }
+        match self.channel.finish() {
+            Ok(0) => self.finished = true,
+            Ok(_) => return Err(PumpError::Invariant),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+            Err(_) => return Err(PumpError::Io),
         }
         Ok(())
     }
+    /// Completes the member's close. The member's result is final here, and
+    /// does not wait for the channel's close: that finishes after it, and the
+    /// connection is reusable only if it finishes cleanly.
     fn finish_channel(&mut self) -> Result<(), PumpError> {
-        if self.finished && self.close_received && !self.close_completed {
-            if self.endpoint.stats().end_sent {
-                match self
-                    .endpoint
-                    .complete_close(Disposition::Reusable, self.facts.clone())
-                {
-                    Ok(()) => self.close_completed = true,
-                    Err(StreamError::WouldBlock) => {}
-                    Err(_) => return Err(PumpError::Stream),
-                }
+        // The client's EOF has gone to the server first: the channel's close
+        // needs it, and it is sent only while the member's stream is live.
+        if self.close_received
+            && !self.close_completed
+            && self.end_sent
+            && self.endpoint.stats().end_sent
+        {
+            match self
+                .endpoint
+                .complete_close(Disposition::Reusable, self.facts.clone())
+            {
+                Ok(()) => self.close_completed = true,
+                Err(StreamError::WouldBlock) => {}
+                Err(_) => return Err(PumpError::Stream),
             }
         }
         Ok(())
@@ -455,8 +510,10 @@ impl<C: ChannelIo> SshPump<C> {
         if snapshot.terminal {
             if !self.close_completed {
                 self.retire_channel();
+                return Ok(());
             }
-            return Ok(());
+            // The member has its Closed. The channel's close goes on.
+            return self.finish_request();
         }
         self.set_io_state()?;
         if !self.opened {
@@ -514,6 +571,9 @@ cfg_if::cfg_if! {
             }
             pub(crate) fn channel(&self) -> &C {
                 &self.channel
+            }
+            pub(crate) fn channel_mut(&mut self) -> &mut C {
+                &mut self.channel
             }
         }
     }

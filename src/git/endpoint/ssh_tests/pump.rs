@@ -12,27 +12,38 @@ use std::{
 };
 
 #[derive(Default)]
-struct FakeChannel {
-    writes: Vec<u8>,
-    output: VecDeque<u8>,
-    stderr: VecDeque<u8>,
+pub(super) struct FakeChannel {
+    pub(super) writes: Vec<u8>,
+    pub(super) output: VecDeque<u8>,
+    pub(super) stderr: VecDeque<u8>,
     write_limit: usize,
     write_would_block: bool,
     read_limit: usize,
     open: bool,
-    sent_eof: bool,
-    output_eof: bool,
-    stderr_eof: bool,
-    finished: bool,
-    disposed: bool,
-    aborts: usize,
+    pub(super) sent_eof: bool,
+    pub(super) output_eof: bool,
+    pub(super) stderr_eof: bool,
+    pub(super) finished: bool,
+    pub(super) disposed: bool,
+    pub(super) aborts: usize,
     open_calls: usize,
-    finish_status: i32,
+    pub(super) finish_status: i32,
     eof_would_block: bool,
+    /// The client's EOF cannot be sent yet: `send_eof` answers WouldBlock.
+    pub(super) eof_withheld: bool,
+    /// The server's close has not arrived: `finish` and `finish_early` answer
+    /// WouldBlock, as the real channel does while it waits for CHANNEL_CLOSE.
+    pub(super) finish_blocked: bool,
+    /// The close fails with this kind, as a dropped connection does.
+    pub(super) finish_error: Option<io::ErrorKind>,
+    /// A close has begun: like the real channel, nothing else may be driven.
+    pub(super) closing: bool,
+    /// The close that finished was the early one.
+    pub(super) early_finished: bool,
 }
 
 impl FakeChannel {
-    fn active() -> Self {
+    pub(super) fn active() -> Self {
         Self {
             open: true,
             write_limit: 2,
@@ -52,7 +63,7 @@ impl ChannelIo for FakeChannel {
     }
 
     fn write_backend(&mut self, input: &[u8]) -> io::Result<usize> {
-        if !self.open || self.disposed {
+        if !self.open || self.disposed || self.closing {
             return Err(io::ErrorKind::BrokenPipe.into());
         }
         if self.write_would_block {
@@ -65,6 +76,9 @@ impl ChannelIo for FakeChannel {
     }
 
     fn read_backend(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if self.closing {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
         if let Some(byte) = self.output.pop_front() {
             output[0] = byte;
             let mut count = 1;
@@ -85,6 +99,9 @@ impl ChannelIo for FakeChannel {
     }
 
     fn read_stderr(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        if self.closing {
+            return Err(io::ErrorKind::BrokenPipe.into());
+        }
         if self.stderr.is_empty() {
             return if self.stderr_eof {
                 Ok(0)
@@ -100,7 +117,7 @@ impl ChannelIo for FakeChannel {
     }
 
     fn send_eof(&mut self) -> io::Result<()> {
-        if self.eof_would_block {
+        if self.eof_would_block || self.eof_withheld {
             self.eof_would_block = false;
             return Err(io::ErrorKind::WouldBlock.into());
         }
@@ -109,12 +126,21 @@ impl ChannelIo for FakeChannel {
     }
 
     fn finish(&mut self) -> io::Result<i32> {
-        if self.sent_eof && self.output_eof && self.stderr_eof {
-            self.finished = true;
-            Ok(self.finish_status)
-        } else {
-            Err(io::ErrorKind::WouldBlock.into())
+        if !(self.sent_eof && self.output_eof && self.stderr_eof) {
+            return Err(io::ErrorKind::WouldBlock.into());
         }
+        self.closing = true;
+        self.closed()
+    }
+
+    fn finish_early(&mut self) -> io::Result<i32> {
+        if !self.sent_eof {
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        self.closing = true;
+        let status = self.closed()?;
+        self.early_finished = true;
+        Ok(status)
     }
 
     fn abort(&mut self) {
@@ -141,7 +167,21 @@ impl ChannelIo for FakeChannel {
     }
 }
 
-fn pair(window: usize) -> (Stream, MessageEndpoint) {
+impl FakeChannel {
+    /// The server's close, once it has arrived.
+    fn closed(&mut self) -> io::Result<i32> {
+        if self.finish_blocked {
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        if let Some(kind) = self.finish_error {
+            return Err(kind.into());
+        }
+        self.finished = true;
+        Ok(self.finish_status)
+    }
+}
+
+pub(super) fn pair(window: usize) -> (Stream, MessageEndpoint) {
     let mut config = Config::new("pump-session", 1, Side::Endpoint);
     config.receive_window = window;
     config.send_buffer = window;
@@ -150,7 +190,7 @@ fn pair(window: usize) -> (Stream, MessageEndpoint) {
     Stream::new(config).expect("valid pump config")
 }
 
-fn data(payload: &[u8], offset: i64) -> Envelope {
+pub(super) fn data(payload: &[u8], offset: i64) -> Envelope {
     Envelope {
         version: 1,
         session_id: "pump-session".into(),
@@ -164,7 +204,7 @@ fn data(payload: &[u8], offset: i64) -> Envelope {
     }
 }
 
-fn end(final_offset: i64) -> Envelope {
+pub(super) fn end(final_offset: i64) -> Envelope {
     Envelope {
         version: 1,
         session_id: "pump-session".into(),
@@ -175,11 +215,22 @@ fn end(final_offset: i64) -> Envelope {
     }
 }
 
-fn cx() -> Context<'static> {
+pub(super) fn close(final_offset: i64) -> Envelope {
+    Envelope {
+        version: 1,
+        session_id: "pump-session".into(),
+        stream_id: 1,
+        kind: MessageKind::Close,
+        close: Some(gwz_transport::protocol::Close { final_offset }),
+        ..Default::default()
+    }
+}
+
+pub(super) fn cx() -> Context<'static> {
     Context::from_waker(Waker::noop())
 }
 
-fn drain_messages<C: ChannelIo>(pump: &mut SshPump<C>, context: &mut Context<'_>) {
+pub(super) fn drain_messages<C: ChannelIo>(pump: &mut SshPump<C>, context: &mut Context<'_>) {
     loop {
         match pump.poll_next_message(context) {
             std::task::Poll::Ready(Ok(Some(_))) => {}
@@ -290,26 +341,6 @@ fn network_clock_classification_keeps_pending_stderr_active() {
         pump.io_status().state,
         gwz_transport::stream::IoState::Network
     );
-}
-
-#[test]
-fn nonzero_service_status_poisoned_channel_cannot_be_reused() {
-    let (stream, endpoint) = pair(2);
-    let mut channel = FakeChannel::active();
-    channel.finish_status = 7;
-    channel.output_eof = true;
-    channel.stderr_eof = true;
-    let mut pump = SshPump::new(stream, endpoint, channel, 2, 8);
-    pump.deliver(end(0)).unwrap();
-    let mut context = cx();
-    for now in 0..8 {
-        drain_messages(&mut pump, &mut context);
-        if pump.tick(&mut context, now).is_err() {
-            assert!(pump.channel().disposed);
-            return;
-        }
-    }
-    panic!("nonzero backend status was accepted");
 }
 
 #[test]

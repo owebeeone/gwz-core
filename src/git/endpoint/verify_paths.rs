@@ -27,9 +27,14 @@
 //! it holds, which OpenSSL never finds, is a root here. A `TRUSTED
 //! CERTIFICATE` block is a root, its trust settings not being kept.
 //!
+//! On Debian the files of the directory are links to the certificates that the
+//! bundle holds, and a root that came from the file is not read again from the
+//! directory: a file whose text is that of a block already read is skipped
+//! before it is parsed. The roots are the same.
+//!
 //! Not consulted: OpenSSL's compiled-in locations, where neither the
 //! variables nor the probe's locations name an existing path.
-use super::ca_bundle::{Block, scan};
+use super::ca_bundle::{Block, scan_spans};
 use std::{
     collections::HashSet,
     ffi::OsStr,
@@ -74,7 +79,12 @@ impl Paths {
 
     /// The certificates the paths hold, the file's first, each once.
     pub(crate) fn roots(&self) -> Vec<native_tls::Certificate> {
-        let mut seen = HashSet::new();
+        self.read().0
+    }
+
+    /// `roots`, with what reading them took.
+    pub(crate) fn read(&self) -> (Vec<native_tls::Certificate>, Reads) {
+        let mut seen = Seen::default();
         let mut roots = Vec::new();
         if let Some(file) = &self.file {
             read_file(file, &mut seen, &mut roots);
@@ -92,8 +102,26 @@ impl Paths {
                 read_file(&path, &mut seen, &mut roots);
             }
         }
-        roots
+        (roots, seen.reads)
     }
+}
+
+/// How many files were read and parsed, and how many were skipped because
+/// their text was that of a block already read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Reads {
+    pub(crate) read: usize,
+    pub(crate) skipped: usize,
+}
+
+/// What has been read: the certificates by their DER, and the text of the
+/// blocks they came from, so that a file holding only such a block is not
+/// parsed again.
+#[derive(Default)]
+struct Seen {
+    certificates: HashSet<Vec<u8>>,
+    blocks: HashSet<Vec<u8>>,
+    reads: Reads,
 }
 
 /// Whether `path` is named as OpenSSL names a certificate in a directory it
@@ -114,22 +142,31 @@ fn is_hashed_name(path: &Path) -> bool {
 
 /// Adds the certificates of the file at `path` that are not in `seen`, up to
 /// the first block that is not one. A file that cannot be read adds none.
-fn read_file(path: &Path, seen: &mut HashSet<Vec<u8>>, roots: &mut Vec<native_tls::Certificate>) {
+fn read_file(path: &Path, seen: &mut Seen, roots: &mut Vec<native_tls::Certificate>) {
     let mut bytes = Vec::new();
     let read = fs::File::open(path).and_then(|file| file.take(MAX_FILE).read_to_end(&mut bytes));
     if read.is_err() {
         return;
     }
-    for block in scan(&bytes, LABELS).blocks {
+    // Exactly one block already read: it is parsed to the same certificate.
+    if seen.blocks.contains(bytes.trim_ascii()) {
+        seen.reads.skipped += 1;
+        return;
+    }
+    seen.reads.read += 1;
+    let (scanned, spans) = scan_spans(&bytes, LABELS);
+    for (block, span) in scanned.blocks.into_iter().zip(spans) {
         let Block::Der(der) = block else {
             return;
         };
-        if seen.contains(&der) {
+        if seen.certificates.contains(&der) {
+            seen.blocks.insert(bytes[span].to_vec());
             continue;
         }
         match native_tls::Certificate::from_der(&der) {
             Ok(certificate) => {
-                seen.insert(der);
+                seen.certificates.insert(der);
+                seen.blocks.insert(bytes[span].to_vec());
                 roots.push(certificate);
             }
             Err(_) => return,

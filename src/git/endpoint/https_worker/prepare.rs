@@ -142,6 +142,10 @@ impl Client {
         // before this hop's request was started (§6.1 (b) of
         // dev-docs/GwzTransportIdleLossDesign.md).
         let mut fresh = false;
+        // The open's one retry has been used: by this attempt, or by an earlier
+        // one whose connection a 401 carries here. A request that never
+        // started is retried only once per open (§2.2 of the same note).
+        let mut retried = false;
         let mut answer_challenge = input.policy == AuthPolicy::Gh
             || (!https_policy::advertisement(input.service) && basic_route);
         loop {
@@ -211,6 +215,7 @@ impl Client {
                         .map(|c| c.scope.as_str())
                         .or_else(|| native_route.as_ref().map(|auth| auth.scope.as_str())),
                     std::mem::take(&mut fresh),
+                    !retried,
                 );
                 let checkout = match budget.logical_deadline {
                     Some(until) => tokio::time::timeout_at(until, checkout)
@@ -233,6 +238,7 @@ impl Client {
                 }
                 lease
             };
+            retried |= lease.retried;
             if native_policy
                 && budget
                     .logical_deadline
@@ -326,11 +332,12 @@ impl Client {
             };
             let mut response = match sent {
                 Ok(response) => response,
-                Err(SendFailure::NotStarted) if prepared.opened.reused => {
+                Err(SendFailure::NotStarted) if prepared.opened.reused && !retried => {
                     // Nothing reached the server: discard the connection and
                     // ask for a new one, with this attempt's slot and budget.
-                    // Only a reused lease qualifies and the next one is
-                    // fresh, so a request is retried at most once.
+                    // Only a reused lease qualifies, and only an open that has
+                    // not retried; the next lease is fresh, so an open is
+                    // retried at most once.
                     drop(guard);
                     drop(connection);
                     let Prepared {
@@ -344,6 +351,7 @@ impl Client {
                     dependency = Some(returned_dependency);
                     credential_offered = offered_before;
                     fresh = true;
+                    retried = true;
                     continue;
                 }
                 Err(SendFailure::NotStarted) => {

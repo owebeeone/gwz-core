@@ -38,7 +38,8 @@ class TransportGlobals(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.workspace = Path(directory.name)
         self.core = self.workspace / 'gwz-core'
-        self.core.mkdir()
+        (self.core / '.github').mkdir(parents=True)
+        (self.core / '.github' / 'gwz-transport.commit').write_text('a' * 40 + '\n')
         self.sibling = self.workspace / 'gwz-transport'
 
     def run_main(self, argv, environ):
@@ -51,6 +52,7 @@ class TransportGlobals(unittest.TestCase):
             os.environ.pop(NAMED, None)
             os.environ.update(environ)
             with patch.object(runner, 'ROOT', self.core), \
+                    patch.object(runner, 'transport_head', return_value='a' * 40), \
                     patch.object(runner.subprocess, 'run') as run, \
                     contextlib.redirect_stdout(stdout):
                 run.return_value.returncode = 0

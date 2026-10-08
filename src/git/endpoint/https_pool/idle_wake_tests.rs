@@ -197,6 +197,7 @@ fn a_fresh_retry_after_a_dead_lease_is_served_promptly() {
                 &CancellationToken::new(),
                 None,
                 true,
+                true,
             ),
         )
         .await

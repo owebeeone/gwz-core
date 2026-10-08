@@ -20,6 +20,7 @@ pub(super) fn run<C>(
     let waker = Waker::from(Arc::new(ThreadWake(thread::current())));
     let mut cx = Context::from_waker(&waker);
     let mut pending = Vec::<Pending>::new();
+    let mut deferred = Vec::<Deferred>::new();
     let mut active = Vec::<Active>::new();
     let mut serial = 0_i64;
     let mut passwords = 0_u64;
@@ -32,10 +33,21 @@ pub(super) fn run<C>(
             for item in pending.drain(..) {
                 item.request.complete(Err(stopped()));
             }
+            for item in deferred.drain(..) {
+                item.request.complete(Err(stopped()));
+            }
             active.clear(); // disconnect Git callers before waiting for physical disposal
             pool.shutdown();
         }
         pending.retain_mut(|item| {
+            if item.request.expired(now) {
+                item.request.reject(io::ErrorKind::TimedOut);
+                false
+            } else {
+                true
+            }
+        });
+        deferred.retain_mut(|item| {
             if item.request.expired(now) {
                 item.request.reject(io::ErrorKind::TimedOut);
                 false
@@ -90,6 +102,34 @@ pub(super) fn run<C>(
             || (stopping_at.is_some() && host.shutdown_complete() && admissions.is_empty())
         {
             break; // The owner transfers unfinished cleanup to the reserved supervisor slot.
+        }
+        // An open that waited for a closing exchange goes to the pool when that
+        // exchange has ended, or when its wait has.
+        let mut index = 0;
+        while index < deferred.len() {
+            let item = &deferred[index];
+            let waiting = now < item.until
+                && active.iter().any(|exchange| {
+                    exchange
+                        .closing
+                        .as_ref()
+                        .is_some_and(|closing| closing.claimed == Some(item.claim))
+                });
+            if waiting {
+                index += 1;
+                continue;
+            }
+            let Deferred {
+                request, policy, ..
+            } = deferred.swap_remove(index);
+            match pool.checkout_until(policy.clone(), request.deadline) {
+                Ok(checkout) => pending.push(Pending {
+                    checkout,
+                    request,
+                    policy,
+                }),
+                Err(error) => request.complete(Err(io::Error::other(error))),
+            }
         }
         let incoming = receiver.try_iter().take(32);
         for mut request in ready.into_iter().chain(incoming) {
@@ -153,6 +193,18 @@ pub(super) fn run<C>(
             policy.allocation_timeout_ms = Some(d.allocation_ms as u64);
             policy.connect_timeout_ms = Some(d.connect_ms as u64);
             policy.interaction_timeout_ms = Some(d.interaction_ms as u64);
+            // An open for a connection that is closing waits for it, once.
+            if let Some(until) =
+                claim_closing(&mut active, &request.key, &policy.identity, serial, now)
+            {
+                deferred.push(Deferred {
+                    request,
+                    policy,
+                    claim: serial,
+                    until,
+                });
+                continue;
+            }
             match pool.checkout_until(policy.clone(), request.deadline) {
                 Ok(checkout) => pending.push(Pending {
                     checkout,
@@ -204,28 +256,32 @@ pub(super) fn run<C>(
             }
             let discard = exchange.discard.load(Ordering::Acquire);
             let mut opened = false;
-            let (disposition, failed) =
-                match host.resource(exchange.lease.as_ref().expect("active lease")) {
-                    Ok(resource) => {
-                        let result = match resource.pump() {
-                            Some(pump) => {
-                                let result = transfer(pump, exchange, &mut cx, now);
-                                opened = pump.opened();
-                                result
-                            }
-                            None => Err(()),
-                        };
-                        match result {
-                            Ok(false) => (None, false),
-                            Ok(true) if !discard && resource.reclaim() => {
-                                (Some(Disposition::Reusable), false)
-                            }
-                            Ok(true) => (Some(Disposition::Discarded), false),
-                            Err(()) => (Some(Disposition::Discarded), true),
+            let (disposition, failed) = match host
+                .resource(exchange.lease.as_ref().expect("active lease"))
+            {
+                Ok(resource) => {
+                    let result = match resource.pump() {
+                        Some(pump) if exchange.closing.is_some() => {
+                            close_step(pump, exchange, &mut cx, now, discard)
                         }
+                        Some(pump) => {
+                            let result = transfer(pump, exchange, &mut cx, now, discard);
+                            opened = pump.opened();
+                            result
+                        }
+                        None => Err(()),
+                    };
+                    match result {
+                        Ok(Turn::Running | Turn::Closing) => (None, false),
+                        Ok(Turn::Finished) if resource.reclaim() => {
+                            (Some(Disposition::Reusable), false)
+                        }
+                        Ok(Turn::Finished | Turn::Over) => (Some(Disposition::Discarded), false),
+                        Err(()) => (Some(Disposition::Discarded), true),
                     }
-                    Err(_) => (Some(Disposition::Discarded), true),
-                };
+                }
+                Err(_) => (Some(Disposition::Discarded), true),
+            };
             if opened && let Some(held) = exchange.held.take() {
                 held.reply();
             }
@@ -246,6 +302,7 @@ pub(super) fn run<C>(
         // callers wake immediately, timers run independently, and idle pools sleep.
         let wait = if active.is_empty()
             && pending.is_empty()
+            && deferred.is_empty()
             && admissions.is_empty()
             && stopping_at.is_none()
         {
@@ -259,6 +316,35 @@ pub(super) fn run<C>(
     for item in pending {
         item.request.complete(Err(stopped()));
     }
+    for item in deferred {
+        item.request.complete(Err(stopped()));
+    }
     drop(active);
     // Dropping receiver releases queued permits and wakes waiting opens.
+}
+
+/// Claims the closing exchange, if one is, that an open for `key` and
+/// `identity` waits for, and returns when its wait ends: `WAIT_FOR_CLOSE_MS`,
+/// or less if the close is given up on sooner. One open waits for one close,
+/// and an open waits once (design §6).
+fn claim_closing(
+    active: &mut [Active],
+    key: &Key,
+    identity: &Identity,
+    claim: i64,
+    now: u64,
+) -> Option<u64> {
+    let exchange = active.iter_mut().find(|exchange| {
+        exchange.key == *key
+            && exchange.identity == *identity
+            && !exchange.discard.load(Ordering::Acquire)
+            && exchange
+                .closing
+                .as_ref()
+                .is_some_and(|closing| !closing.failed && closing.claimed.is_none())
+    })?;
+    let closing = exchange.closing.as_mut()?;
+    closing.claimed = Some(claim);
+    let wait = WAIT_FOR_CLOSE_MS.min(closing.deadline.saturating_sub(now));
+    Some(now.saturating_add(wait))
 }

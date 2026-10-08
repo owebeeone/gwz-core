@@ -153,6 +153,106 @@ fn a_get_written_before_the_server_closes_is_not_retried() {
     });
 }
 
+/// A 401 carry whose connection died before its credentialed request:
+/// `retried` says the open already used its one retry. Returns the attempt's
+/// result, with whether the connection it ended on was reused, and the
+/// connections the server accepted.
+async fn attempt_on_a_dead_carried_lease(retried: bool) -> (Result<bool, Failure>, usize) {
+    let server = Server::start(Arc::new(|_| {
+        Box::pin(async { response(200, GitService::UploadPackAdvertisement, "ok") })
+    }))
+    .await;
+    let port: u16 = server
+        .url
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .trim_end_matches("/repo")
+        .parse()
+        .unwrap();
+    let proxy = CutProxy::start(port);
+    let mut input = input(&server, GitService::UploadPackAdvertisement);
+    input.destination = format!("https://localhost:{}/repo", proxy.port);
+    let mut endpoint = Endpoint::new(
+        server.config(),
+        None,
+        gwz_transport::pool::Config::default(),
+    )
+    .unwrap();
+    let destination = Destination::parse(&input.destination).unwrap();
+    let cancel = CancellationToken::new();
+    let mut lease = endpoint
+        .client
+        .pool
+        .checkout(
+            Key::https(destination.host(), destination.port()),
+            Owner::new(&input.session, &input.operation),
+            5_000,
+            5_000,
+            &cancel,
+        )
+        .await
+        .unwrap();
+    lease.retried = retried;
+    // The server closes it before the credentialed request is written.
+    proxy.cut_all();
+    let connection = lease.connection.clone().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !connection.lock().await.sender.is_closed() {
+        assert!(Instant::now() < deadline, "the connection's driver ends");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    drop(connection);
+    let mut challenge = Some(ChallengeLease {
+        lease: Some(lease),
+        destination: destination.base(),
+        session: input.session.clone(),
+        operation: input.operation.clone(),
+        expires: Instant::now() + Duration::from_secs(5),
+    });
+    let result = endpoint
+        .client
+        .prepare_budget_for_transition(
+            input,
+            &cancel,
+            &mut endpoint.client.budget(),
+            &mut challenge,
+        )
+        .await;
+    let result = match result {
+        Ok(prepared) => {
+            let reused = prepared.opened.reused;
+            finish(prepared).await;
+            Ok(reused)
+        }
+        Err(failure) => Err(failure),
+    };
+    let connections = proxy.connections();
+    assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
+    (result, connections)
+}
+
+/// A request that never started on a carried lease is retried once on a new
+/// connection, unless the open has retried already (P3-3 of the idle-loss
+/// State review): a dead lease followed by a 401 carry is one retry, not two.
+#[test]
+fn a_carried_lease_that_died_is_retried_unless_the_open_has_retried() {
+    runtime().block_on(async {
+        let (result, connections) = attempt_on_a_dead_carried_lease(false).await;
+        assert!(!result.unwrap(), "the retry is a new connection");
+        assert_eq!(connections, 2);
+        let (result, connections) = attempt_on_a_dead_carried_lease(true).await;
+        assert!(matches!(
+            result,
+            Err(Failure {
+                code: ErrorCode::Io,
+                ..
+            })
+        ));
+        assert_eq!(connections, 1);
+    });
+}
+
 fn get() -> Request<RequestBody> {
     let (sender, body) = body_channel();
     drop(sender);

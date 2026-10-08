@@ -74,6 +74,9 @@ impl ChannelIo for Server {
     fn finish(&mut self) -> io::Result<i32> {
         Err(io::ErrorKind::WouldBlock.into())
     }
+    fn finish_early(&mut self) -> io::Result<i32> {
+        Err(io::ErrorKind::WouldBlock.into())
+    }
     fn abort(&mut self) {}
     fn poll_dispose(&mut self) -> io::Result<()> {
         Ok(())
@@ -103,7 +106,7 @@ impl Exchange {
         let (stream, endpoint) = Stream::new(config).unwrap();
         let server = Server::default();
         let mut pump = SshPump::new(stream, endpoint, server.clone(), 65_536, 65_536);
-        pump.track_turns(GitService::UploadPack);
+        pump.set_service(GitService::UploadPack);
         Self {
             pump,
             server,

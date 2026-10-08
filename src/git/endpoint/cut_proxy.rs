@@ -91,6 +91,13 @@ impl CutProxy {
         }
     }
 
+    /// Ends the oldest connection now, and no other.
+    pub(crate) fn cut_oldest(&self) {
+        if let Some(link) = self.links.lock().unwrap().first() {
+            link.cut();
+        }
+    }
+
     /// Every current connection ends, unforwarded, when its client next sends
     /// bytes. Later connections are not affected.
     pub(crate) fn arm_existing(&self) {

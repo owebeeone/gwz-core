@@ -270,6 +270,47 @@ fn the_file_comes_first_and_a_certificate_in_both_is_one_root() {
     );
 }
 
+/// On Debian the hash directory's files are links to the certificates the
+/// bundle holds, so each root would be read twice. A directory file whose
+/// certificate text is that of a block already read is not read again, and the
+/// trust is what it was.
+#[test]
+fn a_directory_file_holding_a_block_already_read_is_skipped_unread() {
+    let root = tempfile::TempDir::new().unwrap();
+    let store = root.path().join("store");
+    let source = root.path().join("source");
+    std::fs::create_dir(&store).unwrap();
+    std::fs::create_dir(&source).unwrap();
+    let names = ["a", "b", "c"];
+    let pems: Vec<_> = names.iter().map(|name| pem(&source, name)).collect();
+    // The bundle is the files joined, and the hash links point at the files.
+    let bundle = write(&root.path().join("bundle.pem"), pems.concat());
+    for (index, pem) in pems.iter().enumerate() {
+        let file = write(&source.join(format!("{}.crt", names[index])), pem);
+        symlink(file, store.join(format!("0000000{index}.0"))).unwrap();
+    }
+    // A certificate the bundle lacks, which must still be a root.
+    let only = pem(&source, "only");
+    write(&store.join("0000000a.0"), &only);
+    // The same certificate under a comment, and again as a second block
+    // in a file of its own: read, and add nothing.
+    write(&store.join("0000000b.0"), format!("# a note\n{}", pems[0]));
+    write(&store.join("0000000c.0"), format!("{}{}", pems[1], pems[2]));
+    let paths = Paths {
+        file: Some(bundle),
+        dir: Some(store),
+    };
+    let (roots, read) = paths.read();
+    let expected = [pems.concat(), only]
+        .iter()
+        .flat_map(|pem| certificates_of(pem.as_bytes()))
+        .collect::<Vec<_>>();
+    assert_eq!(der(&roots), expected, "the trust is exactly what it was");
+    // The bundle, the certificate it lacks and the two files that are not a
+    // block of their own are read; the three links are not.
+    assert_eq!((read.read, read.skipped), (4, 3));
+}
+
 #[test]
 fn a_certificate_file_of_a_megabyte_or_more_is_read() {
     let root = tempfile::TempDir::new().unwrap();

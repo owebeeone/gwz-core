@@ -48,7 +48,8 @@ pub(crate) trait ChannelResource: Resource + Send + 'static {
         path: &str,
     ) -> io::Result<()>;
     fn pump(&mut self) -> Option<&mut SshPump<SshChannel>>;
-    /// Restore an idle owner only after the pump's acknowledged complete close.
+    /// Restore an idle owner only after the pump's finished close: the
+    /// channel's CHANNEL_CLOSE.
     fn reclaim(&mut self) -> bool;
 }
 /// Unparks a thread that parks between bounded polls.
@@ -178,7 +179,46 @@ struct Pending {
     /// What the checkout asked the pool for; a retry asks it again, fresh.
     policy: gwz_transport::pool::Request,
 }
+/// How long an open waits for a closing connection of its key and identity
+/// before it goes to the pool (GwzTransportSshBackgroundCloseDesign §6).
+const WAIT_FOR_CLOSE_MS: u64 = 250;
+/// An open that waits, once, for a closing exchange to end, and then checks a
+/// connection out as any open does.
+struct Deferred {
+    request: OpenRequest,
+    policy: gwz_transport::pool::Request,
+    /// The closing exchange this open waits for.
+    claim: i64,
+    until: u64,
+}
+/// The close that goes on after a terminal has been handed to the member,
+/// while the exchange keeps its lease (design §4).
+struct Closing {
+    /// When the close is given up on: the exchange's `cleanup_ms` after the
+    /// handoff.
+    deadline: u64,
+    /// The terminal was a failure: there is no close to wait for.
+    failed: bool,
+    /// The open that waits for this close to end, if one does.
+    claimed: Option<i64>,
+}
+/// Where an exchange stands after a pass of the worker.
+enum Turn {
+    Running,
+    /// The member has its result and the channel's close goes on.
+    Closing,
+    /// The channel's close is complete: the connection can be reclaimed.
+    Finished,
+    /// The exchange is over, and its connection is not reusable.
+    Over,
+}
 struct Active {
+    /// What an open for this exchange's connection must match to wait for it.
+    key: Key,
+    identity: Identity,
+    cleanup_ms: u64,
+    closing: Option<Closing>,
+    terminal_failed: bool,
     lease: Option<Lease>,
     peer: MessageEndpoint,
     bridge_inbound: Receiver<Envelope>,
@@ -309,6 +349,11 @@ where
         receive_limits: config(Side::Endpoint).receive_limits,
     };
     active.push(Active {
+        key: request.key.clone(),
+        identity: policy.identity.clone(),
+        cleanup_ms: context.deadlines.cleanup_ms as u64,
+        closing: None,
+        terminal_failed: false,
         lease: Some(lease),
         peer,
         bridge_inbound: worker_inbound,
@@ -330,12 +375,15 @@ where
     });
     None
 }
+/// One pass over an exchange the member is still using. It ends when the
+/// terminal has been handed over; the close then goes on (`close_step`).
 fn transfer(
     pump: &mut SshPump<SshChannel>,
     active: &mut Active,
     cx: &mut Context<'_>,
     now: u64,
-) -> Result<bool, ()> {
+    discard: bool,
+) -> Result<Turn, ()> {
     // Time must precede incoming Close, which switches away from the I/O clock.
     pump.advance(now);
     let mut handed = false;
@@ -365,16 +413,14 @@ fn transfer(
                     _ => break,
                 },
             };
-            let terminal = matches!(
-                message.kind,
-                gwz_transport::protocol::MessageKind::Closed
-                    | gwz_transport::protocol::MessageKind::Failed
-            );
+            let failed = message.kind == gwz_transport::protocol::MessageKind::Failed;
+            let terminal = failed || message.kind == gwz_transport::protocol::MessageKind::Closed;
             match active.bridge_outbound.try_send(message) {
                 Ok(()) => {
                     handed = true;
                     if terminal {
                         active.bridge_terminal_delivered = true;
+                        active.terminal_failed = failed;
                     }
                 }
                 Err(TrySendError::Full(message)) => {
@@ -396,7 +442,48 @@ fn transfer(
             waker.wake_by_ref();
         }
     }
-    result
+    if result? {
+        // The bound on the close runs from here, for a failed terminal too.
+        active.closing = Some(Closing {
+            deadline: now.saturating_add(active.cleanup_ms),
+            failed: active.terminal_failed,
+            claimed: None,
+        });
+        return Ok(settle(pump, active, now, discard));
+    }
+    Ok(Turn::Running)
+}
+/// One pass over an exchange whose member has its terminal. The member can no
+/// longer cancel or drop the exchange: neither is read here. The pump runs on
+/// until the channel's close ends, fails, or reaches its bound.
+fn close_step(
+    pump: &mut SshPump<SshChannel>,
+    active: &mut Active,
+    cx: &mut Context<'_>,
+    now: u64,
+    discard: bool,
+) -> Result<Turn, ()> {
+    pump.advance(now);
+    if pump.tick(cx, now).is_err() {
+        pump.cancel();
+        return Err(());
+    }
+    Ok(settle(pump, active, now, discard))
+}
+/// Whether a handed-over exchange is over (design §4): a failed terminal,
+/// discard-after-use and a retired channel end it at once, a finished close
+/// makes the connection reusable, and the bound ends any other.
+fn settle(pump: &SshPump<SshChannel>, active: &Active, now: u64, discard: bool) -> Turn {
+    let closing = active.closing.as_ref().expect("a handed-over exchange");
+    if closing.failed || discard {
+        Turn::Over
+    } else if pump.finished() {
+        Turn::Finished
+    } else if pump.retired() || now >= closing.deadline {
+        Turn::Over
+    } else {
+        Turn::Closing
+    }
 }
 fn release<C: Connector>(host: &mut PoolHost<C>, mut exchange: Active, disposition: Disposition) {
     let lease = exchange.lease.take().expect("active lease");

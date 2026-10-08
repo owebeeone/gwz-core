@@ -62,6 +62,7 @@ cfg_if::cfg_if! {
         // worker through the transport host's HTTPS endpoint instead.
         pub(crate) mod https_local;
         pub(crate) mod https_opening;
+        pub(crate) mod ssh_close_fixture;
         mod ssh_destination_tests;
         pub(crate) mod ssh_fixture;
         pub(crate) mod ssh_password_fixture;

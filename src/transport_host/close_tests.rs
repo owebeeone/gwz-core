@@ -4,12 +4,17 @@
 //! server's upload-pack exits, its forced command closes stdout and stderr and
 //! waits before it exits, so the server's exit status and channel close
 //! arrive that much later. N exchanges, each on its own connection, then
-//! close at once, as a workspace fetch's members do. The closes must overlap:
-//! all of them complete within 2 × `CLOSE_DELAY` plus `MARGIN`, for 8 streams
-//! as for 32, never N × `CLOSE_DELAY`.
-use super::driver_tests::{block_on, commit, common, endpoint_home, fixture_url, local_meta};
+//! close at once, as a workspace fetch's members do. A member's result is
+//! final when libgit2 closes, so each `close()` returns well under
+//! `CLOSE_DELAY`; the connections' graceful closes overlap off the members'
+//! path, and every connection is back in the pool, reusable, `CLOSE_DELAY`
+//! after the exchange (GwzTransportSshBackgroundCloseDesign §10).
+use super::driver_tests::{block_on, commit, endpoint_home, fixture_url, local_meta};
 use super::*;
-use crate::git::endpoint::{ssh_channel::GitService, stream_io::BlockingStream};
+use crate::git::endpoint::{
+    ssh_channel::GitService,
+    ssh_close_fixture::{delayed_close_fixture, read_advertisement},
+};
 use gwz_transport::{protocol::Disposition, stream::CloseResult};
 use std::{
     io::{self, Read, Write},
@@ -19,42 +24,6 @@ use std::{
 };
 
 const CLOSE_DELAY: Duration = Duration::from_secs(1);
-const MARGIN: Duration = Duration::from_secs(2);
-
-/// An SSH fixture whose every channel closes `CLOSE_DELAY` after its Git
-/// service exits. The output ends first, so only the close waits.
-fn delayed_close_fixture() -> common::SshdFixture {
-    let fixture = common::SshdFixture::new();
-    let script = fixture.temp.path().join("delayed-close.sh");
-    crate::git::endpoint::helper_script::write_helper_script(
-        &script,
-        &format!(
-            "eval \"$SSH_ORIGINAL_COMMAND\"\nstatus=$?\nexec 1>&- 2>&-\nsleep {}\nexit $status\n",
-            CLOSE_DELAY.as_secs()
-        ),
-    );
-    let public = std::fs::read_to_string(fixture.temp.path().join("client_ed25519.pub")).unwrap();
-    std::fs::write(
-        fixture.temp.path().join("authorized_keys"),
-        format!("command=\"{}\" {}", script.display(), public),
-    )
-    .unwrap();
-    fixture
-}
-
-/// Reads one pkt-line advertisement through its closing flush-pkt.
-fn read_advertisement(stream: &mut BlockingStream) {
-    loop {
-        let mut length = [0_u8; 4];
-        stream.read_exact(&mut length).unwrap();
-        let length = usize::from_str_radix(std::str::from_utf8(&length).unwrap(), 16).unwrap();
-        if length == 0 {
-            return;
-        }
-        let mut line = vec![0_u8; length - 4];
-        stream.read_exact(&mut line).unwrap();
-    }
-}
 
 struct Closed {
     released: Instant,
@@ -66,7 +35,7 @@ struct Closed {
 /// its advertisement, then closes them all at once as libgit2's smart
 /// transport closes a fetch: a flush-pkt, then the stream's close.
 fn assert_closes_overlap(count: usize) {
-    let fixture = delayed_close_fixture();
+    let fixture = delayed_close_fixture(CLOSE_DELAY);
     let server = git2::Repository::open_bare(&fixture.repository).unwrap();
     commit(&server, "advertised");
     let home = endpoint_home(&fixture);
@@ -123,29 +92,33 @@ fn assert_closes_overlap(count: usize) {
         .map(|close| close.finished.duration_since(first))
         .max()
         .unwrap();
-    let bound = 2 * CLOSE_DELAY + MARGIN;
+    let bound = CLOSE_DELAY / 2;
     eprintln!("{count} closes, each delayed {CLOSE_DELAY:?}: {elapsed:?}; ends in ms: {ends:?}");
     assert!(
         elapsed < bound,
-        "{count} closes started together took {elapsed:?}, past {bound:?}, \
-         each delayed {CLOSE_DELAY:?}; their ends in ms: {ends:?}"
+        "{count} closes started together took {elapsed:?}, past {bound:?}: a member \
+         waited for the server's close, delayed {CLOSE_DELAY:?}; their ends in ms: {ends:?}"
     );
-    for close in &closed {
-        let result = close.result.as_ref().map_err(io::Error::kind);
-        assert_eq!(
-            result.map(|result| result.disposition),
-            Ok(Disposition::Reusable),
-            "every close is clean"
-        );
-    }
-    // The endpoint's worker returns each connection to the pool as it sends
-    // that exchange's Closed, after the clean close it reports.
+    // Every member is done, and no connection is: each stays leased, and
+    // counted, until its own close ends.
     let endpoint = runtime
         .0
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .local_endpoint
         .clone();
+    let counts = endpoint.ssh_counts_for_test().unwrap();
+    assert_eq!((counts.leased, counts.idle), (count, 0), "{counts:?}");
+    for close in &closed {
+        let result = close.result.as_ref().map_err(io::Error::kind);
+        assert_eq!(
+            result.map(|result| result.disposition),
+            Ok(Disposition::Reusable),
+            "every exchange's close is clean; the connection's reuse is the lease's, below"
+        );
+    }
+    // The endpoint's worker keeps each connection leased, and counted, until
+    // its graceful close ends, and then returns it to the pool reusable.
     let deadline = Instant::now() + Duration::from_secs(5);
     let counts = loop {
         let counts = endpoint.ssh_counts_for_test().unwrap();
@@ -168,4 +141,55 @@ fn eight_streams_closing_together_wait_out_one_delayed_close() {
 #[test]
 fn thirty_two_streams_closing_together_wait_out_one_delayed_close() {
     assert_closes_overlap(32);
+}
+
+/// A command that has all its results does not wait for a connection's close
+/// to end: its request finishes, and its runtime shuts down, with a close in
+/// flight, which is discarded.
+#[test]
+fn command_exit_does_not_wait_for_a_close_in_flight() {
+    let delay = Duration::from_secs(3);
+    let fixture = delayed_close_fixture(delay);
+    let server = git2::Repository::open_bare(&fixture.repository).unwrap();
+    commit(&server, "advertised");
+    let home = endpoint_home(&fixture);
+    let runtime = TransportRuntime::new(SshEndpointConfig::fixture(home.clone(), None)).unwrap();
+    let meta = local_meta("command-exit", &home);
+    let request = block_on(runtime.request(meta, "push".into())).unwrap();
+    let identity = home.join("client_ed25519").to_string_lossy().into_owned();
+    let mut stream = request
+        .context
+        .open(
+            &fixture_url(&fixture),
+            GitService::ReceivePack,
+            Some(identity),
+            Arc::new(|_, _| {}),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+    read_advertisement(&mut stream);
+    stream.write_all(b"0000").unwrap();
+    stream.end_write().unwrap();
+    let mut rest = Vec::new();
+    stream.read_to_end(&mut rest).unwrap();
+    let started = Instant::now();
+    stream
+        .close()
+        .expect("the push's result is final at the server's EOF");
+    let endpoint = runtime
+        .0
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .local_endpoint
+        .clone();
+    let counts = endpoint.ssh_counts_for_test().unwrap();
+    assert_eq!((counts.leased, counts.idle), (1, 0), "{counts:?}");
+    assert_eq!(block_on(request.finish()).pending_local_work, 0);
+    block_on(runtime.shutdown());
+    assert!(
+        started.elapsed() < delay / 2,
+        "the command's exit took {:?}, with a close {delay:?} from ending",
+        started.elapsed()
+    );
+    assert!(!fixture.marker.exists());
 }
