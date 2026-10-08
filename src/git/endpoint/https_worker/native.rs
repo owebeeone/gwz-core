@@ -383,7 +383,7 @@ pub(crate) struct Authenticated {
     pub(super) generation: String,
     pub(super) scope: String,
     pub(super) facts: Facts,
-    pool: pool::Pool,
+    pool: HttpsPool,
     revoked: AtomicBool,
 }
 impl Authenticated {

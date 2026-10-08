@@ -100,12 +100,12 @@ fn https_key(server: &Server) -> Key {
 }
 
 fn connector(server: &Server, supervisor: &Supervisor) -> HttpConnector {
-    HttpConnector {
-        config: server.config(),
-        epoch: Instant::now(),
-        setup_slots: Arc::new(Semaphore::new(8)),
-        supervisor: supervisor.clone(),
-    }
+    HttpConnector::new(
+        server.config(),
+        Instant::now(),
+        Arc::new(Semaphore::new(8)),
+        supervisor.clone(),
+    )
 }
 
 #[test]
@@ -238,14 +238,10 @@ async fn full_pool(budget: Budget) -> (RunningPool, Server, Held) {
         ),
     };
     let tls = server.config();
-    let pool =
-        RunningPool::with_connector(Config::default(), authority, move |epoch| HttpConnector {
-            config: tls,
-            epoch,
-            setup_slots: slots,
-            supervisor,
-        })
-        .unwrap();
+    let pool = RunningPool::with_connector(Config::default(), authority, move |epoch| {
+        HttpConnector::new(tls, epoch, slots, supervisor)
+    })
+    .unwrap();
     (pool, server, held)
 }
 
@@ -271,14 +267,62 @@ fn a_wait_on_a_local_budget_outlasts_the_connect_clock_and_then_connects() {
     for budget in [Budget::Jobs, Budget::SetupSlot, Budget::Reservation] {
         runtime().block_on(async {
             let (mut pool, server, held) = full_pool(budget).await;
-            // A 100 ms connect clock, a 5 s allocation.
-            let (lease, ()) = tokio::join!(checkout(&pool, &server, 5_000, 100), async {
-                tokio::time::sleep(Duration::from_millis(400)).await;
+            // A 300 ms connect clock, a 5 s allocation, and a 600 ms wait. (At
+            // 100 ms the handshake itself could exceed the clock under the load
+            // of a parallel suite.)
+            let (lease, ()) = tokio::join!(checkout(&pool, &server, 5_000, 300), async {
+                tokio::time::sleep(Duration::from_millis(600)).await;
                 held.release();
             });
             let lease = lease.unwrap_or_else(|(failed, phase)| {
                 panic!("{budget:?}: the wait failed as {failed:?} in {phase:?}")
             });
+            assert_eq!(server.connections.load(Ordering::SeqCst), 1, "{budget:?}");
+            lease.finish(Disposition::Discarded).unwrap();
+            assert_eq!(pool.shutdown(Duration::from_secs(5)).await, 0);
+        });
+    }
+}
+
+/// The pool's supervisor sleeps until it is woken (`PoolWake`), and a wait on a
+/// local budget ends with nothing happening to the pool itself: the budget's
+/// release must wake it, or the connection is found only at the open's
+/// allocation, which here is 20 s away. The woken turn also resumes the
+/// connect clock (`end_local_wait`): the 300 ms connect clock was spent
+/// waiting, and the connection still connects.
+#[test]
+fn the_end_of_a_local_wait_wakes_the_sleeping_supervisor() {
+    for budget in [Budget::Jobs, Budget::SetupSlot, Budget::Reservation] {
+        runtime().block_on(async {
+            let (mut pool, server, held) = full_pool(budget).await;
+            let waiting = {
+                let (pool, server) = (pool.client.clone(), https_key(&server));
+                tokio::spawn(async move {
+                    pool.checkout(
+                        server,
+                        Owner::new("session", "operation"),
+                        20_000,
+                        300,
+                        &CancellationToken::new(),
+                    )
+                    .await
+                })
+            };
+            tokio::time::sleep(Duration::from_millis(450)).await;
+            let turns = pool.client.steps();
+            assert!(
+                turns <= 8,
+                "{budget:?}: the supervisor took {turns} turns while the connection waited"
+            );
+            assert!(!waiting.is_finished(), "{budget:?}: a full budget leased");
+            held.release();
+            let lease = tokio::time::timeout(Duration::from_secs(2), waiting)
+                .await
+                .unwrap_or_else(|_| panic!("{budget:?}: the end of the wait woke nothing"))
+                .unwrap()
+                .unwrap_or_else(|(failed, phase)| {
+                    panic!("{budget:?}: the wait failed as {failed:?} in {phase:?}")
+                });
             assert_eq!(server.connections.load(Ordering::SeqCst), 1, "{budget:?}");
             lease.finish(Disposition::Discarded).unwrap();
             assert_eq!(pool.shutdown(Duration::from_secs(5)).await, 0);

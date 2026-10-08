@@ -13,6 +13,9 @@
 
 use super::{EndpointSettings, HttpsEndpointConfig, apply_native_timeout, invalid};
 use crate::git::endpoint::{ca_bundle, https_connection};
+cfg_if::cfg_if! { if #[cfg(not(any(windows, target_vendor = "apple")))] {
+    use crate::git::endpoint::{https_tls, verify_paths};
+} }
 use crate::model::ModelResult;
 use crate::session_host::EnvironmentSnapshot;
 use gwz_transport::pool;
@@ -92,9 +95,45 @@ fn value(environment: &EnvironmentSnapshot, names: &[&str]) -> Option<OsString> 
     })
 }
 
+cfg_if::cfg_if! {
+    if #[cfg(not(any(windows, target_vendor = "apple")))] {
+        /// The CA file the snapshot names for the endpoint. Where the backend is
+        /// OpenSSL, `SSL_CERT_FILE` and `SSL_CERT_DIR` are not that but OpenSSL's
+        /// default verify paths, the platform's roots (`platform_roots`).
+        const CA_FILE_VARIABLES: &[&str] = &["GIT_SSL_CAINFO"];
+
+        /// The platform's roots where the backend is OpenSSL: what OpenSSL's
+        /// default verify paths hold, as the snapshot's `SSL_CERT_FILE` and
+        /// `SSL_CERT_DIR` and the standard locations give them, and nothing
+        /// else (`verify_paths`). The backend's own roots are left out, so that
+        /// setting either variable narrows trust as it does in gwz 1.0.17.
+        fn platform_roots(environment: &EnvironmentSnapshot) -> https_tls::RootsLoader {
+            let file = value(environment, &["SSL_CERT_FILE"]);
+            let dir = value(environment, &["SSL_CERT_DIR"]);
+            std::sync::Arc::new(move || {
+                verify_paths::Paths::resolve(file.as_deref(), dir.as_deref(), standard_paths)
+                    .roots()
+            })
+        }
+
+        /// The locations a start of libgit2's host finds for the variables that
+        /// name none: `openssl-probe` 0.1's.
+        fn standard_paths() -> verify_paths::Paths {
+            let probed = openssl_probe::probe();
+            verify_paths::Paths {
+                file: probed.cert_file,
+                dir: probed.cert_dir,
+            }
+        }
+    } else {
+        /// The CA file the snapshot names for the endpoint.
+        const CA_FILE_VARIABLES: &[&str] = &["GIT_SSL_CAINFO", "SSL_CERT_FILE"];
+    }
+}
+
 fn tls_config(environment: &EnvironmentSnapshot) -> ModelResult<https_connection::Config> {
     let mut config = https_connection::Config::default();
-    if let Some(path) = value(environment, &["GIT_SSL_CAINFO", "SSL_CERT_FILE"]) {
+    if let Some(path) = value(environment, CA_FILE_VARIABLES) {
         use std::io::Read;
         let file =
             std::fs::File::open(path).map_err(|_| invalid("cannot read endpoint CA file"))?;
@@ -112,6 +151,9 @@ fn tls_config(environment: &EnvironmentSnapshot) -> ModelResult<https_connection
             ca_bundle::Refusal::NoCertificate => invalid("endpoint CA file has no certificate"),
         })?;
     }
+    cfg_if::cfg_if! { if #[cfg(not(any(windows, target_vendor = "apple")))] {
+        config.platform_roots = Some(platform_roots(environment));
+    } }
     cfg_if::cfg_if! { if #[cfg(unix)] { platform::proxy(environment, &mut config)?; } }
     config
         .validate()

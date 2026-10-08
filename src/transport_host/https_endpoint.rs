@@ -5,6 +5,7 @@ use crate::git::endpoint::{
     https_auth::HelperSlots,
     https_operation::Refusal,
     https_policy,
+    https_wake::CloseWake,
     https_worker::{
         Budget, ChallengeLease, Client, Endpoint as HttpEndpoint, FirstConnect, Input, Prepared,
     },
@@ -48,6 +49,8 @@ struct Entry {
     // Retain the application half until its terminal message is drained.
     stream: Option<Stream>,
     peer: Option<Arc<MessageEndpoint>>,
+    /// Told whenever the stream changes, for the worker's wait to complete the close.
+    wake: CloseWake,
     /// The wait for the peer's next message; the HTTP task's next write wakes it.
     next: Option<super::session::NextMessage>,
     output: Option<Envelope>,
@@ -208,18 +211,20 @@ impl HttpsEndpoint {
                     && matches!(envelope.kind, MessageKind::Data | MessageKind::EndWrite)
                 {
                     entry.handoff = true;
-                    entry
+                    let delivered = entry
                         .peer
                         .as_ref()
                         .ok_or(EndpointError::Protocol)?
-                        .deliver(envelope)
-                        .map_err(|_| EndpointError::Protocol)?;
+                        .deliver(envelope);
+                    entry.wake.notify();
+                    delivered.map_err(|_| EndpointError::Protocol)?;
                     return Ok(());
                 }
                 if let Some(peer) = &entry.peer {
                     if !entry.retired {
-                        peer.deliver(envelope)
-                            .map_err(|_| EndpointError::Protocol)?;
+                        let delivered = peer.deliver(envelope);
+                        entry.wake.notify();
+                        delivered.map_err(|_| EndpointError::Protocol)?;
                     }
                 }
             }
@@ -238,6 +243,8 @@ impl HttpsEndpoint {
         if open.endpoint_id != self.endpoint || open.destination.scheme != Scheme::Https {
             return Err(EndpointError::InvalidRequest);
         }
+        // Its connection's TLS configuration builds while the open is prepared.
+        self.client.prebuild_tls(&self.runtime);
         if !self.operations.contains_key(&request) {
             if self.operations.len() >= 64 {
                 return Err(EndpointError::WouldBlock);
@@ -304,6 +311,7 @@ impl HttpsEndpoint {
                 publication_route: None,
                 stream: None,
                 peer: None,
+                wake: CloseWake::default(),
                 next: None,
                 output: None,
                 retired: false,

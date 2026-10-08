@@ -2,6 +2,7 @@
 //! only of existing envelopes; host placement supplies the same boundary in H2.
 use super::{
     https_remote::OpenRpc,
+    https_wake::CloseWake,
     https_worker::{Client, Input},
     stream_io::BlockingStream,
 };
@@ -149,14 +150,14 @@ impl OpenRpc for LocalRpc {
             let left=Arc::new(left);let right=Arc::new(right);
             if tx.send(Ok(BlockingStream::new(stream))).is_err(){return;}
             let _endpoint_owner=endpoint.clone();
-            let work=prepared.serve(endpoint,right.clone(),cancel.clone());tokio::pin!(work);
+            let ready=CloseWake::default();let work=prepared.serve(endpoint,right.clone(),cancel.clone(),ready.clone());tokio::pin!(work);
             let start=tokio::time::Instant::now();let mut timer=tokio::time::interval(Duration::from_millis(2));let mut finished=false;
             loop {tokio::select! {
                 _=&mut work,if !finished=>{finished=true;},
                 _=cancel.cancelled()=>break,
-                message=left.next_message()=>match message {Ok(Some(m))=>{match mux.route_initiator(m) {Ok(m)=>{if right.deliver(m).is_err(){break;}},Err(_)=>break}},_=>break},
-                message=right.next_message()=>match message {Ok(Some(m))=>{let terminal=matches!(m.kind,MessageKind::Closed|MessageKind::Failed);match mux.route_endpoint(m) {Ok(m)=>{let _=left.deliver(m);},Err(_)=>break}if terminal{break;}},_=>break},
-                _=timer.tick()=>{let now=start.elapsed().as_millis() as u64;left.advance(now);right.advance(now);},
+                message=left.next_message()=>match message {Ok(Some(m))=>{match mux.route_initiator(m) {Ok(m)=>{let delivered=right.deliver(m);ready.notify();if delivered.is_err(){break;}},Err(_)=>break}},_=>break},
+                message=right.next_message()=>match message {Ok(Some(m))=>{ready.notify();let terminal=matches!(m.kind,MessageKind::Closed|MessageKind::Failed);match mux.route_endpoint(m) {Ok(m)=>{let _=left.deliver(m);},Err(_)=>break}if terminal{break;}},_=>break},
+                _=timer.tick()=>{let now=start.elapsed().as_millis() as u64;left.advance(now);right.advance(now);ready.notify();},
             }}
             left.disconnect();right.disconnect();
         });

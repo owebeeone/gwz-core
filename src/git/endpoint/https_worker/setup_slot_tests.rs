@@ -41,12 +41,12 @@ fn connector_with_held_slot(
 ) {
     let slots = Arc::new(Semaphore::new(1));
     let held = slots.clone().try_acquire_owned().unwrap();
-    let connector = HttpConnector {
-        config: server.config(),
-        epoch: deadline_epoch,
-        setup_slots: slots.clone(),
-        supervisor: crate::git::endpoint::agent_job::Supervisor::new(),
-    };
+    let connector = HttpConnector::new(
+        server.config(),
+        deadline_epoch,
+        slots.clone(),
+        crate::git::endpoint::agent_job::Supervisor::new(),
+    );
     (connector, slots, held)
 }
 
@@ -124,12 +124,12 @@ fn thirty_two_connections_through_one_setup_slot_all_connect() {
     runtime().block_on(async {
         let server = server().await;
         let slots = Arc::new(Semaphore::new(1));
-        let mut connector = HttpConnector {
-            config: server.config(),
-            epoch: std::time::Instant::now(),
-            setup_slots: slots.clone(),
-            supervisor: crate::git::endpoint::agent_job::Supervisor::new(),
-        };
+        let mut connector = HttpConnector::new(
+            server.config(),
+            std::time::Instant::now(),
+            slots.clone(),
+            crate::git::endpoint::agent_job::Supervisor::new(),
+        );
         let mut resources: Vec<_> = (0..32)
             .map(|_| {
                 connector

@@ -16,7 +16,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
 };
 pub(crate) type Progress = Arc<Mutex<Facts>>;
 
@@ -126,6 +126,14 @@ pub(crate) struct PoolHost<C: Connector> {
     action_budget: usize,
     disposal_error: Option<io::Error>,
     stall_ms: Arc<AtomicU64>,
+    /// Set by a turn that took an action or moved an entry between phases,
+    /// which can leave work for another turn that nothing else will announce.
+    progressed: bool,
+    /// The waker of the latest turn's caller, which a release wakes: it leaves
+    /// the pool a Close for a discarded connection, an action no resource
+    /// announces and the pool does not either, because the driver's waiter is
+    /// dropped with each turn (`PoolDriver::next_action`).
+    caller: Option<Waker>,
 }
 
 impl<C: Connector> PoolHost<C> {
@@ -142,6 +150,8 @@ impl<C: Connector> PoolHost<C> {
                 action_budget,
                 disposal_error: None,
                 stall_ms: Arc::new(AtomicU64::new(0)),
+                progressed: false,
+                caller: None,
             },
         ))
     }
@@ -183,7 +193,19 @@ impl<C: Connector> PoolHost<C> {
         Ok(std::mem::replace(&mut entry.used, true))
     }
 
+    /// Ends `lease`, and wakes the caller of the turns: what the release leaves
+    /// (a Close for a discarded connection, the discard a refused reuse
+    /// schedules) is the next turn's to take, and a caller asleep between
+    /// turns would take it only when it next woke.
     pub(crate) fn release(&mut self, lease: Lease, disposition: Disposition) -> Result<(), Error> {
+        let released = self.release_lease(lease, disposition);
+        if let Some(caller) = &self.caller {
+            caller.wake_by_ref();
+        }
+        released
+    }
+
+    fn release_lease(&mut self, lease: Lease, disposition: Disposition) -> Result<(), Error> {
         let entry = self.entries.get(&lease.connection()?).ok_or(Error::Stale)?;
         if matches!(entry.phase, Phase::Lost) {
             return lease.release(Disposition::Discarded);
@@ -213,7 +235,11 @@ impl<C: Connector> PoolHost<C> {
     }
 
     /// Bounded turn. Advance BEFORE processing completions: exact deadline wins.
-    /// Host must call periodically even when no checkout or action wakes it.
+    /// A turn that made progress wakes `cx`'s waker, so that its caller takes
+    /// the turn that follows (a resource that failed to connect is disposed of
+    /// on it, a connection started by an action is first polled on it); a turn
+    /// that made none does not. Resources wake the waker as their own work
+    /// completes. The caller must also come at the pool's next deadline.
     pub(crate) fn step(&mut self, cx: &mut Context<'_>, now: u64) -> Result<(), Error> {
         self.step_reported(cx, now, |_| Opening::default())
     }
@@ -224,6 +250,13 @@ impl<C: Connector> PoolHost<C> {
         now: u64,
         mut opening: impl FnMut(ConnectionId) -> Opening,
     ) -> Result<(), Error> {
+        if !self
+            .caller
+            .as_ref()
+            .is_some_and(|w| w.will_wake(cx.waker()))
+        {
+            self.caller = Some(cx.waker().clone());
+        }
         self.driver.advance(now);
         self.actions(cx, &mut opening)?;
         let ids: Vec<_> = self.entries.keys().copied().collect();
@@ -237,6 +270,7 @@ impl<C: Connector> PoolHost<C> {
                     force: false,
                     idle_lost: true,
                 };
+                self.progressed = true;
             }
             match &mut entry.phase {
                 Phase::Connecting => {
@@ -257,6 +291,7 @@ impl<C: Connector> PoolHost<C> {
                     match polled {
                         Poll::Ready(Ok(identity)) => {
                             entry.phase = Phase::Ready;
+                            self.progressed = true;
                             self.driver.connected(id, Ok(identity))?;
                         }
                         Poll::Ready(Err(failure)) => {
@@ -265,6 +300,7 @@ impl<C: Connector> PoolHost<C> {
                                 force: false,
                                 idle_lost: false,
                             };
+                            self.progressed = true;
                         }
                         Poll::Pending => {}
                     }
@@ -276,6 +312,7 @@ impl<C: Connector> PoolHost<C> {
                 } => {
                     match entry.resource.poll_dispose(cx, *force) {
                         Poll::Ready(Ok(())) if *idle_lost => {
+                            self.progressed = true;
                             // Destruction precedes the capacity acknowledgement.
                             // A checkout that won keeps the lease: its exchange
                             // finds the entry Lost, and its release and the
@@ -289,6 +326,7 @@ impl<C: Connector> PoolHost<C> {
                             }
                         }
                         Poll::Ready(Ok(())) => {
+                            self.progressed = true;
                             let failure = connect_failure.clone();
                             // Destruction precedes the capacity acknowledgement.
                             self.entries.remove(&id);
@@ -299,6 +337,7 @@ impl<C: Connector> PoolHost<C> {
                             }
                         }
                         Poll::Ready(Err(error)) => {
+                            self.progressed = true;
                             *force = true;
                             if self.disposal_error.is_none() {
                                 self.disposal_error = Some(error);
@@ -310,7 +349,11 @@ impl<C: Connector> PoolHost<C> {
                 Phase::Ready | Phase::Lost => {}
             }
         }
-        self.actions(cx, &mut opening)
+        self.actions(cx, &mut opening)?;
+        if std::mem::take(&mut self.progressed) {
+            cx.waker().wake_by_ref();
+        }
+        Ok(())
     }
 
     fn actions(
@@ -323,6 +366,7 @@ impl<C: Connector> PoolHost<C> {
                 Poll::Ready(Some(action)) => action,
                 _ => return Ok(()),
             };
+            self.progressed = true;
             match action {
                 Action::Connect {
                     connection,

@@ -40,6 +40,7 @@ mod pooled;
 mod pooled_remote;
 mod pump;
 mod regression;
+mod release_wake;
 mod remote_bridge;
 mod retry;
 mod rsa_sha1;

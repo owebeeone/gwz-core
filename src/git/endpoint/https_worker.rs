@@ -5,6 +5,7 @@ use super::{
     https_destination::Destination,
     https_policy::{self, ResponseAction, RouteKey, Routes},
     https_pool::{HttpLease, HttpsPool, RunningPool},
+    https_wake::CloseWake,
     setup_retry::{self, Phase},
     shared_reservation::Authority,
 };
@@ -64,6 +65,18 @@ pub(crate) struct Client {
     operations: super::https_operation::Operations,
     ids: Arc<gwz_ids::IdSource>,
 }
+impl Client {
+    /// Has the endpoint's TLS configuration built on `runtime` now, for the
+    /// connection an open that has just arrived will need.
+    pub(crate) fn prebuild_tls(&self, runtime: &tokio::runtime::Handle) {
+        self.pool.prebuild_tls(runtime);
+    }
+    cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+        pub(crate) fn tls_builds(&self) -> usize {
+            self.pool.tls_builds()
+        }
+    } }
+}
 pub(crate) struct Endpoint {
     pub(crate) client: Client,
     pool: RunningPool,
@@ -111,7 +124,7 @@ impl Endpoint {
         self.client.slots.close();
         self.client.helpers.close();
         cfg_if::cfg_if! { if #[cfg(unix)] { self.client.auth_owner.cancel(); } }
-        self.client.pool.pool.shutdown();
+        self.client.pool.shutdown();
         while self.client.slots.available_permits() != 64 && Instant::now() < until {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
@@ -133,7 +146,7 @@ impl Drop for Endpoint {
         self.client.slots.close();
         self.client.helpers.close();
         cfg_if::cfg_if! { if #[cfg(unix)] { self.client.auth_owner.cancel(); } }
-        self.client.pool.pool.shutdown();
+        self.client.pool.shutdown();
     }
 }
 pub(crate) struct Prepared {
@@ -416,7 +429,7 @@ fn validate_content(response: &Response<Incoming>, service: GitService) -> Resul
 }
 cfg_if::cfg_if! { if #[cfg(all(test, unix))] { #[path="https_worker_tests.rs"] mod tests; } }
 cfg_if::cfg_if! { if #[cfg(all(test, unix))] { #[path="https_budget_tests.rs"] mod budget_tests; } }
-cfg_if::cfg_if! { if #[cfg(all(test, unix))] { mod retry_tests; mod helper_budget_tests; mod credential_tests; mod setup_slot_tests; } }
+cfg_if::cfg_if! { if #[cfg(all(test, unix))] { mod retry_tests; mod helper_budget_tests; mod credential_tests; mod setup_slot_tests; mod tls_share_tests; mod close_tests; mod supervisor_tests; } }
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {

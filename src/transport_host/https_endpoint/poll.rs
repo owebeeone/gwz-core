@@ -118,6 +118,7 @@ impl HttpsEndpoint {
                                     stream.clone(),
                                     peer.clone(),
                                     entry.cancel.clone(),
+                                    entry.wake.clone(),
                                 )));
                             } else {
                                 entry.prepared = Some(prepared);
@@ -154,6 +155,7 @@ impl HttpsEndpoint {
             }
             if let Some(peer) = &entry.peer {
                 peer.advance(now);
+                entry.wake.notify();
             }
             if entry.serving.is_none() {
                 if entry.handoff {
@@ -170,6 +172,7 @@ impl HttpsEndpoint {
                         stream,
                         peer.clone(),
                         entry.cancel.clone(),
+                        entry.wake.clone(),
                     )));
                     entry.handoff = false;
                 }
@@ -216,6 +219,7 @@ impl HttpsEndpoint {
                         .get_or_insert_with(|| super::super::session::next_message(peer));
                     if let Poll::Ready(result) = next.as_mut().poll(cx) {
                         entry.next = None;
+                        entry.wake.notify();
                         message = result.ok().flatten();
                     }
                 }

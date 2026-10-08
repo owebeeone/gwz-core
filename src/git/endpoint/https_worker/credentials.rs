@@ -6,7 +6,7 @@ pub(crate) struct Credential {
     secret: https_auth::Secret,
     pub(super) scope: String,
     pub(super) rejected: AtomicBool,
-    pool: pool::Pool,
+    pool: HttpsPool,
 }
 impl Drop for Credential {
     fn drop(&mut self) {
@@ -112,7 +112,7 @@ impl Client {
                 secret,
                 scope: self.ids.unique().to_string(),
                 rejected: AtomicBool::new(false),
-                pool: self.pool.pool.clone(),
+                pool: self.pool.clone(),
             }))
         }
         .await;
