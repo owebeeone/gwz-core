@@ -194,7 +194,7 @@ cfg_if::cfg_if! {
 }
 
 cfg_if::cfg_if! {
-    if #[cfg(all(test, unix, gwz_transport_candidate))] {
+    if #[cfg(all(test, any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification))))] {
         mod https_tests {
             use super::*;
 

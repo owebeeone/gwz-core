@@ -35,12 +35,21 @@ fn candidate_binding_recognizes_only_https_as_the_host_http_route() {
 
 #[test]
 fn candidate_binding_maps_helper_availability_to_https_policy() {
+    // Windows asks for its own policies where the others leave the choice to the helper (`None`).
+    let (allowed, disabled) = if cfg!(windows) {
+        (
+            Some(gwz_transport::protocol::AuthPolicy::WindowsConfigured),
+            Some(gwz_transport::protocol::AuthPolicy::WindowsDefault),
+        )
+    } else {
+        (None, Some(gwz_transport::protocol::AuthPolicy::Anonymous))
+    };
     assert_eq!(
         https_policy_for(crate::git::gitbackend::CredentialHelperPolicy::AllowConfigured),
-        None
+        allowed
     );
     assert_eq!(
         https_policy_for(crate::git::gitbackend::CredentialHelperPolicy::Disabled),
-        Some(gwz_transport::protocol::AuthPolicy::Anonymous)
+        disabled
     );
 }

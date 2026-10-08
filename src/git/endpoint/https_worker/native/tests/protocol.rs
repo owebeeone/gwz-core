@@ -1,7 +1,7 @@
 //! Header storage and codec, offer selection, and mechanism history.
 use super::*;
 
-cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+cfg_if::cfg_if! { if #[cfg(test)] {
     #[test]
     fn storage_wipes_before_deallocation_on_encoding_decode_parse_and_drop() {
         let records = Arc::new(Mutex::new(Vec::new()));

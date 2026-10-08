@@ -3,9 +3,65 @@ mod exchange;
 mod protocol;
 mod retention;
 
-cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+// Where the validator child runs as the leader of its own process group on Unix, and
+// what ends its tree when the 30 s bound passes. Windows has no process groups: the
+// child is not isolated, and `taskkill /T` ends the tree.
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        fn isolate(command: &mut std::process::Command) {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        fn kill_tree(child: &std::process::Child) {
+            let _ = std::process::Command::new("/bin/kill").args(["-KILL", &format!("-{}", child.id())]).status();
+        }
+    } else {
+        fn isolate(_command: &mut std::process::Command) {}
+        fn kill_tree(child: &std::process::Child) {
+            let _ = std::process::Command::new("taskkill").args(["/T", "/F", "/PID", &child.id().to_string()]).status();
+        }
+    }
+}
+
+cfg_if::cfg_if! { if #[cfg(test)] {
     use super::*;
-    use hyper::header::{HeaderMap, WWW_AUTHENTICATE};
+    use hyper::header::HeaderMap;
+    fn real_request_validation(request: &gwz_sspi::AuthRequest) -> bool {
+        use std::io::Read;
+        assert!(matches!(request.package, gwz_sspi::Package::Ntlm));
+        assert!(matches!(request.identity, gwz_sspi::Identity::CurrentLogon));
+        assert_eq!(request.target.as_str(), "HTTP/localhost");
+        assert!(request.digest.is_none()); assert!(request.token_limit.raw_bytes() > 0);
+        let source = std::fs::canonicalize(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")).unwrap();
+        let manifest = source.parent().unwrap().parent().unwrap().join("gwz-sspi/Cargo.toml");
+        let target = std::env::var_os("CARGO_TARGET_DIR").map(std::path::PathBuf::from).expect("external target required");
+        assert!(!target.starts_with(source.parent().unwrap().parent().unwrap()));
+        let mut command = std::process::Command::new("cargo");
+        command.args(["+1.95.0", "test", "--manifest-path"]).arg(manifest)
+            .args(["--lib", "--locked", "--offline", "composition_request_validator_fixture", "--", "--nocapture", "--test-threads=1"])
+            .env("CARGO_TARGET_DIR", target.parent().unwrap().join("sspi-validator"))
+            .env("GWZ_SSPI_TEST_COMPOSITION_CBT", request.channel_binding.as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>())
+            .stdout(std::process::Stdio::piped());
+        isolate(&mut command);
+        let mut child = command.spawn().unwrap(); let until = std::time::Instant::now() + Duration::from_secs(30);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() { break status; }
+            if std::time::Instant::now() >= until {
+                kill_tree(&child);
+                let _ = child.wait(); panic!("real SSPI validator fixture exceeded bound");
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        assert!(status.success(), "validator fixture build/execution failed");
+        let mut output = String::new(); child.stdout.take().unwrap().take(8192).read_to_string(&mut output).unwrap();
+        let admitted = output.matches("gwz-sspi-private-validator:admit").count();
+        let refused = output.matches("gwz-sspi-private-validator:refuse").count();
+        assert_eq!(admitted + refused, 1, "missing or ambiguous real-validator receipt"); admitted == 1
+    }
+    // These need the HTTPS fixture server, whose TLS identity schannel cannot load under a key-based
+    // OpenSSH logon (step 0.5b).
+    cfg_if::cfg_if! { if #[cfg(unix)] {
+    use hyper::header::WWW_AUTHENTICATE;
     struct FakePort {
         complete: bool,
         starts: Arc<AtomicUsize>,
@@ -58,38 +114,6 @@ cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
         (NativeCaller { port: Ok(port.clone()), qualification_direct: None }, port)
     }
     pub(super) fn publication_caller() -> NativeCaller { fake(true, 2).0 }
-    fn real_request_validation(request: &gwz_sspi::AuthRequest) -> bool {
-        use std::io::Read;
-        use std::os::unix::process::CommandExt;
-        assert!(matches!(request.package, gwz_sspi::Package::Ntlm));
-        assert!(matches!(request.identity, gwz_sspi::Identity::CurrentLogon));
-        assert_eq!(request.target.as_str(), "HTTP/localhost");
-        assert!(request.digest.is_none()); assert!(request.token_limit.raw_bytes() > 0);
-        let source = std::fs::canonicalize(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")).unwrap();
-        let manifest = source.parent().unwrap().parent().unwrap().join("gwz-sspi/Cargo.toml");
-        let target = std::env::var_os("CARGO_TARGET_DIR").map(std::path::PathBuf::from).expect("external target required");
-        assert!(!target.starts_with(source.parent().unwrap().parent().unwrap()));
-        let mut command = std::process::Command::new("cargo");
-        command.args(["+1.95.0", "test", "--manifest-path"]).arg(manifest)
-            .args(["--lib", "--locked", "--offline", "composition_request_validator_fixture", "--", "--nocapture", "--test-threads=1"])
-            .env("CARGO_TARGET_DIR", target.parent().unwrap().join("sspi-validator"))
-            .env("GWZ_SSPI_TEST_COMPOSITION_CBT", request.channel_binding.as_bytes().iter().map(|b| format!("{b:02x}")).collect::<String>())
-            .stdout(std::process::Stdio::piped()).process_group(0);
-        let mut child = command.spawn().unwrap(); let until = std::time::Instant::now() + Duration::from_secs(30);
-        let status = loop {
-            if let Some(status) = child.try_wait().unwrap() { break status; }
-            if std::time::Instant::now() >= until {
-                let _ = std::process::Command::new("/bin/kill").args(["-KILL", &format!("-{}", child.id())]).status();
-                let _ = child.wait(); panic!("real SSPI validator fixture exceeded bound");
-            }
-            std::thread::sleep(Duration::from_millis(2));
-        };
-        assert!(status.success(), "validator fixture build/execution failed");
-        let mut output = String::new(); child.stdout.take().unwrap().take(8192).read_to_string(&mut output).unwrap();
-        let admitted = output.matches("gwz-sspi-private-validator:admit").count();
-        let refused = output.matches("gwz-sspi-private-validator:refuse").count();
-        assert_eq!(admitted + refused, 1, "missing or ambiguous real-validator receipt"); admitted == 1
-    }
     struct ValidatorPort(Arc<FakePort>);
     impl Port for ValidatorPort {
         fn start(&self, request: gwz_sspi::AuthRequest, deadline: Instant, cancel: gwz_sspi::Cancellation) -> Work<'static, Result<Box<dyn Session>, BridgeError>> {
@@ -112,6 +136,7 @@ cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
             assert_eq!(prepared.unwrap().opened.facts.authenticated, Some(true));
         });
     }
+    } }
     #[test]
     fn production_binding_shapes_are_admitted_or_refused_by_real_validator() {
         let request = |binding| gwz_sspi::AuthRequest {

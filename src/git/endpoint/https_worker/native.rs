@@ -409,4 +409,4 @@ cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
         pub(crate) fn revoked_for_test(&self) -> bool { self.revoked.load(Ordering::Acquire) }
     }
 } }
-cfg_if::cfg_if! { if #[cfg(all(test, unix))] { mod tests; } }
+cfg_if::cfg_if! { if #[cfg(test)] { mod tests; } }

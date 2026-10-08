@@ -34,7 +34,7 @@ mod local_link;
 mod passes;
 mod port;
 mod requests;
-cfg_if::cfg_if! { if #[cfg(all(test, unix))] { mod wake_tests; } }
+cfg_if::cfg_if! { if #[cfg(test)] { mod wake_tests; } }
 mod wait;
 pub(crate) use driver::SshOpenFailure;
 pub(super) use local_link::LocalLink;

@@ -1,7 +1,6 @@
 //! Endpoint exchanges: deadlines, identity sources, rounds, publication and Basic fallback.
-use super::*;
-
 cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+    use super::*;
     #[test]
     fn production_pool_wait_cannot_extend_fixed_deadline() {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {

@@ -238,6 +238,7 @@ def main(argv: list[str] | None = None) -> None:
         [name for name in CFG_SIBLINGS if options.skip_cfg_siblings or name in options.skip_cfg_sibling]
     )
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_candidate_switches.py")], check=True)
+    subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_windows_parity.py")], check=True)
     check_transport_process_globals(options.skip_transport_globals)
     check_transport_pin(options.skip_transport_globals, options.allow_transport_pin_mismatch)
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_crate_versions.py")], check=True)

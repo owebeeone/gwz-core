@@ -1,7 +1,6 @@
 //! Start and Finish ownership, and retention of cleanup charges until they are confirmed.
-use super::*;
-
 cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+    use super::*;
     struct HeldStart { entered: Arc<AtomicUsize>, gate: Arc<AtomicUsize>, cleanup: Arc<AtomicUsize>, registered: bool, steps: Arc<AtomicUsize> }
     impl Port for HeldStart {
         fn start(&self, _: gwz_sspi::AuthRequest, _: Instant, cancel: gwz_sspi::Cancellation) -> Work<'static, Result<Box<dyn Session>, BridgeError>> {

@@ -574,5 +574,6 @@ cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
     mod https_cancel_mux_tests;
     mod retry_tests;
     mod stale_action_tests;
-    mod wake_tests;
 } }
+// Needs no HTTPS server, so it runs on Windows too.
+cfg_if::cfg_if! { if #[cfg(test)] { mod wake_tests; } }

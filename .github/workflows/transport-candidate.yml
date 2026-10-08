@@ -364,6 +364,9 @@ jobs:
         # check covers gwz-core and gwz-py and prints SKIPPED GATE for gwz-cli.
         env:
           RUSTFLAGS: --cfg gwz_transport_candidate --cfg gwz_windows_https_qualification
+          # Step 0.5 runs native/tests.rs on Windows: its real SSPI request
+          # validator needs an external CARGO_TARGET_DIR, as on the Linux legs.
+          CARGO_TARGET_DIR: ${{ runner.temp }}/candidate-tests/target
         run: |
           set -o pipefail
           python scripts/run_tests.py --skip-cfg-sibling gwz-cli --no-fail-fast --lib \
