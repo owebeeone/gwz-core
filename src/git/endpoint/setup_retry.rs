@@ -13,6 +13,7 @@ use gwz_transport::{
 
 mod allocation;
 mod backoff;
+mod limit;
 mod machine;
 mod operations;
 
