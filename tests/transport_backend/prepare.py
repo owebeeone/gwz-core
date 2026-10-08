@@ -87,6 +87,9 @@ extra = '\n'.join([
 manifest = replace_once(manifest, '"Win32_Globalization"', '"Win32_Globalization", "Win32_Networking_WinHttp"')
 manifest = replace_once(manifest, '[dependencies]\n', '[dependencies]\n' + extra + '\n')
 manifest = replace_once(manifest, '[dev-dependencies]\n', '[dev-dependencies]\npyo3 = { version = "=0.28.3", features = ["auto-initialize"] }\n')
+# openssl-probe 0.1 is the crate git2 runs at its start; the transport resolves
+# OpenSSL's default verify paths with it (src/git/endpoint/verify_paths.rs).
+manifest += '\n[target.\'cfg(not(any(windows, target_vendor = "apple")))\'.dependencies]\nopenssl-probe = "=0.1.6"\n'
 # gwz-core names the git2-rs fork (gwz-git2) directly, with its vendored
 # libgit2, so the candidate needs no [patch] and no feature of its own.
 # The placement guide's example (docs/TransportPlacement.md), compiled with

@@ -1,6 +1,8 @@
 //! HTTPS physical owner using the existing generic pool, driven independently of Git.
 use super::{
     https_connection::{self, Config, Connection, HttpConnector, HttpResource},
+    https_tls::SharedTls,
+    https_wake::PoolWake,
     setup_retry::{self, Phase},
     shared_reservation::{Authority, ReservedConnector},
     ssh_pool::{PoolHost, Resource},
@@ -14,7 +16,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    task::{Context, Waker},
+    task::Context,
     time::{Duration, Instant},
 };
 use tokio::{
@@ -28,6 +30,8 @@ pub(crate) struct HttpsPool {
     pub(crate) pool: pool::Pool,
     host: Arc<Mutex<Host>>,
     epoch: Instant,
+    wake: Arc<PoolWake>,
+    tls: SharedTls,
 }
 pub(crate) struct RunningPool {
     pub(crate) client: HttpsPool,
@@ -42,11 +46,8 @@ impl RunningPool {
     ) -> Result<Self, Failure> {
         tls.validate()?;
         let supervisor = authority.supervisor().clone();
-        Self::with_connector(config, authority, move |epoch| HttpConnector {
-            config: tls,
-            epoch,
-            setup_slots: Arc::new(Semaphore::new(8)),
-            supervisor,
+        Self::with_connector(config, authority, move |epoch| {
+            HttpConnector::new(tls, epoch, Arc::new(Semaphore::new(8)), supervisor)
         })
     }
     /// The pool over the connector `connector` makes, given the pool's epoch,
@@ -58,29 +59,18 @@ impl RunningPool {
     ) -> Result<Self, Failure> {
         let epoch = Instant::now();
         let connector = connector(epoch);
+        let tls = connector.tls();
         let (pool, host) = PoolHost::new(config, ReservedConnector::new(connector, authority), 0)
             .map_err(|_| https_connection::failure(ErrorCode::InvalidRequest))?;
         let client = HttpsPool {
             pool,
             host: Arc::new(Mutex::new(host)),
             epoch,
+            wake: Arc::default(),
+            tls,
         };
         let owner = client.clone();
-        let supervisor = tokio::spawn(async move {
-            loop {
-                {
-                    let mut host = owner.host.lock().unwrap_or_else(|e| e.into_inner());
-                    let mut cx = Context::from_waker(Waker::noop());
-                    if host.step(&mut cx, owner.now()).is_err() {
-                        owner.pool.shutdown();
-                    }
-                    if host.shutdown_complete() {
-                        break;
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(2)).await;
-            }
-        });
+        let supervisor = tokio::spawn(async move { owner.supervise().await });
         Ok(Self {
             client,
             supervisor: Some(supervisor),
@@ -88,7 +78,7 @@ impl RunningPool {
         })
     }
     pub(crate) async fn shutdown(&mut self, timeout: Duration) -> usize {
-        self.client.pool.shutdown();
+        self.client.shutdown();
         if let Some(task) = self.supervisor.as_mut() {
             match tokio::time::timeout(timeout, task).await {
                 Ok(Ok(())) => {
@@ -106,10 +96,68 @@ impl RunningPool {
 }
 impl Drop for RunningPool {
     fn drop(&mut self) {
-        self.client.pool.shutdown();
+        self.client.shutdown();
     } // supervisor retains physical owners until retirement
 }
 impl HttpsPool {
+    /// Drives the pool's host until the pool has shut down and every physical
+    /// owner is gone. It sleeps between turns until something is made known to
+    /// it: a resource's waker (a finished setup, a connect, a disposal), or a
+    /// poke for a change made from outside the pool (a checkout, a release, a
+    /// shutdown); or until the pool's next deadline falls due. It takes no
+    /// turn on a timer of its own.
+    async fn supervise(&self) {
+        let waker = self.wake.waker();
+        loop {
+            self.wake.stepped();
+            let deadline = {
+                let mut host = self.host.lock().unwrap_or_else(|e| e.into_inner());
+                let mut cx = Context::from_waker(&waker);
+                let now = self.now();
+                if host.step(&mut cx, now).is_err() {
+                    self.shutdown();
+                }
+                if host.shutdown_complete() {
+                    break;
+                }
+                host.next_deadline()
+                    .map(|at| self.instant_of(at.max(now + 1)))
+            };
+            self.wake.parked(deadline).await;
+        }
+    }
+    /// Has the pool's TLS configuration built on `runtime`, ahead of the first
+    /// connection that needs it.
+    pub(crate) fn prebuild_tls(&self, runtime: &tokio::runtime::Handle) {
+        self.tls.prebuild_on(runtime);
+    }
+    cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+        /// How many times the pool's TLS configuration has been built.
+        pub(crate) fn tls_builds(&self) -> usize {
+            self.tls.builds()
+        }
+    } }
+    /// The instant of `ms` on the pool's clock.
+    fn instant_of(&self, ms: u64) -> tokio::time::Instant {
+        (self.epoch + Duration::from_millis(ms)).into()
+    }
+    /// Shuts the pool down, and has its supervisor see that now.
+    pub(crate) fn shutdown(&self) {
+        self.pool.shutdown();
+        self.wake.poke();
+    }
+    /// Retires the connections scoped to `scope`, and has the supervisor
+    /// close the ones that were idle.
+    pub(crate) fn retire_https_scope(&self, scope: &str) {
+        self.pool.retire_https_scope(scope);
+        self.wake.poke();
+    }
+    cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+        /// The turns the pool's supervisor has taken.
+        pub(crate) fn steps(&self) -> u64 {
+            self.wake.steps()
+        }
+    } }
     pub(crate) fn now(&self) -> u64 {
         self.epoch.elapsed().as_millis().min(u64::MAX as u128) as u64
     }
@@ -179,10 +227,14 @@ impl HttpsPool {
         cancel: &CancellationToken,
     ) -> Result<Lease, (Failure, Phase)> {
         let other = |failure| (failure, Phase::Other);
+        // However this ends (a lease, a failure, a cancellation, being dropped)
+        // the pool has a change for its supervisor to see.
+        let _poke = self.wake.poke_on_drop();
+        let waker = self.wake.waker();
         let checkout = {
             let mut host = self.host.lock().unwrap_or_else(|e| e.into_inner());
             let now = self.now();
-            let mut cx = Context::from_waker(Waker::noop());
+            let mut cx = Context::from_waker(&waker);
             host.step(&mut cx, now)
                 .map_err(pool_failure)
                 .map_err(other)?;
@@ -198,6 +250,8 @@ impl HttpsPool {
                 .map_err(other)?;
             checkout
         };
+        // The request's deadlines are the supervisor's to keep from now on.
+        self.wake.poke();
         tokio::select! {
             result = checkout => result.map_err(|error| {
                 let phase = setup_retry::phase_of(&error);
@@ -287,6 +341,7 @@ impl HttpsPool {
             lease: Some(lease),
             connection: Some(connection),
             host: self.host.clone(),
+            wake: self.wake.clone(),
             reusable,
             cancel: resource_cancel,
             disposed,
@@ -307,6 +362,8 @@ pub(crate) struct HttpLease {
     lease: Option<Lease>,
     pub(crate) connection: Option<Arc<AsyncMutex<Connection>>>,
     host: Arc<Mutex<Host>>,
+    /// Poked when the lease ends, which is a change the pool's supervisor sees.
+    wake: Arc<PoolWake>,
     reusable: Arc<AtomicBool>,
     pub(crate) cancel: CancellationToken,
     pub(crate) disposed: Arc<AtomicBool>,
@@ -338,6 +395,15 @@ impl HttpLease {
             .map_err(pool_failure)
     }
 }
+impl Drop for HttpLease {
+    /// The connection and the lease go before the pool is told, so that what
+    /// the supervisor finds is the pool with this lease gone.
+    fn drop(&mut self) {
+        self.connection = None;
+        self.lease = None;
+        self.wake.poke();
+    }
+}
 fn pool_failure(error: pool::Error) -> Failure {
     use pool::Error;
     let (code, setup_cause) = match error {
@@ -362,6 +428,7 @@ cfg_if::cfg_if! {
     if #[cfg(all(test, unix))] {
         mod idle_budget_tests;
         mod idle_tests;
+        mod idle_wake_tests;
     }
 }
 cfg_if::cfg_if! {

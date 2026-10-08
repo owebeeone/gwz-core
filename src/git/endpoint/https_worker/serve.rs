@@ -61,6 +61,7 @@ impl Prepared {
         stream: Stream,
         peer: Arc<MessageEndpoint>,
         cancel: CancellationToken,
+        ready: CloseWake,
     ) {
         let resource_cancel = self.lease.as_ref().unwrap().cancel.clone();
         let facts = Arc::new(Mutex::new(self.opened.facts.clone()));
@@ -79,7 +80,7 @@ impl Prepared {
         let mut observed = progress.load(Ordering::Relaxed);
         let mut tick = tokio::time::interval(Duration::from_millis(2));
         let result = {
-            let work = self.run(&stream, &peer, facts.clone(), possible.clone());
+            let work = self.run(&stream, &peer, facts.clone(), possible.clone(), &ready);
             tokio::pin!(work);
             loop {
                 tokio::select! {
@@ -115,6 +116,7 @@ impl Prepared {
         peer: &Arc<MessageEndpoint>,
         facts: Arc<Mutex<Facts>>,
         possible: Arc<AtomicBool>,
+        ready: &CloseWake,
     ) -> Result<(), ErrorCode> {
         if let Some(auth) = &self.native_route
             && !auth.usable(self.lease.as_ref().unwrap())
@@ -233,24 +235,36 @@ impl Prepared {
                 Disposition::Discarded
             }
         };
-        loop {
-            let final_facts = facts.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            match peer.complete_close(disposition, final_facts) {
-                Ok(()) => {
-                    self.lease
-                        .take()
-                        .expect("active HTTP lease")
-                        .finish(disposition)
-                        .map_err(|e| e.code)?;
-                    return Ok(());
-                }
-                Err(gwz_transport::stream::Error::WouldBlock) => {}
-                Err(error) => return Err(stream_code(error)),
-            }
-            if Instant::now() >= until {
-                return Err(ErrorCode::Timeout);
-            }
-            tokio::time::sleep(Duration::from_millis(2)).await;
+        finish_close(peer, ready, disposition, &facts, until).await?;
+        self.lease
+            .take()
+            .expect("active HTTP lease")
+            .finish(disposition)
+            .map_err(|e| e.code)?;
+        Ok(())
+    }
+}
+/// Completes the close the initiator asked for, which the stream accepts only
+/// once the initiator's Close has arrived and its own End has been sent. Until
+/// then the stream says `WouldBlock`; the wait ends when the stream changes,
+/// at the latest at `until`.
+pub(super) async fn finish_close(
+    peer: &MessageEndpoint,
+    ready: &CloseWake,
+    disposition: Disposition,
+    facts: &Mutex<Facts>,
+    until: Instant,
+) -> Result<(), ErrorCode> {
+    loop {
+        let final_facts = facts.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        match peer.complete_close(disposition, final_facts) {
+            Ok(()) => return Ok(()),
+            Err(gwz_transport::stream::Error::WouldBlock) => {}
+            Err(error) => return Err(stream_code(error)),
+        }
+        tokio::select! {
+            () = ready.changed() => {}
+            () = tokio::time::sleep_until(until) => return Err(ErrorCode::Timeout),
         }
     }
 }

@@ -5,7 +5,11 @@
 use super::*;
 use crate::git::endpoint::{cut_proxy::CutProxy, https_fixture::Server};
 use http_body_util::BodyExt;
-use std::{future::Future, pin::pin, task::Poll};
+use std::{
+    future::Future,
+    pin::pin,
+    task::{Poll, Waker},
+};
 
 fn get() -> hyper::Request<https_connection::RequestBody> {
     let (sender, rx) = tokio::sync::mpsc::channel(1);

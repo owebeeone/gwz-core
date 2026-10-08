@@ -383,3 +383,20 @@ fn a_new_operation_waits_while_the_operation_table_is_full_and_is_then_admitted(
         shut(&mut endpoint).await;
     });
 }
+
+/// An https Open has the endpoint's TLS configuration build at once, on the
+/// endpoint's runtime, whichever way its connection is later made.
+#[test]
+fn an_https_open_has_the_endpoints_tls_configuration_build() {
+    let mut endpoint = endpoint(https_connection::Config::default(), 1, 0);
+    assert_eq!(endpoint.client.tls_builds(), 0);
+    let (port, _accepted) = closing();
+    endpoint
+        .accept("request".into(), open(1, port, 1_000))
+        .unwrap();
+    let until = std::time::Instant::now() + Duration::from_secs(20);
+    while endpoint.client.tls_builds() != 1 {
+        assert!(std::time::Instant::now() < until, "no build began");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}

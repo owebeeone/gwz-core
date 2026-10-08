@@ -323,7 +323,7 @@ impl Client {
                     generation: prepared.lease.as_ref().unwrap().id.clone(),
                     scope,
                     facts: history.facts,
-                    pool: self.pool.pool.clone(),
+                    pool: self.pool.clone(),
                     revoked: AtomicBool::new(false),
                 });
                 self.routes

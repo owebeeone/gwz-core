@@ -12,6 +12,10 @@ mod request;
 mod session;
 cfg_if::cfg_if! { if #[cfg(test)] { mod qualification_tests; } }
 cfg_if::cfg_if! {
+    // The clones that show OpenSSL's default verify paths as the trust.
+    if #[cfg(all(test, unix, not(target_vendor = "apple")))] { mod ca_trust_clone_tests; }
+}
+cfg_if::cfg_if! {
     if #[cfg(all(test, unix))] {
         mod tests;
         mod driver_tests;
@@ -37,6 +41,7 @@ cfg_if::cfg_if! {
         mod endpoint_environment_tests;
         mod retry_tests;
         mod ca_bundle_tests;
+        mod ca_trust_tests;
     }
 }
 use crate::git::endpoint::https_auth::HelperSlots;

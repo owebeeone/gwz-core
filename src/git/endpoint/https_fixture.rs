@@ -1,6 +1,7 @@
 //! Local TLS fixtures. Git subprocesses here are remote server implementations only.
 use super::{
     https_connection, https_policy,
+    https_wake::CloseWake,
     https_worker::{Input, Prepared},
 };
 use bytes::Bytes;
@@ -139,7 +140,13 @@ pub(crate) fn attach(prepared: Prepared) -> (Stream, JoinHandle<()>) {
     let right = Arc::new(right);
     let task = tokio::spawn(async move {
         let _endpoint_owner = endpoint.clone();
-        let work = prepared.serve(endpoint, right.clone(), CancellationToken::new());
+        let ready = CloseWake::default();
+        let work = prepared.serve(
+            endpoint,
+            right.clone(),
+            CancellationToken::new(),
+            ready.clone(),
+        );
         tokio::pin!(work);
         let start = Instant::now();
         let mut tick = tokio::time::interval(Duration::from_millis(2));
@@ -147,9 +154,9 @@ pub(crate) fn attach(prepared: Prepared) -> (Stream, JoinHandle<()>) {
         loop {
             tokio::select! {
                 _=&mut work,if !finished=>{finished=true;},
-                message=left.next_message()=>match message {Ok(Some(m))=>{if right.deliver(m).is_err(){break;}},_=>break},
-                message=right.next_message()=>match message {Ok(Some(m))=>{let terminal=matches!(m.kind,MessageKind::Closed|MessageKind::Failed);let _=left.deliver(m);if terminal {break;}},_=>break},
-                _=tick.tick()=>{let now=start.elapsed().as_millis() as u64;assert!(now<10000,"message fixture stalled: left={:?} right={:?} finished={finished}",left.stats(),right.stats());left.advance(now);right.advance(now);},
+                message=left.next_message()=>match message {Ok(Some(m))=>{let delivered=right.deliver(m);ready.notify();if delivered.is_err(){break;}},_=>break},
+                message=right.next_message()=>match message {Ok(Some(m))=>{ready.notify();let terminal=matches!(m.kind,MessageKind::Closed|MessageKind::Failed);let _=left.deliver(m);if terminal {break;}},_=>break},
+                _=tick.tick()=>{let now=start.elapsed().as_millis() as u64;assert!(now<10000,"message fixture stalled: left={:?} right={:?} finished={finished}",left.stats(),right.stats());left.advance(now);right.advance(now);ready.notify();},
             }
         }
         left.disconnect();

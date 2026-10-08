@@ -37,9 +37,16 @@ pub(crate) mod https_policy;
 pub(crate) mod https_pool;
 pub(crate) mod https_progress;
 pub(crate) mod https_remote;
+pub(crate) mod https_tls;
+pub(crate) mod https_wake;
 pub(crate) mod https_worker;
 pub(crate) mod shared_reservation;
 pub(crate) mod shutdown_watch;
+cfg_if::cfg_if! {
+    if #[cfg(any(all(test, unix), not(any(windows, target_vendor = "apple"))))] {
+        pub(crate) mod verify_paths;
+    }
+}
 
 pub(crate) mod https_operation;
 

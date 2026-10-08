@@ -1,6 +1,7 @@
 //! Endpoint-owned TLS and a single Hyper HTTP/1 connection; no secondary pool.
 use super::{
     agent_job::{Job, Place, Supervisor},
+    https_tls::SharedTls,
     ssh_pool::{Connector, Resource},
 };
 use bytes::Bytes;
@@ -73,9 +74,13 @@ pub(crate) struct Proxy {
 }
 #[derive(Clone, Default)]
 pub(crate) struct Config {
-    /// The CA file's certificates (`super::ca_bundle`), each added as a root
-    /// beside the platform's built-in roots.
+    /// The CA file's certificates (`super::ca_bundle`), each a root beside the
+    /// platform's built-in roots. A connector takes them into its shared TLS
+    /// configuration (`super::https_tls`) when it is made.
     pub(crate) ca_roots: Vec<native_tls::Certificate>,
+    /// The platform's roots in place of the TLS backend's own, where the
+    /// backend's are not the trust the endpoint needs (`super::verify_paths`).
+    pub(crate) platform_roots: Option<super::https_tls::RootsLoader>,
     pub(crate) proxy: Option<Proxy>,
     /// Exact DNS hosts/IPs or leading-dot suffixes. No caller/core environment.
     pub(crate) no_proxy: Vec<String>,
@@ -170,6 +175,7 @@ struct QueuedSetup {
     /// The setup slot once taken, kept while the host's job budget is full.
     taken: Option<OwnedSemaphorePermit>,
     config: Config,
+    tls: SharedTls,
 }
 pub(crate) struct HttpResource {
     identity: Identity,
@@ -181,6 +187,9 @@ pub(crate) struct HttpResource {
     pub(crate) reusable: Arc<AtomicBool>,
     pub(crate) cancel: CancellationToken,
     driver_abort: Option<tokio::task::AbortHandle>,
+    /// Disposal waiting for a holder of the connection that the pool is not
+    /// told of when it lets go (see `poll_dispose`).
+    holders: Option<Pin<Box<tokio::time::Sleep>>>,
     deadline: Option<Instant>,
     /// The network time the setup has once it starts: the time spent waiting
     /// on a local budget was not the network's (`waiting_locally`).
@@ -207,6 +216,40 @@ pub(crate) struct HttpConnector {
     pub(crate) setup_slots: Arc<Semaphore>,
     /// The host's job budget, which this connector's setup jobs draw on.
     pub(crate) supervisor: Supervisor,
+    /// The TLS configuration of every connection this connector makes.
+    tls: SharedTls,
+}
+impl HttpConnector {
+    /// A connector whose connections trust `config`'s CA roots and whose setup
+    /// jobs draw on `supervisor`'s job budget.
+    pub(crate) fn new(
+        mut config: Config,
+        epoch: Instant,
+        setup_slots: Arc<Semaphore>,
+        supervisor: Supervisor,
+    ) -> Self {
+        let tls = SharedTls::new(
+            std::mem::take(&mut config.ca_roots),
+            config.platform_roots.take(),
+        );
+        Self {
+            config,
+            epoch,
+            setup_slots,
+            supervisor,
+            tls,
+        }
+    }
+    /// The TLS configuration of this connector's connections.
+    pub(crate) fn tls(&self) -> SharedTls {
+        self.tls.clone()
+    }
+    cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+        /// How many times this connector built a TLS configuration.
+        pub(crate) fn tls_builds(&self) -> usize {
+            self.tls.builds()
+        }
+    } }
 }
 impl Connector for HttpConnector {
     type Resource = HttpResource;
@@ -223,6 +266,8 @@ impl Connector for HttpConnector {
         if key.scheme != Scheme::Https {
             return Err(failure(ErrorCode::UnsupportedOperation));
         }
+        // Its build runs beside the first connection's name resolution.
+        self.tls.prebuild();
         let deadline = deadline.and_then(|ms| self.epoch.checked_add(Duration::from_millis(ms)));
         let mut resource = HttpResource {
             identity: identity.clone(),
@@ -231,6 +276,7 @@ impl Connector for HttpConnector {
                 slot: Box::pin(self.setup_slots.clone().acquire_owned()),
                 taken: None,
                 config: self.config.clone(),
+                tls: self.tls.clone(),
             }),
             setup: None,
             connecting: None,
@@ -240,6 +286,7 @@ impl Connector for HttpConnector {
             driver_abort: None,
             network_budget: deadline.map(|at| at.saturating_duration_since(Instant::now())),
             waited: false,
+            holders: None,
             deadline,
             key: key.clone(),
             disposed: Arc::new(AtomicBool::new(false)),
@@ -291,7 +338,7 @@ impl HttpResource {
             }
             Err(_) => return Poll::Ready(Err(failure(ErrorCode::Capacity))),
         };
-        let config = self.queued.take().expect("queued setup").config;
+        let QueuedSetup { config, tls, .. } = self.queued.take().expect("queued setup");
         let key = self.key.clone();
         if self.waited {
             // The wait was local: the setup, and the connect that follows it,
@@ -313,11 +360,7 @@ impl HttpResource {
                     .map_or((key.host.as_str(), key.port), |p| (p.host.as_str(), p.port));
                 let addresses = (host, port).to_socket_addrs()?.take(16).collect::<Vec<_>>();
                 control.check()?;
-                let mut builder = native_tls::TlsConnector::builder();
-                for root in config.ca_roots {
-                    builder.add_root_certificate(root);
-                }
-                let tls = builder.build().map_err(|_| io::ErrorKind::InvalidInput)?;
+                let tls = tls.connector()?;
                 Ok(Setup {
                     addresses,
                     tls,
@@ -423,9 +466,23 @@ impl Resource for HttpResource {
             abort.abort();
         }
         if let Some(connection) = &self.connection {
-            if Arc::strong_count(connection) > 1 {
+            // Disposal waits for every other holder of the connection. The
+            // pool's own are the lease and the exchange's lock, and the pool
+            // is woken when the lease ends; a holder it has no hook on (a
+            // clone taken elsewhere) is looked for again after a while, which
+            // only a disposal blocked on one ever does.
+            let held = Arc::strong_count(connection) > 1 || connection.try_lock().is_err();
+            if held {
+                let wait = self
+                    .holders
+                    .get_or_insert_with(|| Box::pin(tokio::time::sleep(Duration::from_millis(5))));
+                if wait.as_mut().poll(cx).is_ready() {
+                    self.holders = None;
+                    cx.waker().wake_by_ref();
+                }
                 return Poll::Pending;
             }
+            self.holders = None;
             let Ok(mut connection) = connection.try_lock() else {
                 return Poll::Pending;
             };
