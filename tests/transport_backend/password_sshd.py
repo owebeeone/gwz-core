@@ -33,6 +33,7 @@ import struct
 import subprocess
 import sys
 import threading
+import time
 
 M32 = 0xFFFFFFFF
 # RFC 3526 group 14, generator 2.
@@ -460,7 +461,25 @@ class Server:
             log.write(json.dumps(entry) + "\n")
 
 
+def exit_with_parent() -> None:
+    """Exit once the process that started this one is gone.
+
+    A test that is killed cannot run its guard's drop, so without this the
+    server serves for ever, orphaned. The parent's pid changes when it dies on
+    Unix (the process is adopted); where it does not, this never fires.
+    """
+    parent = os.getppid()
+
+    def watch() -> None:
+        while os.getppid() == parent:
+            time.sleep(0.5)
+        os._exit(0)
+
+    threading.Thread(target=watch, daemon=True).start()
+
+
 def main() -> None:
+    exit_with_parent()
     with open(sys.argv[1], encoding="utf-8") as config:
         server = Server(json.load(config))
     listener = socket.socket()

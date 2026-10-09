@@ -19,7 +19,7 @@ It lists the keys a test names, in order, and signs as each key's entry says:
 
 It is written on Python's standard library alone, logs each request as one
 JSON object per line, never key material or a signature, and serves until it
-is killed.
+is killed or the process that started it exits.
 
 Usage: key_agent.py CONFIG. CONFIG is a JSON file:
   {"socket": "<path>", "log": "<path>", "upstream": "<private agent socket>",
@@ -36,11 +36,13 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import secrets
 import socket
 import struct
 import sys
 import threading
+import time
 
 # DSA domain parameters, 1024-bit P and 160-bit Q as ssh-dss requires, made
 # once with `openssl genpkey -genparam` and checked prime. They are public.
@@ -216,7 +218,25 @@ def serve(agent: Agent, connection: socket.socket) -> None:
                 return
 
 
+def exit_with_parent() -> None:
+    """Exit once the process that started this one is gone.
+
+    A test that is killed cannot run its guard's drop, so without this the
+    server serves for ever, orphaned. The parent's pid changes when it dies on
+    Unix (the process is adopted); where it does not, this never fires.
+    """
+    parent = os.getppid()
+
+    def watch() -> None:
+        while os.getppid() == parent:
+            time.sleep(0.5)
+        os._exit(0)
+
+    threading.Thread(target=watch, daemon=True).start()
+
+
 def main() -> None:
+    exit_with_parent()
     with open(sys.argv[1], encoding="utf-8") as config_file:
         config = json.load(config_file)
     agent = Agent(config)

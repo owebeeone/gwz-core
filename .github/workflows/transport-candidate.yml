@@ -146,6 +146,7 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             tests/transport_backend/test_prepare.py \
+            tests/transport_backend/test_fixture_parent_exit.py \
             tests/transport_consumer/candidate/test_candidate.py \
             tests/transport_consumer/test_package_proof.py
       - name: Prepare the candidate build

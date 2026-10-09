@@ -75,71 +75,18 @@ impl Drop for PlainHttpServer {
     }
 }
 
+/// The shared guard, with the `git://` URL of the test's repository.
 struct GitDaemon {
     url: String,
-    child: Option<Child>,
+    daemon: crate::test_support::GitDaemon,
 }
 
 impl GitDaemon {
-    async fn start(repository: &Path) -> Self {
-        let parent = repository.parent().unwrap().to_path_buf();
-        let probe = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = probe.local_addr().unwrap().port();
-        drop(probe);
-        let mut daemon = Self {
-            url: format!("git://127.0.0.1:{port}/repo"),
-            child: Some(
-                Command::new("git")
-                    .arg("daemon")
-                    .arg("--reuseaddr")
-                    .arg("--export-all")
-                    .arg(format!("--base-path={}", parent.display()))
-                    .arg(format!("--port={port}"))
-                    .arg("--listen=127.0.0.1")
-                    .kill_on_drop(true)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn()
-                    .unwrap(),
-            ),
-        };
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
-        let ready = loop {
-            if tokio::time::Instant::now() >= deadline {
-                break false;
-            }
-            if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
-                break true;
-            }
-            if daemon
-                .child
-                .as_mut()
-                .is_some_and(|child| child.try_wait().unwrap().is_some())
-            {
-                break false;
-            }
-            sleep(Duration::from_millis(5)).await;
-        };
-        if !ready {
-            daemon.stop().await;
-            panic!("git daemon failed to become ready");
-        }
-        daemon
-    }
-
-    async fn stop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-        }
-    }
-}
-
-impl Drop for GitDaemon {
-    fn drop(&mut self) {
-        if let Some(child) = self.child.as_mut() {
-            let _ = child.start_kill();
+    fn start(repository: &Path) -> Self {
+        let daemon = crate::test_support::GitDaemon::start(repository.parent().unwrap());
+        Self {
+            url: format!("git://127.0.0.1:{}/repo", daemon.port()),
+            daemon,
         }
     }
 }
@@ -155,7 +102,7 @@ fn local_http_and_git_remain_native_compatibility_transports() {
         let (repository, expected_commit) = https_tests::repository(root.path());
         let repository = Arc::new(repository);
         let http = PlainHttpServer::start(repository.clone()).await;
-        let mut git = GitDaemon::start(repository.as_ref()).await;
+        let git = GitDaemon::start(repository.as_ref());
         let transport = TransportRuntime::new(SshEndpointConfig::fixture(
             https_tests::endpoint_home(&root.path().join("endpoint")),
             None,
@@ -195,6 +142,6 @@ fn local_http_and_git_remain_native_compatibility_transports() {
             assert_eq!(request.finish().await.pending_local_work, 0);
         }
         assert_eq!(transport.shutdown().await.pending_local_work, 0);
-        git.stop().await;
+        drop(git.daemon);
     });
 }

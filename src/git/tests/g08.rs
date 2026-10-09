@@ -152,7 +152,9 @@ fn ssh_clone_times_out_instead_of_hanging() {
         for mut stream in listener.incoming().flatten() {
             let mut buf = [0u8; 64];
             let _ = stream.read(&mut buf); // read the client banner, never reply
-            std::thread::sleep(Duration::from_secs(30));
+            // Far beyond the bound below, so a clone that never times out is still
+            // stuck here when the bound passes, not released by this thread.
+            std::thread::sleep(Duration::from_secs(120));
         }
     });
 
@@ -167,59 +169,37 @@ fn ssh_clone_times_out_instead_of_hanging() {
         result.is_err(),
         "clone of a silent SSH endpoint must fail, not hang"
     );
+    // The timeout is what ended it: not an immediate refusal, which would also
+    // be an error and prove nothing about a stall.
+    let timeout = Duration::from_millis(crate::git::gitbackend::DEFAULT_SERVER_TIMEOUT_MS as u64);
     assert!(
-        elapsed < Duration::from_secs(10),
-        "must terminate quickly via the timeout (took {elapsed:?})"
+        elapsed >= timeout / 2,
+        "failed in {elapsed:?}, before the {timeout:?} timeout could have fired"
+    );
+    // A hang would last until the server thread's 120 s hold ends. The bound
+    // is the timeout plus slack for a loaded machine (10.07 s was seen against
+    // a 10 s bound, one second of slack, with the whole suite running beside).
+    let bound = timeout + Duration::from_secs(15);
+    assert!(
+        elapsed < bound,
+        "must terminate via the {timeout:?} timeout, within {bound:?} (took {elapsed:?})"
     );
 }
 
 #[cfg(unix)]
 #[test]
 fn named_push_reports_server_hook_rejection() {
-    use std::net::{TcpListener, TcpStream};
+    use crate::test_support::GitDaemon;
     use std::os::unix::fs::PermissionsExt;
-    use std::process::{Command, Stdio};
-    use std::time::{Duration, Instant};
 
-    struct Daemon(std::process::Child);
-    impl Drop for Daemon {
-        fn drop(&mut self) {
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
     let temp = TempDir::new("named-push-rejected");
     let remote_path = temp.path().join("remote.git");
     let remote = git2::Repository::init_bare(&remote_path).unwrap();
     let hook = remote_path.join("hooks/pre-receive");
     std::fs::write(&hook, "#!/bin/sh\necho policy-refusal >&2\nexit 1\n").unwrap();
     std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    drop(listener);
-    let mut daemon = Daemon(
-        Command::new("git")
-            .args([
-                "daemon",
-                "--reuseaddr",
-                "--export-all",
-                "--enable=receive-pack",
-                "--listen=127.0.0.1",
-            ])
-            .arg(format!("--port={port}"))
-            .arg(format!("--base-path={}", temp.path().display()))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap(),
-    );
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while TcpStream::connect(("127.0.0.1", port)).is_err() {
-        assert!(daemon.0.try_wait().unwrap().is_none(), "git daemon exited");
-        assert!(Instant::now() < deadline, "git daemon did not start");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let daemon = GitDaemon::start(temp.path());
+    let port = daemon.port();
     let backend = Git2Backend::new();
     let source = temp.path().join("source");
     backend.create_repo(&source).unwrap();
@@ -234,7 +214,12 @@ fn named_push_reports_server_hook_rejection() {
     let error = backend
         .push(&source, "origin", "HEAD:refs/heads/main")
         .unwrap_err();
-    assert_eq!(error.code, crate::model::ErrorCode::RemoteRejected);
+    assert_eq!(
+        error.code,
+        crate::model::ErrorCode::RemoteRejected,
+        "{}",
+        error.message
+    );
     assert!(remote.find_reference("refs/heads/main").is_err());
     std::fs::remove_file(hook).unwrap();
     backend
