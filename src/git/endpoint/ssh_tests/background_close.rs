@@ -10,8 +10,8 @@ use crate::git::endpoint::{
     shared_reservation::Authority,
     ssh_channel::GitService,
     ssh_close_fixture::{
-        delayed_close_fixture, delayed_eof_fixture, dropped_close_fixture, read_advertisement,
-        silent_fixture, stuck_close_fixture,
+        delayed_close_fixture, delayed_eof_fixture, dropped_close_fixture, gated_close_fixture,
+        read_advertisement, silent_fixture, stuck_close_fixture,
     },
     ssh_fixture::SshdFixture,
     ssh_local,
@@ -23,6 +23,7 @@ use gwz_transport::{
     protocol::Opened,
 };
 use std::{
+    fs,
     io::{self, Read, Write},
     path::PathBuf,
     sync::{
@@ -541,36 +542,47 @@ fn the_wait_is_bounded_by_the_closes_remaining_cleanup() {
 
 #[test]
 fn one_closing_connection_defers_one_open() {
-    let rig = Rig::new(delayed_close_fixture(ms(150)), 32, 5_000);
+    // The close ends when the test says so, and the pool's counts say when the
+    // second connection began: neither is a duration, so a slow connect on a
+    // loaded machine cannot reorder what the test compares. The only clock left
+    // is the deferral's own bound, which the test is well inside: it releases
+    // the close as soon as the second connection has begun.
+    let (fixture, release) = gated_close_fixture();
+    let rig = Rig::new(fixture, 32, 5_000);
     closing_fetch(&rig);
+    let released = AtomicBool::new(false);
     let opens: Vec<_> = thread::scope(|scope| {
         let jobs: Vec<_> = (0..2)
             .map(|_| {
                 scope.spawn(|| {
-                    let started = Instant::now();
                     let (stream, opened) = rig.open(GitService::ReceivePack);
-                    (stream, opened, started.elapsed())
+                    // Read at once, after the open, before anything else can
+                    // order against it.
+                    (stream, opened, released.load(Ordering::SeqCst))
                 })
             })
             .collect();
+        // The open that is not deferred starts its connection at once, while
+        // the close is held; the deferred one starts none.
+        let started = Instant::now();
+        while rig.counts().total() != 2 {
+            assert!(started.elapsed() < PATIENCE, "no second connection began");
+            thread::sleep(ms(1));
+        }
+        released.store(true, Ordering::SeqCst);
+        fs::write(&release, b"").unwrap();
         jobs.into_iter().map(|job| job.join().unwrap()).collect()
     });
     let reused: Vec<_> = opens
         .iter()
         .filter(|(_, opened, _)| opened.reused)
         .collect();
-    let fresh: Vec<_> = opens
-        .iter()
-        .filter(|(_, opened, _)| !opened.reused)
-        .collect();
-    assert_eq!((reused.len(), fresh.len()), (1, 1), "one reuses, one opens");
+    let fresh = opens.len() - reused.len();
+    assert_eq!((reused.len(), fresh), (1, 1), "one reuses, one opens");
+    // The deferred open is the one that took the closing connection, and it
+    // could not have it while the close was held.
+    assert!(reused[0].2, "an open was served before the close ended");
     assert_eq!(rig.counts().total(), 2);
-    assert!(
-        fresh[0].2 < reused[0].2,
-        "the open that found no closing connection took {:?}, against {:?}",
-        fresh[0].2,
-        reused[0].2
-    );
 }
 
 #[test]

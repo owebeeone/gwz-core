@@ -11,6 +11,7 @@ use super::{
 use std::{fs, io::Read, time::Duration};
 
 const SCRIPT: &str = "close-script.sh";
+const CLOSE_RELEASE: &str = "close-release";
 
 /// Every channel of the server runs `body`, in which `$SSH_ORIGINAL_COMMAND`
 /// is the Git service to run.
@@ -38,6 +39,20 @@ pub(crate) fn delayed_close_fixture(delay: Duration) -> SshdFixture {
         "eval \"$SSH_ORIGINAL_COMMAND\"\nstatus=$?\nexec 1>&- 2>&-\nsleep {}\nexit $status\n",
         seconds(delay)
     ))
+}
+
+/// The service exits and its output closes, and the channel's exit status and
+/// CHANNEL_CLOSE wait for the returned file to exist: the test, not a clock,
+/// ends the close. The wait is bounded (10 s) so that a test that fails before
+/// it makes the file leaves no script running.
+pub(crate) fn gated_close_fixture() -> (SshdFixture, std::path::PathBuf) {
+    let fixture = forced(&format!(
+        "eval \"$SSH_ORIGINAL_COMMAND\"\nstatus=$?\nexec 1>&- 2>&-\ni=0\n\
+         while [ ! -e \"${{0%/*}}/{CLOSE_RELEASE}\" ] && [ \"$i\" -lt 1000 ]; do\n\
+         sleep 0.01\ni=$((i+1))\ndone\nexit $status\n"
+    ));
+    let release = fixture.temp.path().join(CLOSE_RELEASE);
+    (fixture, release)
 }
 
 /// The service exits, but the channel's output stays open `delay` longer: the

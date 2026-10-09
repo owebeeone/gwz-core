@@ -378,8 +378,32 @@ fn a_new_operation_waits_while_the_operation_table_is_full_and_is_then_admitted(
             .accept("request".into(), open(1, port, 30_000))
             .expect("the freed place admits the open");
         let published = settle(&mut endpoint, 0).await;
-        assert_eq!(published.len(), 1);
-        assert_eq!(published[0].kind, MessageKind::Opened);
+        // The open is admitted once and answered by its Opened, first. The
+        // advertisement it opened serves its data and end from a task of its
+        // own, and settle returns when the attempt ends, not when the serving
+        // does: those messages of the same stream may or may not be published
+        // by then, so the count of messages is not the admission's count.
+        let kinds: Vec<_> = published.iter().map(|message| message.kind).collect();
+        assert_eq!(
+            kinds
+                .iter()
+                .filter(|kind| **kind == MessageKind::Opened)
+                .count(),
+            1,
+            "the open is admitted exactly once: {kinds:?}"
+        );
+        assert_eq!(kinds[0], MessageKind::Opened, "{kinds:?}");
+        assert!(
+            published.iter().all(|message| message.stream_id == 1),
+            "a message of a stream no open made: {kinds:?}"
+        );
+        assert!(
+            kinds.iter().all(|kind| !matches!(
+                kind,
+                MessageKind::OpenFailed | MessageKind::Failed | MessageKind::Closed
+            )),
+            "the admitted open failed: {kinds:?}"
+        );
         shut(&mut endpoint).await;
     });
 }
