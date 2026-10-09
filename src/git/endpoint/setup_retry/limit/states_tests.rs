@@ -172,3 +172,14 @@ fn the_table_settles_with_the_ts_in_force_when_the_connection_is_disposed() {
     table.apply(A, ConnEvent::Disposed, 100);
     assert_eq!(table.next_settle_deadline(), Some(1_000));
 }
+
+#[test]
+fn setups_in_flight_counts_clocked_setups_only() {
+    let mut table = table_with(2);
+    assert_eq!(table.setups_in_flight(), 0);
+    table.apply(ConnId(3), CLOCKED, 0);
+    table.apply(ConnId(4), ConnEvent::Started { clocked: false }, 0);
+    assert_eq!(table.setups_in_flight(), 1);
+    table.apply(ConnId(3), ConnEvent::Connected, 0);
+    assert_eq!(table.setups_in_flight(), 0);
+}

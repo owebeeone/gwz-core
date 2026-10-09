@@ -161,6 +161,10 @@ impl Table {
             phase => matches!(phase, Phase::Closing | Phase::Settling),
         }) == 0
     }
+    /// Clocked setups in flight: the wave has not resolved while any is.
+    pub(crate) fn setups_in_flight(&self) -> usize {
+        self.count(|entry| entry.phase == Phase::SettingUp && entry.clocked)
+    }
     pub(crate) fn next_settle_deadline(&self) -> Option<u64> {
         self.conns
             .values()
