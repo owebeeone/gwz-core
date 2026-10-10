@@ -28,6 +28,17 @@ if [ -z "${commits}" ]; then
   exit 0
 fi
 status=0
+# The base's Windows-parity inventory, whichever form the base has: the directory scripts/checks/windows_parity/,
+# or the single windows_parity_inventory.json that preceded it (origin/main has only the file until the split lands).
+base_inventory=""
+base_tmp=$(mktemp -d)
+if git cat-file -e "${base}:scripts/checks/windows_parity/meta.json" 2>/dev/null; then
+  git archive "${base}" scripts/checks/windows_parity | tar -x -C "${base_tmp}"
+  base_inventory="${base_tmp}/scripts/checks/windows_parity"
+elif git cat-file -e "${base}:scripts/checks/windows_parity_inventory.json" 2>/dev/null; then
+  git show "${base}:scripts/checks/windows_parity_inventory.json" > "${base_tmp}/windows_parity_inventory.json"
+  base_inventory="${base_tmp}/windows_parity_inventory.json"
+fi
 for sha in ${commits}; do
   tmp=$(mktemp -d)
   git archive "${sha}" | tar -x -C "${tmp}"
@@ -46,9 +57,8 @@ for sha in ${commits}; do
   if [ -f "${tmp}/scripts/checks/check_windows_parity.py" ]; then
     parity_ok=1
     "${python}" "${tmp}/scripts/checks/check_windows_parity.py" --root "${tmp}" > "${tmp}/parity.out" 2>&1 || parity_ok=0
-    if git cat-file -e "${base}:scripts/checks/windows_parity_inventory.json" 2>/dev/null; then
-      git show "${base}:scripts/checks/windows_parity_inventory.json" > "${tmp}/parity-base.json"
-      "${python}" "${tmp}/scripts/checks/check_windows_parity.py" --shrink-from "${tmp}/parity-base.json" \
+    if [ -n "${base_inventory}" ]; then
+      "${python}" "${tmp}/scripts/checks/check_windows_parity.py" --shrink-from "${base_inventory}" \
         >> "${tmp}/parity.out" 2>&1 || parity_ok=0
     fi
     if [ "${parity_ok}" = 1 ]; then
@@ -61,4 +71,20 @@ for sha in ${commits}; do
   fi
   rm -rf "${tmp}"
 done
+rm -rf "${base_tmp}"
+# The Windows compile gate (GwzTransportWindowsParityPlan.md, step 0.4; skim finding P3-3): a commit that changes a
+# trigger path needs a `Windows-receipt: <label>` line in its message or in a later commit of the range, or
+# `Windows-receipt: ci-only <reason>`. The range is judged as a whole, with the head's own script and inventory, so
+# it runs once. A head that predates the script has no rule to apply.
+head_tmp=$(mktemp -d)
+git archive "${head}" | tar -x -C "${head_tmp}"
+if [ -f "${head_tmp}/scripts/checks/check_windows_receipts.py" ]; then
+  if "${python}" "${head_tmp}/scripts/checks/check_windows_receipts.py" "${base}" "${head}" --floor "${floor}"; then
+    :
+  else
+    echo "lane gate: Windows-receipt check RED in ${base}..${head}" >&2
+    status=1
+  fi
+fi
+rm -rf "${head_tmp}"
 exit "${status}"

@@ -106,7 +106,7 @@ jobs:
           python scripts/checks/check_candidate_switches.py
           # Windows-parity plan step 0.3: every Unix-only gate has an inventory entry.
           python scripts/checks/check_windows_parity.py
-          python -m unittest scripts/checks/test_check_windows_parity.py scripts/test_windows_lane_check.py
+          python -m unittest scripts/checks/test_check_windows_parity.py scripts/test_windows_lane_check.py scripts/checks/test_check_windows_receipts.py
           python -m unittest scripts/checks/test_check_filesystem_boundary.py scripts/checks/test_run_tests_filesystem_mode.py scripts/checks/test_run_tests_transport_globals.py scripts/checks/test_run_tests_transport_pin.py scripts/checks/test_check_process_globals.py scripts/checks/test_check_cfg_boundaries.py scripts/checks/test_check_candidate_switches.py
           python -m unittest scripts/checks/test_release_boundary.py -v
           # The release script's internal-version bump (plan S1.5) and the

@@ -49,8 +49,21 @@ class Tree(tempfile.TemporaryDirectory):
         (path or self.inventory).write_text(json.dumps(
             {'roots': list(roots), 'steps': STEPS, 'done_steps': list(done), 'entries': list(entries)}), encoding='utf-8')
 
-    def errors(self):
-        return checker.check(self.root, self.inventory)[0]
+    def save_dir(self, files, done=('0.1',), roots=ROOTS, scans=None, path=None):
+        """An inventory directory: meta.json and one `<step>.json` per entry of `files` (a step: its entries or its file's content)."""
+        path = path or self.root / 'inventory'
+        path.mkdir(parents=True, exist_ok=True)
+        meta = {'roots': list(roots), 'steps': STEPS, 'done_steps': list(done)}
+        if scans is not None:
+            meta['scans'] = list(scans)
+        (path / 'meta.json').write_text(json.dumps(meta), encoding='utf-8')
+        for step, content in files.items():
+            body = content if isinstance(content, dict) else {'entries': list(content)}
+            (path / f'{step}.json').write_text(json.dumps(body), encoding='utf-8')
+        return path
+
+    def errors(self, inventory=None):
+        return checker.check(self.root, inventory or self.inventory)[0]
 
 
 UNIX_IMPORT = 'cfg_if::cfg_if! { if #[cfg(unix)] { use std::os::unix::ffi::OsStrExt; } }\n'
@@ -244,7 +257,7 @@ class Shrink(unittest.TestCase):
 
     def test_a_new_paired_or_platform_entry_does_not_raise_the_count(self):
         added = [entry('unix', 'mod a'), entry('unix', 'mod b', state='paired'),
-                 entry('unix', 'mod c', state='platform', reason='AF_UNIX')]
+                 entry('unix', 'mod c', state='platform', reason='AF_UNIX', approved_platform='operator 2026-10-10')]
         self.assertEqual(self.compare(added[:1], added), [])
 
     def test_a_count_raise_fails(self):
@@ -257,6 +270,200 @@ class Shrink(unittest.TestCase):
     def test_a_missing_base_passes(self):
         with Tree() as tree:
             self.assertEqual(checker.shrink(tree.inventory, tree.root / 'none.json')[0], [])
+
+
+SPLIT_SOURCE = 'fn f() -> bool { cfg!(windows) }\n'
+
+
+class Directory(unittest.TestCase):
+    """The inventory as a directory: meta.json plus one file per owning step, loaded as one inventory."""
+
+    def test_a_directory_is_one_inventory(self):
+        two = UNIX_IMPORT + 'cfg_if::cfg_if! { if #[cfg(unix)] { mod b; } }\n'
+        listed = [entry('unix', 'arm: use std::os::unix::ffi::OsStrExt', owner=['1.2']),
+                  entry('os::unix::ffi::OsStrExt', '', kind='os', owner=['1.2'])]
+        with Tree(two, listed) as tree:
+            directory = tree.save_dir({'1.2': listed, '3.4': [entry('unix', 'mod b', owner=['3.4'])]})
+            self.assertEqual(tree.errors(directory), [])
+            data, errors = checker.load_inventory(directory)
+            self.assertEqual((errors, len(data['entries']), checker.unported(data)), ([], 3, 3))
+            tree.save_dir({'1.2': listed}, path=directory)
+            (directory / '3.4.json').unlink()
+            self.assertEqual([error.split()[0] for error in tree.errors(directory)], ['NEW'])
+
+    def test_an_entry_lives_in_the_file_of_its_first_owner(self):
+        with Tree('cfg_if::cfg_if! { if #[cfg(unix)] { mod a; } }\n') as tree:
+            directory = tree.save_dir({'3.4': [entry('unix', 'mod a', owner=['1.2', '3.4'])]})
+            errors = checker.load_inventory(directory)[1]
+            self.assertTrue(any('FILED' in e and '1.2' in e and '3.4.json' in e for e in errors), errors)
+            tree.save_dir({'1.2': [entry('unix', 'mod a', owner=['1.2', '3.4'])]}, path=directory)
+            (directory / '3.4.json').unlink()
+            self.assertEqual(checker.load_inventory(directory)[1], [])
+
+    def test_a_file_named_for_an_unknown_step_or_with_no_meta_is_an_error(self):
+        with Tree() as tree:
+            directory = tree.save_dir({'9.9': []})
+            self.assertTrue(any('9.9.json' in e and 'not a step' in e for e in checker.load_inventory(directory)[1]))
+            (directory / 'meta.json').unlink()
+            self.assertTrue(any('meta.json' in e for e in checker.load_inventory(directory)[1]))
+
+    def test_the_same_key_in_two_files_is_a_duplicate(self):
+        with Tree() as tree:
+            directory = tree.save_dir({'1.2': [entry('unix', 'mod a')], '3.4': [entry('unix', 'mod a', owner=['3.4'])]})
+            self.assertTrue(any('duplicate' in e for e in checker.load_inventory(directory)[1]))
+
+    def test_a_step_file_can_record_its_step_done(self):
+        source = 'cfg_if::cfg_if! { if #[cfg(unix)] { mod a; } }\n'
+        with Tree(source) as tree:
+            directory = tree.save_dir({'1.2': [entry('unix', 'mod a')]})
+            self.assertEqual(tree.errors(directory), [])
+            tree.save_dir({'1.2': {'done': True, 'entries': [entry('unix', 'mod a')]}}, path=directory)
+            self.assertEqual([error.split()[0] for error in tree.errors(directory)], ['DONE'])
+            data, _ = checker.load_inventory(directory)
+            self.assertEqual(data['done_steps'], ['0.1', '1.2'])
+
+    def test_shrink_compares_a_directory_with_a_single_file_in_either_direction(self):
+        two, one = [entry('unix', 'mod a'), entry('unix', 'mod b')], [entry('unix', 'mod a')]
+        with Tree() as tree:
+            directory = tree.save_dir({'1.2': two})
+            tree.save(one)
+            self.assertTrue(checker.shrink(directory, tree.inventory)[0][0].startswith('RAISED'))
+            self.assertEqual(checker.shrink(tree.inventory, directory)[0], [])
+            tree.save(two)
+            self.assertEqual(checker.shrink(directory, tree.inventory)[0], [])
+
+    def test_the_command_takes_a_directory_for_both_the_inventory_and_the_base(self):
+        source = 'cfg_if::cfg_if! { if #[cfg(unix)] { mod a; } }\n'
+        with Tree(source) as tree:
+            directory = tree.save_dir({'1.2': [entry('unix', 'mod a')]})
+            base = tree.save_dir({'1.2': [entry('unix', 'mod a')]}, path=tree.root / 'base')
+            run = Command().run_main
+            self.assertEqual(run('--root', str(tree.root), '--inventory', str(directory))[0], 0)
+            self.assertEqual(run('--inventory', str(directory), '--shrink-from', str(base))[0], 0)
+
+
+class RuntimeSplits(unittest.TestCase):
+    """cfg!(), cfg_attr and the OS extension modules by name are seen, so a runtime split is not invisible."""
+
+    def test_cfg_macros_and_cfg_attr_with_a_platform_predicate_are_splits(self):
+        self.assertEqual(found('fn f() -> bool { cfg!(windows) }\nfn g() -> bool { !cfg!(unix) }\n'),
+                         [('split', 'cfg!(windows)', '', '', True), ('split', 'cfg!(unix)', '', '', True)])
+        self.assertEqual(found('fn f() -> bool { cfg!(all(windows, test)) || cfg!(target_os = "macos") }\n'),
+                         [('split', 'cfg!(all(windows, test))', '', '', True),
+                          ('split', 'cfg!(target_os = "macos")', '', '', True)])
+        self.assertEqual(found('#[cfg_attr(unix, allow(unused))]\nfn f() {}\n'),
+                         [('split', 'cfg_attr(unix)', 'fn f', '', True)])
+        self.assertEqual(found('#![cfg_attr(not(unix), allow(dead_code))]\nfn f() {}\n'),
+                         [('split', 'cfg_attr(not(unix))', 'file', '', True)])
+
+    def test_cfg_macros_without_a_platform_predicate_or_with_the_qualification_switch_are_not_splits(self):
+        for source in ('fn f() -> bool { cfg!(test) }\n', 'fn f() -> bool { cfg!(feature = "x") }\n',
+                       'fn f() -> bool { cfg!(debug_assertions) }\n',
+                       'fn f() -> bool { cfg!(all(windows, gwz_transport_candidate, gwz_windows_https_qualification)) }\n',
+                       '#[cfg_attr(test, derive(Debug))]\nstruct S;\n'):
+            self.assertEqual(found(source), [], source)
+
+    def test_the_named_os_extension_modules_are_os_uses(self):
+        self.assertEqual(sorted(g for k, g, *_ in found('use std::os::linux::fs::MetadataExt;\nuse std::os::macos::fs::MetadataExt as M;\n')),
+                         ['os::linux::fs::MetadataExt', 'os::macos::fs::MetadataExt'])
+
+    def test_a_split_without_an_entry_fails_and_one_with_an_entry_passes(self):
+        with Tree(SPLIT_SOURCE) as tree:
+            self.assertTrue(tree.errors()[0].startswith('NEW   split cfg!(windows)'), tree.errors())
+            tree.save([entry('cfg!(windows)', '', kind='split', state='paired')])
+            self.assertEqual(tree.errors(), [])
+            tree.write(FILE, 'fn f() {}\n')
+            self.assertEqual([error.split()[0] for error in tree.errors()], ['STALE'])
+
+    def test_an_unported_split_counts_in_the_ratchet(self):
+        with Tree(SPLIT_SOURCE, [entry('cfg!(windows)', '', kind='split', state='unported')]) as tree:
+            self.assertEqual(tree.errors(), [])
+            data, _ = checker.load_inventory(tree.inventory)
+            self.assertEqual(checker.unported(data), 1)
+
+
+class ScannedKinds(unittest.TestCase):
+    """A kind the base inventory does not scan yet is compared only once the base scans it."""
+
+    def test_a_single_file_scans_gate_and_os(self):
+        with Tree() as tree:
+            self.assertEqual(checker.load_inventory(tree.inventory)[0]['scans'], ['gate', 'os'])
+
+    def test_a_directory_must_list_the_kinds_the_checker_scans(self):
+        with Tree() as tree:
+            directory = tree.save_dir({}, scans=['gate', 'os'])
+            self.assertTrue(any('scans' in e for e in checker.load_inventory(directory)[1]))
+            directory = tree.save_dir({}, scans=list(checker.SCANS))
+            self.assertEqual(checker.load_inventory(directory)[1], [])
+
+    def test_a_kind_the_base_does_not_scan_is_left_out_of_the_comparison(self):
+        old_base = [entry('unix', 'mod a')]
+        now = [entry('unix', 'mod a'), entry('cfg!(windows)', '', kind='split', state='unported'),
+               entry('cfg!(unix)', '', kind='split', state='unported')]
+        with Tree() as tree:
+            tree.save(old_base)
+            directory = tree.save_dir({'1.2': now}, scans=list(checker.SCANS))
+            errors, summary = checker.shrink(directory, tree.inventory)
+            self.assertEqual(errors, [])
+            self.assertIn('split', summary)
+            base_with_splits = tree.save_dir({'1.2': old_base}, scans=list(checker.SCANS), path=tree.root / 'base')
+            self.assertTrue(checker.shrink(directory, base_with_splits)[0][0].startswith('RAISED'))
+
+    def test_an_old_kind_still_ratchets_against_an_old_base(self):
+        with Tree() as tree:
+            tree.save([entry('unix', 'mod a')])
+            directory = tree.save_dir({'1.2': [entry('unix', 'mod a'), entry('unix', 'mod b')]}, scans=list(checker.SCANS))
+            self.assertTrue(checker.shrink(directory, tree.inventory)[0][0].startswith('RAISED'))
+
+
+class NewPlatformRows(unittest.TestCase):
+    """P3-2: a row that is newly `platform` against the base is listed, and needs a reason and a named approval."""
+
+    def platform(self, **more):
+        return entry('unix', 'mod a', state='platform', reason='AF_UNIX only', **more)
+
+    def compare(self, base, now):
+        with Tree() as tree:
+            tree.save(base, path=tree.root / 'base.json')
+            tree.save(now)
+            return checker.shrink(tree.inventory, tree.root / 'base.json')
+
+    def test_relabelling_unported_as_platform_without_an_approval_fails_and_is_listed(self):
+        errors, summary = self.compare([entry('unix', 'mod a')], [self.platform()])
+        self.assertEqual(len(errors), 1)
+        self.assertTrue(errors[0].startswith('PLATFORM'), errors)
+        self.assertIn('approved_platform', errors[0])
+        self.assertIn('mod a', errors[0])
+        self.assertIn('AF_UNIX only', errors[0])
+
+    def test_a_named_approval_passes_and_the_row_is_still_listed(self):
+        errors, summary = self.compare([entry('unix', 'mod a')], [self.platform(approved_platform='operator 2026-10-10')])
+        self.assertEqual(errors, [])
+        self.assertIn('newly platform', summary)
+        self.assertIn('mod a', summary)
+        self.assertIn('operator 2026-10-10', summary)
+
+    def test_approved_platform_must_name_the_decision(self):
+        for bad in (True, '', '  ', None, 3):
+            errors, _ = self.compare([entry('unix', 'mod a')], [self.platform(approved_platform=bad)])
+            self.assertEqual([e.split()[0] for e in errors], ['PLATFORM'], bad)
+
+    def test_a_new_row_that_is_platform_from_the_start_is_listed_too(self):
+        errors, _ = self.compare([], [self.platform()])
+        self.assertEqual([e.split()[0] for e in errors], ['PLATFORM'])
+
+    def test_a_platform_row_the_base_already_had_is_not_listed(self):
+        errors, summary = self.compare([self.platform()], [self.platform()])
+        self.assertEqual(errors, [])
+        self.assertNotIn('newly platform', summary)
+
+    def test_a_raised_platform_count_is_listed(self):
+        errors, _ = self.compare([self.platform()], [dict(self.platform(), count=2)])
+        self.assertEqual([e.split()[0] for e in errors], ['PLATFORM'])
+
+    def test_a_platform_row_is_not_a_count_raise_once_approved(self):
+        errors, _ = self.compare([entry('unix', 'mod a')], [self.platform(approved_platform='OD14')])
+        self.assertEqual(errors, [])
 
 
 class Command(unittest.TestCase):
