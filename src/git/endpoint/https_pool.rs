@@ -3,7 +3,7 @@ use super::{
     https_connection::{self, Config, Connection, HttpConnector, HttpResource},
     https_tls::SharedTls,
     https_wake::PoolWake,
-    setup_retry::{self, Phase},
+    setup_retry::{self, Conn, Governor, Phase},
     shared_reservation::{Authority, ReservedConnector},
     ssh_pool::{PoolHost, Resource},
 };
@@ -32,6 +32,9 @@ pub(crate) struct HttpsPool {
     epoch: Instant,
     wake: Arc<PoolWake>,
     tls: SharedTls,
+    /// The limit machines of this pool; its host reports every connection's
+    /// state change to them.
+    governor: Governor,
 }
 pub(crate) struct RunningPool {
     pub(crate) client: HttpsPool,
@@ -60,14 +63,19 @@ impl RunningPool {
         let epoch = Instant::now();
         let connector = connector(epoch);
         let tls = connector.tls();
-        let (pool, host) = PoolHost::new(config, ReservedConnector::new(connector, authority), 0)
-            .map_err(|_| https_connection::failure(ErrorCode::InvalidRequest))?;
+        let ceiling = config.per_host.min(config.per_user_host);
+        let (pool, mut host) =
+            PoolHost::new(config, ReservedConnector::new(connector, authority), 0)
+                .map_err(|_| https_connection::failure(ErrorCode::InvalidRequest))?;
+        let governor = Governor::random(pool.control(), ceiling, false);
+        host.set_observer(Arc::new(governor.clone()));
         let client = HttpsPool {
             pool,
             host: Arc::new(Mutex::new(host)),
             epoch,
             wake: Arc::default(),
             tls,
+            governor,
         };
         let owner = client.clone();
         let supervisor = tokio::spawn(async move { owner.supervise().await });
@@ -160,6 +168,10 @@ impl HttpsPool {
     } }
     pub(crate) fn now(&self) -> u64 {
         self.epoch.elapsed().as_millis().min(u64::MAX as u128) as u64
+    }
+    /// The limit machines of this pool.
+    pub(crate) fn governor(&self) -> &Governor {
+        &self.governor
     }
     pub(crate) fn pending(&self) -> usize {
         self.host
@@ -398,6 +410,11 @@ pub(crate) struct HttpLease {
     pub(crate) retried: bool,
 }
 impl HttpLease {
+    /// The pool's name for this lease's connection, which the limit machines
+    /// know it by.
+    pub(crate) fn pool_connection(&self) -> Option<Conn> {
+        self.lease.as_ref()?.connection().ok().map(Conn::of)
+    }
     pub(crate) fn scope(&self, scope: &str) -> Result<(), Failure> {
         self.lease
             .as_ref()

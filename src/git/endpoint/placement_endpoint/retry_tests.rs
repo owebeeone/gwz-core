@@ -10,7 +10,7 @@ use gwz_transport::{
 use std::sync::{Arc, Mutex};
 
 const JITTER: u64 = 7;
-const OPERATION: &str = "operation";
+pub(super) const OPERATION: &str = "operation";
 
 fn failure(code: ErrorCode, setup_cause: Option<SetupFailureCause>) -> Failure {
     Failure {
@@ -21,7 +21,7 @@ fn failure(code: ErrorCode, setup_cause: Option<SetupFailureCause>) -> Failure {
         facts: None,
     }
 }
-fn stall() -> Failure {
+pub(super) fn stall() -> Failure {
     failure(ErrorCode::Timeout, Some(SetupFailureCause::Stall))
 }
 
@@ -106,7 +106,7 @@ impl super::super::ssh_worker::ChannelResource for Setting {
 
 /// An endpoint over the scripted connector, at an operation's per-host limit
 /// and retry budget, with fixed jitter.
-fn endpoint(
+pub(super) fn endpoint(
     outcome: Failure,
     after: Option<Duration>,
     per_host: usize,
@@ -157,7 +157,7 @@ fn scripted_endpoint(
     endpoint.set_max_retries(OPERATION, max_retries);
     (endpoint, starts)
 }
-fn open(stream_id: i64, allocation_ms: i64) -> Envelope {
+pub(super) fn open(stream_id: i64, allocation_ms: i64) -> Envelope {
     let envelope = Envelope {
         version: 2,
         session_id: "session".into(),
@@ -197,7 +197,7 @@ fn key() -> RetryKey {
     (Key::ssh("git", "host", 22), Identity::default())
 }
 /// One pass at `now`, keeping the open terminals it hands out.
-fn step(endpoint: &mut PlacementEndpoint, now: u64, terminals: &mut Vec<Envelope>) {
+pub(super) fn step(endpoint: &mut PlacementEndpoint, now: u64, terminals: &mut Vec<Envelope>) {
     let mut cx = Context::from_waker(std::task::Waker::noop());
     endpoint.step(now, &mut cx).unwrap();
     while let Some(item) = endpoint.take_outbound() {

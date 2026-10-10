@@ -38,8 +38,13 @@ impl Endpoint {
         let capacity = config.max_requests;
         let cleanup = config.cleanup_timeout_ms;
         let policy = config.clone();
-        let (pool, host) = PoolHost::new(config, connector, 0)
+        let ceiling = config.per_host.min(config.per_user_host);
+        let (pool, mut host) = PoolHost::new(config, connector, 0)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+        // Every connection state change on this pool reaches the machines
+        // from the one thread that drives the host, in the order it acted.
+        let governor = Governor::random(pool.control(), ceiling, false);
+        host.set_observer(Arc::new(governor.clone()));
         static NEXT_WORKER: AtomicU64 = AtomicU64::new(1);
         let id = NEXT_WORKER
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
@@ -97,6 +102,7 @@ impl Endpoint {
                 watch,
                 handoff,
                 supervisor,
+                governor,
             }),
             cleanup: Duration::from_millis(cleanup),
         })
@@ -163,6 +169,15 @@ impl Endpoint {
     }
     pub(crate) fn pool(&self) -> &Pool {
         &self.shared.pool
+    }
+    /// The limit machines of this endpoint's pool.
+    pub(crate) fn governor(&self) -> &Governor {
+        &self.shared.governor
+    }
+    /// The pool's clock in milliseconds: the time the pool, its host and the
+    /// governor are all measured in.
+    pub(crate) fn pool_now(&self) -> u64 {
+        elapsed(self.shared.origin)
     }
     pub(crate) fn set_request_capacity(&self, capacity: usize) {
         self.shared.capacity.store(capacity, Ordering::Release);

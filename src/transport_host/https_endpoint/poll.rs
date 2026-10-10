@@ -184,6 +184,7 @@ impl HttpsEndpoint {
                 }
             }
         }
+        self.client.governor().tick(self.client.pool_now());
         self.start_held();
         self.entries.retain(|_, entry| {
             !(entry.retired && entry.preparing.is_none() && entry.serving.is_none())

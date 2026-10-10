@@ -173,6 +173,17 @@ impl PlacementEndpoint {
     /// its first open. An operation never given one retries three times.
     pub(crate) fn set_max_retries(&mut self, request: &str, max_retries: u32) {
         self.retries.set_max_retries(request, max_retries);
+        // The operation's limit machines start SATURATED at its ceiling:
+        // the per-host limits its admission has just installed in the pool,
+        // under the endpoint's own open ceiling (adaptive concurrency design
+        // §4.1). Refusals do not lower `N` yet: no failure is classified as
+        // limit evidence on SSH, and the probe carriers are a later step.
+        let capacity = self.pool().capacity();
+        let ceiling = capacity
+            .per_host
+            .min(capacity.per_user_host)
+            .min(open_ceiling(capacity));
+        self.endpoint.governor().begin_operation(ceiling, false);
     }
 
     /// Advance bounded checks, open completions, and each live message bridge.
@@ -183,6 +194,7 @@ impl PlacementEndpoint {
         let now_ms = self.now_ms;
         self.finish_checks(now_ms, cx);
         self.finish_opens(now_ms);
+        self.endpoint.governor().tick(self.endpoint.pool_now());
         self.start_queued(now_ms)?;
         self.flush_attachments();
         if self.faulted {
@@ -285,6 +297,7 @@ cfg_if::cfg_if! {
             #[path = "placement_endpoint_tests.rs"]
             mod check_tests;
         } }
+        mod limit_tests;
         mod retry_tests;
     }
 }

@@ -14,6 +14,10 @@ impl Spread {
     pub(crate) fn fixed(permille: u64) -> Self {
         Self::new(move || permille)
     }
+    /// Draws from the operating system's random source.
+    pub(crate) fn random() -> Self {
+        Self::new(|| 800 + getrandom::u64().map_or(200, |value| value % 401))
+    }
     fn draw(&mut self) -> u64 {
         (self.0)().clamp(800, 1_200)
     }

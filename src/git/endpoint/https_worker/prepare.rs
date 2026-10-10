@@ -318,6 +318,19 @@ impl Client {
             prepared.opened.facts.credential_offered =
                 current_credential_offered || credential_offered;
             credential_offered = prepared.opened.facts.credential_offered;
+            if prepared.opened.reused {
+                // An exchange on a leased connection is an attempt of its
+                // own: its window runs from here (§4.3).
+                if let Some(connection) =
+                    prepared.lease.as_ref().and_then(HttpLease::pool_connection)
+                {
+                    self.pool.governor().exchange_begins(
+                        &Key::https(destination.host(), destination.port()),
+                        connection,
+                        self.pool.now(),
+                    );
+                }
+            }
             let header_started = Instant::now();
             let sent = tokio::select! {
                 _=async { match budget.logical_deadline { Some(until) => tokio::time::sleep_until(until).await, None => std::future::pending().await } }, if native_policy => return Err(with_facts(ErrorCode::Timeout, Effect::None, &prepared.opened.facts)),
@@ -407,6 +420,12 @@ impl Client {
             }
             let status = response.status().as_u16();
             prepared.opened.facts.http_status = Some(status as i64);
+            self.tell_governor(
+                &prepared,
+                &Key::https(destination.host(), destination.port()),
+                status,
+                response.headers(),
+            );
             if matches!(status, 401 | 403)
                 && let Some(credential) = &prepared.credential
             {

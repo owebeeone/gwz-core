@@ -179,6 +179,15 @@ impl HttpsEndpoint {
     /// its first open. An operation never given one retries three times.
     pub(super) fn set_max_retries(&mut self, request: &str, max_retries: u32) {
         self.retries.set_max_retries(request, max_retries);
+        // The operation's limit machines start SATURATED at the per-host
+        // limit its admission has just installed in the pool (adaptive
+        // concurrency design §4.1). A throttle sets a hold but does not lower
+        // `N` yet: the probe carriers and the classification of the other
+        // refusals are a later step.
+        let capacity = self.pool().capacity();
+        self.client
+            .governor()
+            .begin_operation(capacity.per_host.min(capacity.per_user_host), false);
     }
     pub(super) fn owns(&self, request: &str, id: i64) -> bool {
         self.entries.contains_key(&(request.into(), id))
@@ -574,6 +583,7 @@ cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
     mod https_cancel_mux_tests;
     mod retry_tests;
     mod stale_action_tests;
+    mod throttle_tests;
 } }
 // Needs no HTTPS server, so it runs on Windows too.
 cfg_if::cfg_if! { if #[cfg(test)] { mod wake_tests; } }
