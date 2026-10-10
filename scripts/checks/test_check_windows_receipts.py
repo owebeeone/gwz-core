@@ -82,6 +82,21 @@ class Gate(unittest.TestCase):
         self.assertIn('ci-only', notes[0])
         self.assertIn('sibling pin', notes[0])
 
+    def test_a_later_ci_only_waiver_does_not_cover_an_earlier_trigger_change(self):
+        # The adaptive lane's round-2 review commit (documentation only, ci-only) passed the gate for the
+        # code commits before it; a waiver speaks for its own commit only.
+        errors, notes = self.run_gate(commit('a1', 'Fix', TRIGGER),
+                                      commit('a2', 'Review\n\nWindows-receipt: ci-only documentation only', OTHER))
+        self.assertEqual(len(errors), 1)
+        self.assertIn('a1', errors[0])
+        self.assertEqual(len(notes), 1)
+
+    def test_a_label_after_a_ci_only_waiver_still_covers_the_earlier_change(self):
+        errors, _ = self.run_gate(commit('a1', 'Fix', TRIGGER),
+                                  commit('a2', 'Review\n\nWindows-receipt: ci-only documentation only', OTHER),
+                                  commit('a3', 'Merge\n\nWindows-receipt: adaptive-20261011-b', OTHER))
+        self.assertEqual(errors, [])
+
     def test_a_malformed_receipt_fails_even_without_a_trigger_path(self):
         errors, _ = self.run_gate(commit('a1', 'Docs\n\nWindows-receipt: later', OTHER))
         self.assertEqual(len(errors), 1)

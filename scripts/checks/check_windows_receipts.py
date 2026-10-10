@@ -15,8 +15,9 @@ The receipt convention is one line anywhere in a commit message:
                                            that the candidate-windows job covers, a manifest comment); the gate
                                            prints the reason so the reviewer sees the waiver
 
-A receipt covers its own commit and every earlier commit of the range. A trigger-path change after the last
-receipt fails, so the last triggering commit, or a later one, carries the line. The label is checked for form
+A label covers its own commit and every earlier commit of the range; a ci-only waiver covers its own commit
+only. A trigger-path change after the last label fails, so the last triggering commit, or a later one, carries a
+label (or the triggering commit itself carries the waiver). The label is checked for form
 only: receipts live outside the repository (the receipt directory of the run), and the reviewer reads the
 receipt the label names.
 
@@ -59,17 +60,21 @@ def parse(message: str):
 
 
 def gate(commits):
-    """(errors, notes) for the commits, oldest first. A receipt covers its own commit and the earlier ones."""
+    """(errors, notes) for the commits, oldest first. A label covers its own commit and the earlier ones; a
+    ci-only waiver covers its own commit only."""
     errors, notes, pending = [], [], []
     patterns = lane.trigger_patterns()
     for commit in commits:
         receipt = parse(commit.message)
         if receipt is not None and receipt.error:
             errors.append(f'{commit.sha[:12]}: malformed Windows-receipt line, {receipt.error}; the form is {FORM}')
+        elif receipt is not None and receipt.ci_only:
+            # A waiver speaks for its own commit only: a documentation commit after a code change must not
+            # stand in for the code change's compile.
+            notes.append(f'{commit.sha[:12]}: Windows compile waived, ci-only: {receipt.ci_only}')
+            continue
         elif receipt is not None:
             pending = []
-            if receipt.ci_only:
-                notes.append(f'{commit.sha[:12]}: Windows compile waived, ci-only: {receipt.ci_only}')
             continue
         hits = lane.triggered(commit.paths, patterns)
         if hits:
