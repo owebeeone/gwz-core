@@ -204,11 +204,22 @@ impl PlacementEndpoint {
                 Ok(())
             }
             Decision::Start => {
+                let admission = self
+                    .endpoint
+                    .governor()
+                    .admission(&queued.pool_key, self.endpoint.pool_now());
+                if !admission.gate_open {
+                    // Behind a hold of its site (§5.2): the wait is the
+                    // server's word, and the allocation clock stops.
+                    queued.allocation.stop(now);
+                    self.queued_opens.push_back(queued);
+                    return Ok(());
+                }
                 queued.allocation.run(now);
                 let left = queued.allocation.left(now);
                 if left == 0 {
                     self.fail_open(&queued.key, setup_retry::allocation_timeout());
-                } else if self.admits_open(&queued.pool_key) {
+                } else if self.admits_open(&queued.pool_key, admission.target) {
                     self.start_attempt(queued, now, left);
                 } else {
                     self.queued_opens.push_back(queued);
@@ -393,8 +404,10 @@ impl PlacementEndpoint {
     /// An open starts while the opens in flight stay within the operation's
     /// limits, which the transport host installs in the pool before the
     /// operation's first open: the per-host and per-user ceilings of the open's
-    /// host, and `open_ceiling` across every host.
-    fn admits_open(&self, key: &Key) -> bool {
+    /// host, `open_ceiling` across every host, and `target`, the believed
+    /// limit of the open's site that its limit machine sets (the ceiling
+    /// until a limit is found).
+    fn admits_open(&self, key: &Key, target: usize) -> bool {
         let capacity = self.endpoint.pool().capacity();
         let host = self
             .opens
@@ -403,9 +416,11 @@ impl PlacementEndpoint {
         self.opens.len() < open_ceiling(capacity)
             && host.clone().count() < capacity.per_host
             && host
+                .clone()
                 .filter(|open| open.pool_key.username == key.username)
                 .count()
                 < capacity.per_user_host
+            && host.filter(|open| open.pool_key.port == key.port).count() < target
     }
 }
 

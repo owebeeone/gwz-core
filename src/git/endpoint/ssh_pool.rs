@@ -20,6 +20,37 @@ use std::{
 };
 pub(crate) type Progress = Arc<Mutex<Facts>>;
 
+/// What the host saw happen to a connection (adaptive concurrency design
+/// §4.1's states). Each is reported at the moment the host acts, which is when
+/// the server can first be affected, and in the order the host acted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Seen {
+    /// The connector began the socket connect. `clocked` is false when the
+    /// connect has no deadline.
+    Started { clocked: bool },
+    /// The resource connected, as the pool counts it. (HTTPS is not set up
+    /// until its first exchange is answered, which the endpoint reports.)
+    Connected,
+    /// The connect failed: the server refused or dropped it, or the host
+    /// could not finish it. Nothing remains for the server to count.
+    SetupEnded,
+    /// The client cancelled the connect and has disposed of it.
+    Retired,
+    /// The host began to dispose of the connection.
+    Closing,
+    /// The host has disposed of it.
+    Disposed,
+    /// The server closed an idle connection and the host noticed.
+    ServerClosed,
+}
+
+/// Told, by the one thread that drives a pool host, of every connection's
+/// state change in the order it happened (F10). An observer must not call
+/// back into the host.
+pub(crate) trait Observer: Send + Sync {
+    fn seen(&self, key: &Key, connection: ConnectionId, seen: Seen, now: u64);
+}
+
 /// The open a connection's setup serves: where the setup reports progress,
 /// and what that open's URL holds beyond its pool key (TR2.18). A connection
 /// opened for no live open gets the default, which holds nothing.
@@ -97,6 +128,19 @@ pub(crate) trait Resource {
     }
 }
 
+/// Tells `observer`, if there is one, what the host saw.
+fn notify(
+    observer: &Option<Arc<dyn Observer>>,
+    now: u64,
+    key: &Key,
+    connection: ConnectionId,
+    seen: Seen,
+) {
+    if let Some(observer) = observer {
+        observer.seen(key, connection, seen, now);
+    }
+}
+
 enum Phase {
     Connecting,
     Ready,
@@ -124,6 +168,7 @@ impl Phase {
     }
 }
 struct Entry<R> {
+    key: Key,
     resource: R,
     phase: Phase,
     used: bool,
@@ -147,6 +192,9 @@ pub(crate) struct PoolHost<C: Connector> {
     /// announces and the pool does not either, because the driver's waiter is
     /// dropped with each turn (`PoolDriver::next_action`).
     caller: Option<Waker>,
+    observer: Option<Arc<dyn Observer>>,
+    /// The latest turn's time, which the reports carry.
+    now: u64,
 }
 
 impl<C: Connector> PoolHost<C> {
@@ -165,8 +213,15 @@ impl<C: Connector> PoolHost<C> {
                 stall_ms: Arc::new(AtomicU64::new(0)),
                 progressed: false,
                 caller: None,
+                observer: None,
+                now,
             },
         ))
+    }
+
+    /// Reports every connection's state change to `observer` from now on.
+    pub(crate) fn set_observer(&mut self, observer: Arc<dyn Observer>) {
+        self.observer = Some(observer);
     }
 
     pub(crate) fn stall_slot(&self) -> Arc<AtomicU64> {
@@ -271,6 +326,7 @@ impl<C: Connector> PoolHost<C> {
         {
             self.caller = Some(cx.waker().clone());
         }
+        self.now = now;
         self.driver.advance(now);
         self.actions(cx, &mut opening)?;
         let ids: Vec<_> = self.entries.keys().copied().collect();
@@ -307,6 +363,7 @@ impl<C: Connector> PoolHost<C> {
                             entry.phase = Phase::Ready;
                             self.progressed = true;
                             self.driver.connected(id, Ok(identity))?;
+                            notify(&self.observer, self.now, &entry.key, id, Seen::Connected);
                         }
                         Poll::Ready(Err(failure)) => {
                             entry.phase = Phase::Disposing {
@@ -331,6 +388,7 @@ impl<C: Connector> PoolHost<C> {
                             // A checkout that won keeps the lease: its exchange
                             // finds the entry Lost, and its release and the
                             // pool's Close end it.
+                            let key = entry.key.clone();
                             match self.driver.idle_closed(id) {
                                 Ok(()) => {
                                     self.entries.remove(&id);
@@ -338,17 +396,27 @@ impl<C: Connector> PoolHost<C> {
                                 Err(Error::WrongState) => entry.phase = Phase::Lost,
                                 Err(error) => return Err(error),
                             }
+                            notify(&self.observer, self.now, &key, id, Seen::ServerClosed);
                         }
                         Poll::Ready(Ok(())) => {
                             self.progressed = true;
                             let failure = connect_failure.clone();
+                            let key = entry.key.clone();
                             // Destruction precedes the capacity acknowledgement.
                             self.entries.remove(&id);
+                            let seen = match &failure {
+                                Some(failure) if failure.code == ErrorCode::Cancelled => {
+                                    Seen::Retired
+                                }
+                                Some(_) => Seen::SetupEnded,
+                                None => Seen::Disposed,
+                            };
                             if let Some(failure) = failure {
                                 self.driver.connected(id, Err(failure))?;
                             } else {
                                 self.driver.closed(id)?;
                             }
+                            notify(&self.observer, self.now, &key, id, seen);
                         }
                         Poll::Ready(Err(error)) => {
                             self.progressed = true;
@@ -435,9 +503,19 @@ impl<C: Connector> PoolHost<C> {
                     }
                     Ok(result) => match result {
                         Ok((resource, setup)) => {
+                            notify(
+                                &self.observer,
+                                self.now,
+                                &key,
+                                connection,
+                                Seen::Started {
+                                    clocked: network_deadline.is_some(),
+                                },
+                            );
                             self.entries.insert(
                                 connection,
                                 Entry {
+                                    key: key.clone(),
                                     resource,
                                     phase: Phase::Connecting,
                                     used: false,
@@ -472,6 +550,13 @@ impl<C: Connector> PoolHost<C> {
                 Action::Close { connection, .. } | Action::Abort { connection } => {
                     let force = matches!(action, Action::Abort { .. });
                     let entry = self.entries.get_mut(&connection).ok_or(Error::Stale)?;
+                    notify(
+                        &self.observer,
+                        self.now,
+                        &entry.key,
+                        connection,
+                        Seen::Closing,
+                    );
                     // Also after idle loss: the pool's Close is acknowledged
                     // with `closed`, never a second `idle_closed`.
                     entry.phase = Phase::Disposing {
@@ -496,5 +581,11 @@ impl<C: Connector> Drop for PoolHost<C> {
         // Normal worker shutdown retains this entire host until disposal.
         // Emergency Drop cancels supervised jobs; it never acknowledges reuse.
         self.entries.clear();
+    }
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        mod events_tests;
     }
 }

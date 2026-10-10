@@ -18,25 +18,37 @@
 //! close ends in a discard. Reporting `Closing` at a fetch's completion would
 //! make every key non-quiet and every test window unfair.
 //!
-//! The endpoints do not use these types yet, so the module allows dead code
-//! until the integration step wires them.
-#![allow(dead_code, reason = "wired by the integration step")]
+//! Cut 3: [`governor`], one pool's machines behind one lock, which the pool
+//! host reports to and the endpoints consult. The endpoints use it for the
+//! gate and the admission target, for holds and the idle discard; the
+//! probe carriers, the restore steps and the setup limit are later steps, so
+//! the module still allows dead code.
+#![allow(
+    dead_code,
+    reason = "carriers, restore steps and the setup limit come later"
+)]
 
 mod control;
 mod filter;
 mod fsm;
+mod governor;
 mod hold;
 mod notes;
 mod states;
 mod timer;
 mod windows;
 
+pub(crate) use filter::Signal;
+pub(crate) use governor::{Conn, Governor};
+
 cfg_if::cfg_if! {
     if #[cfg(test)] {
         mod control_hold_tests;
+        mod control_pool_tests;
         mod control_tests;
         mod filter_tests;
         mod fsm_tests;
+        mod governor_tests;
         mod hold_notes_tests;
         mod states_tests;
         mod timer_tests;

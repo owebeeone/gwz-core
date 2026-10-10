@@ -29,11 +29,13 @@ pub(crate) enum ConnEvent {
     /// An abandoned setup's job retired, or the client cancelled the connect:
     /// Settling.
     Retired,
-    /// The client began to close it, or found it dead on use.
+    /// The client began to close it, or found it dead on use; or a setup
+    /// still unanswered was discarded.
     Closing,
     /// The client disposed of a Closing connection: Settling.
     Disposed,
-    /// The server ended a Connected or Closing connection: Gone.
+    /// The server ended a connection that was never answered, a Connected one
+    /// or a Closing one: Gone.
     ServerClosed,
 }
 
@@ -88,6 +90,9 @@ impl Table {
     pub(crate) fn settle_mut(&mut self) -> &mut Settle {
         &mut self.settle
     }
+    pub(crate) fn settle(&self) -> &Settle {
+        &self.settle
+    }
     /// Moves every Settling connection whose time has passed to Gone.
     pub(crate) fn advance(&mut self, now: u64) {
         self.conns
@@ -116,8 +121,13 @@ impl Table {
             (Some(Phase::SettingUp), ConnEvent::SetupEnded) => Phase::Gone,
             (Some(Phase::SettingUp), ConnEvent::Retired)
             | (Some(Phase::Closing), ConnEvent::Disposed) => Phase::Settling,
-            (Some(Phase::Connected), ConnEvent::Closing) => Phase::Closing,
-            (Some(Phase::Connected | Phase::Closing), ConnEvent::ServerClosed) => Phase::Gone,
+            // A connection discarded before its setup was answered (HTTPS: a
+            // throttled discovery on a new connection) is closed all the same.
+            (Some(Phase::Connected | Phase::SettingUp), ConnEvent::Closing) => Phase::Closing,
+            (
+                Some(Phase::SettingUp | Phase::Connected | Phase::Closing),
+                ConnEvent::ServerClosed,
+            ) => Phase::Gone,
             _ => return None,
         };
         if to == Phase::Gone {

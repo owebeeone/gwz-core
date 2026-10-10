@@ -186,6 +186,7 @@ impl Client {
             {
                 return Err(with_facts(ErrorCode::Timeout, Effect::None, &facts));
             }
+            let carried_lease = challenge.is_some();
             let lease = if let Some(carried) = challenge.take() {
                 let mut carried = carried;
                 if let Some(mut lease) = carried.take_for(&destination, &input) {
@@ -318,6 +319,36 @@ impl Client {
             prepared.opened.facts.credential_offered =
                 current_credential_offered || credential_offered;
             credential_offered = prepared.opened.facts.credential_offered;
+            if prepared.opened.reused {
+                // An exchange on a leased connection is an attempt of its
+                // own: its window runs from here (§4.3). During a hold no
+                // open begins its first exchange on a leased connection
+                // (§4.5): the lease goes back unused, and the open asks
+                // again when the hold has ended.
+                if let Some(pooled) = prepared.lease.as_ref().and_then(HttpLease::pool_connection) {
+                    let pool_key = Key::https(destination.host(), destination.port());
+                    let began =
+                        self.pool
+                            .governor()
+                            .exchange_begins(&pool_key, pooled, self.pool.now());
+                    if !began && !carried_lease {
+                        drop(guard);
+                        drop(connection);
+                        let Prepared {
+                            _slot: returned_slot,
+                            _operation: returned_dependency,
+                            lease,
+                            ..
+                        } = prepared;
+                        lease.unwrap().finish(Disposition::Reusable)?;
+                        slot = returned_slot;
+                        dependency = Some(returned_dependency);
+                        credential_offered = offered_before;
+                        self.wait_for_hold(&pool_key, cancel).await?;
+                        continue;
+                    }
+                }
+            }
             let header_started = Instant::now();
             let sent = tokio::select! {
                 _=async { match budget.logical_deadline { Some(until) => tokio::time::sleep_until(until).await, None => std::future::pending().await } }, if native_policy => return Err(with_facts(ErrorCode::Timeout, Effect::None, &prepared.opened.facts)),
@@ -407,6 +438,12 @@ impl Client {
             }
             let status = response.status().as_u16();
             prepared.opened.facts.http_status = Some(status as i64);
+            self.tell_governor(
+                &prepared,
+                &Key::https(destination.host(), destination.port()),
+                status,
+                response.headers(),
+            );
             if matches!(status, 401 | 403)
                 && let Some(credential) = &prepared.credential
             {

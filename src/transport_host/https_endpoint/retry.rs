@@ -169,7 +169,11 @@ impl HttpsEndpoint {
             return;
         };
         let decision = self.retries.machines.machine(&key.0, &pool_key).decide(now);
-        let room = self.admits_attempt(&pool_key);
+        let admission = self
+            .client
+            .governor()
+            .admission(&pool_key, self.client.pool_now());
+        let room = self.admits_attempt(&pool_key, admission.target);
         let Some(entry) = self.entries.get_mut(key) else {
             return;
         };
@@ -196,6 +200,15 @@ impl HttpsEndpoint {
                 let Some(mut held) = entry.held.take() else {
                     return;
                 };
+                if !admission.gate_open {
+                    // Behind a hold of its site (§5.2): the server's word is
+                    // the wait, and the allocation clock stops, as it does
+                    // while the key's retry machine holds the open.
+                    held.allocation.stop(now);
+                    held.lapse();
+                    entry.held = Some(held);
+                    return;
+                }
                 held.allocation.run(now);
                 let left = held.allocation.left(now);
                 if left == 0 {
@@ -213,15 +226,20 @@ impl HttpsEndpoint {
     /// An attempt starts while the attempts in flight on its host stay within
     /// the operation's per-host limits, which the transport host installs in
     /// the pool: a key's first wave is at most that many setups (amendment
-    /// 2's §3.20), as on SSH.
-    fn admits_attempt(&self, pool_key: &pool::Key) -> bool {
+    /// 2's §3.20), as on SSH. The attempts in flight on its site also stay
+    /// within `target`, the believed limit its limit machine sets (the ceiling
+    /// until a limit is found).
+    fn admits_attempt(&self, pool_key: &pool::Key, target: usize) -> bool {
         let capacity = self.client.pool().capacity();
-        let in_flight = self
+        let on_host = self
             .entries
             .values()
-            .filter(|entry| entry.preparing.is_some() && entry.pool_key.host == pool_key.host)
-            .count();
-        in_flight < capacity.per_host.min(capacity.per_user_host)
+            .filter(|entry| entry.preparing.is_some() && entry.pool_key.host == pool_key.host);
+        on_host.clone().count() < capacity.per_host.min(capacity.per_user_host)
+            && on_host
+                .filter(|entry| entry.pool_key.port == pool_key.port)
+                .count()
+                < target
     }
 
     /// One attempt of `key`'s open, with its own budget, afresh unless it

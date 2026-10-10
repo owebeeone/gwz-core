@@ -179,6 +179,18 @@ impl HttpsEndpoint {
     /// its first open. An operation never given one retries three times.
     pub(super) fn set_max_retries(&mut self, request: &str, max_retries: u32) {
         self.retries.set_max_retries(request, max_retries);
+        // The operation's limit machines start SATURATED at the per-host
+        // limit its admission has just installed in the pool (adaptive
+        // concurrency design §4.1). A throttle sets a hold but does not lower
+        // `N` yet: the probe carriers and the classification of the other
+        // refusals are a later step.
+        let capacity = self.pool().capacity();
+        self.client.governor().begin_operation(
+            request,
+            capacity.per_host.min(capacity.per_user_host),
+            false,
+            self.client.pool_now(),
+        );
     }
     pub(super) fn owns(&self, request: &str, id: i64) -> bool {
         self.entries.contains_key(&(request.into(), id))
@@ -405,6 +417,7 @@ impl HttpsEndpoint {
         }
         // Its opens are all finished: no wake starts an attempt for it.
         self.retries.remove(request);
+        self.client.governor().end_operation(request);
     }
     pub(super) fn pending_request_count(&self, request: &str) -> usize {
         self.entries.keys().filter(|(id, _)| id == request).count() + self.client.pending_cleanup()

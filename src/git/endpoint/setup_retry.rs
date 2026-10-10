@@ -19,6 +19,7 @@ mod operations;
 
 pub(crate) use allocation::AllocationClock;
 pub(crate) use backoff::{Jitter, wait_bound_ms};
+pub(crate) use limit::{Conn, Governor, Signal};
 pub(crate) use machine::{Decision, Machine, Outcome};
 pub(crate) use operations::{DEFAULT_MAX_RETRIES, Operations};
 

@@ -146,6 +146,20 @@ impl Limit {
     /// which is the same rule; a confirmation or a test in flight allows no
     /// start at all.
     pub(crate) fn admits_ordinary(&mut self, now: u64) -> bool {
+        if !self.gate_open(now) {
+            return false;
+        }
+        match self.fsm.state() {
+            State::Saturated => self.table.held() < self.ceiling,
+            _ => self.table.possible() < self.fsm.n(),
+        }
+    }
+    /// Whether new connections may start at all: no hold, no confirmation,
+    /// no test in flight, and no connection of an inconclusive refusal's
+    /// window still winding down (§4.4). It does not count connections: the
+    /// pool's limit bounds those, and an open that can lease an idle
+    /// connection is not a start.
+    pub(crate) fn gate_open(&mut self, now: u64) -> bool {
         self.table.advance(now);
         if self.hold.in_force(now) || self.confirmation || self.test_slot.is_some() {
             return false;
@@ -156,10 +170,7 @@ impl Limit {
             }
             self.barrier.clear();
         }
-        match self.fsm.state() {
-            State::Saturated => self.table.held() < self.ceiling,
-            _ => self.table.possible() < self.fsm.n(),
-        }
+        true
     }
     /// Whether an open may begin its first exchange (a discovery) on a
     /// leased connection: not during a hold.
@@ -257,8 +268,28 @@ impl Limit {
                 target,
             ),
         };
-        if !self.windows.open(attempt, kind, own, &self.table) {
-            return None;
+        self.begin(attempt, kind, target, own, clocked, now)
+            .then_some(target)
+    }
+    /// Opens `attempt`'s window with `kind` and `target`, and starts its
+    /// connection in the table when it is new, without asking admission
+    /// again. The pool has made the connection under its own limit, and the
+    /// window runs from its socket connect (§4.3), so the endpoint that sees
+    /// the connect calls this. False, changing nothing, if the attempt is
+    /// already in flight.
+    pub(crate) fn begin(
+        &mut self,
+        attempt: AttemptId,
+        kind: AttemptKind,
+        target: usize,
+        own: Own,
+        clocked: bool,
+        now: u64,
+    ) -> bool {
+        if self.targets.contains_key(&attempt)
+            || !self.windows.open(attempt, kind, own, &self.table)
+        {
+            return false;
         }
         self.targets.insert(attempt, target);
         if kind.is_test() {
@@ -270,7 +301,38 @@ impl Limit {
         if let Own::New(conn) = own {
             self.conn(conn, ConnEvent::Started { clocked }, now);
         }
-        Some(target)
+        true
+    }
+    /// Whether a hold is in force at `now`: the server's word, which no
+    /// other operation's start may erase.
+    pub(crate) fn holding(&self, now: u64) -> bool {
+        self.hold.in_force(now)
+    }
+    /// Takes the hold out, leaving none: a key kept across an operation's end
+    /// for its hold alone carries it into a fresh `Limit`.
+    pub(crate) fn take_hold(&mut self) -> Hold {
+        std::mem::take(&mut self.hold)
+    }
+    /// Puts back a hold taken from another `Limit` of the same key.
+    pub(crate) fn restore_hold(&mut self, hold: Hold) {
+        self.hold = hold;
+    }
+    /// The number of connections the pool may hold on the key (§4.9): the
+    /// machine's `N`, or the target of the test in flight. In SATURATED it is
+    /// the ceiling.
+    pub(crate) fn pool_limit(&self) -> usize {
+        self.test_slot
+            .and_then(|attempt| self.targets.get(&attempt).copied())
+            .unwrap_or_else(|| self.fsm.n())
+    }
+    /// How long the pool holds a freed slot of the key (§4.5): `Ts` outside
+    /// SATURATED, none at the ceiling.
+    pub(crate) fn settle_ms(&self) -> u64 {
+        if self.fsm.state() == State::Saturated {
+            0
+        } else {
+            self.table.settle().ts()
+        }
     }
     /// An attempt's result. `None` if the attempt is not in flight.
     pub(crate) fn result(
@@ -333,6 +395,22 @@ impl Limit {
         self.flush_notes(now);
         Some(ruling)
     }
+    /// A `Retry-After` that came on a response with no attempt in flight (a
+    /// second request on a carried connection): the hold, and nothing else
+    /// (§4.5: any 429 or 503 carrying `Retry-After` sets the key's hold,
+    /// whatever its judgement).
+    pub(crate) fn set_hold(&mut self, retry_after_ms: u64, post: bool, now: u64) {
+        self.table.advance(now);
+        let origin = if post {
+            Origin::Post
+        } else {
+            Origin::Discovery
+        };
+        if let Some(wait) = self.hold.set(retry_after_ms, origin, now) {
+            self.notes.hold(wait);
+        }
+        self.flush_notes(now);
+    }
     /// A test that said nothing is due again when the key is next quiet.
     fn rearm(&mut self, now: u64) {
         self.fsm.test_inconclusive();
@@ -383,7 +461,12 @@ impl Limit {
                 Ruling::RetryMachine
             }
             Evidence::Inconclusive => {
-                self.barrier.extend(closed.winding_down.iter().copied());
+                // The barrier belongs to the adaptive machine: with N pinned
+                // at the ceiling nothing is learned from the overlap, and a
+                // bare refusal must not delay the next start.
+                if self.adaptive {
+                    self.barrier.extend(closed.winding_down.iter().copied());
+                }
                 Ruling::Inconclusive
             }
             Evidence::HoldOnly => Ruling::HoldOnly,

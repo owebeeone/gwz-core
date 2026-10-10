@@ -40,6 +40,7 @@ pub(crate) mod credentials;
 pub(crate) mod native;
 mod prepare;
 mod serve;
+mod throttle;
 
 #[derive(Clone)]
 pub(crate) struct Input {

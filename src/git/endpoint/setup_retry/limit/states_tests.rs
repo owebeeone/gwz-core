@@ -183,3 +183,17 @@ fn setups_in_flight_counts_clocked_setups_only() {
     table.apply(ConnId(3), ConnEvent::Connected, 0);
     assert_eq!(table.setups_in_flight(), 0);
 }
+
+#[test]
+fn a_setup_still_unanswered_when_the_server_closes_it_is_gone() {
+    // HTTPS keep-alive loss of a connection no discovery ever answered.
+    let mut table = Table::new();
+    table.apply(A, CLOCKED, 0);
+    let change = table.apply(A, ConnEvent::ServerClosed, 5).unwrap();
+    assert_eq!(
+        (change.from, change.to),
+        (Some(Phase::SettingUp), Phase::Gone)
+    );
+    assert_eq!((table.possible(), table.setups_in_flight()), (0, 0));
+    assert!(table.is_quiet());
+}

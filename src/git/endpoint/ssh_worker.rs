@@ -3,7 +3,7 @@
 //! [`EndpointAttachment`] that the placement endpoint drives.
 use super::{
     agent_job::{Cleanup, Job, Supervisor},
-    setup_retry::{self, Phase},
+    setup_retry::{self, Governor, Phase},
     shutdown_watch::Watch,
     ssh_admission::{Admissions, Reader},
     ssh_channel::{GitService, SshChannel},
@@ -80,6 +80,9 @@ struct Shared {
     handoff: Handoff,
     /// The host's job budget, which this endpoint's identity checks draw on.
     supervisor: Supervisor,
+    /// The limit machines of this endpoint's pool, which its pool host
+    /// reports every connection's state change to.
+    governor: Governor,
 }
 impl Drop for Shared {
     fn drop(&mut self) {
