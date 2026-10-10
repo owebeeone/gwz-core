@@ -24,8 +24,8 @@ pub fn oid(format: ObjectFormat, byte: u8) -> ObjectId {
 }
 
 /// An in-memory object graph. Faithful to the contract: missing objects are
-/// [`ReadError::Missing`], oversized objects are [`ReadError::LimitExceeded`],
-/// reads are repeatable and never mutate the graph.
+/// [`ReadError::Missing`], oversized graph bodies are [`ReadError::LimitExceeded`],
+/// blobs need only their headers, and reads never mutate the graph.
 #[derive(Clone, Debug, Default)]
 pub struct InMemoryObjectReader {
     objects: BTreeMap<ObjectId, ObjectRecord>,
@@ -103,7 +103,7 @@ impl ObjectReader for InMemoryObjectReader {
             .objects
             .get(oid)
             .ok_or_else(|| ReadError::Missing { oid: oid.clone() })?;
-        if record.size > limits.max_object_bytes {
+        if record.kind != ObjectKind::Blob && record.size > limits.max_object_bytes {
             return Err(ReadError::LimitExceeded {
                 oid: oid.clone(),
                 size: record.size,
@@ -195,6 +195,7 @@ pub fn object_reader_conformance_allowing<R: ObjectReader>(
     serves_every_fixture_object_with_its_edges(reader, fixture);
     refuses_a_missing_object_typed(reader, fixture);
     refuses_an_oversized_object_within_limits(reader, fixture);
+    blob_metadata_needs_no_payload_budget(reader, fixture);
     reads_are_repeatable(reader, fixture);
 }
 
@@ -268,8 +269,9 @@ pub fn refuses_an_oversized_object_within_limits<R: ObjectReader>(
     let largest = fixture
         .objects
         .iter()
+        .filter(|record| record.kind != ObjectKind::Blob)
         .max_by_key(|record| record.size)
-        .expect("fixture has objects");
+        .expect("fixture has graph objects");
     assert!(largest.size > 0, "fixture objects have a size");
     let limits = ReadLimits::new(largest.size - 1);
     match reader.read_object(&largest.oid, &limits) {
@@ -279,6 +281,19 @@ pub fn refuses_an_oversized_object_within_limits<R: ObjectReader>(
             assert_eq!(limit, largest.size - 1);
         }
         other => panic!("oversized read must be LimitExceeded, got {other:?}"),
+    }
+}
+
+pub fn blob_metadata_needs_no_payload_budget<R: ObjectReader>(reader: &R, fixture: &GraphFixture) {
+    for expected in fixture
+        .objects
+        .iter()
+        .filter(|record| record.kind == ObjectKind::Blob)
+    {
+        assert_eq!(
+            reader.read_object(&expected.oid, &ReadLimits::new(0)),
+            Ok(expected.clone())
+        );
     }
 }
 
