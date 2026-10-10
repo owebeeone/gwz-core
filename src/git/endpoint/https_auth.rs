@@ -5,17 +5,31 @@
 //! bytes leave the endpoint adapter.
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
-use std::{ffi::OsString, fmt, io, path::PathBuf, sync::Arc};
-use tokio::sync::Semaphore;
+use std::{
+    ffi::{OsStr, OsString},
+    fmt, io,
+    path::PathBuf,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
+use tokio::{
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    process::{Child, Command},
+    sync::{OwnedSemaphorePermit, Semaphore},
+    task::JoinHandle,
+    time::{Instant, sleep, sleep_until, timeout},
+};
+use tokio_util::sync::CancellationToken;
 cfg_if::cfg_if! { if #[cfg(unix)] {
     use super::https_destination::Destination;
-    use std::{ffi::OsStr, sync::{atomic::{AtomicUsize, Ordering}, Mutex}, time::Duration};
-    use tokio::sync::OwnedSemaphorePermit;
-    use tokio::{io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt}, process::{Child, Command}, time::{Instant, sleep_until, timeout}};
-    use tokio_util::sync::CancellationToken;
-    const OUTPUT_LIMIT: usize = 16 * 1024;
-    const CLEANUP_GRACE: Duration = Duration::from_millis(500);
 } }
+const OUTPUT_LIMIT: usize = 16 * 1024;
+const CLEANUP_GRACE: Duration = Duration::from_millis(500);
+/// How often a helper's owner looks again at a process tree that has not yet emptied.
+const DRAIN_POLL: Duration = Duration::from_millis(2);
 /// Live helper processes one host admits, retained unreaped children included.
 const HELPER_SLOTS: usize = 8;
 
@@ -99,6 +113,7 @@ impl AuthError {
 
 mod secret;
 pub(crate) use secret::{Secret, SecretHeader};
+use secret::{SecretBuffer, parse_secret};
 /// Real host helper admission ledger; Windows qualification never acquires it.
 #[derive(Clone)]
 pub(crate) struct HelperSlots(pub(super) Arc<Semaphore>);
@@ -107,22 +122,35 @@ impl HelperSlots {
         Self(Arc::new(Semaphore::new(HELPER_SLOTS)))
     }
 }
+// The helper process owner, which both platforms compile (step 4.2): the process tree, the owner that ends it, the
+// pipes and the runner that drives one helper child.
+mod owner;
+mod pipes;
+mod process_tree;
+mod runner;
+pub(crate) use owner::AuthOwner;
+use owner::HelperJob;
+use process_tree::ProcessTree;
+// The rest of the helper stack is Unix-only until step 4.3 (discovery, the configuration view, file reads) and step
+// 4.4 (admission) bring it to Windows.
 cfg_if::cfg_if! { if #[cfg(unix)] {
     mod executable;
-    mod owner;
     mod lookup;
-    mod runner;
     mod view;
     mod file_worker;
-    pub(crate) use owner::AuthOwner;
     pub(crate) use lookup::{lookup_until, lookup_setup, LookupAdmission};
-    use owner::{ActiveGuard, HelperJob};
-    use secret::{parse_secret, SecretBuffer};
+    use owner::ActiveGuard;
 } }
 cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        mod helper_fixture;
+    }
+}
+cfg_if::cfg_if! {
     if #[cfg(all(test, unix))] {
-        use lookup::{write_request, lookup_owned, lookup_with_budget};
+        use lookup::{lookup_owned, lookup_with_budget};
         use owner::PendingChild;
+        use pipes::write_request;
         mod test_support;
         cfg_if::cfg_if! {
             if #[cfg(unix)] {

@@ -1,16 +1,12 @@
 //! Bounded regular-file reads retain their lookup admissions through completion.
 use super::*;
+use owner::PendingWorker;
 use std::{
     io::Read,
     os::unix::{ffi::OsStrExt, fs::OpenOptionsExt},
     path::Path,
 };
-use tokio::task::JoinHandle;
 
-pub(super) struct PendingWorker {
-    handle: JoinHandle<Result<SecretBuffer, AuthError>>,
-    _permits: Arc<owner::AdmissionPermits>,
-}
 struct Worker<'a> {
     pending: Option<PendingWorker>,
     owner: &'a AuthOwner,
@@ -27,17 +23,6 @@ impl Drop for Worker<'_> {
         }
     }
 }
-pub(super) fn reap_ready(owner: &AuthOwner) {
-    // Finished blocking workers own no open file. Dropping their completed
-    // join handle disposes the zeroizing result without blocking this thread.
-    owner
-        .inner
-        .workers
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .retain(|pending| !pending.handle.is_finished());
-}
-
 pub(super) async fn read(
     runner: &runner::Runner<'_>,
     path: SecretBuffer,

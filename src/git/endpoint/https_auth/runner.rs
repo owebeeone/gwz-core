@@ -1,6 +1,8 @@
 //! One serial supervised Git child under the lookup's single interaction clock.
 use super::*;
-use std::{os::unix::ffi::OsStrExt, path::Path};
+use std::path::Path;
+
+mod environment;
 
 pub(super) struct Runner<'a> {
     pub(super) owner: &'a AuthOwner,
@@ -91,7 +93,7 @@ impl Runner<'_> {
         self.check()?;
         let mut command = Command::new(self.executable);
         command
-            .current_dir("/")
+            .current_dir(environment::working_directory(self.config)?)
             .args(args)
             .env_clear()
             .envs(
@@ -107,7 +109,7 @@ impl Runner<'_> {
                             "GIT_WORK_TREE",
                         ]
                         .iter()
-                        .any(|removed| key == OsStr::new(removed))
+                        .any(|removed| environment::names(key, removed))
                     })
                     .map(|(key, value)| (key, value)),
             )
@@ -118,32 +120,34 @@ impl Runner<'_> {
             .kill_on_drop(true);
         if let Some(parameters) = parameters {
             for (key, _) in &self.config.environment {
-                if key == "GIT_CONFIG_COUNT"
-                    || key.as_bytes().starts_with(b"GIT_CONFIG_KEY_")
-                    || key.as_bytes().starts_with(b"GIT_CONFIG_VALUE_")
+                if environment::names(key, "GIT_CONFIG_COUNT")
+                    || environment::starts_with(key, "GIT_CONFIG_KEY_")
+                    || environment::starts_with(key, "GIT_CONFIG_VALUE_")
                 {
                     command.env_remove(key);
                 }
             }
             command
                 .env_remove("GIT_CONFIG_SYSTEM")
-                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("GIT_CONFIG_GLOBAL", environment::NULL_CONFIG)
                 .env("GIT_CONFIG_NOSYSTEM", "1")
-                .env("GIT_CONFIG_PARAMETERS", OsStr::from_bytes(parameters));
+                .env(
+                    "GIT_CONFIG_PARAMETERS",
+                    environment::parameters_value(parameters)?,
+                );
             if parameters.is_empty() {
                 command.env_remove("GIT_CONFIG_PARAMETERS");
             }
         }
-        lookup::configure_process_group(&mut command);
         self.check()?;
-        let child = command.spawn().map_err(|error| match error.kind() {
+        let started = process_tree::spawn(&mut command).map_err(|error| match error.kind() {
             io::ErrorKind::NotFound => AuthError::MissingExecutable,
             io::ErrorKind::ArgumentListTooLong if parameters.is_some() => {
                 AuthError::ConfigurationRefused
             }
             _ => AuthError::SpawnFailed,
         })?;
-        let mut job = HelperJob::new(child, self.permits.clone(), self.owner.clone());
+        let mut job = HelperJob::new(started, self.permits.clone(), self.owner.clone());
         let stdin = job.child_mut().stdin.take().ok_or(AuthError::SpawnFailed)?;
         let stdout = job
             .child_mut()
@@ -157,10 +161,10 @@ impl Runner<'_> {
             .ok_or(AuthError::SpawnFailed)?;
         let overflow = CancellationToken::new();
         let read = bounded_output(stdout, limit, overflow.clone());
-        let mut drain = Box::pin(lookup::discard_stderr(stderr));
+        let mut drain = Box::pin(pipes::discard_stderr(stderr));
         let mut completed = Box::pin(async {
             let (write, output, status) = tokio::join!(
-                lookup::write_request(stdin, input),
+                pipes::write_request(stdin, input),
                 read,
                 job.child_mut().wait()
             );
@@ -220,7 +224,7 @@ impl Runner<'_> {
         // refusal. Its cleanup capability must still be owned at that point.
         let result = admit(result);
         if result.is_ok() {
-            job.complete_if_exited();
+            job.retire().await;
         } else {
             job.terminate().await?;
         }
@@ -278,4 +282,4 @@ async fn bounded_output<R: AsyncRead + Unpin>(
     Ok(output)
 }
 
-cfg_if::cfg_if! { if #[cfg(test)] { mod tests; } }
+cfg_if::cfg_if! { if #[cfg(test)] { mod tests; mod process_tests; } }

@@ -156,7 +156,7 @@ cfg_if::cfg_if! {
                 let slots = owner.inner.helper_slots.0.clone();
                 let before = slots.available_permits();
                 let child = Command::new("/bin/sleep").arg("5").kill_on_drop(true).spawn().unwrap();
-                owner.retain_pending(PendingChild { child, _permits: Arc::new(super::super::owner::AdmissionPermits { _endpoint_slot: None, _helper_slot: slots.clone().try_acquire_owned().unwrap() }) });
+                owner.retain_pending(PendingChild { child, tree: None, _permits: Arc::new(super::super::owner::AdmissionPermits { _endpoint_slot: None, _helper_slot: slots.clone().try_acquire_owned().unwrap() }) });
                 let reaper = owner.clone();
                 let task = tokio::spawn(async move { reaper.reap_pending(Instant::now()+Duration::from_secs(5)).await });
                 while !owner.inner.pending.lock().unwrap().is_empty() { tokio::task::yield_now().await; }
@@ -183,6 +183,7 @@ cfg_if::cfg_if! {
                 child.start_kill().unwrap();
                 owner.retain_pending(PendingChild {
                     child,
+                    tree: None,
                     _permits: Arc::new(super::super::owner::AdmissionPermits { _endpoint_slot: None,
                         _helper_slot: slots.clone().try_acquire_owned().unwrap() }),
                 });
@@ -195,12 +196,12 @@ cfg_if::cfg_if! {
             async fn reap_reports_children_arriving_while_it_waits() {
                 let owner = AuthOwner::new(HelperSlots::new());
                 let child = Command::new("/bin/sleep").arg("0.1").kill_on_drop(true).spawn().unwrap();
-                owner.retain_pending(PendingChild { child, _permits: Arc::new(super::super::owner::AdmissionPermits { _endpoint_slot: None, _helper_slot: owner.inner.helper_slots.0.clone().try_acquire_owned().unwrap() }) });
+                owner.retain_pending(PendingChild { child, tree: None, _permits: Arc::new(super::super::owner::AdmissionPermits { _endpoint_slot: None, _helper_slot: owner.inner.helper_slots.0.clone().try_acquire_owned().unwrap() }) });
                 let reaper = owner.clone();
                 let task = tokio::spawn(async move { reaper.reap_pending(Instant::now()+Duration::from_secs(1)).await });
                 while !owner.inner.pending.lock().unwrap().is_empty() { tokio::task::yield_now().await; }
                 let child = Command::new("/bin/sleep").arg("5").kill_on_drop(true).spawn().unwrap();
-                owner.retain_pending(PendingChild { child, _permits: Arc::new(super::super::owner::AdmissionPermits { _endpoint_slot: None, _helper_slot: owner.inner.helper_slots.0.clone().try_acquire_owned().unwrap() }) });
+                owner.retain_pending(PendingChild { child, tree: None, _permits: Arc::new(super::super::owner::AdmissionPermits { _endpoint_slot: None, _helper_slot: owner.inner.helper_slots.0.clone().try_acquire_owned().unwrap() }) });
                 let reported = task.await.unwrap();
                 let actual = owner.pending_cleanup_count();
                 for pending in owner.inner.pending.lock().unwrap().iter_mut() { let _ = pending.child.start_kill(); }

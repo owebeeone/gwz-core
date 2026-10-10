@@ -15,8 +15,18 @@ pub(super) struct AdmissionPermits {
     pub(super) _endpoint_slot: Option<OwnedSemaphorePermit>,
 }
 
+/// A bounded file read that outlived the lookup that started it. The blocking read owns its buffer and both
+/// admission permits until it returns, so this registry keeps its handle.
+pub(super) struct PendingWorker {
+    pub(super) handle: JoinHandle<Result<SecretBuffer, AuthError>>,
+    pub(super) _permits: Arc<AdmissionPermits>,
+}
+
 pub(super) struct PendingChild {
     pub(super) child: Child,
+    /// The helper's process tree. A helper is retired only when its whole tree is gone, so the tree stays here
+    /// until `drained` says so.
+    pub(super) tree: Option<ProcessTree>,
     /// Held for its drop: the host's helper slot stays charged until the
     /// child is reaped or its owner is gone.
     pub(super) _permits: Arc<AdmissionPermits>,
@@ -28,7 +38,7 @@ pub(super) struct AuthOwnerInner {
     pub(super) reaping: AtomicUsize,
     pub(super) pending: Mutex<Vec<PendingChild>>,
     pub(super) helper_slots: HelperSlots,
-    pub(super) workers: Mutex<Vec<super::file_worker::PendingWorker>>,
+    pub(super) workers: Mutex<Vec<PendingWorker>>,
 }
 
 /// Endpoint-scoped ownership for credential helper processes.
@@ -82,6 +92,8 @@ impl AuthOwner {
 
     /// Reaping owns a guarded batch, including while this future is cancelled.
     /// Concurrent transfers into the owner remain visible in the returned count.
+    /// A helper is reaped when its leader has been waited for and its whole
+    /// process tree is gone.
     pub(crate) async fn reap_pending(&self, deadline: Instant) -> usize {
         let children = {
             let mut pending = self
@@ -101,9 +113,20 @@ impl AuthOwner {
         };
         let mut index = 0;
         while index < batch.children.len() && Instant::now() < deadline {
-            let result =
-                tokio::time::timeout_at(deadline, batch.children[index].child.wait()).await;
-            if matches!(result, Ok(Ok(_))) {
+            let pending = &mut batch.children[index];
+            let reaped = tokio::time::timeout_at(deadline, async {
+                let status = pending.child.wait().await;
+                if let Some(tree) = &pending.tree {
+                    confirm_drained(tree, Some(deadline)).await;
+                }
+                status
+            })
+            .await;
+            let drained = batch.children[index]
+                .tree
+                .as_ref()
+                .is_none_or(ProcessTree::drained);
+            if matches!(reaped, Ok(Ok(_))) && drained {
                 batch.children.swap_remove(index);
                 self.inner.reaping.fetch_sub(1, Ordering::AcqRel);
             } else {
@@ -111,17 +134,20 @@ impl AuthOwner {
             }
         }
         drop(batch);
-        super::file_worker::reap_ready(self);
+        reap_ready_workers(self);
         self.pending_cleanup_count()
     }
 
     pub(super) fn reap_ready(&self) {
-        super::file_worker::reap_ready(self);
+        reap_ready_workers(self);
         self.inner
             .pending
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .retain_mut(|pending| !matches!(pending.child.try_wait(), Ok(Some(_))));
+            .retain_mut(|pending| {
+                !(matches!(pending.child.try_wait(), Ok(Some(_)))
+                    && pending.tree.as_ref().is_none_or(ProcessTree::drained))
+            });
     }
 
     pub(super) fn retain_pending(&self, pending: PendingChild) {
@@ -169,14 +195,17 @@ pub(super) struct HelperJob {
     child: Option<Child>,
     permits: Option<Arc<AdmissionPermits>>,
     owner: AuthOwner,
-    process_group: Option<u32>,
+    tree: Option<ProcessTree>,
 }
 
 impl HelperJob {
-    pub(super) fn new(child: Child, permits: Arc<AdmissionPermits>, owner: AuthOwner) -> Self {
-        let process_group = child.id();
+    pub(super) fn new(
+        (child, tree): (Child, ProcessTree),
+        permits: Arc<AdmissionPermits>,
+        owner: AuthOwner,
+    ) -> Self {
         Self {
-            process_group,
+            tree: Some(tree),
             child: Some(child),
             permits: Some(permits),
             owner,
@@ -188,27 +217,48 @@ impl HelperJob {
     }
 
     fn complete(&mut self) {
-        self.process_group = None;
+        self.tree = None;
         drop(self.child.take());
         drop(self.permits.take());
     }
 
-    pub(super) fn complete_if_exited(&mut self) {
-        if self
+    /// A helper that succeeded is retired once its leader has exited and its tree is gone: the owner lets go of
+    /// the tree, and only then of the helper's admission permits. A leader still running, or a tree that does not
+    /// empty within the cleanup grace, stays owned, and dropping the job retains it for the owner to reap.
+    pub(super) async fn retire(&mut self) {
+        if !self
             .child
             .as_mut()
             .is_some_and(|child| matches!(child.try_wait(), Ok(Some(_))))
         {
-            self.complete();
+            return;
         }
+        if let Some(tree) = &self.tree {
+            tree.retire();
+            confirm_drained(tree, Some(Instant::now() + CLEANUP_GRACE)).await;
+            if !tree.drained() {
+                return;
+            }
+        }
+        self.complete();
     }
 
     pub(super) async fn terminate(&mut self) -> Result<(), AuthError> {
-        kill_process_group(self.process_group);
+        if let Some(tree) = &self.tree {
+            tree.kill();
+        }
         let result = {
-            let child = self.child_mut();
+            let tree = self.tree.as_ref();
+            let child = self.child.as_mut().expect("active helper child");
             let _ = child.start_kill();
-            timeout(CLEANUP_GRACE, child.wait()).await
+            timeout(CLEANUP_GRACE, async {
+                let status = child.wait().await;
+                if let Some(tree) = tree {
+                    confirm_drained(tree, None).await;
+                }
+                status
+            })
+            .await
         };
         match result {
             Ok(Ok(_)) => {
@@ -228,29 +278,43 @@ impl Drop for HelperJob {
         let Some(permits) = self.permits.take() else {
             return;
         };
-        kill_process_group(self.process_group);
-        if matches!(child.try_wait(), Ok(Some(_))) {
+        let tree = self.tree.take();
+        if let Some(tree) = &tree {
+            tree.kill();
+        }
+        if matches!(child.try_wait(), Ok(Some(_))) && tree.as_ref().is_none_or(ProcessTree::drained)
+        {
             drop(permits);
             return;
         }
         let _ = child.start_kill();
         self.owner.retain_pending(PendingChild {
             child,
+            tree,
             _permits: permits,
         });
     }
 }
 
-cfg_if::cfg_if! {
-    if #[cfg(unix)] {
-        fn kill_process_group(group: Option<u32>) {
-            if let Some(group) = group {
-                // SAFETY: Command placed this child in its own group. The captured
-                // positive PID names that group, never the caller's process group.
-                unsafe { libc::kill(-(group as libc::pid_t), libc::SIGKILL); }
-            }
+/// Waits until `tree` has no member, ending any that appears meanwhile, or until `deadline`. Callers that
+/// need a bound also check [`ProcessTree::drained`] afterwards.
+async fn confirm_drained(tree: &ProcessTree, deadline: Option<Instant>) {
+    while !tree.drained() {
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return;
         }
-    } else {
-        fn kill_process_group(_group: Option<u32>) {}
+        tree.kill();
+        sleep(DRAIN_POLL).await;
     }
+}
+
+/// Finished blocking workers own no open file. Dropping their completed
+/// join handle disposes the zeroizing result without blocking this thread.
+fn reap_ready_workers(owner: &AuthOwner) {
+    owner
+        .inner
+        .workers
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|pending| !pending.handle.is_finished());
 }

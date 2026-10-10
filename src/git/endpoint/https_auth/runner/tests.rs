@@ -1,10 +1,11 @@
 use super::*;
+use crate::git::endpoint::https_auth::helper_fixture::{Behavior, Fixture};
 
 #[tokio::test]
 async fn remediation_completed_output_and_parsed_answer_require_final_admission() {
     let owner = AuthOwner::new(HelperSlots::new());
     let config = Config {
-        executable: "/usr/bin/git".into(),
+        executable: "git".into(),
         environment: Vec::new(),
     };
     let cancelled = CancellationToken::new();
@@ -77,17 +78,9 @@ async fn completed_native_child_and_ready_timeout_or_cancel_never_admit_answer()
         fn wake(self: Arc<Self>) {}
     }
     for cancel in [false, true] {
-        let home = tempfile::tempdir().unwrap();
-        let marker = home.path().join("complete");
-        let executable = home.path().join("git");
-        crate::git::endpoint::helper_script::write_helper_script(
-            &executable,
-            "printf 'username=alice\\npassword=token\\n'\nexec 1>&-\nprintf x > \"$MARKER\"\nexit 0",
-        );
-        let config = Config {
-            executable,
-            environment: vec![("MARKER".into(), marker.as_os_str().into())],
-        };
+        let fixture = Fixture::new(Behavior::AnswersAndMarks);
+        let marker = fixture.marker.clone();
+        let config = fixture.config.clone();
         let owner = AuthOwner::new(HelperSlots::new());
         let cancelled = CancellationToken::new();
         let runner = Runner {
@@ -106,7 +99,7 @@ async fn completed_native_child_and_ready_timeout_or_cancel_never_admit_answer()
                 _endpoint_slot: None,
             }),
             cancelled: &cancelled,
-            deadline: Instant::now() + Duration::from_millis(100),
+            deadline: Instant::now() + Duration::from_millis(300),
             setup: None,
         };
         let mut work = std::pin::pin!(runner.run(&[], &[], Some(&[]), OUTPUT_LIMIT, false));
@@ -142,16 +135,6 @@ async fn completed_native_child_and_ready_timeout_or_cancel_never_admit_answer()
     }
 }
 
-struct GroupGuard(u32);
-impl Drop for GroupGuard {
-    fn drop(&mut self) {
-        // SAFETY: this fixture child was placed in its own positive process
-        // group. This guard kills only that group, including on original RED.
-        unsafe {
-            libc::kill(-(self.0 as libc::pid_t), libc::SIGKILL);
-        }
-    }
-}
 #[derive(Clone, Copy)]
 enum Boundary {
     Equality,
@@ -160,13 +143,9 @@ enum Boundary {
 }
 
 async fn completed_leader_boundary(boundary: Boundary) {
-    let home = tempfile::tempdir().unwrap();
-    let heartbeat = home.path().join("heartbeat");
-    let executable = home.path().join("helper");
-    crate::git::endpoint::helper_script::write_helper_script(
-        &executable,
-        "/bin/sh -c 'exec 0</dev/null 1>/dev/null 2>/dev/null; while :; do printf x >> \"$HEARTBEAT\"; /bin/sleep 0.01; done' &\nprintf 'username=alice\\npassword=token\\n'\nexit 0",
-    );
+    let fixture = Fixture::new(Behavior::AnswersLeavingDetachedDescendant);
+    let heartbeat = fixture.heartbeat.clone();
+    let config = fixture.config.clone();
     let owner = AuthOwner::new(HelperSlots::new());
     let endpoint = Arc::new(Semaphore::new(1));
     let permits = Arc::new(owner::AdmissionPermits {
@@ -180,10 +159,6 @@ async fn completed_leader_boundary(boundary: Boundary) {
             .unwrap(),
         _endpoint_slot: Some(endpoint.clone().acquire_owned().await.unwrap()),
     });
-    let config = Config {
-        executable,
-        environment: Vec::new(),
-    };
     let cancelled = CancellationToken::new();
     let runner = Runner {
         owner: &owner,
@@ -191,22 +166,22 @@ async fn completed_leader_boundary(boundary: Boundary) {
         executable: &config.executable,
         permits: permits.clone(),
         cancelled: &cancelled,
-        deadline: Instant::now() + Duration::from_secs(5),
+        deadline: Instant::now() + Duration::from_secs(10),
         setup: None,
     };
     let mut command = Command::new(&config.executable);
     command
         .env_clear()
-        .env("HEARTBEAT", &heartbeat)
+        .envs(config.environment.iter().map(|(key, value)| (key, value)))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    lookup::configure_process_group(&mut command);
-    let mut child = command.spawn().unwrap();
-    let _group = GroupGuard(child.id().unwrap());
+    let (mut child, tree) = process_tree::spawn(&mut command).unwrap();
     let mut stdout = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();
-    let mut job = HelperJob::new(child, permits.clone(), owner.clone());
+    // The job owns the tree from here on, and its drop ends the independent descendant even when an assertion
+    // below fails.
+    let mut job = HelperJob::new((child, tree), permits.clone(), owner.clone());
     let mut output = SecretBuffer(Vec::new());
     let mut diagnostic = SecretBuffer(Vec::new());
     let (status, out, err) = tokio::join!(
@@ -217,7 +192,7 @@ async fn completed_leader_boundary(boundary: Boundary) {
     assert!(status.unwrap().success());
     out.unwrap();
     err.unwrap();
-    let until = Instant::now() + Duration::from_secs(1);
+    let until = Instant::now() + Duration::from_secs(10);
     while std::fs::metadata(&heartbeat).map_or(0, |m| m.len()) < 2 {
         assert!(Instant::now() < until, "independent descendant must write");
         tokio::time::sleep(Duration::from_millis(5)).await;
@@ -265,14 +240,9 @@ async fn completed_leader_boundary(boundary: Boundary) {
     assert_eq!(endpoint.available_permits(), 1);
     if !matches!(boundary, Boundary::Success) {
         assert!(!admitted, "no answer or Authorization may be derived");
-        tokio::time::sleep(CLEANUP_GRACE).await;
-        let size = std::fs::metadata(&heartbeat).unwrap().len();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(
-            std::fs::metadata(&heartbeat).unwrap().len(),
-            size,
-            "refused helper's independent descendant must stop writing"
-        );
+        fixture
+            .assert_stopped("refused helper's independent descendant must stop writing")
+            .await;
     }
     assert!(
         owned_at_boundary,
