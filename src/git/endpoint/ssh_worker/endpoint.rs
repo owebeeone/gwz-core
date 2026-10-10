@@ -44,7 +44,7 @@ impl Endpoint {
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
         // Every connection state change on this pool reaches the machines
         // from the one thread that drives the host, in the order it acted.
-        let governor = Governor::random(pool.control(), ceiling, false);
+        let governor = Governor::random(pool.control(), ceiling);
         host.set_observer(Arc::new(governor.clone()));
         static NEXT_WORKER: AtomicU64 = AtomicU64::new(1);
         let id = NEXT_WORKER
@@ -186,6 +186,26 @@ impl Endpoint {
         context: BridgeContext,
         cancelled: Arc<AtomicBool>,
     ) -> io::Result<PendingOpen> {
+        self.start_endpoint_open_tagged(
+            key, selected, service, path, context, cancelled, None, false,
+        )
+    }
+    /// `start_endpoint_open`, where the pool request carries `tag`, which
+    /// names the member the connection serves (adaptive concurrency design
+    /// §4.8), and `carrier` says the open carries a test of the site's limit,
+    /// which the background close must never defer.
+    #[allow(clippy::too_many_arguments)] // One open's fields, and its limit tag.
+    pub(crate) fn start_endpoint_open_tagged(
+        &self,
+        key: Key,
+        selected: Option<PathBuf>,
+        service: GitService,
+        path: &str,
+        context: BridgeContext,
+        cancelled: Arc<AtomicBool>,
+        tag: Option<String>,
+        carrier: bool,
+    ) -> io::Result<PendingOpen> {
         if self.shared.stop.load(Ordering::Acquire) {
             return Err(stopped());
         }
@@ -239,6 +259,8 @@ impl Endpoint {
             progress: Progress::default(),
             setup_slot: Arc::default(),
             cancelled,
+            tag,
+            carrier,
             deadline: absolute.map(|at| at.duration_since(self.shared.origin).as_millis() as u64),
             context,
         };

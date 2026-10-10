@@ -9,21 +9,23 @@
 //!
 //! Unix uses its captured environment proxy settings. Windows WH1 admits only
 //! a verified WinHTTP DIRECT snapshot captured on the original caller entry.
-//! It has no SSH settings and never derives a HOME or agent for HTTPS.
+//! Its SSH settings take `HOME` when it is absolute, as an interim until the
+//! Windows home resolver (plan step 3.1), and have no agent until Phase 3. It
+//! never derives a HOME or agent for HTTPS.
 
 use super::{EndpointSettings, HttpsEndpointConfig, apply_native_timeout, invalid};
 use crate::git::endpoint::{ca_bundle, https_connection};
 cfg_if::cfg_if! { if #[cfg(not(any(windows, target_vendor = "apple")))] {
     use crate::git::endpoint::{https_tls, verify_paths};
 } }
+use super::SshSettings;
 use crate::model::ModelResult;
 use crate::session_host::EnvironmentSnapshot;
 use gwz_transport::pool;
 use std::ffi::OsString;
+use std::path::PathBuf;
 cfg_if::cfg_if! { if #[cfg(unix)] {
-    use super::SshSettings;
     use crate::git::endpoint::https_auth;
-    use std::path::PathBuf;
 } }
 
 cfg_if::cfg_if! { if #[cfg(test)] {
@@ -58,14 +60,11 @@ pub(super) fn endpoint_config_native(
         ));
     }
     let tls = tls_config(environment)?;
-    let ssh = {
-        cfg_if::cfg_if! { if #[cfg(unix)] {
-            Some(SshSettings {
-                home: platform::ssh_home(environment).ok_or_else(|| invalid("endpoint HOME is unavailable"))?,
-                agent: platform::agent(environment),
-            })
-        } else { None } }
-    };
+    let ssh = Some(SshSettings {
+        home: platform::ssh_home(environment)
+            .ok_or_else(|| invalid("endpoint HOME is unavailable"))?,
+        agent: platform::agent(environment),
+    });
     let timeout = crate::git::transport_timeout_ms();
     let mut pool = pool::Config::default();
     apply_native_timeout(&mut pool, timeout);
@@ -244,8 +243,23 @@ cfg_if::cfg_if! {
         }
     } else if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
         mod platform {
+            use super::{EnvironmentSnapshot, PathBuf, value};
             use windows_sys::Win32::Foundation::GlobalFree;
             use windows_sys::Win32::Networking::WinHttp::{WinHttpGetDefaultProxyConfiguration, WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_PROXY_INFO};
+            /// The SSH home, whose `.ssh/known_hosts` the endpoint reads: `HOME`, when it is absolute. An interim
+            /// (plan step 1.6): step 3.1 replaces it with the Windows home resolver (`HOMEDRIVE` and
+            /// `HOMEPATH`, `USERPROFILE`).
+            pub(super) fn ssh_home(environment: &EnvironmentSnapshot) -> Option<PathBuf> {
+                value(environment, &["HOME"])
+                    .map(PathBuf::from)
+                    .filter(|home| home.is_absolute())
+            }
+
+            /// Windows has no agent source until Phase 3 (the OpenSSH pipe, 3.3, and Pageant, 3.6).
+            pub(super) fn agent(_: &EnvironmentSnapshot) -> Option<PathBuf> {
+                None
+            }
+
             pub(super) fn direct() -> bool {
                 // SAFETY: initialized exclusive output. Every returned allocation,
                 // including partial failure outputs, is disposed below.

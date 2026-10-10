@@ -22,7 +22,7 @@ fn retry_allowance_and_challenge_keys_are_account_specific() {
     assert_ne!(a, retry_key(first));
 }
 
-fn runtime() -> tokio::runtime::Runtime {
+pub(super) fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -31,7 +31,11 @@ fn runtime() -> tokio::runtime::Runtime {
 
 /// An endpoint whose pool allows `per_host` connections to a host and whose
 /// waits draw no jitter. Its operation "request" retries `max_retries` times.
-fn endpoint(tls: https_connection::Config, per_host: usize, max_retries: u32) -> HttpsEndpoint {
+pub(super) fn endpoint(
+    tls: https_connection::Config,
+    per_host: usize,
+    max_retries: u32,
+) -> HttpsEndpoint {
     let config = pool::Config {
         per_host,
         per_user_host: per_host,
@@ -53,7 +57,7 @@ fn endpoint(tls: https_connection::Config, per_host: usize, max_retries: u32) ->
 }
 
 /// Stream `stream`'s anonymous advertisement Open of 127.0.0.1:`port`.
-fn open(stream: i64, port: u16, allocation_ms: i64) -> Envelope {
+pub(super) fn open(stream: i64, port: u16, allocation_ms: i64) -> Envelope {
     Envelope {
         version: 2,
         session_id: "session".into(),
@@ -89,7 +93,7 @@ fn open(stream: i64, port: u16, allocation_ms: i64) -> Envelope {
     }
 }
 
-fn port(server: &fixture::Server) -> u16 {
+pub(super) fn port(server: &fixture::Server) -> u16 {
     crate::git::endpoint::https_destination::Destination::parse(&server.url)
         .unwrap()
         .port()
@@ -97,7 +101,7 @@ fn port(server: &fixture::Server) -> u16 {
 
 /// Accepts each connection and closes it at once, before TLS, so that each
 /// setup fails with `Io`; counts the connections.
-fn closing() -> (u16, Arc<AtomicUsize>) {
+pub(super) fn closing() -> (u16, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let accepted = Arc::new(AtomicUsize::new(0));
@@ -113,7 +117,7 @@ fn closing() -> (u16, Arc<AtomicUsize>) {
 
 /// Steps the endpoint at `now` until no attempt is in flight, and returns
 /// the messages it published meanwhile.
-async fn settle(endpoint: &mut HttpsEndpoint, now: u64) -> Vec<Envelope> {
+pub(super) async fn settle(endpoint: &mut HttpsEndpoint, now: u64) -> Vec<Envelope> {
     let mut cx = Context::from_waker(Waker::noop());
     let until = tokio::time::Instant::now() + Duration::from_secs(10);
     let mut published = Vec::new();
@@ -137,12 +141,12 @@ async fn settle(endpoint: &mut HttpsEndpoint, now: u64) -> Vec<Envelope> {
     }
 }
 
-fn code(message: &Envelope) -> ErrorCode {
+pub(super) fn code(message: &Envelope) -> ErrorCode {
     assert_eq!(message.kind, MessageKind::OpenFailed);
     message.open_failed.as_ref().expect("a failure").code
 }
 
-async fn shut(endpoint: &mut HttpsEndpoint) {
+pub(super) async fn shut(endpoint: &mut HttpsEndpoint) {
     endpoint.shutdown();
     let mut cx = Context::from_waker(Waker::noop());
     let until = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -170,21 +174,37 @@ fn a_dead_keys_first_wave_is_its_per_host_limit_and_then_one_probe_at_a_time() {
                 .unwrap();
         }
         // Cold: the first wave is the per-host limit, and no open finishes on
-        // a retriable failure.
+        // a retriable failure. The wave's refusals are limit evidence (each
+        // had the other in its window): requeued, not counted. With nothing
+        // connected the confirmation's test runs at concurrency 1, and its
+        // refusal is the key's first counted failure (adaptive concurrency
+        // design §4.8): a third handshake, at the same instant.
         assert!(settle(&mut endpoint, 0).await.is_empty());
-        assert_eq!(accepted.load(Ordering::Acquire), 2);
-        // Nothing connects before the wake, 1 s after attempt 1.
+        assert_eq!(accepted.load(Ordering::Acquire), 3);
+        // Nothing connects before the wake, 1 s after that attempt.
         assert!(settle(&mut endpoint, 999).await.is_empty());
-        assert_eq!(accepted.load(Ordering::Acquire), 2);
-        // One probe at the wake, attempt 2, and then a 2 s wait.
-        assert!(settle(&mut endpoint, 1_000).await.is_empty());
         assert_eq!(accepted.load(Ordering::Acquire), 3);
+        // One probe at the wake, attempt 2, and then a 2 s wait. Its carrier
+        // has now made three attempts, `--max-retries 2` of them, so it
+        // finishes with its own failure (§5.3) and the key goes on.
+        let early = settle(&mut endpoint, 1_000).await;
+        assert_eq!(accepted.load(Ordering::Acquire), 4);
+        assert_eq!(early.len(), 1);
+        let count = early[0]
+            .open_failed
+            .as_ref()
+            .unwrap()
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.retry_attempt.as_ref())
+            .unwrap();
+        assert_eq!((count.attempt, count.attempts), (3, 3));
         assert!(settle(&mut endpoint, 2_999).await.is_empty());
-        assert_eq!(accepted.load(Ordering::Acquire), 3);
+        assert_eq!(accepted.load(Ordering::Acquire), 4);
         // Attempt 3 is R + 1: its failure finishes every open on the key.
         let finished = settle(&mut endpoint, 3_000).await;
-        assert_eq!(accepted.load(Ordering::Acquire), 4);
-        assert_eq!(finished.len(), 6);
+        assert_eq!(accepted.load(Ordering::Acquire), 5);
+        assert_eq!(finished.len(), 5);
         for message in &finished {
             let count = message
                 .open_failed

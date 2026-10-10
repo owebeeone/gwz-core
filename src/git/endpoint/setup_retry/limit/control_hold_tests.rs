@@ -169,10 +169,14 @@ fn at_max_retries_zero_a_refusal_sets_the_hold_and_lowers_nothing() {
         let mut rig = Rig::with(32, false, 1_000);
         rig.connect(8);
         let a = rig.go(Start::Ordinary);
-        assert_eq!(
-            rig.refuse_with(a, signal, Some(1_000), false),
+        // A Suspect is not evidence without a budget to test it with: the
+        // retry machine's, though the server's `Retry-After` still holds.
+        let want = if signal == Throttle {
             Ruling::HoldOnly
-        );
+        } else {
+            Ruling::RetryMachine
+        };
+        assert_eq!(rig.refuse_with(a, signal, Some(1_000), false), want);
         assert!(!rig.limit.confirmation_open());
         assert_eq!((rig.limit.n(), rig.limit.state()), (32, State::Saturated));
         assert!(!rig.limit.admits_first_exchange(999));

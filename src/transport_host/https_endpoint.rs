@@ -8,6 +8,7 @@ use crate::git::endpoint::{
     https_wake::CloseWake,
     https_worker::{
         Budget, ChallengeLease, Client, Endpoint as HttpEndpoint, FirstConnect, Input, Prepared,
+        Rejection,
     },
     placement_endpoint::{EndpointError, Outbound},
     shared_reservation::Authority,
@@ -29,12 +30,17 @@ use tokio_util::sync::CancellationToken;
 
 mod poll;
 mod retry;
-use retry::{Held, Retries};
+use retry::{Held, Retries, Settling};
 
 type Key = (String, i64);
-/// An attempt's preparation, what its first connect did, and the budget and
-/// challenge it leaves.
-type Attempt = (Result<Prepared, Failure>, FirstConnect, Retry);
+/// An attempt's preparation, what its first connect did, what the limit
+/// machine made of a refusal, and the budget and challenge it leaves.
+type Attempt = (
+    Result<Prepared, Failure>,
+    FirstConnect,
+    Retry,
+    Option<Rejection>,
+);
 struct Entry {
     envelope: Envelope,
     cancel: CancellationToken,
@@ -59,6 +65,10 @@ struct Entry {
     pool_key: pool::Key,
     /// The open while it waits for an attempt (retry.rs).
     held: Option<Held>,
+    /// The attempts the open has started, against `--max-retries + 1` (§5.3).
+    attempts: u32,
+    /// The attempt in flight carries a test of the site's limit (§4.7).
+    carries_test: Option<crate::git::endpoint::setup_retry::TestToken>,
     /// The facts of the open's attempts so far, which its one reply carries:
     /// progress on its diagnostic row (the retry plan's §5).
     facts: Option<Facts>,
@@ -179,18 +189,6 @@ impl HttpsEndpoint {
     /// its first open. An operation never given one retries three times.
     pub(super) fn set_max_retries(&mut self, request: &str, max_retries: u32) {
         self.retries.set_max_retries(request, max_retries);
-        // The operation's limit machines start SATURATED at the per-host
-        // limit its admission has just installed in the pool (adaptive
-        // concurrency design §4.1). A throttle sets a hold but does not lower
-        // `N` yet: the probe carriers and the classification of the other
-        // refusals are a later step.
-        let capacity = self.pool().capacity();
-        self.client.governor().begin_operation(
-            request,
-            capacity.per_host.min(capacity.per_user_host),
-            false,
-            self.client.pool_now(),
-        );
     }
     pub(super) fn owns(&self, request: &str, id: i64) -> bool {
         self.entries.contains_key(&(request.into(), id))
@@ -274,6 +272,17 @@ impl HttpsEndpoint {
                     // A name made for this request is never sealed already.
                     Refusal::Sealed => EndpointError::InvalidRequest,
                 })?;
+            // The operation's limit machines start SATURATED at the per-host
+            // limit its admission installed in the pool (adaptive concurrency
+            // design §4.1), named as its attempts name it. They adapt unless
+            // the operation retries nothing (`--max-retries 0`, §5.3).
+            let capacity = self.pool().capacity();
+            self.client.governor().begin_operation(
+                &name,
+                capacity.per_host.min(capacity.per_user_host),
+                self.retries.max_retries(&request) > 0,
+                self.client.pool_now(),
+            );
             self.operations.insert(
                 request.clone(),
                 Operation {
@@ -329,6 +338,8 @@ impl HttpsEndpoint {
                 retired: false,
                 pool_key,
                 held: Some(held),
+                attempts: 0,
+                carries_test: None,
                 facts: None,
             },
         );
@@ -414,10 +425,12 @@ impl HttpsEndpoint {
         }
         if let Some(operation) = self.operations.remove(request) {
             self.client.finish_operation(&operation.name);
+            self.client
+                .governor()
+                .end_operation(&operation.name, self.client.pool_now());
         }
         // Its opens are all finished: no wake starts an attempt for it.
         self.retries.remove(request);
-        self.client.governor().end_operation(request);
     }
     pub(super) fn pending_request_count(&self, request: &str) -> usize {
         self.entries.keys().filter(|(id, _)| id == request).count() + self.client.pending_cleanup()
@@ -585,6 +598,7 @@ cfg_if::cfg_if! { if #[cfg(test)] {
     mod cancellation_tests;
     #[path = "https_cancel_mux_tests.rs"]
     mod https_cancel_mux_tests;
+    mod requeue_tests;
     mod retry_tests;
     mod stale_action_tests;
 } }

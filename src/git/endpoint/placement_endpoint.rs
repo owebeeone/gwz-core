@@ -6,7 +6,9 @@
 
 use super::{
     agent_job::{self, Job},
-    setup_retry::{self, AllocationClock, Decision, Jitter, Operations, Outcome, Phase},
+    setup_retry::{
+        self, Admission, AllocationClock, Decision, Jitter, Operations, Outcome, Phase, Verdict,
+    },
     ssh_channel::GitService as NativeService,
     ssh_worker::{BridgeContext, Endpoint, EndpointAttachment, PendingOpen},
 };
@@ -70,6 +72,8 @@ struct Request {
     attachment: Option<EndpointAttachment>,
     queued_input: VecDeque<Envelope>,
     terminal: bool,
+    /// The site of the open, once admitted: a stream on it holds a connection.
+    site: Option<gwz_transport::pool::Site>,
     /// The facts of this member's setup attempts so far, which its one reply
     /// carries: progress on its diagnostic row (the retry plan's §5).
     facts: Option<gwz_transport::protocol::Facts>,
@@ -83,6 +87,11 @@ struct OpenJob {
     abandoned: bool,
     /// The Open as it arrived, which a retried attempt starts from again.
     envelope: Envelope,
+    /// The attempts the member has made, this one included, against its
+    /// `--max-retries + 1` (§5.3).
+    attempts: u32,
+    /// This attempt carries a test of the site's limit (§4.7).
+    carries_test: Option<setup_retry::TestToken>,
 }
 struct QueuedOpen {
     key: RequestKey,
@@ -90,6 +99,8 @@ struct QueuedOpen {
     envelope: Envelope,
     /// Its allocation clock, which stops while its key holds it.
     allocation: AllocationClock,
+    /// The attempts it has made so far.
+    attempts: u32,
 }
 struct CheckJob {
     key: RequestKey,
@@ -178,13 +189,15 @@ impl PlacementEndpoint {
         // installed (adaptive concurrency design §4.1). `open_ceiling` bounds
         // opens in flight and stays in `admits_open`: the connections the
         // opens leave behind, streaming on their leases, are the pool's to
-        // count. Refusals do not lower `N` yet: no failure is classified as
-        // limit evidence on SSH, and the probe carriers are a later step.
+        // count. They adapt unless the operation retries nothing (§5.3).
         let capacity = self.pool().capacity();
         let ceiling = capacity.per_host.min(capacity.per_user_host);
-        self.endpoint
-            .governor()
-            .begin_operation(request, ceiling, false, self.endpoint.pool_now());
+        self.endpoint.governor().begin_operation(
+            request,
+            ceiling,
+            max_retries > 0,
+            self.endpoint.pool_now(),
+        );
     }
 
     /// Advance bounded checks, open completions, and each live message bridge.
@@ -241,6 +254,7 @@ fn request_state(envelope: &Envelope) -> Request {
         attachment: None,
         queued_input: VecDeque::new(),
         terminal: false,
+        site: None,
         facts: None,
     }
 }

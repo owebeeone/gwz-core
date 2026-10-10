@@ -1,6 +1,6 @@
 # TR1.8 decisions TD1 to TD14: a brief for the operator
 
-Date: 2026-10-10. Status: **a reading aid; it decides nothing.** It explains the fourteen questions in
+Date: 2026-10-10. Status: **a reading aid; superseded for the answers.** The operator recorded all fourteen decisions on 2026-10-10 in the decision list's discussion record, which controls; in particular TD12 there takes the baseline pipe policy (B) and also approves the bounded real-service run (A), and TD1, TD6, TD7, TD8 and TD9 carry qualifications this brief does not. It explains the fourteen questions in
 [`GwzTransportTR18-OperatorDecisions.md`](GwzTransportTR18-OperatorDecisions.md) (the decision list, which keeps the row-level evidence),
 with enough background to answer each one without the rest of the program's documents. The answer sheet is at the end.
 The list's recommendations are unchanged here; where this brief adds a note of its own it says so.

@@ -21,6 +21,15 @@ pub(super) enum Said {
     Unanswered,
 }
 
+/// What the limit machine made of an open's refusal, which its endpoint acts on
+/// (adaptive concurrency design §5.1): a throttle is requeued whatever the
+/// machine made of it, any other refusal when the machine took it as evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Rejection {
+    pub(crate) throttled: bool,
+    pub(crate) ruling: Option<setup_retry::Ruling>,
+}
+
 /// The cap a `Retry-After` HTTP-date takes when the response has no `Date` to
 /// measure it from (§4.5).
 const NO_DATE_MS: u64 = 30_000;
@@ -121,13 +130,15 @@ impl Client {
     /// governor has discarded the site's idle connections as that requires.
     pub(super) async fn wait_for_hold(
         &self,
+        operation: &str,
         key: &Key,
         cancel: &CancellationToken,
     ) -> Result<(), Failure> {
         let governor = self.pool.governor();
+        let scoped = governor.scoped(operation);
         loop {
             let now = self.pool.now();
-            if governor.exchange_may_begin(key, now) {
+            if scoped.exchange_may_begin(key, now) {
                 return Ok(());
             }
             let pause = governor
@@ -139,32 +150,66 @@ impl Client {
             }
         }
     }
+    /// A connect failed: if it looks like the host's limit, the site's machine
+    /// judges it on that connection's own window, and the ruling is what the
+    /// endpoint acts on (§4.8).
+    pub(super) fn judge_setup(
+        &self,
+        operation: &str,
+        destination: &Destination,
+        member: &str,
+        failed: &Failure,
+    ) -> Option<Rejection> {
+        let signal = setup_retry::suspect(failed, setup_retry::Phase::Setup, false)?;
+        let key = Key::https(destination.host(), destination.port());
+        let ruling = self.pool.governor().scoped(operation).setup_failed(
+            &key,
+            member,
+            signal,
+            self.pool.now(),
+        );
+        Some(Rejection {
+            throttled: false,
+            ruling,
+        })
+    }
     /// A response arrived on `prepared`'s connection: tells the machines.
     pub(super) fn tell_governor(
         &self,
+        operation: &str,
         prepared: &Prepared,
         key: &Key,
         status: u16,
         headers: &HeaderMap,
-    ) {
-        let Some(connection) = prepared.lease.as_ref().and_then(HttpLease::pool_connection) else {
-            return;
-        };
-        let governor = self.pool.governor();
+    ) -> Option<Rejection> {
+        let connection = prepared
+            .lease
+            .as_ref()
+            .and_then(HttpLease::pool_connection)?;
+        let governor = self.pool.governor().scoped(operation);
         let now = self.pool.now();
         match said(status, headers) {
-            Said::Answered => governor.answered(key, connection, now),
-            Said::Throttle { retry_after_ms } => {
-                governor.refused(
+            Said::Answered => {
+                governor.answered(key, connection, now);
+                None
+            }
+            Said::Throttle { retry_after_ms } => Some(Rejection {
+                throttled: true,
+                ruling: governor.refused(
                     key,
                     connection,
                     Signal::Throttle,
                     retry_after_ms,
                     false,
                     now,
-                );
-            }
-            Said::Unanswered => {}
+                ),
+            }),
+            // A bare 503: no connection is set up, and it may be a limit or
+            // may not (§3.2): the machine decides by its window.
+            Said::Unanswered => Some(Rejection {
+                throttled: false,
+                ruling: governor.refused(key, connection, Signal::Suspect, None, false, now),
+            }),
         }
     }
 }

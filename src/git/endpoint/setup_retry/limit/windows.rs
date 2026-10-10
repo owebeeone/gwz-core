@@ -37,6 +37,9 @@ struct Window {
     lo: BTreeSet<ConnId>,
     hi: BTreeSet<ConnId>,
     winding_down: BTreeSet<ConnId>,
+    /// The attempt's connection ended: the sets stop where they are, though
+    /// the verdict on it is still to come.
+    frozen: bool,
 }
 
 /// A window at its attempt's result.
@@ -93,13 +96,18 @@ impl Windows {
                 lo: others(table.connected_ids()),
                 hi: others(table.possible_ids()),
                 winding_down: others(table.winding_down_ids()),
+                frozen: false,
             },
         );
         true
     }
     /// Reports a table transition to every open window.
     pub(crate) fn observe(&mut self, change: &Change) {
-        for window in self.open.values_mut().filter(|w| w.own != change.conn) {
+        for window in self
+            .open
+            .values_mut()
+            .filter(|w| w.own != change.conn && !w.frozen)
+        {
             if change.from == Some(Phase::Connected) {
                 window.lo.remove(&change.conn);
             }
@@ -115,6 +123,13 @@ impl Windows {
             }
         }
     }
+    /// Ends the window's view of the key at `now` without closing it: the
+    /// attempt's connection has ended and its judgement is yet to be asked.
+    pub(crate) fn freeze(&mut self, attempt: AttemptId) {
+        if let Some(window) = self.open.get_mut(&attempt) {
+            window.frozen = true;
+        }
+    }
     /// Closes the window at the attempt's result or abandonment.
     pub(crate) fn close(&mut self, attempt: AttemptId) -> Option<Closed> {
         let window = self.open.remove(&attempt)?;
@@ -124,12 +139,5 @@ impl Windows {
             hi: window.hi.len(),
             winding_down: window.winding_down,
         })
-    }
-    /// Whether `attempt` is a test carrier: an admitted open the SSH worker's
-    /// background-close deferral must never defer.
-    pub(crate) fn is_test_carrier(&self, attempt: AttemptId) -> bool {
-        self.open
-            .get(&attempt)
-            .is_some_and(|window| window.kind.is_test())
     }
 }

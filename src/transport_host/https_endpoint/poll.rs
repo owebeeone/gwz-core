@@ -23,8 +23,12 @@ impl HttpsEndpoint {
             if let Some(task) = entry.preparing.as_mut() {
                 if let Poll::Ready(result) = Pin::new(task).poll(cx) {
                     entry.preparing = None;
-                    let (mut result, connect, mut retry) =
+                    let (mut result, connect, mut retry, rejection) =
                         result.map_err(|_| EndpointError::Protocol)?;
+                    // A test whose connection the host began was taken; one whose
+                    // carrier leased an idle connection, or failed, is given
+                    // back as the token drops (§4.9).
+                    entry.carries_test = None;
                     entry.publication_deadline = retry.budget.publication_deadline();
                     if let Ok(prepared) = &result {
                         let code = if entry.cancel.is_cancelled() {
@@ -62,8 +66,11 @@ impl HttpsEndpoint {
                             self.now_ms,
                             member,
                             entry,
-                            result,
-                            connect,
+                            Settling {
+                                result,
+                                connect,
+                                rejection,
+                            },
                             &mut retry,
                         );
                         let Some(settled) = settled else {

@@ -163,13 +163,16 @@ impl PlacementEndpoint {
         let (pool_key, _) = destination(&open.destination)?;
         let now = self.now();
         let allocation = AllocationClock::new(now, open.deadlines.allocation_ms.max(0) as u64);
-        self.requests.insert(key.clone(), request_state(&envelope));
+        let mut state = request_state(&envelope);
+        state.site = Some(pool_key.site());
+        self.requests.insert(key.clone(), state);
         self.admit(
             QueuedOpen {
                 key,
                 pool_key,
                 envelope,
                 allocation,
+                attempts: 0,
             },
             now,
         )
@@ -204,10 +207,26 @@ impl PlacementEndpoint {
                 Ok(())
             }
             Decision::Start => {
-                let admission = self
-                    .endpoint
-                    .governor()
-                    .admission(&queued.pool_key, self.endpoint.pool_now());
+                let governor = self.endpoint.governor().scoped(&queued.key.0);
+                let pool_now = self.endpoint.pool_now();
+                let mut admission = governor.admission(&queued.pool_key, pool_now);
+                // A due test of the site's limit starts through this member
+                // when it cannot start otherwise, the gate shut or the site
+                // full (§4.5, §4.7): never a probe on its final attempt.
+                let final_attempt = queued.attempts >= self.retries.max_retries(&queued.key.0);
+                let idle = self.idle_may_exist(&queued.pool_key, &admission);
+                let mut carries_test = None;
+                if !(admission.gate_open && (admission.room || idle))
+                    && let Some((target, token)) =
+                        governor.start_test(&queued.pool_key, final_attempt, pool_now)
+                {
+                    admission = Admission {
+                        gate_open: true,
+                        target,
+                        ..admission
+                    };
+                    carries_test = Some(token);
+                }
                 if !admission.gate_open {
                     // Behind a hold of its site (§5.2): the wait is the
                     // server's word, and the allocation clock stops.
@@ -217,10 +236,20 @@ impl PlacementEndpoint {
                 }
                 queued.allocation.run(now);
                 let left = queued.allocation.left(now);
+                // Below the ceiling a member that cannot lease an idle
+                // connection waits for room in the endpoint, where its
+                // allocation clock stops (§5.2), not in the pool.
+                if carries_test.is_none() && !admission.room && !idle {
+                    queued.allocation.stop(now);
+                    self.queued_opens.push_back(queued);
+                    return Ok(());
+                }
+                if left > 0 && self.admits_open(&queued.pool_key, admission.target) {
+                    self.start_attempt(queued, now, left, carries_test);
+                    return Ok(());
+                }
                 if left == 0 {
                     self.fail_open(&queued.key, setup_retry::allocation_timeout());
-                } else if self.admits_open(&queued.pool_key, admission.target) {
-                    self.start_attempt(queued, now, left);
                 } else {
                     self.queued_opens.push_back(queued);
                 }
@@ -231,13 +260,21 @@ impl PlacementEndpoint {
 
     /// One attempt of `queued`'s open, with the allocation it has `left` and
     /// fresh network clocks.
-    fn start_attempt(&mut self, queued: QueuedOpen, now: u64, left: u64) {
+    fn start_attempt(
+        &mut self,
+        queued: QueuedOpen,
+        now: u64,
+        left: u64,
+        carries_test: Option<setup_retry::TestToken>,
+    ) {
         let QueuedOpen {
             key,
             pool_key,
             envelope,
+            attempts,
             ..
         } = queued;
+        let attempts = attempts + 1;
         let open = envelope.open.as_ref().expect("admitted Open");
         let selected = match selected_path(&self.home, &open.identity) {
             Ok(selected) => selected,
@@ -273,13 +310,20 @@ impl PlacementEndpoint {
         };
         // The worker owns the open until it replies. No thread or supervised
         // job waits for it, so opens leave the job budget to their setups.
-        match self.endpoint.start_endpoint_open(
+        let tag = self
+            .endpoint
+            .governor()
+            .scoped(&key.0)
+            .tag(&key.1.to_string());
+        match self.endpoint.start_endpoint_open_tagged(
             pool_key.clone(),
             selected,
             native_service(open.service),
             &open.destination.path,
             context,
             cancelled.clone(),
+            Some(tag),
+            carries_test.is_some(),
         ) {
             Ok(reply) => self.opens.push(OpenJob {
                 key,
@@ -289,9 +333,11 @@ impl PlacementEndpoint {
                 deadline: attempt_deadline,
                 abandoned: false,
                 envelope,
+                attempts,
+                carries_test,
             }),
             // Refused before the worker took it: fail it as its reply would.
-            Err(error) => self.attempt_failed(key, pool_key, envelope, &error, now),
+            Err(error) => self.attempt_failed(key, pool_key, envelope, &error, attempts, now),
         }
     }
 
@@ -381,6 +427,7 @@ impl PlacementEndpoint {
                 attachment: None,
                 queued_input: VecDeque::new(),
                 terminal: false,
+                site: None,
                 facts: None,
             },
         );
@@ -394,11 +441,63 @@ impl PlacementEndpoint {
     }
 
     pub(super) fn start_queued(&mut self, now: u64) -> Result<(), EndpointError> {
+        self.report_demand();
         for _ in 0..self.queued_opens.len() {
             let queued = self.queued_opens.pop_front().expect("queued length");
             self.admit(queued, now)?;
         }
         Ok(())
+    }
+
+    /// Tells each operation's limit machines how many queued members want a
+    /// new connection on a site, and how many of them could carry a probe
+    /// (not on their final attempt, §4.7). A site with none queued is told
+    /// zero, so a test is never started with no one to carry it.
+    pub(super) fn report_demand(&mut self) {
+        let pool_now = self.endpoint.pool_now();
+        let mut demand: Vec<(String, Key, usize, usize)> = self
+            .opens
+            .iter()
+            .map(|open| (open.key.0.clone(), open.pool_key.clone(), 0, 0))
+            .collect();
+        for queued in &self.queued_opens {
+            let operation = &queued.key.0;
+            let spare = queued.attempts < self.retries.max_retries(operation);
+            match demand
+                .iter_mut()
+                .find(|(op, key, ..)| op == operation && *key == queued.pool_key)
+            {
+                Some(entry) => {
+                    entry.2 += 1;
+                    entry.3 += usize::from(spare);
+                }
+                None => demand.push((
+                    operation.clone(),
+                    queued.pool_key.clone(),
+                    1,
+                    usize::from(spare),
+                )),
+            }
+        }
+        for (operation, key, needing, spare) in demand {
+            self.endpoint
+                .governor()
+                .scoped(&operation)
+                .set_demand(&key, needing, spare, pool_now);
+        }
+    }
+
+    /// Whether a connection of the site may be idle: more are set up than
+    /// carry a stream. An overestimate costs a wait in the pool, as at the
+    /// ceiling; an underestimate would hold a member that could lease.
+    fn idle_may_exist(&self, key: &Key, admission: &Admission) -> bool {
+        let site = key.site();
+        let streaming = self
+            .requests
+            .values()
+            .filter(|state| state.attachment.is_some() && state.site.as_ref() == Some(&site))
+            .count();
+        admission.connected > streaming
     }
 
     /// An open starts while the opens in flight stay within the operation's

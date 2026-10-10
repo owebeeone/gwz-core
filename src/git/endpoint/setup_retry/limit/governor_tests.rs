@@ -2,9 +2,9 @@
 //! the endpoints rely on (§4.5, §4.9, §10.2 cases 21, 41, 42 and 51).
 use super::{
     control::Ruling,
-    filter::Signal::Throttle,
+    filter::Signal::{Suspect, Throttle},
     fsm::State,
-    governor::{Conn, Governor},
+    governor::{Conn, Governor, Scoped, TestToken, label},
     timer::Spread,
 };
 use crate::git::endpoint::ssh_pool::{Connector, PoolHost, Resource};
@@ -83,6 +83,10 @@ struct Rig {
     governor: Governor,
     script: Arc<Mutex<Script>>,
     now: u64,
+    /// The operation the rig's helpers speak for.
+    scope: &'static str,
+    /// The members the rig has made requests for.
+    members: u64,
 }
 fn key() -> Key {
     Key::https("host", 443)
@@ -103,15 +107,21 @@ impl Rig {
             0,
         )
         .unwrap();
-        let governor = Governor::new(pool.control(), ceiling, adaptive, || Spread::fixed(1_000));
+        let governor = Governor::new(pool.control(), ceiling, || Spread::fixed(1_000));
         host.set_observer(Arc::new(governor.clone()));
+        governor.begin_operation("op", ceiling, adaptive, 0);
         Self {
             pool,
             host,
             governor,
             script,
             now: 0,
+            scope: "op",
+            members: 0,
         }
+    }
+    fn op(&self) -> Scoped {
+        self.governor.scoped(self.scope)
     }
     fn tick(&mut self, now: u64) {
         self.now = now;
@@ -123,21 +133,26 @@ impl Rig {
             .step(&mut Context::from_waker(Waker::noop()), now)
             .unwrap();
     }
-    fn request(&self) -> Request {
+    /// A request for a new member of the rig's operation, tagged as the
+    /// endpoints tag theirs; its member is `m<n>`.
+    fn request(&mut self) -> Request {
+        self.members += 1;
         let mut request = Request::new(key(), Identity::Https, Owner::new("session", "operation"));
+        request.tag = Some(label(self.scope, &format!("m{}", self.members)));
         request.fresh = true;
         request
     }
     /// A new connection, leased. The pool host runs a turn before and after.
     fn open(&mut self) -> (Lease, Conn) {
-        let mut checkout = self.pool.checkout(self.request()).unwrap();
+        let request = self.request();
+        let mut checkout = self.pool.checkout(request).unwrap();
         self.tick(self.now);
         let lease = take(&mut checkout);
         let id = Conn::of(lease.connection().unwrap());
         (lease, id)
     }
     fn view(&self) -> super::governor::View {
-        self.governor.view(&key(), self.now).unwrap()
+        self.op().view(&key(), self.now).unwrap()
     }
     fn site(&self) -> gwz_transport::pool::Site {
         key().site()
@@ -161,8 +176,8 @@ fn a_new_key_is_saturated_and_tells_the_pool_its_ceiling_and_no_settle_time() {
         (State::Saturated, 8, 8)
     );
     assert_eq!(rig.pool.limit(&rig.site()), Some(8));
-    assert_eq!(rig.governor.admission(&key(), 0).target, 8);
-    assert!(rig.governor.admission(&key(), 0).gate_open);
+    assert_eq!(rig.op().admission(&key(), 0).target, 8);
+    assert!(rig.op().admission(&key(), 0).gate_open);
 }
 
 #[test]
@@ -171,7 +186,7 @@ fn https_is_connected_when_its_first_exchange_is_answered_not_when_tls_is_up() {
     let (lease, connection) = rig.open();
     assert_eq!(rig.view().connected, 0, "TLS up is not set up (§4.1)");
     assert_eq!(rig.view().possible, 1);
-    rig.governor.answered(&key(), connection, 5);
+    rig.op().answered(&key(), connection, 5);
     assert_eq!(rig.view().connected, 1);
     drop(lease);
 }
@@ -184,12 +199,12 @@ fn a_throttle_lowers_the_pool_limit_to_n_and_starts_the_settle_time() {
     for now in 1..=3 {
         rig.now = now;
         let (lease, connection) = rig.open();
-        rig.governor.answered(&key(), connection, now);
+        rig.op().answered(&key(), connection, now);
         leases.push(lease);
     }
     let (fourth, connection) = rig.open();
     let ruling = rig
-        .governor
+        .op()
         .refused(&key(), connection, Throttle, None, false, 10);
     assert_eq!(ruling, Some(Ruling::Overload { n: 3 }));
     let view = rig.view();
@@ -209,11 +224,11 @@ fn outside_saturated_a_discarded_connections_slot_is_held_for_the_settle_time() 
     for now in 1..=5 {
         rig.now = now;
         let (lease, connection) = rig.open();
-        rig.governor.answered(&key(), connection, now);
+        rig.op().answered(&key(), connection, now);
         held.push(lease);
     }
     let (sixth, connection) = rig.open();
-    rig.governor
+    rig.op()
         .refused(&key(), connection, Throttle, None, false, 10);
     assert_eq!(rig.view().n, 5);
     rig.host.release(sixth, Disposition::Discarded).unwrap();
@@ -221,7 +236,8 @@ fn outside_saturated_a_discarded_connections_slot_is_held_for_the_settle_time() 
         .release(held.pop().unwrap(), Disposition::Discarded)
         .unwrap();
     rig.tick(20);
-    let mut next = rig.pool.checkout(rig.request()).unwrap();
+    let request = rig.request();
+    let mut next = rig.pool.checkout(request).unwrap();
     rig.tick(20);
     let pending = |next: &mut Checkout| {
         matches!(
@@ -244,7 +260,7 @@ fn a_long_retry_after_holds_the_gate_and_its_end_discards_the_idle_connections_i
     let mut idle = Vec::new();
     for _ in 0..10 {
         let (lease, connection) = rig.open();
-        rig.governor.answered(&key(), connection, 0);
+        rig.op().answered(&key(), connection, 0);
         idle.push((lease, connection));
     }
     for (lease, _) in idle {
@@ -254,18 +270,18 @@ fn a_long_retry_after_holds_the_gate_and_its_end_discards_the_idle_connections_i
     assert_eq!(rig.pool.limit(&rig.site()), Some(32));
     let (thrower, connection) = rig.open();
     // A request-level refusal with Retry-After: 10 s sets the hold.
-    rig.governor
+    rig.op()
         .refused(&key(), connection, Throttle, Some(10_000), false, 1_000);
-    assert!(!rig.governor.admission(&key(), 1_000).gate_open);
-    assert!(!rig.governor.exchange_may_begin(&key(), 1_000));
+    assert!(!rig.op().admission(&key(), 1_000).gate_open);
+    assert!(!rig.op().exchange_may_begin(&key(), 1_000));
     rig.host.release(thrower, Disposition::Discarded).unwrap();
     rig.tick(10_999);
-    assert!(!rig.governor.admission(&key(), 10_999).gate_open);
+    assert!(!rig.op().admission(&key(), 10_999).gate_open);
     // The hold ends: ten Closing(Discarded) in one turn, no eviction, and
     // only then does the gate open.
     let before = rig.pool.limit(&rig.site());
     rig.tick(11_000);
-    assert!(rig.governor.admission(&key(), 11_000).gate_open);
+    assert!(rig.op().admission(&key(), 11_000).gate_open);
     assert_eq!(before, rig.pool.limit(&rig.site()));
     assert_eq!(rig.view().connected, 0, "all ten left Connected at once");
 }
@@ -274,10 +290,10 @@ fn a_long_retry_after_holds_the_gate_and_its_end_discards_the_idle_connections_i
 fn at_max_retries_zero_a_throttle_sets_the_hold_and_lowers_nothing() {
     let mut rig = Rig::new(8, false);
     let (lease, connection) = rig.open();
-    rig.governor.answered(&key(), connection, 0);
+    rig.op().answered(&key(), connection, 0);
     let (second, other) = rig.open();
     let ruling = rig
-        .governor
+        .op()
         .refused(&key(), other, Throttle, Some(500), false, 5);
     assert_eq!(ruling, Some(Ruling::HoldOnly));
     let view = rig.view();
@@ -296,14 +312,12 @@ fn a_leased_exchange_that_is_refused_is_judged_on_its_own_window() {
     let mut held = Vec::new();
     for now in 0..8 {
         let (lease, connection) = rig.open();
-        rig.governor.answered(&key(), connection, now);
+        rig.op().answered(&key(), connection, now);
         held.push((lease, connection));
     }
     let third = held[2].1;
-    assert!(rig.governor.exchange_begins(&key(), third, 100));
-    let ruling = rig
-        .governor
-        .refused(&key(), third, Throttle, None, false, 101);
+    assert!(rig.op().exchange_begins(&key(), third, 100));
+    let ruling = rig.op().refused(&key(), third, Throttle, None, false, 101);
     assert_eq!(
         ruling,
         Some(Ruling::Overload { n: 7 }),
@@ -315,14 +329,14 @@ fn a_leased_exchange_that_is_refused_is_judged_on_its_own_window() {
 fn a_leased_exchange_may_not_begin_during_a_hold_and_a_successful_one_changes_nothing() {
     let mut rig = Rig::new(8, true);
     let (lease, connection) = rig.open();
-    rig.governor.answered(&key(), connection, 0);
-    assert!(rig.governor.exchange_begins(&key(), connection, 1));
-    rig.governor.answered(&key(), connection, 2);
+    rig.op().answered(&key(), connection, 0);
+    assert!(rig.op().exchange_begins(&key(), connection, 1));
+    rig.op().answered(&key(), connection, 2);
     assert_eq!(rig.view().connected, 1);
     let (second, other) = rig.open();
-    rig.governor
+    rig.op()
         .refused(&key(), other, Throttle, Some(3_000), false, 3);
-    assert!(!rig.governor.exchange_begins(&key(), connection, 4));
+    assert!(!rig.op().exchange_begins(&key(), connection, 4));
     drop((lease, second));
 }
 
@@ -330,26 +344,29 @@ fn a_leased_exchange_may_not_begin_during_a_hold_and_a_successful_one_changes_no
 fn a_hold_is_a_deadline_the_endpoint_wakes_for() {
     let mut rig = Rig::new(8, false);
     let (lease, connection) = rig.open();
-    rig.governor
+    rig.op()
         .refused(&key(), connection, Throttle, Some(5_000), false, 100);
     assert_eq!(rig.governor.next_deadline(100), Some(5_100));
     drop(lease);
 }
 
 #[test]
-fn a_new_operation_starts_every_key_saturated_and_clears_the_pools_numbers() {
+fn an_operation_that_ends_clears_its_numbers_and_the_next_starts_saturated() {
     let mut rig = Rig::new(8, true);
     let (lease, connection) = rig.open();
-    rig.governor.answered(&key(), connection, 0);
+    rig.op().answered(&key(), connection, 0);
     let (second, other) = rig.open();
-    rig.governor
-        .refused(&key(), other, Throttle, None, false, 1);
+    rig.op().refused(&key(), other, Throttle, None, false, 1);
     assert_eq!(rig.view().state, State::Stable);
     drop((lease, second));
-    rig.governor.begin_operation("a", 4, true, 2);
-    assert!(rig.governor.view(&key(), 2).is_none());
+    // The operation ends: its numbers leave the pool, and the next starts
+    // SATURATED at its own ceiling.
+    rig.governor.end_operation("op", 2);
     assert_eq!(rig.pool.limit(&rig.site()), None);
-    assert_eq!(rig.governor.admission(&key(), 2).target, 4);
+    rig.governor.begin_operation("a", 4, true, 2);
+    rig.scope = "a";
+    assert!(rig.op().view(&key(), 2).is_none());
+    assert_eq!(rig.op().admission(&key(), 2).target, 4);
 }
 
 #[test]
@@ -360,7 +377,7 @@ fn a_connection_that_leaves_before_its_exchange_is_answered_ends_its_attempt_wit
     rig.tick(5);
     // The attempt's window is closed: a late refusal finds nothing.
     assert_eq!(
-        rig.governor
+        rig.op()
             .refused(&key(), connection, Throttle, None, false, 6),
         None
     );
@@ -372,12 +389,12 @@ fn a_retry_after_on_a_connection_with_no_attempt_in_flight_still_sets_the_hold()
     // answered, so no window is open, and the server's word holds all the same.
     let mut rig = Rig::new(8, true);
     let (lease, connection) = rig.open();
-    rig.governor.answered(&key(), connection, 0);
+    rig.op().answered(&key(), connection, 0);
     let ruling = rig
-        .governor
+        .op()
         .refused(&key(), connection, Throttle, Some(2_000), false, 10);
     assert_eq!(ruling, None);
-    assert!(!rig.governor.admission(&key(), 10).gate_open);
+    assert!(!rig.op().admission(&key(), 10).gate_open);
     assert_eq!(rig.view().n, 8, "nothing was judged");
     drop(lease);
 }
@@ -394,7 +411,7 @@ fn a_connection_no_exchange_answered_is_gone_when_the_server_closes_it_idle() {
     rig.tick(5);
     let view = rig.view();
     assert_eq!((view.possible, view.connected), (0, 0));
-    assert!(rig.governor.admission(&key(), 5).gate_open);
+    assert!(rig.op().admission(&key(), 5).gate_open);
 }
 
 #[test]
@@ -402,8 +419,8 @@ fn an_answered_leased_exchange_sets_up_a_connection_no_discovery_answered() {
     let mut rig = Rig::new(8, true);
     let (lease, connection) = rig.open();
     assert_eq!(rig.view().connected, 0);
-    assert!(rig.governor.exchange_begins(&key(), connection, 1));
-    rig.governor.answered(&key(), connection, 2);
+    assert!(rig.op().exchange_begins(&key(), connection, 1));
+    rig.op().answered(&key(), connection, 2);
     assert_eq!(rig.view().connected, 1);
     drop(lease);
 }
@@ -411,45 +428,52 @@ fn an_answered_leased_exchange_sets_up_a_connection_no_discovery_answered() {
 #[test]
 fn a_second_live_operation_does_not_erase_a_hold() {
     let mut rig = Rig::new(8, false);
+    rig.governor.end_operation("op", 0);
     rig.governor.begin_operation("a", 8, false, 0);
+    rig.scope = "a";
     let (lease, connection) = rig.open();
-    rig.governor
+    rig.op()
         .refused(&key(), connection, Throttle, Some(20_000), false, 100);
-    // Another request is admitted while the first still runs.
+    // Another request is admitted while the first still runs: its machine is
+    // its own, and it hears the server's word.
     rig.governor.begin_operation("b", 8, false, 200);
-    assert!(!rig.governor.admission(&key(), 200).gate_open);
-    assert!(!rig.governor.admission(&key(), 20_099).gate_open);
-    assert!(rig.governor.admission(&key(), 20_100).gate_open);
+    rig.scope = "b";
+    assert!(!rig.op().admission(&key(), 200).gate_open);
+    assert!(!rig.op().admission(&key(), 20_099).gate_open);
+    assert!(rig.op().admission(&key(), 20_100).gate_open);
     drop(lease);
 }
 
 #[test]
 fn a_hold_still_in_force_outlives_its_operation_but_the_rest_of_its_state_does_not() {
     let mut rig = Rig::new(32, false);
+    rig.governor.end_operation("op", 0);
     rig.governor.begin_operation("a", 4, false, 0);
+    rig.scope = "a";
     let (lease, connection) = rig.open();
-    rig.governor.answered(&key(), connection, 1);
+    rig.op().answered(&key(), connection, 1);
     let other = Key::https("other", 443);
-    rig.governor.admission(&other, 1);
-    rig.governor
+    rig.op().admission(&other, 1);
+    rig.op()
         .refused(&key(), connection, Throttle, Some(20_000), false, 100);
     assert_eq!(rig.view().pool_limit, 4);
-    rig.governor.end_operation("a");
+    rig.governor.end_operation("a", 150);
     // The next operation has another ceiling.
     rig.governor.begin_operation("b", 32, false, 200);
+    rig.scope = "b";
     assert!(
-        !rig.governor.admission(&key(), 200).gate_open,
+        !rig.op().admission(&key(), 200).gate_open,
         "the server's word stands"
     );
     assert!(
-        rig.governor.view(&other, 200).is_none(),
+        rig.op().view(&other, 200).is_none(),
         "a slot with no hold starts over"
     );
     let view = rig.view();
     assert_eq!(
         (view.pool_limit, view.connected, view.possible),
-        (32, 0, 0),
-        "only the hold survived: the new ceiling, none of the old table"
+        (32, 1, 1),
+        "the hold survived with the new ceiling; the site's connection is still there"
     );
     drop(lease);
 }
@@ -459,12 +483,14 @@ fn a_slot_kept_for_its_hold_takes_the_next_operations_ceiling_and_resends_the_po
     // The reviewer's probe (P2-3): hold under ceiling 4, then an operation
     // with 32 on a pool whose numbers its admission has just cleared.
     let mut rig = Rig::new(32, false);
+    rig.governor.end_operation("op", 0);
     rig.governor.begin_operation("a", 4, false, 0);
+    rig.scope = "a";
     let (lease, connection) = rig.open();
-    rig.governor
+    rig.op()
         .refused(&key(), connection, Throttle, Some(20_000), false, 100);
     assert_eq!(rig.pool.limit(&rig.site()), Some(4));
-    rig.governor.end_operation("a");
+    rig.governor.end_operation("a", 120);
     rig.host.release(lease, Disposition::Discarded).unwrap();
     rig.tick(150);
     rig.pool.install_capacity(rig.pool.capacity()).unwrap();
@@ -474,9 +500,10 @@ fn a_slot_kept_for_its_hold_takes_the_next_operations_ceiling_and_resends_the_po
         "install cleared the pool"
     );
     rig.governor.begin_operation("b", 32, false, 200);
-    assert!(!rig.governor.admission(&key(), 20_099).gate_open);
+    rig.scope = "b";
+    assert!(!rig.op().admission(&key(), 20_099).gate_open);
     // The hold ends: the gate opens at the new operation's ceiling.
-    let admission = rig.governor.admission(&key(), 25_000);
+    let admission = rig.op().admission(&key(), 25_000);
     assert!(admission.gate_open);
     assert_eq!(admission.target, 32);
     assert!(
@@ -484,4 +511,523 @@ fn a_slot_kept_for_its_hold_takes_the_next_operations_ceiling_and_resends_the_po
         "the pool's limit is {:?}",
         rig.pool.limit(&rig.site())
     );
+}
+
+/// Opens `count` connections on the rig and has `answer` of them answered by
+/// the rig's operation: the connections the server holds.
+fn hold_connections(rig: &mut Rig, count: usize) -> Vec<(Lease, Conn)> {
+    (0..count)
+        .map(|now| {
+            rig.now = now as u64;
+            let (lease, connection) = rig.open();
+            rig.op().answered(&key(), connection, now as u64);
+            (lease, connection)
+        })
+        .collect()
+}
+
+#[test]
+fn each_operation_has_its_own_machine_over_the_connections_the_server_holds() {
+    // Two overlapping operations on one site (§4.1: one machine per
+    // operation). "a" is refused with three held and lowers its own N; "b",
+    // which heard nothing, stays SATURATED, though it sees the same table.
+    let mut rig = Rig::new(8, true);
+    rig.governor.end_operation("op", 0);
+    rig.governor.begin_operation("a", 8, true, 0);
+    rig.governor.begin_operation("b", 8, true, 0);
+    rig.scope = "a";
+    let held = hold_connections(&mut rig, 3);
+    let (fourth, connection) = rig.open();
+    let ruling = rig
+        .op()
+        .refused(&key(), connection, Throttle, None, false, 10);
+    assert_eq!(ruling, Some(Ruling::Overload { n: 3 }));
+    let a = rig.op().view(&key(), 10).unwrap();
+    rig.scope = "b";
+    let b = rig.op().view(&key(), 10).unwrap();
+    assert_eq!((a.state, a.n, a.connected), (State::Stable, 3, 3));
+    assert_eq!((b.state, b.n, b.connected), (State::Saturated, 8, 3));
+    // The pool follows the most permissive machine, and the endpoint of each
+    // operation reads its own target.
+    assert_eq!(rig.pool.limit(&rig.site()), Some(8));
+    assert_eq!(rig.op().admission(&key(), 10).target, 8);
+    rig.scope = "a";
+    assert_eq!(rig.op().admission(&key(), 10).target, 3);
+    drop((held, fourth));
+}
+
+#[test]
+fn the_pools_numbers_follow_the_live_operations_and_leave_with_the_last() {
+    let mut rig = Rig::new(8, true);
+    rig.governor.end_operation("op", 0);
+    rig.governor.begin_operation("a", 8, true, 0);
+    rig.governor.begin_operation("b", 4, true, 0);
+    rig.scope = "a";
+    let held = hold_connections(&mut rig, 2);
+    let (third, connection) = rig.open();
+    rig.op()
+        .refused(&key(), connection, Throttle, None, false, 10);
+    assert_eq!(rig.view().n, 2);
+    // "b" is at its ceiling of 4 and "a" at 2: the pool allows the larger.
+    assert_eq!(rig.pool.limit(&rig.site()), Some(4));
+    assert_eq!(rig.pool.settle(&rig.site()), 250, "a is outside SATURATED");
+    rig.governor.end_operation("b", 11);
+    assert_eq!(rig.pool.limit(&rig.site()), Some(2));
+    rig.governor.end_operation("a", 12);
+    assert_eq!(rig.pool.limit(&rig.site()), None);
+    assert_eq!(rig.pool.settle(&rig.site()), 0);
+    drop((held, third));
+}
+
+#[test]
+fn a_retry_after_one_operation_hears_holds_every_live_operation_and_the_next() {
+    let mut rig = Rig::new(8, false);
+    rig.governor.end_operation("op", 0);
+    rig.governor.begin_operation("a", 8, false, 0);
+    rig.governor.begin_operation("b", 8, false, 0);
+    rig.scope = "a";
+    let (lease, connection) = rig.open();
+    rig.op()
+        .refused(&key(), connection, Throttle, Some(5_000), false, 100);
+    rig.scope = "b";
+    assert!(!rig.op().admission(&key(), 200).gate_open, "b hears it");
+    rig.governor.end_operation("a", 300);
+    rig.governor.end_operation("b", 300);
+    rig.governor.begin_operation("c", 8, false, 400);
+    rig.scope = "c";
+    assert!(!rig.op().admission(&key(), 400).gate_open, "so does c");
+    assert!(rig.op().admission(&key(), 5_100).gate_open);
+    drop(lease);
+}
+
+#[test]
+fn an_operation_judges_its_refusals_by_its_own_flag_and_ceiling() {
+    // "a" is at `--max-retries 0` (no refusal lowers N); "b" adapts. The same
+    // refusal reported by each is a hold for one and an Overload for the other.
+    let mut rig = Rig::new(8, true);
+    rig.governor.end_operation("op", 0);
+    rig.governor.begin_operation("a", 8, false, 0);
+    rig.governor.begin_operation("b", 4, true, 0);
+    rig.scope = "a";
+    let held = hold_connections(&mut rig, 2);
+    let (third, connection) = rig.open();
+    assert_eq!(
+        rig.op()
+            .refused(&key(), connection, Throttle, None, false, 10),
+        Some(Ruling::HoldOnly)
+    );
+    rig.scope = "b";
+    let (fourth, other) = rig.open();
+    assert_eq!(
+        rig.op().refused(&key(), other, Throttle, None, false, 11),
+        Some(Ruling::Overload { n: 2 })
+    );
+    let view = rig.view();
+    assert_eq!((view.n, view.ceiling), (2, 4));
+    drop((held, third, fourth));
+}
+
+/// Starts a connection the script refuses at setup and ticks until the host
+/// has seen it end: the pool's request fails, which the rig ignores. Returns
+/// the member the request was made for, whose endpoint would report why.
+fn refused_setup(rig: &mut Rig, at: u64) -> String {
+    rig.script.lock().unwrap().refuse = vec![false; 64];
+    let opened = rig.script.lock().unwrap().opened;
+    rig.script.lock().unwrap().refuse[opened] = true;
+    let request = rig.request();
+    let member = format!("m{}", rig.members);
+    let _checkout = rig.pool.checkout(request).unwrap();
+    rig.tick(at);
+    rig.tick(at);
+    member
+}
+
+#[test]
+fn a_setup_the_server_ended_is_judged_when_its_endpoint_says_why() {
+    // The host saw a refused connect end; the endpoint, which has the failure,
+    // asks what the machine made of it (§4.8). Three connections were held,
+    // so nothing was counted besides: a conclusive Suspect opens a
+    // confirmation (§4.5 rule 3).
+    let mut rig = Rig::new(8, true);
+    let held = hold_connections(&mut rig, 3);
+    let member = refused_setup(&mut rig, 10);
+    assert_eq!(rig.view().possible, 3, "the refused setup is Gone");
+    let ruling = rig.op().setup_failed(&key(), &member, Suspect, 11);
+    assert_eq!(ruling, Some(Ruling::Confirmation));
+    assert!(rig.view().confirmation);
+    assert!(!rig.op().admission(&key(), 11).gate_open);
+    // It is judged once: a second report finds nothing to judge.
+    assert_eq!(rig.op().setup_failed(&key(), &member, Suspect, 12), None);
+    drop(held);
+}
+
+#[test]
+fn a_setup_alone_is_the_retry_machines_and_an_unreported_one_expires() {
+    let mut rig = Rig::new(8, true);
+    let member = refused_setup(&mut rig, 10);
+    assert_eq!(
+        rig.op().setup_failed(&key(), &member, Suspect, 11),
+        Some(Ruling::RetryMachine),
+        "hi = 0: nothing else was counted"
+    );
+    // A setup that ends and is never reported must not hold its window for good.
+    let held = hold_connections(&mut rig, 2);
+    let member = refused_setup(&mut rig, 100);
+    assert_eq!(rig.op().setup_failed(&key(), &member, Suspect, 5_000), None);
+    drop(held);
+}
+
+/// A rig in STABLE at `N = 3` with three connections held and the probe timer
+/// due at 510 ms: a Throttle took the fourth.
+fn stable_at_three() -> (Rig, Vec<(Lease, Conn)>) {
+    let mut rig = Rig::new(8, true);
+    let held = hold_connections(&mut rig, 3);
+    let (fourth, connection) = rig.open();
+    assert_eq!(
+        rig.op()
+            .refused(&key(), connection, Throttle, None, false, 10),
+        Some(Ruling::Overload { n: 3 })
+    );
+    drop(fourth);
+    rig.tick(11);
+    (rig, held)
+}
+
+/// Arms the due test of `rig`'s operation for a carrier: its target, and the
+/// token that gives the test back when dropped.
+fn arm(rig: &Rig, carrier_final: bool, now: u64) -> Option<(usize, TestToken)> {
+    rig.op().start_test(&key(), carrier_final, now)
+}
+
+#[test]
+fn a_due_probe_is_armed_for_one_carrier_and_the_pool_limit_rises_with_it() {
+    let (mut rig, held) = stable_at_three();
+    rig.op().set_demand(&key(), 1, 1, 100);
+    assert!(arm(&rig, false, 100).is_none(), "T0 not expired");
+    let (target, _token) = arm(&rig, false, 1_000).unwrap();
+    assert_eq!(target, 4);
+    assert_eq!(
+        rig.pool.limit(&rig.site()),
+        Some(4),
+        "raised under the lock"
+    );
+    assert!(
+        !rig.op().admission(&key(), 1_000).gate_open,
+        "one test only"
+    );
+    assert!(arm(&rig, false, 1_000).is_none());
+    // The next connection the pool starts for this operation is the test:
+    // refused fairly, it backs the timer off and leaves N alone.
+    rig.now = 1_000;
+    let (probe, connection) = rig.open();
+    let ruling = rig
+        .op()
+        .refused(&key(), connection, Throttle, None, false, 1_010);
+    assert_eq!(ruling, Some(Ruling::RefusedTest));
+    assert_eq!(rig.pool.limit(&rig.site()), Some(3), "lowered again");
+    drop((probe, held));
+}
+
+#[test]
+fn a_probe_that_succeeds_raises_n_and_a_final_attempt_never_carries_one() {
+    let (mut rig, held) = stable_at_three();
+    rig.op().set_demand(&key(), 1, 1, 100);
+    assert!(arm(&rig, true, 1_000).is_none());
+    let _token = arm(&rig, false, 1_000).unwrap();
+    rig.now = 1_000;
+    let (probe, connection) = rig.open();
+    rig.op().answered(&key(), connection, 1_010);
+    let view = rig.view();
+    assert_eq!((view.state, view.n), (State::Discovering, 4));
+    drop((probe, held));
+}
+
+#[test]
+fn a_probe_needs_a_carrier_and_dropping_the_carriers_token_gives_the_test_back() {
+    let (rig, held) = stable_at_three();
+    // No member wants a connection: no connection is opened only to test.
+    rig.op().set_demand(&key(), 0, 0, 100);
+    assert!(arm(&rig, false, 1_000).is_none());
+    rig.op().set_demand(&key(), 1, 1, 1_000);
+    let (_, token) = arm(&rig, false, 1_000).unwrap();
+    // The carrier ended with no connection of its own, whatever way it
+    // ended: its token is dropped and the test is back (P2-5).
+    drop(token);
+    assert_eq!(rig.pool.limit(&rig.site()), Some(3));
+    assert!(rig.op().admission(&key(), 1_100).gate_open);
+    assert!(arm(&rig, false, 1_100).is_some(), "due again at once");
+    drop(held);
+}
+
+#[test]
+fn a_tokens_late_drop_never_takes_back_a_later_test() {
+    let (mut rig, held) = stable_at_three();
+    rig.op().set_demand(&key(), 1, 1, 100);
+    let (_, first) = arm(&rig, false, 1_000).unwrap();
+    rig.now = 1_000;
+    let (probe, connection) = rig.open();
+    rig.op().answered(&key(), connection, 1_010);
+    // N is 4 now and the next test arms for another carrier.
+    rig.op().set_demand(&key(), 1, 1, 1_020);
+    let second = arm(&rig, false, 1_020);
+    assert!(second.is_some());
+    drop(first);
+    assert!(
+        !rig.op().admission(&key(), 1_030).gate_open,
+        "the second carrier's test is still armed"
+    );
+    drop((second, probe, held));
+}
+
+// ---- the adaptive step's review (GwzTransportAdaptiveStep-ReviewCodeState.md)
+
+#[test]
+fn p2_1_a_new_operation_sees_the_connections_that_predate_it() {
+    let mut rig = Rig::new(32, true);
+    rig.governor.end_operation("op", 0);
+    rig.governor.begin_operation("a", 32, true, 0);
+    rig.scope = "a";
+    let a_held = hold_connections(&mut rig, 20);
+    rig.governor.begin_operation("b", 32, true, 30);
+    rig.scope = "b";
+    rig.op().admission(&key(), 30);
+    assert_eq!(rig.view().connected, 20, "b sees what a's connections hold");
+    let mut b_held = Vec::new();
+    for t in 31..=32 {
+        rig.now = t;
+        let (lease, connection) = rig.open();
+        rig.op().answered(&key(), connection, t);
+        b_held.push(lease);
+    }
+    rig.now = 33;
+    let (third, connection) = rig.open();
+    let ruling = rig
+        .op()
+        .refused(&key(), connection, Throttle, None, false, 40);
+    assert_eq!(ruling, Some(Ruling::Overload { n: 22 }), "not 2");
+    let b = rig.view();
+    rig.scope = "a";
+    assert_eq!((b.connected, rig.view().connected), (22, 22));
+    drop((a_held, b_held, third));
+}
+
+#[test]
+fn p2_1_connections_kept_idle_by_an_ended_operation_are_seen_by_the_next() {
+    let mut rig = Rig::new(8, true);
+    rig.governor.end_operation("op", 0);
+    rig.governor.begin_operation("a", 8, true, 0);
+    rig.scope = "a";
+    let held = hold_connections(&mut rig, 3);
+    rig.governor.end_operation("a", 10);
+    rig.governor.begin_operation("b", 8, true, 20);
+    rig.scope = "b";
+    rig.op().admission(&key(), 20);
+    let view = rig.view();
+    assert_eq!((view.connected, view.possible), (3, 3));
+    drop(held);
+}
+
+#[test]
+fn p2_2_another_operations_connection_does_not_take_an_armed_test() {
+    let (mut rig, held) = stable_at_three();
+    rig.governor.begin_operation("b", 8, true, 20);
+    rig.op().set_demand(&key(), 1, 1, 100);
+    let (_, token) = arm(&rig, false, 1_000).unwrap();
+    // A member of b starts the next connection, and b's endpoint answers it.
+    rig.scope = "b";
+    rig.now = 1_000;
+    rig.op().admission(&key(), 1_000);
+    let (b_lease, b_conn) = rig.open();
+    rig.op().answered(&key(), b_conn, 1_010);
+    rig.scope = "op";
+    rig.tick(5_000);
+    assert!(
+        !rig.op().admission(&key(), 5_000).gate_open,
+        "the test is still armed for op's own carrier"
+    );
+    // The carrier's own connection is the test: refused, and the gate reopens.
+    rig.now = 5_000;
+    let (own, own_conn) = rig.open();
+    let ruling = rig
+        .op()
+        .refused(&key(), own_conn, Throttle, None, false, 5_010);
+    // It was the test (an ordinary refusal would be an Overload), and b's
+    // connection joined mid-window, so the test ran unfair and is due again.
+    assert_eq!(ruling, Some(Ruling::Unfair));
+    assert!(rig.op().admission(&key(), 5_010).gate_open);
+    drop((token, own, b_lease, held));
+}
+
+#[test]
+fn p2_3_another_operations_answers_raise_a_stable_operations_n() {
+    let (mut rig, held) = stable_at_three();
+    rig.governor.begin_operation("b", 8, true, 20);
+    rig.scope = "b";
+    rig.op().admission(&key(), 300);
+    let mut b_held = Vec::new();
+    for t in 300..304 {
+        rig.now = t;
+        let (lease, connection) = rig.open();
+        rig.op().answered(&key(), connection, t);
+        b_held.push(lease);
+    }
+    rig.scope = "op";
+    // The server holds seven: op's N follows what it is visibly holding.
+    let view = rig.view();
+    assert_eq!((view.connected, view.n), (7, 7));
+    drop((held, b_held));
+}
+
+#[test]
+fn p2_4_a_refused_test_is_judged_on_its_own_window_not_a_waves_unreported_setup() {
+    let mut rig = Rig::new(8, true);
+    let held = hold_connections(&mut rig, 3);
+    let wave = refused_setup(&mut rig, 10);
+    assert_eq!(
+        rig.op().setup_failed(&key(), &wave, Suspect, 11),
+        Some(Ruling::Confirmation)
+    );
+    // Another setup of the wave ends and its endpoint never reports it (an
+    // SSH reset before authentication).
+    let _unreported = refused_setup(&mut rig, 20);
+    rig.op().set_demand(&key(), 1, 1, 21);
+    let (target, _token) = arm(&rig, false, 21).unwrap();
+    assert_eq!(target, 4);
+    // The confirming test is refused fairly and its own member reports it.
+    let test = refused_setup(&mut rig, 22);
+    assert_eq!(
+        rig.op().setup_failed(&key(), &test, Suspect, 23),
+        Some(Ruling::Overload { n: 3 })
+    );
+    drop(held);
+}
+
+#[test]
+fn p2_4_a_report_takes_its_own_members_setup_not_the_newest() {
+    let mut rig = Rig::new(8, true);
+    let held = hold_connections(&mut rig, 3);
+    let first = refused_setup(&mut rig, 10);
+    assert_eq!(
+        rig.op().setup_failed(&key(), &first, Suspect, 11),
+        Some(Ruling::Confirmation)
+    );
+    // A second setup of the wave ends unreported; then the confirming test
+    // runs and is refused too.
+    let wave = refused_setup(&mut rig, 20);
+    rig.op().set_demand(&key(), 1, 1, 21);
+    let (_, _token) = arm(&rig, false, 21).unwrap();
+    let test = refused_setup(&mut rig, 22);
+    // The wave's member reports late: its own window is an ordinary one, and
+    // the confirmation is open, so it is inconclusive; the test's window is
+    // not the one it is judged on.
+    assert_eq!(
+        rig.op().setup_failed(&key(), &wave, Suspect, 23),
+        Some(Ruling::Inconclusive)
+    );
+    assert_eq!(
+        rig.op().setup_failed(&key(), &test, Suspect, 24),
+        Some(Ruling::Overload { n: 3 })
+    );
+    drop(held);
+}
+
+#[test]
+fn p2_4_a_report_that_comes_before_the_host_sees_the_connect_end_is_judged_at_once() {
+    // A timed-out connect fails the request before the host disposes of the
+    // connection, so the endpoint's report precedes the Retired event.
+    let mut rig = Rig::new(8, true);
+    let held = hold_connections(&mut rig, 3);
+    rig.script.lock().unwrap().ready = false;
+    rig.script.lock().unwrap().refuse = vec![false; 64];
+    let request = rig.request();
+    let member = format!("m{}", rig.members);
+    let _checkout = rig.pool.checkout(request).unwrap();
+    rig.tick(10);
+    assert_eq!(rig.view().possible, 4, "the connect is in flight");
+    assert_eq!(
+        rig.op().setup_failed(&key(), &member, Suspect, 11),
+        Some(Ruling::Confirmation),
+        "judged on its own window, before the Retired event"
+    );
+    drop(held);
+}
+
+#[test]
+fn p2_5_a_dropped_carrier_token_reopens_the_gate_for_good() {
+    let (rig, held) = stable_at_three();
+    rig.op().set_demand(&key(), 1, 1, 100);
+    let (_, token) = arm(&rig, false, 1_000).unwrap();
+    drop(token);
+    rig.governor.tick(600_000);
+    assert!(rig.op().admission(&key(), 600_000).gate_open);
+    assert!(arm(&rig, false, 600_000).is_some());
+    drop(held);
+}
+
+#[test]
+fn p2_7_a_report_for_an_ended_operation_does_not_revive_it() {
+    let (rig, held) = stable_at_three();
+    assert_eq!(rig.pool.limit(&rig.site()), Some(3));
+    rig.governor.begin_operation("gone", 8, true, 20);
+    rig.governor.end_operation("gone", 30);
+    let gone = rig.governor.scoped("gone");
+    gone.set_demand(&key(), 0, 0, 40);
+    assert!(gone.start_test(&key(), false, 40).is_none());
+    assert_eq!(gone.admission(&key(), 40).target, 8, "unscoped: no limit");
+    assert!(gone.view(&key(), 40).is_none());
+    rig.governor.tick(50);
+    assert!(!rig.governor.book().scopes.contains_key("gone"));
+    assert_eq!(rig.pool.limit(&rig.site()), Some(3));
+    drop(held);
+}
+
+#[test]
+fn p2_8_a_lone_throttle_without_retry_after_holds_the_site_for_t0() {
+    let mut rig = Rig::new(8, true);
+    let (lease, connection) = rig.open();
+    let ruling = rig
+        .op()
+        .refused(&key(), connection, Throttle, None, false, 100);
+    assert_eq!(ruling, Some(Ruling::RetryMachine), "hi = 0: learns nothing");
+    assert!(!rig.op().admission(&key(), 100).gate_open);
+    assert!(!rig.op().admission(&key(), 599).gate_open);
+    assert!(rig.op().admission(&key(), 600).gate_open, "T0 = 500 ms");
+    drop(lease);
+}
+
+#[test]
+fn p3_1_a_due_probe_that_is_not_ready_stops_the_pool_evicting_for_others() {
+    // §4.5 rule 2: once a due test has reached its base, nothing is closed or
+    // evicted on the key until it is quiet.
+    let (mut rig, mut held) = stable_at_three();
+    rig.op().set_demand(&key(), 1, 1, 400);
+    // A connection closes just before the timer expires: the key is not quiet.
+    let (lease, _) = held.pop().unwrap();
+    rig.host.release(lease, Disposition::Discarded).unwrap();
+    rig.tick(505);
+    rig.tick(511);
+    assert!(rig.pool.no_evict(&rig.site()), "closes are suppressed");
+    // Quiet again, the test is ready and evictions are allowed.
+    rig.tick(900);
+    rig.op().admission(&key(), 900);
+    assert!(!rig.pool.no_evict(&rig.site()));
+    drop(held);
+}
+
+#[test]
+fn p3_1_the_settle_time_follows_the_connect_times_the_machine_measured() {
+    let mut rig = Rig::new(8, true);
+    let mut held = Vec::new();
+    for _ in 0..3 {
+        rig.now = 0;
+        let (lease, connection) = rig.open();
+        // The first exchange is answered 400 ms after the connect began.
+        rig.op().answered(&key(), connection, 400);
+        held.push(lease);
+    }
+    let (fourth, connection) = rig.open();
+    rig.op()
+        .refused(&key(), connection, Throttle, None, false, 410);
+    assert_eq!(rig.view().settle_ms, 900, "2 x 400 + 100");
+    drop((held, fourth));
 }

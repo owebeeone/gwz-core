@@ -20,6 +20,10 @@ pub(in crate::git::endpoint) struct OpenRequest {
         Arc<Mutex<Option<Arc<ssh_setup_context::SetupContext>>>>,
     pub(in crate::git::endpoint) permit: Permit,
     pub(in crate::git::endpoint) context: BridgeContext,
+    /// Names the member the open's connection serves, for the limit machines.
+    pub(in crate::git::endpoint) tag: Option<String>,
+    /// The open carries a test of the site's limit: never deferred.
+    pub(in crate::git::endpoint) carrier: bool,
 }
 pub(in crate::git::endpoint) type OpenOutcome = io::Result<(EndpointAttachment, Opened)>;
 /// Sanitized endpoint outcome; native diagnostics and credential paths stay

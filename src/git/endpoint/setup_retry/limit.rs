@@ -18,15 +18,14 @@
 //! close ends in a discard. Reporting `Closing` at a fetch's completion would
 //! make every key non-quiet and every test window unfair.
 //!
-//! Cut 3: [`governor`], one pool's machines behind one lock, which the pool
-//! host reports to and the endpoints consult. The endpoints use it for the
-//! gate and the admission target, for holds and the idle discard; the
-//! probe carriers, the restore steps and the setup limit are later steps, so
+//! Cut 3: [`governor`], one pool's machines behind one lock, per operation
+//! (§4.1), which the pool host reports to and the endpoints consult through
+//! [`Scoped`]. The endpoints use it for the gate and the admission target,
+//! for holds and the idle discard, for the judgement of a refused setup, and
+//! to start the tests of the limit with a queued member as carrier (§4.7). The
+//! restore steps (RESTORING) and the setup limit `Ns` are the next step, so
 //! the module still allows dead code.
-#![allow(
-    dead_code,
-    reason = "carriers, restore steps and the setup limit come later"
-)]
+#![allow(dead_code, reason = "restore steps and the setup limit come later")]
 
 mod control;
 mod filter;
@@ -34,12 +33,15 @@ mod fsm;
 mod governor;
 mod hold;
 mod notes;
+mod scoped;
 mod states;
 mod timer;
 mod windows;
 
+pub(crate) use control::Ruling;
 pub(crate) use filter::Signal;
-pub(crate) use governor::{Conn, Governor};
+pub(crate) use fsm::State;
+pub(crate) use governor::{Admission, Conn, Governor, Scoped, TestToken, View, label};
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {

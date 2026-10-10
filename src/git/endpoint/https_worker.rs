@@ -41,6 +41,7 @@ pub(crate) mod native;
 mod prepare;
 mod serve;
 mod throttle;
+pub(crate) use throttle::Rejection;
 
 #[derive(Clone)]
 pub(crate) struct Input {
@@ -65,6 +66,9 @@ pub(crate) struct Client {
     native_cleanup: native::Cleanup,
     operations: super::https_operation::Operations,
     ids: Arc<gwz_ids::IdSource>,
+    /// Names each attempt's connection request, which is how its failure is
+    /// judged on its own window (adaptive concurrency design §4.8).
+    attempts: Arc<AtomicUsize>,
 }
 impl Client {
     /// Has the endpoint's TLS configuration built on `runtime` now, for the
@@ -109,6 +113,7 @@ impl Endpoint {
             routes,
             operations,
             ids: Arc::new(crate::operation_context::new_id_source()),
+            attempts: Arc::new(AtomicUsize::new(0)),
             #[cfg(unix)]
             auth_owner: https_auth::AuthOwner::new(helper_slots),
             native: None,

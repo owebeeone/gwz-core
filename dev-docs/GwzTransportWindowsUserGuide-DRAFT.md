@@ -72,14 +72,17 @@ The final guide will state whether a proxy's 407 authentication challenge is
 supported after its 1.0.17 baseline row. Until then proxy authentication support
 is unclaimed. An origin credential is never sent to the proxy.
 
-GWZ starts HTTPS discovery without credentials. If the server offers NTLM,
-Basic or Digest, your configured git helper is asked first. When the server
-also offers Negotiate, a returned helper identity uses Negotiate. A
-Negotiate-only server uses your Windows logon identity without asking a helper.
-If no helper identity is available and the server offers Negotiate or NTLM,
-GWZ can use your Windows logon identity. A helper timeout or cancellation ends
-the operation. A credential the server rejected is not replaced by another
-identity within that operation.
+GWZ starts HTTPS discovery without credentials. If the server offers
+Negotiate or NTLM, alone or beside Basic or Digest, GWZ uses your Windows logon
+identity and does not ask your configured git helper. If Basic is the only
+scheme the server offers that GWZ can use, your configured git helper is asked;
+a GitHub token held by a helper is sent this way. GWZ never answers Digest: a
+server that offers only Digest is refused at once, and Digest is ignored when
+the server offers another scheme. If the server rejects your logon identity, the
+operation stops with an error naming the scheme; GWZ does not try it again or
+turn to a helper credential. A helper timeout or cancellation ends the
+operation. A server that challenges the upload step of a fetch is refused with a
+message, and GWZ does not send the data again.
 
 Your configured helper can show its sign-in window. Git does not prompt on
 the terminal, and the helper interaction has a 120-second bound. At most eight

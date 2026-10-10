@@ -10,8 +10,8 @@ use crate::git::endpoint::{
     shared_reservation::Authority,
     ssh_channel::GitService,
     ssh_close_fixture::{
-        delayed_close_fixture, delayed_eof_fixture, dropped_close_fixture, gated_close_fixture,
-        read_advertisement, silent_fixture, stuck_close_fixture,
+        delayed_close_fixture, delayed_eof_fixture, gated_close_fixture, read_advertisement,
+        silent_fixture, stuck_close_fixture,
     },
     ssh_fixture::SshdFixture,
     ssh_local,
@@ -35,6 +35,22 @@ use std::{
 };
 
 const PATIENCE: Duration = Duration::from_secs(10);
+
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        /// What an open that waited out one deferral and then connected may take: the deferral bound and a connect.
+        const DEFERRED_ONCE_AT_MOST: Duration = Duration::from_millis(450);
+        /// What an open whose deferral the close's own bound cut short may take: the bound and a connect, well
+        /// under the 250 ms wait it would otherwise have made.
+        const BOUNDED_WAIT_AT_MOST: Duration = Duration::from_millis(250);
+    } else {
+        /// The same bound where a connect through Windows' `sshd.exe` takes about 200 ms more (measured on dabeest,
+        /// step 1.5); an open deferred twice would take the deferral bound again on top.
+        const DEFERRED_ONCE_AT_MOST: Duration = Duration::from_millis(650);
+        /// The same with the extra connect time: halfway between the cut-short wait and the full 250 ms one.
+        const BOUNDED_WAIT_AT_MOST: Duration = Duration::from_millis(360);
+    }
+}
 
 fn config(per_host: usize, cleanup_ms: u64) -> Config {
     Config {
@@ -268,16 +284,23 @@ fn a_connection_in_background_close_counts_against_the_cap() {
     rig.fetch(stream);
 }
 
-#[test]
-fn a_background_close_that_drops_the_connection_is_never_reused() {
-    let rig = Rig::new(dropped_close_fixture(), 2, 5_000);
-    let (stream, _) = rig.open(GitService::UploadPack);
-    // libgit2 ignores the close's result: the fetch's stands whatever it is.
-    let _ = rig.fetch_result(stream);
-    rig.wait("discarded", |counts| counts.total() == 0);
-    let (stream, next) = rig.open(GitService::UploadPack);
-    assert!(!next.reused, "a connection whose close failed was reused");
-    drop(stream);
+// The fixture ends the server's own session process with `ps` and `kill -9`, which have no Windows twin here.
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        use crate::git::endpoint::ssh_close_fixture::dropped_close_fixture;
+
+        #[test]
+        fn a_background_close_that_drops_the_connection_is_never_reused() {
+            let rig = Rig::new(dropped_close_fixture(), 2, 5_000);
+            let (stream, _) = rig.open(GitService::UploadPack);
+            // libgit2 ignores the close's result: the fetch's stands whatever it is.
+            let _ = rig.fetch_result(stream);
+            rig.wait("discarded", |counts| counts.total() == 0);
+            let (stream, next) = rig.open(GitService::UploadPack);
+            assert!(!next.reused, "a connection whose close failed was reused");
+            drop(stream);
+        }
+    }
 }
 
 #[test]
@@ -332,27 +355,33 @@ fn a_stream_timeout_terminal_is_released_at_once() {
     );
 }
 
-#[test]
-fn a_closing_exchange_is_released_at_its_deadline() {
-    let cleanup = 900;
-    let rig = Rig::new(stuck_close_fixture(), 1, cleanup);
-    let (stream, _) = rig.open(GitService::ReceivePack);
-    let (closed_in, result) = rig.push(stream);
-    result.expect("the push's result is final at the server's EOF");
-    assert!(closed_in < ms(cleanup / 3), "close() took {closed_in:?}");
-    thread::sleep(ms(cleanup / 3));
-    assert_eq!(
-        rig.counts().leased,
-        1,
-        "released before its bound: {:?}",
-        rig.counts()
-    );
-    // No worker stop: the exchange's own bound, from the handoff, ends it.
-    let ended = rig.wait("released at its bound", |counts| counts.total() == 0);
-    assert!(
-        ended < ms(cleanup) + ms(1_500),
-        "the bound was {cleanup} ms and the close ended after {ended:?} more"
-    );
+// A shell script cannot end a channel's output and keep its process on Windows: MSYS's `exec` leaves a wrapper
+// process holding the channel's pipes, so the server never sends EOF and the row has nothing to wait for.
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        #[test]
+        fn a_closing_exchange_is_released_at_its_deadline() {
+            let cleanup = 900;
+            let rig = Rig::new(stuck_close_fixture(), 1, cleanup);
+            let (stream, _) = rig.open(GitService::ReceivePack);
+            let (closed_in, result) = rig.push(stream);
+            result.expect("the push's result is final at the server's EOF");
+            assert!(closed_in < ms(cleanup / 3), "close() took {closed_in:?}");
+            thread::sleep(ms(cleanup / 3));
+            assert_eq!(
+                rig.counts().leased,
+                1,
+                "released before its bound: {:?}",
+                rig.counts()
+            );
+            // No worker stop: the exchange's own bound, from the handoff, ends it.
+            let ended = rig.wait("released at its bound", |counts| counts.total() == 0);
+            assert!(
+                ended < ms(cleanup) + ms(1_500),
+                "the bound was {cleanup} ms and the close ended after {ended:?} more"
+            );
+        }
+    }
 }
 
 #[test]
@@ -378,31 +407,37 @@ fn a_background_close_that_times_out_is_discarded() {
     }
 }
 
-#[test]
-fn shutdown_discards_a_close_in_flight() {
-    let rig = Rig::new(stuck_close_fixture(), 1, 5_000);
-    let (stream, _) = rig.open(GitService::ReceivePack);
-    let (closed_in, result) = rig.push(stream);
-    result.expect("the push's result is final at the server's EOF");
-    assert!(closed_in < ms(2_000), "close() took {closed_in:?}");
-    assert_eq!(rig.counts().leased, 1);
-    let watch = rig.endpoint.shutdown_watch();
-    let started = Instant::now();
-    rig.endpoint.shutdown();
-    while !watch.status().cleanup_complete {
-        assert!(
-            started.elapsed() < ms(2_500),
-            "shutdown waited for the server: {:?}",
-            watch.status()
-        );
-        thread::sleep(ms(2));
+// A shell script cannot end a channel's output and keep its process on Windows: MSYS's `exec` leaves a wrapper
+// process holding the channel's pipes, so the server never sends EOF and the row has nothing to wait for.
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        #[test]
+        fn shutdown_discards_a_close_in_flight() {
+            let rig = Rig::new(stuck_close_fixture(), 1, 5_000);
+            let (stream, _) = rig.open(GitService::ReceivePack);
+            let (closed_in, result) = rig.push(stream);
+            result.expect("the push's result is final at the server's EOF");
+            assert!(closed_in < ms(2_000), "close() took {closed_in:?}");
+            assert_eq!(rig.counts().leased, 1);
+            let watch = rig.endpoint.shutdown_watch();
+            let started = Instant::now();
+            rig.endpoint.shutdown();
+            while !watch.status().cleanup_complete {
+                assert!(
+                    started.elapsed() < ms(2_500),
+                    "shutdown waited for the server: {:?}",
+                    watch.status()
+                );
+                thread::sleep(ms(2));
+            }
+            assert!(
+                started.elapsed() < ms(500),
+                "cleanup took {:?} against a close that is 5 s from its bound",
+                started.elapsed()
+            );
+            assert_eq!(watch.status().pending_connections, 0);
+        }
     }
-    assert!(
-        started.elapsed() < ms(500),
-        "cleanup took {:?} against a close that is 5 s from its bound",
-        started.elapsed()
-    );
-    assert_eq!(watch.status().pending_connections, 0);
 }
 
 #[test]
@@ -534,7 +569,7 @@ fn the_wait_is_bounded_by_the_closes_remaining_cleanup() {
         "the push opened after {waited:?}, without waiting for the close"
     );
     assert!(
-        waited < ms(250),
+        waited < BOUNDED_WAIT_AT_MOST,
         "the push waited {waited:?}, past the close's own bound of {cleanup} ms"
     );
     drop(stream);
@@ -613,7 +648,7 @@ fn an_open_is_deferred_at_most_once() {
         "the open took {waited:?}, so it did not wait for a closing connection"
     );
     assert!(
-        waited < ms(450),
+        waited < DEFERRED_ONCE_AT_MOST,
         "the open took {waited:?}: it was deferred more than once"
     );
     drop(stream);

@@ -72,11 +72,20 @@ impl SshdFixture {
         fs::read_to_string(self.temp.path().join("sshd.log")).unwrap_or_default()
     }
 
+    /// A server whose sessions run the forced script `ssh_close_fixture` leaves in its directory.
+    pub(crate) fn new_forced() -> Self {
+        Self::build_with(false, OPEN_STARTUPS, "", true)
+    }
+
     fn new_mode(debug: bool, startups: &str) -> Self {
         Self::build(debug, startups, "")
     }
 
     fn build(debug: bool, startups: &str, extra: &str) -> Self {
+        Self::build_with(debug, startups, extra, false)
+    }
+
+    fn build_with(debug: bool, startups: &str, extra: &str, forced: bool) -> Self {
         let programs = fixture_host::programs();
         let temp = TempDir::new().unwrap();
         let host_key = temp.path().join("host_ed25519");
@@ -104,7 +113,11 @@ impl SshdFixture {
         .unwrap();
         let config = temp.path().join("sshd_config");
         let user = fixture_host::login_name();
-        let session = fixture_host::session_directives(temp.path());
+        let session = if forced {
+            fixture_host::forced_session_directives(temp.path())
+        } else {
+            fixture_host::session_directives(temp.path())
+        };
         let config_text =
             fixture_host::server_config(extra, port, &host_key, &authorized, &session, startups);
         fs::write(&config, config_text).unwrap();
@@ -268,6 +281,11 @@ impl Drop for SshdFixture {
     }
 }
 
+/// Writes a key the fixture server trusts: [`run_fixture_keygen`] for the host's programs.
+pub(crate) fn run_fixture_key(path: &Path) {
+    run_fixture_keygen(&fixture_host::programs(), path);
+}
+
 pub(crate) fn run_keygen(path: &Path) {
     run(Command::new(fixture_host::programs().keygen)
         .args(["-q", "-t", "ed25519", "-N", ""])
@@ -284,6 +302,23 @@ fn run_fixture_keygen(programs: &Programs, path: &Path) {
         .args(["-N", ""])
         .arg("-f")
         .arg(path));
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        /// A path that names no regular file and that a plain open would block on: a FIFO in `dir`.
+        pub(crate) fn special_file(dir: &Path) -> PathBuf {
+            let path = dir.join("pipe");
+            let name = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            path
+        }
+    } else {
+        /// A device path with no server behind it: a reader of key and trust files refuses it before it opens it.
+        pub(crate) fn special_file(_dir: &Path) -> PathBuf {
+            PathBuf::from(r"\\.\pipe\gwz-fixture-no-server")
+        }
+    }
 }
 
 pub(crate) fn run(command: &mut Command) {

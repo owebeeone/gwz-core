@@ -29,6 +29,12 @@ impl<K: PartialEq + Clone, M: PartialEq> Operations<K, M> {
     pub(crate) fn set_max_retries(&mut self, operation: &str, max_retries: u32) {
         self.entry(operation).max_retries = max_retries;
     }
+    /// The operation's budget: what it was given, or the default.
+    pub(crate) fn max_retries(&self, operation: &str) -> u32 {
+        self.operations
+            .get(operation)
+            .map_or(DEFAULT_MAX_RETRIES, |entry| entry.max_retries)
+    }
     /// The machine of `key` within `operation`, made on its first use.
     pub(crate) fn machine(&mut self, operation: &str, key: &K) -> &mut Machine<M> {
         let entry = self.entry(operation);

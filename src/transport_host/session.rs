@@ -45,6 +45,32 @@ const CLEANUP: Duration = Duration::from_secs(5);
 /// it can miss a deadline. Whatever gives a pass work wakes it before that.
 const PARK: Duration = Duration::from_millis(5);
 const CHECK_MS: u64 = 120_000;
+cfg_if::cfg_if! {
+    if #[cfg(not(windows))] {
+        /// The policies a driver or endpoint with SSH and HTTPS binds.
+        fn ssh_and_https_endpoint_policies() -> Vec<AuthPolicy> {
+            vec![
+                AuthPolicy::SshAmbient,
+                AuthPolicy::SshExplicit,
+                AuthPolicy::Anonymous,
+                AuthPolicy::Gh,
+                AuthPolicy::WindowsConfigured,
+                AuthPolicy::WindowsDefault,
+            ]
+        }
+    } else {
+        /// The same in the Windows qualification, where the helper policies wait for WH2 (plan steps 4.1 to 4.5).
+        fn ssh_and_https_endpoint_policies() -> Vec<AuthPolicy> {
+            vec![
+                AuthPolicy::SshAmbient,
+                AuthPolicy::SshExplicit,
+                AuthPolicy::Anonymous,
+                AuthPolicy::WindowsDefault,
+            ]
+        }
+    }
+}
+
 pub(super) fn limits() -> Limits {
     let mut limits = binding::default_limits();
     // Match the existing endpoint stream's bounded receive window.
@@ -401,11 +427,6 @@ impl Session {
         handoff: Handoff,
         native: Option<NativeCaller>,
     ) -> ModelResult<(Arc<Self>, TransportPort)> {
-        cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
-            if https.is_none() {
-                return Err(unsupported("HTTPS engine is required in Windows HTTPS qualification"));
-            }
-        } }
         let mut state = Self::empty();
         let id = unique()?;
         let authority = crate::git::endpoint::shared_reservation::Authority::new(
@@ -414,32 +435,30 @@ impl Session {
         );
         state.authority = Some(authority.clone());
         state.installed_capacity = Some(pool::Capacity::from(&config.pool));
-        cfg_if::cfg_if! { if #[cfg(unix)] {
-            if let Some(ssh_settings) = config.ssh {
-        let ssh_helpers = https.as_ref().and_then(|(https, slots)| {
-            https.auth.as_ref().map(|auth| {
-                Arc::new(crate::git::endpoint::ssh_password_helpers::Helpers::new(
-                    auth.clone(),
-                    slots.clone(),
-                ))
-            })
-        });
-        let ssh = ssh_local::connect_with_helpers(
-            config.pool.clone(),
-            ssh_settings.home.join(".ssh/known_hosts"),
-            ssh_settings.agent.clone(),
-            config.io_timeout_ms,
-            authority.clone(),
-            handoff,
-            ssh_helpers,
-        )
-        .map_err(|_| unavailable("SSH endpoint construction failed"))?;
-        state.engine = Some(
-            PlacementEndpoint::new(ssh, ssh_settings.home, id.clone(), id.clone())
-                .map_err(|_| unavailable("endpoint supervisor unavailable"))?,
-        );
-            }
-        } }
+        if let Some(ssh_settings) = config.ssh {
+            let ssh_helpers = https.as_ref().and_then(|(https, slots)| {
+                https.auth.as_ref().map(|auth| {
+                    Arc::new(crate::git::endpoint::ssh_password_helpers::Helpers::new(
+                        auth.clone(),
+                        slots.clone(),
+                    ))
+                })
+            });
+            let ssh = ssh_local::connect_with_helpers(
+                config.pool.clone(),
+                ssh_settings.home.join(".ssh/known_hosts"),
+                ssh_settings.agent.clone(),
+                config.io_timeout_ms,
+                authority.clone(),
+                handoff,
+                ssh_helpers,
+            )
+            .map_err(|_| unavailable("SSH endpoint construction failed"))?;
+            state.engine = Some(
+                PlacementEndpoint::new(ssh, ssh_settings.home, id.clone(), id.clone())
+                    .map_err(|_| unavailable("endpoint supervisor unavailable"))?,
+            );
+        }
         if let Some((https, helper_slots)) = https {
             state.https = Some(super::https_endpoint::HttpsEndpoint::new_native(
                 https,
@@ -456,32 +475,13 @@ impl Session {
             endpoint_id: id.clone(),
             trust_owner: id,
             role: EndpointRole::Driver,
-            schemes: if cfg!(all(
-                windows,
-                gwz_transport_candidate,
-                gwz_windows_https_qualification
-            )) {
-                vec![Scheme::Https]
-            } else if https_enabled {
+            schemes: if https_enabled {
                 vec![Scheme::Ssh, Scheme::Https]
             } else {
                 vec![Scheme::Ssh]
             },
-            policies: if cfg!(all(
-                windows,
-                gwz_transport_candidate,
-                gwz_windows_https_qualification
-            )) {
-                vec![AuthPolicy::Anonymous, AuthPolicy::WindowsDefault]
-            } else if https_enabled {
-                vec![
-                    AuthPolicy::SshAmbient,
-                    AuthPolicy::SshExplicit,
-                    AuthPolicy::Anonymous,
-                    AuthPolicy::Gh,
-                    AuthPolicy::WindowsConfigured,
-                    AuthPolicy::WindowsDefault,
-                ]
+            policies: if https_enabled {
+                ssh_and_https_endpoint_policies()
             } else {
                 vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit]
             },

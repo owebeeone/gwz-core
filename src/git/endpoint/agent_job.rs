@@ -191,7 +191,6 @@ impl<T: Send + 'static> Job<T> {
             spawn,
         )
     }
-    cfg_if::cfg_if! { if #[cfg(unix)] {
     pub(crate) fn start_setup(
         place: Place<'_>,
         setup: Arc<super::ssh_setup_context::SetupContext>,
@@ -217,7 +216,6 @@ impl<T: Send + 'static> Job<T> {
             |name, body| thread::Builder::new().name(name.into()).spawn(body),
         )
     }
-    } }
     fn start_control(
         place: Place<'_>,
         control: Arc<Control>,

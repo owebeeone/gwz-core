@@ -17,6 +17,7 @@
     {"path": "src/git/endpoint/https_auth/view/tests.rs", "kind": "os", "gate": "libc::mkfifo", "target": "", "count": 2, "state": "unported", "owner": ["4.3"], "appendix": "G14"},
     {"path": "src/git/endpoint/https_auth/view/tests.rs", "kind": "os", "gate": "os::unix::ffi::OsStrExt", "target": "", "state": "unported", "owner": ["4.3"], "appendix": "G14"},
     {"path": "src/git/endpoint/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod helper_script", "state": "unported", "owner": ["4.3"], "appendix": "B.2"},
-    {"path": "src/transport_host/endpoint_environment.rs", "kind": "gate", "gate": "unix", "target": "arm: stmt Some(https_auth::Config{executable:", "state": "unported", "owner": ["4.3"], "appendix": "G64"}
+    {"path": "src/transport_host/endpoint_environment.rs", "kind": "gate", "gate": "unix", "target": "arm: stmt Some(https_auth::Config{executable:", "state": "unported", "owner": ["4.3"], "appendix": "G64"},
+    {"path": "src/transport_host/endpoint_environment.rs", "kind": "gate", "gate": "unix", "target": "arm: use crate::git::endpoint::https_auth", "state": "unported", "owner": ["4.3"], "appendix": "G64: the helper auth config (the SSH settings below it are ungated by 1.6)"}
   ]
 }

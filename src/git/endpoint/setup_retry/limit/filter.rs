@@ -74,6 +74,11 @@ pub(crate) fn evidence(refusal: &Refusal) -> Evidence {
     if !kind.is_test() && hi == 0 {
         return Evidence::RetryMachine;
     }
+    // Nothing can be tested without a budget (`--max-retries 0`): a Suspect
+    // is not evidence, and the retry machine counts it as it always did.
+    if !adaptive && signal == Signal::Suspect {
+        return Evidence::RetryMachine;
+    }
     match (judge(kind, target, lo, hi), kind, signal) {
         (Judgement::NotALimit, _, _) => Evidence::RetryMachine,
         (Judgement::Inconclusive, _, _) => Evidence::Inconclusive,

@@ -69,6 +69,7 @@ impl Settle {
     }
 }
 
+#[derive(Clone)]
 struct Entry {
     phase: Phase,
     until: u64,
@@ -77,7 +78,7 @@ struct Entry {
 
 /// Every connection on one key, with its state. Queries are as of the last
 /// [`Table::apply`] or [`Table::advance`].
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Table {
     conns: BTreeMap<ConnId, Entry>,
     settle: Settle,

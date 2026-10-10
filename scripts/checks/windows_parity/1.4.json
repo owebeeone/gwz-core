@@ -1,19 +1,12 @@
 {
   "entries": [
-    {"path": "src/git/endpoint/agent_job.rs", "kind": "gate", "gate": "unix", "target": "arm: fn start_setup", "state": "unported", "owner": ["1.4"], "appendix": "G2"},
-    {"path": "src/git/endpoint/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod ssh_tests", "state": "unported", "owner": ["1.4"], "appendix": "B.2"},
-    {"path": "src/git/endpoint/mod.rs", "kind": "gate", "gate": "unix", "target": "mod idle_watch", "state": "unported", "owner": ["1.4"], "appendix": "G29"},
-    {"path": "src/git/endpoint/mod.rs", "kind": "gate", "gate": "unix", "target": "mod ssh_password", "state": "unported", "owner": ["1.4"], "appendix": "G29"},
-    {"path": "src/git/endpoint/mod.rs", "kind": "gate", "gate": "unix", "target": "mod ssh_setup", "state": "unported", "owner": ["1.4"], "appendix": "G29"},
-    {"path": "src/git/endpoint/ssh_key_auth.rs", "kind": "gate", "gate": "unix", "target": "arm: fn authenticate_reporting", "state": "unported", "owner": ["1.4"], "appendix": "G32"},
-    {"path": "src/git/endpoint/ssh_local.rs", "kind": "gate", "gate": "unix", "target": "arm: use super::{agent_auth, agent_socket, ssh_key_auth, ssh_handoff::Handoff, ssh_key_snapshot::Registry", "state": "unported", "owner": ["1.4"], "appendix": "G34"},
+    {"path": "src/git/endpoint/ssh_fixture.rs", "kind": "gate", "gate": "unix", "target": "arm: fn special_file", "state": "paired", "owner": ["1.4"], "appendix": "new: step 1.4's non-regular path for the reader rows; the Windows arm names a device path with no server"},
+    {"path": "src/git/endpoint/ssh_fixture.rs", "kind": "os", "gate": "libc::mkfifo", "target": "", "state": "paired", "owner": ["1.4"], "appendix": "new: step 1.4's non-regular path for the reader rows"},
+    {"path": "src/git/endpoint/ssh_key_auth.rs", "kind": "gate", "gate": "unix", "target": "arm: fn userauth_from_memory", "state": "paired", "owner": ["1.4"], "appendix": "new: ssh2 offers userauth_pubkey_memory only with OpenSSL; the Windows arm calls libssh2's frommemory through libssh2-sys for a traditional-PEM RSA key"},
     {"path": "src/git/endpoint/ssh_tests/agent_fixture.rs", "kind": "os", "gate": "os::unix::net::{UnixListener, UnixStream}", "target": "", "state": "unported", "owner": ["1.4", "1.7"], "appendix": "G39"},
-    {"path": "src/git/endpoint/ssh_tests/host_case.rs", "kind": "gate", "gate": "unix", "target": "arm: use crate::git::endpoint::{agent_job::Job, ssh_fixture as common, ssh_network}", "state": "unported", "owner": ["1.4"], "appendix": "G41"},
-    {"path": "src/git/endpoint/ssh_tests/key_container.rs", "kind": "gate", "gate": "unix", "target": "arm: use crate::git::endpoint::agent_job", "state": "unported", "owner": ["1.4"], "appendix": "G42"},
-    {"path": "src/git/endpoint/ssh_tests/network.rs", "kind": "gate", "gate": "unix", "target": "arm: use crate::git::endpoint::ssh_fixture as common", "state": "unported", "owner": ["1.4", "3.4"], "appendix": "G49"},
-    {"path": "src/git/endpoint/ssh_tests/selected_key.rs", "kind": "gate", "gate": "unix", "target": "arm: use crate::git::endpoint::ssh_fixture as common", "state": "unported", "owner": ["1.4"], "appendix": "G53"},
-    {"path": "src/git/endpoint/ssh_tests/selected_key.rs", "kind": "os", "gate": "libc::mkfifo", "target": "", "state": "unported", "owner": ["1.4"], "appendix": "G53"},
-    {"path": "src/git/endpoint/ssh_tests/selected_key.rs", "kind": "os", "gate": "os::unix::fs::symlink", "target": "", "state": "unported", "owner": ["1.4"], "appendix": "G53"},
-    {"path": "src/git/endpoint/ssh_tests/selected_pool.rs", "kind": "gate", "gate": "unix", "target": "arm: use super::attachment", "state": "unported", "owner": ["1.4"], "appendix": "G54"}
+    {"path": "src/git/endpoint/ssh_tests/network.rs", "kind": "gate", "gate": "unix", "target": "arm: fn hash_known_hosts", "state": "paired", "owner": ["1.4"], "appendix": "new: ssh-keygen -H on Unix, the fixture's own HMAC on Windows"},
+    {"path": "src/git/endpoint/ssh_tests/selected_key.rs", "kind": "os", "gate": "os::unix::fs::symlink", "target": "", "state": "unported", "owner": ["1.4"], "appendix": "G53 | owed Windows porting work (operator, 2026-10-11: not platform): creating a symbolic link needs a privilege that a Windows logon may not hold"},
+    {"path": "src/git/endpoint/ssh_tests/selected_key.rs", "kind": "gate", "gate": "unix", "target": "arm: fn native_reads", "state": "paired", "owner": ["1.4"], "appendix": "new: libssh2 on Windows (CNG) reads only the traditional PEM form of an RSA key"},
+    {"path": "src/git/endpoint/ssh_tests/selected_key.rs", "kind": "gate", "gate": "unix", "target": "arm: fn symlinks_follow_the_current_regular_file", "state": "unported", "owner": ["1.4"], "appendix": "new | owed Windows porting work (operator, 2026-10-11: not platform): creating a symbolic link needs a privilege that a Windows logon may not hold"}
   ]
 }

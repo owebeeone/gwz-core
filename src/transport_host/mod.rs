@@ -61,7 +61,7 @@ cfg_if::cfg_if! {
 }
 
 use crate::git::endpoint::https_auth::HelperSlots;
-cfg_if::cfg_if! { if #[cfg(unix)] { use crate::git::endpoint::ssh_local; } }
+use crate::git::endpoint::ssh_local;
 use crate::{
     RequestMeta, TransportCapabilitiesRequest, TransportCapabilitiesResponse, TransportPlacement,
     git::Git2Backend,
@@ -91,6 +91,49 @@ use std::{
     time::Duration,
 };
 
+cfg_if::cfg_if! {
+    if #[cfg(not(windows))] {
+        /// The policies an SSH and HTTPS runtime offers.
+        fn ssh_and_https_policies() -> Vec<AuthPolicy> {
+            vec![
+                AuthPolicy::SshAmbient,
+                AuthPolicy::SshExplicit,
+                AuthPolicy::Anonymous,
+                AuthPolicy::Gh,
+            ]
+        }
+    } else {
+        /// The policies an SSH and HTTPS runtime offers in the Windows qualification: `Gh` and `WindowsConfigured`
+        /// wait for the helper runner (WH2, plan steps 4.1 to 4.5); the SSH policies end in a refusal at setup
+        /// when they need an agent, which Windows has none of until Phase 3.
+        fn ssh_and_https_policies() -> Vec<AuthPolicy> {
+            vec![
+                AuthPolicy::SshAmbient,
+                AuthPolicy::SshExplicit,
+                AuthPolicy::Anonymous,
+                AuthPolicy::WindowsDefault,
+            ]
+        }
+    }
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        /// The agent: the socket `SSH_AUTH_SOCK` names, when it is set.
+        fn agent_from_environment() -> Option<PathBuf> {
+            std::env::var_os("SSH_AUTH_SOCK")
+                .filter(|p| !p.is_empty())
+                .map(PathBuf::from)
+        }
+    } else {
+        /// Windows has no agent source until Phase 3 of the Windows parity plan: a setup that needs an agent is
+        /// refused as one with no agent is.
+        fn agent_from_environment() -> Option<PathBuf> {
+            None
+        }
+    }
+}
+
 fn apply_native_timeout(pool: &mut pool::Config, native_ms: u64) {
     if native_ms == 0 {
         pool.connect_timeout_ms = 0;
@@ -105,16 +148,11 @@ pub struct SshEndpointConfig {
 }
 impl SshEndpointConfig {
     pub fn from_environment() -> ModelResult<Self> {
-        cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
-            return Err(unsupported("SSH configuration is unavailable in Windows HTTPS qualification"));
-        } else {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
             .ok_or_else(|| invalid("endpoint HOME is unavailable"))?;
-        let agent = std::env::var_os("SSH_AUTH_SOCK")
-            .filter(|p| !p.is_empty())
-            .map(PathBuf::from);
+        let agent = agent_from_environment();
         let timeout = crate::git::transport_timeout_ms();
         let mut pool = pool::Config::default();
         apply_native_timeout(&mut pool, timeout);
@@ -124,7 +162,6 @@ impl SshEndpointConfig {
             pool,
             io_timeout_ms: timeout,
         })
-        } }
     }
     cfg_if::cfg_if! {
         if #[cfg(test)] {
@@ -206,11 +243,7 @@ impl Drop for RuntimeState {
 pub struct TransportRuntime(Arc<Mutex<RuntimeState>>);
 impl TransportRuntime {
     pub fn new(local: SshEndpointConfig) -> ModelResult<Self> {
-        cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
-            return Err(unsupported("SSH-only runtime is unavailable in Windows HTTPS qualification"));
-        } else {
         Self::build(local, None)
-        } }
     }
     /// `helper_slots` are the HTTPS helper slots of the host whose driver
     /// builds this runtime; its sessions' endpoints share them.
@@ -240,11 +273,6 @@ impl TransportRuntime {
         https: Option<(HttpsEndpointConfig, HelperSlots)>,
         native: Option<NativeCaller>,
     ) -> ModelResult<Self> {
-        cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
-            if https.is_none() {
-                return Err(unsupported("HTTPS engine is required in Windows HTTPS qualification"));
-            }
-        } }
         let enabled = https.is_some();
         let io_timeout_ms = local.io_timeout_ms;
         let connect_timeout_ms = local.pool.connect_timeout_ms;
@@ -298,11 +326,6 @@ impl TransportRuntime {
         if state.closed {
             return Err(unavailable("transport runtime is closed"));
         }
-        cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
-            if !state.https {
-                return Err(unsupported("HTTPS engine is unavailable in Windows HTTPS qualification"));
-            }
-        } }
         let mut placements = vec![TransportPlacement::Local];
         if state.cli.as_ref().is_some_and(|s| !s.is_closed()) {
             placements.push(TransportPlacement::Cli);
@@ -320,37 +343,16 @@ impl TransportRuntime {
             )),
             message_versions: Some(vec![2]),
             placements: Some(placements),
-            schemes: Some(
-                if cfg!(all(
-                    windows,
-                    gwz_transport_candidate,
-                    gwz_windows_https_qualification
-                )) {
-                    vec![Scheme::Https]
-                } else if state.https {
-                    vec![Scheme::Ssh, Scheme::Https]
-                } else {
-                    vec![Scheme::Ssh]
-                },
-            ),
-            auth_policies: Some(
-                if cfg!(all(
-                    windows,
-                    gwz_transport_candidate,
-                    gwz_windows_https_qualification
-                )) {
-                    vec![AuthPolicy::Anonymous, AuthPolicy::WindowsDefault]
-                } else if state.https {
-                    vec![
-                        AuthPolicy::SshAmbient,
-                        AuthPolicy::SshExplicit,
-                        AuthPolicy::Anonymous,
-                        AuthPolicy::Gh,
-                    ]
-                } else {
-                    vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit]
-                },
-            ),
+            schemes: Some(if state.https {
+                vec![Scheme::Ssh, Scheme::Https]
+            } else {
+                vec![Scheme::Ssh]
+            }),
+            auth_policies: Some(if state.https {
+                ssh_and_https_policies()
+            } else {
+                vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit]
+            }),
             message_limits: Some(session::limits()),
         })
     }

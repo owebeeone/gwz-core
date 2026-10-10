@@ -69,18 +69,15 @@ cfg_if::cfg_if! {
 // (the cfg_if wrapper becomes plain declarations) without touching the others. The blank lines between blocks are
 // deliberate: they keep two steps' edits from ever being adjacent lines, which git reports as a conflict.
 
-// Step 1.4: the setup chain.
-cfg_if::cfg_if! {
-    if #[cfg(unix)] {
-        pub(crate) mod idle_watch;
-        pub(crate) mod ssh_password;
-        pub(crate) mod ssh_setup;
-    }
-}
-cfg_if::cfg_if! { if #[cfg(all(test, unix))] { mod ssh_tests; } }
+// Step 1.4: the setup chain (ungated), and the SSH endpoint's suites, which compile on every platform: each suite
+// file keeps its own gate until its owner step.
+pub(crate) mod idle_watch;
+pub(crate) mod ssh_password;
+pub(crate) mod ssh_setup;
+cfg_if::cfg_if! { if #[cfg(test)] { mod ssh_tests; } }
 
-// Step 1.5: option A's sshd close fixture.
-cfg_if::cfg_if! { if #[cfg(all(test, unix))] { pub(crate) mod ssh_close_fixture; } }
+// Step 1.5: option A's sshd close fixture (ungated; it has a Windows form of its forced script).
+cfg_if::cfg_if! { if #[cfg(test)] { pub(crate) mod ssh_close_fixture; } }
 
 // Step 1.8: the integrated SSH test modules.
 cfg_if::cfg_if! {

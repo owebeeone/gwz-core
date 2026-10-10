@@ -29,13 +29,12 @@ fn an_open_behind_a_hold_waits_with_its_allocation_stopped_and_starts_when_it_en
         .await;
         let port = port(&server);
         let mut endpoint = endpoint(server.config(), 8, 3);
-        // The first open meets the 429 and fails as it does without a hold.
+        // The first open meets the 429: it is requeued behind the hold its own
+        // refusal set, not failed (§5.1).
         endpoint
             .accept("request".into(), open(1, port, 30_000))
             .unwrap();
-        let first = settle(&mut endpoint, 0).await;
-        assert_eq!(first.len(), 1);
-        assert_eq!(code(&first[0]), ErrorCode::Io);
+        assert!(settle(&mut endpoint, 0).await.is_empty());
         let held_at = std::time::Instant::now();
         // A second open, with an allocation of 500 ms, is held while the
         // endpoint's own clock runs 5 s past it.
@@ -45,14 +44,16 @@ fn an_open_behind_a_hold_waits_with_its_allocation_stopped_and_starts_when_it_en
         assert!(settle(&mut endpoint, 0).await.is_empty());
         assert!(settle(&mut endpoint, 5_000).await.is_empty());
         assert_eq!(server.connections.load(Ordering::SeqCst), 1, "no start");
-        // The hold ends in the pool's time; the open then starts and succeeds,
-        // with what was left of its allocation.
+        // The hold ends in the pool's time; both opens then start and succeed,
+        // the second with what was left of its allocation.
         let mut cx = Context::from_waker(Waker::noop());
         let mut published = Vec::new();
         let until = std::time::Instant::now() + Duration::from_secs(10);
-        while !published
+        while published
             .iter()
-            .any(|message: &Envelope| message.kind == MessageKind::Opened)
+            .filter(|message: &&Envelope| message.kind == MessageKind::Opened)
+            .count()
+            < 2
         {
             assert!(std::time::Instant::now() < until, "the open never started");
             endpoint.step(5_000, &mut cx).unwrap();
@@ -68,7 +69,11 @@ fn an_open_behind_a_hold_waits_with_its_allocation_stopped_and_starts_when_it_en
                 .all(|message| message.kind != MessageKind::OpenFailed),
             "the held open failed"
         );
-        assert_eq!(server.connections.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            server.connections.load(Ordering::SeqCst),
+            3,
+            "the throttled connection, then one for each open"
+        );
         shut(&mut endpoint).await;
     });
 }

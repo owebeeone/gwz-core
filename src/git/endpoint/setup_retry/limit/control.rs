@@ -87,6 +87,12 @@ pub(crate) struct Limit {
     notes: Notes,
     targets: BTreeMap<AttemptId, usize>,
     test_slot: Option<AttemptId>,
+    /// A test an endpoint has started for a carrier whose connection the host
+    /// has not yet begun: the next connection on the site is the test (§4.9:
+    /// the pool's limit is raised under the same lock as the admission).
+    armed: Option<(AttemptKind, usize, u64)>,
+    /// Which arming a carrier's token may give back.
+    arms: u64,
     confirmation: bool,
     barrier: BTreeSet<ConnId>,
     needing_new: usize,
@@ -107,6 +113,8 @@ impl Limit {
             notes: Notes::default(),
             targets: BTreeMap::new(),
             test_slot: None,
+            armed: None,
+            arms: 0,
             confirmation: false,
             barrier: BTreeSet::new(),
             needing_new: 0,
@@ -131,6 +139,20 @@ impl Limit {
         self.needing_new = needing_new;
         self.non_final = non_final;
     }
+    /// Starts from the table of connections the site already has, which no
+    /// event of this machine's own life told it about.
+    pub(crate) fn seed(&mut self, table: Table) {
+        self.table = table;
+    }
+    /// The server held every connection now Connected at once (§4.2): another
+    /// operation's connection was answered, which is this machine's evidence
+    /// as much as its own. `N := min(C, max(N, Connected))`.
+    pub(crate) fn observed_success(&mut self, now: u64) {
+        let before = (self.fsm.n(), self.fsm.state());
+        self.table.advance(now);
+        self.fsm.success(self.table.connected());
+        self.settled(before, now);
+    }
     pub(crate) fn connect_time(&mut self, ms: u64) {
         self.table.settle_mut().observe_connect(ms);
     }
@@ -154,6 +176,11 @@ impl Limit {
             _ => self.table.possible() < self.fsm.n(),
         }
     }
+    /// Whether the site has room for one more connection of this operation
+    /// below `N` (§4.5). At the ceiling the pool's own limit says so.
+    pub(crate) fn has_room(&self) -> bool {
+        self.fsm.state() == State::Saturated || self.table.possible() < self.fsm.n()
+    }
     /// Whether new connections may start at all: no hold, no confirmation,
     /// no test in flight, and no connection of an inconclusive refusal's
     /// window still winding down (§4.4). It does not count connections: the
@@ -161,7 +188,11 @@ impl Limit {
     /// connection is not a start.
     pub(crate) fn gate_open(&mut self, now: u64) -> bool {
         self.table.advance(now);
-        if self.hold.in_force(now) || self.confirmation || self.test_slot.is_some() {
+        if self.hold.in_force(now)
+            || self.confirmation
+            || self.test_slot.is_some()
+            || self.armed.is_some()
+        {
             return false;
         }
         if !self.barrier.is_empty() {
@@ -189,7 +220,7 @@ impl Limit {
     /// confirming test any member that needs a new connection.
     pub(crate) fn test_due(&mut self, now: u64) -> Option<TestPlan> {
         self.table.advance(now);
-        if self.test_slot.is_some() || self.hold.in_force(now) {
+        if self.test_slot.is_some() || self.armed.is_some() || self.hold.in_force(now) {
             return None;
         }
         let (connected, quiet) = (self.table.connected(), self.table.is_quiet());
@@ -211,6 +242,38 @@ impl Limit {
             target: n + 1,
             ready: quiet && connected == n,
         })
+    }
+    /// Starts the due test for a carrier, when it is ready: the next
+    /// connection on the site is the test. A probe is never carried by a
+    /// member on its final attempt (`carrier_final`), a confirming test is
+    /// (§4.7). Returns the admission target, which the pool's limit follows.
+    pub(crate) fn arm_test(&mut self, carrier_final: bool, now: u64) -> Option<(usize, u64)> {
+        let plan = self.test_due(now)?;
+        if !plan.ready || (carrier_final && plan.kind == AttemptKind::Probe) {
+            return None;
+        }
+        self.arms += 1;
+        self.armed = Some((plan.kind, plan.target, self.arms));
+        Some((plan.target, self.arms))
+    }
+    /// The connection the host has begun is the armed test.
+    pub(crate) fn take_armed(&mut self) -> Option<(AttemptKind, usize)> {
+        self.armed.take().map(|(kind, target, _)| (kind, target))
+    }
+    /// The carrier of arming `arm` ended with no connection of its own (it
+    /// leased an idle one, failed or was cancelled): a probe is due again as
+    /// soon as the key is quiet. Does nothing if that test was taken, or
+    /// another has been armed since.
+    pub(crate) fn disarm(&mut self, arm: u64) {
+        if let Some((kind, _, armed)) = self.armed
+            && armed == arm
+        {
+            self.armed = None;
+            if kind == AttemptKind::Probe {
+                // Expired already, whatever the time.
+                self.rearm(0);
+            }
+        }
     }
     /// Whether the client must close and evict nothing on the key: a due
     /// test has reached its base and waits for quiet.
@@ -308,6 +371,16 @@ impl Limit {
     pub(crate) fn holding(&self, now: u64) -> bool {
         self.hold.in_force(now)
     }
+    /// The hold, if one is in force at `now`: what a machine of the same key
+    /// in another operation inherits.
+    pub(crate) fn hold_in_force(&self, now: u64) -> Option<Hold> {
+        self.hold.in_force(now).then(|| self.hold.clone())
+    }
+    /// The attempt's connection ended: its window stops observing, and its
+    /// verdict, if there is one, is asked for later.
+    pub(crate) fn freeze(&mut self, attempt: AttemptId) {
+        self.windows.freeze(attempt);
+    }
     /// Takes the hold out, leaving none: a key kept across an operation's end
     /// for its hold alone carries it into a fresh `Limit`.
     pub(crate) fn take_hold(&mut self) -> Hold {
@@ -323,6 +396,7 @@ impl Limit {
     pub(crate) fn pool_limit(&self) -> usize {
         self.test_slot
             .and_then(|attempt| self.targets.get(&attempt).copied())
+            .or(self.armed.map(|(_, target, _)| target))
             .unwrap_or_else(|| self.fsm.n())
     }
     /// How long the pool holds a freed slot of the key (§4.5): `Ts` outside
@@ -384,6 +458,11 @@ impl Limit {
                 self.refused(evidence(&refusal), &closed, now)
             }
         };
+        self.settled(before, now);
+        Some(ruling)
+    }
+    /// Notes what a result did to `N` and the state, and flushes the notes.
+    fn settled(&mut self, before: (usize, State), now: u64) {
         let (n, state) = (self.fsm.n(), self.fsm.state());
         if n != before.0 {
             self.notes.n_changed(n);
@@ -393,7 +472,6 @@ impl Limit {
             self.notes.saturated(self.ceiling);
         }
         self.flush_notes(now);
-        Some(ruling)
     }
     /// A `Retry-After` that came on a response with no attempt in flight (a
     /// second request on a carried connection): the hold, and nothing else
@@ -500,10 +578,6 @@ impl Limit {
     fn flush_notes(&mut self, now: u64) {
         let resolved = self.table.setups_in_flight() == 0;
         self.notes.flush(now, self.fsm.n(), self.ceiling, resolved);
-    }
-    /// Whether `attempt` is an admitted test carrier: never deferred.
-    pub(crate) fn is_test_carrier(&self, attempt: AttemptId) -> bool {
-        self.windows.is_test_carrier(attempt)
     }
     /// The endpoint discarded the key's idle connections after a long hold.
     pub(crate) fn idle_discarded(&mut self, now: u64) {

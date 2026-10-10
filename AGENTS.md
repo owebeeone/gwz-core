@@ -26,9 +26,10 @@ Follow the root `AGENTS.md` rules.
   `candidate-windows` job instead. The gate is a compile gate only; Windows behaviour is judged by
   that job's test run and by the dabeest rows of the step that needs them. The lane gate
   (`scripts/checks/check_lane_commits.sh`) fails a lane that changes a trigger path unless a commit
-  message at or after the change carries `Windows-receipt: <label>` (the label the run used) or
-  `Windows-receipt: ci-only <reason>` for a change that cannot alter how gwz-core compiles on
-  Windows (the gate prints the reason for the reviewer). Every `cfg(unix)`-style gate, Unix-only OS
+  message at or after the change carries `Windows-receipt: <label>` (the label the run used), or the
+  changing commit itself carries `Windows-receipt: ci-only <reason>` for a change that cannot alter
+  how gwz-core compiles on Windows (the gate prints the reason for the reviewer; a waiver covers its
+  own commit only). Every `cfg(unix)`-style gate, Unix-only OS
   call and runtime platform split (`cfg!(windows)`) in the transport also needs a row in the
   Windows-parity inventory, `scripts/checks/windows_parity/<step>.json` for the row's first owner
   step (`check_windows_parity.py`, which `run_tests.py` and the lane gate run; its docstring says

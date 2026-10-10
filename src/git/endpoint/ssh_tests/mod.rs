@@ -14,7 +14,11 @@
 mod agent_auth;
 mod agent_capacity;
 mod agent_client;
-mod agent_fixture;
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        mod agent_fixture;
+    }
+}
 mod agent_keys;
 mod agent_wait;
 mod attachment;
@@ -35,6 +39,12 @@ mod key_types;
 mod local_endpoint;
 mod max_startups;
 mod network;
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        mod network_agent;
+    }
+}
+mod no_agent;
 mod placement_endpoint;
 mod pool_host;
 mod pooled;

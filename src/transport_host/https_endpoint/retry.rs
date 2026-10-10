@@ -9,8 +9,16 @@
 //! its key waits.
 use super::*;
 use crate::git::endpoint::setup_retry::{
-    self, AllocationClock, Decision, Jitter, Operations, Outcome, Phase,
+    self, Admission, AllocationClock, Decision, Jitter, Operations, Outcome, Phase, TestToken,
 };
+
+/// How an attempt ended, and what the limit machine can say of it.
+pub(super) struct Settling {
+    pub(super) result: Result<Prepared, Failure>,
+    pub(super) connect: FirstConnect,
+    /// A refusal the machine judged on its response (§5.1).
+    pub(super) rejection: Option<Rejection>,
+}
 
 /// The endpoint's setup retry state: each operation's machines, by HTTPS
 /// pool key, whose members are the opens' stream keys, and the jitter that
@@ -60,6 +68,10 @@ impl Retries {
     pub(super) fn set_max_retries(&mut self, request: &str, max_retries: u32) {
         self.machines.set_max_retries(request, max_retries);
     }
+    /// The request's `--max-retries`.
+    pub(super) fn max_retries(&self, request: &str) -> u32 {
+        self.machines.max_retries(request)
+    }
     /// Forgets a finished or cancelled request: its next operation starts
     /// its keys Cold.
     pub(super) fn remove(&mut self, request: &str) {
@@ -78,10 +90,15 @@ impl Retries {
         now: u64,
         member: Key,
         entry: &mut Entry,
-        result: Result<Prepared, Failure>,
-        connect: FirstConnect,
+        settling: Settling,
         carry: &mut Retry,
     ) -> Option<Result<Prepared, Failure>> {
+        let Settling {
+            result,
+            connect,
+            rejection,
+        } = settling;
+        let allowed = self.machines.max_retries(&member.0).saturating_add(1);
         let machine = self.machines.machine(&member.0, &entry.pool_key);
         // A fresh connect is the setup the key counts, also when the request
         // after it failed: the setup ended before that request's first byte.
@@ -111,9 +128,47 @@ impl Retries {
         } else {
             Phase::Other
         };
+        // A refusal that looks like the site's limit was judged by its machine
+        // on its own window when it came (§4.8), a response's in the attempt
+        // and a connect failure's as the connect ended. When it is evidence,
+        // the open is requeued and the key is not made to count it (§5.1).
+        if let Some(rejection) = rejection
+            && setup_retry::requeues(rejection.ruling, rejection.throttled)
+        {
+            machine.abandoned(&member);
+            if entry.attempts >= allowed {
+                let facts = failure.facts.clone();
+                let spent =
+                    setup_retry::spent(failure, rejection.throttled, entry.attempts, allowed);
+                entry.facts = setup_retry::merged_facts(entry.facts.take(), facts);
+                return Some(Err(Failure {
+                    facts: entry.facts.clone(),
+                    ..spent
+                }));
+            }
+            entry.facts = setup_retry::merged_facts(entry.facts.take(), failure.facts);
+            let allocation = entry
+                .envelope
+                .open
+                .as_ref()
+                .map_or(0, |open| open.deadlines.allocation_ms);
+            entry.held = Some(Held::new(None, now, allocation));
+            return None;
+        }
         let verdict = setup_retry::classify(&failure, phase);
         let jitter = self.jitter.draw();
         let failure = match machine.failed(&member, verdict, failure.clone(), now, jitter) {
+            // The key counts it and waits, but the open's own budget is spent
+            // (§5.3): it finishes with its failure, the key left as it is.
+            Outcome::Retry if entry.attempts >= allowed => {
+                let facts = failure.facts.clone();
+                let spent = setup_retry::spent(failure, false, entry.attempts, allowed);
+                entry.facts = setup_retry::merged_facts(entry.facts.take(), facts);
+                return Some(Err(Failure {
+                    facts: entry.facts.clone(),
+                    ..spent
+                }));
+            }
             Outcome::Retry => {
                 entry.facts = setup_retry::merged_facts(entry.facts.take(), failure.facts);
                 let allocation = entry
@@ -141,8 +196,63 @@ impl Retries {
 }
 
 impl HttpsEndpoint {
+    /// Whether a connection of the site may be idle: more are set up than
+    /// carry a stream. An overestimate costs a wait in the pool, as at the
+    /// ceiling; an underestimate would hold an open that could lease.
+    fn idle_may_exist(&self, pool_key: &pool::Key, admission: &Admission) -> bool {
+        let streaming = self
+            .entries
+            .values()
+            .filter(|entry| {
+                (entry.prepared.is_some() || entry.serving.is_some())
+                    && entry.pool_key.site() == pool_key.site()
+            })
+            .count();
+        admission.connected > streaming
+    }
+
+    /// Tells each operation's limit machines how many held opens want a new
+    /// connection on a site, and how many could carry a probe (not on their
+    /// final attempt, §4.7). A site with none held is told zero.
+    fn report_demand(&self) {
+        let pool_now = self.client.pool_now();
+        let mut demand: Vec<(String, pool::Key, usize, usize)> = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.preparing.is_some())
+            .map(|((request, _), entry)| (request.clone(), entry.pool_key.clone(), 0, 0))
+            .collect();
+        for ((request, _), entry) in self.entries.iter().filter(|(_, e)| e.held.is_some()) {
+            let spare = entry.attempts < self.retries.machines.max_retries(request);
+            match demand
+                .iter_mut()
+                .find(|(op, key, ..)| op == request && *key == entry.pool_key)
+            {
+                Some(found) => {
+                    found.2 += 1;
+                    found.3 += usize::from(spare);
+                }
+                None => demand.push((
+                    request.clone(),
+                    entry.pool_key.clone(),
+                    1,
+                    usize::from(spare),
+                )),
+            }
+        }
+        for (request, key, needing, spare) in demand {
+            if let Some(operation) = self.operations.get(&request) {
+                self.client
+                    .governor()
+                    .scoped(&operation.name)
+                    .set_demand(&key, needing, spare, pool_now);
+            }
+        }
+    }
+
     /// Offers each held open an attempt.
     pub(super) fn start_held(&mut self) {
+        self.report_demand();
         let held: Vec<Key> = self
             .entries
             .iter()
@@ -169,10 +279,38 @@ impl HttpsEndpoint {
             return;
         };
         let decision = self.retries.machines.machine(&key.0, &pool_key).decide(now);
-        let admission = self
-            .client
-            .governor()
-            .admission(&pool_key, self.client.pool_now());
+        let name = self
+            .operations
+            .get(&key.0)
+            .map(|operation| operation.name.clone())
+            .unwrap_or_default();
+        let governor = self.client.governor().scoped(&name);
+        let pool_now = self.client.pool_now();
+        let mut admission = governor.admission(&pool_key, pool_now);
+        // A due test of the site's limit starts through this open when it
+        // cannot start otherwise, the gate shut or the site full (§4.5, §4.7):
+        // never a probe on its final attempt.
+        let mut carries_test = None;
+        let idle = self.idle_may_exist(&pool_key, &admission);
+        if matches!(decision, Decision::Start)
+            && !(admission.gate_open && (admission.room || idle))
+            && let Some(attempts) = self.entries.get(key).map(|entry| entry.attempts)
+            && let Some((target, token)) = governor.start_test(
+                &pool_key,
+                attempts >= self.retries.machines.max_retries(&key.0),
+                pool_now,
+            )
+        {
+            admission = Admission {
+                gate_open: true,
+                target,
+                ..admission
+            };
+            carries_test = Some(token);
+        }
+        // Below the ceiling an open that cannot lease an idle connection
+        // waits for room here, where its allocation clock stops (§5.2).
+        let waits_for_room = carries_test.is_none() && !admission.room && !idle;
         let room = self.admits_attempt(&pool_key, admission.target);
         let Some(entry) = self.entries.get_mut(key) else {
             return;
@@ -200,10 +338,11 @@ impl HttpsEndpoint {
                 let Some(mut held) = entry.held.take() else {
                     return;
                 };
-                if !admission.gate_open {
-                    // Behind a hold of its site (§5.2): the server's word is
-                    // the wait, and the allocation clock stops, as it does
-                    // while the key's retry machine holds the open.
+                if !admission.gate_open || waits_for_room {
+                    // Behind a hold of its site, or a full one (§5.2): the
+                    // wait is the server's or the limit's, and the allocation
+                    // clock stops, as it does while the key's retry machine
+                    // holds the open.
                     held.allocation.stop(now);
                     held.lapse();
                     entry.held = Some(held);
@@ -214,7 +353,7 @@ impl HttpsEndpoint {
                 if left == 0 {
                     fail(entry, setup_retry::allocation_timeout());
                 } else if room {
-                    self.start_attempt(key, held.carry, left);
+                    self.start_attempt(key, held.carry, left, carries_test);
                 } else {
                     held.lapse();
                     entry.held = Some(held);
@@ -245,7 +384,13 @@ impl HttpsEndpoint {
     /// One attempt of `key`'s open, with its own budget, afresh unless it
     /// continues the anonymous attempt `carry`, and the allocation its hold
     /// `left`.
-    fn start_attempt(&mut self, key: &Key, carry: Option<Retry>, left: u64) {
+    fn start_attempt(
+        &mut self,
+        key: &Key,
+        carry: Option<Retry>,
+        left: u64,
+        carries_test: Option<TestToken>,
+    ) {
         let Some(name) = self
             .operations
             .get(&key.0)
@@ -256,6 +401,8 @@ impl HttpsEndpoint {
         let Some(entry) = self.entries.get_mut(key) else {
             return;
         };
+        entry.attempts += 1;
+        entry.carries_test = carries_test;
         let open = entry.envelope.open.as_ref().expect("admitted Open");
         let input = input(open, &entry.envelope.session_id, &name);
         let mut deadlines = open.deadlines.clone();
@@ -274,10 +421,10 @@ impl HttpsEndpoint {
         let cancelled = entry.cancel.clone();
         let client = self.client.clone();
         entry.preparing = Some(self.runtime.spawn(async move {
-            let (result, connect) = client
-                .prepare_attempt(input, &cancelled, &mut carry.budget, &mut carry.challenge)
+            let (result, connect, rejection) = client
+                .prepare_attempt_judged(input, &cancelled, &mut carry.budget, &mut carry.challenge)
                 .await;
-            (result, connect, carry)
+            (result, connect, carry, rejection)
         }));
     }
 }

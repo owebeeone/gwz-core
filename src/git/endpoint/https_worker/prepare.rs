@@ -12,11 +12,26 @@ impl Client {
         budget: &mut Budget,
         challenge: &mut Option<ChallengeLease>,
     ) -> (Result<Prepared, Failure>, FirstConnect) {
-        let mut connect = FirstConnect::None;
-        let result = self
-            .run_attempt(input, cancel, budget, challenge, &mut connect)
+        let (result, connect, _) = self
+            .prepare_attempt_judged(input, cancel, budget, challenge)
             .await;
         (result, connect)
+    }
+    /// `prepare_attempt`, also saying what the limit machine made of the
+    /// attempt's refusal, if the server refused it (§5.1).
+    pub(crate) async fn prepare_attempt_judged(
+        &self,
+        input: Input,
+        cancel: &CancellationToken,
+        budget: &mut Budget,
+        challenge: &mut Option<ChallengeLease>,
+    ) -> (Result<Prepared, Failure>, FirstConnect, Option<Rejection>) {
+        let mut connect = FirstConnect::None;
+        let mut refusal = None;
+        let result = self
+            .run_attempt(input, cancel, budget, challenge, &mut connect, &mut refusal)
+            .await;
+        (result, connect, refusal)
     }
     /// The attempt itself, which records its first connect in `connect`.
     async fn run_attempt(
@@ -26,6 +41,7 @@ impl Client {
         budget: &mut Budget,
         challenge: &mut Option<ChallengeLease>,
         connect: &mut FirstConnect,
+        refusal: &mut Option<Rejection>,
     ) -> Result<Prepared, Failure> {
         if cfg!(all(
             windows,
@@ -137,6 +153,10 @@ impl Client {
                 .unwrap_or_else(|p| p.into_inner())
                 .basic_get(&key);
         let mut hops = 0;
+        // This attempt's member for the limit machines: its first connect's
+        // request carries the tag, and a refusal of that connect is judged on
+        // that connection's own window (§4.8).
+        let member = format!("a{}", self.attempts.fetch_add(1, Ordering::Relaxed));
         let mut credential_offered = false;
         // The next checkout must open a new connection: a reused one died
         // before this hop's request was started (§6.1 (b) of
@@ -217,6 +237,7 @@ impl Client {
                         .or_else(|| native_route.as_ref().map(|auth| auth.scope.as_str())),
                     std::mem::take(&mut fresh),
                     !retried,
+                    first.then(|| self.pool.governor().scoped(&input.operation).tag(&member)),
                 );
                 let checkout = match budget.logical_deadline {
                     Some(until) => tokio::time::timeout_at(until, checkout)
@@ -224,16 +245,25 @@ impl Client {
                         .unwrap_or_else(|_| Err((failure(ErrorCode::Timeout), Phase::Other))),
                     None => checkout.await,
                 };
-                let lease = checkout.map_err(|(error, phase)| {
-                    let mut failed = with_facts(error.code, error.effect, &facts);
-                    if first {
-                        failed.setup_cause = error.setup_cause;
-                        if phase == Phase::Setup {
-                            *connect = FirstConnect::Failed;
+                let lease = match checkout {
+                    Ok(lease) => lease,
+                    Err((error, phase)) => {
+                        let mut failed = with_facts(error.code, error.effect, &facts);
+                        if first {
+                            failed.setup_cause = error.setup_cause;
+                            if phase == Phase::Setup {
+                                *connect = FirstConnect::Failed;
+                                *refusal = self.judge_setup(
+                                    &input.operation,
+                                    &destination,
+                                    &member,
+                                    &failed,
+                                );
+                            }
                         }
+                        return Err(failed);
                     }
-                    failed
-                })?;
+                };
                 if first && !lease.reused {
                     *connect = FirstConnect::Connected;
                 }
@@ -327,10 +357,11 @@ impl Client {
                 // again when the hold has ended.
                 if let Some(pooled) = prepared.lease.as_ref().and_then(HttpLease::pool_connection) {
                     let pool_key = Key::https(destination.host(), destination.port());
-                    let began =
-                        self.pool
-                            .governor()
-                            .exchange_begins(&pool_key, pooled, self.pool.now());
+                    let began = self
+                        .pool
+                        .governor()
+                        .scoped(&input.operation)
+                        .exchange_begins(&pool_key, pooled, self.pool.now());
                     if !began && !carried_lease {
                         drop(guard);
                         drop(connection);
@@ -344,7 +375,8 @@ impl Client {
                         slot = returned_slot;
                         dependency = Some(returned_dependency);
                         credential_offered = offered_before;
-                        self.wait_for_hold(&pool_key, cancel).await?;
+                        self.wait_for_hold(&input.operation, &pool_key, cancel)
+                            .await?;
                         continue;
                     }
                 }
@@ -438,7 +470,8 @@ impl Client {
             }
             let status = response.status().as_u16();
             prepared.opened.facts.http_status = Some(status as i64);
-            self.tell_governor(
+            *refusal = self.tell_governor(
+                &input.operation,
                 &prepared,
                 &Key::https(destination.host(), destination.port()),
                 status,
