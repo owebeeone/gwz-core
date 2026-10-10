@@ -1,0 +1,14 @@
+{
+  "entries": [
+    {"path": "src/git/endpoint/https_auth.rs", "kind": "gate", "gate": "unix", "target": "mod lookup", "state": "unported", "owner": ["4.2"], "appendix": "G5"},
+    {"path": "src/git/endpoint/https_auth.rs", "kind": "gate", "gate": "unix", "target": "mod owner", "state": "unported", "owner": ["4.2"], "appendix": "G5"},
+    {"path": "src/git/endpoint/https_auth/lookup.rs", "kind": "gate", "gate": "unix", "target": "arm: fn configure_process_group", "state": "unported", "owner": ["4.2"], "appendix": "G8"},
+    {"path": "src/git/endpoint/https_auth/owner.rs", "kind": "gate", "gate": "unix", "target": "arm: fn kill_process_group", "state": "unported", "owner": ["4.2"], "appendix": "G9"},
+    {"path": "src/git/endpoint/https_auth/owner.rs", "kind": "os", "gate": "libc::SIGKILL", "target": "", "state": "unported", "owner": ["4.2"], "appendix": "G9"},
+    {"path": "src/git/endpoint/https_auth/owner.rs", "kind": "os", "gate": "libc::kill", "target": "", "state": "unported", "owner": ["4.2"], "appendix": "G9"},
+    {"path": "src/git/endpoint/https_auth/owner.rs", "kind": "os", "gate": "libc::pid_t", "target": "", "state": "unported", "owner": ["4.2"], "appendix": "G9"},
+    {"path": "src/git/endpoint/https_auth/runner/tests.rs", "kind": "os", "gate": "libc::SIGKILL", "target": "", "state": "unported", "owner": ["4.2"], "appendix": "G11"},
+    {"path": "src/git/endpoint/https_auth/runner/tests.rs", "kind": "os", "gate": "libc::kill", "target": "", "state": "unported", "owner": ["4.2"], "appendix": "G11"},
+    {"path": "src/git/endpoint/https_auth/runner/tests.rs", "kind": "os", "gate": "libc::pid_t", "target": "", "state": "unported", "owner": ["4.2"], "appendix": "G11"}
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "entries": [
+    {"path": "src/transport_host/endpoint_environment.rs", "kind": "gate", "gate": "unix", "target": "arm: mod platform", "state": "unported", "owner": ["3.1", "3.2b", "4.6", "4.7"], "appendix": "G64"},
+    {"path": "src/transport_setting.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod tests", "state": "unported", "owner": ["3.1"], "appendix": "G71"},
+    {"path": "src/transport_setting/tests/files.rs", "kind": "os", "gate": "os::unix::fs::PermissionsExt", "target": "", "state": "unported", "owner": ["3.1"], "appendix": "G72"},
+    {"path": "src/transport_setting/tests/files.rs", "kind": "os", "gate": "os::unix::fs::symlink", "target": "", "state": "unported", "owner": ["3.1"], "appendix": "G72"},
+    {"path": "src/transport_setting/tests/fixture.rs", "kind": "os", "gate": "libc::c_int", "target": "", "state": "unported", "owner": ["3.1"], "appendix": "G73"},
+    {"path": "src/transport_setting/tests/fixture.rs", "kind": "os", "gate": "libc::mkfifo", "target": "", "state": "unported", "owner": ["3.1"], "appendix": "G73"},
+    {"path": "src/transport_setting/tests/fixture.rs", "kind": "os", "gate": "os::unix::ffi::{OsStrExt, OsStringExt}", "target": "", "state": "unported", "owner": ["3.1"], "appendix": "G73"},
+    {"path": "src/transport_setting/tests/precedence.rs", "kind": "os", "gate": "os::unix::ffi::OsStrExt", "target": "", "state": "unported", "owner": ["3.1"], "appendix": "G74"},
+    {"path": "src/transport_setting/tests/precedence.rs", "kind": "os", "gate": "os::unix::fs::PermissionsExt", "target": "", "state": "unported", "owner": ["3.1"], "appendix": "G74"},
+    {"path": "src/transport_setting/tests/scan.rs", "kind": "os", "gate": "os::unix::fs::symlink", "target": "", "state": "unported", "owner": ["3.1"], "appendix": "G75"},
+    {"path": "src/transport_setting/tests/text.rs", "kind": "os", "gate": "os::unix::ffi::OsStrExt", "target": "", "state": "unported", "owner": ["3.1"], "appendix": "G76"}
+  ]
+}

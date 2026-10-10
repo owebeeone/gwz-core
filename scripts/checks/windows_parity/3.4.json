@@ -1,0 +1,9 @@
+{
+  "entries": [
+    {"path": "src/git/endpoint/agent_auth.rs", "kind": "gate", "gate": "unix", "target": "arm: mod unix", "state": "unported", "owner": ["3.4"], "appendix": "G1"},
+    {"path": "src/git/endpoint/agent_auth.rs", "kind": "os", "gate": "libc::malloc", "target": "", "state": "unported", "owner": ["3.4"], "appendix": "G1"},
+    {"path": "src/git/endpoint/ssh_tests/agent_auth.rs", "kind": "gate", "gate": "unix", "target": "arm: use crate::git::endpoint::agent_auth", "state": "unported", "owner": ["3.4"], "appendix": "G37"},
+    {"path": "src/git/endpoint/ssh_tests/agent_auth.rs", "kind": "os", "gate": "os::unix::net::UnixStream", "target": "", "state": "unported", "owner": ["3.4"], "appendix": "G37"},
+    {"path": "src/git/endpoint/ssh_tests/agent_auth.rs", "kind": "os", "gate": "os::unix::net::UnixStream::connect", "target": "", "state": "unported", "owner": ["3.4"], "appendix": "G37"}
+  ]
+}

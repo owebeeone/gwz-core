@@ -1,0 +1,9 @@
+{
+  "entries": [
+    {"path": "src/transport_host/endpoint_environment.rs", "kind": "gate", "gate": "unix", "target": "arm: stmt Some(SshSettings{home:platform::", "state": "unported", "owner": ["1.6", "3.1"], "appendix": "G64"},
+    {"path": "src/transport_host/endpoint_environment.rs", "kind": "gate", "gate": "unix", "target": "arm: use super::SshSettings", "state": "unported", "owner": ["1.6"], "appendix": "G64"},
+    {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "unix", "target": "arm: use crate::git::endpoint::ssh_local", "state": "unported", "owner": ["1.6"], "appendix": "G67"},
+    {"path": "src/transport_host/qualification_tests.rs", "kind": "gate", "gate": "else if unix", "target": "arm: fn unix_public_ssh_constructor_retains_its_engine_and_defaults", "state": "unported", "owner": ["1.6", "5.1"], "appendix": "G68"},
+    {"path": "src/transport_host/session.rs", "kind": "gate", "gate": "unix", "target": "arm: stmt if let Some(ssh_settings) = config", "state": "unported", "owner": ["1.6"], "appendix": "G70"}
+  ]
+}

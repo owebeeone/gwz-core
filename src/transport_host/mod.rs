@@ -15,19 +15,38 @@ cfg_if::cfg_if! {
     // The clones that show OpenSSL's default verify paths as the trust.
     if #[cfg(all(test, unix, not(target_vendor = "apple")))] { mod ca_trust_clone_tests; }
 }
+
+// Windows parity (GwzTransportWindowsParityPlan.md): the test modules below still compile on Unix only. Each block
+// belongs to one step, whose rows are in scripts/checks/windows_parity/<step>.json, and that step ungates its block in
+// place (the cfg_if wrapper becomes plain declarations) without touching the others. The blank lines between blocks
+// are deliberate: they keep two steps' edits from ever being adjacent lines, which git reports as a conflict.
+
+// Permanent: the trust branch that only OpenSSL builds have (row 0.5, platform).
+cfg_if::cfg_if! { if #[cfg(all(test, unix))] { mod ca_trust_tests; } }
+
+// Step 1.8: the host-level modules that build a runtime with an SSH configuration.
 cfg_if::cfg_if! {
     if #[cfg(all(test, unix))] {
         mod tests;
-        mod driver_tests;
-        mod close_tests;
         mod throughput_tests;
         mod fault_tests;
+        mod message_embedding_tests;
+        mod https_route_scale_tests;
+        mod https_compat_tests;
+        mod endpoint_environment_tests;
+        mod retry_tests;
+    }
+}
+
+// Step 4.11: the helper-dependent modules.
+cfg_if::cfg_if! {
+    if #[cfg(all(test, unix))] {
+        mod driver_tests;
+        mod close_tests;
         mod command_tests;
         mod fetch_preflight_tests;
-        mod message_embedding_tests;
         mod https_tests;
         mod https_policy_tests;
-        mod https_route_scale_tests;
         cfg_if::cfg_if! {
             if #[cfg(unix)] {
                 mod https_helper_projection_tests;
@@ -35,15 +54,12 @@ cfg_if::cfg_if! {
                 mod https_negotiate_projection_tests;
             }
         }
-        mod https_compat_tests;
         mod cancellable_tests;
         mod cancellable_https_tests;
-        mod endpoint_environment_tests;
-        mod retry_tests;
         mod ca_bundle_tests;
-        mod ca_trust_tests;
     }
 }
+
 use crate::git::endpoint::https_auth::HelperSlots;
 cfg_if::cfg_if! { if #[cfg(unix)] { use crate::git::endpoint::ssh_local; } }
 use crate::{

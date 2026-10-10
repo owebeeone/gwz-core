@@ -1,0 +1,21 @@
+{
+  "entries": [
+    {"path": "src/git/endpoint/helper_script.rs", "kind": "gate", "gate": "target_os = \"linux\"", "target": "arm: fn the_warm_up_waits_out_a_process_that_holds_the_script_open_for_writing", "state": "unported", "owner": ["4.3"], "appendix": "G4"},
+    {"path": "src/git/endpoint/helper_script.rs", "kind": "os", "gate": "os::unix::fs::PermissionsExt", "target": "", "state": "unported", "owner": ["4.3"], "appendix": "G4"},
+    {"path": "src/git/endpoint/https_auth.rs", "kind": "gate", "gate": "unix", "target": "mod executable", "state": "unported", "owner": ["4.3"], "appendix": "G5"},
+    {"path": "src/git/endpoint/https_auth.rs", "kind": "gate", "gate": "unix", "target": "mod file_worker", "state": "unported", "owner": ["4.3"], "appendix": "G5"},
+    {"path": "src/git/endpoint/https_auth.rs", "kind": "gate", "gate": "unix", "target": "mod runner", "state": "unported", "owner": ["4.3"], "appendix": "G5"},
+    {"path": "src/git/endpoint/https_auth.rs", "kind": "gate", "gate": "unix", "target": "mod view", "state": "unported", "owner": ["4.3"], "appendix": "G5"},
+    {"path": "src/git/endpoint/https_auth/executable.rs", "kind": "gate", "gate": "unix", "target": "arm: fn executable_file", "state": "unported", "owner": ["4.3"], "appendix": "G6"},
+    {"path": "src/git/endpoint/https_auth/executable.rs", "kind": "os", "gate": "os::unix::fs::PermissionsExt", "target": "", "state": "unported", "owner": ["4.3"], "appendix": "G6"},
+    {"path": "src/git/endpoint/https_auth/file_worker.rs", "kind": "os", "gate": "libc::O_NONBLOCK", "target": "", "state": "unported", "owner": ["4.3"], "appendix": "G7"},
+    {"path": "src/git/endpoint/https_auth/file_worker.rs", "kind": "os", "gate": "os::unix::{ffi::OsStrExt, fs::OpenOptionsExt}", "target": "", "state": "unported", "owner": ["4.3"], "appendix": "G7"},
+    {"path": "src/git/endpoint/https_auth/runner.rs", "kind": "os", "gate": "os::unix::ffi::OsStrExt", "target": "", "state": "unported", "owner": ["4.3"], "appendix": "G10"},
+    {"path": "src/git/endpoint/https_auth/view.rs", "kind": "os", "gate": "os::unix::ffi::OsStrExt", "target": "", "state": "unported", "owner": ["4.3"], "appendix": "G12"},
+    {"path": "src/git/endpoint/https_auth/view/framing.rs", "kind": "os", "gate": "os::unix::ffi::OsStrExt", "target": "", "state": "unported", "owner": ["4.3"], "appendix": "G13"},
+    {"path": "src/git/endpoint/https_auth/view/tests.rs", "kind": "os", "gate": "libc::mkfifo", "target": "", "count": 2, "state": "unported", "owner": ["4.3"], "appendix": "G14"},
+    {"path": "src/git/endpoint/https_auth/view/tests.rs", "kind": "os", "gate": "os::unix::ffi::OsStrExt", "target": "", "state": "unported", "owner": ["4.3"], "appendix": "G14"},
+    {"path": "src/git/endpoint/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod helper_script", "state": "unported", "owner": ["4.3"], "appendix": "B.2"},
+    {"path": "src/transport_host/endpoint_environment.rs", "kind": "gate", "gate": "unix", "target": "arm: stmt Some(https_auth::Config{executable:", "state": "unported", "owner": ["4.3"], "appendix": "G64"}
+  ]
+}

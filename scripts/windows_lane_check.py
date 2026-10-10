@@ -20,6 +20,8 @@ toolchain through RUSTUP_TOOLCHAIN. `--tests` also checks the library in test mo
 import argparse
 from dataclasses import dataclass, field
 import datetime
+import fnmatch
+import importlib.util
 import json
 from pathlib import Path
 import re
@@ -28,6 +30,10 @@ import sys
 import time
 
 CORE = Path(__file__).resolve().parents[1]
+_spec = importlib.util.spec_from_file_location('check_windows_parity', CORE / 'scripts' / 'checks' / 'check_windows_parity.py')
+parity = importlib.util.module_from_spec(_spec)
+sys.modules.setdefault('check_windows_parity', parity)
+_spec.loader.exec_module(parity)
 HOST = 'gianni@dabeest'
 HOST_ROOT = '/e/gwz-tests'  # E:/gwz-tests in MinGW bash
 SSH = ['ssh', '-o', 'ClearAllForwardings=yes', '-o', 'ForwardAgent=no', '-o', 'ForwardX11=no',
@@ -35,8 +41,9 @@ SSH = ['ssh', '-o', 'ClearAllForwardings=yes', '-o', 'ForwardAgent=no', '-o', 'F
 TOOLCHAIN = '1.95.0'
 QUALIFICATION = '--cfg gwz_transport_candidate --cfg gwz_windows_https_qualification'
 SHAPES = (('ordinary', ''), ('transport', '--cfg gwz_transport_candidate'), ('qualification', QUALIFICATION))
-# A lane that changes one of these needs the compile gate before it merges (AGENTS.md, "Windows compile gate").
-TRIGGER_PATHS = ('src/git/endpoint/', 'src/transport_host/', 'Cargo.toml', 'tests/transport_backend/prepare.py')
+# A lane that changes one of these needs the compile gate before it merges (AGENTS.md, "Windows compile gate"): every
+# scope root of the Windows-parity inventory (so the two lists cannot drift apart) and the build inputs below.
+TRIGGER_EXTRA = ('Cargo.toml', 'Cargo.lock', 'tests/transport_backend/prepare.py', '.github/*.commit')
 SIBLING_PINS = (('gwz-transport', 'https://github.com/owebeeone/gwz-transport.git'),
                 ('gwz-sspi', 'https://github.com/owebeeone/gwz-sspi.git'))
 LABEL = re.compile(r'^[a-z][a-z0-9]*(-[a-z0-9]+)*$')
@@ -62,9 +69,25 @@ def check_label(label: str) -> str:
     return label
 
 
-def triggered(paths) -> list[str]:
+def trigger_patterns(inventory: Path | None = None) -> list[str]:
+    """The inventory's scope roots, then TRIGGER_EXTRA. A root is a file, a directory or a `*` pattern."""
+    data, errors = parity.load_inventory(inventory or parity.DEFAULT_INVENTORY)
+    if data is None:
+        raise Refused('the Windows-parity inventory cannot be read, so the trigger paths are unknown: '
+                      + '; '.join(errors))
+    return list(data['roots']) + list(TRIGGER_EXTRA)
+
+
+def matches(path: str, pattern: str) -> bool:
+    if '*' in pattern:
+        return fnmatch.fnmatchcase(path, pattern)
+    return path == pattern or path.startswith(pattern.rstrip('/') + '/')
+
+
+def triggered(paths, patterns=None) -> list[str]:
     """The paths among `paths` that start the gate."""
-    return [p for p in paths if any(p == t or (t.endswith('/') and p.startswith(t)) for t in TRIGGER_PATHS)]
+    patterns = trigger_patterns() if patterns is None else patterns
+    return [p for p in paths if any(matches(p, t) for t in patterns)]
 
 
 @dataclass
