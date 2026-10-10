@@ -182,31 +182,50 @@ fn a_missing_object_refuses_typed_and_is_never_fetched() {
 }
 
 #[test]
-fn an_object_over_the_limit_refuses_with_its_size_and_the_limit() {
-    let fixture = Fixture::checkout(ObjectFormat::Sha1);
-    let body = vec![b'x'; 4096];
-    fixture.write("large.txt", &body);
-    fixture.commit("large");
-    let blob = fixture
-        .open()
-        .find_commit(fixture.head_commit())
-        .expect("commit")
-        .tree()
-        .expect("tree")
-        .get_name("large.txt")
-        .expect("entry")
-        .id();
+fn blob_metadata_reads_do_not_load_or_limit_the_payload() {
+    for format in [ObjectFormat::Sha1, ObjectFormat::Sha256] {
+        let fixture = Fixture::checkout(format);
+        let repository = fixture.open();
+        let body = vec![b'x'; 4096];
+        let blob = repository.blob(&body).expect("blob");
+        let oid = id(format, blob);
+        let reader = LocalObjectReader::open(&admitted(fixture.root()));
 
-    let reader = LocalObjectReader::open(&admitted(fixture.root()));
-    let oid = id(ObjectFormat::Sha1, blob);
-    match reader.read_object(&oid, &ReadLimits::new(4095)) {
-        Err(ReadError::LimitExceeded { size, limit, .. }) => {
-            assert_eq!(size, 4096);
-            assert_eq!(limit, 4095);
-        }
-        other => panic!("expected LimitExceeded, got {other:?}"),
+        assert_eq!(
+            reader.read_object(&oid, &ReadLimits::new(0)),
+            Ok(ObjectRecord {
+                oid,
+                kind: ObjectKind::Blob,
+                size: body.len() as u64,
+                edges: Vec::new(),
+            })
+        );
     }
-    assert!(reader.read_object(&oid, &ReadLimits::new(4096)).is_ok());
+}
+
+#[test]
+fn graph_object_bodies_over_the_limit_refuse_with_their_size_and_the_limit() {
+    let fixture = Fixture::checkout(ObjectFormat::Sha1);
+    let repository = fixture.open();
+    let commit = fixture.head_commit();
+    let tree = repository.find_commit(commit).expect("commit").tree_id();
+    let tag = fixture.annotated_tag("v1");
+    let odb = repository.odb().expect("odb");
+    let reader = LocalObjectReader::open(&admitted(fixture.root()));
+
+    for object in [commit, tree, tag] {
+        let size = odb.read_header(object).expect("header").0 as u64;
+        let oid = id(ObjectFormat::Sha1, object);
+        assert_eq!(
+            reader.read_object(&oid, &ReadLimits::new(size - 1)),
+            Err(ReadError::LimitExceeded {
+                oid: oid.clone(),
+                size,
+                limit: size - 1,
+            })
+        );
+        assert!(reader.read_object(&oid, &ReadLimits::new(size)).is_ok());
+    }
 }
 
 #[test]

@@ -891,6 +891,25 @@ fn a_witness_with_no_eligible_retained_root_preserves_nothing() {
 }
 
 #[test]
+fn connectivity_does_not_charge_blob_payloads_to_the_read_limit() {
+    let mut reader = InMemoryObjectReader::new();
+    let blob = oid(SHA1, 0x01);
+    let tree = oid(SHA1, 0x02);
+    let head = oid(SHA1, 0x03);
+    reader
+        .blob(blob.clone(), 467_727_520)
+        .tree(tree.clone(), vec![blob])
+        .commit(head.clone(), tree, Vec::new());
+    let protected = roots(vec![root(RootSource::Head, head)]);
+
+    let outcome = check_connectivity(&protected, &reader, Limits::default(), &NeverCancelled);
+    assert!(
+        matches!(outcome, ConnectivityOutcome::Complete(ref coverage) if coverage.objects_visited == 3),
+        "a header-only blob read must not exhaust the payload limit: {outcome:?}"
+    );
+}
+
+#[test]
 fn an_oversized_object_is_unknown_never_verified() {
     let mut reader = InMemoryObjectReader::new();
     let head = commit(&mut reader, SHA1, 0x10, Vec::new());

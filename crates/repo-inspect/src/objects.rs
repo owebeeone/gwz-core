@@ -4,9 +4,9 @@
 //! outgoing edges, never blob bytes (contract: "Blob bytes are never
 //! returned; history verification needs edges and presence, not content").
 //!
-//! The size bound is applied from the object **header**, before the object is
-//! loaded, so an oversized object costs a header read rather than its own
-//! size in memory. Nothing here fetches: a missing object is
+//! The body-size bound is applied from the object **header**, before a graph
+//! object is loaded. Blobs have no outgoing edges and need only their header,
+//! regardless of payload size. Nothing here fetches: a missing object is
 //! [`ReadError::Missing`], never a reason to reach a promisor remote.
 
 use git2::{ErrorCode, ObjectType, Repository};
@@ -36,7 +36,7 @@ pub(crate) fn read_object(
         }
     };
     let size = size as u64;
-    if size > limits.max_object_bytes {
+    if kind != ObjectType::Blob && size > limits.max_object_bytes {
         return Err(ReadError::LimitExceeded {
             oid: oid.clone(),
             size,

@@ -572,8 +572,10 @@ impl RootSource {
 /// Per-call resource bounds for object reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadLimits {
-    /// Largest object the reader will load; a larger object is
-    /// [`ReadError::LimitExceeded`].
+    /// Largest object body the reader will load to obtain outgoing edges;
+    /// a larger commit, tree or tag is [`ReadError::LimitExceeded`]. Blobs
+    /// have no edges and are read from their headers without loading their
+    /// bodies, so their payload sizes are not subject to this bound.
     pub max_object_bytes: u64,
 }
 
