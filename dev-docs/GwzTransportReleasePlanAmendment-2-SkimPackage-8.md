@@ -2,7 +2,9 @@
 
 Date: 2026-10-10. Status: **a package for a skim review; no review has run.** It describes the difference between revision 7 and the revision 8 DRAFT of [`GwzTransportReleasePlanAmendment-2.md`](GwzTransportReleasePlanAmendment-2.md). It decides nothing and authorizes no implementation, commit, tag, push or publication.
 
-**Reviewer's object.** The amendment's revision 8 DRAFT, SHA-256 `a39f47649575dcd790667e901819bf93c3bf62938475fbebd497396d28bb94ae`; its base is revision 7 (gwz-core `HEAD` at the time of drafting), SHA-256 `c37f0a5a2e5f89542fe6bb86455fceaa304d0e0725059132755d505327d9da02`. Review the difference only. Revision 7 is itself an unreviewed DRAFT (its status bullet says so), and this package asks nothing about it. Line numbers below are **revision 7's**; revision 8 adds one line to the header and one to the changelog, so its own numbers sit one to two lines later.
+**Update 2026-10-11 (before any skim review ran).** The TD9 HTTPS rows (`2026-10-10-tr18-td9-user-root-trust`) show that Windows 1.0.17 follows an absolute-URL discovery redirect over HTTPS (301, 302, 307, 308; another origin, another host name, a new path) and never a relative `Location`; over plain HTTP it follows none. Items 2 and 3 below therefore carry corrected replacement text for the redirect row (revision 8's lines 179 and 227), and the amendment's status bullet and changelog say so. Nothing else in revision 8 changed. The SHA-256 below is of the corrected revision 8.
+
+**Reviewer's object.** The amendment's revision 8 DRAFT, SHA-256 `5d462c6902e7c26ceb6df328477e19908c5f92c8e82180be5b4fb44b8d207b63`; its base is revision 7 (gwz-core `HEAD` at the time of drafting), SHA-256 `c37f0a5a2e5f89542fe6bb86455fceaa304d0e0725059132755d505327d9da02`. Review the difference only. Revision 7 is itself an unreviewed DRAFT (its status bullet says so), and this package asks nothing about it. Line numbers below are **revision 7's**; revision 8 adds one line to the header and one to the changelog, so its own numbers sit one to two lines later.
 
 ## 1. What changed and why
 
@@ -12,11 +14,11 @@ On 2026-10-10 the operator decided TD1 to TD4 and TD14 A ([decision list](GwzTra
 |---|---|---|
 | TD1 | A accepted. The logon session answers `Negotiate`/`NTLM`; the configured helper answers `Basic`. It is not a Basic-only restriction. Stop after rejection of the logon identity; do not replay or downgrade to helper credentials. | The helper-first rule and the helper-identity-over-`Negotiate` rows go. The helper is asked only when `Basic` is the only workable scheme. A rejected logon identity ends the operation. |
 | TD2 | A accepted. Refuse Digest-only promptly; ignore Digest when another supported scheme is available. | The `Digest` rows (helper identity over SSPI) go; a `Digest`-only refusal and a `Digest, Basic` row take their place. |
-| TD3 | A accepted. Follow discovery redirects on Windows; no credentials across origins; HTTPS confirmation owed. | The redirect row stays and is marked a transport-only assertion and a deliberate difference (1.0.17 follows none on Windows). |
+| TD3 | A accepted. Follow discovery redirects on Windows; no credentials across origins; HTTPS confirmation owed. | The redirect row stays and is marked a transport-only assertion and a deliberate difference only in its relative-`Location` and plain-HTTP forms (corrected 2026-10-11: over HTTPS 1.0.17 follows an absolute-URL `Location`; see the update note above). |
 | TD4 | A accepted. Refuse a challenged POST with a clear diagnostic; never replay its body. | A sentence and one fixture row are added. They state the outcome Windows 1.0.17 already has (a failure), with the transport's own message. |
 | TD14 | A accepted. Reconcile the contradicted text in revision 8 before step 2.4's review; no new mechanism. | This revision. |
 
-Two clarifications from the discussion record are carried into the text as written: NTLM and Kerberos are distinct (the successful fixture exchanges used NTLM, so they do not qualify Kerberos), and GitHub token authentication remains the helper's Basic-over-HTTPS path. The HTTPS confirmation of TD1 and TD3 is owed, so the new text says so rather than asserting an HTTPS result.
+Two clarifications from the discussion record are carried into the text as written: NTLM and Kerberos are distinct (the successful fixture exchanges used NTLM, so they do not qualify Kerberos), and GitHub token authentication remains the helper's Basic-over-HTTPS path. The HTTPS confirmation of TD1 and TD3 was owed when this package was first written; the TD9 rows have since executed, confirmed TD1 and narrowed TD3's difference (update note above).
 
 ## 2. Beyond the three cited lines (flag for the lane owner)
 
@@ -42,7 +44,7 @@ Superseded:
 
 Replacement:
 
-> A `Negotiate, Basic` row and an `NTLM, Basic` row, each with a configured helper able to answer, the fake `gh` and then a non-gh helper, assert that the helper is not asked and the logon session authenticates, as do a `Negotiate`-only row and an `NTLM`-only row with a helper credential present. A `Basic`-only row with a helper able to answer asserts that the helper is asked once and answers. A `Digest`-only row is refused at once, naming `Digest` and the off switch, and a `Digest, Basic` row ignores `Digest`. A row whose server rejects the logon identity asserts that the operation stops with an error naming the scheme, with no replay and no helper asked. A row whose server challenges the `POST` after a successful discovery asserts the refusal and that the body is sent once. A row in which one name redirects discovery to the other authenticates at the second; Windows 1.0.17 follows no discovery redirect, so this row is a transport-only assertion and a deliberate difference, to be confirmed over HTTPS. 
+> A `Negotiate, Basic` row and an `NTLM, Basic` row, each with a configured helper able to answer, the fake `gh` and then a non-gh helper, assert that the helper is not asked and the logon session authenticates, as do a `Negotiate`-only row and an `NTLM`-only row with a helper credential present. A `Basic`-only row with a helper able to answer asserts that the helper is asked once and answers. A `Digest`-only row is refused at once, naming `Digest` and the off switch, and a `Digest, Basic` row ignores `Digest`. A row whose server rejects the logon identity asserts that the operation stops with an error naming the scheme, with no replay and no helper asked. A row whose server challenges the `POST` after a successful discovery asserts the refusal and that the body is sent once. A row in which one name redirects discovery to the other authenticates at the second; Windows 1.0.17 follows an absolute-URL discovery redirect over HTTPS and none over plain HTTP, and never a relative `Location`, so this row is a transport-only assertion and a deliberate difference only in its relative-`Location` and plain-HTTP forms (TR1.8 §7). 
 
 The rest of the line stands: the Intranet and Internet names, "Under either name the operation authenticates on the transport, as on 1.0.17 (OD16)", and the final "A row whose server requires channel binding authenticates;" (see section 4).
 
@@ -54,7 +56,7 @@ Superseded:
 
 Replacement:
 
->   - **Test first,** TR1.8's `Negotiate` fixture rows on dabeest: both names authenticate on the transport; a `Negotiate, Basic` challenge and an `NTLM, Basic` challenge, and a `Negotiate`-only challenge and an `NTLM`-only challenge, each with a helper credential present, take the logon session, and the helper is not asked; a `Basic`-only challenge with a helper able to answer asks the helper once and authenticates; a `Digest`-only challenge is refused at once, and `Digest` beside `Basic` is ignored; a rejected logon identity ends the operation with an error naming the scheme, with no replay and no helper asked; a challenged `POST` is refused and its body is never replayed; a discovery redirect from one name to the other authenticates at the second (a transport-only row, since 1.0.17 follows none on Windows); a server that requires channel binding authenticates.
+>   - **Test first,** TR1.8's `Negotiate` fixture rows on dabeest: both names authenticate on the transport; a `Negotiate, Basic` challenge and an `NTLM, Basic` challenge, and a `Negotiate`-only challenge and an `NTLM`-only challenge, each with a helper credential present, take the logon session, and the helper is not asked; a `Basic`-only challenge with a helper able to answer asks the helper once and authenticates; a `Digest`-only challenge is refused at once, and `Digest` beside `Basic` is ignored; a rejected logon identity ends the operation with an error naming the scheme, with no replay and no helper asked; a challenged `POST` is refused and its body is never replayed; a discovery redirect from one name to the other authenticates at the second (a transport-only row only in its relative-`Location` and plain-HTTP forms; 1.0.17 follows an absolute `Location` over HTTPS); a server that requires channel binding authenticates.
 
 ### Item 4. §3.14, line 367 (OD16's "precedence" bullet) *(beyond the cited lines)*
 
@@ -130,7 +132,7 @@ Replacement:
 2. Is any mechanism proposed that the decisions did not approve? The author found none: every sentence states an outcome that 1.0.17 has, or a refusal with a message, and TD14 asks for no new mechanism.
 3. Is any sentence in the amendment, outside the six items, still contradicted by TD1 to TD4? A search for "helper" together with "Negotiate", "NTLM" or "Digest", and for "precedence", found only the sites above, the revision 5 history lines (700, 704 and 711), and line 468 (a parity reference to the credential callback, which is not a claim about schemes).
 4. Is the HTTPS qualification honest? The text says the rows were plain HTTP and that the HTTPS confirmation is owed.
-5. Does the "transport-only assertion" wording for the redirect row match TD3 ("follow ... on Windows"; "HTTPS confirmation remains owed")?
+5. Does the "transport-only assertion" wording for the redirect row match TD3 ("follow ... on Windows") and the TD9 HTTPS rows (an absolute `Location` is followed over HTTPS; a relative one, and everything over HTTP, is not)?
 
 ## 6. What this package does not do
 
