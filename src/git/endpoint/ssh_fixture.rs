@@ -248,12 +248,9 @@ impl SshdFixture {
             (self.port, self.user.clone(), self.known_hosts.clone());
         let key = self.temp.path().join("client_ed25519");
         move || {
-            let stream = TcpStream::connect(("127.0.0.1", port))?;
-            let mut connection = SshConnection::new(stream)?;
+            let (mut connection, _) = handshaken(port, 5_000)?;
             {
                 let session = connection.session();
-                session.set_timeout(5_000);
-                session.handshake()?;
                 let (host_key, _) = session
                     .host_key()
                     .ok_or_else(|| io::Error::other("sshd did not provide a host key"))?;
@@ -283,6 +280,33 @@ impl Drop for SshdFixture {
         self.job.terminate();
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// How many times [`handshaken`] connects before it gives up.
+const HANDSHAKE_ATTEMPTS: usize = 6;
+
+/// Connects to `port` and completes the SSH handshake within `timeout_ms`, with a duplicate of the socket for
+/// the caller to watch or break. libssh2 on Windows CNG sometimes ends a key exchange on its own side, about one
+/// connection in a hundred, whatever the server, key exchange method or host key algorithm (the server's log shows
+/// it finished its half and then saw the client close; `Session(-8)`, "Unable to exchange encryption keys"), so a
+/// failure with that code connects afresh; any other failure, and the last attempt's, is returned.
+pub(crate) fn handshaken(port: u16, timeout_ms: u32) -> io::Result<(SshConnection, TcpStream)> {
+    let mut attempt = 1;
+    loop {
+        let stream = TcpStream::connect(("127.0.0.1", port))?;
+        let watch = stream.try_clone()?;
+        let mut connection = SshConnection::new(stream)?;
+        connection.session().set_timeout(timeout_ms);
+        match connection.session().handshake() {
+            Ok(()) => return Ok((connection, watch)),
+            Err(error)
+                if attempt < HANDSHAKE_ATTEMPTS && error.code() == ssh2::ErrorCode::Session(-8) =>
+            {
+                attempt += 1;
+            }
+            Err(error) => return Err(error.into()),
+        }
     }
 }
 

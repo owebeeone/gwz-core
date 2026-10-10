@@ -19,6 +19,22 @@ const HOST: &str = "githost.example";
 /// Establishes trust in the fixture's server for an open whose URL wrote
 /// the host as `written`, with `known` as its `known_hosts`.
 fn establish(f: &common::SshdFixture, written: &str, known: String) -> io::Result<()> {
+    // libssh2 on Windows CNG ends about one key exchange in a hundred on its own side (`common::handshaken`);
+    // the transport reports that as `Other` and its driver retries it, so these single opens do the same.
+    let mut result = establish_once(f, written, known.clone());
+    for _ in 0..5 {
+        if !result
+            .as_ref()
+            .is_err_and(|error| error.kind() == io::ErrorKind::Other)
+        {
+            break;
+        }
+        result = establish_once(f, written, known.clone());
+    }
+    result
+}
+
+fn establish_once(f: &common::SshdFixture, written: &str, known: String) -> io::Result<()> {
     let key = Key::ssh(&f.user, HOST, f.port);
     let address = SocketAddr::from(([127, 0, 0, 1], f.port));
     let written = written.to_owned();

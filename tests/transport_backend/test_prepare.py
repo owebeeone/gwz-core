@@ -104,6 +104,7 @@ def test_candidate_adds_the_windows_networking_features_the_endpoint_needs(tmp_p
         "Win32_System_JobObjects",
         "Win32_System_Memory",
         "Win32_System_Pipes",
+        "Win32_System_SystemInformation",
         "Win32_System_Threading",
         "Win32_UI_WindowsAndMessaging",
     }
