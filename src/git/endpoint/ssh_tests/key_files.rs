@@ -3,74 +3,80 @@
 //! §5). Each file authenticates on the production path, the snapshot registry
 //! reading and checking it and `ssh_key_auth` signing, against a disposable
 //! sshd that authorizes only its key.
+use super::key_material as keys;
+use crate::git::endpoint::{
+    agent_job::Job,
+    fixture_host,
+    ssh_fixture::{self as common, SshdFixture},
+    ssh_key_auth,
+    ssh_key_snapshot::Registry,
+    ssh_network,
+};
+use gwz_transport::pool::Key;
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+    process::Command,
+    task::{Context, Poll, Waker},
+    time::{Duration, Instant},
+};
+
+fn finish<T: Send + 'static>(job: &mut Job<T>) -> io::Result<T> {
+    let until = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Poll::Ready(result) = job.poll_result(&mut Context::from_waker(Waker::noop())) {
+            return result;
+        }
+        assert!(Instant::now() < until);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Authenticates with the key file `path` against a server that
+/// authorizes only `public`, a key's type and blob.
+fn authenticate(path: &Path, public: &(String, String)) -> io::Result<()> {
+    let server = SshdFixture::new();
+    let line = format!("{} {}\n", public.0, public.1);
+    fs::write(server.temp.path().join("authorized_keys"), line).unwrap();
+    let registry = Registry::new();
+    let key = Key::ssh(&server.user, "127.0.0.1", server.port);
+    let loaded =
+        finish(&mut registry.start(key.clone(), path.into(), None, Duration::from_secs(1))?)?;
+    let entry = registry.intern(loaded, || Ok(()))?;
+    let known = server.known_hosts.clone();
+    let mut job = Job::start_isolated(
+        Some(Instant::now() + Duration::from_secs(10)),
+        Duration::from_secs(1),
+        move |control| {
+            let (connection, trusted) = ssh_network::establish(&key, &known, &control)?;
+            ssh_key_auth::authenticate_reporting(connection, &trusted, entry, control, || {}, || {})
+                .map(drop)
+        },
+    )?;
+    finish(&mut job)
+}
+
+/// A copy of the key file `from` at `dir/name`, converted by
+/// `ssh-keygen` to `format` (`PEM` or `PKCS8`) unless it is `openssh`.
+fn container(dir: &Path, from: &Path, name: &str, format: &str) -> PathBuf {
+    let path = dir.join(name);
+    fs::copy(from, &path).unwrap();
+    if format != "openssh" {
+        common::run(
+            Command::new(fixture_host::programs().keygen)
+                .args(["-q", "-p", "-m", format, "-P", "", "-N", "", "-f"])
+                .arg(&path),
+        );
+    }
+    path
+}
+
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
-        use super::key_fixture as keys;
-        use crate::git::endpoint::{
-            agent_job::Job, ssh_fixture::{self as common, SshdFixture}, ssh_key_auth,
-            ssh_key_snapshot::Registry, ssh_network,
-        };
         use base64::{Engine as _, engine::general_purpose::STANDARD};
-        use gwz_transport::pool::Key;
-        use std::{
-            fs, io,
-            path::{Path, PathBuf},
-            process::Command,
-            task::{Context, Poll, Waker},
-            time::{Duration, Instant},
-        };
 
         /// What `openssl ecparam -name prime256v1 -genkey` writes before the key.
         const P256_PARAMETERS: &str = "-----BEGIN EC PARAMETERS-----\nBggqhkjOPQMBBw==\n-----END EC PARAMETERS-----\n";
-
-        fn finish<T: Send + 'static>(job: &mut Job<T>) -> io::Result<T> {
-            let until = Instant::now() + Duration::from_secs(15);
-            loop {
-                if let Poll::Ready(result) = job.poll_result(&mut Context::from_waker(Waker::noop())) {
-                    return result;
-                }
-                assert!(Instant::now() < until);
-                std::thread::sleep(Duration::from_millis(1));
-            }
-        }
-
-        /// Authenticates with the key file `path` against a server that
-        /// authorizes only `public`, a key's type and blob.
-        fn authenticate(path: &Path, public: &(String, String)) -> io::Result<()> {
-            let server = SshdFixture::new();
-            let line = format!("{} {}\n", public.0, public.1);
-            fs::write(server.temp.path().join("authorized_keys"), line).unwrap();
-            let registry = Registry::new();
-            let key = Key::ssh(&server.user, "127.0.0.1", server.port);
-            let loaded = finish(&mut registry.start(key.clone(), path.into(), None, Duration::from_secs(1))?)?;
-            let entry = registry.intern(loaded, || Ok(()))?;
-            let known = server.known_hosts.clone();
-            let mut job = Job::start_isolated(
-                Some(Instant::now() + Duration::from_secs(10)),
-                Duration::from_secs(1),
-                move |control| {
-                    let (connection, trusted) = ssh_network::establish(&key, &known, &control)?;
-                    ssh_key_auth::authenticate_reporting(connection, &trusted, entry, control, || {}, || {})
-                        .map(drop)
-                },
-            )?;
-            finish(&mut job)
-        }
-
-        /// A copy of the key file `from` at `dir/name`, converted by
-        /// `ssh-keygen` to `format` (`PEM` or `PKCS8`) unless it is `openssh`.
-        fn container(dir: &Path, from: &Path, name: &str, format: &str) -> PathBuf {
-            let path = dir.join(name);
-            fs::copy(from, &path).unwrap();
-            if format != "openssh" {
-                common::run(
-                    Command::new("ssh-keygen")
-                        .args(["-q", "-p", "-m", format, "-P", "", "-N", "", "-f"])
-                        .arg(&path),
-                );
-            }
-            path
-        }
 
         fn armor(label: &str, der: &[u8]) -> String {
             let body = STANDARD.encode(der);
@@ -122,7 +128,7 @@ cfg_if::cfg_if! {
             let second = keys::keygen(dir.path(), "second", "ed25519", None);
             let plain = fs::read_to_string(&first).unwrap();
             let second_text = fs::read_to_string(&second).unwrap();
-            common::run(Command::new("ssh-keygen").args(["-q", "-p", "-P", "", "-N", "fixture-passphrase", "-f"]).arg(&first));
+            common::run(Command::new(fixture_host::programs().keygen).args(["-q", "-p", "-P", "", "-N", "fixture-passphrase", "-f"]).arg(&first));
             let encrypted = fs::read_to_string(&first).unwrap();
             for (name, hidden) in [("plain", &plain), ("encrypted", &encrypted)] {
                 let path = dir.path().join(format!("ambiguous-{name}"));
@@ -169,6 +175,57 @@ cfg_if::cfg_if! {
                 blob.extend_from_slice(field);
             }
             authenticate(&pkcs8, &("ssh-ed25519".to_owned(), STANDARD.encode(blob))).unwrap();
+        }
+    } else {
+        use crate::git::endpoint::ssh_limits::SshLimit;
+
+        /// Every row of the key-file matrix on Windows, where libssh2 (WinCNG) reads one form: 1.0.17's `x3-type-*`
+        /// rows. A file in any other form is refused before the server is asked to accept it, with the limit.
+        fn refused_as_a_limit(path: &Path, public: &(String, String)) {
+            let error = authenticate(path, public).expect_err("the form is not read on Windows");
+            let name = path.file_name().unwrap().to_string_lossy();
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported, "{name}: {error}");
+            assert_eq!(SshLimit::of_error(&error), Some(SshLimit::KeyFile));
+        }
+
+        #[test]
+        fn an_unencrypted_rsa_pem_key_file_authenticates() {
+            let dir = tempfile::tempdir().unwrap();
+            let rsa = keys::keygen(dir.path(), "rsa", "rsa", Some(2048));
+            let public = keys::public(dir.path(), "rsa");
+            let pem = container(dir.path(), &rsa, "rsa-pem", "PEM");
+            assert!(fs::read_to_string(&pem).unwrap().starts_with("-----BEGIN RSA PRIVATE KEY-----"));
+            authenticate(&pem, &public).unwrap();
+        }
+
+        #[test]
+        fn every_other_key_file_form_is_refused_as_a_limit_whatever_its_type() {
+            let dir = tempfile::tempdir().unwrap();
+            // The new format `ssh-keygen -t rsa` writes by default, and PKCS#8.
+            let rsa = keys::keygen(dir.path(), "rsa", "rsa", Some(2048));
+            let rsa_public = keys::public(dir.path(), "rsa");
+            for format in ["openssh", "PKCS8"] {
+                refused_as_a_limit(&container(dir.path(), &rsa, &format!("rsa-{format}"), format), &rsa_public);
+            }
+            // A passphrase on the traditional PEM form is refused when the key is admitted, as on every platform,
+            // before the form is looked at.
+            let encrypted = container(dir.path(), &rsa, "rsa-encrypted", "PEM");
+            common::run(
+                Command::new(fixture_host::programs().keygen)
+                    .args(["-q", "-p", "-P", "", "-N", "fixture-passphrase", "-f"])
+                    .arg(&encrypted),
+            );
+            let error = authenticate(&encrypted, &rsa_public).expect_err("an encrypted key is not admitted");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{error}");
+            // ECDSA and Ed25519, in each container.
+            for (kind, bits) in [("ecdsa", Some(256)), ("ecdsa", Some(384)), ("ecdsa", Some(521)), ("ed25519", None)] {
+                let name = format!("{kind}{}", bits.unwrap_or(0));
+                let key = keys::keygen(dir.path(), &name, kind, bits);
+                let public = keys::public(dir.path(), &name);
+                for format in ["openssh", "PEM", "PKCS8"] {
+                    refused_as_a_limit(&container(dir.path(), &key, &format!("{name}-{format}"), format), &public);
+                }
+            }
         }
     }
 }

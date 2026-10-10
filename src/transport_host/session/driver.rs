@@ -108,6 +108,43 @@ impl std::error::Error for SshOpenFailure {
         }
     }
 }
+/// An SSH open that met a limit of the SSH library on this platform (TD5), worded for the destination it was for. Its
+/// display is the whole message: the cause, then the fix.
+#[derive(Debug)]
+pub(crate) struct SshLimitFailure {
+    limit: crate::git::endpoint::ssh_limits::SshLimit,
+    host: String,
+    port: u16,
+}
+impl SshLimitFailure {
+    pub(crate) fn model_error(&self) -> crate::model::ModelError {
+        crate::model::ModelError::new(
+            crate::model::ErrorCode::UnsupportedOperation,
+            self.to_string(),
+        )
+    }
+}
+impl std::fmt::Display for SshLimitFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.limit.reason(&self.host, self.port))
+    }
+}
+impl std::error::Error for SshLimitFailure {}
+/// The error for an open that failed with `failure` for `host` and `port`.
+fn open_failure_io(
+    failure: Failure,
+    attempts: Option<(u32, u32)>,
+    host: String,
+    port: u16,
+) -> io::Error {
+    match crate::git::endpoint::ssh_limits::SshLimit::of_failure(&failure) {
+        Some(limit) => io::Error::new(
+            io::ErrorKind::Unsupported,
+            SshLimitFailure { limit, host, port },
+        ),
+        None => failure_io(failure, attempts),
+    }
+}
 fn failure_io(failure: Failure, attempts: Option<(u32, u32)>) -> io::Error {
     let kind = match failure.code {
         gwz_transport::protocol::ErrorCode::Authentication => io::ErrorKind::PermissionDenied,
@@ -262,6 +299,31 @@ cfg_if::cfg_if! {
             assert!(reported.get_ref().unwrap().source().is_some_and(|source| {
                 source.is::<crate::git::endpoint::ssh_remote::AuthenticationRejected>()
             }));
+        }
+
+        #[test]
+        fn an_open_that_met_a_platform_limit_says_what_and_how_to_fix_it_for_its_destination() {
+            use crate::git::endpoint::ssh_limits::SshLimit;
+            use gwz_transport::protocol::AuthMethod;
+            for (limit, method) in [(SshLimit::HostKeys, AuthMethod::None), (SshLimit::KeyFile, AuthMethod::SshKey)] {
+                let mut failure = limit.failure();
+                failure.facts = Some(Facts { method, ..Facts::default() });
+                let reported = open_failure_io(failure, Some((1, 4)), "git.example.com".into(), 2222);
+                assert_eq!(reported.kind(), io::ErrorKind::Unsupported, "{limit:?}");
+                let words = limit.reason("git.example.com", 2222);
+                assert_eq!(reported.to_string(), words, "{limit:?}");
+                let failed = reported.get_ref().unwrap().downcast_ref::<SshLimitFailure>().unwrap();
+                let model = failed.model_error();
+                assert_eq!(model.code, crate::model::ErrorCode::UnsupportedOperation);
+                assert_eq!(model.message, words);
+            }
+            // The driver's own refusal of the same code carries no facts and keeps its generic display.
+            let own = open_failure_io(limit_free_unsupported(), None, "git.example.com".into(), 22);
+            assert!(own.get_ref().unwrap().downcast_ref::<SshOpenFailure>().is_some());
+        }
+
+        fn limit_free_unsupported() -> Failure {
+            Failure { code: ErrorCode::UnsupportedOperation, ..Failure::default() }
         }
     }
 }

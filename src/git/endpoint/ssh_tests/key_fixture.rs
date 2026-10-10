@@ -207,28 +207,7 @@ fn startup_failures_terminate_and_reap_every_spawned_child() {
     }
 }
 
-/// A new key of `ssh-keygen -t kind` (and `-b bits`) at `dir/name`, with no
-/// passphrase; its public key is `dir/name.pub`.
-pub(crate) fn keygen(dir: &Path, name: &str, kind: &str, bits: Option<u32>) -> PathBuf {
-    let path = dir.join(name);
-    let mut command = Command::new("ssh-keygen");
-    command.args(["-q", "-t", kind, "-N", "", "-f"]).arg(&path);
-    if let Some(bits) = bits {
-        command.args(["-b", &bits.to_string()]);
-    }
-    common::run(&mut command);
-    path
-}
-
-/// The type and base64 blob of the public key `dir/name.pub`.
-pub(crate) fn public(dir: &Path, name: &str) -> (String, String) {
-    let text = fs::read_to_string(dir.join(format!("{name}.pub"))).unwrap();
-    let mut fields = text.split_whitespace();
-    (
-        fields.next().unwrap().to_owned(),
-        fields.next().unwrap().to_owned(),
-    )
-}
+pub(crate) use super::key_material::{keygen, public};
 
 /// The security key whose point is the plain Ed25519 or ECDSA P-256 key
 /// `blob`'s, with the application `ssh:`, as its type and base64 blob.

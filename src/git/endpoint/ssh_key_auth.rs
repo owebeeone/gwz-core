@@ -1,6 +1,7 @@
 //! In-memory explicit-key authentication; no agent, path reopen or fallback.
 use super::{
-    agent_job::Control, ssh_connection::SshConnection, ssh_key_snapshot::Entry, ssh_network,
+    agent_job::Control, ssh_connection::SshConnection, ssh_key_snapshot::Entry, ssh_limits,
+    ssh_network,
 };
 use std::{io, sync::Arc};
 /// The connection is destroyed before its snapshot pin on every rejected handoff.
@@ -47,6 +48,10 @@ pub(crate) fn authenticate_reporting(
     loop {
         control.check()?;
         offered();
+        // A form the library cannot read is refused here, where it would otherwise hang or offer nothing (TD5).
+        if let Some(limit) = ssh_limits::key_form_limit(owner.entry.text()) {
+            return Err(limit.into_error());
+        }
         let result = userauth_from_memory(owner.connection.session(), user, owner.entry.text());
         control.check()?;
         match result {
@@ -87,23 +92,14 @@ cfg_if::cfg_if! {
             session.userauth_pubkey_memory(user, None, key, None)
         }
     } else {
-        /// The header of the one key form libssh2's CNG backend reads.
-        const CNG_KEY_HEADER: &str = "-----BEGIN RSA PRIVATE KEY-----";
-
         /// The same call on Windows. `ssh2` offers `userauth_pubkey_memory` only with OpenSSL, but libssh2's CNG
         /// backend implements `libssh2_userauth_publickey_frommemory` for RSA keys in PEM form, so this calls it
         /// through the `-sys` crate, as `ssh2` does on Unix. A key in memory never touches a file.
         ///
-        /// CNG reads only the traditional PEM form, and given an OpenSSH-format (or any other) key it does not
-        /// return: the call blocks the setup thread beyond any cancellation (found on dabeest, step 1.4). So
-        /// the key is refused here, before the call, unless it has the `RSA PRIVATE KEY` header CNG reads.
+        /// CNG reads only an unencrypted RSA key in the traditional PEM form, and given any other it does not
+        /// return: the call blocks the setup thread beyond any cancellation (found on dabeest, step 1.4). The
+        /// caller has checked the form (`ssh_limits::key_form_limit`) and refused the others.
         fn userauth_from_memory(session: &ssh2::Session, user: &str, key: &str) -> Result<(), ssh2::Error> {
-            if !key.trim_start().starts_with(CNG_KEY_HEADER) {
-                return Err(ssh2::Error::new(
-                    ssh2::ErrorCode::Session(libssh2_sys::LIBSSH2_ERROR_METHOD_NOT_SUPPORTED),
-                    "Windows reads only RSA private keys in the traditional PEM form",
-                ));
-            }
             let user = std::ffi::CString::new(user)?;
             let key = std::ffi::CString::new(key)?;
             let mut raw = session.raw();

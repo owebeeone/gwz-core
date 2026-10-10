@@ -1,6 +1,13 @@
 {
   "entries": [
-    {"path": "src/git/endpoint/ssh_tests/max_startups.rs", "kind": "gate", "gate": "target_os = \"macos\"", "target": "arm: use crate::git::endpoint::ssh_fixture::SshdFixture", "state": "unported", "owner": ["3.7"], "appendix": "G47"},
-    {"path": "src/git/endpoint/ssh_tests/max_startups.rs", "kind": "gate", "gate": "unix", "target": "arm: use crate::git::endpoint::{agent_job::Job, setup_retry::{Phase, Verdict, classify}, ssh_network, ssh", "state": "unported", "owner": ["3.7"], "appendix": "G47"}
+    {"path": "src/git/endpoint/ssh_network/tests.rs", "kind": "gate", "gate": "else", "target": "arm: fn os_errors", "state": "paired", "owner": ["3.7"], "appendix": "new: step 3.7's per-platform socket-error table; the Unix arm sits beside a Windows arm with Winsock numbers"},
+    {"path": "src/git/endpoint/ssh_network/tests.rs", "kind": "os", "gate": "libc::EADDRNOTAVAIL", "target": "", "count": 1, "state": "paired", "owner": ["3.7"], "appendix": "new: step 3.7's per-platform socket-error table; the Unix arm sits beside a Windows arm with Winsock numbers"},
+    {"path": "src/git/endpoint/ssh_network/tests.rs", "kind": "os", "gate": "libc::ECONNABORTED", "target": "", "count": 1, "state": "paired", "owner": ["3.7"], "appendix": "new: step 3.7's per-platform socket-error table; the Unix arm sits beside a Windows arm with Winsock numbers"},
+    {"path": "src/git/endpoint/ssh_network/tests.rs", "kind": "os", "gate": "libc::ECONNREFUSED", "target": "", "count": 1, "state": "paired", "owner": ["3.7"], "appendix": "new: step 3.7's per-platform socket-error table; the Unix arm sits beside a Windows arm with Winsock numbers"},
+    {"path": "src/git/endpoint/ssh_network/tests.rs", "kind": "os", "gate": "libc::ECONNRESET", "target": "", "count": 1, "state": "paired", "owner": ["3.7"], "appendix": "new: step 3.7's per-platform socket-error table; the Unix arm sits beside a Windows arm with Winsock numbers"},
+    {"path": "src/git/endpoint/ssh_network/tests.rs", "kind": "os", "gate": "libc::EHOSTUNREACH", "target": "", "count": 1, "state": "paired", "owner": ["3.7"], "appendix": "new: step 3.7's per-platform socket-error table; the Unix arm sits beside a Windows arm with Winsock numbers"},
+    {"path": "src/git/endpoint/ssh_network/tests.rs", "kind": "os", "gate": "libc::ENETUNREACH", "target": "", "count": 1, "state": "paired", "owner": ["3.7"], "appendix": "new: step 3.7's per-platform socket-error table; the Unix arm sits beside a Windows arm with Winsock numbers"},
+    {"path": "src/git/endpoint/ssh_network/tests.rs", "kind": "os", "gate": "libc::ETIMEDOUT", "target": "", "count": 1, "state": "paired", "owner": ["3.7"], "appendix": "new: step 3.7's per-platform socket-error table; the Unix arm sits beside a Windows arm with Winsock numbers"},
+    {"path": "src/git/endpoint/ssh_tests/max_startups.rs", "kind": "gate", "gate": "else", "target": "arm: const ONE_START", "state": "paired", "owner": ["3.7"], "appendix": "G47: the fixture's one-start configuration; Windows' sshd.exe is OpenSSH 9.5, which has no PerSourcePenalties"}
   ]
 }
