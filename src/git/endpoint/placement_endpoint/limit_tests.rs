@@ -74,7 +74,10 @@ fn an_open_is_held_by_the_believed_limit_of_its_site_not_only_by_the_ceiling() {
     // the site waits for the first, as it would for a limit of one.
     let (mut endpoint, starts) = endpoint(stall(), None, 4, 3);
     let mut terminals = Vec::new();
-    endpoint.endpoint.governor().begin_operation(4, true);
+    endpoint
+        .endpoint
+        .governor()
+        .begin_operation(OPERATION, 4, true, 0);
     endpoint.accept(OPERATION.into(), open(1, 30_000)).unwrap();
     until(&mut endpoint, 0, &mut terminals, |endpoint| {
         endpoint
@@ -113,5 +116,70 @@ fn an_open_is_held_by_the_believed_limit_of_its_site_not_only_by_the_ceiling() {
     assert_eq!(*starts.lock().unwrap(), 2, "the third open waits for room");
     // It waits in the endpoint, not in the pool: it was never submitted.
     assert_eq!((endpoint.opens.len(), endpoint.queued_opens.len()), (2, 1));
+    endpoint.shutdown();
+}
+
+#[test]
+fn in_saturated_the_pool_site_limit_is_the_pools_own_cap_not_the_open_ceiling() {
+    // `--max-per-host 64`: opens in flight stop at the endpoint's own ceiling
+    // of 32, but the connections they leave behind (streaming on their
+    // leases) are bounded by the pool's cap, 64. A site limit of 32 would
+    // make the 33rd connection wait, which 1.0.17 does not.
+    let (mut endpoint, _) = endpoint(stall(), None, 64, 3);
+    let mut terminals = Vec::new();
+    endpoint.accept(OPERATION.into(), open(1, 30_000)).unwrap();
+    until(&mut endpoint, 0, &mut terminals, |endpoint| {
+        endpoint
+            .endpoint
+            .governor()
+            .view(&site_key(), endpoint.endpoint.pool_now())
+            .is_some_and(|view| view.possible == 1)
+    });
+    let site = site_key().site();
+    assert!(
+        endpoint.pool().limit(&site).is_none_or(|limit| limit == 64),
+        "the pool's site limit is {:?}",
+        endpoint.pool().limit(&site)
+    );
+    let view = endpoint
+        .endpoint
+        .governor()
+        .view(&site_key(), endpoint.endpoint.pool_now())
+        .unwrap();
+    assert_eq!((view.ceiling, view.pool_limit), (64, 64));
+    endpoint.shutdown();
+}
+
+#[test]
+fn a_second_request_does_not_erase_the_hold_a_live_request_set() {
+    let (mut endpoint, starts) = endpoint(stall(), None, 4, 3);
+    let mut terminals = Vec::new();
+    endpoint.accept(OPERATION.into(), open(1, 30_000)).unwrap();
+    until(&mut endpoint, 0, &mut terminals, |endpoint| {
+        endpoint
+            .endpoint
+            .governor()
+            .view(&site_key(), endpoint.endpoint.pool_now())
+            .is_some_and(|view| view.possible == 1)
+    });
+    let pool_now = endpoint.endpoint.pool_now();
+    endpoint.endpoint.governor().refused(
+        &site_key(),
+        Conn(1),
+        Signal::Throttle,
+        Some(1_100),
+        false,
+        pool_now,
+    );
+    // Request "other" is admitted while OPERATION still runs.
+    endpoint.set_max_retries("other", 3);
+    endpoint.accept("other".into(), open(2, 30_000)).unwrap();
+    for now in [0, 1, 2] {
+        step(&mut endpoint, now, &mut terminals);
+    }
+    assert_eq!(*starts.lock().unwrap(), 1, "no start inside the hold");
+    until(&mut endpoint, 3, &mut terminals, |_| {
+        *starts.lock().unwrap() == 2
+    });
     endpoint.shutdown();
 }

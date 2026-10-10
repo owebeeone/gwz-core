@@ -186,6 +186,7 @@ impl Client {
             {
                 return Err(with_facts(ErrorCode::Timeout, Effect::None, &facts));
             }
+            let carried_lease = challenge.is_some();
             let lease = if let Some(carried) = challenge.take() {
                 let mut carried = carried;
                 if let Some(mut lease) = carried.take_for(&destination, &input) {
@@ -320,15 +321,32 @@ impl Client {
             credential_offered = prepared.opened.facts.credential_offered;
             if prepared.opened.reused {
                 // An exchange on a leased connection is an attempt of its
-                // own: its window runs from here (§4.3).
-                if let Some(connection) =
-                    prepared.lease.as_ref().and_then(HttpLease::pool_connection)
-                {
-                    self.pool.governor().exchange_begins(
-                        &Key::https(destination.host(), destination.port()),
-                        connection,
-                        self.pool.now(),
-                    );
+                // own: its window runs from here (§4.3). During a hold no
+                // open begins its first exchange on a leased connection
+                // (§4.5): the lease goes back unused, and the open asks
+                // again when the hold has ended.
+                if let Some(pooled) = prepared.lease.as_ref().and_then(HttpLease::pool_connection) {
+                    let pool_key = Key::https(destination.host(), destination.port());
+                    let began =
+                        self.pool
+                            .governor()
+                            .exchange_begins(&pool_key, pooled, self.pool.now());
+                    if !began && !carried_lease {
+                        drop(guard);
+                        drop(connection);
+                        let Prepared {
+                            _slot: returned_slot,
+                            _operation: returned_dependency,
+                            lease,
+                            ..
+                        } = prepared;
+                        lease.unwrap().finish(Disposition::Reusable)?;
+                        slot = returned_slot;
+                        dependency = Some(returned_dependency);
+                        credential_offered = offered_before;
+                        self.wait_for_hold(&pool_key, cancel).await?;
+                        continue;
+                    }
                 }
             }
             let header_started = Instant::now();

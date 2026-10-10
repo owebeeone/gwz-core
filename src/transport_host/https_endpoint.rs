@@ -185,9 +185,12 @@ impl HttpsEndpoint {
         // `N` yet: the probe carriers and the classification of the other
         // refusals are a later step.
         let capacity = self.pool().capacity();
-        self.client
-            .governor()
-            .begin_operation(capacity.per_host.min(capacity.per_user_host), false);
+        self.client.governor().begin_operation(
+            request,
+            capacity.per_host.min(capacity.per_user_host),
+            false,
+            self.client.pool_now(),
+        );
     }
     pub(super) fn owns(&self, request: &str, id: i64) -> bool {
         self.entries.contains_key(&(request.into(), id))
@@ -414,6 +417,7 @@ impl HttpsEndpoint {
         }
         // Its opens are all finished: no wake starts an attempt for it.
         self.retries.remove(request);
+        self.client.governor().end_operation(request);
     }
     pub(super) fn pending_request_count(&self, request: &str) -> usize {
         self.entries.keys().filter(|(id, _)| id == request).count() + self.client.pending_cleanup()
@@ -583,7 +587,6 @@ cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
     mod https_cancel_mux_tests;
     mod retry_tests;
     mod stale_action_tests;
-    mod throttle_tests;
 } }
 // Needs no HTTPS server, so it runs on Windows too.
 cfg_if::cfg_if! { if #[cfg(test)] { mod wake_tests; } }

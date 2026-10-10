@@ -22,7 +22,7 @@ fn retry_allowance_and_challenge_keys_are_account_specific() {
     assert_ne!(a, retry_key(first));
 }
 
-pub(super) fn runtime() -> tokio::runtime::Runtime {
+fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -31,11 +31,7 @@ pub(super) fn runtime() -> tokio::runtime::Runtime {
 
 /// An endpoint whose pool allows `per_host` connections to a host and whose
 /// waits draw no jitter. Its operation "request" retries `max_retries` times.
-pub(super) fn endpoint(
-    tls: https_connection::Config,
-    per_host: usize,
-    max_retries: u32,
-) -> HttpsEndpoint {
+fn endpoint(tls: https_connection::Config, per_host: usize, max_retries: u32) -> HttpsEndpoint {
     let config = pool::Config {
         per_host,
         per_user_host: per_host,
@@ -57,7 +53,7 @@ pub(super) fn endpoint(
 }
 
 /// Stream `stream`'s anonymous advertisement Open of 127.0.0.1:`port`.
-pub(super) fn open(stream: i64, port: u16, allocation_ms: i64) -> Envelope {
+fn open(stream: i64, port: u16, allocation_ms: i64) -> Envelope {
     Envelope {
         version: 2,
         session_id: "session".into(),
@@ -93,7 +89,7 @@ pub(super) fn open(stream: i64, port: u16, allocation_ms: i64) -> Envelope {
     }
 }
 
-pub(super) fn port(server: &fixture::Server) -> u16 {
+fn port(server: &fixture::Server) -> u16 {
     crate::git::endpoint::https_destination::Destination::parse(&server.url)
         .unwrap()
         .port()
@@ -117,7 +113,7 @@ fn closing() -> (u16, Arc<AtomicUsize>) {
 
 /// Steps the endpoint at `now` until no attempt is in flight, and returns
 /// the messages it published meanwhile.
-pub(super) async fn settle(endpoint: &mut HttpsEndpoint, now: u64) -> Vec<Envelope> {
+async fn settle(endpoint: &mut HttpsEndpoint, now: u64) -> Vec<Envelope> {
     let mut cx = Context::from_waker(Waker::noop());
     let until = tokio::time::Instant::now() + Duration::from_secs(10);
     let mut published = Vec::new();
@@ -141,12 +137,12 @@ pub(super) async fn settle(endpoint: &mut HttpsEndpoint, now: u64) -> Vec<Envelo
     }
 }
 
-pub(super) fn code(message: &Envelope) -> ErrorCode {
+fn code(message: &Envelope) -> ErrorCode {
     assert_eq!(message.kind, MessageKind::OpenFailed);
     message.open_failed.as_ref().expect("a failure").code
 }
 
-pub(super) async fn shut(endpoint: &mut HttpsEndpoint) {
+async fn shut(endpoint: &mut HttpsEndpoint) {
     endpoint.shutdown();
     let mut cx = Context::from_waker(Waker::noop());
     let until = tokio::time::Instant::now() + Duration::from_secs(5);
@@ -428,3 +424,5 @@ fn an_https_open_has_the_endpoints_tls_configuration_build() {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
+
+mod throttle;

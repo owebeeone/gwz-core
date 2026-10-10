@@ -133,3 +133,34 @@ fn the_gate_is_closed_by_a_hold_until_the_idle_connections_are_discarded_not_by_
     rig.limit.idle_discarded(5_000);
     assert!(rig.limit.gate_open(5_000));
 }
+
+#[test]
+fn without_adaptation_an_inconclusive_refusal_sets_no_barrier() {
+    // The barrier (§4.4) belongs to the adaptive machine: with N pinned at the
+    // ceiling, a bare refusal whose window saw a close must not delay starts.
+    for (adaptive, gate_open) in [(true, false), (false, true)] {
+        let mut rig = Rig::with(2, adaptive, 1_000);
+        rig.connect(2);
+        assert!(rig.limit.begin(
+            AttemptId(1),
+            AttemptKind::Ordinary,
+            2,
+            Own::New(ConnId(9)),
+            true,
+            0
+        ));
+        rig.limit.conn(ConnId(2), ConnEvent::Closing, 0);
+        rig.limit.conn(ConnId(9), ConnEvent::SetupEnded, 0);
+        let ruling = rig.limit.result(
+            AttemptId(1),
+            Outcome::Refused {
+                signal: Throttle,
+                retry_after_ms: None,
+                post: false,
+            },
+            0,
+        );
+        assert_eq!(ruling, Some(Ruling::Inconclusive), "adaptive {adaptive}");
+        assert_eq!(rig.limit.gate_open(0), gate_open, "adaptive {adaptive}");
+    }
+}

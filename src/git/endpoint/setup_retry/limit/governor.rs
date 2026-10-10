@@ -73,6 +73,8 @@ struct Slot {
 }
 
 struct Book {
+    /// The operations that have begun and not ended on this pool.
+    live: BTreeSet<String>,
     ceiling: usize,
     adaptive: bool,
     spread: Box<dyn Fn() -> Spread + Send + Sync>,
@@ -117,6 +119,7 @@ impl Governor {
         Self {
             control,
             book: Arc::new(Mutex::new(Book {
+                live: BTreeSet::new(),
                 ceiling,
                 adaptive,
                 spread: Box::new(spread),
@@ -134,17 +137,57 @@ impl Governor {
         self.book.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// A new operation: every key starts SATURATED at `ceiling`, and the
-    /// numbers the last operation set on the pool are cleared.
-    pub(crate) fn begin_operation(&self, ceiling: usize, adaptive: bool) {
+    /// An operation begins. When no other operation is live, every key
+    /// starts SATURATED at `ceiling` and the numbers the last operation set on
+    /// the pool are cleared, except that a key whose hold is still in force keeps
+    /// the hold alone, moved into a fresh machine at this operation's ceiling:
+    /// the server's word outlasts the operation that heard it. When another
+    /// operation is live the machines are left as they are, since they are
+    /// the pool's, not one operation's (scoping them per operation is the
+    /// adaptive step's).
+    pub(crate) fn begin_operation(
+        &self,
+        operation: &str,
+        ceiling: usize,
+        adaptive: bool,
+        now: u64,
+    ) {
         let mut book = self.book();
-        for slot in book.slots.drain(..) {
-            self.control.clear_limit(&slot.site);
-            let _ = self.control.set_settle(&slot.site, 0);
+        let shared = book.live.iter().any(|live| live != operation);
+        book.live.insert(operation.to_owned());
+        if shared {
+            return;
         }
+        // Only a hold survives: the server's word. It moves into a fresh
+        // machine built with this operation's ceiling, and the slot's cache of
+        // what the pool was told is empty, so the numbers are sent again after
+        // the pool's own capacity install cleared them.
+        let mut kept = Vec::new();
+        for mut slot in std::mem::take(&mut book.slots) {
+            if slot.limit.holding(now) {
+                let mut limit = Limit::new(ceiling, adaptive, (book.spread)());
+                limit.restore_hold(slot.limit.take_hold());
+                kept.push(Slot {
+                    site: slot.site,
+                    limit,
+                    leased: BTreeSet::new(),
+                    applied: None,
+                });
+            } else {
+                self.control.clear_limit(&slot.site);
+                let _ = self.control.set_settle(&slot.site, 0);
+            }
+        }
+        book.slots = kept;
         book.ceiling = ceiling;
         book.adaptive = adaptive;
         book.notes.clear();
+    }
+
+    /// An operation ended: it no longer shields the machines from the next
+    /// operation's start.
+    pub(crate) fn end_operation(&self, operation: &str) {
+        self.book().live.remove(operation);
     }
 
     /// Whether new connections may start on `key`'s site, and how many the
@@ -179,6 +222,9 @@ impl Governor {
         if !slot.limit.admits_first_exchange(now) {
             return false;
         }
+        // The connection's own setup attempt, if no exchange answered it, is
+        // over: it went back to the pool unanswered.
+        slot.limit.result(connection.attempt(), Outcome::Ended, now);
         let target = slot.limit.pool_limit();
         let began = slot.limit.begin(
             connection.attempt(),
@@ -202,9 +248,9 @@ impl Governor {
         let index = self.slot(&mut book, key);
         let slot = &mut book.slots[index];
         let fresh = !slot.leased.remove(&connection.0);
-        if fresh {
-            slot.limit.conn(connection.id(), ConnEvent::Connected, now);
-        }
+        // Any answered exchange sets up a connection no discovery answered
+        // (a POST-only use, or a lease taken after an unanswered one).
+        slot.limit.conn(connection.id(), ConnEvent::Connected, now);
         slot.limit
             .result(connection.attempt(), Outcome::Succeeded { fresh }, now);
         self.sync(&mut book, index, now);

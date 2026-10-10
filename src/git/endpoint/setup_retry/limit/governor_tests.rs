@@ -26,6 +26,8 @@ struct Script {
     /// Each new connection takes the next entry: true refuses it.
     refuse: Vec<bool>,
     opened: usize,
+    /// The peer closed the connection while it was idle.
+    lost: bool,
 }
 struct Fake {
     script: Arc<Mutex<Script>>,
@@ -65,6 +67,13 @@ impl Resource for Fake {
     }
     fn reusable(&self) -> bool {
         true
+    }
+    fn poll_idle_lost(&mut self, _: &mut Context<'_>) -> Poll<()> {
+        if self.script.lock().unwrap().lost {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
     }
 }
 
@@ -337,7 +346,7 @@ fn a_new_operation_starts_every_key_saturated_and_clears_the_pools_numbers() {
         .refused(&key(), other, Throttle, None, false, 1);
     assert_eq!(rig.view().state, State::Stable);
     drop((lease, second));
-    rig.governor.begin_operation(4, true);
+    rig.governor.begin_operation("a", 4, true, 2);
     assert!(rig.governor.view(&key(), 2).is_none());
     assert_eq!(rig.pool.limit(&rig.site()), None);
     assert_eq!(rig.governor.admission(&key(), 2).target, 4);
@@ -371,4 +380,108 @@ fn a_retry_after_on_a_connection_with_no_attempt_in_flight_still_sets_the_hold()
     assert!(!rig.governor.admission(&key(), 10).gate_open);
     assert_eq!(rig.view().n, 8, "nothing was judged");
     drop(lease);
+}
+
+#[test]
+fn a_connection_no_exchange_answered_is_gone_when_the_server_closes_it_idle() {
+    // POST-only use, or a lease returned unanswered: the entry must not stay
+    // Setting up with its window open, or the key is never quiet.
+    let mut rig = Rig::new(8, true);
+    let (lease, _) = rig.open();
+    assert_eq!(rig.view().possible, 1);
+    rig.host.release(lease, Disposition::Reusable).unwrap();
+    rig.script.lock().unwrap().lost = true;
+    rig.tick(5);
+    let view = rig.view();
+    assert_eq!((view.possible, view.connected), (0, 0));
+    assert!(rig.governor.admission(&key(), 5).gate_open);
+}
+
+#[test]
+fn an_answered_leased_exchange_sets_up_a_connection_no_discovery_answered() {
+    let mut rig = Rig::new(8, true);
+    let (lease, connection) = rig.open();
+    assert_eq!(rig.view().connected, 0);
+    assert!(rig.governor.exchange_begins(&key(), connection, 1));
+    rig.governor.answered(&key(), connection, 2);
+    assert_eq!(rig.view().connected, 1);
+    drop(lease);
+}
+
+#[test]
+fn a_second_live_operation_does_not_erase_a_hold() {
+    let mut rig = Rig::new(8, false);
+    rig.governor.begin_operation("a", 8, false, 0);
+    let (lease, connection) = rig.open();
+    rig.governor
+        .refused(&key(), connection, Throttle, Some(20_000), false, 100);
+    // Another request is admitted while the first still runs.
+    rig.governor.begin_operation("b", 8, false, 200);
+    assert!(!rig.governor.admission(&key(), 200).gate_open);
+    assert!(!rig.governor.admission(&key(), 20_099).gate_open);
+    assert!(rig.governor.admission(&key(), 20_100).gate_open);
+    drop(lease);
+}
+
+#[test]
+fn a_hold_still_in_force_outlives_its_operation_but_the_rest_of_its_state_does_not() {
+    let mut rig = Rig::new(32, false);
+    rig.governor.begin_operation("a", 4, false, 0);
+    let (lease, connection) = rig.open();
+    rig.governor.answered(&key(), connection, 1);
+    let other = Key::https("other", 443);
+    rig.governor.admission(&other, 1);
+    rig.governor
+        .refused(&key(), connection, Throttle, Some(20_000), false, 100);
+    assert_eq!(rig.view().pool_limit, 4);
+    rig.governor.end_operation("a");
+    // The next operation has another ceiling.
+    rig.governor.begin_operation("b", 32, false, 200);
+    assert!(
+        !rig.governor.admission(&key(), 200).gate_open,
+        "the server's word stands"
+    );
+    assert!(
+        rig.governor.view(&other, 200).is_none(),
+        "a slot with no hold starts over"
+    );
+    let view = rig.view();
+    assert_eq!(
+        (view.pool_limit, view.connected, view.possible),
+        (32, 0, 0),
+        "only the hold survived: the new ceiling, none of the old table"
+    );
+    drop(lease);
+}
+
+#[test]
+fn a_slot_kept_for_its_hold_takes_the_next_operations_ceiling_and_resends_the_pools_numbers() {
+    // The reviewer's probe (P2-3): hold under ceiling 4, then an operation
+    // with 32 on a pool whose numbers its admission has just cleared.
+    let mut rig = Rig::new(32, false);
+    rig.governor.begin_operation("a", 4, false, 0);
+    let (lease, connection) = rig.open();
+    rig.governor
+        .refused(&key(), connection, Throttle, Some(20_000), false, 100);
+    assert_eq!(rig.pool.limit(&rig.site()), Some(4));
+    rig.governor.end_operation("a");
+    rig.host.release(lease, Disposition::Discarded).unwrap();
+    rig.tick(150);
+    rig.pool.install_capacity(rig.pool.capacity()).unwrap();
+    assert_eq!(
+        rig.pool.limit(&rig.site()),
+        None,
+        "install cleared the pool"
+    );
+    rig.governor.begin_operation("b", 32, false, 200);
+    assert!(!rig.governor.admission(&key(), 20_099).gate_open);
+    // The hold ends: the gate opens at the new operation's ceiling.
+    let admission = rig.governor.admission(&key(), 25_000);
+    assert!(admission.gate_open);
+    assert_eq!(admission.target, 32);
+    assert!(
+        rig.pool.limit(&rig.site()).is_none_or(|limit| limit == 32),
+        "the pool's limit is {:?}",
+        rig.pool.limit(&rig.site())
+    );
 }

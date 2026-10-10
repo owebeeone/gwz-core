@@ -26,6 +26,7 @@ impl PlacementEndpoint {
         }
         // Its members are all finished: no wake opens a probe for it.
         self.retries.remove(request);
+        self.endpoint.governor().end_operation(request);
     }
     /// Ends one cancelled stream: queues its `Cancelled` terminal, unless it
     /// has one already, and abandons its attached exchange.

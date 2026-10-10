@@ -82,7 +82,12 @@ fn http_date(text: &str) -> Option<u64> {
     if parts.next()? != "GMT" || parts.next().is_some() || clock.next().is_some() {
         return None;
     }
-    if !(1..=31).contains(&day) || hour > 23 || minute > 59 || second > 60 || year < 1970 {
+    if !(1..=31).contains(&day)
+        || hour > 23
+        || minute > 59
+        || second > 60
+        || !(1970..=9_999).contains(&year)
+    {
         return None;
     }
     // Days from 1970-01-01 to the date (civil-from-days, proleptic Gregorian).
@@ -96,7 +101,10 @@ fn http_date(text: &str) -> Option<u64> {
     let day_of_year = (153 * m + 2) / 5 + day - 1;
     let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
     let days = era * 146_097 + day_of_era - 719_468;
-    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
+    // A year below 10,000 keeps every product far below `u64::MAX`; the
+    // checked forms keep a later change honest.
+    days.checked_mul(86_400)?
+        .checked_add(hour * 3_600 + minute * 60 + second)
 }
 
 impl Client {
@@ -108,6 +116,28 @@ impl Client {
     /// The pool's clock, which the machines are measured in.
     pub(crate) fn pool_now(&self) -> u64 {
         self.pool.now()
+    }
+    /// Waits until the hold on `key`'s site, if any, has ended, and the
+    /// governor has discarded the site's idle connections as that requires.
+    pub(super) async fn wait_for_hold(
+        &self,
+        key: &Key,
+        cancel: &CancellationToken,
+    ) -> Result<(), Failure> {
+        let governor = self.pool.governor();
+        loop {
+            let now = self.pool.now();
+            if governor.exchange_may_begin(key, now) {
+                return Ok(());
+            }
+            let pause = governor
+                .next_deadline(now)
+                .map_or(20, |at| at.saturating_sub(now).clamp(5, 100));
+            tokio::select! {
+                _ = cancel.cancelled() => return Err(failure(ErrorCode::Cancelled)),
+                _ = tokio::time::sleep(Duration::from_millis(pause)) => {}
+            }
+        }
     }
     /// A response arrived on `prepared`'s connection: tells the machines.
     pub(super) fn tell_governor(
@@ -214,7 +244,19 @@ cfg_if::cfg_if! {
 
             #[test]
             fn an_unreadable_retry_after_is_none_and_a_huge_one_saturates() {
-                for text in ["", "soon", "-5", "1.5", "Sun, 31 Feb 1994 25:00:00 GMT", "Sun, 06 Nov 1994 08:49:37 PST"] {
+                for text in [
+                    "",
+                    "soon",
+                    "-5",
+                    "1.5",
+                    "Sun, 31 Feb 1994 25:00:00 GMT",
+                    "Sun, 06 Nov 1994 08:49:37 PST",
+                    // Hostile years: no overflow, no panic.
+                    "Sun, 06 Nov 1000000000000 08:49:37 GMT",
+                    "Sun, 06 Nov 18446744073709551615 08:49:37 GMT",
+                    "Sun, 06 Nov 10000 08:49:37 GMT",
+                    "Sun, 06 Nov 1969 08:49:37 GMT",
+                ] {
                     assert_eq!(retry_after_ms(&headers(&[("retry-after", text)])), None, "{text:?}");
                 }
                 assert_eq!(retry_after_ms(&HeaderMap::new()), None);

@@ -228,3 +228,5 @@ fn thirty_two_concurrent_connections_all_succeed_at_the_default_per_host_ceiling
         assert_eq!(endpoint.shutdown(Duration::from_secs(5)).await, 0);
     });
 }
+
+mod throttle;

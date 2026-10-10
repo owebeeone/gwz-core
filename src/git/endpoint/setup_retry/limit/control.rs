@@ -303,6 +303,20 @@ impl Limit {
         }
         true
     }
+    /// Whether a hold is in force at `now`: the server's word, which no
+    /// other operation's start may erase.
+    pub(crate) fn holding(&self, now: u64) -> bool {
+        self.hold.in_force(now)
+    }
+    /// Takes the hold out, leaving none: a key kept across an operation's end
+    /// for its hold alone carries it into a fresh `Limit`.
+    pub(crate) fn take_hold(&mut self) -> Hold {
+        std::mem::take(&mut self.hold)
+    }
+    /// Puts back a hold taken from another `Limit` of the same key.
+    pub(crate) fn restore_hold(&mut self, hold: Hold) {
+        self.hold = hold;
+    }
     /// The number of connections the pool may hold on the key (§4.9): the
     /// machine's `N`, or the target of the test in flight. In SATURATED it is
     /// the ceiling.
@@ -447,7 +461,12 @@ impl Limit {
                 Ruling::RetryMachine
             }
             Evidence::Inconclusive => {
-                self.barrier.extend(closed.winding_down.iter().copied());
+                // The barrier belongs to the adaptive machine: with N pinned
+                // at the ceiling nothing is learned from the overlap, and a
+                // bare refusal must not delay the next start.
+                if self.adaptive {
+                    self.barrier.extend(closed.winding_down.iter().copied());
+                }
                 Ruling::Inconclusive
             }
             Evidence::HoldOnly => Ruling::HoldOnly,

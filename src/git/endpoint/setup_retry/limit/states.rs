@@ -34,7 +34,8 @@ pub(crate) enum ConnEvent {
     Closing,
     /// The client disposed of a Closing connection: Settling.
     Disposed,
-    /// The server ended a Connected or Closing connection: Gone.
+    /// The server ended a connection that was never answered, a Connected one
+    /// or a Closing one: Gone.
     ServerClosed,
 }
 
@@ -123,7 +124,10 @@ impl Table {
             // A connection discarded before its setup was answered (HTTPS: a
             // throttled discovery on a new connection) is closed all the same.
             (Some(Phase::Connected | Phase::SettingUp), ConnEvent::Closing) => Phase::Closing,
-            (Some(Phase::Connected | Phase::Closing), ConnEvent::ServerClosed) => Phase::Gone,
+            (
+                Some(Phase::SettingUp | Phase::Connected | Phase::Closing),
+                ConnEvent::ServerClosed,
+            ) => Phase::Gone,
             _ => return None,
         };
         if to == Phase::Gone {
