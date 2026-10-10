@@ -142,6 +142,9 @@ mod tests {
                 let v6 = SocketAddr::from((Ipv6Addr::LOCALHOST, loopback.port));
                 // Two connections wait on IPv4 and one on IPv6.
                 let _clients = [v4, v4, v6].map(|address| TcpStream::connect(address).unwrap());
+                // Park once so the reactor reports both listeners readable; without it the
+                // IPv6 connection's readiness can arrive a turn late and IPv4 is served twice.
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 let first = loopback.accept().await.unwrap();
                 let second = loopback.accept().await.unwrap();
                 let families = [first, second].map(|socket| socket.local_addr().unwrap().is_ipv6());
