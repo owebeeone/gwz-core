@@ -67,7 +67,7 @@ impl RunningPool {
         let (pool, mut host) =
             PoolHost::new(config, ReservedConnector::new(connector, authority), 0)
                 .map_err(|_| https_connection::failure(ErrorCode::InvalidRequest))?;
-        let governor = Governor::random(pool.control(), ceiling, false);
+        let governor = Governor::random(pool.control(), ceiling);
         host.set_observer(Arc::new(governor.clone()));
         let client = HttpsPool {
             pool,
@@ -200,6 +200,7 @@ impl HttpsPool {
             None,
             false,
             true,
+            None,
         )
         .await
     }
@@ -221,6 +222,7 @@ impl HttpsPool {
         scope: Option<&str>,
         fresh: bool,
         may_retry: bool,
+        tag: Option<String>,
     ) -> Result<HttpLease, (Failure, Phase)> {
         let started = Instant::now();
         let identity = scope.map_or(Identity::Https, |scope| Identity::HttpsScoped(scope.into()));
@@ -228,6 +230,7 @@ impl HttpsPool {
         request.connect_timeout_ms = Some(connect_ms);
         request.allocation_timeout_ms = Some(allocation_ms);
         request.fresh = fresh;
+        request.tag = tag;
         let lease = self.lease(request.clone(), cancel).await?;
         match self.adopt(lease, started)? {
             Adopted::Lease(mut lease) => {

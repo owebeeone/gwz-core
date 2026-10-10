@@ -193,9 +193,13 @@ pub(super) fn run<C>(
             policy.allocation_timeout_ms = Some(d.allocation_ms as u64);
             policy.connect_timeout_ms = Some(d.connect_ms as u64);
             policy.interaction_timeout_ms = Some(d.interaction_ms as u64);
-            // An open for a connection that is closing waits for it, once.
-            if let Some(until) =
-                claim_closing(&mut active, &request.key, &policy.identity, serial, now)
+            policy.tag = request.tag.clone();
+            // An open for a connection that is closing waits for it, once; a
+            // test of the site's limit does not, for it needs a connection of
+            // its own at once (§4.7).
+            if !request.carrier
+                && let Some(until) =
+                    claim_closing(&mut active, &request.key, &policy.identity, serial, now)
             {
                 deferred.push(Deferred {
                     request,

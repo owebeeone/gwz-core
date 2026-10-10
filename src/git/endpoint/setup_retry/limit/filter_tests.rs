@@ -114,15 +114,13 @@ fn a_refusal_with_nothing_else_counted_is_the_retry_machines() {
 fn at_max_retries_zero_a_conclusive_refusal_only_sets_the_hold() {
     // Case 11, §5.3: no decrease and no confirmation; hi = 0 is still the
     // retry machine's.
-    for signal in [Throttle, Suspect] {
-        let mut r = refusal(Ordinary, signal, 32, 0, 31);
-        r.adaptive = false;
-        assert_eq!(evidence(&r), Evidence::HoldOnly);
-        r.hi = 0;
-        assert_eq!(evidence(&r), Evidence::RetryMachine);
-        r.hi = 40;
-        assert_eq!(evidence(&r), Evidence::Inconclusive);
-    }
+    let mut r = refusal(Ordinary, Throttle, 32, 0, 31);
+    r.adaptive = false;
+    assert_eq!(evidence(&r), Evidence::HoldOnly);
+    r.hi = 0;
+    assert_eq!(evidence(&r), Evidence::RetryMachine);
+    r.hi = 40;
+    assert_eq!(evidence(&r), Evidence::Inconclusive);
 }
 
 #[test]
@@ -152,4 +150,19 @@ fn a_refused_test_is_judged_by_fairness_not_by_hi_or_signal() {
             Evidence::RetryMachine
         );
     }
+}
+
+#[test]
+fn p3_2_without_adaptation_a_suspect_is_the_retry_machines_whatever_its_window() {
+    // `--max-retries 0`: nothing can be tested, so a Suspect is not evidence.
+    // The retry machine counts it as it did before the limit machine existed.
+    for (target, hi) in [(32, 5), (4, 31), (32, 0)] {
+        let mut stalled = refusal(Ordinary, Suspect, target, 0, hi);
+        stalled.adaptive = false;
+        assert_eq!(evidence(&stalled), Evidence::RetryMachine, "{target} {hi}");
+    }
+    // A throttle still holds, and nothing more.
+    let mut throttled = refusal(Ordinary, Throttle, 32, 0, 5);
+    throttled.adaptive = false;
+    assert_eq!(evidence(&throttled), Evidence::HoldOnly);
 }

@@ -335,10 +335,8 @@ fn a_probe_fills_to_n_waits_for_quiet_then_tests_n_plus_one() {
     let probe = rig.go(Start::Probe);
     assert_eq!(rig.target, 9);
     assert_eq!(rig.limit.state(), State::Probing);
-    assert!(rig.limit.is_test_carrier(probe.0), "never deferred");
     assert!(!rig.limit.admits_ordinary(500) && rig.plan().is_none());
     assert_eq!(rig.refuse(probe, Throttle), Ruling::RefusedTest);
-    assert!(!rig.limit.is_test_carrier(probe.0));
     assert_eq!((rig.limit.n(), rig.limit.state()), (8, State::Stable));
     assert_eq!(
         rig.limit.next_deadline(500),

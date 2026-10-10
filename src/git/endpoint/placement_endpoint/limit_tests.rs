@@ -272,3 +272,53 @@ fn at_max_retries_zero_a_refused_member_finishes_at_once_and_nothing_adapts() {
     assert!(!view.confirmation);
     endpoint.shutdown();
 }
+
+#[test]
+fn p3_2_at_max_retries_zero_a_dead_host_costs_one_wave_not_one_timeout_per_member() {
+    // Six members, two at a time: the first wave's failures are the retry
+    // machine's (the budget is spent at once), which closes the key and
+    // finishes the other four without a handshake.
+    let (mut endpoint, starts) = endpoint(refused(), Some(Duration::from_millis(30)), 2, 0);
+    let mut terminals = Vec::new();
+    for id in 1..=6 {
+        endpoint.accept(OPERATION.into(), open(id, 30_000)).unwrap();
+    }
+    let begun = Instant::now();
+    while terminals.len() < 6 {
+        assert!(begun.elapsed() < Duration::from_secs(10), "never finished");
+        step(&mut endpoint, 0, &mut terminals);
+    }
+    assert_eq!(*starts.lock().unwrap(), 2);
+    endpoint.shutdown();
+}
+
+#[test]
+fn p2_7_a_request_cancelled_with_an_open_in_flight_leaves_no_machine_behind() {
+    let (mut endpoint, _) = endpoint(stall(), None, 4, 3);
+    let mut terminals = Vec::new();
+    endpoint.accept(OPERATION.into(), open(1, 30_000)).unwrap();
+    until(&mut endpoint, 0, &mut terminals, |endpoint| {
+        endpoint
+            .endpoint
+            .governor()
+            .scoped(OPERATION)
+            .view(&site_key(), endpoint.endpoint.pool_now())
+            .is_some_and(|view| view.possible == 1)
+    });
+    endpoint.cancel_request(OPERATION);
+    // The next passes report demand and give tests back for the abandoned
+    // open: neither may bring its operation back.
+    for now in [1, 2, 3] {
+        step(&mut endpoint, now, &mut terminals);
+    }
+    assert!(
+        !endpoint
+            .endpoint
+            .governor()
+            .scoped(OPERATION)
+            .view(&site_key(), endpoint.endpoint.pool_now())
+            .is_some(),
+    );
+    assert_eq!(endpoint.pool().limit(&site_key().site()), None);
+    endpoint.shutdown();
+}

@@ -150,6 +150,29 @@ impl Client {
             }
         }
     }
+    /// A connect failed: if it looks like the host's limit, the site's machine
+    /// judges it on that connection's own window, and the ruling is what the
+    /// endpoint acts on (§4.8).
+    pub(super) fn judge_setup(
+        &self,
+        operation: &str,
+        destination: &Destination,
+        member: &str,
+        failed: &Failure,
+    ) -> Option<Rejection> {
+        let signal = setup_retry::suspect(failed, setup_retry::Phase::Setup, false)?;
+        let key = Key::https(destination.host(), destination.port());
+        let ruling = self.pool.governor().scoped(operation).setup_failed(
+            &key,
+            member,
+            signal,
+            self.pool.now(),
+        );
+        Some(Rejection {
+            throttled: false,
+            ruling,
+        })
+    }
     /// A response arrived on `prepared`'s connection: tells the machines.
     pub(super) fn tell_governor(
         &self,

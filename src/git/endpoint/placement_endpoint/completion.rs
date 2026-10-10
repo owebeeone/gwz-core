@@ -133,15 +133,6 @@ impl PlacementEndpoint {
                 continue;
             };
             let job = self.opens.swap_remove(index);
-            if job.carries_test {
-                // A test that began a connection of its own was taken by the
-                // host; one that leased an idle connection, or never
-                // connected, is given back (§4.9).
-                self.endpoint
-                    .governor()
-                    .scoped(&job.key.0)
-                    .test_unused(&job.pool_key, self.endpoint.pool_now());
-            }
             if job.abandoned {
                 if let Ok((attachment, _)) = result {
                     attachment.cancel();
@@ -225,6 +216,7 @@ impl PlacementEndpoint {
         {
             let ruling = self.endpoint.governor().scoped(&key.0).setup_failed(
                 &pool_key,
+                &key.1.to_string(),
                 signal,
                 self.endpoint.pool_now(),
             );

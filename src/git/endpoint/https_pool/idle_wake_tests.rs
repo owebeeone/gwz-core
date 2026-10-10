@@ -198,6 +198,7 @@ fn a_fresh_retry_after_a_dead_lease_is_served_promptly() {
                 None,
                 true,
                 true,
+                None,
             ),
         )
         .await

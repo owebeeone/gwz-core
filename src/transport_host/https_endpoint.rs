@@ -68,7 +68,7 @@ struct Entry {
     /// The attempts the open has started, against `--max-retries + 1` (§5.3).
     attempts: u32,
     /// The attempt in flight carries a test of the site's limit (§4.7).
-    carries_test: bool,
+    carries_test: Option<crate::git::endpoint::setup_retry::TestToken>,
     /// The facts of the open's attempts so far, which its one reply carries:
     /// progress on its diagnostic row (the retry plan's §5).
     facts: Option<Facts>,
@@ -339,7 +339,7 @@ impl HttpsEndpoint {
                 pool_key,
                 held: Some(held),
                 attempts: 0,
-                carries_test: false,
+                carries_test: None,
                 facts: None,
             },
         );

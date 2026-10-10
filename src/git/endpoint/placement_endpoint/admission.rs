@@ -215,9 +215,9 @@ impl PlacementEndpoint {
                 // full (§4.5, §4.7): never a probe on its final attempt.
                 let final_attempt = queued.attempts >= self.retries.max_retries(&queued.key.0);
                 let idle = self.idle_may_exist(&queued.pool_key, &admission);
-                let mut carries_test = false;
+                let mut carries_test = None;
                 if !(admission.gate_open && (admission.room || idle))
-                    && let Some(target) =
+                    && let Some((target, token)) =
                         governor.start_test(&queued.pool_key, final_attempt, pool_now)
                 {
                     admission = Admission {
@@ -225,7 +225,7 @@ impl PlacementEndpoint {
                         target,
                         ..admission
                     };
-                    carries_test = true;
+                    carries_test = Some(token);
                 }
                 if !admission.gate_open {
                     // Behind a hold of its site (§5.2): the wait is the
@@ -239,7 +239,7 @@ impl PlacementEndpoint {
                 // Below the ceiling a member that cannot lease an idle
                 // connection waits for room in the endpoint, where its
                 // allocation clock stops (§5.2), not in the pool.
-                if !carries_test && !admission.room && !idle {
+                if carries_test.is_none() && !admission.room && !idle {
                     queued.allocation.stop(now);
                     self.queued_opens.push_back(queued);
                     return Ok(());
@@ -247,9 +247,6 @@ impl PlacementEndpoint {
                 if left > 0 && self.admits_open(&queued.pool_key, admission.target) {
                     self.start_attempt(queued, now, left, carries_test);
                     return Ok(());
-                }
-                if carries_test {
-                    governor.test_unused(&queued.pool_key, pool_now);
                 }
                 if left == 0 {
                     self.fail_open(&queued.key, setup_retry::allocation_timeout());
@@ -263,7 +260,13 @@ impl PlacementEndpoint {
 
     /// One attempt of `queued`'s open, with the allocation it has `left` and
     /// fresh network clocks.
-    fn start_attempt(&mut self, queued: QueuedOpen, now: u64, left: u64, carries_test: bool) {
+    fn start_attempt(
+        &mut self,
+        queued: QueuedOpen,
+        now: u64,
+        left: u64,
+        carries_test: Option<setup_retry::TestToken>,
+    ) {
         let QueuedOpen {
             key,
             pool_key,
@@ -307,13 +310,20 @@ impl PlacementEndpoint {
         };
         // The worker owns the open until it replies. No thread or supervised
         // job waits for it, so opens leave the job budget to their setups.
-        match self.endpoint.start_endpoint_open(
+        let tag = self
+            .endpoint
+            .governor()
+            .scoped(&key.0)
+            .tag(&key.1.to_string());
+        match self.endpoint.start_endpoint_open_tagged(
             pool_key.clone(),
             selected,
             native_service(open.service),
             &open.destination.path,
             context,
             cancelled.clone(),
+            Some(tag),
+            carries_test.is_some(),
         ) {
             Ok(reply) => self.opens.push(OpenJob {
                 key,

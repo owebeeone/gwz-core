@@ -140,11 +140,4 @@ impl Windows {
             winding_down: window.winding_down,
         })
     }
-    /// Whether `attempt` is a test carrier: an admitted open the SSH worker's
-    /// background-close deferral must never defer.
-    pub(crate) fn is_test_carrier(&self, attempt: AttemptId) -> bool {
-        self.open
-            .get(&attempt)
-            .is_some_and(|window| window.kind.is_test())
-    }
 }

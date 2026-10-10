@@ -183,26 +183,6 @@ fn a_background_close_leaves_the_window_fair_until_the_connection_is_discarded()
 }
 
 #[test]
-fn a_test_carrier_is_known_while_its_window_is_open() {
-    let mut key = Key::new(1);
-    let kinds = [
-        (AttemptKind::Ordinary, false),
-        (AttemptKind::Probe, true),
-        (AttemptKind::Confirming, true),
-        (AttemptKind::Restore, false),
-    ];
-    for (n, (kind, test)) in kinds.into_iter().enumerate() {
-        let n = n as u64 + 1;
-        key.start(n, 100 + n, kind);
-        assert_eq!(kind.is_test(), test);
-        assert_eq!(key.windows.is_test_carrier(AttemptId(n)), test, "{kind:?}");
-        key.result(n);
-        assert!(!key.windows.is_test_carrier(AttemptId(n)), "closed");
-    }
-    assert!(!key.windows.is_test_carrier(AttemptId(99)), "unknown");
-}
-
-#[test]
 fn an_attempt_has_one_window_and_closing_an_unknown_one_returns_nothing() {
     let mut key = Key::new(1);
     key.start(1, 10, AttemptKind::Ordinary);

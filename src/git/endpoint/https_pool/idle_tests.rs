@@ -204,6 +204,7 @@ fn the_retry_after_a_dead_lease_is_fresh_and_leaves_another_idle_connection_alon
                     None,
                     false,
                     true,
+                    None,
                 )
                 .await
                 .unwrap();
@@ -240,6 +241,7 @@ fn a_dead_lease_is_not_retried_by_an_open_that_has_retried() {
                     None,
                     false,
                     false,
+                    None,
                 )
                 .await;
             let (failure, _) = failed.err().expect("no second retry");

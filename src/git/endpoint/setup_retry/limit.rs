@@ -41,7 +41,7 @@ mod windows;
 pub(crate) use control::Ruling;
 pub(crate) use filter::Signal;
 pub(crate) use fsm::State;
-pub(crate) use governor::{Admission, Conn, Governor, Scoped, View};
+pub(crate) use governor::{Admission, Conn, Governor, Scoped, TestToken, View, label};
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {

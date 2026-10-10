@@ -153,6 +153,10 @@ impl Client {
                 .unwrap_or_else(|p| p.into_inner())
                 .basic_get(&key);
         let mut hops = 0;
+        // This attempt's member for the limit machines: its first connect's
+        // request carries the tag, and a refusal of that connect is judged on
+        // that connection's own window (§4.8).
+        let member = format!("a{}", self.attempts.fetch_add(1, Ordering::Relaxed));
         let mut credential_offered = false;
         // The next checkout must open a new connection: a reused one died
         // before this hop's request was started (§6.1 (b) of
@@ -233,6 +237,7 @@ impl Client {
                         .or_else(|| native_route.as_ref().map(|auth| auth.scope.as_str())),
                     std::mem::take(&mut fresh),
                     !retried,
+                    first.then(|| self.pool.governor().scoped(&input.operation).tag(&member)),
                 );
                 let checkout = match budget.logical_deadline {
                     Some(until) => tokio::time::timeout_at(until, checkout)
@@ -240,16 +245,25 @@ impl Client {
                         .unwrap_or_else(|_| Err((failure(ErrorCode::Timeout), Phase::Other))),
                     None => checkout.await,
                 };
-                let lease = checkout.map_err(|(error, phase)| {
-                    let mut failed = with_facts(error.code, error.effect, &facts);
-                    if first {
-                        failed.setup_cause = error.setup_cause;
-                        if phase == Phase::Setup {
-                            *connect = FirstConnect::Failed;
+                let lease = match checkout {
+                    Ok(lease) => lease,
+                    Err((error, phase)) => {
+                        let mut failed = with_facts(error.code, error.effect, &facts);
+                        if first {
+                            failed.setup_cause = error.setup_cause;
+                            if phase == Phase::Setup {
+                                *connect = FirstConnect::Failed;
+                                *refusal = self.judge_setup(
+                                    &input.operation,
+                                    &destination,
+                                    &member,
+                                    &failed,
+                                );
+                            }
                         }
+                        return Err(failed);
                     }
-                    failed
-                })?;
+                };
                 if first && !lease.reused {
                     *connect = FirstConnect::Connected;
                 }

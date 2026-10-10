@@ -101,7 +101,7 @@ pub(super) fn port(server: &fixture::Server) -> u16 {
 
 /// Accepts each connection and closes it at once, before TLS, so that each
 /// setup fails with `Io`; counts the connections.
-fn closing() -> (u16, Arc<AtomicUsize>) {
+pub(super) fn closing() -> (u16, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let accepted = Arc::new(AtomicUsize::new(0));
@@ -184,15 +184,27 @@ fn a_dead_keys_first_wave_is_its_per_host_limit_and_then_one_probe_at_a_time() {
         // Nothing connects before the wake, 1 s after that attempt.
         assert!(settle(&mut endpoint, 999).await.is_empty());
         assert_eq!(accepted.load(Ordering::Acquire), 3);
-        // One probe at the wake, attempt 2, and then a 2 s wait.
-        assert!(settle(&mut endpoint, 1_000).await.is_empty());
+        // One probe at the wake, attempt 2, and then a 2 s wait. Its carrier
+        // has now made three attempts, `--max-retries 2` of them, so it
+        // finishes with its own failure (§5.3) and the key goes on.
+        let early = settle(&mut endpoint, 1_000).await;
         assert_eq!(accepted.load(Ordering::Acquire), 4);
+        assert_eq!(early.len(), 1);
+        let count = early[0]
+            .open_failed
+            .as_ref()
+            .unwrap()
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.retry_attempt.as_ref())
+            .unwrap();
+        assert_eq!((count.attempt, count.attempts), (3, 3));
         assert!(settle(&mut endpoint, 2_999).await.is_empty());
         assert_eq!(accepted.load(Ordering::Acquire), 4);
         // Attempt 3 is R + 1: its failure finishes every open on the key.
         let finished = settle(&mut endpoint, 3_000).await;
         assert_eq!(accepted.load(Ordering::Acquire), 5);
-        assert_eq!(finished.len(), 6);
+        assert_eq!(finished.len(), 5);
         for message in &finished {
             let count = message
                 .open_failed

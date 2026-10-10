@@ -91,7 +91,7 @@ struct OpenJob {
     /// `--max-retries + 1` (§5.3).
     attempts: u32,
     /// This attempt carries a test of the site's limit (§4.7).
-    carries_test: bool,
+    carries_test: Option<setup_retry::TestToken>,
 }
 struct QueuedOpen {
     key: RequestKey,

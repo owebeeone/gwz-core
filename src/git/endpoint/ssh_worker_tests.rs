@@ -58,6 +58,8 @@ fn queued_expiry_releases_admission_without_stopping_worker() {
         permits.fetch_add(1, Ordering::SeqCst);
         sender
             .send(OpenRequest {
+                tag: None,
+                carrier: false,
                 progress: Default::default(),
                 setup_slot: Arc::default(),
                 key: Key::ssh("git", "host", 22),
@@ -209,6 +211,8 @@ fn an_open_cancelled_while_connecting_fails_cancelled_whichever_pass_sees_it() {
     let (reply, result) = mpsc::sync_channel(1);
     sender
         .send(OpenRequest {
+            tag: None,
+            carrier: false,
             progress: Default::default(),
             setup_slot: Arc::default(),
             key: Key::ssh("git", "host", 22),

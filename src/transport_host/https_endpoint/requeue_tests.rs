@@ -3,7 +3,7 @@
 //! §5.1, §5.3 and §10.2 cases 1, 9 and 43). The server is the fixture's, with
 //! a rule for which connection it answers.
 use super::{
-    retry_tests::{code, endpoint, open, port, runtime, settle, shut},
+    retry_tests::{closing, code, endpoint, open, port, runtime, settle, shut},
     *,
 };
 use crate::git::endpoint::{
@@ -252,6 +252,68 @@ fn a_limit_is_found_tested_for_the_command_and_climbed_when_it_lifts() {
                 .all(|m| m.kind == MessageKind::Opened)
         );
         assert_eq!(replies(&published).len(), 4);
+        shut(&mut endpoint).await;
+    });
+}
+
+#[test]
+fn p2_6_the_retry_machines_retry_never_takes_a_member_past_its_budget() {
+    runtime().block_on(async {
+        // The dead-key scenario at `--max-retries 2`: three attempts allowed.
+        let (port, _accepted) = closing();
+        let mut endpoint = endpoint(
+            crate::git::endpoint::https_connection::Config::default(),
+            2,
+            2,
+        );
+        for stream in 1..=6 {
+            endpoint
+                .accept("request".into(), open(stream, port, 900))
+                .unwrap();
+        }
+        let mut worst = 0;
+        for now in [0u64, 999, 1_000, 2_999, 3_000] {
+            settle(&mut endpoint, now).await;
+            for entry in endpoint.entries.values() {
+                // An open that is held again after its last attempt would start
+                // an attempt above the budget.
+                worst = worst
+                    .max(entry.attempts + u32::from(entry.attempts >= 3 && entry.held.is_some()));
+            }
+        }
+        assert!(
+            worst <= 3,
+            "a member made {worst} attempts at --max-retries 2"
+        );
+        shut(&mut endpoint).await;
+    });
+}
+
+#[test]
+fn p2_8_a_lone_bare_429_is_not_retried_without_a_wait() {
+    runtime().block_on(async {
+        let (server, requests) = server(Arc::new(|_, _| 429)).await;
+        let port = port(&server);
+        let mut endpoint = endpoint(server.config(), 8, 3);
+        endpoint
+            .accept("request".into(), open(1, port, 30_000))
+            .unwrap();
+        let begun = tokio::time::Instant::now();
+        let mut published = Vec::new();
+        collect(
+            &mut endpoint,
+            Duration::from_secs(10),
+            &mut published,
+            |p| !replies(p).is_empty(),
+        )
+        .await;
+        assert_eq!(code(replies(&published)[0]), ErrorCode::Capacity);
+        assert_eq!(requests.load(Ordering::SeqCst), 4);
+        assert!(
+            begun.elapsed() >= Duration::from_millis(1_400),
+            "three waits of T0 = 500 ms between four attempts: {:?}",
+            begun.elapsed()
+        );
         shut(&mut endpoint).await;
     });
 }

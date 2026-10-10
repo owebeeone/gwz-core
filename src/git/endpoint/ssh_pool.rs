@@ -49,6 +49,19 @@ pub(crate) enum Seen {
 /// back into the host.
 pub(crate) trait Observer: Send + Sync {
     fn seen(&self, key: &Key, connection: ConnectionId, seen: Seen, now: u64);
+    /// The connect began. `tag` is the tag of the request that opened the
+    /// connection, which names the member it serves. An observer that reads
+    /// no tags takes it as `Seen::Started`.
+    fn started(
+        &self,
+        key: &Key,
+        connection: ConnectionId,
+        _tag: Option<&str>,
+        clocked: bool,
+        now: u64,
+    ) {
+        self.seen(key, connection, Seen::Started { clocked }, now);
+    }
 }
 
 /// The open a connection's setup serves: where the setup reports progress,
@@ -455,6 +468,7 @@ impl<C: Connector> PoolHost<C> {
                     key,
                     identity,
                     network_deadline,
+                    tag,
                 } => match catch_unwind(AssertUnwindSafe(|| {
                     let mut reported = opening(connection);
                     if let Some(remaining) = self.driver.opening_allocation_remaining(connection) {
@@ -503,15 +517,15 @@ impl<C: Connector> PoolHost<C> {
                     }
                     Ok(result) => match result {
                         Ok((resource, setup)) => {
-                            notify(
-                                &self.observer,
-                                self.now,
-                                &key,
-                                connection,
-                                Seen::Started {
-                                    clocked: network_deadline.is_some(),
-                                },
-                            );
+                            if let Some(observer) = &self.observer {
+                                observer.started(
+                                    &key,
+                                    connection,
+                                    tag.as_deref(),
+                                    network_deadline.is_some(),
+                                    self.now,
+                                );
+                            }
                             self.entries.insert(
                                 connection,
                                 Entry {

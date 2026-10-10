@@ -25,20 +25,32 @@
 //! one capacity (a different one is refused), so their ceilings agree; their
 //! flags and budgets need not.
 //!
-//! **An attempt is its connection.** A new connection's attempt begins at the
-//! socket connect the host reports (§4.3: the window runs from the connect)
-//! and a leased exchange's at `exchange_begins`; both are keyed by the pool's
-//! connection id, which is also the machine's. The pool enforces the number
-//! of connections; the endpoints consult only the gate (a hold, a
-//! confirmation, a test in flight) and the number, so an open that can lease
-//! an idle connection is never held by a count.
+//! **The site's connections are not an operation's.** The governor keeps one
+//! table of the connections on each site, fed by every event whether or not
+//! any operation is live; a machine starts from a copy of it, so an operation
+//! that begins while connections exist (another operation's, or the last
+//! one's, left idle) sees what the server holds.
+//!
+//! **An attempt is its connection, and a connection is tagged with its member.**
+//! A new connection's attempt begins at the socket connect the host reports
+//! (§4.3: the window runs from the connect) and a leased exchange's at
+//! `exchange_begins`; both are keyed by the pool's connection id, which is also
+//! the machine's. The request that opened a connection carries a tag naming
+//! its operation and member ([`label`]), which the pool hands back on the
+//! connect: that is how an armed test is taken only by its own operation's
+//! connection, and how a failed setup is judged on its own window, by the
+//! member whose endpoint reports it, whether the host has seen the connect end
+//! yet or not. The pool enforces the number of connections; the endpoints
+//! consult only the gate (a hold, a confirmation, a test in flight) and the
+//! number, so an open that can lease an idle connection is never held by a
+//! count.
 
 use super::{
     control::{Action, Limit, Outcome},
     fsm::State,
     hold::Hold,
     notes::Note,
-    states::{ConnEvent, ConnId},
+    states::{ConnEvent, ConnId, Table},
     timer::Spread,
     windows::{AttemptId, AttemptKind, Own},
 };
@@ -48,12 +60,26 @@ use gwz_transport::{
     protocol::Scheme,
 };
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, Mutex, MutexGuard},
 };
 
 /// Notes kept for the reader that drains them (§9); the oldest are dropped.
 const NOTES_KEPT: usize = 64;
+
+/// How long a setup the host saw end waits for its endpoint's word before it
+/// counts as an attempt that ended with no verdict.
+const ENDED_TTL_MS: u64 = 1_000;
+
+/// The tag a request carries to its connection: the operation it belongs to
+/// and the member it serves.
+pub(crate) fn label(operation: &str, member: &str) -> String {
+    format!("{operation}\u{1f}{member}")
+}
+fn operation_of(tag: &str) -> &str {
+    tag.split_once('\u{1f}')
+        .map_or(tag, |(operation, _)| operation)
+}
 
 /// What an endpoint needs to start something on a site.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,15 +117,9 @@ pub(super) struct Slot {
     pub(super) limit: Limit,
     /// The attempts that are exchanges on a leased connection.
     pub(super) leased: BTreeSet<u64>,
-    /// Setups the host saw end, oldest first, with when: each waits for its
-    /// endpoint to say why it failed (`Scoped::setup_failed`), since only the
-    /// endpoint holds the failure. The window stopped where the setup ended.
-    pub(super) ended: VecDeque<(u64, u64)>,
+    /// Whether the machine wants the pool to evict nothing on the site.
+    pub(super) suppress: bool,
 }
-
-/// How long an ended setup waits for its endpoint's word before it counts as
-/// an attempt that ended with no verdict.
-const ENDED_TTL_MS: u64 = 1_000;
 
 /// One operation's machines.
 pub(super) struct Scope {
@@ -109,14 +129,39 @@ pub(super) struct Scope {
     pub(super) notes: Vec<(Site, Note)>,
 }
 
+/// Where a connection stands for the one who judges its setup.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Stage {
+    /// Setting up; its member's endpoint may report a failure at any time.
+    Live,
+    /// The host saw the setup end at this time; the report is still to come.
+    Ended(u64),
+    /// Its member's endpoint reported first and the machine judged it then.
+    Judged,
+    /// Set up.
+    Up,
+}
+pub(super) struct Info {
+    pub(super) tag: Option<String>,
+    pub(super) stage: Stage,
+    pub(super) started: u64,
+}
+
+/// What the server holds on one site, whoever's it is.
+pub(super) struct SiteState {
+    pub(super) site: Site,
+    pub(super) table: Table,
+    pub(super) conns: BTreeMap<u64, Info>,
+}
+
 pub(super) struct Book {
     /// What an operation not yet begun is given (the pool's own cap).
     default_ceiling: usize,
-    default_adaptive: bool,
     spread: Box<dyn Fn() -> Spread + Send + Sync>,
     pub(super) scopes: BTreeMap<String, Scope>,
-    /// What the pool was last told for each site: `(limit, settle ms)`.
-    applied: Vec<(Site, (usize, u64))>,
+    pub(super) sites: Vec<SiteState>,
+    /// What the pool was last told for each site: limit, settle ms, no-evict.
+    applied: Vec<(Site, (usize, u64, bool))>,
     /// Holds still in force when their operation ended: the server's word
     /// outlasts the operation that heard it.
     held_over: Vec<(Site, Hold)>,
@@ -136,6 +181,39 @@ pub(crate) struct Scoped {
     pub(super) operation: String,
 }
 
+/// A started test, which the carrier holds until it has a connection of its
+/// own or ends: dropping it gives the test back if it was never taken, on
+/// every exit, so a carrier that fails before reaching the pool cannot leave
+/// the site's gate shut (§5.2).
+#[must_use = "dropping the token gives the test back"]
+pub(crate) struct TestToken {
+    governor: Governor,
+    operation: String,
+    site: Site,
+    arm: u64,
+}
+impl TestToken {
+    pub(super) fn new(governor: &Governor, operation: &str, site: Site, arm: u64) -> Self {
+        Self {
+            governor: governor.clone(),
+            operation: operation.to_owned(),
+            site,
+            arm,
+        }
+    }
+}
+impl Drop for TestToken {
+    fn drop(&mut self) {
+        let mut book = self.governor.book();
+        if let Some(scope) = book.scopes.get_mut(&self.operation)
+            && let Some(slot) = scope.slots.iter_mut().find(|slot| slot.site == self.site)
+        {
+            slot.limit.disarm(self.arm);
+        }
+        self.governor.reconcile(&mut book, &self.site);
+    }
+}
+
 /// A pool connection as the machine names it: the pool's sequence number,
 /// which is unique within one pool, and a governor serves one pool.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -153,24 +231,37 @@ impl Conn {
 }
 
 impl Book {
-    /// The scope of `operation`, made with the defaults on first use.
-    pub(super) fn scope(&mut self, operation: &str) -> &mut Scope {
-        let (ceiling, adaptive) = (self.default_ceiling, self.default_adaptive);
-        self.scopes
-            .entry(operation.to_owned())
-            .or_insert_with(|| Scope::new(ceiling, adaptive))
+    /// The index of `site`'s state, made on its first event.
+    pub(super) fn default_ceiling(&self) -> usize {
+        self.default_ceiling
+    }
+    pub(super) fn site_index(&mut self, site: &Site) -> usize {
+        if let Some(index) = self.sites.iter().position(|state| &state.site == site) {
+            return index;
+        }
+        self.sites.push(SiteState {
+            site: site.clone(),
+            table: Table::new(),
+            conns: BTreeMap::new(),
+        });
+        self.sites.len() - 1
     }
 
     /// The index of `site`'s slot in `operation`'s scope, made on first use.
-    /// A new machine inherits any hold in force on the site: from the other
-    /// live operations, or one an ended operation left.
-    pub(super) fn slot(&mut self, operation: &str, site: &Site, now: u64) -> usize {
-        let scope = self.scope(operation);
+    /// `None` when the operation is not live: a scope is made only by
+    /// `begin_operation`, so a late report for an ended one revives nothing.
+    /// A new machine starts from the site's table, and inherits any hold in
+    /// force on the site: from the other live operations, or one an ended
+    /// operation left.
+    pub(super) fn slot(&mut self, operation: &str, site: &Site, now: u64) -> Option<usize> {
+        let scope = self.scopes.get(operation)?;
         if let Some(index) = scope.slots.iter().position(|slot| &slot.site == site) {
-            return index;
+            return Some(index);
         }
         let (ceiling, adaptive) = (scope.ceiling, scope.adaptive);
         let mut limit = Limit::new(ceiling, adaptive, (self.spread)());
+        let seeded = self.site_index(site);
+        limit.seed(self.sites[seeded].table.clone());
         let live = self
             .scopes
             .values()
@@ -185,22 +276,36 @@ impl Book {
         if let Some(hold) = live.or(left) {
             limit.restore_hold(hold);
         }
-        let scope = self.scope(operation);
+        let scope = self.scopes.get_mut(operation)?;
         scope.slots.push(Slot {
             site: site.clone(),
             limit,
             leased: BTreeSet::new(),
-            ended: VecDeque::new(),
+            suppress: false,
         });
-        scope.slots.len() - 1
+        Some(scope.slots.len() - 1)
+    }
+
+    /// Every live operation's slot on `site`, as `(operation, index)`.
+    pub(super) fn slots_on(&self, site: &Site) -> Vec<(String, usize)> {
+        self.scopes
+            .iter()
+            .flat_map(|(name, scope)| {
+                scope
+                    .slots
+                    .iter()
+                    .position(|slot| &slot.site == site)
+                    .map(|index| (name.clone(), index))
+            })
+            .collect()
     }
 }
 
 impl Scope {
-    fn new(ceiling: usize, adaptive: bool) -> Self {
+    fn new(ceiling: usize) -> Self {
         Self {
             ceiling,
-            adaptive,
+            adaptive: false,
             slots: Vec::new(),
             notes: Vec::new(),
         }
@@ -208,23 +313,21 @@ impl Scope {
 }
 
 impl Governor {
-    /// A governor over the pool `control` reaches. An operation that was never
-    /// begun gets `ceiling`, the pool's own cap, and `adaptive`, false when no
-    /// refusal may lower `N` (`--max-retries 0`, §5.3). `spread` draws each
+    /// A governor over the pool `control` reaches. `ceiling` is the pool's own
+    /// cap, which an unscoped report is answered with. `spread` draws each
     /// key's probe-timer jitter.
     pub(crate) fn new(
         control: PoolControl,
         ceiling: usize,
-        adaptive: bool,
         spread: impl Fn() -> Spread + Send + Sync + 'static,
     ) -> Self {
         Self {
             control,
             book: Arc::new(Mutex::new(Book {
                 default_ceiling: ceiling,
-                default_adaptive: adaptive,
                 spread: Box::new(spread),
                 scopes: BTreeMap::new(),
+                sites: Vec::new(),
                 applied: Vec::new(),
                 held_over: Vec::new(),
             })),
@@ -232,8 +335,8 @@ impl Governor {
     }
     /// `new`, with the probe timers' jitter drawn from the operating system's
     /// random source.
-    pub(crate) fn random(control: PoolControl, ceiling: usize, adaptive: bool) -> Self {
-        Self::new(control, ceiling, adaptive, Spread::random)
+    pub(crate) fn random(control: PoolControl, ceiling: usize) -> Self {
+        Self::new(control, ceiling, Spread::random)
     }
     pub(super) fn book(&self) -> MutexGuard<'_, Book> {
         self.book.lock().unwrap_or_else(|e| e.into_inner())
@@ -258,8 +361,9 @@ impl Governor {
     ) {
         let mut book = self.book();
         self.drop_scope(&mut book, operation, now);
-        book.scopes
-            .insert(operation.to_owned(), Scope::new(ceiling, adaptive));
+        let mut scope = Scope::new(ceiling);
+        scope.adaptive = adaptive;
+        book.scopes.insert(operation.to_owned(), scope);
         // The pool's numbers may have been cleared by the capacity install
         // that admitted this operation: send them again.
         book.applied.clear();
@@ -317,18 +421,12 @@ impl Governor {
             return;
         };
         let slot = &mut scope.slots[index];
-        while let Some(&(conn, at)) = slot.ended.front() {
-            if now.saturating_sub(at) < ENDED_TTL_MS {
-                break;
-            }
-            slot.ended.pop_front();
-            slot.limit.result(AttemptId(conn), Outcome::Ended, now);
-        }
         if slot.limit.tick(now) == Some(Action::DiscardIdle) {
             // One step under the pool's lock, before the hold lifts.
             self.control.discard_idle(&slot.site);
             slot.limit.idle_discarded(now);
         }
+        slot.suppress = slot.limit.closes_suppressed(now);
         let notes = slot.limit.drain_notes();
         let site = slot.site.clone();
         scope
@@ -336,20 +434,62 @@ impl Governor {
             .extend(notes.into_iter().map(|note| (site.clone(), note)));
         let excess = scope.notes.len().saturating_sub(NOTES_KEPT);
         scope.notes.drain(..excess);
+        self.sweep(book, &site, now);
         self.reconcile(book, &site);
     }
 
+    /// Syncs every live operation's slot on `site`.
+    pub(super) fn sync_site(&self, book: &mut Book, site: &Site, now: u64) {
+        for (operation, index) in book.slots_on(site) {
+            self.sync(book, &operation, index, now);
+        }
+    }
+
+    /// A setup the host saw end, whose endpoint never said why, ends its
+    /// attempt with no verdict once its time is up.
+    fn sweep(&self, book: &mut Book, site: &Site, now: u64) {
+        let index = book.site_index(site);
+        let expired: Vec<u64> = book.sites[index]
+            .conns
+            .iter()
+            .filter(|(_, info)| {
+                matches!(info.stage, Stage::Ended(at) if now.saturating_sub(at) >= ENDED_TTL_MS)
+            })
+            .map(|(conn, _)| *conn)
+            .collect();
+        for conn in expired {
+            let info = book.sites[index].conns.remove(&conn);
+            let owner = info.and_then(|info| info.tag);
+            let Some(owner) = owner.as_deref().map(operation_of) else {
+                continue;
+            };
+            if let Some(i) = book.slot(owner, site, now)
+                && let Some(scope) = book.scopes.get_mut(owner)
+            {
+                scope.slots[i]
+                    .limit
+                    .result(AttemptId(conn), Outcome::Ended, now);
+            }
+        }
+    }
+
     /// Tells the pool `site`'s numbers when they changed: the most
-    /// permissive limit and the longest settle of the live machines, or
-    /// nothing when none is left.
-    fn reconcile(&self, book: &mut Book, site: &Site) {
+    /// permissive limit and the longest settle of the live machines, evictions
+    /// stopped if any machine wants them stopped, or nothing when none is left.
+    pub(super) fn reconcile(&self, book: &mut Book, site: &Site) {
         let wanted = book
             .scopes
             .values()
             .flat_map(|scope| &scope.slots)
             .filter(|slot| &slot.site == site)
-            .map(|slot| (slot.limit.pool_limit(), slot.limit.settle_ms()))
-            .reduce(|a, b| (a.0.max(b.0), a.1.max(b.1)));
+            .map(|slot| {
+                (
+                    slot.limit.pool_limit(),
+                    slot.limit.settle_ms(),
+                    slot.suppress,
+                )
+            })
+            .reduce(|a, b| (a.0.max(b.0), a.1.max(b.1), a.2 || b.2));
         let known = book.applied.iter().position(|(applied, _)| applied == site);
         match (wanted, known) {
             (Some(wanted), Some(index)) if book.applied[index].1 != wanted => {
@@ -364,52 +504,134 @@ impl Governor {
                 book.applied.swap_remove(index);
                 self.control.clear_limit(site);
                 let _ = self.control.set_settle(site, 0);
+                let _ = self.control.set_no_evict(site, false);
             }
             _ => {}
         }
     }
 
-    fn tell_pool(&self, site: &Site, (limit, settle_ms): (usize, u64)) {
+    fn tell_pool(&self, site: &Site, (limit, settle_ms, no_evict): (usize, u64, bool)) {
         let _ = self.control.set_limit(site, limit);
         let _ = self.control.set_settle(site, settle_ms);
+        let _ = self.control.set_no_evict(site, no_evict);
     }
 }
 
 impl Observer for Governor {
-    fn seen(&self, key: &Key, connection: ConnectionId, seen: Seen, now: u64) {
+    fn started(
+        &self,
+        key: &Key,
+        connection: ConnectionId,
+        tag: Option<&str>,
+        clocked: bool,
+        now: u64,
+    ) {
         let connection = Conn::of(connection);
         let site = key.site();
         let mut book = self.book();
+        let state = book.site_index(&site);
+        let table = &mut book.sites[state];
+        table
+            .table
+            .apply(connection.id(), ConnEvent::Started { clocked }, now);
+        table.conns.insert(
+            connection.0,
+            Info {
+                tag: tag.map(str::to_owned),
+                stage: Stage::Live,
+                started: now,
+            },
+        );
+        let owner = tag.map(operation_of);
         let operations: Vec<String> = book.scopes.keys().cloned().collect();
         for operation in operations {
-            let index = book.slot(&operation, &site, now);
+            let Some(index) = book.slot(&operation, &site, now) else {
+                continue;
+            };
             let slot = &mut book.scopes.get_mut(&operation).expect("scope").slots[index];
-            let id = connection.id();
-            match seen {
-                Seen::Started { clocked } => {
-                    // A test an endpoint armed for its carrier is this
-                    // connection; any other start is an ordinary one.
-                    let (kind, target) = slot
-                        .limit
-                        .take_armed()
-                        .unwrap_or_else(|| (AttemptKind::Ordinary, slot.limit.pool_limit()));
-                    let began = slot.limit.begin(
-                        connection.attempt(),
-                        kind,
-                        target,
-                        Own::New(id),
-                        clocked,
-                        now,
-                    );
-                    if !began {
-                        slot.limit.conn(id, ConnEvent::Started { clocked }, now);
-                    }
+            // A test an endpoint armed for its carrier is the next connection
+            // that carrier's operation starts; any other start is an ordinary
+            // one, whoever's.
+            let (kind, target) = if owner == Some(operation.as_str()) {
+                slot.limit.take_armed()
+            } else {
+                None
+            }
+            .unwrap_or_else(|| (AttemptKind::Ordinary, slot.limit.pool_limit()));
+            let began = slot.limit.begin(
+                connection.attempt(),
+                kind,
+                target,
+                Own::New(connection.id()),
+                clocked,
+                now,
+            );
+            if !began {
+                slot.limit
+                    .conn(connection.id(), ConnEvent::Started { clocked }, now);
+            }
+            self.sync(&mut book, &operation, index, now);
+        }
+    }
+
+    fn seen(&self, key: &Key, connection: ConnectionId, seen: Seen, now: u64) {
+        let connection = Conn::of(connection);
+        let site = key.site();
+        let id = connection.id();
+        let mut book = self.book();
+        let state = book.site_index(&site);
+        let event = match seen {
+            // HTTPS is set up when its first exchange is answered, which the
+            // endpoint reports; SSH when it is authenticated, which is this.
+            Seen::Started { .. } => return,
+            Seen::Connected if key.scheme.wire() == Scheme::Https.wire() => return,
+            Seen::Connected => ConnEvent::Connected,
+            Seen::SetupEnded => ConnEvent::SetupEnded,
+            Seen::Retired => ConnEvent::Retired,
+            Seen::Closing => ConnEvent::Closing,
+            Seen::ServerClosed => ConnEvent::ServerClosed,
+            Seen::Disposed => ConnEvent::Disposed,
+        };
+        let sites = &mut book.sites[state];
+        sites.table.apply(id, event, now);
+        let mut owner = None;
+        let mut judged = false;
+        let mut connect_ms = None;
+        match (seen, sites.conns.get_mut(&connection.0)) {
+            (Seen::Connected, Some(info)) => {
+                connect_ms = Some(now.saturating_sub(info.started));
+                info.stage = Stage::Up;
+            }
+            (Seen::SetupEnded | Seen::Retired, Some(info)) => {
+                owner = info.tag.as_deref().map(|tag| operation_of(tag).to_owned());
+                judged = info.stage == Stage::Judged;
+                if judged {
+                    sites.conns.remove(&connection.0);
+                } else {
+                    info.stage = Stage::Ended(now);
                 }
-                // HTTPS is set up when its first exchange is answered, which
-                // the endpoint reports; SSH when it is authenticated, which
-                // is this. Authenticated is a fact about the server, so every
+            }
+            (Seen::Closing | Seen::ServerClosed, Some(_)) => {
+                sites.conns.remove(&connection.0);
+            }
+            _ => {}
+        }
+        if let Some(ms) = connect_ms {
+            sites.table.settle_mut().observe_connect(ms);
+        }
+        let operations: Vec<String> = book.scopes.keys().cloned().collect();
+        for operation in operations {
+            let Some(index) = book.slot(&operation, &site, now) else {
+                continue;
+            };
+            let slot = &mut book.scopes.get_mut(&operation).expect("scope").slots[index];
+            if let Some(ms) = connect_ms {
+                slot.limit.connect_time(ms);
+            }
+            match seen {
+                Seen::Started { .. } => {}
+                // Authenticated is a fact about the server, so every
                 // operation's machine takes it as its success.
-                Seen::Connected if key.scheme.wire() == Scheme::Https.wire() => {}
                 Seen::Connected => {
                     slot.limit.conn(id, ConnEvent::Connected, now);
                     slot.limit.result(
@@ -418,24 +640,20 @@ impl Observer for Governor {
                         now,
                     );
                 }
-                // A setup that ended: the server refused it, or the client gave
-                // up on it. The window stops here, and the verdict waits for the
-                // endpoint's failure (`Scoped::setup_failed`).
+                // A setup that ended: the server refused it, or the client
+                // gave up on it. The window stops here, and its member's
+                // endpoint says why (`Scoped::setup_failed`); the others have
+                // no one to say.
                 Seen::SetupEnded | Seen::Retired => {
-                    let event = match seen {
-                        Seen::SetupEnded => ConnEvent::SetupEnded,
-                        _ => ConnEvent::Retired,
-                    };
                     slot.limit.conn(id, event, now);
                     slot.leased.remove(&connection.0);
-                    slot.limit.freeze(connection.attempt());
-                    slot.ended.push_back((connection.0, now));
+                    if owner.as_deref() == Some(operation.as_str()) {
+                        slot.limit.freeze(connection.attempt());
+                    } else {
+                        slot.limit.result(connection.attempt(), Outcome::Ended, now);
+                    }
                 }
                 Seen::Closing | Seen::ServerClosed => {
-                    let event = match seen {
-                        Seen::Closing => ConnEvent::Closing,
-                        _ => ConnEvent::ServerClosed,
-                    };
                     slot.limit.conn(id, event, now);
                     // The connection left with its attempt unanswered: the
                     // attempt ends with no verdict for the machine.
@@ -443,10 +661,11 @@ impl Observer for Governor {
                     slot.limit.result(connection.attempt(), Outcome::Ended, now);
                 }
                 Seen::Disposed => {
-                    slot.limit.conn(id, ConnEvent::Disposed, now);
+                    slot.limit.conn(id, event, now);
                 }
             }
             self.sync(&mut book, &operation, index, now);
         }
+        self.reconcile(&mut book, &site);
     }
 }
