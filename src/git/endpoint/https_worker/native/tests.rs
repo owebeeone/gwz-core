@@ -58,9 +58,6 @@ cfg_if::cfg_if! { if #[cfg(test)] {
         let refused = output.matches("gwz-sspi-private-validator:refuse").count();
         assert_eq!(admitted + refused, 1, "missing or ambiguous real-validator receipt"); admitted == 1
     }
-    // These need the HTTPS fixture server, whose TLS identity schannel cannot load under a key-based
-    // OpenSSH logon (step 0.5b).
-    cfg_if::cfg_if! { if #[cfg(unix)] {
     use hyper::header::WWW_AUTHENTICATE;
     struct FakePort {
         complete: bool,
@@ -136,7 +133,6 @@ cfg_if::cfg_if! { if #[cfg(test)] {
             assert_eq!(prepared.unwrap().opened.facts.authenticated, Some(true));
         });
     }
-    } }
     #[test]
     fn production_binding_shapes_are_admitted_or_refused_by_real_validator() {
         let request = |binding| gwz_sspi::AuthRequest {

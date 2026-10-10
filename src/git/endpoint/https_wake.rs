@@ -44,7 +44,7 @@ impl PoolWake {
     pub(crate) fn poke_on_drop(self: &Arc<Self>) -> PokeOnDrop {
         PokeOnDrop(self.clone())
     }
-    cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+    cfg_if::cfg_if! { if #[cfg(test)] {
         /// The turns the supervisor has taken.
         pub(crate) fn steps(&self) -> u64 {
             self.steps.load(Ordering::Relaxed)

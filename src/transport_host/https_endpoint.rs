@@ -93,7 +93,7 @@ pub(super) struct HttpsEndpoint {
     clock: Clock,
 }
 impl HttpsEndpoint {
-    cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+    cfg_if::cfg_if! { if #[cfg(test)] {
         pub(in crate::transport_host) fn client_for_test(&self) -> Client { self.client.clone() }
     } }
     pub(super) fn pool(&self) -> &pool::Pool {
@@ -522,7 +522,7 @@ fn fail_publication(entry: &mut Entry, message: &mut Envelope, code: ErrorCode) 
         peer.disconnect();
     }
 }
-cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+cfg_if::cfg_if! { if #[cfg(test)] {
     /// tokio's monotonic clock, or the readings a test scripts in its place.
     #[derive(Clone)]
     struct Clock(Option<Arc<dyn Fn() -> tokio::time::Instant + Send + Sync>>);
@@ -567,7 +567,7 @@ fn failed_open(envelope: &Envelope, code: ErrorCode, facts: Option<Facts>) -> En
     }
 }
 
-cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+cfg_if::cfg_if! { if #[cfg(test)] {
     #[path = "cancellation_tests.rs"]
     mod cancellation_tests;
     #[path = "https_cancel_mux_tests.rs"]

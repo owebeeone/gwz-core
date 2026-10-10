@@ -71,7 +71,7 @@ impl Client {
     pub(crate) fn prebuild_tls(&self, runtime: &tokio::runtime::Handle) {
         self.pool.prebuild_tls(runtime);
     }
-    cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+    cfg_if::cfg_if! { if #[cfg(test)] {
         pub(crate) fn tls_builds(&self) -> usize {
             self.pool.tls_builds()
         }
@@ -176,7 +176,7 @@ impl Prepared {
             route.revoke();
         }
     }
-    cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+    cfg_if::cfg_if! { if #[cfg(test)] {
         pub(crate) fn publication_resources_for_test(&self) -> (Arc<native::Authenticated>, Arc<tokio::sync::Mutex<https_connection::Connection>>) {
             (self.native_route.clone().unwrap(), self.lease.as_ref().unwrap().connection.clone().unwrap())
         }
@@ -429,7 +429,8 @@ fn validate_content(response: &Response<Incoming>, service: GitService) -> Resul
 }
 cfg_if::cfg_if! { if #[cfg(all(test, unix))] { #[path="https_worker_tests.rs"] mod tests; } }
 cfg_if::cfg_if! { if #[cfg(all(test, unix))] { #[path="https_budget_tests.rs"] mod budget_tests; } }
-cfg_if::cfg_if! { if #[cfg(all(test, unix))] { mod retry_tests; mod helper_budget_tests; mod credential_tests; mod setup_slot_tests; mod tls_share_tests; mod supervisor_tests; } }
+cfg_if::cfg_if! { if #[cfg(all(test, unix))] { mod retry_tests; mod helper_budget_tests; mod credential_tests; } }
+cfg_if::cfg_if! { if #[cfg(test)] { mod setup_slot_tests; mod tls_share_tests; mod supervisor_tests; } }
 // Needs no HTTPS server, so it runs on Windows too.
 cfg_if::cfg_if! { if #[cfg(test)] { mod close_tests; } }
 

@@ -51,17 +51,25 @@ cfg_if::cfg_if! {
 pub(crate) mod https_operation;
 
 cfg_if::cfg_if! {
-    if #[cfg(all(test, unix))] {
-        mod budget_wait_tests;
+    if #[cfg(test)] {
         pub(crate) mod cut_proxy;
-        mod job_budget_wait_tests;
-        mod git_turns_tests;
-        pub(crate) mod helper_script;
+        // The TLS test servers are rustls, so that they run where the platform's
+        // key store is denied (Windows under a key-based OpenSSH logon).
         pub(crate) mod https_fixture;
         // The HTTPS worker's in-process fixtures: production composes the
         // worker through the transport host's HTTPS endpoint instead.
         pub(crate) mod https_local;
         pub(crate) mod https_opening;
+        pub(crate) mod loopback;
+    }
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(all(test, unix))] {
+        mod budget_wait_tests;
+        mod job_budget_wait_tests;
+        mod git_turns_tests;
+        pub(crate) mod helper_script;
         pub(crate) mod ssh_close_fixture;
         mod ssh_destination_tests;
         pub(crate) mod ssh_fixture;

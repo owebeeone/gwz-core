@@ -244,7 +244,7 @@ impl HttpConnector {
     pub(crate) fn tls(&self) -> SharedTls {
         self.tls.clone()
     }
-    cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+    cfg_if::cfg_if! { if #[cfg(test)] {
         /// How many times this connector built a TLS configuration.
         pub(crate) fn tls_builds(&self) -> usize {
             self.tls.builds()

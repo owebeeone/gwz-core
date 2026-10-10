@@ -4,7 +4,7 @@
 //! that closes it just as the client starts an exchange on it.
 use std::{
     io::{Read, Write},
-    net::{Shutdown, TcpListener, TcpStream},
+    net::{Shutdown, SocketAddr, TcpStream},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -29,6 +29,8 @@ impl Link {
 
 pub(crate) struct CutProxy {
     pub(crate) port: u16,
+    /// The listeners' addresses, which `drop` connects to so that each accept loop sees the stop.
+    wake: Vec<SocketAddr>,
     links: Arc<Mutex<Vec<Link>>>,
     accepted: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
@@ -36,43 +38,50 @@ pub(crate) struct CutProxy {
 
 impl CutProxy {
     pub(crate) fn start(target: u16) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
+        let listeners = super::loopback::bind();
+        let port = listeners[0].local_addr().unwrap().port();
+        let wake = listeners
+            .iter()
+            .map(|listener| listener.local_addr().unwrap())
+            .collect();
         let links = Arc::new(Mutex::new(Vec::new()));
         let accepted = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
-        let (shared, count, stopping) = (links.clone(), accepted.clone(), stop.clone());
-        thread::spawn(move || {
-            for client in listener.incoming() {
-                if stopping.load(Ordering::Acquire) {
-                    break;
+        for listener in listeners {
+            let (shared, count, stopping) = (links.clone(), accepted.clone(), stop.clone());
+            thread::spawn(move || {
+                for client in listener.incoming() {
+                    if stopping.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let Ok(client) = client else {
+                        continue;
+                    };
+                    let Ok(server) = TcpStream::connect(("127.0.0.1", target)) else {
+                        continue;
+                    };
+                    count.fetch_add(1, Ordering::AcqRel);
+                    let armed = Arc::new(AtomicBool::new(false));
+                    let frozen = Arc::new(AtomicBool::new(false));
+                    let link = Link {
+                        client: client.try_clone().unwrap(),
+                        server: server.try_clone().unwrap(),
+                        armed: armed.clone(),
+                        frozen: frozen.clone(),
+                    };
+                    let (upstream, downstream) = (
+                        (client.try_clone().unwrap(), server.try_clone().unwrap()),
+                        (server, client),
+                    );
+                    shared.lock().unwrap().push(link);
+                    thread::spawn(move || forward(upstream.0, upstream.1, Some((armed, frozen))));
+                    thread::spawn(move || forward(downstream.0, downstream.1, None));
                 }
-                let Ok(client) = client else {
-                    continue;
-                };
-                let Ok(server) = TcpStream::connect(("127.0.0.1", target)) else {
-                    continue;
-                };
-                count.fetch_add(1, Ordering::AcqRel);
-                let armed = Arc::new(AtomicBool::new(false));
-                let frozen = Arc::new(AtomicBool::new(false));
-                let link = Link {
-                    client: client.try_clone().unwrap(),
-                    server: server.try_clone().unwrap(),
-                    armed: armed.clone(),
-                    frozen: frozen.clone(),
-                };
-                let (upstream, downstream) = (
-                    (client.try_clone().unwrap(), server.try_clone().unwrap()),
-                    (server, client),
-                );
-                shared.lock().unwrap().push(link);
-                thread::spawn(move || forward(upstream.0, upstream.1, Some((armed, frozen))));
-                thread::spawn(move || forward(downstream.0, downstream.1, None));
-            }
-        });
+            });
+        }
         Self {
             port,
+            wake,
             links,
             accepted,
             stop,
@@ -119,8 +128,10 @@ impl Drop for CutProxy {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
         self.cut_all();
-        // Wake the accept loop so that it sees the stop.
-        let _ = TcpStream::connect(("127.0.0.1", self.port));
+        // Wake the accept loops so that they see the stop.
+        for address in &self.wake {
+            let _ = TcpStream::connect(address);
+        }
     }
 }
 

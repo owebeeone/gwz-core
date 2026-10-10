@@ -403,7 +403,7 @@ impl Drop for Authenticated {
     }
 }
 
-cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+cfg_if::cfg_if! { if #[cfg(test)] {
     pub(crate) fn publication_fixture() -> NativeCaller { tests::publication_caller() }
     impl Authenticated {
         pub(crate) fn revoked_for_test(&self) -> bool { self.revoked.load(Ordering::Acquire) }

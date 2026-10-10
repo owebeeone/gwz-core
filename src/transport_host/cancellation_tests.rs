@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use crate::transport_host::https_tests::fixture;
+use crate::git::endpoint::https_fixture as fixture;
 
 #[test]
 fn cancel_after_opened_is_queued_replaces_opened_with_cancelled_terminal() {

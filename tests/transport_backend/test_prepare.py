@@ -106,6 +106,18 @@ def test_in_process_python_dependency_is_candidate_only(tmp_path):
     assert 'pyo3' not in (ROOT / "Cargo.toml").read_text()
 
 
+def test_tls_test_servers_are_rustls_dev_dependencies_and_product_tls_stays_native(tmp_path):
+    # Step 0.5b: the fixture's servers must not load a platform identity, and the product must not gain rustls.
+    manifest = _manifest(prepare(tmp_path / "backend"))
+    for crate in ("rustls", "tokio-rustls"):
+        assert crate in manifest["dev-dependencies"]
+        assert crate not in manifest["dependencies"]
+    assert manifest["dev-dependencies"]["rustls"]["default-features"] is False
+    assert "ring" in manifest["dev-dependencies"]["rustls"]["features"]
+    assert "native-tls" in manifest["dependencies"]
+    assert "rustls" not in (ROOT / "Cargo.toml").read_text()
+
+
 def test_prepared_path_dependencies_resolve_from_a_fresh_destination(tmp_path):
     destination = prepare(tmp_path / "backend")
     workspace = {destination}

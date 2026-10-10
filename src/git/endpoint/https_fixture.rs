@@ -3,6 +3,7 @@ use super::{
     https_connection, https_policy,
     https_wake::CloseWake,
     https_worker::{Input, Prepared},
+    loopback::Loopback,
 };
 use bytes::Bytes;
 use gwz_transport::{
@@ -12,6 +13,10 @@ use gwz_transport::{
 use http_body_util::Full;
 use hyper::{Request, Response, body::Incoming, service::service_fn};
 use hyper_util::rt::TokioIo;
+use rustls::{
+    ServerConfig,
+    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
+};
 use std::{
     convert::Infallible,
     future::Future,
@@ -27,7 +32,9 @@ use tokio::{
     task::{JoinHandle, JoinSet},
     time::Instant,
 };
+use tokio_rustls::TlsAcceptor;
 use tokio_util::sync::CancellationToken;
+mod tests;
 pub(crate) type Handler = Arc<
     dyn Fn(Request<Incoming>) -> Pin<Box<dyn Future<Output = Response<Full<Bytes>>> + Send>>
         + Send
@@ -46,40 +53,54 @@ impl Drop for Server {
         self.task.abort();
     }
 }
-fn identity() -> (Vec<u8>, Vec<u8>) {
-    static CERT: OnceLock<(Vec<u8>, Vec<u8>)> = OnceLock::new();
-    CERT.get_or_init(||{
-        let dir=tempfile::tempdir().unwrap();
-        let run=|args:&[&str]|{let output=std::process::Command::new("openssl").current_dir(dir.path()).args(args).output().unwrap();assert!(output.status.success(),"fixture certificate command failed");};
+/// The fixture CA (PEM, the bytes a client trusts) and a TLS acceptor over its leaf certificate.
+///
+/// The servers are rustls, not the platform's TLS: schannel loads a server identity through
+/// the user's key store, which Windows denies under a key-based OpenSSH logon (DPAPI and
+/// persisted CAPI and CNG keys: access denied), so a native-tls server cannot run there. The
+/// clients under test stay native-tls, the product's stack, and verify against this CA.
+fn identity() -> (Vec<u8>, TlsAcceptor) {
+    static IDENTITY: OnceLock<(Vec<u8>, Arc<ServerConfig>)> = OnceLock::new();
+    let (ca, config) = IDENTITY.get_or_init(|| {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            let output = std::process::Command::new("openssl").current_dir(dir.path()).args(args).output().expect("the openssl program starts");
+            assert!(output.status.success(), "fixture certificate command failed: openssl {args:?}: {}", String::from_utf8_lossy(&output.stderr));
+        };
         run(&["req","-x509","-newkey","rsa:2048","-nodes","-keyout","ca-key.pem","-out","ca.pem","-days","2","-subj","/CN=GWZ Fixture CA","-addext","basicConstraints=critical,CA:TRUE","-addext","keyUsage=critical,keyCertSign,cRLSign"]);
         run(&["req","-new","-newkey","rsa:2048","-nodes","-keyout","key.pem","-out","request.pem","-subj","/CN=localhost"]);
         std::fs::write(dir.path().join("extensions"),"subjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n").unwrap();
         run(&["x509","-req","-in","request.pem","-CA","ca.pem","-CAkey","ca-key.pem","-CAcreateserial","-out","cert.pem","-days","1","-extfile","extensions"]);
-        run(&["pkcs12","-export","-out","identity.p12","-inkey","key.pem","-in","cert.pem","-certfile","ca.pem","-passout","pass:fixture"]);
-        (std::fs::read(dir.path().join("ca.pem")).unwrap(),std::fs::read(dir.path().join("identity.p12")).unwrap())
-    }).clone()
+        run(&["x509","-in","cert.pem","-outform","DER","-out","cert.der"]);
+        run(&["x509","-in","ca.pem","-outform","DER","-out","ca.der"]);
+        run(&["pkcs8","-topk8","-nocrypt","-in","key.pem","-outform","DER","-out","key.der"]);
+        let read = |name: &str| std::fs::read(dir.path().join(name)).unwrap();
+        let chain = vec![CertificateDer::from(read("cert.der")), CertificateDer::from(read("ca.der"))];
+        let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(read("key.der")));
+        // The ring provider is named here, so that no process-wide default is installed.
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(chain, key)
+            .unwrap();
+        (read("ca.pem"), Arc::new(config))
+    });
+    (ca.clone(), TlsAcceptor::from(config.clone()))
 }
 impl Server {
     pub async fn start(handler: Handler) -> Self {
-        let (ca, p12) = identity();
-        let acceptor = tokio_native_tls::TlsAcceptor::from(
-            native_tls::TlsAcceptor::new(
-                native_tls::Identity::from_pkcs12(&p12, "fixture").unwrap(),
-            )
-            .unwrap(),
-        );
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!(
-            "https://localhost:{}/repo",
-            listener.local_addr().unwrap().port()
-        );
+        let (ca, acceptor) = identity();
+        let listener = Loopback::bind();
+        let url = format!("https://localhost:{}/repo", listener.port);
         let connections = Arc::new(AtomicUsize::new(0));
         let count = connections.clone();
         let task = tokio::spawn(async move {
             let mut children = JoinSet::new();
             loop {
                 tokio::select! {
-                    result=listener.accept()=>{let (socket,_)=result.unwrap();let connection_id=ConnectionId(count.fetch_add(1,Ordering::SeqCst)+1);let acceptor=acceptor.clone();let handler=handler.clone();children.spawn(async move {
+                    result=listener.accept()=>{let socket=result.unwrap();let connection_id=ConnectionId(count.fetch_add(1,Ordering::SeqCst)+1);let acceptor=acceptor.clone();let handler=handler.clone();children.spawn(async move {
                         if let Ok(tls)=acceptor.accept(socket).await {
                             let _=hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(tls),service_fn(move |mut req|{let handler=handler.clone();req.extensions_mut().insert(connection_id);async move {Ok::<_,Infallible>(handler(req).await)}})).await;
                         }
@@ -168,25 +189,16 @@ impl Server {
     /// A deliberately malformed/partial HTTP peer, while retaining valid TLS.
     pub async fn raw(bytes: Vec<u8>) -> Self {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let (ca, p12) = identity();
-        let acceptor = tokio_native_tls::TlsAcceptor::from(
-            native_tls::TlsAcceptor::new(
-                native_tls::Identity::from_pkcs12(&p12, "fixture").unwrap(),
-            )
-            .unwrap(),
-        );
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let url = format!(
-            "https://localhost:{}/repo",
-            listener.local_addr().unwrap().port()
-        );
+        let (ca, acceptor) = identity();
+        let listener = Loopback::bind();
+        let url = format!("https://localhost:{}/repo", listener.port);
         let connections = Arc::new(AtomicUsize::new(0));
         let count = connections.clone();
         let task = tokio::spawn(async move {
             let mut children = JoinSet::new();
             loop {
                 tokio::select! {
-                    result=listener.accept()=>{let (socket,_)=result.unwrap();let acceptor=acceptor.clone();let bytes=bytes.clone();count.fetch_add(1,Ordering::SeqCst);children.spawn(async move {
+                    result=listener.accept()=>{let socket=result.unwrap();let acceptor=acceptor.clone();let bytes=bytes.clone();count.fetch_add(1,Ordering::SeqCst);children.spawn(async move {
                         if let Ok(mut tls)=acceptor.accept(socket).await {let mut header=Vec::new();while !header.ends_with(b"\r\n\r\n") && header.len()<65536 {let Ok(b)=tls.read_u8().await else{return;};header.push(b);}
                             let _=tls.write_all(&bytes).await;let _=tls.flush().await;tokio::time::sleep(Duration::from_millis(20)).await;let _=tls.shutdown().await;
                         }
@@ -223,13 +235,7 @@ impl Tunnel {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        let (_, p12) = identity();
-        let acceptor = tokio_native_tls::TlsAcceptor::from(
-            native_tls::TlsAcceptor::new(
-                native_tls::Identity::from_pkcs12(&p12, "fixture").unwrap(),
-            )
-            .unwrap(),
-        );
+        let (_, acceptor) = identity();
         let seen = Arc::new(Mutex::new(Vec::new()));
         let requests = seen.clone();
         let task = tokio::spawn(async move {

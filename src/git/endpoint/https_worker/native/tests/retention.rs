@@ -1,5 +1,5 @@
 //! Start and Finish ownership, and retention of cleanup charges until they are confirmed.
-cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+cfg_if::cfg_if! { if #[cfg(test)] {
     use super::*;
     struct HeldStart { entered: Arc<AtomicUsize>, gate: Arc<AtomicUsize>, cleanup: Arc<AtomicUsize>, registered: bool, steps: Arc<AtomicUsize> }
     impl Port for HeldStart {

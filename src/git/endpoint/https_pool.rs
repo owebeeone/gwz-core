@@ -131,7 +131,7 @@ impl HttpsPool {
     pub(crate) fn prebuild_tls(&self, runtime: &tokio::runtime::Handle) {
         self.tls.prebuild_on(runtime);
     }
-    cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+    cfg_if::cfg_if! { if #[cfg(test)] {
         /// How many times the pool's TLS configuration has been built.
         pub(crate) fn tls_builds(&self) -> usize {
             self.tls.builds()
@@ -152,7 +152,7 @@ impl HttpsPool {
         self.pool.retire_https_scope(scope);
         self.wake.poke();
     }
-    cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+    cfg_if::cfg_if! { if #[cfg(test)] {
         /// The turns the pool's supervisor has taken.
         pub(crate) fn steps(&self) -> u64 {
             self.wake.steps()
@@ -450,7 +450,7 @@ fn pool_failure(error: pool::Error) -> Failure {
     }
 }
 cfg_if::cfg_if! {
-    if #[cfg(all(test, unix))] {
+    if #[cfg(test)] {
         mod idle_budget_tests;
         mod idle_tests;
         mod idle_wake_tests;

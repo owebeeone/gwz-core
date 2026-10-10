@@ -124,46 +124,52 @@ fn actual_status_failures_cross_mux_once_before_any_stream() {
         }
     });
 }
-#[test]
-fn anonymous_failure_crosses_mux_before_distinct_gh_open() {
-    runtime().block_on(async {
-        let server = Server::start(Arc::new(|_| {
-            Box::pin(async { response(401, GitService::UploadPackAdvertisement, "") })
-        }))
-        .await;
-        let mut endpoint = Endpoint::new(
-            server.config(),
-            None,
-            gwz_transport::pool::Config::default(),
-        )
-        .unwrap();
-        let (outcome, session) = opening(
-            &endpoint.client,
-            input(&server, GitService::UploadPackAdvertisement),
-            true,
-        )
-        .await;
-        match &outcome {
-            Outcome::Failed {
-                first_failure: Some(first),
-                ..
-            } => assert_eq!(first.facts.as_ref().unwrap().http_status, Some(401)),
-            _ => panic!("missing first failure"),
-        }
-        failed(outcome, ErrorCode::Unavailable);
-        assert_eq!(session.receipts().len(), 2);
-        assert_ne!(
-            session.receipts()[0].stream_id,
-            session.receipts()[1].stream_id
-        );
-        assert!(
-            session
-                .receipts()
-                .iter()
-                .all(|r| r.kind == MessageKind::OpenFailed)
-        );
-        assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
-    });
+// The automatic open's second attempt is a gh helper open, which Windows refuses (UnsupportedOperation)
+// until step 4.4 gives it a helper owner.
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+    #[test]
+    fn anonymous_failure_crosses_mux_before_distinct_gh_open() {
+        runtime().block_on(async {
+            let server = Server::start(Arc::new(|_| {
+                Box::pin(async { response(401, GitService::UploadPackAdvertisement, "") })
+            }))
+            .await;
+            let mut endpoint = Endpoint::new(
+                server.config(),
+                None,
+                gwz_transport::pool::Config::default(),
+            )
+            .unwrap();
+            let (outcome, session) = opening(
+                &endpoint.client,
+                input(&server, GitService::UploadPackAdvertisement),
+                true,
+            )
+            .await;
+            match &outcome {
+                Outcome::Failed {
+                    first_failure: Some(first),
+                    ..
+                } => assert_eq!(first.facts.as_ref().unwrap().http_status, Some(401)),
+                _ => panic!("missing first failure"),
+            }
+            failed(outcome, ErrorCode::Unavailable);
+            assert_eq!(session.receipts().len(), 2);
+            assert_ne!(
+                session.receipts()[0].stream_id,
+                session.receipts()[1].stream_id
+            );
+            assert!(
+                session
+                    .receipts()
+                    .iter()
+                    .all(|r| r.kind == MessageKind::OpenFailed)
+            );
+            assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
+        });
+    }
+    }
 }
 cfg_if::cfg_if! {
     if #[cfg(unix)] {

@@ -256,7 +256,7 @@ impl Session {
             state.engine.as_ref().map(|engine| engine.pool().capacity())
                 .or_else(|| state.https.as_ref().map(|endpoint| endpoint.pool().capacity()))
         }
-        cfg_if::cfg_if! { if #[cfg(unix)] {
+        cfg_if::cfg_if! { if #[cfg(test)] {
             pub(super) fn https_client_for_test(&self) -> crate::git::endpoint::https_worker::Client {
                 self.state.lock().unwrap_or_else(|error| error.into_inner()).https.as_ref().unwrap().client_for_test()
             }

@@ -86,7 +86,15 @@ extra = '\n'.join([
 ])
 manifest = replace_once(manifest, '"Win32_Globalization"', '"Win32_Globalization", "Win32_Networking_WinHttp"')
 manifest = replace_once(manifest, '[dependencies]\n', '[dependencies]\n' + extra + '\n')
-manifest = replace_once(manifest, '[dev-dependencies]\n', '[dev-dependencies]\npyo3 = { version = "=0.28.3", features = ["auto-initialize"] }\n')
+# The HTTPS test fixture's TLS servers are rustls over the ring provider (pure Rust apart from ring's
+# own assembly): a native-tls server loads its identity from the platform key store, which Windows
+# denies under a key-based OpenSSH logon (step 0.5b). Test-only; the product's TLS stays native-tls.
+dev_extra = '\n'.join([
+    'pyo3 = { version = "=0.28.3", features = ["auto-initialize"] }',
+    'rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }',
+    'tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring", "tls12"] }',
+])
+manifest = replace_once(manifest, '[dev-dependencies]\n', '[dev-dependencies]\n' + dev_extra + '\n')
 # openssl-probe 0.1 is the crate git2 runs at its start; the transport resolves
 # OpenSSL's default verify paths with it (src/git/endpoint/verify_paths.rs).
 manifest += '\n[target.\'cfg(not(any(windows, target_vendor = "apple")))\'.dependencies]\nopenssl-probe = "=0.1.6"\n'

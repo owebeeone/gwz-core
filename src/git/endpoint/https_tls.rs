@@ -89,7 +89,7 @@ impl SharedTls {
             self.prebuild_on(&runtime);
         }
     }
-    cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+    cfg_if::cfg_if! { if #[cfg(test)] {
         /// How many times this configuration has been built.
         pub(crate) fn builds(&self) -> usize {
             self.0.builds.load(Ordering::SeqCst)
