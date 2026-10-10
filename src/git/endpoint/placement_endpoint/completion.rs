@@ -151,10 +151,12 @@ impl PlacementEndpoint {
             }
             match result {
                 Ok((attachment, mut opened)) => {
+                    let machine = retry_key(&job.pool_key, &job.envelope);
                     let admitted = self
                         .retries
-                        .machine(&job.key.0, &retry_key(&job.pool_key, &job.envelope))
+                        .machine(&job.key.0, &machine)
                         .succeeded(&job.key, !opened.reused);
+                    self.health(&job.key.0, &job.pool_key, &machine);
                     if !admitted {
                         attachment.discard_after_use();
                     }
@@ -233,6 +235,7 @@ impl PlacementEndpoint {
             now,
             jitter,
         );
+        self.health(&key.0, &pool_key, &machine);
         match outcome {
             Outcome::Retry => {
                 self.requeue(key, pool_key, envelope, failure, attempts, allowed, now)
@@ -246,7 +249,51 @@ impl PlacementEndpoint {
                     ..last.wire_failure()
                 },
             ),
+            // The budget is spent, or a retest failed: the members queued on
+            // the key share its failure, and later arrivals park (§5.5).
+            Outcome::Sweep(last) => {
+                self.sweep(&key.0, &machine, &last);
+                self.fail_open(
+                    &key,
+                    Failure {
+                        facts: failure.facts,
+                        ..last.wire_failure()
+                    },
+                );
+            }
             Outcome::Return => self.fail_open(&key, failure),
+        }
+    }
+
+    /// Tells the site's limit machine what the retry machine's last call
+    /// changed about the key's health, which freezes or restores `N` (§5.5).
+    pub(super) fn health(&mut self, operation: &str, pool_key: &Key, machine: &RetryKey) {
+        if let Some(change) = self.retries.machine(operation, machine).take_change() {
+            self.endpoint.governor().scoped(operation).health(
+                pool_key,
+                change,
+                self.endpoint.pool_now(),
+            );
+        }
+    }
+
+    /// Finishes every member of `operation` queued on `machine`'s key with the
+    /// failure the key went Down on, as the key's budget being spent finishes
+    /// them (§5.5).
+    fn sweep(&mut self, operation: &str, machine: &RetryKey, last: &setup_retry::Final) {
+        let (swept, kept): (VecDeque<_>, VecDeque<_>) = std::mem::take(&mut self.queued_opens)
+            .into_iter()
+            .partition(|queued| {
+                queued.key.0 == operation
+                    && retry_key(&queued.pool_key, &queued.envelope) == *machine
+            });
+        self.queued_opens = kept;
+        for queued in swept {
+            let failure = Failure {
+                facts: None,
+                ..last.clone().wire_failure()
+            };
+            self.fail_open(&queued.key, failure);
         }
     }
 

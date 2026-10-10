@@ -28,6 +28,8 @@ struct Script {
     /// The resources are ready once this is set.
     ready: bool,
     lost: bool,
+    /// The socket connect completed after this many milliseconds.
+    tcp_ms: Option<u64>,
 }
 struct Fake(Arc<Mutex<Script>>);
 struct Factory(Arc<Mutex<Script>>);
@@ -65,6 +67,9 @@ impl Resource for Fake {
     }
     fn reusable(&self) -> bool {
         true
+    }
+    fn tcp_connect_ms(&self) -> Option<u64> {
+        self.0.lock().unwrap().tcp_ms
     }
     fn poll_idle_lost(&mut self, _: &mut Context<'_>) -> Poll<()> {
         if self.0.lock().unwrap().lost {
@@ -226,5 +231,50 @@ fn every_event_of_a_connection_carries_its_pool_id() {
             .unwrap()
             .iter()
             .all(|(connection, _, _)| *connection == id)
+    );
+}
+
+#[test]
+fn the_socket_connect_is_reported_once_when_it_completes_before_the_setup_does() {
+    let (pool, mut host, script, log) = rig(Script::default());
+    let mut checkout = pool.checkout(request()).unwrap();
+    tick(&mut host, 10);
+    tick(&mut host, 20);
+    assert_eq!(seen(&log), [(Seen::Started { clocked: true }, 10)]);
+    // The socket is connected at once; the login takes until 700.
+    script.lock().unwrap().tcp_ms = Some(40);
+    tick(&mut host, 30);
+    tick(&mut host, 40);
+    script.lock().unwrap().ready = true;
+    tick(&mut host, 700);
+    let _lease = lease(&mut checkout);
+    assert_eq!(
+        seen(&log),
+        [
+            (Seen::Started { clocked: true }, 10),
+            (Seen::TcpConnected { ms: 40 }, 30),
+            (Seen::Connected, 700),
+        ],
+        "reported once, at the pass that saw it, before the connection is Connected"
+    );
+}
+
+#[test]
+fn a_resource_that_completes_in_one_turn_reports_its_socket_connect_first() {
+    let (pool, mut host, _, log) = rig(Script {
+        ready: true,
+        tcp_ms: Some(25),
+        ..Script::default()
+    });
+    let mut checkout = pool.checkout(request()).unwrap();
+    tick(&mut host, 10);
+    let _lease = lease(&mut checkout);
+    assert_eq!(
+        seen(&log),
+        [
+            (Seen::Started { clocked: true }, 10),
+            (Seen::TcpConnected { ms: 25 }, 10),
+            (Seen::Connected, 10),
+        ]
     );
 }

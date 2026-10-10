@@ -11,6 +11,7 @@ use super::{
     timer::T0_MS,
     windows::{AttemptId, AttemptKind, Own},
 };
+use crate::git::endpoint::setup_retry::machine::Change;
 use gwz_transport::pool::{Key, Site};
 
 impl Scoped {
@@ -54,13 +55,25 @@ impl Scoped {
             target: slot.limit.pool_limit(),
             room: slot.limit.has_room(),
             connected: slot.limit.table().connected(),
+            restoring: slot.limit.restoring(),
         })
         .unwrap_or_else(|| Admission {
             gate_open: true,
             target: self.governor.book().default_ceiling(),
             room: true,
             connected: 0,
+            restoring: false,
         })
+    }
+
+    /// The key's retry machine changed health (§5.5): it left Cold or Healthy,
+    /// which freezes `N_good`, or came back to Healthy, which restores `N` by
+    /// judged steps when the outage lowered it.
+    pub(crate) fn health(&self, key: &Key, change: Change, now: u64) {
+        self.with(key, now, |slot, _| match change {
+            Change::Left => slot.limit.outage(),
+            Change::Healed => slot.limit.recovered(now),
+        });
     }
 
     /// Whether an open may begin its first exchange (a discovery) on a leased
@@ -110,28 +123,19 @@ impl Scoped {
         table
             .table
             .apply(connection.id(), ConnEvent::Connected, now);
-        let mut connect_ms = None;
-        if let Some(info) = table.conns.get_mut(&connection.0) {
-            if info.stage == Stage::Live {
-                connect_ms = Some(now.saturating_sub(info.started));
-            }
-            info.stage = Stage::Up;
-        }
-        if let Some(ms) = connect_ms {
-            table.table.settle_mut().observe_connect(ms);
-        }
+        let fresh_answer = table
+            .conns
+            .get_mut(&connection.0)
+            .is_some_and(|info| std::mem::replace(&mut info.stage, Stage::Up) == Stage::Live);
         for (operation, index) in book.slots_on(&site) {
             let mine = operation == self.operation;
             let slot = &mut book.scopes.get_mut(&operation).expect("scope").slots[index];
-            if let Some(ms) = connect_ms {
-                slot.limit.connect_time(ms);
-            }
             slot.limit.conn(connection.id(), ConnEvent::Connected, now);
             if mine {
                 let fresh = !slot.leased.remove(&connection.0);
                 slot.limit
                     .result(connection.attempt(), Outcome::Succeeded { fresh }, now);
-            } else if connect_ms.is_some() {
+            } else if fresh_answer {
                 slot.limit.observed_success(now);
             }
         }
@@ -244,7 +248,7 @@ impl Scoped {
         if let Some(index) = book.slot(&self.operation, &key.site(), now) {
             book.scopes.get_mut(&self.operation).expect("scope").slots[index]
                 .limit
-                .set_demand(needing_new, non_final);
+                .set_demand(needing_new, non_final, now);
         }
     }
 
@@ -288,6 +292,7 @@ impl Scoped {
                 pool_limit: slot.limit.pool_limit(),
                 settle_ms: slot.limit.settle_ms(),
                 confirmation: slot.limit.confirmation_open(),
+                outage: slot.limit.in_outage(),
             }
         })
     }

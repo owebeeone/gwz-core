@@ -191,6 +191,7 @@ impl HttpsEndpoint {
                 }
             }
         }
+        self.apply_retry_effects();
         self.client.governor().tick(self.client.pool_now());
         self.start_held();
         self.entries.retain(|_, entry| {

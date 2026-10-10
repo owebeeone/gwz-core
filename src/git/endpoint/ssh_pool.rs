@@ -28,6 +28,10 @@ pub(crate) enum Seen {
     /// The connector began the socket connect. `clocked` is false when the
     /// connect has no deadline.
     Started { clocked: bool },
+    /// The socket connect completed after `ms` of TCP connecting, a fact of
+    /// the host alone: the settle time `Ts` follows it (§4.1), not the longer
+    /// setup (a login, a first exchange) that comes after.
+    TcpConnected { ms: u64 },
     /// The resource connected, as the pool counts it. (HTTPS is not set up
     /// until its first exchange is answered, which the endpoint reports.)
     Connected,
@@ -139,6 +143,12 @@ pub(crate) trait Resource {
     fn waiting_locally(&self) -> bool {
         false
     }
+    /// How long the socket connect took, once it has completed: the host
+    /// reports it once, so the limit machines' settle time follows the
+    /// network's round trip and not the setup that follows it.
+    fn tcp_connect_ms(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Tells `observer`, if there is one, what the host saw.
@@ -187,6 +197,8 @@ struct Entry<R> {
     used: bool,
     /// Whether the pool has been told that the resource waits locally.
     waiting: bool,
+    /// Whether its socket connect has been reported.
+    tcp_reported: bool,
     _setup: Option<Arc<SetupContext>>,
 }
 pub(crate) struct PoolHost<C: Connector> {
@@ -371,6 +383,18 @@ impl<C: Connector> PoolHost<C> {
                             self.driver.end_local_wait(id)
                         };
                     }
+                    if !entry.tcp_reported
+                        && let Some(ms) = entry.resource.tcp_connect_ms()
+                    {
+                        entry.tcp_reported = true;
+                        notify(
+                            &self.observer,
+                            self.now,
+                            &entry.key,
+                            id,
+                            Seen::TcpConnected { ms },
+                        );
+                    }
                     match polled {
                         Poll::Ready(Ok(identity)) => {
                             entry.phase = Phase::Ready;
@@ -534,6 +558,7 @@ impl<C: Connector> PoolHost<C> {
                                     phase: Phase::Connecting,
                                     used: false,
                                     waiting: false,
+                                    tcp_reported: false,
                                     _setup: setup,
                                 },
                             );

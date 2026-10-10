@@ -24,7 +24,7 @@ fn an_overload_sets_n_to_the_smaller_of_connected_and_hi_with_a_floor_of_one() {
 
 #[test]
 fn an_overload_from_every_state_ends_in_stable() {
-    for from in [Discovering, Stable, Probing, Saturated] {
+    for from in [Discovering, Stable, Probing, Saturated, Restoring] {
         let mut fsm = stable(32, 8);
         match from {
             Saturated => fsm = Fsm::new(32),
@@ -33,6 +33,7 @@ fn an_overload_from_every_state_ends_in_stable() {
                 fsm.test_succeeded(9, true);
             }
             Probing => fsm.test_started(),
+            Restoring => fsm.begin_restore(),
             Stable => {}
         }
         assert_eq!(fsm.state(), from);
@@ -117,10 +118,32 @@ fn a_test_that_said_nothing_leaves_probing_and_discovering_as_they_were_or_stabl
 }
 
 #[test]
+fn restoring_is_left_by_an_overload_the_ceiling_or_its_end_and_a_late_probe_leaves_it_be() {
+    let mut fsm = stable(32, 8);
+    fsm.begin_restore();
+    assert_eq!(fsm.state(), Restoring);
+    // A probe that was in flight when it began is judged, but the restore goes on.
+    fsm.probe_refused();
+    fsm.test_succeeded(9, true);
+    fsm.test_inconclusive();
+    assert_eq!((fsm.n(), fsm.state()), (9, Restoring));
+    fsm.end_restore();
+    assert_eq!(fsm.state(), Stable);
+    // The ceiling is SATURATED, never RESTORING.
+    fsm.begin_restore();
+    fsm.success(32);
+    assert_eq!(fsm.state(), Saturated);
+    fsm.begin_restore();
+    assert_eq!(fsm.state(), Saturated, "nothing to restore at the ceiling");
+}
+
+#[test]
 fn saturated_is_exactly_n_equal_to_the_ceiling_whatever_the_sequence() {
     // Every sequence of up to five operations over a ceiling of 3.
     type Op = fn(&mut Fsm);
-    let ops: [Op; 9] = [
+    let ops: [Op; 11] = [
+        |f| f.begin_restore(),
+        |f| f.end_restore(),
         |f| f.success(3),
         |f| f.success(1),
         |f| f.overload(2, 2),

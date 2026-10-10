@@ -52,7 +52,7 @@ use super::{
     notes::Note,
     states::{ConnEvent, ConnId, Table},
     timer::Spread,
-    windows::{AttemptId, AttemptKind, Own},
+    windows::{AttemptId, Own},
 };
 use crate::git::endpoint::ssh_pool::{Observer, Seen};
 use gwz_transport::{
@@ -97,6 +97,24 @@ pub(crate) struct Admission {
     /// The connections of the site that are set up: some may be idle, which a
     /// member leases without a start.
     pub(crate) connected: usize,
+    /// A restore after an outage is under way (§5.5): a new connection is
+    /// started only by a member not on its final attempt.
+    pub(crate) restoring: bool,
+}
+
+impl Admission {
+    /// Whether a member waits for a new connection although the gate is open:
+    /// a restore step's start is carried by a member not on its final attempt,
+    /// so a restore never fails a member (§5.5). A member that can lease an
+    /// idle connection starts nothing, and a test's carrier is the test's.
+    pub(crate) fn holds_final_attempt(
+        &self,
+        final_attempt: bool,
+        may_lease_idle: bool,
+        carries_test: bool,
+    ) -> bool {
+        self.restoring && final_attempt && !may_lease_idle && !carries_test
+    }
 }
 
 /// A site's machine as the endpoints and the member scheduler may read it.
@@ -110,6 +128,9 @@ pub(crate) struct View {
     pub(crate) pool_limit: usize,
     pub(crate) settle_ms: u64,
     pub(crate) confirmation: bool,
+    /// The key's retry machine is down or recovering, and `N_good` is frozen
+    /// (§5.5).
+    pub(crate) outage: bool,
 }
 
 pub(super) struct Slot {
@@ -144,7 +165,6 @@ pub(super) enum Stage {
 pub(super) struct Info {
     pub(super) tag: Option<String>,
     pub(super) stage: Stage,
-    pub(super) started: u64,
 }
 
 /// What the server holds on one site, whoever's it is.
@@ -539,7 +559,6 @@ impl Observer for Governor {
             Info {
                 tag: tag.map(str::to_owned),
                 stage: Stage::Live,
-                started: now,
             },
         );
         let owner = tag.map(operation_of);
@@ -557,7 +576,7 @@ impl Observer for Governor {
             } else {
                 None
             }
-            .unwrap_or_else(|| (AttemptKind::Ordinary, slot.limit.pool_limit()));
+            .unwrap_or_else(|| slot.limit.start_kind());
             let began = slot.limit.begin(
                 connection.attempt(),
                 kind,
@@ -580,10 +599,22 @@ impl Observer for Governor {
         let id = connection.id();
         let mut book = self.book();
         let state = book.site_index(&site);
+        if let Seen::TcpConnected { ms } = seen {
+            // The settle time follows the TCP connect (§4.1), reported by the
+            // host when the socket connect completed: not the setup after it.
+            book.sites[state].table.settle_mut().observe_connect(ms);
+            for operation in book.scopes.keys().cloned().collect::<Vec<_>>() {
+                if let Some(index) = book.slot(&operation, &site, now) {
+                    let slot = &mut book.scopes.get_mut(&operation).expect("scope").slots[index];
+                    slot.limit.connect_time(ms);
+                }
+            }
+            return;
+        }
         let event = match seen {
             // HTTPS is set up when its first exchange is answered, which the
             // endpoint reports; SSH when it is authenticated, which is this.
-            Seen::Started { .. } => return,
+            Seen::Started { .. } | Seen::TcpConnected { .. } => return,
             Seen::Connected if key.scheme.wire() == Scheme::Https.wire() => return,
             Seen::Connected => ConnEvent::Connected,
             Seen::SetupEnded => ConnEvent::SetupEnded,
@@ -596,10 +627,8 @@ impl Observer for Governor {
         sites.table.apply(id, event, now);
         let mut owner = None;
         let mut judged = false;
-        let mut connect_ms = None;
         match (seen, sites.conns.get_mut(&connection.0)) {
             (Seen::Connected, Some(info)) => {
-                connect_ms = Some(now.saturating_sub(info.started));
                 info.stage = Stage::Up;
             }
             (Seen::SetupEnded | Seen::Retired, Some(info)) => {
@@ -616,20 +645,14 @@ impl Observer for Governor {
             }
             _ => {}
         }
-        if let Some(ms) = connect_ms {
-            sites.table.settle_mut().observe_connect(ms);
-        }
         let operations: Vec<String> = book.scopes.keys().cloned().collect();
         for operation in operations {
             let Some(index) = book.slot(&operation, &site, now) else {
                 continue;
             };
             let slot = &mut book.scopes.get_mut(&operation).expect("scope").slots[index];
-            if let Some(ms) = connect_ms {
-                slot.limit.connect_time(ms);
-            }
             match seen {
-                Seen::Started { .. } => {}
+                Seen::Started { .. } | Seen::TcpConnected { .. } => {}
                 // Authenticated is a fact about the server, so every
                 // operation's machine takes it as its success.
                 Seen::Connected => {

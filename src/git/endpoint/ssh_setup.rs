@@ -184,6 +184,7 @@ impl Connector for SetupConnector {
             setup_context,
             idle,
             watch: None,
+            tcp_ms: None,
         };
         // The setup starts at once when the host's job budget has a place.
         // When it is full the setup waits for one, with its work in hand: a
@@ -230,6 +231,8 @@ pub(crate) struct NativeResource {
     idle: Arc<IdleReactor>,
     /// The idle session's socket watch, only while `State::Idle`.
     watch: Option<IdleSocket>,
+    /// The socket connect's time, kept when the job's result is taken.
+    tcp_ms: Option<u64>,
 }
 impl NativeResource {
     /// Starts the setup's job once the job budget has a place for it. Until
@@ -300,8 +303,12 @@ impl Resource for NativeResource {
                     self.state = State::Connecting(job);
                     Poll::Pending
                 }
-                Poll::Ready(Err(error)) => Poll::Ready(Err(self.setup_failure(&error))),
+                Poll::Ready(Err(error)) => {
+                    self.tcp_ms = job.tcp_connect_ms();
+                    Poll::Ready(Err(self.setup_failure(&error)))
+                }
                 Poll::Ready(Ok(mut authenticated)) => {
+                    self.tcp_ms = job.tcp_connect_ms();
                     let identity_matches = authenticated.identity == self.requested;
                     let session_ok = authenticated.connection.session().authenticated()
                         && authenticated.facts.authenticated == Some(true);
@@ -341,6 +348,12 @@ impl Resource for NativeResource {
     }
     fn waiting_locally(&self) -> bool {
         matches!(self.state, State::Waiting(_))
+    }
+    fn tcp_connect_ms(&self) -> Option<u64> {
+        match &self.state {
+            State::Connecting(job) => job.tcp_connect_ms(),
+            _ => self.tcp_ms,
+        }
     }
     fn poll_dispose(&mut self, cx: &mut Context<'_>, force: bool) -> Poll<io::Result<()>> {
         let state = mem::replace(&mut self.state, State::Disposed);

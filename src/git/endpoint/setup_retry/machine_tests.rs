@@ -74,11 +74,13 @@ fn alone(max_retries: u32, stall_ms: u64) -> (Vec<u64>, u32, Final) {
                 waits.push(wake - now);
                 now = wake;
             }
-            Outcome::Finish(last) => {
-                assert_eq!(key.decide(now + 60_000), Decision::Finish(last.clone()));
+            Outcome::Sweep(last) => {
+                // Down, not closed: the next arrival would carry a retest.
+                assert_eq!(key.decide(now), Decision::Wait, "parked until the retest");
+                assert_eq!(key.decide(now + 30_000), Decision::Start);
                 return (waits, attempt, last);
             }
-            Outcome::Return => panic!("a stall in setup is a setup outcome"),
+            Outcome::Finish(_) | Outcome::Return => panic!("a stall in setup is a setup outcome"),
         }
     }
     unreachable!()
@@ -231,6 +233,13 @@ fn dead_key(
             failed_once = true;
             match key.failed(&member, verdict, failure.clone(), now, JITTER) {
                 Outcome::Retry => queue.push_back(member),
+                // The members queued when the key went Down share its failure.
+                Outcome::Sweep(last) => {
+                    finals[member] = Some(last.clone());
+                    for queued in queue.drain(..) {
+                        finals[queued] = Some(last.clone());
+                    }
+                }
                 Outcome::Finish(last) => finals[member] = Some(last),
                 Outcome::Return => panic!("a dead key's setup failure is a setup outcome"),
             }
@@ -258,8 +267,9 @@ fn thirty_two_cold_members_on_a_dead_key_open_a_wave_at_the_limit_then_one_at_a_
 }
 
 /// Members one at a time, as `--jobs 1` runs them: the next member asks only
-/// once the one before it has finished. With `healthy_first` the first
-/// member's setup succeeds and the server is dead from the second on.
+/// once the one before it has finished, and a parked member waits for the
+/// key's next retest. With `healthy_first` the first member's setup succeeds
+/// and the server is dead from the second on.
 fn jobs_one(members: usize, failure: Failure, healthy_first: bool) -> (usize, Vec<Final>) {
     let mut key = Machine::new(3);
     let verdict = classify(&failure, Phase::Setup);
@@ -284,7 +294,7 @@ fn jobs_one(members: usize, failure: Failure, healthy_first: bool) -> (usize, Ve
                     }
                     match key.failed(&member, verdict, failure.clone(), now, JITTER) {
                         Outcome::Retry => {}
-                        Outcome::Finish(last) => {
+                        Outcome::Finish(last) | Outcome::Sweep(last) => {
                             finals.push(last);
                             break;
                         }
@@ -298,16 +308,22 @@ fn jobs_one(members: usize, failure: Failure, healthy_first: bool) -> (usize, Ve
 }
 
 #[test]
-fn with_jobs_1_thirty_two_members_cause_four_handshakes_and_one_failure_even_after_healthy() {
+fn with_jobs_1_a_dead_key_costs_four_handshakes_and_two_parked_retests_then_members_finish_at_once()
+{
+    // §5.5, case 32: the first member spends the budget (attempt 4 of 4), the
+    // next two each carry a retest 30 s on, and after two failed retests in a
+    // row every other member finishes with no handshake and no count.
     let (handshakes, finals) = jobs_one(32, stall(), false);
-    assert_eq!(handshakes, 4);
+    assert_eq!(handshakes, 4 + 2);
     assert_eq!(finals.len(), 32);
-    assert!(finals.iter().all(|f| *f == last(stall(), 4, 4)));
-    // Healthy earlier in the operation, then exhausted: Closed, not Cold.
+    assert_eq!(finals[0], last(stall(), 4, 4));
+    assert!(finals[1..].iter().all(|f| *f == last(stall(), 0, 4)));
+    // Healthy earlier in the operation, then exhausted: Down, not Cold.
     let (handshakes, finals) = jobs_one(32, stall(), true);
-    assert_eq!(handshakes, 1 + 4);
+    assert_eq!(handshakes, 1 + 4 + 2);
     assert_eq!(finals.len(), 31);
-    assert!(finals.iter().all(|f| *f == last(stall(), 4, 4)));
+    assert_eq!(finals[0], last(stall(), 4, 4));
+    assert!(finals[1..].iter().all(|f| *f == last(stall(), 0, 4)));
 }
 
 #[test]

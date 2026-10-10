@@ -21,7 +21,7 @@ mod requeue;
 pub(crate) use allocation::AllocationClock;
 pub(crate) use backoff::{Jitter, wait_bound_ms};
 pub(crate) use limit::{Admission, Conn, Governor, Ruling, Scoped, Signal, State, TestToken, View};
-pub(crate) use machine::{Decision, Machine, Outcome};
+pub(crate) use machine::{Change, Decision, Final, Machine, Outcome};
 pub(crate) use operations::{DEFAULT_MAX_RETRIES, Operations};
 pub(crate) use requeue::{requeues, spent, suspect};
 
@@ -152,6 +152,7 @@ pub(crate) fn merged_facts(earlier: Option<Facts>, later: Option<Facts>) -> Opti
 cfg_if::cfg_if! {
     if #[cfg(test)] {
         mod classify_tests;
+        mod down_tests;
         mod machine_tests;
     }
 }

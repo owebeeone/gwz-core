@@ -279,6 +279,13 @@ impl<C: Connector> Resource for ReservedResource<C> {
         }
     }
 
+    fn tcp_connect_ms(&self) -> Option<u64> {
+        match &self.state {
+            Slot::Started { inner, .. } => inner.tcp_connect_ms(),
+            _ => None,
+        }
+    }
+
     fn poll_idle_lost(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         match &mut self.state {
             Slot::Started { inner, .. } => inner.poll_idle_lost(cx),
@@ -508,6 +515,9 @@ mod tests {
         fn reusable(&self) -> bool {
             false
         }
+        fn tcp_connect_ms(&self) -> Option<u64> {
+            Some(42)
+        }
         fn poll_idle_lost(&mut self, _cx: &mut Context<'_>) -> Poll<()> {
             Poll::Ready(())
         }
@@ -544,6 +554,23 @@ mod tests {
         drop(ssh);
         assert!(authority.try_reserve("github.example").is_some());
         drop(https);
+    }
+
+    #[test]
+    fn a_reserved_resource_reports_the_socket_connect_time_of_the_one_it_wraps() {
+        let mut connector = ReservedConnector::new(
+            FakeConnector {
+                dispose_pending: false,
+                fail: false,
+            },
+            Authority::new(1, 1),
+        );
+        let key = Key::ssh("git", "github.example", 22);
+        let started = connector.start(&key, &Identity::Ambient, None).unwrap();
+        assert_eq!(started.tcp_connect_ms(), Some(42));
+        // A connection still waiting for its reservation has connected nothing.
+        let waiting = connector.start(&key, &Identity::Ambient, None).unwrap();
+        assert_eq!(waiting.tcp_connect_ms(), None);
     }
 
     #[test]
