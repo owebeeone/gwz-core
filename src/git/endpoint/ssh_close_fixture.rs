@@ -91,29 +91,44 @@ pub(crate) fn delayed_eof_fixture(delay: Duration) -> SshdFixture {
     ))
 }
 
-// The walk up to the server's own session process uses `ps` and `kill -9`, which have no Windows twin here.
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
-        /// The service exits and its output closes, and then the server's own session
-        /// dies, as a server that drops the connection while the channel is closing.
-        pub(crate) fn dropped_close_fixture() -> SshdFixture {
-            forced(
-                "eval \"$SSH_ORIGINAL_COMMAND\"\nexec 1>&- 2>&-\n\
-                 pid=$$\n\
-                 while [ \"$pid\" -gt 1 ]; do\n\
-                 pid=$(ps -o ppid= -p \"$pid\" | tr -d ' ')\n\
-                 case \"$(ps -o comm= -p \"$pid\")\" in\n\
-                 *sshd*) kill -9 \"$pid\"; break;;\n\
-                 esac\n\
-                 done\n\
-                 sleep 5\n",
-            )
+        /// What the script runs once the service has exited and its output has closed: the walk up to the server's
+        /// own session process uses `ps`, and `kill -9` ends it.
+        fn dropped_tail() -> String {
+            "pid=$$\n\
+             while [ \"$pid\" -gt 1 ]; do\n\
+             pid=$(ps -o ppid= -p \"$pid\" | tr -d ' ')\n\
+             case \"$(ps -o comm= -p \"$pid\")\" in\n\
+             *sshd*) kill -9 \"$pid\"; break;;\n\
+             esac\n\
+             done\n\
+             sleep 5\n"
+                .to_owned()
+        }
+    } else {
+        use super::fixture_helper::{self, Mode};
+
+        /// The same with the native helper, which ends the server's session processes by exact id
+        /// (`fixture_helper`).
+        fn dropped_tail() -> String {
+            format!("{}\n", fixture_helper::script_line(Mode::DropSession))
         }
     }
 }
 
+/// The service exits and its output closes, and then the server's own session
+/// dies, as a server that drops the connection while the channel is closing.
+pub(crate) fn dropped_close_fixture() -> SshdFixture {
+    forced(&format!(
+        "eval \"$SSH_ORIGINAL_COMMAND\"\nexec 1>&- 2>&-\n{}",
+        dropped_tail()
+    ))
+}
+
 /// The service exits and its output closes, and the channel then never
-/// closes: the server's process does not exit.
+/// closes: the server's process does not exit. (On Windows the output does not end until the process does; see
+/// the rows that stay Unix in `ssh_tests`.)
 pub(crate) fn stuck_close_fixture() -> SshdFixture {
     forced("eval \"$SSH_ORIGINAL_COMMAND\"\nexec 1>&- 2>&-\nexec sleep 20\n")
 }

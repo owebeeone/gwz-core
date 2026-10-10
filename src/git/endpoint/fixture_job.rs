@@ -36,7 +36,24 @@ cfg_if::cfg_if! {
 
         impl ProcessJob {
             pub(crate) fn new() -> io::Result<Self> {
-                let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+                Self::create(None)
+            }
+
+            /// A job other processes of the fixture can open by `name` (see `fixture_helper`, which lists its
+            /// members and nothing else).
+            pub(crate) fn named(name: &str) -> io::Result<Self> {
+                Self::create(Some(name))
+            }
+
+            fn create(name: Option<&str>) -> io::Result<Self> {
+                let wide: Option<Vec<u16>> =
+                    name.map(|name| name.encode_utf16().chain([0]).collect());
+                let handle = unsafe {
+                    CreateJobObjectW(
+                        std::ptr::null(),
+                        wide.as_ref().map_or(std::ptr::null(), |name| name.as_ptr()),
+                    )
+                };
                 if handle.is_null() {
                     return Err(io::Error::last_os_error());
                 }
@@ -194,6 +211,10 @@ cfg_if::cfg_if! {
 
         impl ProcessJob {
             pub(crate) fn new() -> io::Result<Self> {
+                Ok(Self)
+            }
+
+            pub(crate) fn named(_name: &str) -> io::Result<Self> {
                 Ok(Self)
             }
 

@@ -27,12 +27,13 @@
     {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod cancellable_tests", "state": "unported", "owner": ["4.11"], "appendix": "B.2"},
     {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod close_tests", "state": "unported", "owner": ["4.11"], "appendix": "B.2"},
     {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod command_tests", "state": "unported", "owner": ["4.11"], "appendix": "B.2"},
-    {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod driver_tests", "state": "unported", "owner": ["4.11"], "appendix": "B.2"},
     {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod fetch_preflight_tests", "state": "unported", "owner": ["4.11"], "appendix": "B.2", "note": "moved from 0.5 by its inventory pass: it uses https_tests (git_http_backend through helper_script) and driver_tests"},
     {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod https_policy_tests", "state": "unported", "owner": ["4.11"], "appendix": "B.2"},
-    {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod https_tests", "state": "unported", "owner": ["4.11"], "appendix": "B.2"},
     {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "unix", "target": "mod https_helper_projection_tests", "state": "unported", "owner": ["4.11"], "appendix": "G67"},
     {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "unix", "target": "mod https_negotiate_projection_tests", "state": "unported", "owner": ["4.11"], "appendix": "G67"},
-    {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "unix", "target": "mod ssh_helper_projection_tests", "state": "unported", "owner": ["4.11"], "appendix": "G67"}
+    {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "unix", "target": "mod ssh_helper_projection_tests", "state": "unported", "owner": ["4.11"], "appendix": "G67"},
+    {"path": "src/git/gitbackend/transport_candidate_tests/drivers.rs", "kind": "gate", "gate": "unix", "target": "arm: fn candidate_service_refusal_skips_only_private_members_and_forgets_observations", "state": "unported", "owner": ["4.11"], "appendix": "moved from mod transport_candidate_tests (step 1.8 ungated the module): the one test that writes a POSIX script and chmods it"},
+    {"path": "src/transport_host/driver_tests.rs", "kind": "gate", "gate": "unix", "target": "arm: fn cli_endpoint_preserves_repository_refusal_and_reuses_binding_after_failure", "state": "unported", "owner": ["4.11"], "appendix": "moved from mod driver_tests (step 1.8 ungated the module, whose fixtures the 1.8 modules share): the one test that forces a POSIX helper script; the arm also holds the four tests that open SSH through the CLI placement, which refuses an open whose URL must not use the credential helpers (Windows disables them until 4.3/4.4)"},
+    {"path": "src/transport_host/https_tests.rs", "kind": "gate", "gate": "unix", "target": "arm: use crate::git::endpoint::https_auth", "state": "unported", "owner": ["4.11"], "appendix": "moved from mod https_tests (step 1.8 ungated the module): fake_gh and the one row that configures the Gh helper"}
   ]
 }

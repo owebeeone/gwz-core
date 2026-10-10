@@ -151,8 +151,10 @@ fn an_early_close_waits_only_for_the_servers_close() {
     assert!(channel.into_session().is_ok());
 }
 
-// A shell script cannot end a channel's output and keep its process on Windows: MSYS's `exec` leaves a wrapper
-// process holding the channel's pipes, so the server never sends EOF and the row has nothing to wait for.
+// A Windows sshd.exe sends a channel's EOF only when the session's process exits, whatever has happened to the pipes
+// (step 1.5's native helper, run 2026-10-11, closed every handle to the output pipes in every process and got no
+// EOF until the process exited, when EOF, exit status and CLOSE came together), so no server process can end the
+// output and keep the channel open, and the row has nothing to wait for.
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
         use crate::git::endpoint::ssh_close_fixture::stuck_close_fixture;

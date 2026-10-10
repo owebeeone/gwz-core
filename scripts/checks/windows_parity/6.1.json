@@ -1,0 +1,5 @@
+{
+  "entries": [
+    {"path": "src/transport_host/throughput_tests.rs", "kind": "gate", "gate": "unix", "target": "arm: fn an_https_clone_of_a_large_pack_keeps_pace_with_libgit2", "state": "unported", "owner": ["6.1"], "appendix": "new (step 1.8 ungated the module): the HTTPS clone of the large pack timed out on Windows (dabeest 2026-10-11) where the native baseline cloned it; a speed finding for TR8.4"}
+  ]
+}

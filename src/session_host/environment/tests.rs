@@ -359,10 +359,14 @@ cfg_if::cfg_if! {
         fn platform_pairs() -> Vec<(Vec<u8>, Vec<u8>)> {
             // Windows needs SystemRoot to start some system services; it is
             // part of the snapshot, so the child must see it and nothing else.
+            // The child is the test binary, which loads the Python runtime that the embedding tests link
+            // (python313.dll) from the directories of `PATH`, so `PATH` is part of the snapshot too.
             let root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".into());
+            let path = std::env::var("PATH").unwrap_or_default();
             vec![
                 (PROBE.as_bytes().to_vec(), b"1".to_vec()),
                 (b"SystemRoot".to_vec(), root.into_bytes()),
+                (b"PATH".to_vec(), path.into_bytes()),
                 (b"GWZ_SNAPSHOT_LONE".to_vec(), b"a\xED\xA0\x80b".to_vec()),
             ]
         }

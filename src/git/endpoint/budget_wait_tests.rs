@@ -184,7 +184,7 @@ fn a_full_job_budget_leaves_opens_running_and_checks_waiting() {
             1_000,
         )
         .unwrap(),
-        PathBuf::from("/tmp"),
+        std::env::temp_dir(),
         "endpoint".into(),
         "owner".into(),
     )

@@ -19,8 +19,10 @@ import shutil
 #     (`pageant_exchange/sys.rs`) needs Win32_Security_Authorization, Win32_System_DataExchange, Win32_System_Memory
 #     and Win32_UI_WindowsAndMessaging. The candidate-to-production switch must
 #     carry every one of them into Cargo.toml's `windows-sys` list.
-#   test only: Win32_System_Diagnostics_ToolHelp and the named-pipe and job calls of the SSH test servers
-#     (`fixture_job.rs`) and of the regular-file test; they are named here as well as in Cargo.toml's Windows
+#   test only: Win32_System_Diagnostics_ToolHelp, Win32_System_IO and Win32_System_Ioctl, for the Job Object,
+#     thread suspension and process lists of the SSH test servers and their native helper (`fixture_job.rs`), a
+#     named pipe in the regular-file test, pipe reads and writes in the agent fixture, and the directory junction of
+#     the URL tests; they are named here as well as in Cargo.toml's Windows
 #     dev-dependencies, because `cargo check --lib --profile test`, which scripts/windows_lane_check.py runs, does
 #     not enable dev-dependency features.
 CANDIDATE_WINDOWS_FEATURES = (
@@ -30,6 +32,8 @@ CANDIDATE_WINDOWS_FEATURES = (
     "Win32_Security_Authorization",
     "Win32_System_DataExchange",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
     "Win32_System_JobObjects",
     "Win32_System_Memory",
     "Win32_System_Pipes",

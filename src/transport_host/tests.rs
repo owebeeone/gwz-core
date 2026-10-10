@@ -7,7 +7,7 @@ use std::{
 };
 
 fn config() -> SshEndpointConfig {
-    SshEndpointConfig::fixture(std::path::PathBuf::from("/nonexistent-endpoint-home"), None)
+    SshEndpointConfig::fixture(std::env::temp_dir().join("nonexistent-endpoint-home"), None)
 }
 /// TR2.18: a URL's password goes only to an endpoint in the driver's own
 /// process. The client placement's driver has none, so it refuses the open

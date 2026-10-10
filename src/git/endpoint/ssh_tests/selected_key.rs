@@ -1,4 +1,5 @@
 use crate::git::endpoint::agent_job;
+use crate::git::endpoint::fixture_host;
 use crate::git::endpoint::ssh_fixture as common;
 use crate::git::endpoint::ssh_key_auth;
 use crate::git::endpoint::ssh_key_snapshot;
@@ -284,26 +285,20 @@ fn a_pipe_or_device_path_does_not_hang_the_key_load() {
     );
     assert!(start.elapsed() < Duration::from_secs(2));
 }
-// Creating a symbolic link needs a privilege a Windows logon may not hold.
-cfg_if::cfg_if! {
-    if #[cfg(unix)] {
-        #[test]
-        fn symlinks_follow_the_current_regular_file() {
-            use std::os::unix::fs::symlink;
-            let dir = tempfile::tempdir().unwrap();
-            let r = Registry::new();
-            let key = Key::ssh("u", "h", 22);
-            let regular = dir.path().join("regular");
-            fs::write(&regular, PEM).unwrap();
-            let link = dir.path().join("link");
-            symlink(&regular, &link).unwrap();
-            let pin = load(&r, key.clone(), &link).unwrap();
-            fs::remove_file(regular).unwrap();
-            assert!(load(&r, key, &link).is_err());
-            drop(pin);
-            assert_eq!(r.usage(), (0, 0));
-        }
-    }
+#[test]
+fn symlinks_follow_the_current_regular_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let r = Registry::new();
+    let key = Key::ssh("u", "h", 22);
+    let regular = dir.path().join("regular");
+    fs::write(&regular, PEM).unwrap();
+    let link = dir.path().join("link");
+    fixture_host::make_symlink(&regular, &link);
+    let pin = load(&r, key.clone(), &link).unwrap();
+    fs::remove_file(regular).unwrap();
+    assert!(load(&r, key, &link).is_err());
+    drop(pin);
+    assert_eq!(r.usage(), (0, 0));
 }
 #[test]
 fn native_rsa_openssh_pem_and_pkcs8_authenticate() {

@@ -1,27 +1,10 @@
 {
+  "done": true,
   "entries": [
-    {"path": "src/git/endpoint/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod budget_wait_tests", "state": "unported", "owner": ["1.8"], "appendix": "B.2"},
-    {"path": "src/git/endpoint/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod git_turns_tests", "state": "unported", "owner": ["1.8"], "appendix": "B.2"},
-    {"path": "src/git/endpoint/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod job_budget_wait_tests", "state": "unported", "owner": ["1.8"], "appendix": "B.2"},
-    {"path": "src/git/endpoint/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod ssh_destination_tests", "state": "unported", "owner": ["1.8"], "appendix": "B.2"},
-    {"path": "src/git/endpoint/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod ssh_pump_clock_tests", "state": "unported", "owner": ["1.8"], "appendix": "B.2"},
-    {"path": "src/git/endpoint/placement_endpoint.rs", "kind": "gate", "gate": "unix", "target": "mod check_tests", "state": "unported", "owner": ["1.8"], "appendix": "G30"},
-    {"path": "src/git/endpoint/placement_endpoint_tests.rs", "kind": "os", "gate": "libc::O_NONBLOCK", "target": "", "state": "unported", "owner": ["1.8"], "appendix": "G31"},
-    {"path": "src/git/endpoint/placement_endpoint_tests.rs", "kind": "os", "gate": "libc::mkfifo", "target": "", "state": "unported", "owner": ["1.8"], "appendix": "G31"},
-    {"path": "src/git/endpoint/placement_endpoint_tests.rs", "kind": "os", "gate": "os::unix::ffi::OsStrExt", "target": "", "state": "unported", "owner": ["1.8"], "appendix": "G31"},
-    {"path": "src/git/endpoint/placement_endpoint_tests.rs", "kind": "os", "gate": "os::unix::fs::OpenOptionsExt", "target": "", "state": "unported", "owner": ["1.8"], "appendix": "G31"},
-    {"path": "src/git/endpoint/ssh_tests/retry.rs", "kind": "gate", "gate": "unix", "target": "arm: use crate::git::endpoint::{placement_endpoint::PlacementEndpoint, setup_retry::Jitter, shared_reserv", "state": "unported", "owner": ["1.8"], "appendix": "G51"},
-    {"path": "src/git/gitbackend.rs", "kind": "gate", "gate": "all(test, unix, gwz_transport_candidate)", "target": "mod transport_candidate_tests", "state": "unported", "owner": ["1.8"], "appendix": "G57"},
-    {"path": "src/transport_host/cleanup_tests.rs", "kind": "gate", "gate": "unix", "target": "arm: fn completed_request_retirement_cannot_expire_the_shared_session", "state": "unported", "owner": ["1.8"], "appendix": "G63"},
-    {"path": "src/transport_host/https_route_scale_tests.rs", "kind": "os", "gate": "os::unix::fs::symlink", "target": "", "state": "unported", "owner": ["1.8"], "appendix": "G66"},
-    {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod endpoint_environment_tests", "state": "unported", "owner": ["1.8"], "appendix": "B.2"},
-    {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod fault_tests", "state": "unported", "owner": ["1.8"], "appendix": "B.2"},
-    {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod https_compat_tests", "state": "unported", "owner": ["1.8"], "appendix": "B.2"},
-    {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod https_route_scale_tests", "state": "unported", "owner": ["1.8"], "appendix": "B.2"},
-    {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod message_embedding_tests", "state": "unported", "owner": ["1.8"], "appendix": "B.2"},
-    {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod retry_tests", "state": "unported", "owner": ["1.8"], "appendix": "B.2"},
-    {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod tests", "state": "unported", "owner": ["1.8"], "appendix": "B.2"},
-    {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod throughput_tests", "state": "unported", "owner": ["1.8"], "appendix": "B.2"},
-    {"path": "src/transport_host/request.rs", "kind": "gate", "gate": "unix", "target": "mod https_budget_gate_tests", "state": "unported", "owner": ["1.8"], "appendix": "G69"}
+    {"path": "src/git/endpoint/placement_endpoint_tests.rs", "kind": "os", "gate": "libc::O_NONBLOCK", "target": "", "state": "paired", "owner": ["1.8"], "appendix": "G31"},
+    {"path": "src/git/endpoint/placement_endpoint_tests.rs", "kind": "os", "gate": "os::unix::fs::OpenOptionsExt", "target": "", "state": "paired", "owner": ["1.8"], "appendix": "G31"},
+    {"path": "src/git/endpoint/fixture_host.rs", "kind": "os", "gate": "os::unix::fs::symlink", "target": "", "state": "paired", "owner": ["1.8"], "appendix": "new: the symlink helper of the 1.8 and 1.4 rows; the Windows arm checks the symbolic-link privilege and says so when it is absent"},
+    {"path": "src/git/endpoint/placement_endpoint_tests.rs", "kind": "gate", "gate": "unix", "target": "arm: fn release_a_blocked_open", "state": "paired", "owner": ["1.8"], "appendix": "new: the FIFO row releases a blocked open on Unix; a device path on Windows is refused before any open"},
+    {"path": "src/transport_host/endpoint_environment_tests.rs", "kind": "gate", "gate": "unix", "target": "arm: fn check_proxy", "state": "paired", "owner": ["1.8"], "appendix": "new: Windows takes its proxy from the machine, not the environment, and no agent from SSH_AUTH_SOCK, and configures no credential helper, until steps 4.6/4.7, 3.2b and 4.3/4.4; the Windows arms assert that interim"}
   ]
 }

@@ -1,0 +1,6 @@
+{
+  "entries": [
+    {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod https_compat_tests", "state": "unported", "owner": ["5.1"], "appendix": "moved from step 1.8: the Windows qualification refuses the plain HTTP and git remotes this module clones, until 5.1 retires the switch"},
+    {"path": "src/git/gitbackend/transport_candidate_tests.rs", "kind": "split", "gate": "cfg!(unix)", "target": "", "state": "unported", "owner": ["5.1"], "appendix": "new: the native local-path clone at the end of the candidate push test; the Windows qualification refuses a local path as a remote until 5.1 retires the switch"}
+  ]
+}

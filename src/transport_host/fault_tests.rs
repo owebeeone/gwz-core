@@ -568,7 +568,12 @@ fn oversized_open_deadlines_fail_through_bound_session_without_stopping_progress
             "after",
             Identity {
                 mode: IdentityMode::ExplicitKey,
-                key_path: Some("/missing-after-policy-rejection".into()),
+                key_path: Some(
+                    std::env::temp_dir()
+                        .join("missing-after-policy-rejection")
+                        .to_string_lossy()
+                        .into_owned(),
+                ),
                 path_base: None,
             },
         )

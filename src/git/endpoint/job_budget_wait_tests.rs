@@ -391,7 +391,7 @@ fn ssh_endpoint(ran: Arc<AtomicBool>) -> (PlacementEndpoint, Supervisor) {
     .unwrap();
     let endpoint = PlacementEndpoint::new(
         endpoint,
-        std::path::PathBuf::from("/tmp"),
+        std::env::temp_dir(),
         "endpoint".into(),
         "owner".into(),
     )

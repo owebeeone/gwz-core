@@ -10,8 +10,8 @@ use crate::git::endpoint::{
     shared_reservation::Authority,
     ssh_channel::GitService,
     ssh_close_fixture::{
-        delayed_close_fixture, delayed_eof_fixture, gated_close_fixture, read_advertisement,
-        silent_fixture, stuck_close_fixture,
+        delayed_close_fixture, delayed_eof_fixture, dropped_close_fixture, gated_close_fixture,
+        read_advertisement, silent_fixture, stuck_close_fixture,
     },
     ssh_fixture::SshdFixture,
     ssh_local,
@@ -298,23 +298,16 @@ fn a_connection_in_background_close_counts_against_the_cap() {
     rig.fetch(stream);
 }
 
-// The fixture ends the server's own session process with `ps` and `kill -9`, which have no Windows twin here.
-cfg_if::cfg_if! {
-    if #[cfg(unix)] {
-        use crate::git::endpoint::ssh_close_fixture::dropped_close_fixture;
-
-        #[test]
-        fn a_background_close_that_drops_the_connection_is_never_reused() {
-            let rig = Rig::new(dropped_close_fixture(), 2, 5_000);
-            let (stream, _) = rig.open(GitService::UploadPack);
-            // libgit2 ignores the close's result: the fetch's stands whatever it is.
-            let _ = rig.fetch_result(stream);
-            rig.wait("discarded", |counts| counts.total() == 0);
-            let (stream, next) = rig.open(GitService::UploadPack);
-            assert!(!next.reused, "a connection whose close failed was reused");
-            drop(stream);
-        }
-    }
+#[test]
+fn a_background_close_that_drops_the_connection_is_never_reused() {
+    let rig = Rig::new(dropped_close_fixture(), 2, 5_000);
+    let (stream, _) = rig.open(GitService::UploadPack);
+    // libgit2 ignores the close's result: the fetch's stands whatever it is.
+    let _ = rig.fetch_result(stream);
+    rig.wait("discarded", |counts| counts.total() == 0);
+    let (stream, next) = rig.open(GitService::UploadPack);
+    assert!(!next.reused, "a connection whose close failed was reused");
+    drop(stream);
 }
 
 #[test]
@@ -369,8 +362,10 @@ fn a_stream_timeout_terminal_is_released_at_once() {
     );
 }
 
-// A shell script cannot end a channel's output and keep its process on Windows: MSYS's `exec` leaves a wrapper
-// process holding the channel's pipes, so the server never sends EOF and the row has nothing to wait for.
+// A Windows sshd.exe sends a channel's EOF only when the session's process exits, whatever has happened to the pipes
+// (step 1.5's native helper, run 2026-10-11, closed every handle to the output pipes in every process and got no
+// EOF until the process exited, when EOF, exit status and CLOSE came together), so no server process can end the
+// output and keep the channel open, and the row has nothing to wait for.
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
         #[test]
@@ -421,8 +416,10 @@ fn a_background_close_that_times_out_is_discarded() {
     }
 }
 
-// A shell script cannot end a channel's output and keep its process on Windows: MSYS's `exec` leaves a wrapper
-// process holding the channel's pipes, so the server never sends EOF and the row has nothing to wait for.
+// A Windows sshd.exe sends a channel's EOF only when the session's process exits, whatever has happened to the pipes
+// (step 1.5's native helper, run 2026-10-11, closed every handle to the output pipes in every process and got no
+// EOF until the process exited, when EOF, exit status and CLOSE came together), so no server process can end the
+// output and keep the channel open, and the row has nothing to wait for.
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
         #[test]

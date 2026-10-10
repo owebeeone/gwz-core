@@ -25,7 +25,9 @@ fn setup() -> (common::SshdFixture, git2::Oid, PathBuf, PathBuf) {
     let rsa = f.temp.path().join("client_rsa");
     common::run(
         std::process::Command::new("ssh-keygen")
-            .args(["-q", "-t", "rsa", "-b", "2048", "-N", ""])
+            .arg("-q")
+            .args(crate::git::endpoint::fixture_host::rsa_key_arguments())
+            .args(["-N", ""])
             .arg("-f")
             .arg(&rsa),
     );
@@ -91,109 +93,116 @@ fn clone(
     (reached, scoped.transport_observations().unwrap().snapshot())
 }
 
-#[test]
-fn candidate_url_passwords_authenticate_as_libgit2_uses_them() {
-    if std::env::var_os(host_context::CHILD).is_none() {
-        host_context::run_in_child_with(
-            module_path!(),
-            "candidate_url_passwords_authenticate_as_libgit2_uses_them",
-            &[(password_fixture::PYTHON, password_fixture::interpreter())],
-        );
-        return;
-    }
-    let (f, head, rsa, home) = setup();
-    let both = server(&f, &home, &rsa, &["password", "publickey"]);
-    let password_only = server(&f, &home, &rsa, &["password"]);
-    let keys_only = server(&f, &home, &rsa, &["publickey"]);
-    let ed25519 = f.temp.path().join("client_ed25519");
-    // The server, the URL's password, whether the clone succeeds, and the
-    // requests the server sees, on both routes alike.
-    let cases: [(Option<&PasswordSshd>, &str, bool, &[&str]); 6] = [
-        // The key-only sshd: the password is not offered, so keys authenticate.
-        (None, WRONG, true, &[]),
-        (Some(&both), PASSWORD, true, &["none", "password:accepted"]),
-        (
-            Some(&both),
-            WRONG,
-            true,
-            &[
-                "none",
-                "password:refused",
-                "publickey:query",
-                "publickey:accepted",
-            ],
-        ),
-        (
-            Some(&password_only),
-            WRONG,
-            false,
-            &["none", "password:refused"],
-        ),
-        (
-            Some(&password_only),
-            PASSWORD,
-            true,
-            &["none", "password:accepted"],
-        ),
-        (
-            Some(&keys_only),
-            PASSWORD,
-            true,
-            &["none", "publickey:query", "publickey:accepted"],
-        ),
-    ];
-    let mut differences = Vec::new();
-    for (index, (server, password, succeeds, expected)) in cases.into_iter().enumerate() {
-        let (port, key) = server.map_or((f.port, &ed25519), |s| (s.port, &rsa));
-        let url = format!(
-            "ssh://{}:{password}@127.0.0.1:{port}{}",
-            f.user,
-            f.repository.display()
-        );
-        let meta = meta(key);
-        let attempts = || {
-            server.map(|server| {
-                let seen = server.attempts();
-                server.clear();
-                seen
-            })
-        };
-        let ((transport, rows), cleanup) = crate::transport_host::with_local_transport(
-            meta.clone(),
-            format!("password-{index}"),
-            |backend| clone(backend, &f, &meta, &url, &format!("transport-{index}")),
-        )
-        .unwrap();
-        assert_eq!(cleanup.pending_local_work, 0);
-        let on_transport = attempts();
-        let (native, _) = clone(
-            &Git2Backend::new(),
-            &f,
-            &meta,
-            &url,
-            &format!("native-{index}"),
-        );
-        let on_native = attempts();
-        let expected = server.map(|_| expected.iter().map(|s| s.to_string()).collect::<Vec<_>>());
-        for (route, outcome, seen) in [
-            ("transport", &transport, &on_transport),
-            ("native", &native, &on_native),
-        ] {
-            if outcome.as_ref().is_ok_and(|reached| *reached == head) != succeeds
-                || *seen != expected
-            {
-                differences.push(format!(
-                    "case {index}: {route} {outcome:?} saw {seen:?}, expected success={succeeds} {expected:?}"
-                ));
+// The password-only server rows of this differential: on Windows the transport's first request to the password-only
+// server was a public-key one and the clone failed ("Authentication (attempt 2 of 4)", dabeest, 2026-10-11, case 4),
+// where the native route passed. Password-only servers are step 4.5's.
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        #[test]
+        fn candidate_url_passwords_authenticate_as_libgit2_uses_them() {
+            if std::env::var_os(host_context::CHILD).is_none() {
+                host_context::run_in_child_with(
+                    module_path!(),
+                    "candidate_url_passwords_authenticate_as_libgit2_uses_them",
+                    &[(password_fixture::PYTHON, password_fixture::interpreter())],
+                );
+                return;
             }
-        }
-        // The password is a secret: no error and no transport row holds it.
-        let shown = format!("{transport:?} {rows:?}");
-        if shown.contains(PASSWORD) || shown.contains(WRONG) {
-            differences.push(format!("case {index}: the transport showed the password"));
+            let (f, head, rsa, home) = setup();
+            let both = server(&f, &home, &rsa, &["password", "publickey"]);
+            let password_only = server(&f, &home, &rsa, &["password"]);
+            let keys_only = server(&f, &home, &rsa, &["publickey"]);
+            let ed25519 = f.temp.path().join("client_ed25519");
+            // The server, the URL's password, whether the clone succeeds, and the
+            // requests the server sees, on both routes alike.
+            let cases: [(Option<&PasswordSshd>, &str, bool, &[&str]); 6] = [
+                // The key-only sshd: the password is not offered, so keys authenticate.
+                (None, WRONG, true, &[]),
+                (Some(&both), PASSWORD, true, &["none", "password:accepted"]),
+                (
+                    Some(&both),
+                    WRONG,
+                    true,
+                    &[
+                        "none",
+                        "password:refused",
+                        "publickey:query",
+                        "publickey:accepted",
+                    ],
+                ),
+                (
+                    Some(&password_only),
+                    WRONG,
+                    false,
+                    &["none", "password:refused"],
+                ),
+                (
+                    Some(&password_only),
+                    PASSWORD,
+                    true,
+                    &["none", "password:accepted"],
+                ),
+                (
+                    Some(&keys_only),
+                    PASSWORD,
+                    true,
+                    &["none", "publickey:query", "publickey:accepted"],
+                ),
+            ];
+            let mut differences = Vec::new();
+            for (index, (server, password, succeeds, expected)) in cases.into_iter().enumerate() {
+                let (port, key) = server.map_or((f.port, &ed25519), |s| (s.port, &rsa));
+                let url = format!(
+                    "ssh://{}:{password}@127.0.0.1:{port}{}",
+                    f.user,
+                    common::server_path(&f.url_repository)
+                );
+                let meta = meta(key);
+                let attempts = || {
+                    server.map(|server| {
+                        let seen = server.attempts();
+                        server.clear();
+                        seen
+                    })
+                };
+                let ((transport, rows), cleanup) = crate::transport_host::with_local_transport(
+                    meta.clone(),
+                    format!("password-{index}"),
+                    |backend| clone(backend, &f, &meta, &url, &format!("transport-{index}")),
+                )
+                .unwrap();
+                assert_eq!(cleanup.pending_local_work, 0);
+                let on_transport = attempts();
+                let (native, _) = clone(
+                    &Git2Backend::new(),
+                    &f,
+                    &meta,
+                    &url,
+                    &format!("native-{index}"),
+                );
+                let on_native = attempts();
+                let expected = server.map(|_| expected.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+                for (route, outcome, seen) in [
+                    ("transport", &transport, &on_transport),
+                    ("native", &native, &on_native),
+                ] {
+                    if outcome.as_ref().is_ok_and(|reached| *reached == head) != succeeds
+                        || *seen != expected
+                    {
+                        differences.push(format!(
+                            "case {index}: {route} {outcome:?} saw {seen:?}, expected success={succeeds} {expected:?}"
+                        ));
+                    }
+                }
+                // The password is a secret: no error and no transport row holds it.
+                let shown = format!("{transport:?} {rows:?}");
+                if shown.contains(PASSWORD) || shown.contains(WRONG) {
+                    differences.push(format!("case {index}: the transport showed the password"));
+                }
+            }
+            assert!(differences.is_empty(), "{}", differences.join("\n"));
         }
     }
-    assert!(differences.is_empty(), "{}", differences.join("\n"));
 }
 
 #[test]
@@ -213,7 +222,7 @@ fn candidate_a_url_password_authenticates_only_its_own_connection() {
             "ssh://{}{password}@127.0.0.1:{}{}",
             f.user,
             both.port,
-            f.repository.display()
+            common::server_path(&f.url_repository)
         )
     };
     let meta = meta(&rsa);

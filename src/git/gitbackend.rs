@@ -42,7 +42,7 @@ pub(crate) fn credential_helper_timeout(error: &git2::Error) -> bool {
 mod transport_observations;
 mod transport_support;
 cfg_if::cfg_if! {
-    if #[cfg(all(test, unix, gwz_transport_candidate))] {
+    if #[cfg(all(test, gwz_transport_candidate, any(unix, gwz_windows_https_qualification)))] {
         mod transport_candidate_tests;
     }
 }

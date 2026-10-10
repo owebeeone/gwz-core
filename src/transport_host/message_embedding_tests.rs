@@ -372,13 +372,20 @@ pub(super) fn run(consumer: Consumer, cancel: bool, disconnect: bool) {
     assert_eq!(endpoint_report.pending_local_work, 0);
     assert_eq!(runtime_report.pending_local_work, 0);
 }
-#[test]
-fn rust_messages_embed_live_git_exchange() {
-    run(Consumer::Rust, false, false);
-}
-#[test]
-fn python_messages_embed_live_git_exchange() {
-    run(Consumer::Python, false, false);
+// These two let the clone run to its end through the CLI placement, whose endpoint is another process as far as the
+// host can tell: an open whose URL must not use the credential helpers is refused there, and Windows disables helpers
+// until the helper runner (WH2, steps 4.3 and 4.4). The rows that cancel or disconnect first do not reach the open.
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        #[test]
+        fn rust_messages_embed_live_git_exchange() {
+            run(Consumer::Rust, false, false);
+        }
+        #[test]
+        fn python_messages_embed_live_git_exchange() {
+            run(Consumer::Python, false, false);
+        }
+    }
 }
 #[test]
 fn rust_messages_cancel_while_delivery_is_paused() {

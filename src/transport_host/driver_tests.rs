@@ -59,7 +59,7 @@ pub(super) fn fixture_url(fixture: &common::SshdFixture) -> String {
         "ssh://{}@127.0.0.1:{}{}",
         fixture.user,
         fixture.port,
-        fixture.repository.display()
+        common::server_path(&fixture.url_repository)
     )
 }
 
@@ -112,8 +112,31 @@ fn sequential_local_requests_reuse_an_idle_ssh_connection() {
             connection = row.connection_id;
         }
         assert_eq!(block_on(request.finish()).pending_local_work, 0);
+        // The member is done at libssh2's close, and its connection is leased, and counted, until the server's close
+        // ends and the worker returns it: a second request that came sooner would open a connection of its own.
+        // How soon that is depends on how fast the server's session ends (a Windows `sshd.exe` takes longer).
+        wait_for_an_idle_connection(&runtime);
     }
     block_on(runtime.shutdown());
+}
+
+/// Waits until the runtime's local SSH pool holds one idle connection and no leased one.
+fn wait_for_an_idle_connection(runtime: &TransportRuntime) {
+    let endpoint = runtime
+        .0
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .local_endpoint
+        .clone();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let counts = endpoint.ssh_counts_for_test().unwrap();
+        if (counts.idle, counts.leased) == (1, 0) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "no idle connection: {counts:?}");
+        thread::sleep(Duration::from_millis(5));
+    }
 }
 
 #[test]
@@ -209,86 +232,6 @@ impl CliHarness {
 }
 
 #[test]
-fn cli_driver_operations_share_one_host_scoped_request() {
-    let harness = CliHarness::new();
-    let server = git2::Repository::open_bare(&harness.fixture.repository).unwrap();
-    let first = commit(&server, "first");
-    let request_meta = harness.meta("host-driver");
-    let client = harness
-        .endpoint
-        .register_request(&request_meta.request_id)
-        .unwrap();
-    let request = block_on(
-        harness
-            .runtime
-            .request(request_meta.clone(), "clone".into()),
-    )
-    .unwrap();
-    let target = harness.fixture.temp.path().join("clone");
-    let backend = request
-        .backend()
-        .with_transport(harness.fixture.temp.path(), request_meta.transport.as_ref())
-        .unwrap()
-        .unwrap();
-
-    backend
-        .clone_repo(&fixture_url(&harness.fixture), &target)
-        .unwrap();
-    assert!(
-        backend
-            .ls_remote(&target, "origin")
-            .unwrap()
-            .iter()
-            .any(|item| item.target == first.to_string())
-    );
-    backend.fetch(&target, "origin").unwrap();
-    server
-        .tag_lightweight("fixture", &server.find_object(first, None).unwrap(), false)
-        .unwrap();
-    backend.tag_fetch(&target, "origin").unwrap();
-    assert_eq!(
-        backend
-            .read_remote_file(&fixture_url(&harness.fixture), "origin", "payload")
-            .unwrap(),
-        Some(b"first".to_vec())
-    );
-    let local = git2::Repository::open(&target).unwrap();
-    let pushed = commit(&local, "local");
-    backend
-        .push(&target, "origin", "refs/heads/main:refs/heads/published")
-        .unwrap();
-    assert_eq!(
-        server
-            .find_reference("refs/heads/published")
-            .unwrap()
-            .target(),
-        Some(pushed)
-    );
-    let rows = backend.transport_observations().unwrap().snapshot();
-    assert!(rows.len() >= 6);
-    assert!(rows.iter().all(|row| row.authenticated == Some(true)));
-    assert!(
-        rows.iter()
-            .all(|row| row.endpoint_id.is_some() && row.stream_id.is_some())
-    );
-    assert_eq!(rows.iter().filter(|row| row.credential_offered).count(), 1);
-    let connection = rows[0]
-        .connection_id
-        .clone()
-        .expect("endpoint connection ID");
-    assert!(
-        rows.iter()
-            .all(|row| row.connection_id.as_ref() == Some(&connection))
-    );
-    assert!(rows.iter().skip(1).all(|row| row.reused == Some(true)));
-    assert!(!harness.fixture.marker.exists());
-
-    let _ = block_on(request.finish());
-    let _ = block_on(client.finish());
-    let _ = block_on(harness.endpoint.shutdown());
-}
-
-#[test]
 fn host_scope_rejects_metadata_or_operation_changes_before_transport() {
     let harness = CliHarness::new();
     let request_meta = harness.meta("scope-check");
@@ -342,7 +285,7 @@ fn cli_preflight_checks_every_selected_identity_before_any_target_runs() {
     .unwrap();
     let result = request
         .backend()
-        .with_transport(Path::new("/tmp"), request_meta.transport.as_ref());
+        .with_transport(&std::env::temp_dir(), request_meta.transport.as_ref());
     assert!(result.is_err());
     assert!(!harness.fixture.temp.path().join("last-target").exists());
     let _ = block_on(request.finish());
@@ -367,7 +310,7 @@ fn explicit_cli_rejects_non_ssh_without_native_fallback() {
     let options = request_meta.transport.as_ref().unwrap();
     let scoped = request
         .backend()
-        .with_transport(Path::new("/tmp"), Some(options))
+        .with_transport(&std::env::temp_dir(), Some(options))
         .unwrap()
         .unwrap();
     let result = scoped.clone_repo(
@@ -380,272 +323,6 @@ fn explicit_cli_rejects_non_ssh_without_native_fallback() {
     let _ = block_on(request.finish());
     let _ = block_on(client.finish());
     let _ = block_on(harness.endpoint.shutdown());
-}
-
-#[test]
-fn host_scoped_workspace_drivers_keep_request_identity_across_init_and_fetch() {
-    let harness = CliHarness::new();
-    let server = git2::Repository::open_bare(&harness.fixture.repository).unwrap();
-    commit(&server, "first");
-    let root = harness.fixture.temp.path().join("workspace");
-    std::fs::create_dir(&root).unwrap();
-    let source = crate::SourceUrl {
-        url: fixture_url(&harness.fixture),
-        path: Some("member".into()),
-        remote_name: None,
-        branch: None,
-    };
-
-    let init_meta = harness.meta("workspace-init");
-    let init_client = harness
-        .endpoint
-        .register_request(&init_meta.request_id)
-        .unwrap();
-    let init_request = block_on(harness.runtime.request(init_meta.clone(), "init".into())).unwrap();
-    let init = handle_init_from_sources(
-        init_request.backend(),
-        &root,
-        crate::InitFromSourcesRequest {
-            meta: init_meta,
-            workspace_root: root.to_string_lossy().into_owned(),
-            sources: vec![source],
-            ..Default::default()
-        },
-        "init",
-        &NullSink,
-    )
-    .unwrap();
-    assert_eq!(
-        init.response.meta.aggregate_status,
-        crate::AggregateStatus::Ok
-    );
-    let _ = block_on(init_request.finish());
-    let _ = block_on(init_client.finish());
-
-    let fetch_meta = harness.meta("workspace-fetch");
-    let fetch_client = harness
-        .endpoint
-        .register_request(&fetch_meta.request_id)
-        .unwrap();
-    let fetch_request =
-        block_on(harness.runtime.request(fetch_meta.clone(), "fetch".into())).unwrap();
-    let fetch = handle_fetch(
-        fetch_request.backend(),
-        &root,
-        crate::FetchRequest { meta: fetch_meta },
-        "fetch",
-    )
-    .unwrap();
-    assert!(matches!(
-        fetch.response.meta.aggregate_status,
-        crate::AggregateStatus::Ok | crate::AggregateStatus::Noop
-    ));
-    let _ = block_on(fetch_request.finish());
-    let _ = block_on(fetch_client.finish());
-
-    std::fs::remove_dir_all(root.join("member")).unwrap();
-    let materialize_meta = harness.meta("workspace-materialize");
-    let materialize_client = harness
-        .endpoint
-        .register_request(&materialize_meta.request_id)
-        .unwrap();
-    let materialize_request = block_on(
-        harness
-            .runtime
-            .request(materialize_meta.clone(), "materialize".into()),
-    )
-    .unwrap();
-    let materialize = handle_materialize(
-        materialize_request.backend(),
-        &root,
-        crate::MaterializeRequest {
-            meta: materialize_meta,
-            target: crate::MaterializeTarget {
-                kind: crate::MaterializeTargetKind::Lock,
-                ..Default::default()
-            },
-        },
-        "materialize",
-        &NullSink,
-    )
-    .unwrap();
-    assert!(matches!(
-        materialize.response.meta.aggregate_status,
-        crate::AggregateStatus::Ok | crate::AggregateStatus::Noop
-    ));
-    let _ = block_on(materialize_request.finish());
-    let _ = block_on(materialize_client.finish());
-
-    let mut sync_meta = harness.meta("workspace-repo-sync");
-    sync_meta.transport = None;
-    let sync_client = harness
-        .endpoint
-        .register_request(&sync_meta.request_id)
-        .unwrap();
-    let sync_request = block_on(
-        harness
-            .runtime
-            .request(sync_meta.clone(), "repo-sync".into()),
-    )
-    .unwrap();
-    handle_repo_sync(
-        sync_request.backend(),
-        &root,
-        crate::RepoSyncRequest {
-            meta: sync_meta,
-            private: Some(false),
-        },
-        "repo-sync",
-    )
-    .unwrap();
-    let _ = block_on(sync_request.finish());
-    let _ = block_on(sync_client.finish());
-    let _ = block_on(harness.endpoint.shutdown());
-}
-
-#[test]
-fn cli_endpoint_preserves_repository_refusal_and_reuses_binding_after_failure() {
-    let harness = CliHarness::new();
-    let script = harness.fixture.temp.path().join("refuse-missing.sh");
-    crate::git::endpoint::helper_script::write_helper_script(
-        &script,
-        "case \"$SSH_ORIGINAL_COMMAND\" in\n *-missing*) echo 'ERROR: Repository not found.' >&2; exit 1 ;;\n *) eval \"$SSH_ORIGINAL_COMMAND\" ;;\nesac\n",
-    );
-    let public =
-        std::fs::read_to_string(harness.fixture.temp.path().join("client_ed25519.pub")).unwrap();
-    std::fs::write(
-        harness.fixture.temp.path().join("authorized_keys"),
-        format!("command=\"{}\" {}", script.display(), public),
-    )
-    .unwrap();
-    let server = git2::Repository::open_bare(&harness.fixture.repository).unwrap();
-    commit(&server, "first");
-    let request_meta = harness.meta("refusal");
-    let client = harness
-        .endpoint
-        .register_request(&request_meta.request_id)
-        .unwrap();
-    let request = block_on(
-        harness
-            .runtime
-            .request(request_meta.clone(), "clone".into()),
-    )
-    .unwrap();
-    let backend = request
-        .backend()
-        .with_transport(harness.fixture.temp.path(), request_meta.transport.as_ref())
-        .unwrap()
-        .unwrap();
-    let error = backend
-        .clone_repo(
-            &format!("{}-missing", fixture_url(&harness.fixture)),
-            &harness.fixture.temp.path().join("absent"),
-        )
-        .unwrap_err();
-    assert_eq!(error.code, crate::model::ErrorCode::RemoteRejected);
-    let denied = backend
-        .transport_observations()
-        .unwrap()
-        .snapshot()
-        .pop()
-        .unwrap();
-    assert_eq!(denied.authenticated, Some(true));
-    assert!(denied.endpoint_id.is_some());
-    backend
-        .clone_repo(
-            &fixture_url(&harness.fixture),
-            &harness.fixture.temp.path().join("present"),
-        )
-        .unwrap();
-    assert_eq!(block_on(request.finish()).pending_local_work, 0);
-    block_on(client.finish());
-    block_on(harness.endpoint.shutdown());
-}
-
-#[test]
-fn cli_authentication_failure_retains_attempt_facts_without_claiming_an_open_stream() {
-    let harness = CliHarness::new();
-    std::fs::write(harness.fixture.temp.path().join("authorized_keys"), "").unwrap();
-    let request_meta = harness.meta("authentication");
-    let client = harness
-        .endpoint
-        .register_request(&request_meta.request_id)
-        .unwrap();
-    let request = block_on(
-        harness
-            .runtime
-            .request(request_meta.clone(), "clone".into()),
-    )
-    .unwrap();
-    let backend = request
-        .backend()
-        .with_transport(harness.fixture.temp.path(), request_meta.transport.as_ref())
-        .unwrap()
-        .unwrap();
-    let error = backend
-        .clone_repo(
-            &fixture_url(&harness.fixture),
-            &harness.fixture.temp.path().join("denied"),
-        )
-        .unwrap_err();
-    assert_eq!(error.code, crate::model::ErrorCode::RemoteRejected);
-    let row = backend
-        .transport_observations()
-        .unwrap()
-        .snapshot()
-        .pop()
-        .unwrap();
-    assert!(row.credential_offered);
-    assert_eq!(row.authenticated, Some(false));
-    assert!(row.connection_id.is_none());
-    block_on(request.finish());
-    block_on(client.finish());
-    block_on(harness.endpoint.shutdown());
-}
-
-#[test]
-fn cli_one_request_supports_concurrent_git_streams() {
-    let harness = CliHarness::new();
-    let server = git2::Repository::open_bare(&harness.fixture.repository).unwrap();
-    commit(&server, "concurrent");
-    let request_meta = harness.meta("fanout");
-    let client = harness
-        .endpoint
-        .register_request(&request_meta.request_id)
-        .unwrap();
-    let request = block_on(
-        harness
-            .runtime
-            .request(request_meta.clone(), "clone".into()),
-    )
-    .unwrap();
-    let backend = request
-        .backend()
-        .with_transport(harness.fixture.temp.path(), request_meta.transport.as_ref())
-        .unwrap()
-        .unwrap();
-    thread::scope(|threads| {
-        let jobs: Vec<_> = (0..crate::operation::resolve_jobs(None))
-            .map(|index| {
-                let backend = backend.clone();
-                let url = fixture_url(&harness.fixture);
-                let target = harness.fixture.temp.path().join(format!("fanout-{index}"));
-                threads.spawn(move || backend.clone_repo(&url, &target))
-            })
-            .collect();
-        for job in jobs {
-            job.join().unwrap().unwrap();
-        }
-    });
-    let rows = backend.transport_observations().unwrap().snapshot();
-    assert_eq!(rows.len(), crate::operation::resolve_jobs(None));
-    assert!(rows.iter().all(|row| row.authenticated == Some(true)));
-    let streams: std::collections::BTreeSet<_> =
-        rows.iter().map(|row| row.stream_id.unwrap()).collect();
-    assert_eq!(streams.len(), crate::operation::resolve_jobs(None));
-    block_on(request.finish());
-    block_on(client.finish());
-    block_on(harness.endpoint.shutdown());
 }
 
 /// A raw upload-pack stream through the CLI endpoint, read past the server's
@@ -789,4 +466,358 @@ fn cli_open_rechecks_a_selected_file_after_successful_preflight() {
     block_on(request.finish());
     block_on(client.finish());
     block_on(harness.endpoint.shutdown());
+}
+
+// The refusal script is a POSIX helper script forced in `authorized_keys`: it waits for step 4.3's Windows
+// fake-helper form and step 4.11. The tests that open SSH through the CLI placement wait for the same: its endpoint is
+// another process as far as the host can tell, so an open whose URL must not use the credential helpers is refused
+// there, and Windows disables helpers until the helper runner (WH2, steps 4.3 and 4.4).
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        #[test]
+        fn cli_endpoint_preserves_repository_refusal_and_reuses_binding_after_failure() {
+            let harness = CliHarness::new();
+            let script = harness.fixture.temp.path().join("refuse-missing.sh");
+            crate::git::endpoint::helper_script::write_helper_script(
+                &script,
+                "case \"$SSH_ORIGINAL_COMMAND\" in\n *-missing*) echo 'ERROR: Repository not found.' >&2; exit 1 ;;\n *) eval \"$SSH_ORIGINAL_COMMAND\" ;;\nesac\n",
+            );
+            let public =
+                std::fs::read_to_string(harness.fixture.temp.path().join("client_ed25519.pub")).unwrap();
+            std::fs::write(
+                harness.fixture.temp.path().join("authorized_keys"),
+                format!("command=\"{}\" {}", script.display(), public),
+            )
+            .unwrap();
+            let server = git2::Repository::open_bare(&harness.fixture.repository).unwrap();
+            commit(&server, "first");
+            let request_meta = harness.meta("refusal");
+            let client = harness
+                .endpoint
+                .register_request(&request_meta.request_id)
+                .unwrap();
+            let request = block_on(
+                harness
+                    .runtime
+                    .request(request_meta.clone(), "clone".into()),
+            )
+            .unwrap();
+            let backend = request
+                .backend()
+                .with_transport(harness.fixture.temp.path(), request_meta.transport.as_ref())
+                .unwrap()
+                .unwrap();
+            let error = backend
+                .clone_repo(
+                    &format!("{}-missing", fixture_url(&harness.fixture)),
+                    &harness.fixture.temp.path().join("absent"),
+                )
+                .unwrap_err();
+            assert_eq!(error.code, crate::model::ErrorCode::RemoteRejected);
+            let denied = backend
+                .transport_observations()
+                .unwrap()
+                .snapshot()
+                .pop()
+                .unwrap();
+            assert_eq!(denied.authenticated, Some(true));
+            assert!(denied.endpoint_id.is_some());
+            backend
+                .clone_repo(
+                    &fixture_url(&harness.fixture),
+                    &harness.fixture.temp.path().join("present"),
+                )
+                .unwrap();
+            assert_eq!(block_on(request.finish()).pending_local_work, 0);
+            block_on(client.finish());
+            block_on(harness.endpoint.shutdown());
+        }
+
+        #[test]
+        fn cli_driver_operations_share_one_host_scoped_request() {
+            let harness = CliHarness::new();
+            let server = git2::Repository::open_bare(&harness.fixture.repository).unwrap();
+            let first = commit(&server, "first");
+            let request_meta = harness.meta("host-driver");
+            let client = harness
+                .endpoint
+                .register_request(&request_meta.request_id)
+                .unwrap();
+            let request = block_on(
+                harness
+                    .runtime
+                    .request(request_meta.clone(), "clone".into()),
+            )
+            .unwrap();
+            let target = harness.fixture.temp.path().join("clone");
+            let backend = request
+                .backend()
+                .with_transport(harness.fixture.temp.path(), request_meta.transport.as_ref())
+                .unwrap()
+                .unwrap();
+
+            backend
+                .clone_repo(&fixture_url(&harness.fixture), &target)
+                .unwrap();
+            assert!(
+                backend
+                    .ls_remote(&target, "origin")
+                    .unwrap()
+                    .iter()
+                    .any(|item| item.target == first.to_string())
+            );
+            backend.fetch(&target, "origin").unwrap();
+            server
+                .tag_lightweight("fixture", &server.find_object(first, None).unwrap(), false)
+                .unwrap();
+            backend.tag_fetch(&target, "origin").unwrap();
+            assert_eq!(
+                backend
+                    .read_remote_file(&fixture_url(&harness.fixture), "origin", "payload")
+                    .unwrap(),
+                Some(b"first".to_vec())
+            );
+            let local = git2::Repository::open(&target).unwrap();
+            let pushed = commit(&local, "local");
+            backend
+                .push(&target, "origin", "refs/heads/main:refs/heads/published")
+                .unwrap();
+            assert_eq!(
+                server
+                    .find_reference("refs/heads/published")
+                    .unwrap()
+                    .target(),
+                Some(pushed)
+            );
+            let rows = backend.transport_observations().unwrap().snapshot();
+            assert!(rows.len() >= 6);
+            assert!(rows.iter().all(|row| row.authenticated == Some(true)));
+            assert!(
+                rows.iter()
+                    .all(|row| row.endpoint_id.is_some() && row.stream_id.is_some())
+            );
+            assert_eq!(rows.iter().filter(|row| row.credential_offered).count(), 1);
+            let connection = rows[0]
+                .connection_id
+                .clone()
+                .expect("endpoint connection ID");
+            assert!(
+                rows.iter()
+                    .all(|row| row.connection_id.as_ref() == Some(&connection))
+            );
+            assert!(rows.iter().skip(1).all(|row| row.reused == Some(true)));
+            assert!(!harness.fixture.marker.exists());
+
+            let _ = block_on(request.finish());
+            let _ = block_on(client.finish());
+            let _ = block_on(harness.endpoint.shutdown());
+        }
+
+        #[test]
+        fn host_scoped_workspace_drivers_keep_request_identity_across_init_and_fetch() {
+            let harness = CliHarness::new();
+            let server = git2::Repository::open_bare(&harness.fixture.repository).unwrap();
+            commit(&server, "first");
+            let root = harness.fixture.temp.path().join("workspace");
+            std::fs::create_dir(&root).unwrap();
+            let source = crate::SourceUrl {
+                url: fixture_url(&harness.fixture),
+                path: Some("member".into()),
+                remote_name: None,
+                branch: None,
+            };
+
+            let init_meta = harness.meta("workspace-init");
+            let init_client = harness
+                .endpoint
+                .register_request(&init_meta.request_id)
+                .unwrap();
+            let init_request = block_on(harness.runtime.request(init_meta.clone(), "init".into())).unwrap();
+            let init = handle_init_from_sources(
+                init_request.backend(),
+                &root,
+                crate::InitFromSourcesRequest {
+                    meta: init_meta,
+                    workspace_root: root.to_string_lossy().into_owned(),
+                    sources: vec![source],
+                    ..Default::default()
+                },
+                "init",
+                &NullSink,
+            )
+            .unwrap();
+            assert_eq!(
+                init.response.meta.aggregate_status,
+                crate::AggregateStatus::Ok
+            );
+            let _ = block_on(init_request.finish());
+            let _ = block_on(init_client.finish());
+
+            let fetch_meta = harness.meta("workspace-fetch");
+            let fetch_client = harness
+                .endpoint
+                .register_request(&fetch_meta.request_id)
+                .unwrap();
+            let fetch_request =
+                block_on(harness.runtime.request(fetch_meta.clone(), "fetch".into())).unwrap();
+            let fetch = handle_fetch(
+                fetch_request.backend(),
+                &root,
+                crate::FetchRequest { meta: fetch_meta },
+                "fetch",
+            )
+            .unwrap();
+            assert!(matches!(
+                fetch.response.meta.aggregate_status,
+                crate::AggregateStatus::Ok | crate::AggregateStatus::Noop
+            ));
+            let _ = block_on(fetch_request.finish());
+            let _ = block_on(fetch_client.finish());
+
+            std::fs::remove_dir_all(root.join("member")).unwrap();
+            let materialize_meta = harness.meta("workspace-materialize");
+            let materialize_client = harness
+                .endpoint
+                .register_request(&materialize_meta.request_id)
+                .unwrap();
+            let materialize_request = block_on(
+                harness
+                    .runtime
+                    .request(materialize_meta.clone(), "materialize".into()),
+            )
+            .unwrap();
+            let materialize = handle_materialize(
+                materialize_request.backend(),
+                &root,
+                crate::MaterializeRequest {
+                    meta: materialize_meta,
+                    target: crate::MaterializeTarget {
+                        kind: crate::MaterializeTargetKind::Lock,
+                        ..Default::default()
+                    },
+                },
+                "materialize",
+                &NullSink,
+            )
+            .unwrap();
+            assert!(matches!(
+                materialize.response.meta.aggregate_status,
+                crate::AggregateStatus::Ok | crate::AggregateStatus::Noop
+            ));
+            let _ = block_on(materialize_request.finish());
+            let _ = block_on(materialize_client.finish());
+
+            let mut sync_meta = harness.meta("workspace-repo-sync");
+            sync_meta.transport = None;
+            let sync_client = harness
+                .endpoint
+                .register_request(&sync_meta.request_id)
+                .unwrap();
+            let sync_request = block_on(
+                harness
+                    .runtime
+                    .request(sync_meta.clone(), "repo-sync".into()),
+            )
+            .unwrap();
+            handle_repo_sync(
+                sync_request.backend(),
+                &root,
+                crate::RepoSyncRequest {
+                    meta: sync_meta,
+                    private: Some(false),
+                },
+                "repo-sync",
+            )
+            .unwrap();
+            let _ = block_on(sync_request.finish());
+            let _ = block_on(sync_client.finish());
+            let _ = block_on(harness.endpoint.shutdown());
+        }
+
+        #[test]
+        fn cli_authentication_failure_retains_attempt_facts_without_claiming_an_open_stream() {
+            let harness = CliHarness::new();
+            std::fs::write(harness.fixture.temp.path().join("authorized_keys"), "").unwrap();
+            let request_meta = harness.meta("authentication");
+            let client = harness
+                .endpoint
+                .register_request(&request_meta.request_id)
+                .unwrap();
+            let request = block_on(
+                harness
+                    .runtime
+                    .request(request_meta.clone(), "clone".into()),
+            )
+            .unwrap();
+            let backend = request
+                .backend()
+                .with_transport(harness.fixture.temp.path(), request_meta.transport.as_ref())
+                .unwrap()
+                .unwrap();
+            let error = backend
+                .clone_repo(
+                    &fixture_url(&harness.fixture),
+                    &harness.fixture.temp.path().join("denied"),
+                )
+                .unwrap_err();
+            assert_eq!(error.code, crate::model::ErrorCode::RemoteRejected);
+            let row = backend
+                .transport_observations()
+                .unwrap()
+                .snapshot()
+                .pop()
+                .unwrap();
+            assert!(row.credential_offered);
+            assert_eq!(row.authenticated, Some(false));
+            assert!(row.connection_id.is_none());
+            block_on(request.finish());
+            block_on(client.finish());
+            block_on(harness.endpoint.shutdown());
+        }
+
+        #[test]
+        fn cli_one_request_supports_concurrent_git_streams() {
+            let harness = CliHarness::new();
+            let server = git2::Repository::open_bare(&harness.fixture.repository).unwrap();
+            commit(&server, "concurrent");
+            let request_meta = harness.meta("fanout");
+            let client = harness
+                .endpoint
+                .register_request(&request_meta.request_id)
+                .unwrap();
+            let request = block_on(
+                harness
+                    .runtime
+                    .request(request_meta.clone(), "clone".into()),
+            )
+            .unwrap();
+            let backend = request
+                .backend()
+                .with_transport(harness.fixture.temp.path(), request_meta.transport.as_ref())
+                .unwrap()
+                .unwrap();
+            thread::scope(|threads| {
+                let jobs: Vec<_> = (0..crate::operation::resolve_jobs(None))
+                    .map(|index| {
+                        let backend = backend.clone();
+                        let url = fixture_url(&harness.fixture);
+                        let target = harness.fixture.temp.path().join(format!("fanout-{index}"));
+                        threads.spawn(move || backend.clone_repo(&url, &target))
+                    })
+                    .collect();
+                for job in jobs {
+                    job.join().unwrap().unwrap();
+                }
+            });
+            let rows = backend.transport_observations().unwrap().snapshot();
+            assert_eq!(rows.len(), crate::operation::resolve_jobs(None));
+            assert!(rows.iter().all(|row| row.authenticated == Some(true)));
+            let streams: std::collections::BTreeSet<_> =
+                rows.iter().map(|row| row.stream_id.unwrap()).collect();
+            assert_eq!(streams.len(), crate::operation::resolve_jobs(None));
+            block_on(request.finish());
+            block_on(client.finish());
+            block_on(harness.endpoint.shutdown());
+        }
+    }
 }

@@ -2,6 +2,7 @@
   "entries": [
     {"path": "src/git/endpoint/ssh_password_helpers.rs", "kind": "gate", "gate": "unix", "target": "arm: fn lookup", "state": "unported", "owner": ["4.5"], "appendix": "G36"},
     {"path": "src/git/endpoint/ssh_tests/mod.rs", "kind": "gate", "gate": "unix", "target": "mod password_helpers", "state": "unported", "owner": ["4.5"], "appendix": "G48"},
-    {"path": "src/git/endpoint/ssh_tests/password_helpers.rs", "kind": "os", "gate": "libc::kill", "target": "", "state": "unported", "owner": ["4.5"], "appendix": "G50"}
+    {"path": "src/git/endpoint/ssh_tests/password_helpers.rs", "kind": "os", "gate": "libc::kill", "target": "", "state": "unported", "owner": ["4.5"], "appendix": "G50"},
+    {"path": "src/git/gitbackend/transport_candidate_tests/url_password.rs", "kind": "gate", "gate": "unix", "target": "arm: fn candidate_url_passwords_authenticate_as_libgit2_uses_them", "state": "unported", "owner": ["4.5"], "appendix": "new (step 1.8 ungated the module): the differential over password-only servers; on Windows the transport's first request to the password-only server was a public-key one (case 4, dabeest 2026-10-11) where the native route passed"}
   ]
 }

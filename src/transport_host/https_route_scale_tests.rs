@@ -27,8 +27,10 @@ fn list_all(jobs: u32, per_host: u32) -> Vec<String> {
         let root = tempfile::tempdir().unwrap();
         let (repository, commit) = repository(root.path());
         for index in 0..COUNT {
-            std::os::unix::fs::symlink(&repository, root.path().join(format!("repo-{index}")))
-                .unwrap();
+            crate::git::endpoint::fixture_host::make_symlink(
+                &repository,
+                &root.path().join(format!("repo-{index}")),
+            );
         }
         let repository = Arc::new(repository);
         let server = fixture::Server::start(Arc::new(move |request| {

@@ -176,15 +176,12 @@ fn shutdown_reports_blocked_physical_disposal_then_eventual_zero() {
     assert_eq!(report.pending_local_work, 0);
 }
 
-// This fixture constructs the real Unix SSH endpoint. The disposal test above
-// uses portable pool resources and remains available on Windows.
-cfg_if::cfg_if! { if #[cfg(unix)] {
 #[test]
 fn completed_request_retirement_cannot_expire_the_shared_session() {
     use crate::transport_host::{SshEndpointConfig, TransportRuntime};
     use crate::{RequestMeta, TransportOptions, TransportPlacement};
     let runtime = TransportRuntime::new(SshEndpointConfig::fixture(
-        std::path::PathBuf::from("/nonexistent-endpoint-home"),
+        std::env::temp_dir().join("nonexistent-endpoint-home"),
         None,
     ))
     .unwrap();
@@ -197,16 +194,10 @@ fn completed_request_retirement_cannot_expire_the_shared_session() {
         }),
         ..Default::default()
     };
-    let request = block_on(
-        runtime.request(request_meta("retired"), "fetch".into()),
-    )
-    .unwrap();
+    let request = block_on(runtime.request(request_meta("retired"), "fetch".into())).unwrap();
     let session = request.context.session.clone();
     let endpoint = runtime.0.lock().unwrap().local_endpoint.clone();
-    assert_eq!(
-        block_on(request.finish()).pending_local_work,
-        0
-    );
+    assert_eq!(block_on(request.finish()).pending_local_work, 0);
     for side in [&session, &endpoint] {
         let mut state = side.state.lock().unwrap();
         let record = state.registrations.get_mut("retired").unwrap();
@@ -225,21 +216,10 @@ fn completed_request_retirement_cannot_expire_the_shared_session() {
         !session.is_closed(),
         "completed retirement killed the shared session"
     );
-    let next = block_on(
-        runtime.request(request_meta("next"), "fetch".into()),
-    )
-    .unwrap();
-    assert_eq!(
-        block_on(next.finish()).pending_local_work,
-        0
-    );
-    assert_eq!(
-        block_on(runtime.shutdown()).pending_local_work,
-        0
-    );
+    let next = block_on(runtime.request(request_meta("next"), "fetch".into())).unwrap();
+    assert_eq!(block_on(next.finish()).pending_local_work, 0);
+    assert_eq!(block_on(runtime.shutdown()).pending_local_work, 0);
 }
-
-} }
 
 /// Poll portable session cleanup with a finite fixture deadline.
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
