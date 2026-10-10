@@ -31,6 +31,7 @@ impl Session {
                 UrlExtras::new(destination.written_host.clone(), password)
                     .with_helpers(helpers_allowed)
             });
+        let shown = (destination.key.host.clone(), destination.key.port);
         let policy = if identity.mode == IdentityMode::ExplicitKey {
             AuthPolicy::SshExplicit
         } else {
@@ -61,7 +62,7 @@ impl Session {
         )
         .map_err(|failure| {
             let attempts = setup_retry::reported_attempt(&failure);
-            failure_io(failure, attempts)
+            open_failure_io(failure, attempts, shown.0, shown.1)
         })
     }
     pub(in crate::transport_host) fn open_https(

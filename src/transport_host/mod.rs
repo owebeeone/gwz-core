@@ -83,8 +83,8 @@ pub fn validate_request_context(meta: &RequestMeta, operation_id: &str) -> Model
 }
 pub(crate) use request::{HttpsAttemptReceipt, HttpsOpenFailure, RequestContext};
 use session::Session;
-pub(crate) use session::SshOpenFailure;
 pub use session::{Attachment, TransportPort};
+pub(crate) use session::{SshLimitFailure, SshOpenFailure};
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},

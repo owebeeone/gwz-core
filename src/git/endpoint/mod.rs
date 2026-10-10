@@ -17,6 +17,7 @@ pub(crate) mod ssh_handoff;
 pub(crate) mod ssh_key_auth;
 pub(crate) mod ssh_key_container;
 pub(crate) mod ssh_key_snapshot;
+pub(crate) mod ssh_limits;
 pub(crate) mod ssh_local;
 pub(crate) mod ssh_network;
 pub(crate) mod ssh_password_helpers;
@@ -75,6 +76,9 @@ pub(crate) mod idle_watch;
 pub(crate) mod ssh_password;
 pub(crate) mod ssh_setup;
 cfg_if::cfg_if! { if #[cfg(test)] { mod ssh_tests; } }
+
+// Step 3.5: Pageant's exchange primitive. Its pure rules compile everywhere; the OS calls are Windows'.
+pub(crate) mod pageant_exchange;
 
 // Step 1.5: option A's sshd close fixture (ungated; it has a Windows form of its forced script).
 cfg_if::cfg_if! { if #[cfg(test)] { pub(crate) mod ssh_close_fixture; } }

@@ -36,7 +36,7 @@ mod port;
 mod requests;
 cfg_if::cfg_if! { if #[cfg(test)] { mod wake_tests; } }
 mod wait;
-pub(crate) use driver::SshOpenFailure;
+pub(crate) use driver::{SshLimitFailure, SshOpenFailure};
 pub(super) use local_link::LocalLink;
 use wait::Wait;
 pub type Attachment = (String, Envelope);

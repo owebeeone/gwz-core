@@ -6,6 +6,7 @@ use super::{
     ssh_connection::SshConnection,
     ssh_key_auth::Verified,
     ssh_key_snapshot::Entry,
+    ssh_limits::SshLimit,
     ssh_pool::{Connector, Opening, Progress, Resource},
     ssh_pump::SshPump,
     ssh_setup_context::SetupContext,
@@ -569,6 +570,9 @@ fn timeout_failure(reason: TimeoutReason) -> Failure {
 pub(crate) fn failure_from_io(error: &io::Error) -> Failure {
     if let Some(reason) = timeout_reason(error) {
         return timeout_failure(reason);
+    }
+    if let Some(limit) = SshLimit::of_error(error) {
+        return limit.failure();
     }
     failure(error.kind())
 }

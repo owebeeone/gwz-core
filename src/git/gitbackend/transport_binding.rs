@@ -177,9 +177,10 @@ cfg_if::cfg_if! {
                     self.report.clone(),
                     self.facts.clone(),
                 ).inspect_err(|error| {
-                    if let Some(failed) = error.get_ref().and_then(|e| e.downcast_ref::<crate::transport_host::SshOpenFailure>())
-                        && let Some(error) = failed.model_error(self.context.is_cli())
-                        && let Some(attempt) = &self.attempt {
+                    let reported = error.get_ref().and_then(|e| e.downcast_ref::<crate::transport_host::SshOpenFailure>())
+                        .and_then(|failed| failed.model_error(self.context.is_cli()))
+                        .or_else(|| error.get_ref().and_then(|e| e.downcast_ref::<crate::transport_host::SshLimitFailure>()).map(|limit| limit.model_error()));
+                    if let (Some(error), Some(attempt)) = (reported, &self.attempt) {
                         attempt.failed(error);
                     }
                 })

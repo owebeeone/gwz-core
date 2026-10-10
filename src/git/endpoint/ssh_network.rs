@@ -3,6 +3,7 @@ use super::{
     agent_job::Control,
     socket_wait::{self, Interest},
     ssh_connection::SshConnection,
+    ssh_limits::SshLimit,
 };
 use crate::git::regular_file;
 use cfg_if::cfg_if;
@@ -70,6 +71,9 @@ where
     control.check()?;
     validate_lines(&text, control)?;
     control.check()?;
+    // A limit of the SSH library is met before any connection is made: it would only waste the server's start.
+    let prefs = host_key_preferences(&text, names, key.port, control)?;
+    control.check()?;
     let mut addresses = resolve_addresses(&key.host, key.port, control)?;
     control.check()?;
     addresses.truncate(ADDRESS_CAP);
@@ -77,7 +81,7 @@ where
         return Err(io::ErrorKind::NotFound.into());
     }
     let socket = connect_addresses(addresses, control, connect)?;
-    handshake(socket, names, key.port, &text, control)
+    handshake(socket, names, key.port, &text, &prefs, control)
 }
 
 pub(crate) fn connect_addresses<C>(
@@ -145,7 +149,22 @@ pub(crate) fn read_regular(path: &Path, control: &Control) -> io::Result<String>
     if bytes.len() > FILE_CAP {
         return Err(io::ErrorKind::InvalidInput.into());
     }
-    String::from_utf8(bytes).map_err(|_| io::ErrorKind::InvalidInput.into())
+    // libssh2 reads `known_hosts` as text, which on Windows is not the file's bytes (`crt_text`).
+    String::from_utf8(libssh2_text(bytes)).map_err(|_| io::ErrorKind::InvalidInput.into())
+}
+
+cfg_if! {
+    if #[cfg(windows)] {
+        /// A `known_hosts` file's bytes as libssh2 reads them: in text mode, through the C runtime.
+        fn libssh2_text(bytes: Vec<u8>) -> Vec<u8> {
+            super::ssh_limits::crt_text(&bytes).into_owned()
+        }
+    } else {
+        /// A `known_hosts` file's bytes as libssh2 reads them.
+        fn libssh2_text(bytes: Vec<u8>) -> Vec<u8> {
+            bytes
+        }
+    }
 }
 
 fn validate_lines(text: &str, control: &Control) -> io::Result<()> {
@@ -240,6 +259,7 @@ fn handshake(
     names: &[&str],
     port: u16,
     text: &str,
+    prefs: &str,
     control: &Control,
 ) -> io::Result<(SshConnection, Vec<u8>)> {
     let mut connection = SshConnection::new(socket).map_err(clean)?;
@@ -248,12 +268,11 @@ fn handshake(
     control.check()?;
     let mut known = connection.session().known_hosts().map_err(ssh)?;
     load_known(&mut known, text, None, control)?;
-    let prefs = preferences(&mut connection, text, names, port, control)?;
     if !prefs.is_empty() {
         control.check()?;
         connection
             .session()
-            .method_pref(MethodType::HostKey, &prefs)
+            .method_pref(MethodType::HostKey, prefs)
             .map_err(ssh)?;
         control.check()?;
     }
@@ -306,29 +325,52 @@ pub(crate) fn wait_session(connection: &mut SshConnection, control: &Control) ->
     })
 }
 
-fn preferences(
-    connection: &mut SshConnection,
+/// The host-key preference for a connection to `names`: the algorithms of the kinds `known_hosts` has entries for,
+/// as the session's library supports them. A session is made for the answer and never connected.
+fn host_key_preferences(
     text: &str,
     names: &[&str],
     port: u16,
     control: &Control,
 ) -> io::Result<String> {
-    let mut prefs = String::new();
-    for (kind, algorithms) in HOSTKEYS {
+    let session = ssh2::Session::new().map_err(ssh)?;
+    let supported = session.supported_algs(MethodType::HostKey).map_err(ssh)?;
+    let mut present = Vec::new();
+    for entry @ (kind, _) in HOSTKEYS {
         control.check()?;
-        let mut set = connection.session().known_hosts().map_err(ssh)?;
+        let mut set = session.known_hosts().map_err(ssh)?;
         if load_known(&mut set, text, Some(kind), control)?
             && names
                 .iter()
                 .any(|name| matches!(set.check_port(name, port, &[0]), CheckResult::Mismatch))
         {
-            if !prefs.is_empty() {
-                prefs.push(',');
-            }
-            prefs.push_str(algorithms);
+            present.push(*entry);
         }
     }
-    Ok(prefs)
+    host_key_choice(&present, &supported)
+}
+
+/// The preference list for the kinds `known_hosts` holds entries for (`present`, each with its algorithms), as the
+/// library `supported` supports them. Algorithms it lacks are left out, as libssh2 would strip them; when the kinds
+/// present are all unsupported the open is refused (TD5), where 1.0.17 failed with `failed to set hostkey preference`.
+fn host_key_choice(present: &[(&str, &str)], supported: &[&str]) -> io::Result<String> {
+    let mut prefs = Vec::new();
+    let mut refused = false;
+    for (_, algorithms) in present {
+        let kept: Vec<_> = algorithms
+            .split(',')
+            .filter(|algorithm| supported.contains(algorithm))
+            .collect();
+        if kept.is_empty() {
+            refused = true;
+        } else {
+            prefs.extend(kept);
+        }
+    }
+    if prefs.is_empty() && refused {
+        return Err(SshLimit::HostKeys.into_error());
+    }
+    Ok(prefs.join(","))
 }
 
 fn load_known(
@@ -398,6 +440,11 @@ fn line_kind(line: &str) -> Option<&str> {
 fn clean(error: io::Error) -> io::Error {
     if super::agent_job::timeout_reason(&error).is_some() {
         return error;
+    }
+    // An abort the network stack reports (it carries an OS error number; the setup's own cancellation does not) is a
+    // connection lost before authentication, which a retry may cure. Windows reports it where Unix reports a reset.
+    if error.kind() == io::ErrorKind::ConnectionAborted && error.raw_os_error().is_some() {
+        return io::Error::from(io::ErrorKind::ConnectionReset);
     }
     io::Error::from(error.kind())
 }

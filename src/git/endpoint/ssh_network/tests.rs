@@ -318,3 +318,138 @@ cfg_if::cfg_if! {
         }
     }
 }
+
+/// The `known_hosts` kinds that have entries for a host, as `preferences` finds them.
+fn present(kinds: &[&str]) -> Vec<(&'static str, &'static str)> {
+    HOSTKEYS
+        .iter()
+        .filter(|(kind, _)| kinds.contains(kind))
+        .copied()
+        .collect()
+}
+
+#[test]
+fn host_key_preferences_keep_only_what_the_library_supports() {
+    // libssh2 on Windows (WinCNG) verifies RSA host keys only (TD5).
+    let rsa_only = ["rsa-sha2-512", "rsa-sha2-256", "ssh-rsa"];
+    let everything: Vec<&str> = HOSTKEYS
+        .iter()
+        .flat_map(|(_, algorithms)| algorithms.split(','))
+        .collect();
+    // No entry for the host: no preference, and trust is decided by the handshake.
+    assert_eq!(host_key_choice(&[], &rsa_only).unwrap(), "");
+    // An RSA entry names the three RSA algorithms, in order.
+    assert_eq!(
+        host_key_choice(&present(&["ssh-rsa"]), &rsa_only).unwrap(),
+        "rsa-sha2-512,rsa-sha2-256,ssh-rsa"
+    );
+    // Entries of other kinds beside it are dropped, not refused (1.0.17: x2-f, x2-h).
+    assert_eq!(
+        host_key_choice(
+            &present(&["ssh-ed25519", "ecdsa-sha2-nistp256", "ssh-rsa"]),
+            &rsa_only
+        )
+        .unwrap(),
+        "rsa-sha2-512,rsa-sha2-256,ssh-rsa"
+    );
+    // Entries of unsupported kinds alone are refused before any connection (1.0.17: x2-a, x2-b, x2-d).
+    for kinds in [
+        &["ssh-ed25519"][..],
+        &["ecdsa-sha2-nistp256"],
+        &["ecdsa-sha2-nistp384", "ssh-ed25519"],
+    ] {
+        let error = host_key_choice(&present(kinds), &rsa_only).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported, "{kinds:?}");
+        assert_eq!(
+            super::super::ssh_limits::SshLimit::of_error(&error),
+            Some(super::super::ssh_limits::SshLimit::HostKeys)
+        );
+    }
+    // A library that supports every kind keeps every preference, as on macOS and Linux.
+    assert_eq!(
+        host_key_choice(&present(&["ssh-ed25519"]), &everything).unwrap(),
+        "ssh-ed25519"
+    );
+    assert_eq!(
+        host_key_choice(&present(&["ssh-ed25519", "ssh-rsa"]), &everything).unwrap(),
+        "ssh-ed25519,rsa-sha2-512,rsa-sha2-256,ssh-rsa"
+    );
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(windows)] {
+        /// The raw OS errors a setup's socket calls report on Windows (Winsock numbers), with the kind `std` gives each.
+        fn os_errors() -> Vec<(i32, io::ErrorKind)> {
+            vec![
+                (10053, io::ErrorKind::ConnectionAborted), // WSAECONNABORTED
+                (10054, io::ErrorKind::ConnectionReset),   // WSAECONNRESET
+                (10061, io::ErrorKind::ConnectionRefused), // WSAECONNREFUSED
+                (10060, io::ErrorKind::TimedOut),          // WSAETIMEDOUT
+                (10049, io::ErrorKind::AddrNotAvailable),  // WSAEADDRNOTAVAIL
+                (10051, io::ErrorKind::NetworkUnreachable), // WSAENETUNREACH
+                (10065, io::ErrorKind::HostUnreachable),   // WSAEHOSTUNREACH
+            ]
+        }
+    } else {
+        /// The raw OS errors a setup's socket calls report, with the kind `std` gives each.
+        fn os_errors() -> Vec<(i32, io::ErrorKind)> {
+            vec![
+                (libc::ECONNABORTED, io::ErrorKind::ConnectionAborted),
+                (libc::ECONNRESET, io::ErrorKind::ConnectionReset),
+                (libc::ECONNREFUSED, io::ErrorKind::ConnectionRefused),
+                (libc::ETIMEDOUT, io::ErrorKind::TimedOut),
+                (libc::EADDRNOTAVAIL, io::ErrorKind::AddrNotAvailable),
+                (libc::ENETUNREACH, io::ErrorKind::NetworkUnreachable),
+                (libc::EHOSTUNREACH, io::ErrorKind::HostUnreachable),
+            ]
+        }
+    }
+}
+
+/// How a setup ends for an error its socket calls report, as the retry machine sees it.
+fn verdict_of(
+    error: io::Error,
+) -> (
+    gwz_transport::protocol::ErrorCode,
+    crate::git::endpoint::setup_retry::Verdict,
+) {
+    use crate::git::endpoint::{
+        setup_retry::{Phase, classify},
+        ssh_setup::failure_from_io,
+    };
+    let failure = failure_from_io(&clean(error));
+    (failure.code, classify(&failure, Phase::Setup))
+}
+
+#[test]
+fn what_the_socket_reports_decides_whether_a_dropped_setup_is_retried() {
+    use crate::git::endpoint::setup_retry::Verdict::{Close, Retry, Return};
+    use gwz_transport::protocol::ErrorCode::{Cancelled, Io, Timeout, Unavailable};
+    // The kinds are the OS's own: the platform's numbers map to them (the table is per platform).
+    for (raw, kind) in os_errors() {
+        assert_eq!(io::Error::from_raw_os_error(raw).kind(), kind, "{raw}");
+    }
+    // A connection lost before authentication is retried, whichever way the platform reports it. Windows reports an
+    // abort (WSAECONNABORTED) where a peer's reset or close reaches a connect that is still completing; only the
+    // transport's own cancellation is a `ConnectionAborted` that is not the OS's, and that is never retried.
+    for (raw, kind) in os_errors() {
+        let expected = match kind {
+            io::ErrorKind::ConnectionAborted | io::ErrorKind::ConnectionReset => (Io, Retry),
+            io::ErrorKind::ConnectionRefused => (Unavailable, Retry),
+            io::ErrorKind::NetworkUnreachable | io::ErrorKind::HostUnreachable => (Io, Retry),
+            // Pinned as they are: an OS connect timeout has no setup origin, and an unusable address cannot recover.
+            io::ErrorKind::TimedOut => (Timeout, Close),
+            io::ErrorKind::AddrNotAvailable => (Unavailable, Close),
+            other => unreachable!("{other:?}"),
+        };
+        assert_eq!(
+            verdict_of(io::Error::from_raw_os_error(raw)),
+            expected,
+            "{kind:?} ({raw})"
+        );
+    }
+    assert_eq!(
+        verdict_of(io::ErrorKind::ConnectionAborted.into()),
+        (Cancelled, Return)
+    );
+}

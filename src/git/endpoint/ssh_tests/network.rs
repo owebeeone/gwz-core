@@ -314,99 +314,103 @@ fn native_trust_accepts_large_file_that_bounded_endpoint_explicitly_refuses() {
         io::ErrorKind::InvalidInput
     );
 }
-// libssh2 reads a `known_hosts` file in text mode on Windows (CR LF is LF, Ctrl-Z ends the file), which the
-// transport's byte reader does not reproduce yet: the row has no Windows twin until step 3.8.
-cfg_if::cfg_if! {
-    if #[cfg(unix)] {
-        #[test]
-        fn complete_line_parsing_has_the_documented_native_differential() {
-            let mut f = common::SshdFixture::new();
-            let mut connection = f.session();
-            let host = connection.session().host_key().unwrap().0.to_vec();
-            let original = fs::read_to_string(&f.known_hosts)
-                .unwrap()
-                .trim_end()
-                .to_owned();
-            for host_list in [false, true] {
-                for bytes in [4090, 4091, 4092] {
-                    let extra = bytes - original.len();
-                    let line = if host_list {
-                        format!(
-                            "{}{}{}",
-                            if extra % 2 == 1 { "x" } else { "" },
-                            "x,".repeat(extra / 2),
-                            original
-                        )
-                    } else {
-                        format!("{original}{}", "z".repeat(extra))
-                    };
-                    assert_eq!(line.len(), bytes);
-                    fs::write(&f.known_hosts, line + "\n").unwrap();
-                    let mut native = connection.session().known_hosts().unwrap();
-                    let baseline = native
-                        .read_file(&f.known_hosts, ssh2::KnownHostFileKind::OpenSSH)
-                        .is_ok();
-                    assert_eq!(
-                        baseline,
-                        bytes <= 4091,
-                        "host_list={host_list}, bytes={bytes}"
-                    );
-                    if baseline {
-                        assert!(matches!(
-                            native.check_port("127.0.0.1", f.port, &host),
-                            ssh2::CheckResult::Match
-                        ));
-                    }
-                    drop(native);
-                    assert!(establish(key(&f), f.known_hosts.clone()).is_ok());
-                }
-            }
-            fs::write(&f.known_hosts, format!("\x0b\n{original}\n")).unwrap();
+// libssh2 reads a `known_hosts` file with `fopen(.., "r")`, which on Windows is text mode: a carriage return before a line
+// feed is dropped and Ctrl-Z ends the file (`ssh_limits::crt_text`). The rows compare the transport's reading with
+// libssh2's own on every platform, so each platform's differential is pinned by the platform it runs on.
+#[test]
+fn complete_line_parsing_has_the_documented_native_differential() {
+    let mut f = common::SshdFixture::new();
+    let mut connection = f.session();
+    let host = connection.session().host_key().unwrap().0.to_vec();
+    let original = fs::read_to_string(&f.known_hosts)
+        .unwrap()
+        .trim_end()
+        .to_owned();
+    for host_list in [false, true] {
+        for bytes in [4090, 4091, 4092] {
+            let extra = bytes - original.len();
+            let line = if host_list {
+                format!(
+                    "{}{}{}",
+                    if extra % 2 == 1 { "x" } else { "" },
+                    "x,".repeat(extra / 2),
+                    original
+                )
+            } else {
+                // Padding after a space is a comment, which leaves the key as it was (the fixture's Windows line has
+                // none of its own, so padding without the space would change the key).
+                format!("{original} {}", "z".repeat(extra - 1))
+            };
+            assert_eq!(line.len(), bytes);
+            fs::write(&f.known_hosts, format!("{line}\n")).unwrap();
             let mut native = connection.session().known_hosts().unwrap();
-            assert!(
-                native
-                    .read_file(&f.known_hosts, ssh2::KnownHostFileKind::OpenSSH)
-                    .is_err()
+            let baseline = native
+                .read_file(&f.known_hosts, ssh2::KnownHostFileKind::OpenSSH)
+                .is_ok();
+            assert_eq!(
+                baseline,
+                bytes <= 4091,
+                "host_list={host_list}, bytes={bytes}"
             );
-            drop(native);
-            assert!(establish(key(&f), f.known_hosts.clone()).is_err());
-        }
-        // libssh2 reads a `known_hosts` file in text mode on Windows (CR LF is LF, Ctrl-Z ends the file), which the
-        // transport's byte reader does not reproduce yet: the row has no Windows twin until step 3.8.
-        cfg_if::cfg_if! {
-            if #[cfg(unix)] {
-                #[test]
-                fn carriage_return_data_matches_native_trust() {
-                    for comment in ["", " comment"] {
-                        let mut f = common::SshdFixture::new();
-                        let mut connection = f.session();
-                        let host = connection.session().host_key().unwrap().0.to_vec();
-                        let original = fs::read_to_string(&f.known_hosts).unwrap();
-                        let fields: Vec<_> = original.split_whitespace().collect();
-                        let bare = format!("{} {} {}", fields[0], fields[1], fields[2]);
-                        for suffix in ["", "\n", "\r", "\r\n", "\r\r\n"] {
-                            fs::write(&f.known_hosts, format!("{bare}{comment}{suffix}")).unwrap();
-                            let mut native = connection.session().known_hosts().unwrap();
-                            let parsed = native
-                                .read_file(&f.known_hosts, ssh2::KnownHostFileKind::OpenSSH)
-                                .is_ok();
-                            let matched = parsed
-                                && matches!(
-                                    native.check_port("127.0.0.1", f.port, &host),
-                                    ssh2::CheckResult::Match
-                                );
-                            drop(native);
-                            let result = establish(key(&f), f.known_hosts.clone());
-                            assert_eq!(
-                                result.is_ok(),
-                                matched,
-                                "comment={comment:?}, suffix={suffix:?}, result={:?}",
-                                result.err()
-                            );
-                        }
-                    }
-                }
+            if baseline {
+                let checked = native.check_port("127.0.0.1", f.port, &host);
+                assert!(
+                    matches!(checked, ssh2::CheckResult::Match),
+                    "host_list={host_list}, bytes={bytes}, line={line:?}"
+                );
             }
+            drop(native);
+            assert!(establish(key(&f), f.known_hosts.clone()).is_ok());
+        }
+    }
+    fs::write(&f.known_hosts, format!("\x0b\n{original}\n")).unwrap();
+    let mut native = connection.session().known_hosts().unwrap();
+    assert!(
+        native
+            .read_file(&f.known_hosts, ssh2::KnownHostFileKind::OpenSSH)
+            .is_err()
+    );
+    drop(native);
+    assert!(establish(key(&f), f.known_hosts.clone()).is_err());
+}
+
+#[test]
+fn carriage_return_data_matches_native_trust() {
+    for comment in ["", " comment"] {
+        let mut f = common::SshdFixture::new();
+        let mut connection = f.session();
+        let host = connection.session().host_key().unwrap().0.to_vec();
+        let original = fs::read_to_string(&f.known_hosts).unwrap();
+        let fields: Vec<_> = original.split_whitespace().collect();
+        let bare = format!("{} {} {}", fields[0], fields[1], fields[2]);
+        for suffix in [
+            "",
+            "\n",
+            "\r",
+            "\r\n",
+            "\r\r\n",
+            "\x1a",
+            "\n\x1a",
+            "\r\n\x1a\nx",
+        ] {
+            fs::write(&f.known_hosts, format!("{bare}{comment}{suffix}")).unwrap();
+            let mut native = connection.session().known_hosts().unwrap();
+            let parsed = native
+                .read_file(&f.known_hosts, ssh2::KnownHostFileKind::OpenSSH)
+                .is_ok();
+            let matched = parsed
+                && matches!(
+                    native.check_port("127.0.0.1", f.port, &host),
+                    ssh2::CheckResult::Match
+                );
+            drop(native);
+            let result = establish(key(&f), f.known_hosts.clone());
+            assert_eq!(
+                result.is_ok(),
+                matched,
+                "comment={comment:?}, suffix={suffix:?}, result={:?}",
+                result.err()
+            );
         }
     }
 }
@@ -571,5 +575,71 @@ fn invalid_encoding_and_nul_are_refused_before_resolution() {
             io::ErrorKind::InvalidInput
         );
         assert!(!resolved.load(Ordering::SeqCst));
+    }
+}
+
+// TD5: libssh2 on Windows (WinCNG) verifies RSA host keys only, as 1.0.17's does. A `known_hosts` that holds only
+// other kinds for the host (RS rows x2-a, x2-b, x2-d) is refused before any connection is made, with the limit, and an
+// RSA line beside such lines is enough (x2-f, x2-h). Elsewhere every kind is verified, so the same files connect.
+cfg_if::cfg_if! {
+    if #[cfg(windows)] {
+        /// A `known_hosts` line for `host` of a kind libssh2 on Windows cannot verify. Its key is not a real key:
+        /// the file is read, never matched.
+        fn other_kind_line(host: &str, kind: &str) -> String {
+            use base64::{Engine as _, engine::general_purpose::STANDARD};
+            let mut blob = Vec::new();
+            for field in [kind.as_bytes(), &[7u8; 32]] {
+                blob.extend_from_slice(&(field.len() as u32).to_be_bytes());
+                blob.extend_from_slice(field);
+            }
+            format!("{host} {kind} {}\n", STANDARD.encode(blob))
+        }
+
+        #[test]
+        fn host_keys_other_than_rsa_are_refused_before_any_connection_is_made() {
+            let dir = tempfile::tempdir().unwrap();
+            let known_hosts = dir.path().join("known_hosts");
+            // Nothing listens on the port: a connection would be refused, so the limit shows none was tried.
+            let closed = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+            let port = closed.local_addr().unwrap().port();
+            drop(closed);
+            let host = format!("[127.0.0.1]:{port}");
+            for kinds in [
+                &["ssh-ed25519"][..],
+                &["ecdsa-sha2-nistp256"],
+                &["ecdsa-sha2-nistp384"],
+                &["ecdsa-sha2-nistp521"],
+                &["ecdsa-sha2-nistp256", "ssh-ed25519"],
+            ] {
+                let text: String = kinds.iter().map(|kind| other_kind_line(&host, kind)).collect();
+                fs::write(&known_hosts, text).unwrap();
+                let error = establish(Key::ssh("git", "127.0.0.1", port), known_hosts.clone())
+                    .err()
+                    .expect("no RSA entry, no connection");
+                assert_eq!(error.kind(), io::ErrorKind::Unsupported, "{kinds:?}: {error}");
+                assert_eq!(
+                    crate::git::endpoint::ssh_limits::SshLimit::of_error(&error),
+                    Some(crate::git::endpoint::ssh_limits::SshLimit::HostKeys),
+                    "{kinds:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn an_rsa_host_key_beside_other_kinds_is_enough() {
+            let f = common::SshdFixture::new();
+            let rsa = fs::read_to_string(&f.known_hosts).unwrap();
+            assert!(rsa.contains("ssh-rsa"), "the Windows fixture's host key is RSA: {rsa}");
+            let host = format!("[127.0.0.1]:{}", f.port);
+            for (name, text) in [
+                ("rsa first", format!("{rsa}{}{}", other_kind_line(&host, "ssh-ed25519"), other_kind_line(&host, "ecdsa-sha2-nistp256"))),
+                ("rsa last", format!("{}{}{rsa}", other_kind_line(&host, "ecdsa-sha2-nistp384"), other_kind_line(&host, "ssh-ed25519"))),
+            ] {
+                fs::write(&f.known_hosts, text).unwrap();
+                let (mut connection, _) = establish(key(&f), f.known_hosts.clone())
+                    .unwrap_or_else(|error| panic!("{name}: {error}"));
+                assert!(matches!(connection.session().host_key().unwrap().1, ssh2::HostKeyType::Rsa), "{name}");
+            }
+        }
     }
 }

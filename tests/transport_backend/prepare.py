@@ -15,7 +15,9 @@ import shutil
 #     job), Win32_System_Threading (CreateProcessW, the attribute list, process waits), Win32_System_Pipes (the
 #     overlapped pipes), Win32_Security (inheritable handle attributes), Win32_System_SystemInformation (the Windows
 #     directory), and the production list's own Win32_Foundation and Win32_Storage_FileSystem; Win32_Networking_
-#     WinHttp and Win32_Networking_WinSock serve the HTTPS and SSH code. The candidate-to-production switch must
+#     WinHttp and Win32_Networking_WinSock serve the HTTPS and SSH code; step 3.5's Pageant exchange
+#     (`pageant_exchange/sys.rs`) needs Win32_Security_Authorization, Win32_System_DataExchange, Win32_System_Memory
+#     and Win32_UI_WindowsAndMessaging. The candidate-to-production switch must
 #     carry every one of them into Cargo.toml's `windows-sys` list.
 #   test only: Win32_System_Diagnostics_ToolHelp and the named-pipe and job calls of the SSH test servers
 #     (`fixture_job.rs`) and of the regular-file test; they are named here as well as in Cargo.toml's Windows
@@ -25,11 +27,15 @@ CANDIDATE_WINDOWS_FEATURES = (
     "Win32_Networking_WinHttp",
     "Win32_Networking_WinSock",
     "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_DataExchange",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
+    "Win32_System_Memory",
     "Win32_System_Pipes",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
 )
 
 # Cargo resolves a dependency path against the directory of the manifest that

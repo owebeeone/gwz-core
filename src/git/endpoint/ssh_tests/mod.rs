@@ -35,6 +35,7 @@ cfg_if::cfg_if! {
         mod key_fixture;
     }
 }
+mod key_material;
 mod key_types;
 mod local_endpoint;
 mod max_startups;
@@ -46,6 +47,7 @@ cfg_if::cfg_if! {
 }
 mod no_agent;
 mod placement_endpoint;
+mod platform_limits;
 mod pool_host;
 mod pooled;
 mod pooled_remote;
