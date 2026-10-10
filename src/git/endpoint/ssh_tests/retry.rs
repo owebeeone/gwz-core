@@ -161,14 +161,21 @@ cfg_if::cfg_if! {
             assert_eq!(failed.kind, MessageKind::OpenFailed);
             assert_eq!(failed.open_failed.as_ref().unwrap().code, ErrorCode::Io);
             assert_eq!(accepted.load(Ordering::Acquire), 4, "four attempts after Healthy");
-            // Every later member of the operation finishes with that failure,
-            // without a connection: the key is Closed, not Cold.
-            for stream_id in 3..=5 {
+            // The key is Down, not Closed and not Cold (§5.5). A later member
+            // parks for the key's next retest, 30 s on, carries it, and shares
+            // its failure; so does the one after it, for the second retest.
+            for stream_id in 3..=4 {
                 placement.accept(OPERATION.into(), open(&fixture, stream_id)).unwrap();
                 let late = reply(&mut placement, &mut now, stream_id);
                 assert_eq!(late.open_failed.as_ref().unwrap().code, ErrorCode::Io);
             }
-            assert_eq!(accepted.load(Ordering::Acquire), 4);
+            assert_eq!(accepted.load(Ordering::Acquire), 6, "four attempts and two retests");
+            // After two failed retests in a row, a member that arrives before
+            // the next is due finishes with that failure, without a connection.
+            placement.accept(OPERATION.into(), open(&fixture, 5)).unwrap();
+            let late = reply(&mut placement, &mut now, 5);
+            assert_eq!(late.open_failed.as_ref().unwrap().code, ErrorCode::Io);
+            assert_eq!(accepted.load(Ordering::Acquire), 6);
             placement.shutdown();
         }
 

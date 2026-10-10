@@ -1,5 +1,10 @@
 //! One pool key's retry state for one operation: the retry plan's §5, with
-//! amendment 2's §3.20 (OD18) cold start.
+//! amendment 2's §3.20 (OD18) cold start, and the adaptive concurrency
+//! design's §5.5: a transient failure does not close the key. Exhausting the
+//! retriable budget puts the key **Down**, not Closed: the members queued then
+//! finish with the failure, and arrivals park for the next retest (one fresh
+//! setup per 30 s), until two retests in a row have failed. Only a Permanent
+//! failure closes a key.
 //!
 //! The machine opens nothing itself. Its endpoint asks it, for each member
 //! that wants a connection, whether that member may start an attempt now,
@@ -18,10 +23,15 @@ pub(crate) struct Final {
 
 impl Final {
     /// Project the endpoint's known count into the wire failure without
-    /// changing the retry machine or inferring a count at the driver.
+    /// changing the retry machine or inferring a count at the driver. A
+    /// failure no attempt of the member made (`attempt` 0: a retest's, or a
+    /// Down key's, that the member only shares) carries no count.
     pub(crate) fn wire_failure(self) -> Failure {
         let mut failure = self.failure;
-        if self.attempt > 1 || super::classify(&failure, super::Phase::Setup) == Verdict::Retry {
+        if self.attempt > 0
+            && (self.attempt > 1
+                || super::classify(&failure, super::Phase::Setup) == Verdict::Retry)
+        {
             let detail = failure.detail.get_or_insert_with(Box::default);
             detail.retry_attempt = Some(gwz_transport::protocol::RetryAttempt {
                 attempt: i64::from(self.attempt),
@@ -38,9 +48,10 @@ pub(crate) enum Decision {
     /// Start one, and record it with [`Machine::start`].
     Start,
     /// Hold the member: the key opens no setup until its wake, or until its
-    /// one probe ends.
+    /// one probe or retest ends. On a Down key this is parking (§5.5).
     Wait,
-    /// The key is closed for the operation: finish the member with this.
+    /// The key is closed for the operation, or Down after two failed retests
+    /// and not yet due another: finish the member with this.
     Finish(Final),
 }
 
@@ -51,20 +62,46 @@ pub(crate) enum Outcome {
     Retry,
     /// The member is finished with this failure.
     Finish(Final),
+    /// The member is finished with this failure, and so is every member queued
+    /// on the key: the key's budget is exhausted, or its retest failed (§5.5).
+    /// The endpoint, which owns the queue, finishes them.
+    Sweep(Final),
     /// The member is finished with its own failure, and the key did not move.
     Return,
+}
+
+/// What a call changed about the key's health, for the limit machine (§5.5's
+/// restore): the key left Cold or Healthy, or came back to Healthy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Change {
+    Left,
+    Healed,
+}
+
+/// Milliseconds between a Down key's retests.
+const RETEST_MS: u64 = 30_000;
+/// Failed retests in a row after which arrivals finish at once.
+const GIVE_UP_AFTER: u32 = 2;
+
+struct Down {
+    last: Final,
+    retest_at: u64,
+    failed_retests: u32,
 }
 
 /// A key's state. Cold: no setup has succeeded or been counted yet, and
 /// the first wave starts in parallel, as far as the endpoint's per-host limit
 /// lets it. Healthy: normal allocation. Waiting: a counted retriable failure
 /// left attempts, and nothing opens until `until`. Degraded: one probe at a
-/// time, `probe` while it runs. Closed: the operation's last word on the key.
+/// time, `probe` while it runs. Down: the budget is spent; arrivals park for
+/// the next retest. Closed: the operation's last word on the key, after a
+/// Permanent failure.
 enum State {
     Cold,
     Healthy,
     Waiting { until: u64 },
     Degraded { probe: bool },
+    Down(Down),
     Closed(Final),
 }
 
@@ -74,6 +111,8 @@ struct Flight<M> {
     member: M,
     generation: u64,
     attempt: u32,
+    /// The attempt is a Down key's retest.
+    retest: bool,
 }
 
 /// One pool key's retry machine within one operation.
@@ -86,6 +125,7 @@ pub(crate) struct Machine<M> {
     /// Retriable failures counted since the key last set up a session.
     attempts: u32,
     flights: Vec<Flight<M>>,
+    change: Option<Change>,
 }
 
 impl<M: PartialEq> Machine<M> {
@@ -96,7 +136,13 @@ impl<M: PartialEq> Machine<M> {
             generation: 0,
             attempts: 0,
             flights: Vec::new(),
+            change: None,
         }
+    }
+
+    /// What the last calls changed about the key's health, once.
+    pub(crate) fn take_change(&mut self) -> Option<Change> {
+        self.change.take()
     }
 
     /// Whether a member that wants a connection at `now` may start an
@@ -110,6 +156,24 @@ impl<M: PartialEq> Machine<M> {
         match &self.state {
             State::Cold | State::Healthy | State::Degraded { probe: false } => Decision::Start,
             State::Waiting { .. } | State::Degraded { probe: true } => Decision::Wait,
+            // The members queued when the key went Down were finished then. A
+            // later one parks for the next retest, which one member carries;
+            // after two failed retests in a row it finishes at once, with a
+            // failure it made no attempt at.
+            State::Down(down) => {
+                if self.flights.iter().any(|flight| flight.retest) {
+                    Decision::Wait
+                } else if now >= down.retest_at {
+                    Decision::Start
+                } else if down.failed_retests >= GIVE_UP_AFTER {
+                    Decision::Finish(Final {
+                        attempt: 0,
+                        ..down.last.clone()
+                    })
+                } else {
+                    Decision::Wait
+                }
+            }
             State::Closed(last) => Decision::Finish(last.clone()),
         }
     }
@@ -119,10 +183,17 @@ impl<M: PartialEq> Machine<M> {
         if let State::Degraded { probe } = &mut self.state {
             *probe = true;
         }
+        // A retest is no attempt of its member's: it carries no count.
+        let retest = matches!(self.state, State::Down(_));
         self.flights.push(Flight {
             member,
             generation: self.generation,
-            attempt: self.attempts.saturating_add(1),
+            attempt: if retest {
+                0
+            } else {
+                self.attempts.saturating_add(1)
+            },
+            retest,
         });
     }
 
@@ -144,10 +215,19 @@ impl<M: PartialEq> Machine<M> {
             State::Degraded { probe: true } if current => {
                 self.state = if fresh {
                     self.attempts = 0;
+                    self.change = Some(Change::Healed);
                     State::Healthy
                 } else {
                     State::Degraded { probe: false }
                 };
+            }
+            // The host has returned: parked members proceed. A retest that
+            // leased an idle connection proves nothing, and the next carries
+            // another.
+            State::Down(_) if current && flight.retest && fresh => {
+                self.state = State::Healthy;
+                self.attempts = 0;
+                self.change = Some(Change::Healed);
             }
             _ => {}
         }
@@ -185,6 +265,25 @@ impl<M: PartialEq> Machine<M> {
                 _ => Outcome::Finish(self.last(failure, attempt)),
             };
         }
+        let retest = flight.as_ref().is_some_and(|flight| flight.retest);
+        if let State::Down(down) = &mut self.state
+            && verdict == Verdict::Retry
+        {
+            // A retest that fails: it and every member parked or queued share
+            // the failure, and the next retest is 30 s on. A stale attempt
+            // from before the key went Down counts nothing and parks.
+            if !retest {
+                return Outcome::Retry;
+            }
+            down.failed_retests += 1;
+            down.retest_at = now.saturating_add(RETEST_MS);
+            down.last = Final {
+                failure,
+                attempt: 0,
+                attempts: self.max_retries.saturating_add(1),
+            };
+            return Outcome::Sweep(down.last.clone());
+        }
         match verdict {
             // From a generation the key has left: no count, and the member
             // waits with the others.
@@ -192,6 +291,7 @@ impl<M: PartialEq> Machine<M> {
             Verdict::Retry => {
                 if matches!(self.state, State::Cold | State::Healthy) {
                     self.generation += 1;
+                    self.change = Some(Change::Left);
                 }
                 self.attempts = attempt;
                 if attempt <= self.max_retries {
@@ -199,7 +299,7 @@ impl<M: PartialEq> Machine<M> {
                     self.state = State::Waiting { until };
                     Outcome::Retry
                 } else {
-                    Outcome::Finish(self.close(failure, attempt))
+                    Outcome::Sweep(self.go_down(failure, attempt, now))
                 }
             }
             _ => Outcome::Finish(self.close(failure, attempt)),
@@ -233,6 +333,18 @@ impl<M: PartialEq> Machine<M> {
             attempts: self.max_retries.saturating_add(1),
         }
     }
+    /// The retriable budget is spent: the key is Down, its first retest 30 s
+    /// on (§5.5).
+    fn go_down(&mut self, failure: Failure, attempt: u32, now: u64) -> Final {
+        let last = self.last(failure, attempt);
+        self.generation += 1;
+        self.state = State::Down(Down {
+            last: last.clone(),
+            retest_at: now.saturating_add(RETEST_MS),
+            failed_retests: 0,
+        });
+        last
+    }
     /// Closes the key for the rest of the operation with `failure`.
     fn close(&mut self, failure: Failure, attempt: u32) -> Final {
         let last = self.last(failure, attempt);
@@ -247,8 +359,9 @@ cfg_if::cfg_if! {
         impl<M> Machine<M> {
             /// When a waiting key admits its next probe.
             pub(crate) fn wake_at(&self) -> Option<u64> {
-                match self.state {
-                    State::Waiting { until } => Some(until),
+                match &self.state {
+                    State::Waiting { until } => Some(*until),
+                    State::Down(down) => Some(down.retest_at),
                     _ => None,
                 }
             }

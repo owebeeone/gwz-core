@@ -144,6 +144,104 @@ fn live_control_retries_socket_timeout_and_abort() {
 }
 
 #[test]
+fn the_tcp_connect_time_is_the_answering_addresses_and_none_when_nothing_answers() {
+    let peer = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let live = peer.local_addr().unwrap();
+    let mut first = true;
+    let mut job = Job::start_isolated(
+        Some(Instant::now() + Duration::from_secs(3)),
+        Duration::from_secs(1),
+        move |c| {
+            connect_addresses(vec![live, live], &c, |address, _| {
+                if std::mem::take(&mut first) {
+                    std::thread::sleep(Duration::from_millis(300));
+                    Err(io::ErrorKind::TimedOut.into())
+                } else {
+                    std::thread::sleep(Duration::from_millis(40));
+                    TcpStream::connect(address)
+                }
+            })
+        },
+    )
+    .unwrap();
+    finish(&mut job).unwrap();
+    let ms = job.tcp_connect_ms().expect("the connect was measured");
+    assert!(
+        (40..250).contains(&ms),
+        "{ms} ms: the failed address's time is not the round trip"
+    );
+    let mut none = Job::start_isolated(
+        Some(Instant::now() + Duration::from_secs(3)),
+        Duration::from_secs(1),
+        move |c| connect_addresses(vec![live], &c, |_, _| Err(io::ErrorKind::TimedOut.into())),
+    )
+    .unwrap();
+    finish(&mut none).unwrap_err();
+    assert_eq!(none.tcp_connect_ms(), None);
+}
+
+#[test]
+fn an_ssh_resource_reports_its_jobs_tcp_connect_time_while_connecting_and_after_a_failure() {
+    use crate::git::endpoint::{
+        agent_job::Supervisor,
+        ssh_pool::{Connector, Opening, Resource},
+        ssh_setup::SetupConnector,
+    };
+    use gwz_transport::pool::Identity;
+    use std::sync::{Mutex, mpsc};
+    let peer = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let live = peer.local_addr().unwrap();
+    let (finish, finished) = mpsc::channel::<()>();
+    let finished = Arc::new(Mutex::new(finished));
+    let mut connector = SetupConnector::reported(
+        Instant::now(),
+        Duration::from_secs(1),
+        Supervisor::new(),
+        move |_, _, _| {
+            let finished = finished.clone();
+            Ok(Box::new(move |c| {
+                connect_addresses(vec![live], &c, |address, _| TcpStream::connect(address))?;
+                // Not authenticated yet: the setup waits, then fails.
+                let _ = finished
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5));
+                Err(io::ErrorKind::Other.into())
+            }))
+        },
+    );
+    let mut resource = connector
+        .start_reported(
+            &Key::ssh("git", "127.0.0.1", live.port()),
+            &Identity::Ambient,
+            None,
+            Opening::default(),
+        )
+        .unwrap();
+    let mut cx = Context::from_waker(Waker::noop());
+    let until = Instant::now() + Duration::from_secs(5);
+    while resource.tcp_connect_ms().is_none() {
+        assert!(
+            Instant::now() < until,
+            "the socket connect was never reported"
+        );
+        assert!(resource.poll_connected(&mut cx).is_pending());
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let measured = resource.tcp_connect_ms();
+    finish.send(()).unwrap();
+    while resource.poll_connected(&mut cx).is_pending() {
+        assert!(Instant::now() < until, "the setup never failed");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(
+        resource.tcp_connect_ms(),
+        measured,
+        "kept after the job's result is taken"
+    );
+}
+
+#[test]
 fn terminal_control_wins_over_socket_error_without_retry() {
     use std::sync::{atomic::AtomicUsize, mpsc};
     for cancel in [true, false] {

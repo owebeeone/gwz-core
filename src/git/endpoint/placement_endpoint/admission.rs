@@ -236,6 +236,13 @@ impl PlacementEndpoint {
                 }
                 queued.allocation.run(now);
                 let left = queued.allocation.left(now);
+                // A restore step's new connection is carried by a member not on
+                // its final attempt, so a restore never fails a member (§5.5).
+                if admission.holds_final_attempt(final_attempt, idle, carries_test.is_some()) {
+                    queued.allocation.stop(now);
+                    self.queued_opens.push_back(queued);
+                    return Ok(());
+                }
                 // Below the ceiling a member that cannot lease an idle
                 // connection waits for room in the endpoint, where its
                 // allocation clock stops (§5.2), not in the pool.

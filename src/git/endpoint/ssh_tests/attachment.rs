@@ -69,6 +69,28 @@ pub(super) fn start(
     )
 }
 
+/// `start`, where the open carries a test of the site's limit: the worker
+/// never defers such an open behind a closing connection (§4.7).
+pub(super) fn start_carrier(
+    endpoint: &Endpoint,
+    key: Key,
+    selected: Option<PathBuf>,
+    service: GitService,
+    path: &str,
+    deadlines: Deadlines,
+) -> io::Result<PendingOpen> {
+    endpoint.start_endpoint_open_tagged(
+        key,
+        selected,
+        service,
+        path,
+        context(deadlines),
+        Arc::new(AtomicBool::new(false)),
+        None,
+        true,
+    )
+}
+
 /// Waits for the worker's reply to an open.
 pub(super) fn finish(open: &PendingOpen) -> io::Result<(EndpointAttachment, Opened)> {
     let until = Instant::now() + Duration::from_secs(60);
@@ -95,6 +117,21 @@ pub(super) fn open(
 ) -> io::Result<(BlockingStream, Opened)> {
     let context = context(deadlines.clone());
     let pending = start(endpoint, key, selected, service, path, deadlines)?;
+    let (attachment, opened) = finish(&pending)?;
+    Ok((drive(attachment, &context), opened))
+}
+
+/// [`open`], for a test carrier.
+pub(super) fn open_carrier(
+    endpoint: &Endpoint,
+    key: Key,
+    selected: Option<PathBuf>,
+    service: GitService,
+    path: &str,
+    deadlines: Deadlines,
+) -> io::Result<(BlockingStream, Opened)> {
+    let context = context(deadlines.clone());
+    let pending = start_carrier(endpoint, key, selected, service, path, deadlines)?;
     let (attachment, opened) = finish(&pending)?;
     Ok((drive(attachment, &context), opened))
 }

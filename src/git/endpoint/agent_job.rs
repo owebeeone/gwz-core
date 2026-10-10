@@ -263,6 +263,10 @@ impl<T: Send + 'static> Job<T> {
         worker.unpark();
         Ok(Self { cell, worker })
     }
+    /// How long the job's socket connect took, once it has completed.
+    pub(crate) fn tcp_connect_ms(&self) -> Option<u64> {
+        self.cell.control.tcp_connect_ms()
+    }
     pub(crate) fn cancel(&self) {
         self.cell.control.cancel();
         self.worker.unpark();

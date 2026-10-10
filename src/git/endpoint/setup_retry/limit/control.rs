@@ -97,6 +97,24 @@ pub(crate) struct Limit {
     barrier: BTreeSet<ConnId>,
     needing_new: usize,
     non_final: usize,
+    /// The `N` in force at the last success (§5.5's `N_good`), or the ceiling
+    /// before any.
+    last_good: usize,
+    /// `N_good` as frozen when the retry machine left Cold or Healthy: set
+    /// for the length of an outage.
+    outage: Option<usize>,
+    restore: Option<Restore>,
+}
+
+/// RESTORING's step: a judged doubling toward `N_good` (§5.5).
+struct Restore {
+    good: usize,
+    /// The step's target `S`: starts are admitted up to it.
+    target: usize,
+    /// The step's starts that have no result yet.
+    step: BTreeSet<AttemptId>,
+    started: bool,
+    refused: bool,
 }
 
 impl Limit {
@@ -119,6 +137,9 @@ impl Limit {
             barrier: BTreeSet::new(),
             needing_new: 0,
             non_final: 0,
+            last_good: ceiling,
+            outage: None,
+            restore: None,
         }
     }
     pub(crate) fn n(&self) -> usize {
@@ -135,9 +156,105 @@ impl Limit {
     }
     /// The queued members that need a new connection, and how many of them
     /// are not on their final attempt (the probe's carriers).
-    pub(crate) fn set_demand(&mut self, needing_new: usize, non_final: usize) {
+    pub(crate) fn set_demand(&mut self, needing_new: usize, non_final: usize, now: u64) {
         self.needing_new = needing_new;
         self.non_final = non_final;
+        // A restore step's starts are carried by members not on their final
+        // attempt. With none to carry it and nothing in flight, the restore
+        // gives the rest of the distance to the probe timer.
+        if needing_new > 0
+            && non_final == 0
+            && self.restore.as_ref().is_some_and(|r| r.step.is_empty())
+        {
+            self.end_restore(now);
+        }
+    }
+    /// The retry machine left Cold or Healthy (§5.5): `N_good` is the `N` in
+    /// force at the last success, kept for the length of the outage.
+    pub(crate) fn outage(&mut self) {
+        self.outage.get_or_insert(self.last_good);
+    }
+    /// The retry machine is Healthy again: when the outage left `N` below
+    /// `N_good`, RESTORING begins (§5.5). Nothing is restored without a
+    /// budget to test with.
+    pub(crate) fn recovered(&mut self, now: u64) {
+        let Some(good) = self.outage.take() else {
+            return;
+        };
+        if !self.adaptive || self.fsm.n() >= good || self.restore.is_some() {
+            return;
+        }
+        self.table.advance(now);
+        // The probe timer needs no stopping: no probe is due while RESTORING,
+        // and its exit arms the timer afresh.
+        self.fsm.begin_restore();
+        self.restore = Some(Restore {
+            good,
+            target: self.step_target(good),
+            step: BTreeSet::new(),
+            started: false,
+            refused: false,
+        });
+    }
+    /// `S := max(N, min(N_good, 2 x max(1, Connected)))`.
+    fn step_target(&self, good: usize) -> usize {
+        let doubled = 2 * self.table.connected().max(1);
+        self.fsm.n().max(good.min(doubled))
+    }
+    /// Whether the key's retry machine has left Cold or Healthy and not come
+    /// back (§5.5): `N_good` is frozen.
+    pub(crate) fn in_outage(&self) -> bool {
+        self.outage.is_some()
+    }
+    /// Whether a restore is under way: the endpoints let only members not on
+    /// their final attempt start new connections then.
+    pub(crate) fn restoring(&self) -> bool {
+        self.restore.is_some()
+    }
+    /// What a new connection that is not a test starts as: a restore step's
+    /// start while RESTORING (§4.4), else an ordinary start at the pool's
+    /// limit.
+    pub(crate) fn start_kind(&self) -> (AttemptKind, usize) {
+        match &self.restore {
+            Some(restore) => (AttemptKind::Restore, restore.target),
+            None => (AttemptKind::Ordinary, self.pool_limit()),
+        }
+    }
+    /// The restore is over: STABLE at the current `N`, `T := T0`.
+    fn end_restore(&mut self, now: u64) {
+        self.restore = None;
+        self.fsm.end_restore();
+        self.timer.reset();
+        self.timer.arm(now);
+    }
+    /// A step's result: when every start of the step has one, a refusal ends
+    /// the restore, reaching `N_good` ends it, and otherwise the next step
+    /// doubles. An Overload or the ceiling ended it already.
+    fn restore_progress(&mut self, attempt: AttemptId, kind: AttemptKind, refused: bool, now: u64) {
+        if self.fsm.state() != State::Restoring {
+            self.restore = None;
+            return;
+        }
+        let Some(restore) = &mut self.restore else {
+            return;
+        };
+        if kind == AttemptKind::Restore {
+            restore.step.remove(&attempt);
+            restore.refused |= refused;
+        }
+        if !restore.started || !restore.step.is_empty() {
+            return;
+        }
+        if restore.refused || self.fsm.n() >= restore.good {
+            self.end_restore(now);
+            return;
+        }
+        let good = restore.good;
+        let target = self.step_target(good);
+        if let Some(restore) = &mut self.restore {
+            restore.target = target;
+            restore.started = false;
+        }
     }
     /// Starts from the table of connections the site already has, which no
     /// event of this machine's own life told it about.
@@ -151,6 +268,7 @@ impl Limit {
         let before = (self.fsm.n(), self.fsm.state());
         self.table.advance(now);
         self.fsm.success(self.table.connected());
+        self.last_good = self.fsm.n();
         self.settled(before, now);
     }
     pub(crate) fn connect_time(&mut self, ms: u64) {
@@ -173,13 +291,18 @@ impl Limit {
         }
         match self.fsm.state() {
             State::Saturated => self.table.held() < self.ceiling,
-            _ => self.table.possible() < self.fsm.n(),
+            _ => self.table.possible() < self.room_target(),
         }
+    }
+    /// How many connections may be Possible before ordinary starts stop: `N`,
+    /// or the restore step's target.
+    fn room_target(&self) -> usize {
+        self.restore.as_ref().map_or(self.fsm.n(), |r| r.target)
     }
     /// Whether the site has room for one more connection of this operation
     /// below `N` (§4.5). At the ceiling the pool's own limit says so.
     pub(crate) fn has_room(&self) -> bool {
-        self.fsm.state() == State::Saturated || self.table.possible() < self.fsm.n()
+        self.fsm.state() == State::Saturated || self.table.possible() < self.room_target()
     }
     /// Whether new connections may start at all: no hold, no confirmation,
     /// no test in flight, and no connection of an inconclusive refusal's
@@ -235,7 +358,8 @@ impl Limit {
         let due = match self.fsm.state() {
             State::Discovering => true,
             State::Stable => self.timer.expired(now),
-            State::Probing | State::Saturated => false,
+            // The probe timer is suspended during a restore (§4.6).
+            State::Probing | State::Saturated | State::Restoring => false,
         };
         (due && self.non_final > 0).then_some(TestPlan {
             kind: AttemptKind::Probe,
@@ -361,6 +485,12 @@ impl Limit {
         if kind == AttemptKind::Probe {
             self.fsm.test_started();
         }
+        if kind == AttemptKind::Restore
+            && let Some(restore) = &mut self.restore
+        {
+            restore.step.insert(attempt);
+            restore.started = true;
+        }
         if let Own::New(conn) = own {
             self.conn(conn, ConnEvent::Started { clocked }, now);
         }
@@ -397,7 +527,7 @@ impl Limit {
         self.test_slot
             .and_then(|attempt| self.targets.get(&attempt).copied())
             .or(self.armed.map(|(_, target, _)| target))
-            .unwrap_or_else(|| self.fsm.n())
+            .unwrap_or_else(|| self.room_target())
     }
     /// How long the pool holds a freed slot of the key (§4.5): `Ts` outside
     /// SATURATED, none at the ceiling.
@@ -458,6 +588,8 @@ impl Limit {
                 self.refused(evidence(&refusal), &closed, now)
             }
         };
+        let refused = matches!(outcome, Outcome::Refused { .. });
+        self.restore_progress(attempt, closed.kind, refused, now);
         self.settled(before, now);
         Some(ruling)
     }
@@ -501,6 +633,13 @@ impl Limit {
         Ruling::Ended
     }
     fn succeeded(&mut self, closed: &Closed, target: usize, fresh: bool, now: u64) -> Ruling {
+        let ruling = self.succeeded_as(closed, target, fresh, now);
+        if fresh {
+            self.last_good = self.fsm.n();
+        }
+        ruling
+    }
+    fn succeeded_as(&mut self, closed: &Closed, target: usize, fresh: bool, now: u64) -> Ruling {
         let connected = self.table.connected();
         match closed.kind {
             AttemptKind::Probe if !fresh => {

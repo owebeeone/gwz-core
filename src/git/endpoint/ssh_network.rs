@@ -14,6 +14,7 @@ use std::{
     io::{self, Read},
     net::{SocketAddr, TcpStream, ToSocketAddrs},
     path::Path,
+    time::Instant,
 };
 
 const FILE_CAP: usize = 4 * 1024 * 1024;
@@ -91,8 +92,14 @@ where
     let mut last = None;
     for address in addresses {
         control.check()?;
+        let started = Instant::now();
         let socket = match connect_address(address, control) {
-            Ok(socket) => socket,
+            Ok(socket) => {
+                // The settle time follows this: the TCP connect to the
+                // address that answered, not the setup that comes after.
+                control.record_tcp_connect(started.elapsed());
+                socket
+            }
             Err(error) => {
                 control.check()?;
                 last = Some(error);

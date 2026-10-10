@@ -86,6 +86,36 @@ fn a_connection_past_the_setup_slots_waits_for_one_instead_of_failing() {
     });
 }
 
+/// The connector's resource reports how long its socket connect took, once
+/// the connect has completed and not before (the settle time follows it).
+#[test]
+fn a_connection_reports_its_tcp_connect_time_once_the_socket_connects() {
+    runtime().block_on(async {
+        let server = server().await;
+        let slots = Arc::new(Semaphore::new(1));
+        let held = slots.clone().try_acquire_owned().unwrap();
+        let mut connector = HttpConnector::new(
+            server.config(),
+            std::time::Instant::now(),
+            slots,
+            crate::git::endpoint::agent_job::Supervisor::new(),
+        );
+        let mut resource = connector
+            .start(&key_of(&server), &pool::Identity::Https, None)
+            .unwrap();
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(matches!(resource.poll_connected(&mut cx), Poll::Pending));
+        assert_eq!(resource.tcp_connect_ms(), None, "queued: nothing connected");
+        drop(held);
+        let until = Instant::now() + Duration::from_secs(10);
+        while resource.poll_connected(&mut cx).is_pending() {
+            assert!(Instant::now() < until, "never connected");
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert!(resource.tcp_connect_ms().is_some_and(|ms| ms < 5_000));
+    });
+}
+
 /// F4: a connection waiting for a setup slot has sent nothing to the server, so
 /// its wait is local. It reports that it waits (`waiting_locally`), the pool
 /// pauses its connect clock, and the open's allocation alone bounds it, ending

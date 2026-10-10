@@ -598,6 +598,8 @@ cfg_if::cfg_if! { if #[cfg(test)] {
     mod cancellation_tests;
     #[path = "https_cancel_mux_tests.rs"]
     mod https_cancel_mux_tests;
+    mod carrier_tests;
+    mod down_tests;
     mod requeue_tests;
     mod retry_tests;
     mod stale_action_tests;

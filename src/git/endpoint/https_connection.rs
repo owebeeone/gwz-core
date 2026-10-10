@@ -199,6 +199,9 @@ pub(crate) struct HttpResource {
     pub(crate) disposed: Arc<AtomicBool>,
     pub(crate) connect_elapsed: Duration,
     pub(crate) connect_started: Instant,
+    /// How long the socket connect took, in milliseconds plus one (zero: not
+    /// yet connected), set by the connect task.
+    tcp_connect: Arc<AtomicU64>,
     /// The connection's driver end (`Connection::ended`), until it is seen.
     ended: Option<oneshot::Receiver<()>>,
     driver_ended: bool,
@@ -292,6 +295,7 @@ impl Connector for HttpConnector {
             disposed: Arc::new(AtomicBool::new(false)),
             connect_elapsed: Duration::ZERO,
             connect_started: Instant::now(),
+            tcp_connect: Arc::new(AtomicU64::new(0)),
             ended: None,
             driver_ended: false,
         };
@@ -404,11 +408,12 @@ impl Resource for HttpResource {
             let key = self.key.clone();
             let cancelled = self.cancel.clone();
             let deadline = self.deadline;
+            let tcp = self.tcp_connect.clone();
             self.connecting = Some(tokio::spawn(async move {
                 tokio::select! {
                     _=cancelled.cancelled()=>Err(failure(ErrorCode::Cancelled)),
                     _=async {if let Some(at)=deadline {tokio::time::sleep_until(at.into()).await;} else {std::future::pending::<()>().await;}}=>Err(Failure { setup_cause: Some(SetupFailureCause::Aggregate), ..failure(ErrorCode::Timeout) }),
-                    result=connect(setup,key)=>result,
+                    result=connect(setup,key,tcp)=>result,
                 }
             }));
         }
@@ -436,6 +441,9 @@ impl Resource for HttpResource {
     }
     fn waiting_locally(&self) -> bool {
         self.queued.is_some()
+    }
+    fn tcp_connect_ms(&self) -> Option<u64> {
+        self.tcp_connect.load(Ordering::Acquire).checked_sub(1)
     }
     fn poll_dispose(&mut self, cx: &mut Context<'_>, _force: bool) -> Poll<io::Result<()>> {
         self.cancel.cancel();
@@ -530,12 +538,17 @@ impl Drop for HttpResource {
         }
     }
 }
-async fn connect(setup: Setup, key: Key) -> Result<Connection, Failure> {
+async fn connect(setup: Setup, key: Key, tcp: Arc<AtomicU64>) -> Result<Connection, Failure> {
     let mut socket = None;
     let mut last_error = None;
     for address in setup.addresses {
+        let started = Instant::now();
         match TcpStream::connect(address).await {
             Ok(connected) => {
+                // The settle time follows this, not the TLS handshake and the
+                // first exchange after it (adaptive concurrency design §4.1).
+                let ms = started.elapsed().as_millis().min(u128::from(u64::MAX - 1)) as u64;
+                tcp.store(ms + 1, Ordering::Release);
                 socket = Some(connected);
                 break;
             }

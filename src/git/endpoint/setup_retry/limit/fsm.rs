@@ -7,6 +7,9 @@ pub(crate) enum State {
     Stable,
     Probing,
     Saturated,
+    /// After an outage that lowered `N`: judged doubling steps back up to
+    /// `N_good` (§5.5). The probe timer is suspended.
+    Restoring,
 }
 
 /// What a refused probe did to the probe timer.
@@ -51,6 +54,18 @@ impl Fsm {
             self.state = State::Saturated;
         }
     }
+    /// The retry machine is Healthy again with `N < N_good` (§5.5).
+    pub(crate) fn begin_restore(&mut self) {
+        if self.state != State::Saturated {
+            self.state = State::Restoring;
+        }
+    }
+    /// The restore ended short of the ceiling: STABLE at the current `N`.
+    pub(crate) fn end_restore(&mut self) {
+        if self.state == State::Restoring {
+            self.state = State::Stable;
+        }
+    }
     /// A probe or a DISCOVERING test has started.
     pub(crate) fn test_started(&mut self) {
         if self.state == State::Stable {
@@ -74,7 +89,9 @@ impl Fsm {
         } else {
             Backoff::Double
         };
-        if self.state != State::Saturated {
+        // A test in flight when a restore began is judged, but the restore
+        // goes on.
+        if matches!(self.state, State::Probing | State::Discovering) {
             self.state = State::Stable;
         }
         backoff

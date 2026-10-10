@@ -102,7 +102,7 @@ impl Rig {
             .expect("in flight")
     }
     pub(super) fn demand(&mut self, needing_new: usize, non_final: usize) {
-        self.limit.set_demand(needing_new, non_final);
+        self.limit.set_demand(needing_new, non_final, self.now);
     }
     pub(super) fn plan(&mut self) -> Option<TestPlan> {
         self.limit.test_due(self.now)

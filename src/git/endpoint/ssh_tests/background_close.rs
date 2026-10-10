@@ -126,6 +126,20 @@ impl Rig {
         )
     }
 
+    /// An open that carries a test of the site's limit.
+    fn open_carrier(&self, service: GitService) -> (BlockingStream, Opened) {
+        let path = self.fixture.repository.to_str().unwrap().to_owned();
+        attachment::open_carrier(
+            &self.endpoint,
+            key(&self.fixture),
+            Some(identity(&self.fixture)),
+            service,
+            &path,
+            attachment::deadlines(&config(self.per_host, self.cleanup_ms), self.io_ms),
+        )
+        .unwrap()
+    }
+
     fn open_as(&self, service: GitService, identity: PathBuf) -> (BlockingStream, Opened) {
         let path = self.fixture.repository.to_str().unwrap().to_owned();
         self.open_path(service, identity, &path).unwrap()
@@ -549,6 +563,26 @@ fn a_close_slower_than_the_wait_bound_opens_a_new_connection() {
         "the push opened after {waited:?}, without waiting for the close"
     );
     assert!(waited < ms(2_000), "the push waited {waited:?}");
+    rig.push(stream).1.unwrap();
+    rig.wait("both idle", |counts| counts.idle == 2);
+}
+
+#[test]
+fn a_test_carrier_is_never_deferred_for_a_closing_connection() {
+    // The same close as the test above, which makes an ordinary open wait at
+    // least 200 ms for it: the carrier of a test needs a connection of its own
+    // at once, so it neither waits nor takes the closing one.
+    let rig = Rig::new(delayed_close_fixture(ms(600)), 32, 5_000);
+    closing_fetch(&rig);
+    let started = Instant::now();
+    let (stream, push) = rig.open_carrier(GitService::ReceivePack);
+    let waited = started.elapsed();
+    assert!(!push.reused, "the carrier took the closing connection");
+    assert_eq!(rig.counts().total(), 2);
+    assert!(
+        waited < ms(200),
+        "the carrier waited {waited:?} for a closing connection"
+    );
     rig.push(stream).1.unwrap();
     rig.wait("both idle", |counts| counts.idle == 2);
 }

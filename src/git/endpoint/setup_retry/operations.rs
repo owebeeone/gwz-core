@@ -93,7 +93,7 @@ cfg_if::cfg_if! {
         fn each_operation_has_its_own_budget_and_each_key_its_own_machine() {
             let mut operations = Operations::new();
             operations.set_max_retries("strict", 0);
-            let finished = Outcome::Finish(Final { failure: stall(), attempt: 1, attempts: 1 });
+            let finished = Outcome::Sweep(Final { failure: stall(), attempt: 1, attempts: 1 });
             assert_eq!(fail_once(&mut operations, "strict", "a"), finished);
             // Another key of the same operation is still Cold.
             assert_eq!(operations.machine("strict", &"b").decide(0), Decision::Start);
@@ -105,8 +105,8 @@ cfg_if::cfg_if! {
         fn a_removed_operation_starts_its_keys_cold_again() {
             let mut operations = Operations::new();
             operations.set_max_retries("op", 0);
-            assert!(matches!(fail_once(&mut operations, "op", "a"), Outcome::Finish(_)));
-            assert!(matches!(operations.machine("op", &"a").decide(0), Decision::Finish(_)));
+            assert!(matches!(fail_once(&mut operations, "op", "a"), Outcome::Sweep(_)));
+            assert_eq!(operations.machine("op", &"a").decide(0), Decision::Wait, "Down");
             operations.remove("op");
             assert_eq!(operations.machine("op", &"a").decide(0), Decision::Start);
             assert_eq!(fail_once(&mut operations, "op", "a"), Outcome::Retry, "and the default budget");

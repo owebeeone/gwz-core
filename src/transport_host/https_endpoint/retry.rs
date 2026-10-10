@@ -9,7 +9,8 @@
 //! its key waits.
 use super::*;
 use crate::git::endpoint::setup_retry::{
-    self, Admission, AllocationClock, Decision, Jitter, Operations, Outcome, Phase, TestToken,
+    self, Admission, AllocationClock, Change, Decision, Final, Jitter, Operations, Outcome, Phase,
+    TestToken,
 };
 
 /// How an attempt ended, and what the limit machine can say of it.
@@ -26,6 +27,12 @@ pub(super) struct Settling {
 pub(super) struct Retries {
     machines: Operations<pool::Key, Key>,
     jitter: Jitter,
+    /// What the machines' calls changed about their keys' health, for the
+    /// site's limit machine, until the endpoint's pass tells it (§5.5).
+    health: Vec<(String, pool::Key, Change)>,
+    /// Keys that went Down or failed a retest, whose queued opens share the
+    /// failure until the endpoint's pass finishes them (§5.5).
+    sweeps: Vec<(String, pool::Key, Final)>,
 }
 
 /// An open the endpoint holds until an attempt may start.
@@ -63,6 +70,8 @@ impl Retries {
         Self {
             machines: Operations::new(),
             jitter: Jitter::random(),
+            health: Vec::new(),
+            sweeps: Vec::new(),
         }
     }
     pub(super) fn set_max_retries(&mut self, request: &str, max_retries: u32) {
@@ -107,6 +116,10 @@ impl Retries {
             (FirstConnect::None, Ok(_)) => machine.succeeded(&member, false),
             _ => true,
         };
+        if let Some(change) = machine.take_change() {
+            self.health
+                .push((member.0.clone(), entry.pool_key.clone(), change));
+        }
         let failure = match result {
             Ok(mut prepared) => {
                 if !admitted {
@@ -157,7 +170,12 @@ impl Retries {
         }
         let verdict = setup_retry::classify(&failure, phase);
         let jitter = self.jitter.draw();
-        let failure = match machine.failed(&member, verdict, failure.clone(), now, jitter) {
+        let outcome = machine.failed(&member, verdict, failure.clone(), now, jitter);
+        if let Some(change) = machine.take_change() {
+            self.health
+                .push((member.0.clone(), entry.pool_key.clone(), change));
+        }
+        let failure = match outcome {
             // The key counts it and waits, but the open's own budget is spent
             // (§5.3): it finishes with its failure, the key left as it is.
             Outcome::Retry if entry.attempts >= allowed => {
@@ -185,6 +203,14 @@ impl Retries {
                 facts: failure.facts,
                 ..last.wire_failure()
             },
+            Outcome::Sweep(last) => {
+                self.sweeps
+                    .push((member.0.clone(), entry.pool_key.clone(), last.clone()));
+                Failure {
+                    facts: failure.facts,
+                    ..last.wire_failure()
+                }
+            }
             Outcome::Return => failure,
         };
         entry.facts = setup_retry::merged_facts(entry.facts.take(), failure.facts.clone());
@@ -196,6 +222,34 @@ impl Retries {
 }
 
 impl HttpsEndpoint {
+    /// What the retry machines' calls this pass changed, for the site's limit
+    /// machine and for the opens held on a key that went Down (§5.5).
+    pub(super) fn apply_retry_effects(&mut self) {
+        for (request, pool_key, change) in std::mem::take(&mut self.retries.health) {
+            if let Some(operation) = self.operations.get(&request) {
+                self.client.governor().scoped(&operation.name).health(
+                    &pool_key,
+                    change,
+                    self.client.pool_now(),
+                );
+            }
+        }
+        for (request, pool_key, last) in std::mem::take(&mut self.retries.sweeps) {
+            for ((owner, _), entry) in self.entries.iter_mut() {
+                if *owner == request && entry.pool_key == pool_key && entry.held.is_some() {
+                    entry.held = None;
+                    fail(
+                        entry,
+                        Failure {
+                            facts: None,
+                            ..last.clone().wire_failure()
+                        },
+                    );
+                }
+            }
+        }
+    }
+
     /// Whether a connection of the site may be idle: more are set up than
     /// carry a stream. An overestimate costs a wait in the pool, as at the
     /// ceiling; an underestimate would hold an open that could lease.
@@ -311,6 +365,14 @@ impl HttpsEndpoint {
         // Below the ceiling an open that cannot lease an idle connection
         // waits for room here, where its allocation clock stops (§5.2).
         let waits_for_room = carries_test.is_none() && !admission.room && !idle;
+        // A restore step's new connection is carried by an open not on its
+        // final attempt, so a restore never fails an open (§5.5).
+        let final_attempt = self
+            .entries
+            .get(key)
+            .is_some_and(|entry| entry.attempts >= self.retries.machines.max_retries(&key.0));
+        let waits_for_restore =
+            admission.holds_final_attempt(final_attempt, idle, carries_test.is_some());
         let room = self.admits_attempt(&pool_key, admission.target);
         let Some(entry) = self.entries.get_mut(key) else {
             return;
@@ -338,7 +400,7 @@ impl HttpsEndpoint {
                 let Some(mut held) = entry.held.take() else {
                     return;
                 };
-                if !admission.gate_open || waits_for_room {
+                if !admission.gate_open || waits_for_room || waits_for_restore {
                     // Behind a hold of its site, or a full one (§5.2): the
                     // wait is the server's or the limit's, and the allocation
                     // clock stops, as it does while the key's retry machine

@@ -1,5 +1,8 @@
 use super::*;
-use std::task::Waker;
+use std::{
+    sync::atomic::{AtomicU64, Ordering},
+    task::Waker,
+};
 #[derive(Clone, Copy)]
 pub(super) struct Fail {
     pub(super) kind: io::ErrorKind,
@@ -31,6 +34,10 @@ pub(super) struct State {
 }
 pub(crate) struct Control {
     pub(super) state: Mutex<State>,
+    /// How long the job's socket connect took, in milliseconds plus one (zero:
+    /// not yet connected). The host reports it, for the limit machines' settle
+    /// time (adaptive concurrency design §4.1).
+    tcp_connect: AtomicU64,
     pub(super) stall: Duration,
     pub(super) cleanup: Duration,
     pub(super) clock: Arc<dyn Fn() -> Instant + Send + Sync>,
@@ -53,6 +60,7 @@ impl Control {
                 aggregate,
                 wait_started: None,
             }),
+            tcp_connect: AtomicU64::new(0),
             stall,
             cleanup,
             clock,
@@ -61,6 +69,15 @@ impl Control {
     }
     pub(super) fn now(&self) -> Instant {
         (self.clock)()
+    }
+    /// The socket connect completed after `took`.
+    pub(crate) fn record_tcp_connect(&self, took: Duration) {
+        let ms = took.as_millis().min(u128::from(u64::MAX - 1)) as u64;
+        self.tcp_connect.store(ms + 1, Ordering::Release);
+    }
+    /// How long the socket connect took, once it has completed.
+    pub(crate) fn tcp_connect_ms(&self) -> Option<u64> {
+        self.tcp_connect.load(Ordering::Acquire).checked_sub(1)
     }
     fn fail(&self, state: &mut State, reason: TimeoutReason) {
         state.failure = Some(Fail {

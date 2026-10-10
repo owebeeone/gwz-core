@@ -22,10 +22,17 @@
 //! (§4.1), which the pool host reports to and the endpoints consult through
 //! [`Scoped`]. The endpoints use it for the gate and the admission target,
 //! for holds and the idle discard, for the judgement of a refused setup, and
-//! to start the tests of the limit with a queued member as carrier (§4.7). The
-//! restore steps (RESTORING) and the setup limit `Ns` are the next step, so
-//! the module still allows dead code.
-#![allow(dead_code, reason = "restore steps and the setup limit come later")]
+//! to start the tests of the limit with a queued member as carrier (§4.7).
+//! Cut 4: RESTORING (§5.5), in [`control`] and [`fsm`]: after an outage that
+//! lowered `N`, judged doubling steps back up to `N_good`, which the endpoints
+//! start when the retry machine's health changes ([`Scoped::health`]). The
+//! setup limit `Ns`, the POST-level holds and the notes drain are the next
+//! steps, so the module still allows dead code (their hooks, and `admit`,
+//! which only the machine's own tests drive).
+#![allow(
+    dead_code,
+    reason = "the setup limit, POST-level holds and the notes drain come later"
+)]
 
 mod control;
 mod filter;
@@ -47,6 +54,7 @@ cfg_if::cfg_if! {
     if #[cfg(test)] {
         mod control_hold_tests;
         mod control_pool_tests;
+        mod control_restore_tests;
         mod control_tests;
         mod filter_tests;
         mod fsm_tests;

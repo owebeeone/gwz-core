@@ -312,6 +312,8 @@ cfg_if::cfg_if! {
             #[path = "placement_endpoint_tests.rs"]
             mod check_tests;
         } }
+        mod carrier_tests;
+        mod down_tests;
         mod limit_tests;
         mod retry_tests;
     }
