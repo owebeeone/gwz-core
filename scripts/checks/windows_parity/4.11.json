@@ -1,8 +1,8 @@
 {
   "entries": [
-    {"path": "src/git/endpoint/https_auth.rs", "kind": "gate", "gate": "all(test, unix)", "target": "arm: use lookup::{write_request, lookup_owned, lookup_with_budget}", "state": "unported", "owner": ["4.11"], "appendix": "G5"},
     {"path": "src/git/endpoint/https_auth.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod test_support", "state": "unported", "owner": ["4.11"], "appendix": "G5"},
     {"path": "src/git/endpoint/https_auth.rs", "kind": "gate", "gate": "unix", "target": "mod runner_tests", "state": "unported", "owner": ["4.11"], "appendix": "G5"},
+    {"path": "src/git/endpoint/https_auth.rs", "kind": "gate", "gate": "all(test, unix)", "target": "arm: use lookup::{lookup_owned, lookup_with_budget}", "state": "unported", "owner": ["4.11"], "appendix": "G5"},
     {"path": "src/git/endpoint/https_auth_integration_tests.rs", "kind": "gate", "gate": "unix", "target": "arm: use super::*", "state": "unported", "owner": ["4.11"], "appendix": "G15"},
     {"path": "src/git/endpoint/https_auth_integration_tests.rs", "kind": "gate", "gate": "unix", "target": "mod challenge", "state": "unported", "owner": ["4.11"], "appendix": "G15"},
     {"path": "src/git/endpoint/https_auth_integration_tests.rs", "kind": "gate", "gate": "unix", "target": "mod policy", "state": "unported", "owner": ["4.11"], "appendix": "G15"},

@@ -1,7 +1,7 @@
 {
   "entries": [
-    {"path": "src/git/endpoint/https_auth.rs", "kind": "gate", "gate": "unix", "target": "arm: use owner::AuthOwner", "state": "unported", "owner": ["4.4"], "appendix": "G5"},
     {"path": "src/git/endpoint/https_auth.rs", "kind": "gate", "gate": "unix", "target": "arm: use super::https_destination::Destination", "state": "unported", "owner": ["4.4"], "appendix": "G5"},
+    {"path": "src/git/endpoint/https_auth.rs", "kind": "gate", "gate": "unix", "target": "arm: use lookup::{lookup_until, lookup_setup, LookupAdmission}", "state": "unported", "owner": ["4.4"], "appendix": "G5"},
     {"path": "src/git/endpoint/https_worker.rs", "kind": "gate", "gate": "unix", "target": "arm: stmt self.auth_owner.pending_cleanup_count()", "state": "unported", "owner": ["4.4"], "appendix": "G20"},
     {"path": "src/git/endpoint/https_worker.rs", "kind": "gate", "gate": "unix", "target": "arm: stmt self.auth_owner.reap_pending(Instant::", "state": "unported", "owner": ["4.4"], "appendix": "G20"},
     {"path": "src/git/endpoint/https_worker.rs", "kind": "gate", "gate": "unix", "target": "arm: stmt self.client.auth_owner.cancel(", "count": 2, "state": "unported", "owner": ["4.4"], "appendix": "G20"},
