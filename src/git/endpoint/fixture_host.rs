@@ -121,7 +121,7 @@ pub(crate) fn posix_force_command(directory: &str, git_directories: &[String]) -
         "a fixture path with a single quote cannot be quoted for the shell"
     );
     format!(
-        "ForceCommand cd '{}' && export PATH='{path}':\"$PATH\" && eval \"$SSH_ORIGINAL_COMMAND\"\n",
+        "ForceCommand cd '{}' && export PATH='{path}':\"$PATH\" && {SESSION_COMMAND}\n",
         posix_path(directory)
     )
 }
@@ -148,8 +148,16 @@ pub(crate) fn session_batch(
     )
 }
 
-/// What the POSIX shell runs for each session: the command the client sent.
-pub(crate) const SESSION_SCRIPT: &str = "eval \"$SSH_ORIGINAL_COMMAND\"\n";
+/// The script a fixture may leave in its directory to run in place of the client's command, as a forced command
+/// does on Unix (the close fixtures, `ssh_close_fixture`). It is sourced, so its `exit` is the session's.
+pub(crate) const FORCED_SCRIPT: &str = "close-script.sh";
+
+/// What the POSIX shell evaluates for a session: the fixture's forced script when it has one, else the command the
+/// client sent.
+const SESSION_COMMAND: &str = "if [ -f ./close-script.sh ]; then . ./close-script.sh; else eval \"$SSH_ORIGINAL_COMMAND\"; fi";
+
+/// What the POSIX shell runs for each session.
+pub(crate) const SESSION_SCRIPT: &str = "if [ -f ./close-script.sh ]; then . ./close-script.sh; else eval \"$SSH_ORIGINAL_COMMAND\"; fi\n";
 
 /// A `known_hosts` entry for `host` from a `.pub` file's text: the key type and key only, on one line. The
 /// comment is dropped and the line ending is `\n`, whatever the key generator wrote. Windows' `ssh-keygen` ends
@@ -163,7 +171,7 @@ pub(crate) fn normalized_known_hosts_line(host: &str, public_key: &str) -> Strin
 /// The name of the bare repository the fixture serves, which carries a shell-injection marker: a server that
 /// evaluates the repository path unquoted would run `touch` and create the marker.
 pub(crate) fn repository_name(marker: &Path) -> String {
-    format!("repo'$(touch {})'", marker_target(marker))
+    format!("repo'$({})'", injected_command(marker))
 }
 
 cfg_if! {
@@ -175,9 +183,9 @@ cfg_if! {
             format!("{host} {public_key}")
         }
 
-        /// How the injected `touch` names the marker: by its whole path.
-        fn marker_target(marker: &Path) -> String {
-            marker.to_str().unwrap().to_owned()
+        /// The command the repository name injects: `touch` on the marker, by its whole path.
+        fn injected_command(marker: &Path) -> String {
+            format!("touch {}", marker.to_str().unwrap())
         }
 
         /// Finds the server and key generator.
@@ -210,6 +218,11 @@ cfg_if! {
             String::new()
         }
 
+        /// The same for a server whose sessions run a forced script: on Unix that is `authorized_keys`' business.
+        pub(crate) fn forced_session_directives(_temp: &Path) -> String {
+            String::new()
+        }
+
         /// The configuration lines every fixture server has, then the platform's, then `startups`.
         pub(crate) fn server_config(
             extra: &str,
@@ -238,10 +251,16 @@ cfg_if! {
             normalized_known_hosts_line(host, public_key)
         }
 
-        /// How the injected `touch` names the marker. A Windows file name has no `:` or `\`, so the marker is
-        /// named relative to the session's directory, which is the fixture's.
-        fn marker_target(marker: &Path) -> String {
-            marker.file_name().unwrap().to_string_lossy().into_owned()
+        /// The command the repository name injects: `touch` on the marker. Under `cmd.exe` the session wrapper changes
+        /// into the fixture's directory and a Windows file name has no `:` or `\`, so the marker is named relative to
+        /// it. Under a POSIX default shell the commands run where the server puts them, so the marker is named by its
+        /// whole path; the command's own space is `${IFS}` there, since a space ending a path segment is not a Windows
+        /// directory name.
+        fn injected_command(marker: &Path) -> String {
+            match default_shell() {
+                SessionShell::Posix => format!("touch${{IFS}}{}", posix_path(&marker.display().to_string())),
+                SessionShell::Cmd => format!("touch {}", marker.file_name().unwrap().to_string_lossy()),
+            }
         }
 
         /// The first file named `name` in a directory of `PATH`.
@@ -292,24 +311,44 @@ cfg_if! {
             env::var("USERNAME").expect("USERNAME names the account the server logs in")
         }
 
-        /// The `ForceCommand` line that makes the host's default shell run an exec request's command the way a
-        /// Unix `sshd` would; under `cmd.exe` it writes the wrapper it names into `temp` first.
-        pub(crate) fn session_directives(temp: &Path) -> String {
+        /// The host's OpenSSH default shell, from the registry.
+        fn default_shell() -> SessionShell {
             let registry = Command::new("reg")
                 .args(["query", "HKLM\\SOFTWARE\\OpenSSH", "/v", "DefaultShell"])
                 .output()
                 .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
                 .unwrap_or_default();
-            let Some(shell) = session_shell(&registry) else {
+            session_shell(&registry).unwrap_or_else(|| {
                 panic!(
                     "the host's OpenSSH default shell is neither cmd.exe nor a POSIX shell, and the fixture runs commands under only those: {registry}"
-                );
-            };
-            let git_directories = git_directories();
-            if shell == SessionShell::Posix {
-                return posix_force_command(&temp.display().to_string(), &git_directories);
+                )
+            })
+        }
+
+        /// The configuration lines that make the host's default shell run an exec request's command the way a Unix
+        /// `sshd` would. Under a POSIX default shell there are none: the shell takes the command as it is. A forced
+        /// command would be wrong there, because Windows' `sshd.exe` gives every channel of a connection after the
+        /// first the first channel's `SSH_ORIGINAL_COMMAND` (found on dabeest, step 1.6: a push after a fetch on one
+        /// connection ran `git-upload-pack`). Under `cmd.exe`, which knows neither POSIX quoting nor
+        /// `git-upload-pack`, it forces a command that fixes both, and writes the wrapper it names into `temp`.
+        pub(crate) fn session_directives(temp: &Path) -> String {
+            match default_shell() {
+                SessionShell::Posix => String::new(),
+                SessionShell::Cmd => cmd_session_directives(temp),
             }
-            force_command_directive(&write_cmd_session(temp, &git_directories).display().to_string())
+        }
+
+        /// The same for a server whose sessions run [`FORCED_SCRIPT`] when the fixture leaves one in its directory
+        /// (the close fixtures): a forced command under either shell, with the first-command limit above.
+        pub(crate) fn forced_session_directives(temp: &Path) -> String {
+            match default_shell() {
+                SessionShell::Posix => posix_force_command(&temp.display().to_string(), &git_directories()),
+                SessionShell::Cmd => cmd_session_directives(temp),
+            }
+        }
+
+        fn cmd_session_directives(temp: &Path) -> String {
+            force_command_directive(&write_cmd_session(temp, &git_directories()).display().to_string())
         }
 
         /// The directories Git runs from: the one that holds `git.exe`, and its exec path.
@@ -451,7 +490,7 @@ mod tests {
                     "C:/Program Files/Git/mingw64/libexec/git-core".into()
                 ]
             ),
-            "ForceCommand cd '/c/Users/a b/Temp/.tmpX' && export PATH='/c/Program Files/Git/cmd:/c/Program Files/Git/mingw64/libexec/git-core':\"$PATH\" && eval \"$SSH_ORIGINAL_COMMAND\"\n"
+            "ForceCommand cd '/c/Users/a b/Temp/.tmpX' && export PATH='/c/Program Files/Git/cmd:/c/Program Files/Git/mingw64/libexec/git-core':\"$PATH\" && if [ -f ./close-script.sh ]; then . ./close-script.sh; else eval \"$SSH_ORIGINAL_COMMAND\"; fi\n"
         );
     }
 
@@ -475,12 +514,17 @@ mod tests {
     #[test]
     fn the_session_script_evaluates_the_original_command() {
         assert!(SESSION_SCRIPT.contains("eval \"$SSH_ORIGINAL_COMMAND\""));
+        assert!(SESSION_SCRIPT.contains(FORCED_SCRIPT) && SESSION_COMMAND.contains(FORCED_SCRIPT));
     }
 
     #[test]
     fn the_repository_name_carries_the_injection_marker() {
         let name = repository_name(&Path::new("/work/temp").join("injection-marker"));
-        assert!(name.starts_with("repo'$(touch "), "{name}");
+        // The space is `${IFS}` where the marker is named by a whole path and a space would end a directory name.
+        assert!(
+            name.starts_with("repo'$(touch ") || name.starts_with("repo'$(touch${IFS}"),
+            "{name}"
+        );
         assert!(name.ends_with("injection-marker)'"), "{name}");
     }
 

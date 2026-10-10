@@ -22,7 +22,6 @@ gwz_transport_candidate  src/git/endpoint/https_worker.rs  fn with_authority
 gwz_transport_candidate  src/git/endpoint/https_worker/prepare.rs  fn run_attempt
 gwz_transport_candidate  src/git/gitbackend.rs  fn with_transport
 gwz_transport_candidate  src/git/gitbackend.rs  fn with_transport
-gwz_transport_candidate  src/git/gitbackend.rs  fn with_transport
 gwz_transport_candidate  src/git/gitbackend.rs  mod transport_candidate_tests
 gwz_transport_candidate  src/git/gitbackend.rs  use transport_support::server_timeout_ms as transport_timeout_ms
 gwz_transport_candidate  src/git/gitbackend/backend.rs  fn with_host_context
@@ -46,23 +45,12 @@ gwz_transport_candidate  src/protocol/mod.rs  mod generated
 gwz_transport_candidate  src/transport_host/endpoint_environment.rs  fn capture_qualification_proxy
 gwz_transport_candidate  src/transport_host/endpoint_environment.rs  fn endpoint_config_native
 gwz_transport_candidate  src/transport_host/endpoint_environment.rs  mod platform
-gwz_transport_candidate  src/transport_host/mod.rs  fn build_native
 gwz_transport_candidate  src/transport_host/mod.rs  fn capabilities
 gwz_transport_candidate  src/transport_host/mod.rs  fn capabilities
-gwz_transport_candidate  src/transport_host/mod.rs  fn capabilities
-gwz_transport_candidate  src/transport_host/mod.rs  fn capabilities
-gwz_transport_candidate  src/transport_host/mod.rs  fn capabilities
-gwz_transport_candidate  src/transport_host/mod.rs  fn from_environment
-gwz_transport_candidate  src/transport_host/mod.rs  fn new
 gwz_transport_candidate  src/transport_host/mod.rs  fn open_request
 gwz_transport_candidate  src/transport_host/qualification_tests.rs  fn https_only_request_retains_context_and_selects_the_builds_actual_backend
 gwz_transport_candidate  src/transport_host/qualification_tests.rs  fn https_only_request_retains_context_and_selects_the_builds_actual_backend
 gwz_transport_candidate  src/transport_host/qualification_tests.rs  fn qualification_capabilities_and_forged_opens_agree_before_effects
-gwz_transport_candidate  src/transport_host/qualification_tests.rs  fn qualification_direct_and_shared_no_https_constructors_refuse_before_owners_start
-gwz_transport_candidate  src/transport_host/session.rs  fn endpoint_with_https_native
-gwz_transport_candidate  src/transport_host/session.rs  fn endpoint_with_https_native
-gwz_transport_candidate  src/transport_host/session.rs  fn endpoint_with_https_native
-gwz_transport_candidate  src/transport_host/session/driver/opening.rs  fn open
 gwz_transport_candidate  src/transport_host/session/driver/opening.rs  fn open_https
 gwz_transport_candidate  src/workspace_ops/merge/validate.rs  fn max_retries_is_refused_like_every_policy_field_merge_does_not_act_on
 gwz_transport_candidate  src/workspace_ops/merge/validate.rs  fn validate_common_meta

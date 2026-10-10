@@ -6,8 +6,10 @@ pub(crate) mod agent_job;
 pub(crate) mod agent_keys;
 pub(crate) mod agent_socket;
 pub(crate) mod git_turns;
+pub(crate) mod idle_watch;
 pub(crate) mod placement_endpoint;
 pub(crate) mod setup_retry;
+pub(crate) mod socket_wait;
 pub(crate) mod ssh_admission;
 pub(crate) mod ssh_channel;
 pub(crate) mod ssh_connection;
@@ -18,13 +20,13 @@ pub(crate) mod ssh_key_container;
 pub(crate) mod ssh_key_snapshot;
 pub(crate) mod ssh_local;
 pub(crate) mod ssh_network;
-cfg_if::cfg_if! { if #[cfg(unix)] { pub(crate) mod idle_watch; pub(crate) mod ssh_password; pub(crate) mod ssh_setup; } }
+pub(crate) mod ssh_password;
 pub(crate) mod ssh_password_helpers;
 pub(crate) mod ssh_pool;
 pub(crate) mod ssh_pump;
 pub(crate) mod ssh_remote;
+pub(crate) mod ssh_setup;
 pub(crate) mod ssh_setup_context;
-pub(crate) mod socket_wait;
 pub(crate) mod ssh_shutdown;
 pub(crate) mod ssh_worker;
 pub(crate) mod stream_io;
@@ -71,19 +73,20 @@ cfg_if::cfg_if! {
         mod job_budget_wait_tests;
         mod git_turns_tests;
         pub(crate) mod helper_script;
-        pub(crate) mod ssh_close_fixture;
         mod ssh_destination_tests;
         mod ssh_pump_clock_tests;
-        mod ssh_tests;
     }
 }
 
-// The SSH test servers run on every platform: Windows' own `sshd.exe` stands in for `/usr/sbin/sshd` (step 1.1).
+// The SSH test servers and the SSH endpoint's suites run on every platform: Windows' own `sshd.exe` stands in
+// for `/usr/sbin/sshd` (step 1.1); each suite file keeps its own gate until its owner step (steps 1.4 to 3.8).
 cfg_if::cfg_if! {
     if #[cfg(test)] {
         pub(crate) mod fixture_host;
         pub(crate) mod fixture_job;
+        pub(crate) mod ssh_close_fixture;
         pub(crate) mod ssh_fixture;
         pub(crate) mod ssh_password_fixture;
+        mod ssh_tests;
     }
 }

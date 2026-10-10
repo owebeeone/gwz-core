@@ -1,0 +1,6 @@
+{
+  "entries": [
+    {"path": "src/git/endpoint/ssh_tests/max_startups.rs", "kind": "gate", "gate": "target_os = \"macos\"", "target": "arm: use crate::git::endpoint::ssh_fixture::SshdFixture", "state": "unported", "owner": ["3.7"], "appendix": "G47"},
+    {"path": "src/git/endpoint/ssh_tests/max_startups.rs", "kind": "gate", "gate": "unix", "target": "arm: use crate::git::endpoint::{agent_job::Job, setup_retry::{Phase, Verdict, classify}, ssh_network, ssh", "state": "unported", "owner": ["3.7"], "appendix": "G47"}
+  ]
+}

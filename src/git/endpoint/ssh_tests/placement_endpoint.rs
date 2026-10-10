@@ -21,6 +21,11 @@ use std::{
     task::{Context, Waker},
 };
 
+/// An absolute endpoint home on every platform (`/endpoint-home` is relative on Windows). Nothing is read there.
+fn endpoint_home() -> PathBuf {
+    std::env::temp_dir().join("endpoint-home")
+}
+
 fn endpoint() -> Endpoint {
     struct Noop;
     impl Connector for Noop {
@@ -80,7 +85,7 @@ fn open(identity: Identity) -> Envelope {
 fn placement_open_rejects_relative_path_without_endpoint_base_before_worker_effects() {
     let mut endpoint = PlacementEndpoint::new(
         endpoint(),
-        PathBuf::from("/endpoint-home"),
+        endpoint_home(),
         "endpoint".into(),
         "owner".into(),
     )
@@ -107,7 +112,7 @@ fn placement_open_rejects_relative_path_without_endpoint_base_before_worker_effe
 fn one_operation_can_own_parallel_streams_and_shutdown_preserves_terminals() {
     let mut endpoint = PlacementEndpoint::new(
         endpoint(),
-        PathBuf::from("/endpoint-home"),
+        endpoint_home(),
         "endpoint".into(),
         "owner".into(),
     )
@@ -142,7 +147,7 @@ fn one_operation_can_own_parallel_streams_and_shutdown_preserves_terminals() {
 fn check_identity_path_rejection_is_typed_and_has_no_facts() {
     let mut endpoint = PlacementEndpoint::new(
         endpoint(),
-        PathBuf::from("/endpoint-home"),
+        endpoint_home(),
         "endpoint".into(),
         "owner".into(),
     )
@@ -210,7 +215,7 @@ fn check_identity_reads_regular_file_without_parsing_and_reports_missing_file() 
     fs::write(&path, b"not an ssh key").unwrap();
     let mut regular_endpoint = PlacementEndpoint::new(
         endpoint(),
-        PathBuf::from("/endpoint-home"),
+        endpoint_home(),
         "endpoint".into(),
         "owner".into(),
     )
@@ -237,7 +242,7 @@ fn check_identity_reads_regular_file_without_parsing_and_reports_missing_file() 
 
     let mut endpoint = PlacementEndpoint::new(
         endpoint(),
-        PathBuf::from("/endpoint-home"),
+        endpoint_home(),
         "endpoint".into(),
         "owner".into(),
     )
@@ -270,7 +275,7 @@ fn check_identity_reads_regular_file_without_parsing_and_reports_missing_file() 
 fn preopen_cancellation_contains_open_failed_payload_accepted_by_codec() {
     let mut endpoint = PlacementEndpoint::new(
         endpoint(),
-        PathBuf::from("/endpoint-home"),
+        endpoint_home(),
         "endpoint".into(),
         "owner".into(),
     )
@@ -332,13 +337,9 @@ fn message_deadlines_tighten_pool_policy_and_cannot_disable_a_positive_policy() 
             configured,
         )
         .unwrap();
-        let mut bridge = PlacementEndpoint::new(
-            worker,
-            PathBuf::from("/endpoint-home"),
-            "endpoint".into(),
-            "owner".into(),
-        )
-        .unwrap();
+        let mut bridge =
+            PlacementEndpoint::new(worker, endpoint_home(), "endpoint".into(), "owner".into())
+                .unwrap();
         let mut message = open(Identity::default());
         let body = message.open.as_mut().unwrap();
         body.policy = AuthPolicy::SshAmbient;
@@ -430,13 +431,8 @@ fn open_timeout_replies_before_blocked_physical_work_finishes() {
         3000,
     )
     .unwrap();
-    let mut bridge = PlacementEndpoint::new(
-        worker,
-        PathBuf::from("/endpoint-home"),
-        "endpoint".into(),
-        "owner".into(),
-    )
-    .unwrap();
+    let mut bridge =
+        PlacementEndpoint::new(worker, endpoint_home(), "endpoint".into(), "owner".into()).unwrap();
     let mut message = open(Identity::default());
     message.open.as_mut().unwrap().policy = AuthPolicy::SshAmbient;
     bridge.accept("r".into(), message).unwrap();

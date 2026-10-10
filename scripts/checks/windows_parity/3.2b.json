@@ -1,0 +1,5 @@
+{
+  "entries": [
+    {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "unix", "target": "arm: fn agent_from_environment", "state": "paired", "owner": ["3.2b"], "appendix": "new: Windows has no agent source until Phase 3"}
+  ]
+}

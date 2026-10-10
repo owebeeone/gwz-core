@@ -1,0 +1,6 @@
+{
+  "entries": [
+    {"path": "src/transport_host/endpoint_environment.rs", "kind": "gate", "gate": "unix", "target": "arm: fn environment_proxy", "state": "unported", "owner": ["4.6", "4.7"], "appendix": "G64"},
+    {"path": "src/transport_host/endpoint_environment.rs", "kind": "gate", "gate": "unix", "target": "arm: stmt platform::proxy(environment, &mut", "state": "unported", "owner": ["4.6", "4.7"], "appendix": "G64"}
+  ]
+}
