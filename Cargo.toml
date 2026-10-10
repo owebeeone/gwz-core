@@ -107,6 +107,11 @@ rustix = { version = "1", features = ["fs"] }
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem"] }
 
+[target.'cfg(windows)'.dev-dependencies]
+# src/git/regular_file.rs creates a named pipe in a test, to show that a pipe handle is not a regular file. (The
+# candidate manifest names these features itself; see tests/transport_backend/prepare.py.)
+windows-sys = { version = "0.61", features = ["Win32_Security", "Win32_System_Pipes"] }
+
 [dev-dependencies]
 libgit2-sys = { package = "gwz-libgit2-sys", path = "../git2-rs/libgit2-sys", version = "=0.18.8" }
 serde_json = "1"

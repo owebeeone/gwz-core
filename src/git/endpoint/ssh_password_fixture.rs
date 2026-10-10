@@ -1,12 +1,13 @@
 //! A loopback SSH server that accepts a fixed test password, for TR2.18's
 //! URL-password tests: `tests/transport_backend/password_sshd.py`, run by
-//! `python3`. Stock `sshd` checks only system passwords, which a test must
-//! never send, so this server, on Python's standard library alone, checks its
-//! own. It offers the methods a test names, `password` and `publickey` (RSA
-//! or DSA keys), sends `server-sig-algs` only when a test names its value
-//! (TR2.8's SHA-1 rows), runs each exec request's Git command, and logs each
-//! authentication request without its password. It stops and reaps its server
-//! on drop.
+//! `python3` (`python` on Windows, which also needs a POSIX `sh` on `PATH`).
+//! Stock `sshd` checks only system passwords, which a test must never send, so
+//! this server, on Python's standard library alone, checks its own. It offers
+//! the methods a test names, `password` and `publickey` (RSA or DSA keys),
+//! sends `server-sig-algs` only when a test names its value (TR2.8's SHA-1
+//! rows), runs each exec request's Git command, and logs each authentication
+//! request without its password. It stops and reaps its server on drop.
+use super::fixture_job::ProcessJob;
 use std::{
     fs,
     io::{BufRead, BufReader},
@@ -22,18 +23,23 @@ const SERVER: &str = include_str!("../../../tests/transport_backend/password_ssh
 /// user's own `HOME`.
 pub(crate) const PYTHON: &str = "GWZ_TEST_PYTHON";
 
-/// The interpreter `python3` runs here, by its own path.
+/// The command that starts Python: `python3` on Unix, `python` on Windows, where `python3` is often only a stub
+/// that opens the Store.
+const PYTHON_COMMAND: &str = if cfg!(windows) { "python" } else { "python3" };
+
+/// The interpreter [`PYTHON_COMMAND`] runs here, by its own path.
 pub(crate) fn interpreter() -> String {
-    let output = Command::new("python3")
+    let output = Command::new(PYTHON_COMMAND)
         .args(["-c", "import sys; print(sys.executable)"])
         .output()
-        .expect("python3 runs");
-    assert!(output.status.success(), "python3 runs");
+        .expect("python runs");
+    assert!(output.status.success(), "python runs");
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
 pub(crate) struct PasswordSshd {
     child: Child,
+    job: ProcessJob,
     pub(crate) port: u16,
     /// The host key's `known_hosts` field: its type and base64 blob.
     host_key: String,
@@ -85,7 +91,8 @@ impl PasswordSshd {
             text["server_sig_algs"] = sig_algs.into();
         }
         fs::write(&config, text.to_string()).unwrap();
-        let python = std::env::var_os(PYTHON).unwrap_or_else(|| "python3".into());
+        let python = std::env::var_os(PYTHON).unwrap_or_else(|| PYTHON_COMMAND.into());
+        let job = ProcessJob::new().unwrap();
         let mut child = Command::new(python)
             .arg("-B")
             .arg(&script)
@@ -94,7 +101,8 @@ impl PasswordSshd {
             .stdout(Stdio::piped())
             .stderr(fs::File::create(dir.join("stderr.txt")).unwrap())
             .spawn()
-            .expect("python3 runs the password fixture");
+            .expect("python runs the password fixture");
+        job.adopt(&child).unwrap();
         let mut ready = String::new();
         BufReader::new(child.stdout.take().unwrap())
             .read_line(&mut ready)
@@ -105,6 +113,7 @@ impl PasswordSshd {
             port: ready["port"].as_u64().unwrap() as u16,
             host_key: ready["host_key"].as_str().unwrap().to_owned(),
             child,
+            job,
             log,
         }
     }
@@ -159,6 +168,8 @@ impl PasswordSshd {
 
 impl Drop for PasswordSshd {
     fn drop(&mut self) {
+        // The `sh` processes the server starts for exec requests are in its job on Windows, and end with it.
+        self.job.terminate();
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

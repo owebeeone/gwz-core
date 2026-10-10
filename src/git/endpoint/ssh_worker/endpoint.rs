@@ -1,4 +1,5 @@
 use super::*;
+use crate::git::regular_file;
 impl Endpoint {
     /// The endpoint. A driver in its process deposits each open's URL extras
     /// in `handoff`, from which the open takes them (TR2.18).
@@ -132,30 +133,19 @@ impl Endpoint {
         selected: PathBuf,
         deadline: Option<Instant>,
     ) -> io::Result<Job<()>> {
-        cfg_if::cfg_if! { if #[cfg(unix)] {
-        Job::start(&self.shared.supervisor, deadline, self.cleanup, move |control| {
-            control.check()?;
-            use std::os::unix::fs::OpenOptionsExt;
-            // O_NONBLOCK prevents special files (including a replaced FIFO) from
-            // blocking before fstat establishes the regular-file requirement.
-            let file = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NONBLOCK)
-                .open(selected)
-                .map_err(|error| io::Error::from(error.kind()))?;
-            control.check()?;
-            let metadata = file
-                .metadata()
-                .map_err(|error| io::Error::from(error.kind()))?;
-            if !metadata.file_type().is_file() {
-                return Err(io::ErrorKind::InvalidInput.into());
-            }
-            Ok(())
-        })
-        } else {
-            let _ = (selected, deadline);
-            Err(io::ErrorKind::Unsupported.into())
-        } }
+        Job::start(
+            &self.shared.supervisor,
+            deadline,
+            self.cleanup,
+            move |control| {
+                control.check()?;
+                // The regular-file open refuses a FIFO, a device or a pipe (a replaced file included) without
+                // blocking, on every platform.
+                regular_file::open(&selected).map_err(|error| io::Error::from(error.kind()))?;
+                control.check()?;
+                Ok(())
+            },
+        )
     }
 
     pub(crate) fn pending_requests(&self) -> usize {
