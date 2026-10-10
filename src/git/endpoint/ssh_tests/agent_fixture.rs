@@ -193,15 +193,12 @@ impl Fixture {
         fixture
     }
     pub fn prepared(&self, method: &str) -> (SshConnection, Vec<u8>) {
-        let stream = TcpStream::connect(("127.0.0.1", self.ssh.port)).unwrap();
+        let (mut connection, stream) = common::handshaken(self.ssh.port, 3_000).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(1)))
             .unwrap();
-        *self.monitor.lock().unwrap() = Some(stream.try_clone().unwrap());
-        let mut connection = SshConnection::new(stream).unwrap();
+        *self.monitor.lock().unwrap() = Some(stream);
         let session = connection.session();
-        session.set_timeout(3_000);
-        session.handshake().unwrap();
         let key = session.host_key().unwrap().0.to_vec();
         let mut known = session.known_hosts().unwrap();
         known

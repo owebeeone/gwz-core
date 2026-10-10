@@ -89,16 +89,24 @@ def test_candidate_adds_the_windows_networking_features_the_endpoint_needs(tmp_p
     production = tomllib.loads((ROOT / "Cargo.toml").read_text())["target"]["cfg(windows)"]["dependencies"]["windows-sys"]
     # The candidate adds to production's list, never replaces it: WinHttp for the HTTPS endpoint, WinSock for
     # the SSH endpoint's socket waits (GwzTransportWindowsParityPlan.md, step 1.2), and the features the SSH test
-    # fixtures use (step 1.1). Production names none of them.
+    # fixtures use (step 1.1), and Pageant's exchange (step 3.5: its mapping, descriptor and `WM_COPYDATA`).
+    # Production names none of them.
     assert set(production["features"]) < set(prepared["features"])
     assert set(prepared["features"]) - set(production["features"]) == {
         "Win32_Networking_WinHttp",
         "Win32_Networking_WinSock",
         "Win32_Security",
+        "Win32_Security_Authorization",
+        "Win32_System_DataExchange",
         "Win32_System_Diagnostics_ToolHelp",
+        "Win32_System_IO",
+        "Win32_System_Ioctl",
         "Win32_System_JobObjects",
+        "Win32_System_Memory",
         "Win32_System_Pipes",
+        "Win32_System_SystemInformation",
         "Win32_System_Threading",
+        "Win32_UI_WindowsAndMessaging",
     }
 
 

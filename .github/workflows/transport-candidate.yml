@@ -299,6 +299,35 @@ jobs:
           rustup toolchain install 1.95.0 --profile minimal
           rustup default 1.95.0
           rustc --version
+      - name: Install the OpenSSH server the SSH fixtures run
+        # The image has the OpenSSH client and no server, and the fixtures
+        # (src/git/endpoint/fixture_host.rs) run a foreground sshd.exe per test.
+        # Windows' optional-feature install is slow and depends on Windows
+        # Update, so this downloads Win32-OpenSSH's portable zip at a pinned
+        # release and checks its SHA-256. Nothing is installed as a service and
+        # no registry value is set: GWZ_TEST_SSHD names the sshd.exe (the
+        # fixture finds ssh-keygen.exe beside it), GWZ_TEST_SH Git for Windows'
+        # POSIX sh, which the fixture's cmd.exe shims run, since this image's
+        # default shell for sshd is cmd.exe.
+        env:
+          OPENSSH_RELEASE: v9.8.3.0p2-Preview
+          OPENSSH_SHA256: 0ca131f3a78f404dc819a6336606caec0db1663a692ccc3af1e90232706ada54
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/openssh"
+          mkdir -p "$dir"
+          curl --fail --silent --show-error --location --retry 5 --retry-all-errors \
+            --output "$dir/OpenSSH-Win64.zip" \
+            "https://github.com/PowerShell/Win32-OpenSSH/releases/download/$OPENSSH_RELEASE/OpenSSH-Win64.zip"
+          echo "$OPENSSH_SHA256  $dir/OpenSSH-Win64.zip" | sha256sum --check -
+          powershell -NoProfile -Command "Expand-Archive -LiteralPath '$(cygpath -w "$dir/OpenSSH-Win64.zip")' -DestinationPath '$(cygpath -w "$dir")'"
+          sshd="$dir/OpenSSH-Win64/sshd.exe"
+          test -f "$sshd" && test -f "$dir/OpenSSH-Win64/ssh-keygen.exe"
+          "$sshd" -V 2>&1 || true
+          sh_exe='C:\Program Files\Git\usr\bin\sh.exe'
+          test -f "$(cygpath -u "$sh_exe")"
+          echo "GWZ_TEST_SSHD=$(cygpath -w "$sshd")" >> "$GITHUB_ENV"
+          echo "GWZ_TEST_SH=$sh_exe" >> "$GITHUB_ENV"
       - name: Install taut-proto
         # The generators accept only the pinned release, from this interpreter's
         # site-packages. The Python tests and the generator checks run on the

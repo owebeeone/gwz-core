@@ -172,12 +172,9 @@ impl ChannelResource for PendingResource {
 
 fn authenticated(fixture: &mut common::SshdFixture) -> ssh_connection::SshConnection {
     use ssh2::{CheckResult, KnownHostFileKind};
-    let socket = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
-    let mut connection = ssh_connection::SshConnection::new(socket).unwrap();
+    let (mut connection, _) = common::handshaken(fixture.port, 5_000).unwrap();
     {
         let session = connection.session();
-        session.set_timeout(5_000);
-        session.handshake().unwrap();
         let (key, _) = session.host_key().unwrap();
         let mut known = session.known_hosts().unwrap();
         known

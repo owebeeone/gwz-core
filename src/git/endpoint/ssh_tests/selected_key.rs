@@ -470,11 +470,7 @@ fn native_disconnect_is_io_at_the_setup_boundary_without_retry() {
     let r = Registry::new();
     let entry = load(&r, key.clone(), &f.temp.path().join("client_ed25519")).unwrap();
     let identity = entry.identity();
-    let socket = TcpStream::connect(("127.0.0.1", f.port)).unwrap();
-    let breaker = socket.try_clone().unwrap();
-    let mut conn = common::SshConnection::new(socket).unwrap();
-    conn.session().set_timeout(3000);
-    conn.session().handshake().unwrap();
+    let (mut conn, breaker) = common::handshaken(f.port, 3000).unwrap();
     let host = conn.session().host_key().unwrap().0.to_vec();
     let mut known = conn.session().known_hosts().unwrap();
     known

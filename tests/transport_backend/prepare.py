@@ -15,21 +15,31 @@ import shutil
 #     job), Win32_System_Threading (CreateProcessW, the attribute list, process waits), Win32_System_Pipes (the
 #     overlapped pipes), Win32_Security (inheritable handle attributes), Win32_System_SystemInformation (the Windows
 #     directory), and the production list's own Win32_Foundation and Win32_Storage_FileSystem; Win32_Networking_
-#     WinHttp and Win32_Networking_WinSock serve the HTTPS and SSH code. The candidate-to-production switch must
+#     WinHttp and Win32_Networking_WinSock serve the HTTPS and SSH code; step 3.5's Pageant exchange
+#     (`pageant_exchange/sys.rs`) needs Win32_Security_Authorization, Win32_System_DataExchange, Win32_System_Memory
+#     and Win32_UI_WindowsAndMessaging. The candidate-to-production switch must
 #     carry every one of them into Cargo.toml's `windows-sys` list.
-#   test only: Win32_System_Diagnostics_ToolHelp and the named-pipe and job calls of the SSH test servers
-#     (`fixture_job.rs`) and of the regular-file test; they are named here as well as in Cargo.toml's Windows
+#   test only: Win32_System_Diagnostics_ToolHelp, Win32_System_IO and Win32_System_Ioctl, for the Job Object,
+#     thread suspension and process lists of the SSH test servers and their native helper (`fixture_job.rs`), a
+#     named pipe in the regular-file test, pipe reads and writes in the agent fixture, and the directory junction of
+#     the URL tests; they are named here as well as in Cargo.toml's Windows
 #     dev-dependencies, because `cargo check --lib --profile test`, which scripts/windows_lane_check.py runs, does
 #     not enable dev-dependency features.
 CANDIDATE_WINDOWS_FEATURES = (
     "Win32_Networking_WinHttp",
     "Win32_Networking_WinSock",
     "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_DataExchange",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
     "Win32_System_JobObjects",
+    "Win32_System_Memory",
     "Win32_System_Pipes",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
 )
 
 # Cargo resolves a dependency path against the directory of the manifest that
