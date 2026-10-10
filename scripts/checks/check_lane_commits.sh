@@ -28,17 +28,21 @@ if [ -z "${commits}" ]; then
   exit 0
 fi
 status=0
-# The base's Windows-parity inventory, whichever form the base has: the directory scripts/checks/windows_parity/,
-# or the single windows_parity_inventory.json that preceded it (origin/main has only the file until the split lands).
-base_inventory=""
-base_tmp=$(mktemp -d)
-if git cat-file -e "${base}:scripts/checks/windows_parity/meta.json" 2>/dev/null; then
-  git archive "${base}" scripts/checks/windows_parity | tar -x -C "${base_tmp}"
-  base_inventory="${base_tmp}/scripts/checks/windows_parity"
-elif git cat-file -e "${base}:scripts/checks/windows_parity_inventory.json" 2>/dev/null; then
-  git show "${base}:scripts/checks/windows_parity_inventory.json" > "${base_tmp}/windows_parity_inventory.json"
-  base_inventory="${base_tmp}/windows_parity_inventory.json"
-fi
+# The Windows-parity inventory a commit is compared with, whichever form it has: the directory
+# scripts/checks/windows_parity/, or the single windows_parity_inventory.json that preceded it. A commit is
+# compared with the base as of its own fork point (git merge-base), not with the base's current tip: a lane cloned
+# from an older main lowers the count against where it started, and the base may have moved on and lowered it
+# further meanwhile. A merge of the base brings the fork point up to that base.
+inventory_at() {
+  local ref="$1" dir="$2"
+  if git cat-file -e "${ref}:scripts/checks/windows_parity/meta.json" 2>/dev/null; then
+    git archive "${ref}" scripts/checks/windows_parity | tar -x -C "${dir}"
+    echo "${dir}/scripts/checks/windows_parity"
+  elif git cat-file -e "${ref}:scripts/checks/windows_parity_inventory.json" 2>/dev/null; then
+    git show "${ref}:scripts/checks/windows_parity_inventory.json" > "${dir}/windows_parity_inventory.json"
+    echo "${dir}/windows_parity_inventory.json"
+  fi
+}
 for sha in ${commits}; do
   tmp=$(mktemp -d)
   git archive "${sha}" | tar -x -C "${tmp}"
@@ -56,6 +60,8 @@ for sha in ${commits}; do
   # checker has none to run.
   if [ -f "${tmp}/scripts/checks/check_windows_parity.py" ]; then
     parity_ok=1
+    base_tmp=$(mktemp -d)
+    base_inventory=$(inventory_at "$(git merge-base "${base}" "${sha}")" "${base_tmp}")
     "${python}" "${tmp}/scripts/checks/check_windows_parity.py" --root "${tmp}" > "${tmp}/parity.out" 2>&1 || parity_ok=0
     # A commit made before the per-step inventory (scripts/checks/windows_parity/) carries a checker
     # that reads only the single-file form, so it cannot compare against a base in the directory form.
@@ -74,10 +80,10 @@ for sha in ${commits}; do
       cat "${tmp}/parity.out" >&2
       status=1
     fi
+    rm -rf "${base_tmp}"
   fi
   rm -rf "${tmp}"
 done
-rm -rf "${base_tmp}"
 # The Windows compile gate (GwzTransportWindowsParityPlan.md, step 0.4; skim finding P3-3): a commit that changes a
 # trigger path needs a `Windows-receipt: <label>` line in its message or in a later commit of the range, or
 # `Windows-receipt: ci-only <reason>`. The range is judged as a whole, with the head's own script and inventory, so
