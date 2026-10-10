@@ -224,13 +224,13 @@ cfg_if::cfg_if! {
                 https_remote::install(callbacks, Arc::new(route));
                 return;
             }
-            cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
-                callbacks.smart_transport(false, |_| -> Result<RemoteTransport, git2::Error> {
-                    Err(git2::Error::new(git2::ErrorCode::Invalid, git2::ErrorClass::Net, "Windows HTTPS qualification supports only HTTPS remotes"))
-                });
-                return;
-            } }
             if matches!(Destination::parse(url), Ok(None)) {
+                // Neither SSH nor HTTPS (`http:`, a file): the Windows qualification serves no other remote.
+                cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
+                    callbacks.smart_transport(false, |_| -> Result<RemoteTransport, git2::Error> {
+                        Err(git2::Error::new(git2::ErrorCode::Invalid, git2::ErrorClass::Net, "Windows qualification supports only SSH and HTTPS remotes"))
+                    });
+                } }
                 return;
             }
             let selected = identity.map(|i| i.path.to_string_lossy().into_owned());

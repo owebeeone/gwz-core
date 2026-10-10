@@ -105,8 +105,8 @@ cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_htt
             let settings = EndpointSettings { ssh: None, pool: pool::Config::default(), io_timeout_ms: 3000 };
             let runtime = TransportRuntime::build_native(settings, Some((HttpsEndpointConfig { tls: Default::default(), auth: None }, HelperSlots::new())), None).unwrap();
             let caps = runtime.capabilities(TransportCapabilitiesRequest { schema_version: "gwz.protocol/v0".into(), ..Default::default() }).unwrap();
-            assert_eq!(caps.schemes, Some(vec![Scheme::Https]));
-            assert_eq!(caps.auth_policies, Some(vec![AuthPolicy::Anonymous, AuthPolicy::WindowsDefault]));
+            assert_eq!(caps.schemes, Some(vec![Scheme::Ssh, Scheme::Https]));
+            assert_eq!(caps.auth_policies, Some(vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit, AuthPolicy::Anonymous, AuthPolicy::WindowsDefault]));
             assert!(!caps.file_identity);
             assert!(!caps.exact_agent_identity);
             let request = runtime.request(meta("qualification-refusal"), "operation".into()).await.unwrap();
@@ -123,7 +123,10 @@ cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_htt
             use crate::git::GitBackend;
             let fixture = tempfile::tempdir().unwrap();
             let target = fixture.path().join("no-clone");
-            for url in ["ssh://git@example.invalid/repo", "http://example.invalid/repo", "file:///unavailable/repo", "git@example.invalid:repo"] {
+            // SSH is no longer refused by the qualification boundary (plan step 1.6); remotes that are neither SSH nor HTTPS still are.
+            request.backend().validate_url_identity(None, "origin", "ssh://git@example.invalid/repo").unwrap();
+            request.backend().validate_url_identity(None, "origin", "git@example.invalid:repo").unwrap();
+            for url in ["http://example.invalid/repo", "file:///unavailable/repo"] {
                 let refused = request.backend().validate_url_identity(None, "origin", url).unwrap_err();
                 assert_eq!(refused.code, ErrorCode::UnsupportedOperation);
                 let refused = request.backend().clone_repo(url, &target).unwrap_err();
@@ -131,9 +134,10 @@ cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_htt
                 assert!(!target.exists());
             }
             let options = crate::TransportOptions { default_identity: Some("/must-not-read-key".into()), ..Default::default() };
-            let refused = request.backend().with_transport(&target, Some(&options)).unwrap_err();
-            assert_eq!(refused.code, ErrorCode::UnsupportedOperation);
-            assert!(SshEndpointConfig::from_environment().is_err());
+            // The identity may be refused as a path that is not absolute, but no longer as unavailable in qualification.
+            if let Err(error) = request.backend().with_transport(&target, Some(&options)) {
+                assert_ne!(error.code, ErrorCode::UnsupportedOperation, "{error:?}");
+            }
             let authority = crate::git::endpoint::shared_reservation::Authority::new(8, 8);
             let mut http = crate::git::endpoint::https_worker::Endpoint::with_authority(Default::default(), None, Default::default(), 3000, authority, HelperSlots::new()).unwrap();
             for policy in [AuthPolicy::Gh, AuthPolicy::WindowsConfigured] {
@@ -258,28 +262,73 @@ fn https_only_cancelled_capacity_retirement_closes_the_mutated_generation() {
         assert_eq!(runtime.shutdown().await.pending_local_work, 0);
     });
 }
-cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
-    #[test]
-    fn qualification_direct_and_shared_no_https_constructors_refuse_before_owners_start() {
-        let config = SshEndpointConfig::fixture(std::path::PathBuf::from("C:/ordinary-home"), None);
-        let failure = TransportRuntime::new(config.clone()).err().expect("SSH-only runtime must refuse");
-        assert_eq!(failure.code, crate::model::ErrorCode::UnsupportedOperation);
-        let failure = TransportRuntime::build_native(config.clone().into(), None, None).err().expect("shared runtime boundary must refuse");
-        assert_eq!(failure.code, crate::model::ErrorCode::UnsupportedOperation);
-        let failure = Session::endpoint_with_https_native(config.into(), None, crate::git::endpoint::ssh_handoff::Handoff::default(), None).err().expect("shared endpoint boundary must refuse");
-        assert_eq!(failure.code, crate::model::ErrorCode::UnsupportedOperation);
-    }
-} else if #[cfg(unix)] {
-    #[test]
-    fn unix_public_ssh_constructor_retains_its_engine_and_defaults() {
-        let executor = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        executor.block_on(async {
-            let home = tempfile::tempdir().unwrap();
-            let runtime = TransportRuntime::new(SshEndpointConfig::fixture(home.path().to_path_buf(), None)).unwrap();
-            let endpoint = runtime.0.lock().unwrap().local_endpoint.clone();
-            assert!(endpoint.endpoint_offer_for_test().0);
-            assert_eq!(endpoint.capacity_for_test(), Some(pool::Capacity::from(&pool::Config::default())));
-            assert_eq!(runtime.shutdown().await.pending_local_work, 0);
-        });
-    }
-} }
+#[test]
+fn public_ssh_constructor_retains_its_engine_and_defaults() {
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    executor.block_on(async {
+        let home = tempfile::tempdir().unwrap();
+        let runtime =
+            TransportRuntime::new(SshEndpointConfig::fixture(home.path().to_path_buf(), None))
+                .unwrap();
+        let endpoint = runtime.0.lock().unwrap().local_endpoint.clone();
+        assert!(endpoint.endpoint_offer_for_test().0);
+        assert_eq!(
+            endpoint.capacity_for_test(),
+            Some(pool::Capacity::from(&pool::Config::default()))
+        );
+        let caps = runtime
+            .capabilities(TransportCapabilitiesRequest {
+                schema_version: "gwz.protocol/v0".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(caps.schemes, Some(vec![Scheme::Ssh]));
+        assert_eq!(
+            caps.auth_policies,
+            Some(vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit])
+        );
+        assert_eq!(runtime.shutdown().await.pending_local_work, 0);
+    });
+}
+
+#[test]
+fn ssh_and_https_runtime_offers_both_schemes_and_binds_what_it_offers() {
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    executor.block_on(async {
+        let home = tempfile::tempdir().unwrap();
+        let config = SshEndpointConfig::fixture(home.path().to_path_buf(), None);
+        let runtime = TransportRuntime::build_native(
+            config.into(),
+            Some((
+                HttpsEndpointConfig {
+                    tls: Default::default(),
+                    auth: None,
+                },
+                HelperSlots::new(),
+            )),
+            None,
+        )
+        .unwrap();
+        let caps = runtime
+            .capabilities(TransportCapabilitiesRequest {
+                schema_version: "gwz.protocol/v0".into(),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(caps.schemes, Some(vec![Scheme::Ssh, Scheme::Https]));
+        let endpoint = runtime.0.lock().unwrap().local_endpoint.clone();
+        assert!(
+            endpoint.endpoint_offer_for_test().0,
+            "the SSH engine is constructed"
+        );
+        let (_, bound) = endpoint.endpoint_offer_for_test();
+        assert_eq!(Some(bound.schemes.clone()), caps.schemes);
+        assert_eq!(runtime.shutdown().await.pending_local_work, 0);
+    });
+}

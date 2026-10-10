@@ -16,12 +16,7 @@ impl Session {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             state.engine.is_none() && state.endpoint_config.is_some()
         };
-        if cfg!(all(
-            windows,
-            gwz_transport_candidate,
-            gwz_windows_https_qualification
-        )) || absent_ssh
-        {
+        if absent_ssh {
             return Err(io::ErrorKind::Unsupported.into());
         }
         let mut destination = Destination::parse(url)?.ok_or(io::ErrorKind::Unsupported)?;

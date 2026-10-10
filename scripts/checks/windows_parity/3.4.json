@@ -1,0 +1,12 @@
+{
+  "entries": [
+    {"path": "src/git/endpoint/agent_auth.rs", "kind": "gate", "gate": "unix", "target": "arm: mod unix", "state": "unported", "owner": ["3.4"], "appendix": "G1"},
+    {"path": "src/git/endpoint/agent_auth.rs", "kind": "os", "gate": "libc::malloc", "target": "", "state": "unported", "owner": ["3.4"], "appendix": "G1"},
+    {"path": "src/git/endpoint/ssh_local.rs", "kind": "gate", "gate": "unix", "target": "arm: fn agent_authenticate", "state": "paired", "owner": ["3.4", "3.6"], "appendix": "new: step 1.4's agent step; the Windows arm refuses a needed agent with the no-agent refusal until the Windows agent sources land"},
+    {"path": "src/git/endpoint/ssh_tests/agent_auth.rs", "kind": "gate", "gate": "unix", "target": "arm: use crate::git::endpoint::agent_auth", "state": "unported", "owner": ["3.4"], "appendix": "G37"},
+    {"path": "src/git/endpoint/ssh_tests/agent_auth.rs", "kind": "os", "gate": "os::unix::net::UnixStream", "target": "", "state": "unported", "owner": ["3.4"], "appendix": "G37"},
+    {"path": "src/git/endpoint/ssh_tests/agent_auth.rs", "kind": "os", "gate": "os::unix::net::UnixStream::connect", "target": "", "state": "unported", "owner": ["3.4"], "appendix": "G37"},
+    {"path": "src/git/endpoint/ssh_tests/mod.rs", "kind": "gate", "gate": "unix", "target": "mod network_agent", "state": "unported", "owner": ["3.4"], "appendix": "new: the agent rows of network.rs"},
+    {"path": "src/git/endpoint/ssh_tests/network_agent.rs", "kind": "gate", "gate": "unix", "target": "arm: use super::network::{finish, key}", "state": "unported", "owner": ["3.4"], "appendix": "new: the agent rows of network.rs"}
+  ]
+}

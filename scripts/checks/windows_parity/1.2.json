@@ -1,0 +1,17 @@
+{
+  "entries": [
+    {"path": "src/git/endpoint/socket_wait.rs", "kind": "gate", "gate": "unix", "target": "arm: fn the_unix_in_progress_codes_are_pending", "state": "paired", "owner": ["1.2"], "appendix": "new: step 1.2's portable socket readiness; the Unix arm sits beside a Windows select arm"},
+    {"path": "src/git/endpoint/socket_wait.rs", "kind": "gate", "gate": "unix", "target": "arm: use std::os::fd::{AsRawFd, RawFd}", "state": "paired", "owner": ["1.2"], "appendix": "new: step 1.2's portable socket readiness; the Unix arm sits beside a Windows select arm"},
+    {"path": "src/git/endpoint/socket_wait.rs", "kind": "os", "gate": "libc::EALREADY", "target": "", "count": 2, "state": "paired", "owner": ["1.2"], "appendix": "new: step 1.2's portable socket readiness; the Unix arm sits beside a Windows select arm"},
+    {"path": "src/git/endpoint/socket_wait.rs", "kind": "os", "gate": "libc::ECONNREFUSED", "target": "", "state": "paired", "owner": ["1.2"], "appendix": "new: step 1.2's portable socket readiness; the Unix arm sits beside a Windows select arm"},
+    {"path": "src/git/endpoint/socket_wait.rs", "kind": "os", "gate": "libc::EINPROGRESS", "target": "", "count": 2, "state": "paired", "owner": ["1.2"], "appendix": "new: step 1.2's portable socket readiness; the Unix arm sits beside a Windows select arm"},
+    {"path": "src/git/endpoint/socket_wait.rs", "kind": "os", "gate": "libc::POLLERR", "target": "", "state": "paired", "owner": ["1.2"], "appendix": "new: step 1.2's portable socket readiness; the Unix arm sits beside a Windows select arm"},
+    {"path": "src/git/endpoint/socket_wait.rs", "kind": "os", "gate": "libc::POLLHUP", "target": "", "state": "paired", "owner": ["1.2"], "appendix": "new: step 1.2's portable socket readiness; the Unix arm sits beside a Windows select arm"},
+    {"path": "src/git/endpoint/socket_wait.rs", "kind": "os", "gate": "libc::POLLIN", "target": "", "state": "paired", "owner": ["1.2"], "appendix": "new: step 1.2's portable socket readiness; the Unix arm sits beside a Windows select arm"},
+    {"path": "src/git/endpoint/socket_wait.rs", "kind": "os", "gate": "libc::POLLOUT", "target": "", "count": 2, "state": "paired", "owner": ["1.2"], "appendix": "new: step 1.2's portable socket readiness; the Unix arm sits beside a Windows select arm"},
+    {"path": "src/git/endpoint/socket_wait.rs", "kind": "os", "gate": "libc::poll", "target": "", "state": "paired", "owner": ["1.2"], "appendix": "new: step 1.2's portable socket readiness; the Unix arm sits beside a Windows select arm"},
+    {"path": "src/git/endpoint/socket_wait.rs", "kind": "os", "gate": "libc::pollfd", "target": "", "state": "paired", "owner": ["1.2"], "appendix": "new: step 1.2's portable socket readiness; the Unix arm sits beside a Windows select arm"},
+    {"path": "src/git/endpoint/socket_wait.rs", "kind": "os", "gate": "os::fd::RawFd", "target": "", "state": "paired", "owner": ["1.2"], "appendix": "new: step 1.2's portable socket readiness; the Unix arm sits beside a Windows select arm"},
+    {"path": "src/git/endpoint/socket_wait.rs", "kind": "os", "gate": "os::fd::{AsRawFd, RawFd}", "target": "", "state": "paired", "owner": ["1.2"], "appendix": "new: step 1.2's portable socket readiness; the Unix arm sits beside a Windows select arm"}
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {"path": "src/git/endpoint/ssh_tests/key_fixture.rs", "kind": "os", "gate": "libc::ECHILD", "target": "", "state": "platform", "owner": ["1.7"], "appendix": "G44", "reason": "the Unix key-agent fixture (UnixStream, kill, waitpid); it stays for Unix and step 1.7 adds the Windows twin beside it"},
+    {"path": "src/git/endpoint/ssh_tests/key_fixture.rs", "kind": "os", "gate": "libc::ESRCH", "target": "", "state": "platform", "owner": ["1.7"], "appendix": "G44", "reason": "the Unix key-agent fixture (UnixStream, kill, waitpid); it stays for Unix and step 1.7 adds the Windows twin beside it"},
+    {"path": "src/git/endpoint/ssh_tests/key_fixture.rs", "kind": "os", "gate": "libc::WNOHANG", "target": "", "state": "platform", "owner": ["1.7"], "appendix": "G44", "reason": "the Unix key-agent fixture (UnixStream, kill, waitpid); it stays for Unix and step 1.7 adds the Windows twin beside it"},
+    {"path": "src/git/endpoint/ssh_tests/key_fixture.rs", "kind": "os", "gate": "libc::kill", "target": "", "state": "platform", "owner": ["1.7"], "appendix": "G44", "reason": "the Unix key-agent fixture (UnixStream, kill, waitpid); it stays for Unix and step 1.7 adds the Windows twin beside it"},
+    {"path": "src/git/endpoint/ssh_tests/key_fixture.rs", "kind": "os", "gate": "libc::pid_t", "target": "", "state": "platform", "owner": ["1.7"], "appendix": "G44", "reason": "the Unix key-agent fixture (UnixStream, kill, waitpid); it stays for Unix and step 1.7 adds the Windows twin beside it"},
+    {"path": "src/git/endpoint/ssh_tests/key_fixture.rs", "kind": "os", "gate": "libc::waitpid", "target": "", "state": "platform", "owner": ["1.7"], "appendix": "G44", "reason": "the Unix key-agent fixture (UnixStream, kill, waitpid); it stays for Unix and step 1.7 adds the Windows twin beside it"},
+    {"path": "src/git/endpoint/ssh_tests/key_fixture.rs", "kind": "os", "gate": "os::unix::net::UnixStream::connect", "target": "", "state": "platform", "owner": ["1.7"], "appendix": "G44", "reason": "the Unix key-agent fixture (UnixStream, kill, waitpid); it stays for Unix and step 1.7 adds the Windows twin beside it"},
+    {"path": "src/git/endpoint/ssh_tests/mod.rs", "kind": "gate", "gate": "unix", "target": "mod key_fixture", "state": "unported", "owner": ["1.7"], "appendix": "G48"},
+    {"path": "src/git/endpoint/ssh_tests/mod.rs", "kind": "gate", "gate": "unix", "target": "mod agent_fixture", "state": "unported", "owner": ["1.7"], "appendix": "new: the Windows agent fixture"}
+  ]
+}
