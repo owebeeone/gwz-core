@@ -28,17 +28,35 @@ fn trusting(ca: &[u8]) -> native_tls::TlsConnector {
     builder.build().unwrap()
 }
 
+/// Why an exchange failed: before the handshake or after it (`Io`), or in it (`Handshake`).
+#[derive(Debug)]
+enum Failed {
+    Io(std::io::Error),
+    Handshake(native_tls::Error),
+}
+
+impl From<std::io::Error> for Failed {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
 /// Everything the peer sends after `request`, over a handshake verified by `connector`.
 fn exchange(
     connector: &native_tls::TlsConnector,
     port: u16,
     request: &[u8],
-) -> std::io::Result<Vec<u8>> {
+) -> Result<Vec<u8>, Failed> {
     let tcp = std::net::TcpStream::connect(("127.0.0.1", port))?;
     tcp.set_read_timeout(Some(Duration::from_secs(10)))?;
     let mut tls = connector
         .connect("localhost", tcp)
-        .map_err(|error| std::io::Error::other(error.to_string()))?;
+        .map_err(|error| match error {
+            native_tls::HandshakeError::Failure(error) => Failed::Handshake(error),
+            native_tls::HandshakeError::WouldBlock(_) => {
+                Failed::Io(std::io::ErrorKind::WouldBlock.into())
+            }
+        })?;
     tls.write_all(request)?;
     let mut reply = Vec::new();
     // An abrupt close after the reply is not this test's subject.
@@ -85,10 +103,18 @@ fn a_client_that_does_not_trust_the_fixture_ca_is_refused() {
         let port = port(&server.url);
         let default_roots = native_tls::TlsConnector::new().unwrap();
         let refused = blocking(move || exchange(&default_roots, port, REQUEST)).await;
+        // The connection was made and the handshake is what failed: not a refused or reset
+        // connection, nor a read error. The platform names the cause in its own words, so the
+        // positive control below shows the server is healthy for a client that trusts its CA.
         assert!(
-            refused.is_err(),
-            "the platform roots must not trust the fixture CA"
+            matches!(refused, Err(Failed::Handshake(_))),
+            "the platform roots must not trust the fixture CA: {refused:?}"
         );
+        let connector = trusting(&server.ca);
+        let reply = blocking(move || exchange(&connector, port, REQUEST))
+            .await
+            .unwrap();
+        assert!(reply.starts_with(b"HTTP/1.1 200"));
     });
 }
 
