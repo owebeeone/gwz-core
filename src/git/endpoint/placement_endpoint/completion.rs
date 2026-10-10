@@ -133,6 +133,15 @@ impl PlacementEndpoint {
                 continue;
             };
             let job = self.opens.swap_remove(index);
+            if job.carries_test {
+                // A test that began a connection of its own was taken by the
+                // host; one that leased an idle connection, or never
+                // connected, is given back (§4.9).
+                self.endpoint
+                    .governor()
+                    .scoped(&job.key.0)
+                    .test_unused(&job.pool_key, self.endpoint.pool_now());
+            }
             if job.abandoned {
                 if let Ok((attachment, _)) = result {
                     attachment.cancel();
@@ -175,7 +184,14 @@ impl PlacementEndpoint {
                     self.push_outbound(job.key.0.clone(), message);
                 }
                 Err(error) => {
-                    self.attempt_failed(job.key, job.pool_key, job.envelope, &error, now_ms);
+                    self.attempt_failed(
+                        job.key,
+                        job.pool_key,
+                        job.envelope,
+                        &error,
+                        job.attempts,
+                        now_ms,
+                    );
                 }
             }
         }
@@ -190,6 +206,7 @@ impl PlacementEndpoint {
         pool_key: Key,
         envelope: Envelope,
         error: &io::Error,
+        attempts: u32,
         now: u64,
     ) {
         if !self.requests.contains_key(&key) {
@@ -199,6 +216,24 @@ impl PlacementEndpoint {
         let verdict = setup_retry::classify(&failure, phase);
         let jitter = self.jitter.draw();
         let machine = retry_key(&pool_key, &envelope);
+        let allowed = self.retries.max_retries(&key.0).saturating_add(1);
+        // A refusal that looks like the host's limit is judged by the site's
+        // machine (§4.8): when it is evidence, the member is requeued and the
+        // key is not made to count it (§5.1).
+        if verdict == Verdict::Retry
+            && let Some(signal) = setup_retry::suspect(&failure, phase, true)
+        {
+            let ruling = self.endpoint.governor().scoped(&key.0).setup_failed(
+                &pool_key,
+                signal,
+                self.endpoint.pool_now(),
+            );
+            if setup_retry::requeues(ruling, false) {
+                self.retries.machine(&key.0, &machine).abandoned(&key);
+                self.requeue(key, pool_key, envelope, failure, attempts, allowed, now);
+                return;
+            }
+        }
         let outcome = self.retries.machine(&key.0, &machine).failed(
             &key,
             verdict,
@@ -208,17 +243,7 @@ impl PlacementEndpoint {
         );
         match outcome {
             Outcome::Retry => {
-                self.keep_facts(&key, failure.facts);
-                let allocation = envelope
-                    .open
-                    .as_ref()
-                    .map_or(0, |open| open.deadlines.allocation_ms.max(0) as u64);
-                self.queued_opens.push_back(QueuedOpen {
-                    key,
-                    pool_key,
-                    envelope,
-                    allocation: AllocationClock::new(now, allocation),
-                });
+                self.requeue(key, pool_key, envelope, failure, attempts, allowed, now)
             }
             // Its own attempts' facts, also when the key finishes it with a
             // failure another member's setup recorded.
@@ -231,5 +256,38 @@ impl PlacementEndpoint {
             ),
             Outcome::Return => self.fail_open(&key, failure),
         }
+    }
+
+    /// Returns a member to the queue for another attempt, or finishes it when
+    /// the `allowed` attempts it made are spent (§5.3): the key stays as it is.
+    #[allow(clippy::too_many_arguments)] // One member's attempt, as it ended.
+    fn requeue(
+        &mut self,
+        key: RequestKey,
+        pool_key: Key,
+        envelope: Envelope,
+        failure: Failure,
+        attempts: u32,
+        allowed: u32,
+        now: u64,
+    ) {
+        if attempts >= allowed {
+            let facts = failure.facts.clone();
+            let spent = setup_retry::spent(failure, false, attempts, allowed);
+            self.fail_open(&key, Failure { facts, ..spent });
+            return;
+        }
+        self.keep_facts(&key, failure.facts);
+        let allocation = envelope
+            .open
+            .as_ref()
+            .map_or(0, |open| open.deadlines.allocation_ms.max(0) as u64);
+        self.queued_opens.push_back(QueuedOpen {
+            key,
+            pool_key,
+            envelope,
+            allocation: AllocationClock::new(now, allocation),
+            attempts,
+        });
     }
 }

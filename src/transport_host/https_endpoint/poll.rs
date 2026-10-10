@@ -23,8 +23,18 @@ impl HttpsEndpoint {
             if let Some(task) = entry.preparing.as_mut() {
                 if let Poll::Ready(result) = Pin::new(task).poll(cx) {
                     entry.preparing = None;
-                    let (mut result, connect, mut retry) =
+                    let (mut result, connect, mut retry, rejection) =
                         result.map_err(|_| EndpointError::Protocol)?;
+                    if std::mem::take(&mut entry.carries_test) {
+                        // A test whose connection the host began is taken; one
+                        // that leased an idle connection is given back (§4.9).
+                        if let Some(operation) = self.operations.get(request) {
+                            self.client
+                                .governor()
+                                .scoped(&operation.name)
+                                .test_unused(&entry.pool_key, self.client.pool_now());
+                        }
+                    }
                     entry.publication_deadline = retry.budget.publication_deadline();
                     if let Ok(prepared) = &result {
                         let code = if entry.cancel.is_cancelled() {
@@ -58,12 +68,22 @@ impl HttpsEndpoint {
                     // one told it at its cancellation.
                     if !entry.cancel.is_cancelled() {
                         let member = (request.clone(), entry.envelope.stream_id);
+                        let name = self
+                            .operations
+                            .get(request)
+                            .map(|operation| operation.name.clone())
+                            .unwrap_or_default();
                         let settled = self.retries.settle(
                             self.now_ms,
                             member,
                             entry,
-                            result,
-                            connect,
+                            Settling {
+                                result,
+                                connect,
+                                rejection,
+                                governor: self.client.governor().scoped(&name),
+                                pool_now: self.client.pool_now(),
+                            },
                             &mut retry,
                         );
                         let Some(settled) = settled else {

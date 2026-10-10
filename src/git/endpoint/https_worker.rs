@@ -41,6 +41,7 @@ pub(crate) mod native;
 mod prepare;
 mod serve;
 mod throttle;
+pub(crate) use throttle::Rejection;
 
 #[derive(Clone)]
 pub(crate) struct Input {

@@ -65,7 +65,9 @@ fn a_429_with_retry_after_holds_the_site_and_its_end_discards_the_idle_connectio
         .await;
         let mut endpoint = Endpoint::new(server.config(), None, pool::Config::default()).unwrap();
         let key = Key::https("localhost", Destination::parse(&server.url).unwrap().port());
-        let governor = endpoint.client.governor().clone();
+        let pool_governor = endpoint.client.governor().clone();
+        pool_governor.begin_operation("operation", 32, false, 0);
+        let governor = pool_governor.scoped("operation");
         let ok = server.url.clone();
         let throttled = server.url.replace("/repo", "/throttle");
         // Three connections at once, each served to its end: three idle, and
@@ -90,14 +92,14 @@ fn a_429_with_retry_after_holds_the_site_and_its_end_discards_the_idle_connectio
         assert!(!governor.exchange_may_begin(&key, now), "and so is a lease");
         // Nothing but time lifts it, and its end discards the idle connections.
         tokio::time::sleep(Duration::from_millis(1_900)).await;
-        governor.tick(endpoint.client.pool_now());
+        pool_governor.tick(endpoint.client.pool_now());
         assert!(
             !governor
                 .admission(&key, endpoint.client.pool_now())
                 .gate_open
         );
         tokio::time::sleep(Duration::from_millis(250)).await;
-        governor.tick(endpoint.client.pool_now());
+        pool_governor.tick(endpoint.client.pool_now());
         assert!(held_at.elapsed() >= Duration::from_millis(2_000));
         assert!(
             governor
@@ -128,13 +130,17 @@ fn a_hold_set_between_admission_and_lease_keeps_the_exchange_from_the_server() {
         let mut endpoint = Endpoint::new(server.config(), None, pool::Config::default()).unwrap();
         let key = Key::https("localhost", Destination::parse(&server.url).unwrap().port());
         let ok = server.url.clone();
+        endpoint
+            .client
+            .governor()
+            .begin_operation("operation", 32, false, 0);
         serve(attempt(&endpoint, &ok).await.unwrap()).await;
         assert_eq!(arrivals.lock().unwrap().len(), 1);
         // Another member's 429 on a connection with nothing in flight: the
         // hold, and nothing else.
         let held_at = std::time::Instant::now();
         let now = endpoint.client.pool_now();
-        endpoint.client.governor().refused(
+        endpoint.client.governor().scoped("operation").refused(
             &key,
             crate::git::endpoint::setup_retry::Conn(u64::MAX),
             crate::git::endpoint::setup_retry::Signal::Throttle,

@@ -193,7 +193,7 @@ pub(super) fn open(stream_id: i64, allocation_ms: i64) -> Envelope {
 }
 /// The machine of every open here: one pool key, and the default identity
 /// their Opens name.
-fn key() -> RetryKey {
+pub(super) fn key() -> RetryKey {
     (Key::ssh("git", "host", 22), Identity::default())
 }
 /// One pass at `now`, keeping the open terminals it hands out.
@@ -339,7 +339,10 @@ fn thirty_two_cold_opens_on_a_dead_key_set_up_a_wave_at_the_limit_then_one_at_a_
         let (terminals, _) = run(&mut endpoint, 32);
         assert_eq!(
             *starts.lock().unwrap(),
-            per_host + 3,
+            // The wave at the limit, its one confirming handshake at
+            // concurrency 1 (adaptive concurrency design §4.8), then the
+            // retry plan's three single probes (case 31).
+            per_host + 4,
             "per-host limit {per_host}"
         );
         assert!(
@@ -458,7 +461,9 @@ fn a_cancel_during_the_wait_opens_no_probe() {
     for now in [2, 1_000 + JITTER, 60_000] {
         step(&mut endpoint, now, &mut terminals);
     }
-    assert_eq!(*starts.lock().unwrap(), 2, "the wake opens no probe");
+    // The wave of two stalled together; the machine's one confirming
+    // handshake made the third start (§4.5 rule 3), and the wake opens none.
+    assert_eq!(*starts.lock().unwrap(), 3, "the wake opens no probe");
     assert_eq!(terminals.len(), 2);
     assert_eq!(open_failure(&terminals[1]).0, ErrorCode::Cancelled);
 }

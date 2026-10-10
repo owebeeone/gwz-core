@@ -13,6 +13,7 @@ pub(crate) enum Origin {
     Post,
 }
 
+#[derive(Clone)]
 struct Active {
     until: u64,
     origin: Origin,
@@ -21,7 +22,7 @@ struct Active {
     discard_asked: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Hold {
     active: Option<Active>,
 }

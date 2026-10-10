@@ -16,12 +16,14 @@ mod backoff;
 mod limit;
 mod machine;
 mod operations;
+mod requeue;
 
 pub(crate) use allocation::AllocationClock;
 pub(crate) use backoff::{Jitter, wait_bound_ms};
-pub(crate) use limit::{Conn, Governor, Signal};
+pub(crate) use limit::{Admission, Conn, Governor, Ruling, Scoped, Signal, State, View};
 pub(crate) use machine::{Decision, Machine, Outcome};
 pub(crate) use operations::{DEFAULT_MAX_RETRIES, Operations};
+pub(crate) use requeue::{requeues, spent, suspect};
 
 /// Where an open's failure happened, as the endpoint that owns it saw it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

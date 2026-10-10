@@ -12,11 +12,26 @@ impl Client {
         budget: &mut Budget,
         challenge: &mut Option<ChallengeLease>,
     ) -> (Result<Prepared, Failure>, FirstConnect) {
-        let mut connect = FirstConnect::None;
-        let result = self
-            .run_attempt(input, cancel, budget, challenge, &mut connect)
+        let (result, connect, _) = self
+            .prepare_attempt_judged(input, cancel, budget, challenge)
             .await;
         (result, connect)
+    }
+    /// `prepare_attempt`, also saying what the limit machine made of the
+    /// attempt's refusal, if the server refused it (§5.1).
+    pub(crate) async fn prepare_attempt_judged(
+        &self,
+        input: Input,
+        cancel: &CancellationToken,
+        budget: &mut Budget,
+        challenge: &mut Option<ChallengeLease>,
+    ) -> (Result<Prepared, Failure>, FirstConnect, Option<Rejection>) {
+        let mut connect = FirstConnect::None;
+        let mut refusal = None;
+        let result = self
+            .run_attempt(input, cancel, budget, challenge, &mut connect, &mut refusal)
+            .await;
+        (result, connect, refusal)
     }
     /// The attempt itself, which records its first connect in `connect`.
     async fn run_attempt(
@@ -26,6 +41,7 @@ impl Client {
         budget: &mut Budget,
         challenge: &mut Option<ChallengeLease>,
         connect: &mut FirstConnect,
+        refusal: &mut Option<Rejection>,
     ) -> Result<Prepared, Failure> {
         if cfg!(all(
             windows,
@@ -327,10 +343,11 @@ impl Client {
                 // again when the hold has ended.
                 if let Some(pooled) = prepared.lease.as_ref().and_then(HttpLease::pool_connection) {
                     let pool_key = Key::https(destination.host(), destination.port());
-                    let began =
-                        self.pool
-                            .governor()
-                            .exchange_begins(&pool_key, pooled, self.pool.now());
+                    let began = self
+                        .pool
+                        .governor()
+                        .scoped(&input.operation)
+                        .exchange_begins(&pool_key, pooled, self.pool.now());
                     if !began && !carried_lease {
                         drop(guard);
                         drop(connection);
@@ -344,7 +361,8 @@ impl Client {
                         slot = returned_slot;
                         dependency = Some(returned_dependency);
                         credential_offered = offered_before;
-                        self.wait_for_hold(&pool_key, cancel).await?;
+                        self.wait_for_hold(&input.operation, &pool_key, cancel)
+                            .await?;
                         continue;
                     }
                 }
@@ -438,7 +456,8 @@ impl Client {
             }
             let status = response.status().as_u16();
             prepared.opened.facts.http_status = Some(status as i64);
-            self.tell_governor(
+            *refusal = self.tell_governor(
+                &input.operation,
                 &prepared,
                 &Key::https(destination.host(), destination.port()),
                 status,
