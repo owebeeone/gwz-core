@@ -77,11 +77,18 @@ pub(crate) mod ssh_setup;
 cfg_if::cfg_if! { if #[cfg(test)] { mod ssh_tests; } }
 
 // Step 1.5: option A's sshd close fixture (ungated; it has a Windows form of its forced script).
-cfg_if::cfg_if! { if #[cfg(test)] { pub(crate) mod ssh_close_fixture; } }
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        pub(crate) mod ssh_close_fixture;
+        // The native helper process of the close fixtures: a shell script on Windows cannot end a channel's output
+        // and keep its process (the shells above it hold the channel's pipes).
+        cfg_if::cfg_if! { if #[cfg(windows)] { pub(crate) mod fixture_helper; } }
+    }
+}
 
 // Step 1.8: the integrated SSH test modules.
 cfg_if::cfg_if! {
-    if #[cfg(all(test, unix))] {
+    if #[cfg(test)] {
         mod budget_wait_tests;
         mod job_budget_wait_tests;
         mod git_turns_tests;

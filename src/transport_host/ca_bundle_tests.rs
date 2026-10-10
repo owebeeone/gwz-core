@@ -5,14 +5,13 @@
 //! connection opens. Each test clones through the production entry from the
 //! disposable HTTPS fixture.
 
-use super::https_tests;
+use super::https_tests::{self, unrelated_ca};
 use super::*;
 use crate::git::GitBackend;
 use crate::model::ModelResult;
 use crate::session_host::EnvironmentSnapshot;
 use std::{
     path::Path,
-    process::Command,
     sync::{
         atomic::{AtomicUsize, Ordering},
         mpsc,
@@ -154,7 +153,7 @@ cfg_if::cfg_if! {
                 "{}::the_bundle_adds_to_the_platform_roots",
                 module_path!().split_once("::").unwrap().1
             );
-            let output = Command::new(std::env::current_exe().unwrap())
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", &name, "--nocapture", "--test-threads", "1"])
                 .env(ROOTS_CHILD, root.path())
                 .env("SSL_CERT_FILE", root.path().join("store.pem"))
@@ -203,24 +202,6 @@ pub(super) fn clone(
         gate.token(),
         |backend| backend.clone_repo(url, &target).map(|_| ()),
     )
-}
-
-/// A CA certificate, in PEM, that issued nothing the fixture serves; `name`
-/// names its files in `dir` and its subject.
-pub(super) fn unrelated_ca(dir: &Path, name: &str) -> Vec<u8> {
-    let path = dir.join(format!("{name}.pem"));
-    let output = Command::new("openssl")
-        .args(["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout"])
-        .arg(dir.join(format!("{name}-key.pem")))
-        .arg("-out")
-        .arg(&path)
-        .args(["-days", "2", "-subj", &format!("/CN=GWZ {name}")])
-        .args(["-addext", "basicConstraints=critical,CA:TRUE"])
-        .args(["-addext", "keyUsage=critical,keyCertSign,cRLSign"])
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "openssl made no CA certificate");
-    std::fs::read(path).unwrap()
 }
 
 /// The HTTPS fixture serving a repository through `git http-backend`, on a

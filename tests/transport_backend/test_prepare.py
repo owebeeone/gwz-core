@@ -96,6 +96,8 @@ def test_candidate_adds_the_windows_networking_features_the_endpoint_needs(tmp_p
         "Win32_Networking_WinSock",
         "Win32_Security",
         "Win32_System_Diagnostics_ToolHelp",
+        "Win32_System_IO",
+        "Win32_System_Ioctl",
         "Win32_System_JobObjects",
         "Win32_System_Pipes",
         "Win32_System_Threading",

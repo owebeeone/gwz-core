@@ -9,9 +9,10 @@ import re
 import shutil
 
 # The `windows-sys` features the candidate's endpoint code needs beyond the production list in Cargo.toml. A step
-# that needs one more Windows API adds a name here (GwzTransportWindowsParityPlan.md, section 4). The last five
-# serve the test fixtures (a Job Object and thread suspension for the SSH servers, a named pipe in the
-# regular-file test); they are named here as well as in Cargo.toml's Windows dev-dependencies, because
+# that needs one more Windows API adds a name here (GwzTransportWindowsParityPlan.md, section 4). The last seven
+# serve the test fixtures (a Job Object, thread suspension and process lists for the SSH servers and their native
+# helper, a named pipe in the regular-file test, pipe reads and writes in the agent fixture, and the directory
+# junction of the URL tests); they are named here as well as in Cargo.toml's Windows dev-dependencies, because
 # `cargo check --lib --profile test`, which scripts/windows_lane_check.py runs, does not enable dev-dependency
 # features.
 CANDIDATE_WINDOWS_FEATURES = (
@@ -19,6 +20,8 @@ CANDIDATE_WINDOWS_FEATURES = (
     "Win32_Networking_WinSock",
     "Win32_Security",
     "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
     "Win32_System_JobObjects",
     "Win32_System_Pipes",
     "Win32_System_Threading",

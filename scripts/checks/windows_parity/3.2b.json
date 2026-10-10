@@ -1,5 +1,6 @@
 {
   "entries": [
-    {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "unix", "target": "arm: fn agent_from_environment", "state": "paired", "owner": ["3.2b"], "appendix": "new: Windows has no agent source until Phase 3"}
+    {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "unix", "target": "arm: fn agent_from_environment", "state": "paired", "owner": ["3.2b"], "appendix": "new: Windows has no agent source until Phase 3"},
+    {"path": "src/transport_host/endpoint_environment_tests.rs", "kind": "gate", "gate": "unix", "target": "arm: use super::driver_tests::{commit, common, endpoint_home, fixture_url}", "state": "unported", "owner": ["3.2b"], "appendix": "moved from mod endpoint_environment_tests (step 1.8 ungated the module): the test that serves the snapshot an ssh-agent on a Unix socket; the pipe agent fixture of step 1.7 is its Windows twin"}
   ]
 }

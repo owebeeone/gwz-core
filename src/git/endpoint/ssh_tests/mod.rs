@@ -10,13 +10,18 @@
 //! [`key_fixture`]'s agent. Running them needs Git, `/usr/sbin/sshd`,
 //! `ssh-keygen`, `ssh-agent`, `ssh-add`, `ps`, `kill`, `python3` and
 //! `openssl`; none of them reads or changes the user's SSH configuration,
-//! keys, agent or `known_hosts`.
+//! keys, agent or `known_hosts`. On Windows the server is the system's
+//! `sshd.exe` (`fixture_host`), the agent twins are `agent_fixture_pipe` and
+//! `key_fixture_pipe` (an in-process agent on a named pipe), and the
+//! close fixtures' hard cases use `fixture_helper`.
 mod agent_auth;
 mod agent_capacity;
 mod agent_client;
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
         mod agent_fixture;
+    } else {
+        mod agent_fixture_pipe;
     }
 }
 mod agent_keys;
@@ -33,6 +38,8 @@ mod key_files;
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
         mod key_fixture;
+    } else {
+        mod key_fixture_pipe;
     }
 }
 mod key_types;

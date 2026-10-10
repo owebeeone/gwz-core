@@ -443,9 +443,7 @@ cfg_if::cfg_if! {
             }
         }
 
-        cfg_if::cfg_if! { if #[cfg(unix)] {
-            #[path = "https_budget_gate_tests.rs"]
-            mod https_budget_gate_tests;
-        } }
+        #[path = "https_budget_gate_tests.rs"]
+        mod https_budget_gate_tests;
     }
 }

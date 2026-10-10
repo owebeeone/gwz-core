@@ -94,7 +94,7 @@ fn url(f: &common::SshdFixture) -> String {
         "ssh://{}@127.0.0.1:{}{}",
         f.user,
         f.port,
-        f.repository.display()
+        common::server_path(&f.url_repository)
     )
 }
 fn commit(repo: &git2::Repository, text: &str) -> git2::Oid {
@@ -269,7 +269,7 @@ fn candidate_push_rejection_pushurl_and_native_local_route_are_preserved() {
             "ssh://{}@127.0.0.1:{}{}",
             f.user,
             f.port,
-            alternate.display()
+            common::server_path(&alternate)
         )),
     )
     .unwrap();
@@ -288,15 +288,18 @@ fn candidate_push_rejection_pushurl_and_native_local_route_are_preserved() {
                 .any(|r| r.target == first.to_string())
         );
     }
-    // A stopped transport host must have no effect on native local transport.
+    // A stopped transport host must have no effect on native local transport. The Windows qualification refuses a
+    // local path as a remote ("supports only SSH and HTTPS remotes") until step 5.1 retires it.
     host.shutdown();
-    let local = f.temp.path().join("local");
-    b.clone_repo(f.repository.to_str().unwrap(), &local)
-        .unwrap();
-    assert_eq!(b.head(&local).unwrap().commit, Some(first.to_string()));
-    let rows = b.transport_observations().unwrap().snapshot();
-    assert_eq!(rows.iter().filter(|r| r.credential_offered).count(), 1);
-    assert_eq!(rows.last().unwrap().authenticated, None);
+    if cfg!(unix) {
+        let local = f.temp.path().join("local");
+        b.clone_repo(f.repository.to_str().unwrap(), &local)
+            .unwrap();
+        assert_eq!(b.head(&local).unwrap().commit, Some(first.to_string()));
+        let rows = b.transport_observations().unwrap().snapshot();
+        assert_eq!(rows.iter().filter(|r| r.credential_offered).count(), 1);
+        assert_eq!(rows.last().unwrap().authenticated, None);
+    }
     drop(request);
 }
 

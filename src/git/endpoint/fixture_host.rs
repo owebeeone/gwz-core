@@ -14,14 +14,26 @@
 //! use 2048-bit RSA keys in PEM form; the files keep their `_ed25519` names, which many tests spell.
 //!
 //! **Commands.** Windows' `sshd.exe` runs an exec request through the host's default shell, which is `cmd.exe`
-//! unless `HKLM\SOFTWARE\OpenSSH\DefaultShell` names another. `cmd.exe` neither knows POSIX quoting nor finds
-//! `git-upload-pack`, so the fixture's configuration forces a command that fixes both, and which command depends
-//! on the shell: under `cmd.exe`, a `.cmd` file in the temporary directory puts Git on `PATH`, changes into that
-//! directory and has a POSIX `sh` (`GWZ_TEST_SH`, or the `sh.exe` on `PATH`, as Git for Windows provides)
-//! `eval` the original command; under a POSIX default shell (a Git for Windows `bash.exe`, say) the forced command
-//! does the same in the shell's own words. Either way the client's quoting means what it means on Unix, and the
-//! working directory is the fixture's, which the shell-injection marker is relative to. A default shell of
-//! another kind fails the test with that said.
+//! unless `HKLM\SOFTWARE\OpenSSH\DefaultShell` names another. Under a POSIX default shell (a Git for Windows
+//! `bash.exe`) the client's command runs as it would on Unix, and the fixture adds nothing. `cmd.exe` neither knows
+//! POSIX quoting nor finds `git-upload-pack`, and a forced command cannot fix that: `sshd.exe` gives every channel
+//! of a connection after the first the first channel's `SSH_ORIGINAL_COMMAND` (found on dabeest, step 1.6), so a
+//! connection that carries two commands would run the first twice. The fixture therefore forces nothing under
+//! `cmd.exe`. It puts a directory of **shims** first on the server's `PATH`, which the sessions inherit: a batch
+//! file for each Git service (`git-upload-pack.cmd`) that `cmd.exe` finds by the very name the client sent. The
+//! shim keeps its arguments as the client quoted them, puts Git on `PATH`, changes into the fixture's directory
+//! (the shell-injection marker is relative to it) and has a POSIX `sh` (`GWZ_TEST_SH`, or the `sh.exe` on `PATH`,
+//! as Git for Windows provides) rebuild the client's command and `eval` it, so the client's quoting means what it
+//! means on Unix. Each command is its own channel's, so a reused connection runs the right one. A default shell
+//! of another kind fails the test with that said.
+//!
+//! **Testing the `cmd.exe` path on a host that has another shell.** The default shell is a registry value, a host
+//! setting a test must not change, and `sshd_config` has no directive for it. `GWZ_TEST_SSH_SHELL=cmd` makes the
+//! fixture behave as it does under `cmd.exe`: it writes the shims, and forces a session command (the native
+//! helper's `cmd-session` mode, `fixture_helper`) that runs the client's command as `sshd.exe` runs it there,
+//! `cmd.exe /c` and the raw command line, with the shims first on the server's `PATH`. That tests everything but
+//! `sshd.exe`'s own choice of `cmd.exe`, and its reuse of a connection (the simulation forces a command, which
+//! `sshd.exe` repeats for every channel of a connection).
 use cfg_if::cfg_if;
 use std::path::{Path, PathBuf};
 
@@ -44,16 +56,6 @@ pub(crate) fn config_value(path: &str) -> String {
         format!("\"{path}\"")
     } else {
         path
-    }
-}
-
-/// The `ForceCommand` line that runs `script`, a Windows path, under `cmd.exe`. `sshd_config` takes the rest of the
-/// line as the command, unparsed, so the path is only quoted for `cmd`, and only when it holds a space.
-pub(crate) fn force_command_directive(script: &str) -> String {
-    if script.contains(char::is_whitespace) {
-        format!("ForceCommand \"{script}\"\n")
-    } else {
-        format!("ForceCommand {script}\n")
     }
 }
 
@@ -126,9 +128,11 @@ pub(crate) fn posix_force_command(directory: &str, git_directories: &[String]) -
     )
 }
 
-/// The batch file a Windows session runs: Git on `PATH`, the fixture's directory as the working directory (the
-/// shell-injection marker is relative to it), and the POSIX shell evaluating the client's command.
-pub(crate) fn session_batch(
+/// The shim for `service`, a batch file `cmd.exe` runs in place of the command the client sent: Git on `PATH`, the
+/// client's arguments as they came (`%*`), the fixture's directory as the working directory, and the POSIX shell
+/// running [`SHIM_SCRIPT`].
+pub(crate) fn shim_batch(
+    service: &str,
     shell: &str,
     script: &str,
     directory: &str,
@@ -141,11 +145,24 @@ pub(crate) fn session_batch(
         .collect::<Vec<_>>()
         .join(";");
     format!(
-        "@echo off\r\nset \"PATH={path}\"\r\ncd /d \"{directory}\"\r\n\"{shell}\" \"{script}\"\r\nexit /b %errorlevel%\r\n",
+        "@echo off\r\nsetlocal\r\nset \"PATH={path}\"\r\nset \"GWZ_SERVICE={service}\"\r\nset \"GWZ_ARGS=%*\"\r\ncd /d \"{directory}\"\r\n\"{shell}\" \"{script}\"\r\nexit /b %errorlevel%\r\n",
         shell = shell.replace('/', "\\"),
         script = script.replace('/', "\\"),
         directory = directory.replace('/', "\\"),
     )
+}
+
+/// What the POSIX shell runs for a shim: the client's command rebuilt from the shim's name and arguments, then the
+/// fixture's forced script when it has one, else the command itself.
+pub(crate) const SHIM_SCRIPT: &str = "SSH_ORIGINAL_COMMAND=\"$GWZ_SERVICE $GWZ_ARGS\"\nexport SSH_ORIGINAL_COMMAND\nif [ -f ./close-script.sh ]; then . ./close-script.sh; else eval \"$SSH_ORIGINAL_COMMAND\"; fi\n";
+
+/// `existing`, a `PATH`, with `shims` first.
+pub(crate) fn path_with_shims(shims: &str, existing: &str) -> String {
+    if existing.is_empty() {
+        shims.to_owned()
+    } else {
+        format!("{shims};{existing}")
+    }
 }
 
 /// The script a fixture may leave in its directory to run in place of the client's command, as a forced command
@@ -155,9 +172,6 @@ pub(crate) const FORCED_SCRIPT: &str = "close-script.sh";
 /// What the POSIX shell evaluates for a session: the fixture's forced script when it has one, else the command the
 /// client sent.
 const SESSION_COMMAND: &str = "if [ -f ./close-script.sh ]; then . ./close-script.sh; else eval \"$SSH_ORIGINAL_COMMAND\"; fi";
-
-/// What the POSIX shell runs for each session.
-pub(crate) const SESSION_SCRIPT: &str = "if [ -f ./close-script.sh ]; then . ./close-script.sh; else eval \"$SSH_ORIGINAL_COMMAND\"; fi\n";
 
 /// A `known_hosts` entry for `host` from a `.pub` file's text: the key type and key only, on one line. The
 /// comment is dropped and the line ending is `\n`, whatever the key generator wrote. Windows' `ssh-keygen` ends
@@ -177,6 +191,26 @@ pub(crate) fn repository_name(marker: &Path) -> String {
 cfg_if! {
     if #[cfg(unix)] {
         use std::process::Command;
+
+        /// `path` as the path of an `ssh://` URL or a Git command names it on this server: as it is on Unix.
+        pub(crate) fn server_path(path: &Path) -> String {
+            path.display().to_string()
+        }
+
+        /// The arguments that make `ssh-keygen` write an RSA key the fixture's libssh2 can use: the default form.
+        pub(crate) fn rsa_key_arguments() -> &'static [&'static str] {
+            &["-t", "rsa", "-b", "2048"]
+        }
+
+        /// The variables a child that otherwise has a clean environment still needs: none on Unix.
+        pub(crate) fn system_environment() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+            Vec::new()
+        }
+
+        /// The path through which a URL reaches `repository`: itself on Unix.
+        pub(crate) fn url_repository(_temp: &Path, repository: &Path) -> PathBuf {
+            repository.to_owned()
+        }
 
         /// A `known_hosts` entry for `host` from a `.pub` file's text, as the Unix `ssh-keygen` wrote it: tests that\n        /// pad the line to libssh2's length limits count its comment.
         pub(crate) fn known_hosts_line(host: &str, public_key: &str) -> String {
@@ -223,6 +257,19 @@ cfg_if! {
             String::new()
         }
 
+        /// A symbolic link at `link` to `target`.
+        pub(crate) fn make_symlink(target: &Path, link: &Path) {
+            std::os::unix::fs::symlink(target, link).unwrap();
+        }
+
+        /// The name of the fixture's Job Object: unused on Unix.
+        pub(crate) fn job_name(_temp: &Path) -> String {
+            String::new()
+        }
+
+        /// The server's environment: Unix adds nothing.
+        pub(crate) fn server_environment(_temp: &Path, _server: &mut Command) {}
+
         /// The configuration lines every fixture server has, then the platform's, then `startups`.
         pub(crate) fn server_config(
             extra: &str,
@@ -239,8 +286,125 @@ cfg_if! {
             )
         }
     } else if #[cfg(windows)] {
-        use std::{env, fs, process::Command};
+        use std::{env, fs, os::windows::fs::OpenOptionsExt, process::Command};
 
+        /// `path` as the path of an `ssh://` URL or a Git command names it on this server: the POSIX form a Windows
+        /// server's shell and Git take (`E:\\a\\b` as `/e/a/b`), since a drive letter has no place in a URL path.
+        pub(crate) fn server_path(path: &Path) -> String {
+            posix_path(&path.display().to_string())
+        }
+
+        /// The arguments that make `ssh-keygen` write an RSA key the fixture's libssh2 can use: in PEM form, the only
+        /// form libssh2 on Windows CNG reads.
+        pub(crate) fn rsa_key_arguments() -> &'static [&'static str] {
+            &["-t", "rsa", "-b", "2048", "-m", "PEM"]
+        }
+
+        /// The variables a child that otherwise has a clean environment still needs on Windows, to run at all: `Path`
+        /// (the test executable loads the Python runtime from it), the system directory, the account (the fixture's server logs in as it), the temporary directories, the
+        /// command interpreter and the program directories Git looks in; and the test hosts' overrides.
+        pub(crate) fn system_environment() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+            const NAMES: &[&str] = &[
+                "Path",
+                "SystemRoot",
+                "SystemDrive",
+                "windir",
+                "USERNAME",
+                "USERDOMAIN",
+                "TEMP",
+                "TMP",
+                "ComSpec",
+                "PATHEXT",
+                "ProgramData",
+                "ProgramFiles",
+                "ProgramFiles(x86)",
+                "ProgramW6432",
+                "LOCALAPPDATA",
+                "APPDATA",
+                "USERPROFILE",
+                SSHD_ENV,
+                SH_ENV,
+                SHELL_ENV,
+            ];
+            NAMES
+                .iter()
+                .filter_map(|name| env::var_os(name).map(|value| ((*name).into(), value)))
+                .collect()
+        }
+
+        /// The path through which a URL reaches `repository`: a directory junction to it in `temp`. The
+        /// repository's own name carries a single quote (the shell-injection marker), and a POSIX shell on Windows
+        /// does not convert a POSIX-form path that holds one into the Windows form Git needs, so a URL, which
+        /// cannot hold a drive letter, reaches it by a name without one. (The SSH endpoint's own tests give Git the
+        /// Windows form directly.) A junction needs no privilege.
+        pub(crate) fn url_repository(temp: &Path, repository: &Path) -> PathBuf {
+            let link = temp.join("url-repository");
+            make_junction(&link, repository).unwrap_or_else(|error| {
+                panic!("creating the junction {} failed: {error}", link.display())
+            });
+            link
+        }
+
+        /// A directory junction at `link` to the directory `target`: an empty directory whose reparse data is a
+        /// mount point (`IO_REPARSE_TAG_MOUNT_POINT`) naming `target` in the NT namespace.
+        fn make_junction(link: &Path, target: &Path) -> std::io::Result<()> {
+            use std::{
+                os::windows::{ffi::OsStrExt, io::AsRawHandle},
+                ptr,
+            };
+            use windows_sys::Win32::{
+                Foundation::HANDLE,
+                Storage::FileSystem::{FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT},
+                System::{IO::DeviceIoControl, Ioctl::FSCTL_SET_REPARSE_POINT},
+            };
+            const MOUNT_POINT: u32 = 0xA000_0003;
+            // The substitute name is the NT path `\??\E:\...` and the print name is empty.
+            let target = std::fs::canonicalize(target)?;
+            let canonical: Vec<u16> = target.as_os_str().encode_wide().collect();
+            // `canonicalize` gives `\\?\E:\...`; the NT form of that prefix is `\??\`.
+            let substitute: Vec<u16> = [r"\??\".encode_utf16().collect::<Vec<_>>(), canonical[4..].to_vec()].concat();
+            std::fs::create_dir(link)?;
+            let directory = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+                .open(link)?;
+            let mut data = Vec::new();
+            let name_bytes = (substitute.len() * 2) as u16;
+            // REPARSE_DATA_BUFFER header: tag, data length, reserved; then the mount point fields.
+            data.extend_from_slice(&MOUNT_POINT.to_le_bytes());
+            data.extend_from_slice(&(8 + name_bytes + 2 + 2).to_le_bytes());
+            data.extend_from_slice(&0_u16.to_le_bytes());
+            data.extend_from_slice(&0_u16.to_le_bytes()); // substitute name offset
+            data.extend_from_slice(&name_bytes.to_le_bytes());
+            data.extend_from_slice(&(name_bytes + 2).to_le_bytes()); // print name offset
+            data.extend_from_slice(&0_u16.to_le_bytes()); // print name length
+            for unit in &substitute {
+                data.extend_from_slice(&unit.to_le_bytes());
+            }
+            data.extend_from_slice(&[0, 0, 0, 0]); // the substitute name's and the print name's terminators
+            let mut returned = 0_u32;
+            let done = unsafe {
+                DeviceIoControl(
+                    directory.as_raw_handle() as HANDLE,
+                    FSCTL_SET_REPARSE_POINT,
+                    data.as_ptr().cast(),
+                    data.len() as u32,
+                    ptr::null_mut(),
+                    0,
+                    &mut returned,
+                    ptr::null_mut(),
+                )
+            };
+            if done == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        }
+
+        /// The Git services whose commands a `cmd.exe` session finds shims for.
+        pub(crate) const SHIMMED_SERVICES: [&str; 3] = ["git-upload-pack", "git-receive-pack", "git-upload-archive"];
+        /// The directory of a fixture that holds its shims.
+        pub(crate) const SHIMS_DIRECTORY: &str = "shims";
         /// Names the `sshd.exe` a Windows fixture runs, when set.
         pub(crate) const SSHD_ENV: &str = "GWZ_TEST_SSHD";
         /// Names the POSIX `sh.exe` a Windows fixture's commands run under, when set.
@@ -251,7 +415,7 @@ cfg_if! {
             normalized_known_hosts_line(host, public_key)
         }
 
-        /// The command the repository name injects: `touch` on the marker. Under `cmd.exe` the session wrapper changes
+        /// The command the repository name injects: `touch` on the marker. Under `cmd.exe` the shim changes
         /// into the fixture's directory and a Windows file name has no `:` or `\`, so the marker is named relative to
         /// it. Under a POSIX default shell the commands run where the server puts them, so the marker is named by its
         /// whole path; the command's own space is `${IFS}` there, since a space ending a path segment is not a Windows
@@ -311,8 +475,14 @@ cfg_if! {
             env::var("USERNAME").expect("USERNAME names the account the server logs in")
         }
 
+        /// Names the shell a fixture server's sessions are to behave as, whatever the host's default shell is.
+        /// `cmd` runs every command under `cmd.exe /c` and the shims, which is what `sshd.exe` does on a host
+        /// whose default shell is `cmd.exe` (a hosted `windows-2022` runner), and so lets a host with another
+        /// default shell exercise that path.
+        pub(crate) const SHELL_ENV: &str = "GWZ_TEST_SSH_SHELL";
+
         /// The host's OpenSSH default shell, from the registry.
-        fn default_shell() -> SessionShell {
+        fn registry_shell() -> SessionShell {
             let registry = Command::new("reg")
                 .args(["query", "HKLM\\SOFTWARE\\OpenSSH", "/v", "DefaultShell"])
                 .output()
@@ -325,30 +495,79 @@ cfg_if! {
             })
         }
 
-        /// The configuration lines that make the host's default shell run an exec request's command the way a Unix
-        /// `sshd` would. Under a POSIX default shell there are none: the shell takes the command as it is. A forced
-        /// command would be wrong there, because Windows' `sshd.exe` gives every channel of a connection after the
-        /// first the first channel's `SSH_ORIGINAL_COMMAND` (found on dabeest, step 1.6: a push after a fetch on one
-        /// connection ran `git-upload-pack`). Under `cmd.exe`, which knows neither POSIX quoting nor
-        /// `git-upload-pack`, it forces a command that fixes both, and writes the wrapper it names into `temp`.
-        pub(crate) fn session_directives(temp: &Path) -> String {
-            match default_shell() {
-                SessionShell::Posix => String::new(),
-                SessionShell::Cmd => cmd_session_directives(temp),
+        /// The shell the sessions behave as: [`SHELL_ENV`]'s, else the host's.
+        fn default_shell() -> SessionShell {
+            match env::var(SHELL_ENV).as_deref() {
+                Ok("cmd") => SessionShell::Cmd,
+                Ok(other) => panic!("{SHELL_ENV} is {other:?}; the only simulated shell is \"cmd\""),
+                Err(_) => registry_shell(),
             }
+        }
+
+        /// The configuration lines that make the host's default shell run an exec request's command the way a Unix
+        /// `sshd` would: none. Under a POSIX default shell the shell takes the command as it is. Under `cmd.exe` the
+        /// fixture writes shims for the Git services into `temp` ([`server_environment`] puts them on the server's
+        /// `PATH`), because a forced command would be wrong: see the module's note on `SSH_ORIGINAL_COMMAND`.
+        pub(crate) fn session_directives(temp: &Path) -> String {
+            if default_shell() != SessionShell::Cmd {
+                return String::new();
+            }
+            write_cmd_shims(temp, &git_directories());
+            if registry_shell() == SessionShell::Cmd {
+                return String::new();
+            }
+            // The host's shell is another, so the sessions are made to start `cmd.exe` as `sshd.exe` would.
+            format!("ForceCommand {}\n", super::fixture_helper::script_line(super::fixture_helper::Mode::CmdSession))
         }
 
         /// The same for a server whose sessions run [`FORCED_SCRIPT`] when the fixture leaves one in its directory
-        /// (the close fixtures): a forced command under either shell, with the first-command limit above.
+        /// (the close fixtures). Under a POSIX default shell that is a forced command, which is safe there because
+        /// a close fixture's connection carries one command; under `cmd.exe` the shims run the script.
         pub(crate) fn forced_session_directives(temp: &Path) -> String {
             match default_shell() {
                 SessionShell::Posix => posix_force_command(&temp.display().to_string(), &git_directories()),
-                SessionShell::Cmd => cmd_session_directives(temp),
+                SessionShell::Cmd => session_directives(temp),
             }
         }
 
-        fn cmd_session_directives(temp: &Path) -> String {
-            force_command_directive(&write_cmd_session(temp, &git_directories()).display().to_string())
+        /// A symbolic link at `link` to `target`, a file or a directory. Creating one needs the symbolic-link
+        /// privilege (`SeCreateSymbolicLinkPrivilege`, which an administrator's elevated logon and a logon with
+        /// Developer Mode hold, and an ordinary one does not); without it the test fails and says so, since a skipped
+        /// row would leave the symlink behaviour unqualified without a trace.
+        pub(crate) fn make_symlink(target: &Path, link: &Path) {
+            let made = if target.is_dir() {
+                std::os::windows::fs::symlink_dir(target, link)
+            } else {
+                std::os::windows::fs::symlink_file(target, link)
+            };
+            match made {
+                Ok(()) => {}
+                Err(error) if error.raw_os_error() == Some(1314) => {
+                    panic!(
+                        "creating a symbolic link needs the symbolic-link privilege (ERROR_PRIVILEGE_NOT_HELD); run this test from an elevated logon or with Developer Mode on: {error}"
+                    );
+                }
+                Err(error) => panic!("creating a symbolic link failed: {error}"),
+            }
+        }
+
+        /// The name of the fixture's Job Object, unique because its directory is.
+        pub(crate) fn job_name(temp: &Path) -> String {
+            format!("gwz-fixture-{}", temp.file_name().unwrap().to_string_lossy())
+        }
+
+        /// The server's environment: the name of the fixture's job, so that a session's helper can list the
+        /// processes the fixture owns, and the shims first on `PATH` when the fixture wrote any.
+        pub(crate) fn server_environment(temp: &Path, server: &mut Command) {
+            server.env(super::fixture_helper::JOB_ENV, job_name(temp));
+            let shims = temp.join(SHIMS_DIRECTORY);
+            if shims.is_dir() {
+                let existing = env::var("PATH").unwrap_or_default();
+                let path = path_with_shims(&shims.display().to_string(), &existing);
+                // Under a simulated `cmd.exe` the sessions' own shell would reorder `PATH`; this copy is the server's.
+                server.env(super::fixture_helper::SERVER_PATH_ENV, &path);
+                server.env("PATH", path);
+            }
         }
 
         /// The directories Git runs from: the one that holds `git.exe`, and its exec path.
@@ -363,28 +582,32 @@ cfg_if! {
             directories
         }
 
-        /// Writes the `cmd.exe` session wrapper and the POSIX script it runs into `temp`; returns the wrapper.
-        fn write_cmd_session(temp: &Path, git_directories: &[String]) -> PathBuf {
+        /// Writes the shims and the POSIX script they run into `temp`/[`SHIMS_DIRECTORY`]; returns that directory.
+        pub(crate) fn write_cmd_shims(temp: &Path, git_directories: &[String]) -> PathBuf {
             let shell = env::var_os(SH_ENV)
                 .map(PathBuf::from)
                 .or_else(|| on_path("sh.exe"))
                 .unwrap_or_else(|| {
                     panic!("native gate requires a POSIX sh.exe (on PATH, or named by {SH_ENV}), as Git for Windows provides")
                 });
-            let script = temp.join("session.sh");
-            fs::write(&script, SESSION_SCRIPT).unwrap();
-            let batch = temp.join("session.cmd");
-            fs::write(
-                &batch,
-                session_batch(
-                    &shell.display().to_string(),
-                    &script.display().to_string(),
-                    &temp.display().to_string(),
-                    git_directories,
-                ),
-            )
-            .unwrap();
-            batch
+            let shims = temp.join(SHIMS_DIRECTORY);
+            fs::create_dir_all(&shims).unwrap();
+            let script = shims.join("shim.sh");
+            fs::write(&script, SHIM_SCRIPT).unwrap();
+            for service in SHIMMED_SERVICES {
+                fs::write(
+                    shims.join(format!("{service}.cmd")),
+                    shim_batch(
+                        service,
+                        &shell.display().to_string(),
+                        &script.display().to_string(),
+                        &temp.display().to_string(),
+                        git_directories,
+                    ),
+                )
+                .unwrap();
+            }
+            shims
         }
 
         /// The configuration lines every fixture server has, then the platform's, then `startups`. The Windows
@@ -439,18 +662,6 @@ mod tests {
     }
 
     #[test]
-    fn the_forced_command_is_the_rest_of_the_line_quoted_only_for_cmd() {
-        assert_eq!(
-            force_command_directive("E:\\t\\session.cmd"),
-            "ForceCommand E:\\t\\session.cmd\n"
-        );
-        assert_eq!(
-            force_command_directive("E:\\a b\\session.cmd"),
-            "ForceCommand \"E:\\a b\\session.cmd\"\n"
-        );
-    }
-
-    #[test]
     fn the_default_shell_is_read_from_the_registry_output() {
         let bash = "\r\nHKEY_LOCAL_MACHINE\\SOFTWARE\\OpenSSH\r\n    DefaultShell    REG_SZ    C:\\Program Files\\Git\\bin\\bash.exe\r\n\r\n";
         assert_eq!(session_shell(bash), Some(SessionShell::Posix));
@@ -495,10 +706,11 @@ mod tests {
     }
 
     #[test]
-    fn the_session_batch_puts_git_on_the_path_and_runs_the_shell_in_the_fixture_directory() {
-        let batch = session_batch(
+    fn a_shim_runs_the_service_in_the_fixture_directory_with_git_on_the_path() {
+        let batch = shim_batch(
+            "git-upload-pack",
             "C:/Program Files/Git/usr/bin/sh.exe",
-            "E:/t/session.sh",
+            "E:/t/shim.sh",
             "E:/t",
             &[
                 "C:/Program Files/Git/cmd".into(),
@@ -507,14 +719,26 @@ mod tests {
         );
         assert_eq!(
             batch,
-            "@echo off\r\nset \"PATH=C:\\Program Files\\Git\\cmd;C:\\Program Files\\Git\\mingw64\\libexec\\git-core;%PATH%\"\r\ncd /d \"E:\\t\"\r\n\"C:\\Program Files\\Git\\usr\\bin\\sh.exe\" \"E:\\t\\session.sh\"\r\nexit /b %errorlevel%\r\n"
+            "@echo off\r\nsetlocal\r\nset \"PATH=C:\\Program Files\\Git\\cmd;C:\\Program Files\\Git\\mingw64\\libexec\\git-core;%PATH%\"\r\nset \"GWZ_SERVICE=git-upload-pack\"\r\nset \"GWZ_ARGS=%*\"\r\ncd /d \"E:\\t\"\r\n\"C:\\Program Files\\Git\\usr\\bin\\sh.exe\" \"E:\\t\\shim.sh\"\r\nexit /b %errorlevel%\r\n"
         );
     }
 
     #[test]
-    fn the_session_script_evaluates_the_original_command() {
-        assert!(SESSION_SCRIPT.contains("eval \"$SSH_ORIGINAL_COMMAND\""));
-        assert!(SESSION_SCRIPT.contains(FORCED_SCRIPT) && SESSION_COMMAND.contains(FORCED_SCRIPT));
+    fn the_shim_script_rebuilds_the_clients_command_and_runs_the_forced_script_or_evaluates_it() {
+        assert!(SHIM_SCRIPT.starts_with(
+            "SSH_ORIGINAL_COMMAND=\"$GWZ_SERVICE $GWZ_ARGS\"\nexport SSH_ORIGINAL_COMMAND\n"
+        ));
+        assert!(SHIM_SCRIPT.contains("eval \"$SSH_ORIGINAL_COMMAND\""));
+        assert!(SHIM_SCRIPT.contains(FORCED_SCRIPT) && SESSION_COMMAND.contains(FORCED_SCRIPT));
+    }
+
+    #[test]
+    fn the_shims_directory_comes_first_on_the_servers_path() {
+        assert_eq!(
+            path_with_shims("E:\\t\\shims", "C:\\Windows;C:\\Git"),
+            "E:\\t\\shims;C:\\Windows;C:\\Git"
+        );
+        assert_eq!(path_with_shims("E:\\t\\shims", ""), "E:\\t\\shims");
     }
 
     #[test]
@@ -547,28 +771,57 @@ mod tests {
 
     cfg_if! {
         if #[cfg(windows)] {
-            /// The `cmd.exe` session wrapper, run as `sshd.exe` runs it when the default shell is `cmd.exe`: with the
-            /// client's command in `SSH_ORIGINAL_COMMAND`. A host whose default shell is another still runs this, since
-            /// it needs no server.
+            use std::os::windows::process::CommandExt;
+
+            /// A shim, run as `cmd.exe` runs it when it is `sshd.exe`'s default shell: the command line the client sent,
+            /// POSIX quoting and all, with the shims first on `PATH`. A host whose default shell is another still
+            /// runs this, since it needs no server.
             #[test]
-            fn the_cmd_session_wrapper_runs_a_posix_quoted_git_command_in_the_fixture_directory() {
+            fn a_shim_runs_a_posix_quoted_git_command_in_the_fixture_directory_under_cmd() {
                 let temp = tempfile::TempDir::new().unwrap();
                 let marker = temp.path().join("injection-marker");
                 let repository = temp.path().join(repository_name(&marker));
                 let init = Command::new("git").args(["init", "-q", "--bare", "--"]).arg(&repository).status().unwrap();
                 assert!(init.success());
-                let batch = write_cmd_session(temp.path(), &git_directories());
+                let shims = write_cmd_shims(temp.path(), &git_directories());
                 let quoted = repository.to_str().unwrap().replace('\'', "'\\''");
-                let output = Command::new("cmd")
+                let mut server = Command::new("cmd");
+                server_environment(temp.path(), &mut server);
+                let output = server
                     .arg("/c")
-                    .arg(&batch)
-                    .env("SSH_ORIGINAL_COMMAND", format!("git-upload-pack '{quoted}'"))
+                    .raw_arg(format!("git-upload-pack '{quoted}'"))
                     .stdin(std::process::Stdio::null())
                     .output()
                     .unwrap();
                 // The advertisement is complete; Git then reports that the client, here no client, hung up.
-                assert!(output.stdout.windows(4).any(|window| window == b"0000"), "{output:?}");
+                assert!(output.stdout.windows(4).any(|window| window == b"0000"), "{output:?} {shims:?}");
                 assert!(!marker.exists(), "the repository path was shell-injected");
+            }
+
+            /// Two commands, one after the other, each the shim's own: the second is not the first again.
+            #[test]
+            fn each_shim_runs_its_own_service() {
+                let temp = tempfile::TempDir::new().unwrap();
+                let repository = temp.path().join("repo");
+                let init = Command::new("git").args(["init", "-q", "--bare", "--"]).arg(&repository).status().unwrap();
+                assert!(init.success());
+                write_cmd_shims(temp.path(), &git_directories());
+                let quoted = repository.to_str().unwrap().to_owned();
+                let advertisement = |service: &str| {
+                    let mut server = Command::new("cmd");
+                    server_environment(temp.path(), &mut server);
+                    let output = server
+                        .arg("/c")
+                        .raw_arg(format!("{service} '{quoted}'"))
+                        .stdin(std::process::Stdio::null())
+                        .output()
+                        .unwrap();
+                    String::from_utf8_lossy(&output.stdout).into_owned()
+                };
+                let upload = advertisement("git-upload-pack");
+                let receive = advertisement("git-receive-pack");
+                assert!(upload.contains("multi_ack"), "{upload}");
+                assert!(receive.contains("report-status"), "{receive}");
             }
         }
     }

@@ -6,11 +6,11 @@
 //! SSH configuration, keys, agent or `known_hosts`, and it stops and reaps its
 //! server, and on Windows every process the server started, on drop. A missing
 //! `sshd` fails the test rather than skipping it.
+pub(crate) use super::{fixture_host::server_path, ssh_channel, ssh_connection};
 use super::{
     fixture_host::{self, Programs},
     fixture_job::ProcessJob,
 };
-pub(crate) use super::{ssh_channel, ssh_connection};
 
 use ssh2::{CheckResult, KnownHostFileKind};
 use std::fs;
@@ -41,6 +41,8 @@ pub(crate) struct SshdFixture {
     pub(crate) user: String,
     pub(crate) known_hosts: PathBuf,
     pub(crate) repository: PathBuf,
+    /// The path a URL names the repository by: [`Self::repository`] itself, except on Windows (`fixture_host`).
+    pub(crate) url_repository: PathBuf,
     pub(crate) marker: PathBuf,
     pub(crate) authenticated_sessions: usize,
 }
@@ -100,6 +102,7 @@ impl SshdFixture {
         run(Command::new("git")
             .args(["init", "--bare", "--initial-branch=main", "--"])
             .arg(&repository));
+        let url_repository = fixture_host::url_repository(temp.path(), &repository);
         let port = TcpListener::bind(("127.0.0.1", 0))
             .unwrap()
             .local_addr()
@@ -132,7 +135,8 @@ impl SshdFixture {
             // A Windows server's reasons for failing to start go to this log, since nothing reads its stderr.
             server.arg("-E").arg(&log);
         }
-        let job = ProcessJob::new().unwrap();
+        fixture_host::server_environment(temp.path(), &mut server);
+        let job = ProcessJob::named(&fixture_host::job_name(temp.path())).unwrap();
         let child = server
             .args(["-f"])
             .arg(&config)
@@ -148,6 +152,7 @@ impl SshdFixture {
             port,
             user,
             known_hosts,
+            url_repository,
             repository,
             marker,
             authenticated_sessions: 0,

@@ -9,8 +9,8 @@
 //! endpoint configuration that names them. The clones that show the trust
 //! are in `ca_trust_clone_tests`.
 
-use super::ca_bundle_tests::unrelated_ca;
 use super::endpoint_environment::endpoint_config;
+use super::https_tests::unrelated_ca;
 use crate::git::endpoint::verify_paths::Paths;
 use crate::session_host::EnvironmentSnapshot;
 use std::{

@@ -90,6 +90,7 @@ fn native_clone(
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .env_clear()
+        .envs(crate::git::endpoint::fixture_host::system_environment())
         .env("HOME", home)
         .env(URL, url)
         .env(TARGET, target)
@@ -220,7 +221,7 @@ fn an_ssh_clone_of_a_large_pack_keeps_pace_with_libgit2() {
         "ssh://{}@127.0.0.1:{}{}",
         fixture.user,
         fixture.port,
-        repository.display()
+        common::server_path(&repository)
     );
     let runtime = TransportRuntime::new(SshEndpointConfig::fixture(home.clone(), None)).unwrap();
     let meta = local_meta("throughput-ssh", &home);
@@ -247,78 +248,84 @@ fn an_ssh_clone_of_a_large_pack_keeps_pace_with_libgit2() {
     block_on(runtime.shutdown());
 }
 
-#[test]
-fn an_https_clone_of_a_large_pack_keeps_pace_with_libgit2() {
-    let executor = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    executor.block_on(async {
-        let root = tempfile::tempdir().unwrap();
-        let repository = root.path().join("repo");
-        large_repository(&repository);
-        let repository = Arc::new(repository);
-        let server = fixture::Server::start(Arc::new(move |request| {
-            let repository = repository.clone();
-            Box::pin(async move {
-                // The fixture's macOS TLS keeps a record it could not send
-                // while the socket was full until its next read or write; a
-                // closing connection sends it. Without this a large response
-                // can stall a client, libgit2's above all.
-                let mut response = git_http_backend(repository, request).await;
-                response.headers_mut().insert(
-                    hyper::header::CONNECTION,
-                    hyper::header::HeaderValue::from_static("close"),
-                );
-                response
-            })
-        }))
-        .await;
-        let home = super::https_tests::endpoint_home(root.path());
-        let runtime = TransportRuntime::with_https(
-            SshEndpointConfig::fixture(home.clone(), None),
-            HttpsEndpointConfig {
-                tls: server.config(),
-                auth: None,
-            },
-            HelperSlots::new(),
-        )
-        .unwrap();
-        let request = runtime
-            .request(https_meta("throughput-https"), "clone".into())
-            .await
-            .unwrap();
-        let backend = request.backend().clone();
-        let (url, directory) = (server.url.clone(), root.path().to_path_buf());
-        // The clones block; this executor keeps serving them meanwhile.
-        let compared = tokio::task::spawn_blocking(move || {
-            let directory =
-                |name: &str, attempt: usize| directory.join(format!("{name}-{attempt}"));
-            assert_keeps_pace(
-                "HTTPS",
-                |attempt| {
-                    native_clone(
-                        &url,
-                        &directory("native", attempt),
-                        &home,
-                        None,
-                        "localhost",
-                    )
-                },
-                |attempt| {
-                    let began = Instant::now();
-                    backend
-                        .clone_repo(&url, &directory("transport", attempt))
-                        .unwrap();
-                    began.elapsed()
-                },
-            );
-        })
-        .await;
-        if let Err(error) = compared {
-            std::panic::resume_unwind(error.into_panic());
+// The HTTPS transport's clone of the large pack ended in "HTTPS endpoint request failed: Timeout" on Windows (dabeest,
+// 2026-10-11), where the native baseline cloned it: a speed finding for the qualification's speed rows (step 6.1).
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        #[test]
+        fn an_https_clone_of_a_large_pack_keeps_pace_with_libgit2() {
+            let executor = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            executor.block_on(async {
+                let root = tempfile::tempdir().unwrap();
+                let repository = root.path().join("repo");
+                large_repository(&repository);
+                let repository = Arc::new(repository);
+                let server = fixture::Server::start(Arc::new(move |request| {
+                    let repository = repository.clone();
+                    Box::pin(async move {
+                        // The fixture's macOS TLS keeps a record it could not send
+                        // while the socket was full until its next read or write; a
+                        // closing connection sends it. Without this a large response
+                        // can stall a client, libgit2's above all.
+                        let mut response = git_http_backend(repository, request).await;
+                        response.headers_mut().insert(
+                            hyper::header::CONNECTION,
+                            hyper::header::HeaderValue::from_static("close"),
+                        );
+                        response
+                    })
+                }))
+                .await;
+                let home = super::https_tests::endpoint_home(root.path());
+                let runtime = TransportRuntime::with_https(
+                    SshEndpointConfig::fixture(home.clone(), None),
+                    HttpsEndpointConfig {
+                        tls: server.config(),
+                        auth: None,
+                    },
+                    HelperSlots::new(),
+                )
+                .unwrap();
+                let request = runtime
+                    .request(https_meta("throughput-https"), "clone".into())
+                    .await
+                    .unwrap();
+                let backend = request.backend().clone();
+                let (url, directory) = (server.url.clone(), root.path().to_path_buf());
+                // The clones block; this executor keeps serving them meanwhile.
+                let compared = tokio::task::spawn_blocking(move || {
+                    let directory =
+                        |name: &str, attempt: usize| directory.join(format!("{name}-{attempt}"));
+                    assert_keeps_pace(
+                        "HTTPS",
+                        |attempt| {
+                            native_clone(
+                                &url,
+                                &directory("native", attempt),
+                                &home,
+                                None,
+                                "localhost",
+                            )
+                        },
+                        |attempt| {
+                            let began = Instant::now();
+                            backend
+                                .clone_repo(&url, &directory("transport", attempt))
+                                .unwrap();
+                            began.elapsed()
+                        },
+                    );
+                })
+                .await;
+                if let Err(error) = compared {
+                    std::panic::resume_unwind(error.into_panic());
+                }
+                assert_eq!(request.finish().await.pending_local_work, 0);
+                assert_eq!(runtime.shutdown().await.pending_local_work, 0);
+            });
         }
-        assert_eq!(request.finish().await.pending_local_work, 0);
-        assert_eq!(runtime.shutdown().await.pending_local_work, 0);
-    });
+    }
 }

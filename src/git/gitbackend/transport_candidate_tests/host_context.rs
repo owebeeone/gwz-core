@@ -12,105 +12,6 @@ use super::*;
 
 pub(super) const CHILD: &str = "GWZ_TR2_11_ROUTE_CHILD";
 
-#[test]
-fn candidate_ssh_takes_the_transport_only_inside_a_host_context() {
-    if std::env::var_os(CHILD).is_none() {
-        run_in_child(
-            module_path!(),
-            "candidate_ssh_takes_the_transport_only_inside_a_host_context",
-        );
-        return;
-    }
-    let f = common::SshdFixture::new();
-    let home = std::path::PathBuf::from(std::env::var_os("HOME").expect("the parent sets HOME"));
-    std::fs::create_dir_all(home.join(".ssh")).unwrap();
-    std::fs::copy(&f.known_hosts, home.join(".ssh/known_hosts")).unwrap();
-    // Both routes read a URL's path as written (TR2.16), so the fixture's own
-    // repository, whose path holds a space and shell characters, serves both.
-    commit(
-        &git2::Repository::open_bare(&f.repository).unwrap(),
-        "first",
-    );
-    let url = url(&f);
-    let meta = crate::RequestMeta {
-        request_id: "route".into(),
-        schema_version: "gwz.protocol/v0".into(),
-        transport: Some(crate::TransportOptions {
-            default_identity: Some(
-                f.temp
-                    .path()
-                    .join("client_ed25519")
-                    .to_string_lossy()
-                    .into_owned(),
-            ),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-
-    // The control: inside `with_local_transport` the endpoint's receipts name
-    // the connection, and the fetch reuses the clone's pooled connection
-    // without offering a credential. That is what a transport endpoint shows.
-    let (rows, cleanup) =
-        crate::transport_host::with_local_transport(meta.clone(), "route".into(), |backend| {
-            clone_then_fetch(backend, &f, &url, &meta, "transport")
-        })
-        .unwrap();
-    assert_eq!(cleanup.pending_local_work, 0);
-    assert_eq!(rows.len(), 2, "{rows:?}");
-    assert!(
-        rows.iter()
-            .all(|r| r.endpoint_id.is_some() && r.connection_id.is_some()),
-        "{rows:?}"
-    );
-    assert_eq!(rows[1].connection_id, rows[0].connection_id, "{rows:?}");
-    assert_eq!(
-        (rows[1].reused, rows[1].credential_offered),
-        (Some(true), false),
-        "{rows:?}"
-    );
-
-    // Without a host context: libgit2's own SSH transport, which offers the
-    // selected key through the credential callback on a connection of its own
-    // for every operation. No endpoint receipt, no pooled connection.
-    let rows = clone_then_fetch(&Git2Backend::new(), &f, &url, &meta, "native");
-    assert_eq!(rows.len(), 2, "{rows:?}");
-    for row in &rows {
-        assert_eq!(
-            (
-                row.endpoint_id.as_deref(),
-                row.connection_id.as_deref(),
-                row.stream_id,
-                row.reused
-            ),
-            (None, None, None, None),
-            "no transport endpoint may open a stream: {rows:?}"
-        );
-        assert!(
-            row.credential_offered && row.authenticated == Some(true),
-            "each native operation authenticates its own connection; a transport endpoint \
-             would have pooled the clone's connection for the fetch: {rows:?}"
-        );
-    }
-}
-
-fn clone_then_fetch(
-    backend: &Git2Backend,
-    f: &common::SshdFixture,
-    url: &str,
-    meta: &crate::RequestMeta,
-    name: &str,
-) -> Vec<crate::TransportObservation> {
-    let scoped = backend
-        .with_transport(f.temp.path(), meta.transport.as_ref())
-        .unwrap()
-        .unwrap();
-    let target = f.temp.path().join(name);
-    scoped.clone_repo(url, &target).unwrap();
-    scoped.fetch(&target, "origin").unwrap();
-    scoped.transport_observations().unwrap().snapshot()
-}
-
 /// Runs the test `name` of `module`, a `module_path!()`, in a child of this
 /// test binary, with a clean environment whose `HOME` is a new temporary
 /// directory and which sets `CHILD`, and asserts that the child ran exactly
@@ -131,6 +32,7 @@ pub(super) fn run_in_child_with(module: &str, name: &str, extra: &[(&str, String
         .env("HOME", home.path())
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_TERMINAL_PROMPT", "0");
+    command.envs(crate::git::endpoint::fixture_host::system_environment());
     for key in ["PATH", "TMPDIR", "GWZ_TEST_GIT", "GWZ_TEST_FS"] {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);

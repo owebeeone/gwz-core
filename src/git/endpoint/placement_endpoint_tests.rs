@@ -25,7 +25,7 @@ fn fixture() -> PlacementEndpoint {
             100,
         )
         .unwrap(),
-        PathBuf::from("/tmp"),
+        std::env::temp_dir(),
         "endpoint".into(),
         "owner".into(),
     )
@@ -62,7 +62,7 @@ fn blocked_check_times_out_before_physical_disposal() {
     })
     .unwrap();
     entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-    let envelope = check(Path::new("/tmp/unused"), 10);
+    let envelope = check(&std::env::temp_dir().join("unused"), 10);
     let key = ("request".into(), 1);
     endpoint
         .requests
@@ -102,11 +102,10 @@ fn blocked_check_times_out_before_physical_disposal() {
 }
 #[test]
 fn fifo_identity_without_writer_rejects_without_blocking() {
-    use std::{ffi::CString, os::unix::ffi::OsStrExt, os::unix::fs::OpenOptionsExt};
+    // A FIFO on Unix; on Windows a device path with no server behind it (`ssh_fixture::special_file`), which the
+    // reader refuses by its spelling before it opens anything (step 1.3).
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("identity-fifo");
-    let cpath = CString::new(path.as_os_str().as_bytes()).unwrap();
-    assert_eq!(unsafe { libc::mkfifo(cpath.as_ptr(), 0o600) }, 0);
+    let path = super::super::ssh_fixture::special_file(dir.path());
     let mut endpoint = fixture();
     endpoint
         .accept("request".into(), check(&path, 1000))
@@ -123,11 +122,7 @@ fn fifo_identity_without_writer_rejects_without_blocking() {
         }
         thread::sleep(Duration::from_millis(1));
     };
-    // Release the original buggy blocking open before asserting, so red leaves no hung job.
-    let _writer = std::fs::OpenOptions::new()
-        .write(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(&path);
+    release_a_blocked_open(&path);
     assert_eq!(
         result
             .expect("special file admission blocked")
@@ -286,7 +281,7 @@ fn slow_endpoint(
             9_000,
         )
         .unwrap(),
-        PathBuf::from("/tmp"),
+        std::env::temp_dir(),
         "endpoint".into(),
         "owner".into(),
     )
@@ -466,5 +461,21 @@ fn stepping_the_endpoint_has_its_worker_wake_the_stepper_when_the_shutdown_settl
             "the worker's shutdown settled without waking the stepper"
         );
         thread::sleep(Duration::from_millis(1));
+    }
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        /// Releases the original buggy blocking open before the assertions, so red leaves no hung job.
+        fn release_a_blocked_open(path: &Path) {
+            use std::os::unix::fs::OpenOptionsExt;
+            let _writer = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(path);
+        }
+    } else {
+        /// A device path is refused before any open, so nothing can be blocked in one.
+        fn release_a_blocked_open(_path: &Path) {}
     }
 }

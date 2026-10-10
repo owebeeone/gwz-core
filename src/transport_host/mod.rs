@@ -26,26 +26,35 @@ cfg_if::cfg_if! { if #[cfg(all(test, unix))] { mod ca_trust_tests; } }
 
 // Step 1.8: the host-level modules that build a runtime with an SSH configuration.
 cfg_if::cfg_if! {
-    if #[cfg(all(test, unix))] {
+    if #[cfg(test)] {
         mod tests;
         mod throughput_tests;
         mod fault_tests;
         mod message_embedding_tests;
         mod https_route_scale_tests;
-        mod https_compat_tests;
         mod endpoint_environment_tests;
         mod retry_tests;
     }
 }
 
-// Step 4.11: the helper-dependent modules.
+// Step 5.1: the qualification refuses the remotes this module's one test clones (plain HTTP and the git protocol), as
+// the Windows qualification admits only SSH and HTTPS; retiring the switch ungates it.
+cfg_if::cfg_if! { if #[cfg(all(test, unix))] { mod https_compat_tests; } }
+
+// Step 4.11: the helper-dependent modules. `driver_tests` and `https_tests` also hold the shared fixtures of the step 1.8
+// modules above (`block_on`, `endpoint_home`, `repository`, `git_http_backend` and the rest), which need no helper, so
+// they compile everywhere (step 1.8) and only their helper-script items stay Unix (rows in 4.11.json).
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        mod driver_tests;
+        mod https_tests;
+    }
+}
 cfg_if::cfg_if! {
     if #[cfg(all(test, unix))] {
-        mod driver_tests;
         mod close_tests;
         mod command_tests;
         mod fetch_preflight_tests;
-        mod https_tests;
         mod https_policy_tests;
         cfg_if::cfg_if! {
             if #[cfg(unix)] {
