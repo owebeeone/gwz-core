@@ -29,6 +29,16 @@ and so does a candidate backend without a host context (TR2.11). HOME and
 SSH_AUTH_SOCK are read only by `SshEndpointConfig::from_environment`, when a
 runtime is built from it, as `with_local_transport` does.
 
+On Windows the SSH test server is the system's own OpenSSH server, `sshd.exe`, started as a plain
+foreground child of the test, with a configuration, keys and `authorized_keys` of its own in a
+temporary directory (no service, no system-wide setting). It is found at `GWZ_TEST_SSHD`, else
+`%SystemRoot%\System32\OpenSSH\sshd.exe`, else on `PATH`; a missing server fails the test, as on
+Unix. The keys are RSA, since libssh2 on Windows CNG has no ed25519 (the files keep their
+`_ed25519` names). The server's exec requests run under the host's OpenSSH default shell, `cmd.exe`
+or a POSIX shell, and Git and a POSIX `sh` (`GWZ_TEST_SH`, or `sh.exe` on `PATH`) must be on the
+test's `PATH`, as Git for Windows provides. Every process the server starts is in a Job Object
+that the test owns and closes.
+
 Stock `sshd` checks only system passwords, which no test may send, so the
 URL-password tests (TR2.18) run `password_sshd.py` instead: a loopback SSH
 server on Python's standard library alone that accepts one fixed test password

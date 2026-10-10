@@ -24,6 +24,7 @@ pub(crate) mod ssh_pool;
 pub(crate) mod ssh_pump;
 pub(crate) mod ssh_remote;
 pub(crate) mod ssh_setup_context;
+pub(crate) mod socket_wait;
 pub(crate) mod ssh_shutdown;
 pub(crate) mod ssh_worker;
 pub(crate) mod stream_io;
@@ -64,9 +65,17 @@ cfg_if::cfg_if! {
         pub(crate) mod https_opening;
         pub(crate) mod ssh_close_fixture;
         mod ssh_destination_tests;
-        pub(crate) mod ssh_fixture;
-        pub(crate) mod ssh_password_fixture;
         mod ssh_pump_clock_tests;
         mod ssh_tests;
+    }
+}
+
+// The SSH test servers run on every platform: Windows' own `sshd.exe` stands in for `/usr/sbin/sshd` (step 1.1).
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        pub(crate) mod fixture_host;
+        pub(crate) mod fixture_job;
+        pub(crate) mod ssh_fixture;
+        pub(crate) mod ssh_password_fixture;
     }
 }

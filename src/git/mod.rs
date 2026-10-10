@@ -7,6 +7,7 @@ cfg_if::cfg_if! {
     }
 }
 mod index_status_char;
+pub(crate) mod regular_file;
 #[cfg(test)]
 mod tests;
 mod url_scheme;

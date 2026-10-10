@@ -191,26 +191,11 @@ fn opaque_path(path: &str) -> ModelResult<PathBuf> {
 }
 
 pub(crate) fn validate_file(path: &Path) -> ModelResult<()> {
-    // Validate availability without reading or retaining any private-key bytes.
-    if !std::fs::metadata(path)
-        .map_err(|_| unavailable())?
-        .is_file()
-    {
-        return Err(unavailable());
-    }
-    let mut options = std::fs::OpenOptions::new();
-    options.read(true);
-    cfg_if::cfg_if! {
-        if #[cfg(unix)] {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.custom_flags(libc::O_NONBLOCK);
-        }
-    }
-    let file = options.open(path).map_err(|_| unavailable())?;
-    if !file.metadata().map_err(|_| unavailable())?.is_file() {
-        return Err(unavailable());
-    }
-    Ok(())
+    // Validate availability without reading or retaining any private-key bytes. The one regular-file open decides
+    // in one step, so a path replaced by a FIFO or a device between a check and the open cannot block it.
+    crate::git::regular_file::open(path)
+        .map(drop)
+        .map_err(|_| unavailable())
 }
 
 pub(crate) fn for_remote(

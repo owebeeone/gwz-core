@@ -8,6 +8,22 @@ from pathlib import Path
 import re
 import shutil
 
+# The `windows-sys` features the candidate's endpoint code needs beyond the production list in Cargo.toml. A step
+# that needs one more Windows API adds a name here (GwzTransportWindowsParityPlan.md, section 4). The last five
+# serve the test fixtures (a Job Object and thread suspension for the SSH servers, a named pipe in the
+# regular-file test); they are named here as well as in Cargo.toml's Windows dev-dependencies, because
+# `cargo check --lib --profile test`, which scripts/windows_lane_check.py runs, does not enable dev-dependency
+# features.
+CANDIDATE_WINDOWS_FEATURES = (
+    "Win32_Networking_WinHttp",
+    "Win32_Networking_WinSock",
+    "Win32_Security",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_JobObjects",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+)
+
 # Cargo resolves a dependency path against the directory of the manifest that
 # names it, lexically, without following symlinks. The prepared manifest is a
 # copy in the destination, so each relative dependency path in it is anchored
@@ -84,7 +100,11 @@ extra = '\n'.join([
     'native-tls = "=0.2.18"', 'tokio-native-tls = "=0.3.1"',
 
 ])
-manifest = replace_once(manifest, '"Win32_Globalization"', '"Win32_Globalization", "Win32_Networking_WinHttp"')
+manifest = replace_once(
+    manifest,
+    '"Win32_Globalization"',
+    ", ".join(['"Win32_Globalization"', *(json.dumps(name) for name in CANDIDATE_WINDOWS_FEATURES)]),
+)
 manifest = replace_once(manifest, '[dependencies]\n', '[dependencies]\n' + extra + '\n')
 manifest = replace_once(manifest, '[dev-dependencies]\n', '[dev-dependencies]\npyo3 = { version = "=0.28.3", features = ["auto-initialize"] }\n')
 # openssl-probe 0.1 is the crate git2 runs at its start; the transport resolves

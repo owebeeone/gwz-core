@@ -3,9 +3,10 @@ use super::{
     agent_job::{Control, Job, Supervisor},
     ssh_key_container,
 };
+use crate::git::regular_file;
 use gwz_transport::pool::{Identity, Key};
 use std::{
-    io,
+    io::{self, Read},
     path::PathBuf,
     sync::{Arc, Mutex, Weak},
     time::{Duration, Instant},
@@ -148,30 +149,21 @@ impl Registry {
 impl Reservation {
     fn read(self, key: Key, path: PathBuf, control: &Control) -> io::Result<Loaded> {
         self.read_with(key, control, |buffer, control| {
-            cfg_if::cfg_if! {
-                if #[cfg(unix)] {
-                    use std::{fs::OpenOptions, io::Read, os::unix::fs::OpenOptionsExt};
-                    control.check()?;
-                    let mut file = OpenOptions::new().read(true).custom_flags(libc::O_NONBLOCK).open(path).map_err(clean)?;
-                    control.check()?;
-                    let metadata = file.metadata().map_err(clean)?;
-                    control.check()?;
-                    if !metadata.file_type().is_file() { return Err(io::ErrorKind::InvalidInput.into()); }
-                    let mut used = 0;
-                    while used < buffer.len() {
-                        control.check()?;
-                        let end = (used + 8192).min(buffer.len());
-                        let n = file.read(&mut buffer[used..end]).map_err(clean)?;
-                        control.check()?;
-                        if n == 0 { break; }
-                        used += n;
-                    }
-                    Ok(used)
-                } else {
-                    let _ = (path, buffer, control);
-                    Err(io::ErrorKind::Unsupported.into())
+            control.check()?;
+            let mut file = regular_file::open(&path).map_err(clean)?;
+            control.check()?;
+            let mut used = 0;
+            while used < buffer.len() {
+                control.check()?;
+                let end = (used + 8192).min(buffer.len());
+                let n = file.read(&mut buffer[used..end]).map_err(clean)?;
+                control.check()?;
+                if n == 0 {
+                    break;
                 }
+                used += n;
             }
+            Ok(used)
         })
     }
     // Fixed allocation avoids uncharged growth/copy overlap. Keep its full

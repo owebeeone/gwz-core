@@ -83,6 +83,25 @@ def test_prepare_manifest_keeps_candidate_dependency_outside_production(tmp_path
     assert "vendored-libgit2" in git2["features"]
 
 
+def test_candidate_adds_the_windows_networking_features_the_endpoint_needs(tmp_path):
+    destination = prepare(tmp_path / "backend")
+    prepared = _manifest(destination)["target"]["cfg(windows)"]["dependencies"]["windows-sys"]
+    production = tomllib.loads((ROOT / "Cargo.toml").read_text())["target"]["cfg(windows)"]["dependencies"]["windows-sys"]
+    # The candidate adds to production's list, never replaces it: WinHttp for the HTTPS endpoint, WinSock for
+    # the SSH endpoint's socket waits (GwzTransportWindowsParityPlan.md, step 1.2), and the features the SSH test
+    # fixtures use (step 1.1). Production names none of them.
+    assert set(production["features"]) < set(prepared["features"])
+    assert set(prepared["features"]) - set(production["features"]) == {
+        "Win32_Networking_WinHttp",
+        "Win32_Networking_WinSock",
+        "Win32_Security",
+        "Win32_System_Diagnostics_ToolHelp",
+        "Win32_System_JobObjects",
+        "Win32_System_Pipes",
+        "Win32_System_Threading",
+    }
+
+
 def test_protocol_module_has_explicit_candidate_boundary():
     source = PROTOCOL_MOD.read_text()
 

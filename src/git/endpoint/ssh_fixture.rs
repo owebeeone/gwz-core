@@ -1,10 +1,15 @@
 //! A disposable OpenSSH server for the SSH endpoint's tests: a loopback
-//! `/usr/sbin/sshd` on a high port with temporary host and client keys, a
-//! temporary `known_hosts` that trusts only its host key, and a bare
-//! repository whose name carries a shell-injection marker. It never reads or
-//! changes the user's SSH configuration, keys, agent or `known_hosts`, and it
-//! stops and reaps its server on drop. A missing `sshd` fails the test rather
-//! than skipping it.
+//! `sshd` (`/usr/sbin/sshd`, or Windows' own `sshd.exe`; see `fixture_host`)
+//! on a high port with temporary host and client keys, a temporary
+//! `known_hosts` that trusts only its host key, and a bare repository whose
+//! name carries a shell-injection marker. It never reads or changes the user's
+//! SSH configuration, keys, agent or `known_hosts`, and it stops and reaps its
+//! server, and on Windows every process the server started, on drop. A missing
+//! `sshd` fails the test rather than skipping it.
+use super::{
+    fixture_host::{self, Programs},
+    fixture_job::ProcessJob,
+};
 pub(crate) use super::{ssh_channel, ssh_connection};
 
 use ssh2::{CheckResult, KnownHostFileKind};
@@ -19,16 +24,19 @@ use tempfile::TempDir;
 
 pub(crate) use ssh_channel::{GitService, SshChannel};
 pub(crate) use ssh_connection::SshConnection;
-use std::collections::HashMap;
 
 /// The transport sets up as many connections to one host at once as an
 /// operation allows, 32 by default. OpenSSH's default `MaxStartups` drops
 /// unauthenticated connections beyond 10, so the fixture's server takes more.
 const OPEN_STARTUPS: &str = "MaxStartups 64\n";
 
+/// How long a server has to start accepting: a Windows `sshd.exe` is slower to start than a Unix one.
+const READY_WITHIN: Duration = Duration::from_secs(if cfg!(windows) { 20 } else { 5 });
+
 pub(crate) struct SshdFixture {
     pub(crate) temp: TempDir,
     pub(crate) child: Child,
+    job: ProcessJob,
     pub(crate) port: u16,
     pub(crate) user: String,
     pub(crate) known_hosts: PathBuf,
@@ -69,22 +77,17 @@ impl SshdFixture {
     }
 
     fn build(debug: bool, startups: &str, extra: &str) -> Self {
-        assert!(
-            Path::new("/usr/sbin/sshd").exists(),
-            "native gate requires /usr/sbin/sshd; this is not a skipped qualification"
-        );
+        let programs = fixture_host::programs();
         let temp = TempDir::new().unwrap();
         let host_key = temp.path().join("host_ed25519");
         let client_key = temp.path().join("client_ed25519");
-        run_keygen(&host_key);
-        run_keygen(&client_key);
+        run_fixture_keygen(&programs, &host_key);
+        run_fixture_keygen(&programs, &client_key);
         let authorized = temp.path().join("authorized_keys");
         fs::copy(client_key.with_extension("pub"), &authorized).unwrap();
         let marker = temp.path().join("injection-marker");
         let known_hosts = temp.path().join("known_hosts");
-        let repository = temp
-            .path()
-            .join("repo'$(touch ".to_owned() + marker.to_str().unwrap() + ")'");
+        let repository = temp.path().join(fixture_host::repository_name(&marker));
         run(Command::new("git")
             .args(["init", "--bare", "--initial-branch=main", "--"])
             .arg(&repository));
@@ -94,26 +97,29 @@ impl SshdFixture {
             .unwrap()
             .port();
         let host_public = fs::read_to_string(host_key.with_extension("pub")).unwrap();
-        fs::write(&known_hosts, format!("[127.0.0.1]:{port} {host_public}")).unwrap();
+        fs::write(
+            &known_hosts,
+            fixture_host::known_hosts_line(&format!("[127.0.0.1]:{port}"), &host_public),
+        )
+        .unwrap();
         let config = temp.path().join("sshd_config");
-        let user = run_output(Command::new("id").args(["-un"]));
-        let config_text = format!(
-            "{extra}Port {port}\nListenAddress 127.0.0.1\nHostKey {}\nAuthorizedKeysFile {}\nPidFile none\nPasswordAuthentication no\nKbdInteractiveAuthentication no\nChallengeResponseAuthentication no\nUsePAM no\nPermitRootLogin yes\nPubkeyAuthentication yes\nStrictModes no\nLogLevel ERROR\n{startups}",
-            host_key.display(),
-            authorized.display(),
-        );
+        let user = fixture_host::login_name();
+        let session = fixture_host::session_directives(temp.path());
+        let config_text =
+            fixture_host::server_config(extra, port, &host_key, &authorized, &session, startups);
         fs::write(&config, config_text).unwrap();
-        run(Command::new("/usr/sbin/sshd")
-            .args(["-t", "-f"])
-            .arg(&config));
-        let mut server = Command::new("/usr/sbin/sshd");
+        run(Command::new(&programs.sshd).args(["-t", "-f"]).arg(&config));
+        let log = temp.path().join("sshd.log");
+        let mut server = Command::new(&programs.sshd);
         server.args(["-D", "-e"]);
         if debug {
             server.arg("-ddd");
         }
-        if !extra.is_empty() {
-            server.arg("-E").arg(temp.path().join("sshd.log"));
+        if !extra.is_empty() || cfg!(windows) {
+            // A Windows server's reasons for failing to start go to this log, since nothing reads its stderr.
+            server.arg("-E").arg(&log);
         }
+        let job = ProcessJob::new().unwrap();
         let child = server
             .args(["-f"])
             .arg(&config)
@@ -121,9 +127,11 @@ impl SshdFixture {
             .stderr(Stdio::null())
             .spawn()
             .unwrap();
-        let fixture = Self {
+        job.adopt(&child).unwrap();
+        let mut fixture = Self {
             temp,
             child,
+            job,
             port,
             user,
             known_hosts,
@@ -137,15 +145,21 @@ impl SshdFixture {
         fixture
     }
 
-    fn wait_ready(&self) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+    fn wait_ready(&mut self) {
+        let deadline = Instant::now() + READY_WITHIN;
         while Instant::now() < deadline {
             if TcpStream::connect(("127.0.0.1", self.port)).is_ok() {
                 return;
             }
+            if let Some(status) = self.child.try_wait().unwrap() {
+                panic!(
+                    "temporary sshd exited with {status} before it was ready: {}",
+                    self.log()
+                );
+            }
             thread::sleep(Duration::from_millis(20));
         }
-        panic!("temporary sshd did not become ready");
+        panic!("temporary sshd did not become ready: {}", self.log());
     }
 
     /// This server's host key as a `known_hosts` line for `name` at `port`:
@@ -247,14 +261,27 @@ impl SshdFixture {
 
 impl Drop for SshdFixture {
     fn drop(&mut self) {
+        // The job ends every process the server started, by membership; the child is then reaped.
+        self.job.terminate();
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
 }
 
 pub(crate) fn run_keygen(path: &Path) {
-    run(Command::new("ssh-keygen")
+    run(Command::new(fixture_host::programs().keygen)
         .args(["-q", "-t", "ed25519", "-N", ""])
+        .arg("-f")
+        .arg(path));
+}
+
+/// Writes the key a fixture server or client uses: ed25519 where the fixture's libssh2 reads it, RSA in PEM form
+/// on Windows, where it does not.
+fn run_fixture_keygen(programs: &Programs, path: &Path) {
+    run(Command::new(&programs.keygen)
+        .args(["-q"])
+        .args(fixture_host::fixture_key_arguments())
+        .args(["-N", ""])
         .arg("-f")
         .arg(path));
 }
@@ -274,78 +301,100 @@ pub(crate) fn run_output(command: &mut Command) -> String {
     String::from_utf8(output.stdout).unwrap().trim().to_owned()
 }
 
-pub(crate) struct PausedProcessTree {
-    pids: Vec<i32>,
-    resumed: bool,
-}
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        use std::collections::HashMap;
 
-impl PausedProcessTree {
-    pub(crate) fn resume(&mut self) {
-        if self.resumed {
-            return;
+        pub(crate) struct PausedProcessTree {
+            pids: Vec<i32>,
+            resumed: bool,
         }
-        self.resumed = true;
-        for pid in &self.pids {
-            // Teardown must not panic while unwinding; an exited child needs no
-            // resume. Keep the guard armed before the first STOP below.
-            let _ = Command::new("kill")
-                .args(["-CONT", &pid.to_string()])
-                .output();
+
+        impl PausedProcessTree {
+            pub(crate) fn resume(&mut self) {
+                if self.resumed {
+                    return;
+                }
+                self.resumed = true;
+                for pid in &self.pids {
+                    // Teardown must not panic while unwinding; an exited child needs no
+                    // resume. Keep the guard armed before the first STOP below.
+                    let _ = Command::new("kill")
+                        .args(["-CONT", &pid.to_string()])
+                        .output();
+                }
+            }
         }
-    }
-}
 
-impl Drop for PausedProcessTree {
-    fn drop(&mut self) {
-        self.resume();
-    }
-}
-
-pub(crate) fn pause_process_tree(root: u32) -> PausedProcessTree {
-    thread::sleep(Duration::from_millis(100));
-    let output = run_output(Command::new("ps").args(["-axo", "pid=,ppid=,state="]));
-    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
-    for line in output.lines() {
-        let mut fields = line.split_whitespace();
-        let Some(pid) = fields.next().and_then(|value| value.parse::<i32>().ok()) else {
-            continue;
-        };
-        let Some(ppid) = fields.next().and_then(|value| value.parse::<i32>().ok()) else {
-            continue;
-        };
-        if fields.next().is_some_and(|state| state.starts_with('Z')) {
-            continue;
+        impl Drop for PausedProcessTree {
+            fn drop(&mut self) {
+                self.resume();
+            }
         }
-        children.entry(ppid).or_default().push(pid);
-    }
-    let mut pids = Vec::new();
-    collect_children(root as i32, &children, &mut pids);
-    pids.push(root as i32);
-    let mut paused = PausedProcessTree {
-        pids: Vec::new(),
-        resumed: false,
-    };
-    for pid in pids {
-        paused.pids.push(pid);
-        run(Command::new("kill").args(["-STOP", &pid.to_string()]));
-    }
-    for pid in &paused.pids {
-        let state = run_output(Command::new("ps").args(["-o", "state=", "-p", &pid.to_string()]));
-        assert!(
-            state.starts_with('T'),
-            "fixture process {pid} was not stopped: {state}"
-        );
-    }
-    paused
-}
 
-fn collect_children(root: i32, children: &HashMap<i32, Vec<i32>>, output: &mut Vec<i32>) {
-    let Some(owned) = children.get(&root) else {
-        return;
-    };
-    for child in owned {
-        collect_children(*child, children, output);
-        output.push(*child);
+        pub(crate) fn pause_process_tree(root: u32) -> PausedProcessTree {
+            thread::sleep(Duration::from_millis(100));
+            let output = run_output(Command::new("ps").args(["-axo", "pid=,ppid=,state="]));
+            let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
+            for line in output.lines() {
+                let mut fields = line.split_whitespace();
+                let Some(pid) = fields.next().and_then(|value| value.parse::<i32>().ok()) else {
+                    continue;
+                };
+                let Some(ppid) = fields.next().and_then(|value| value.parse::<i32>().ok()) else {
+                    continue;
+                };
+                if fields.next().is_some_and(|state| state.starts_with('Z')) {
+                    continue;
+                }
+                children.entry(ppid).or_default().push(pid);
+            }
+            let mut pids = Vec::new();
+            collect_children(root as i32, &children, &mut pids);
+            pids.push(root as i32);
+            let mut paused = PausedProcessTree {
+                pids: Vec::new(),
+                resumed: false,
+            };
+            for pid in pids {
+                paused.pids.push(pid);
+                run(Command::new("kill").args(["-STOP", &pid.to_string()]));
+            }
+            for pid in &paused.pids {
+                let state = run_output(Command::new("ps").args(["-o", "state=", "-p", &pid.to_string()]));
+                assert!(
+                    state.starts_with('T'),
+                    "fixture process {pid} was not stopped: {state}"
+                );
+            }
+            paused
+        }
+
+        fn collect_children(root: i32, children: &HashMap<i32, Vec<i32>>, output: &mut Vec<i32>) {
+            let Some(owned) = children.get(&root) else {
+                return;
+            };
+            for child in owned {
+                collect_children(*child, children, output);
+                output.push(*child);
+            }
+        }
+    } else if #[cfg(windows)] {
+        /// A server's process tree, suspended thread by thread until [`Self::resume`] or drop.
+        pub(crate) struct PausedProcessTree(super::fixture_job::Suspended);
+
+        impl PausedProcessTree {
+            pub(crate) fn resume(&mut self) {
+                self.0.resume();
+            }
+        }
+
+        /// Suspends `root` and every process descended from it, as `kill -STOP` does on Unix.
+        pub(crate) fn pause_process_tree(root: u32) -> PausedProcessTree {
+            // Give the server's session processes a moment to exist, as the Unix twin does.
+            thread::sleep(Duration::from_millis(100));
+            PausedProcessTree(super::fixture_job::suspend_tree(root).expect("the server's processes were suspended"))
+        }
     }
 }
 
@@ -438,4 +487,88 @@ pub(crate) fn exchange(channel: &mut SshChannel) -> (Vec<u8>, Vec<u8>, i32) {
         thread::sleep(Duration::from_millis(2));
     }
     panic!("SSH channel exchange timed out; stderr={stderr:?}");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Read;
+
+    #[test]
+    fn the_server_answers_a_handshake_and_serves_upload_pack_for_the_bare_repository() {
+        let mut fixture = SshdFixture::new();
+        let session = fixture.session();
+        let repository = fixture.repository.to_str().unwrap().to_owned();
+        let mut channel = SshChannel::new(session, GitService::UploadPack, &repository).unwrap();
+        open(&mut channel);
+        let (stdout, stderr, status) = exchange(&mut channel);
+        assert!(
+            stdout.windows(4).any(|window| window == b"0000"),
+            "{stdout:?}"
+        );
+        assert!(
+            stderr.is_empty(),
+            "unexpected upload-pack diagnostics: {stderr:?}"
+        );
+        assert_eq!(status, 0);
+        assert_eq!(fixture.authenticated_sessions, 1);
+        assert!(
+            !fixture.marker.exists(),
+            "repository path was shell-injected"
+        );
+    }
+
+    #[test]
+    fn the_known_hosts_file_trusts_the_server_key_and_nothing_else() {
+        let fixture = SshdFixture::new();
+        let text = fs::read_to_string(&fixture.known_hosts).unwrap();
+        let fields: Vec<&str> = text.split_whitespace().collect();
+        assert_eq!(text.lines().count(), 1, "{text:?}");
+        assert!(text.ends_with('\n') && !text.contains('\r'), "{text:?}");
+        assert!(fields.len() >= 3, "{text:?}");
+        assert_eq!(fields[0], format!("[127.0.0.1]:{}", fixture.port));
+        assert!(fields[1].starts_with("ssh-"), "{text:?}");
+    }
+
+    #[test]
+    fn a_paused_server_gives_no_banner_until_it_is_resumed() {
+        let fixture = SshdFixture::new();
+        let mut paused = pause_process_tree(fixture.child.id());
+        let mut stream = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        let mut banner = [0u8; 8];
+        let error = stream
+            .read(&mut banner)
+            .expect_err("a paused server sent a banner");
+        assert!(
+            matches!(
+                error.kind(),
+                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+            ),
+            "{error}"
+        );
+        paused.resume();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        stream.read_exact(&mut banner).unwrap();
+        assert_eq!(&banner[..4], b"SSH-");
+    }
+
+    #[test]
+    fn dropping_the_fixture_stops_the_server() {
+        let fixture = SshdFixture::new();
+        let port = fixture.port;
+        drop(fixture);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            assert!(
+                Instant::now() < deadline,
+                "the server still accepted after its fixture dropped"
+            );
+            thread::sleep(Duration::from_millis(20));
+        }
+    }
 }
