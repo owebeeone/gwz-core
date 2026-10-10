@@ -1,8 +1,34 @@
 # TR1.8 (Windows parity): what the evidence leaves for the operator
 
-Date: 2026-10-10. Status: **a decision list, for the operator.** It decides nothing and authorizes nothing: no implementation, commit, push, tag, publish,
-host change or account. It is the product of plan steps 2.2, 2.3 and 2.3b (`GwzTransportWindowsParityPlan.md`, revision 3) and the refresh in
-[`GwzTransportWindowsParityDesign-Delta.md`](GwzTransportWindowsParityDesign-Delta.md); step 2.4 (settle, review, GO) has not been run and waits on these answers.
+Date: 2026-10-10. Status: **operator decisions recorded for all fourteen items.** The operator accepted the recommendations in the discussion table, including its qualifications and the combined TD12 choice.
+The bounded host transactions in TD9, TD10 and TD12 are approved within their stated safeguards. This is not an implementation, qualification or release verdict, and grants no commit, push, tag or publication authorization. Prior recorded authorizations are unchanged.
+It is the product of plan steps 2.2, 2.3 and 2.3b (`GwzTransportWindowsParityPlan.md`, revision 3) and the refresh in
+[`GwzTransportWindowsParityDesign-Delta.md`](GwzTransportWindowsParityDesign-Delta.md); step 2.4 (settle, review, GO) has not been run. These answers now permit preparation of the settled review package.
+
+## Operator discussion record — 2026-10-10
+
+The operator first asked for the spoken decisions to be recorded, then confirmed that the recommended answers in the discussion table are the decisions. All option selections below are settled. In particular, TD12 accepts the baseline pipe policy and the bounded real-service test separately; it does not select the original B-only recommendation that declined the test.
+
+| Decision | Recorded answer | Scope and qualification |
+|---|---|---|
+| TD1 | **A accepted** | Retain Windows logon authentication for Negotiate/NTLM and configured-helper credentials for Basic. This is not a Basic-only restriction. Stop after rejection of the logon identity; do not replay or downgrade to helper credentials. |
+| TD2 | **A accepted** | Refuse Digest-only promptly; ignore Digest when another supported scheme is available. |
+| TD3 | **A accepted** | Follow discovery redirects on Windows; do not forward credentials across origins. HTTPS confirmation remains owed. |
+| TD4 | **A accepted** | Refuse a challenged POST with a clear diagnostic; never replay its body. |
+| TD5 | **A+B accepted** | Keep the backend limits and improve diagnostics. Agent authentication supports RSA, ECDSA and Ed25519 in the tests; RSA-only host-key and unencrypted RSA-PEM file-key limits are separate. No OpenSSL backend change was selected. |
+| TD6 | **A accepted with native-path clarification** | One captured home serves known_hosts and tilde identity expansion; fix Windows Unicode home and key paths. Preserve native paths on every platform. The demonstrated Windows defect and the broader path-boundary audit must be distinguished; see TD6 below. |
+| TD7 | **B accepted with evidence qualification** | Dispose of the baseline authentication question using Mac HTTP, Linux trusted HTTPS and inference. The Mac trusted-HTTPS row remains unexecuted; do not relabel it as an executed test. |
+| TD8 | **B accepted** | Real hardware security-key signing and Pageant-held certificates remain not qualified, rather than being declared unsupported. |
+| TD9 | **A accepted** | An attended, temporary one-certificate transaction in the current user's Root store, with the exact certificate removed and absence verified. Missing baseline EPA evidence does not establish that the transport fails EPA. |
+| TD10 | **A accepted** | Serialized machine-proxy tests in a quiet window, with booking lock, saved exact prior state, deadline guard armed before mutation, and restoration verified after every row. |
+| TD11 | **B accepted** | Omit the additional cross-user/logon-session refusal promise; retain the proven process/window checks. Safety review must judge that policy explicitly. No second account is approved by this choice. |
+| TD12 | **Baseline pipe policy plus bounded service test accepted** | Adopt OQ4(a), with local-pipe admission and no server-identity restriction. Also approve A's bounded real-service run: capture service state and start type, start for qualification, and restore the original state and start type. Do not mark the native-service combination qualified before the run. |
+| TD13 | **Migration-difference register accepted** | Record the intentional differences listed below, reconciled with these settled choices; keep unqualified combinations in a separate limitations list. This is not an implementation or qualification verdict. |
+| TD14 | **A accepted** | Reconcile the contradicted amendment text in revision 8 before step 2.4's review; no new transport mechanism is proposed. |
+
+**Authentication clarification.** NTLM and Kerberos are distinct protocols. Negotiate selects a mechanism; the successful fixture exchanges used NTLM, so they do not qualify Kerberos. GitHub token authentication remains the configured-helper Basic-over-HTTPS path.
+
+**EPA evidence clarification.** The missing TD9 rows are baseline parity and broader qualification gaps. The earlier [WH1 native refresh](../../dev-docs/GwzWindowsHttpsIntegrationImplementation-Verdict-3.md) already records integrated CLI and installed-wheel Git operations and wrong-CBT rejection under its limited qualification route. That does not complete B16 or authorize ordinary Windows activation, but it prevents an unexecuted baseline comparison being described as a demonstrated transport failure.
 
 Every question has options, a recommendation and the evidence behind it, so all fourteen can be answered in one message. Evidence runs are in the private
 `gwz-core-evidence/campaigns/transport-qualification/runs/` (private access required): **RS** `2026-10-10-tr18-windows-ssh-rows` (90 SSH rows on released Windows 1.0.17),
@@ -14,25 +40,25 @@ fixture CA needs a trust change (TD9). Where a recommendation leans on an HTTP r
 
 ## The answers in one line each
 
-| # | Question | Recommend | Needs an approval or a host change? |
+| # | Question | Settled answer | Host change or remaining qualification? |
 |---|---|---|---|
 | TD1 | Which identity answers Negotiate or NTLM on Windows: the helper (amendment 2) or the logon session (1.0.17)? | A: match 1.0.17, logon session, helper only for Basic | no (amends text) |
 | TD2 | Digest | A: refuse; ignore it when another supported scheme is offered | no |
 | TD3 | Redirects on Windows (1.0.17 follows none) | A: follow them, as on macOS and Linux; confirm on HTTPS after TD9 | no |
-| TD4 | A 401 to a POST | A: refuse with a clear message (confirm) | no |
+| TD4 | A 401 to a POST | A: refuse with a clear message | no |
 | TD5 | RSA-only host keys and file keys on Windows | A plus B: match 1.0.17, add diagnostics | no |
-| TD6 | Home directories: non-ASCII paths, `~/` | A: one captured home; fix non-ASCII for HOME and key paths | no |
-| TD7 | B17, Mac HTTPS with a trusted CA | B: close B17 on plain HTTP (Mac) and HTTPS (Linux) | an interactive keychain authorization if A |
+| TD6 | Home directories: non-ASCII paths, `~/` | A: one captured home; fix Windows Unicode paths; preserve native paths on every platform | no |
+| TD7 | B17, Mac HTTPS with a trusted CA | B: dispose of the question by inference, not an executed Mac trusted-HTTPS row | Mac trusted-HTTPS remains unexecuted |
 | TD8 | Hardware security key and a Pageant-held certificate | B: declare not qualified; no hardware | hardware if A |
-| TD9 | Windows native trust for one fixture CA (B16 EPA and every HTTPS row) | A: attended one-certificate transaction | **yes: a trust change** |
-| TD10 | Machine WinHTTP proxy rows (B09/P04 grammar) | A: authorize the serialized transactions | **yes: a machine setting** |
-| TD11 | A second local account (P01 cross-SID Pageant) | B: decline; drop the claim | an account if A |
-| TD12 | Start the OpenSSH Authentication Agent service (P03) | B: decline; no server-identity check on the pipe | a service start if A |
+| TD9 | Windows native trust for one fixture CA (B16 EPA and every HTTPS row) | A: attended one-certificate transaction | **approved: a bounded current-user trust change** |
+| TD10 | Machine WinHTTP proxy rows (B09/P04 grammar) | A: serialized transactions | **approved: bounded machine-setting changes** |
+| TD11 | A second local account (P01 cross-SID Pageant) | B: decline; drop the additional refusal claim | no account; Safety review remains |
+| TD12 | Start the OpenSSH Authentication Agent service (P03) | OQ4(a) baseline pipe policy, plus A's bounded real-service test | **approved: bounded service start and restoration** |
 | TD13 | The list of deliberate differences from 1.0.17 for the migration notes | accept the list | no |
 | TD14 | How amendment 2's superseded sentences are changed | A: a short revision 8 before step 2.4 | no |
 
-To accept every recommendation: "TD1 A, TD2 A, TD3 A, TD4 A, TD5 A+B, TD6 A, TD7 B, TD8 B, TD9 A, TD10 A, TD11 B, TD12 B, TD13 accept, TD14 A."
-The two host approvals that cost the most (TD9, TD10) need a quiet window on the shared host (about half a day and about a day); under the recommendations nothing else needs the host.
+**Settled answers:** TD1 A, TD2 A, TD3 A, TD4 A, TD5 A+B, TD6 A with native-path clarification, TD7 B with the missing-test qualification, TD8 B, TD9 A, TD10 A, TD11 B, TD12 OQ4(a) plus the bounded A test, TD13 accept, TD14 A.
+The two host transactions that cost the most (TD9, TD10) need a quiet window on the shared host (about half a day and about a day). TD12 additionally needs its bounded real-service run. Approval records do not mean the rows have executed or passed.
 
 ---
 
@@ -127,11 +153,13 @@ And `~/` in `--identity` is expanded from **`USERPROFILE`**, while `known_hosts`
 
 **Recommendation: A.** Reproducing a refusal that comes from a narrow `fopen` serves no user (the plan's OQ7 reasoning), and the `~/` split matters only when HOME differs from USERPROFILE. List both in the deviation register (TD13).
 
+**Path representation clarification (operator discussion, 2026-10-10).** Preserving native paths is a cross-platform rule, not a Windows-only rule or a promise that every filename is UTF-8. On Windows, retain native paths through the Unicode file APIs; do not guess the filesystem or terminal encoding or pass a Unicode filename through a narrow C file-opening interface. On Unix, retain native filename bytes through file operations rather than requiring valid UTF-8 or using lossy text conversion. Display text and the encoding of file contents are separate from the path used to open a file. The evidence above establishes the Windows defect; it does not establish that all Linux or macOS path conversions have been audited. Review the affected SSH home and identity path conversions on those platforms, and record any broader audit as outstanding rather than claiming it is complete.
+
 ### TD7. B17, the Mac HTTPS row with a trusted CA
 
 **Evidence.** RM: on macOS and Linux 1.0.17 refuses `401 Negotiate` (`'Negotiate' authentication is not supported`, code `GitCommandFailed`) and sends **no `Authorization` header**; NTLM-only gives `could not acquire credentials` (`RemoteRejected`). Linux was run over HTTPS (CA trusted through `SSL_CERT_FILE`) and over HTTP with identical results; the Mac over plain HTTP and, as a control, HTTPS with the CA **untrusted** (fails at certificate verification).
 The approved Mac trust step (temporary keychain, `security add-trusted-cert -r trustRoot -k <temp keychain>`) **did not complete: macOS raised an interactive authorization dialog** and the lane did not escalate. Everything was restored (search list equal to the saved one, no entry for the CA, no keychain file). The dialog's helper process (`SecurityAgent`) outlived the run by several minutes and has since exited.
-**Options.** A. An attended re-run in which the operator answers the one authorization (a few minutes). B. Close B17 as executed: the Negotiate refusal is decided by libgit2 before any TLS-specific step, the Linux HTTPS row is complete, and the Mac plain-HTTP and untrusted-HTTPS rows are consistent with it.
+**Options.** A. An attended re-run in which the operator answers the one authorization (a few minutes). B. Close the baseline authentication question by inference: the Linux HTTPS row is complete, and the Mac plain-HTTP and untrusted-HTTPS rows are consistent with it. The Mac trusted-HTTPS row remains unexecuted; this disposition must not count it as executed.
 **Recommendation: B.** An HTTPS-trusted Mac row would add no information about the authentication layer; the amendment needs "refused with a message naming the off switch", which is the transport's job, not a 1.0.17 property.
 **Note.** The Mac binary is a local source build of 1.0.17 (`cf97fa15...`), not the release asset; Linux is the released artifact on **aarch64** (the release target is x86-64).
 
@@ -154,7 +182,7 @@ If none of TD9 to TD12 is answered yes, step 2.4's reviewers get the claims list
 **Options.**
 - **A. Attended one-certificate transaction.** On dabeest, one disposable certificate (a day's validity, pinned thumbprint) is added to the **current user's** Root store with `certutil -user -addstore Root <cert>` by the operator or in an attended session, the lane runs the HTTPS rows inside a booked interval of about 45 minutes, and the certificate is removed (`certutil -user -delstore Root <thumbprint>`) and its absence verified. No machine store, no service, no policy.
 - **B. Unattended, with an external supervisor** that is proved to be outside every job (the 2026-10-03 design). New engineering before any row can run.
-- **C. Decline.** B16 stays unexecuted and the EPA/CBT claim leaves the design; the transport could not claim EPA parity, so a server that requires Extended Protection (AD FS, Exchange and current IIS setups often do) works on 1.0.17 and fails on the transport with nothing in the evidence to show it.
+- **C. Decline.** B16 stays unexecuted and the EPA/CBT parity claim leaves the design. Compatibility with servers requiring Extended Protection remains unqualified by this baseline campaign; the missing comparison does not demonstrate either baseline success or transport failure. The earlier limited WH1 qualification remains separate evidence, as noted in the discussion record above.
 **Recommendation: A.** It is the smallest change that makes the EPA claim evidence. About half a day of host time including the HTTPS variants.
 
 ### TD10. The machine WinHTTP proxy (B09/P04 grammar)
@@ -182,13 +210,15 @@ If none of TD9 to TD12 is answered yes, step 2.4's reviewers get the claims list
 - **C. Adopt OQ4(b) unmeasured:** not allowed by the design's own section 11.
 **Recommendation: B.** It is exact parity and removes a rule that has no row behind it. The one thing B leaves is S5.6's evidence for the native-agent cell: the owned-pipe rows cover the code path; if the operator wants the real service in the evidence, take A at step 6.3.
 
+**Settled operator choice (2026-10-10).** The discussion's combined recommendation supersedes B-only: adopt OQ4(a)'s baseline local-pipe policy without a server-identity check, and run A's bounded real-service qualification with the original service state and start type restored. Starting the service does not imply acceptance of the draft's caller-SID/logon-id restriction.
+
 ---
 
 ## Group 4: process
 
 ### TD13. The deliberate differences from 1.0.17 (for the migration notes)
 
-The recommendations above make the transport differ from released Windows 1.0.17 in these places. Confirm the list, or strike items (a struck item must be matched exactly):
+The settled choices above approve these intended differences from released Windows 1.0.17. They are migration-note requirements, not claims that the changes have all been implemented or qualified:
 
 1. Non-ASCII HOME and key paths work (TD6).
 2. A challenge offering Digest beside a supported scheme uses the supported scheme; a Digest-only challenge fails at once, not after 15 replays (TD2).
@@ -198,7 +228,7 @@ The recommendations above make the transport differ from released Windows 1.0.17
 6. `~/` identities use the same captured home as `known_hosts` (TD6).
 7. An SSH drop before authentication is retried under the retry plan (TR2.1); 1.0.17 makes one attempt (RS/x7-*, 1 connection per drop shape).
 8. Plain messages replace `failed to set hostkey preference`, an empty `failed to authenticate SSH session:`, and the shared no-agent text for unsupported `SSH_AUTH_SOCK` forms (TD5, and the design's naming of the variable).
-9. Unchanged by choice (not deviations): environment and git-config proxies are ignored on Windows; the logon session's credentials go to any host that challenges (OD16); RSA-only host and file keys; RSA agent signatures at `rsa-sha2-512` only.
+9. Unchanged by choice (not deviations): environment and git-config proxies are ignored on Windows; the logon session's credentials go to any host that challenges (OD16); RSA-only host keys and unencrypted RSA-PEM file keys; RSA agent signatures at `rsa-sha2-512` only. Agent-key support for ECDSA and Ed25519 remains separate from these limits.
 
 **Recommendation: accept the list.**
 
@@ -210,9 +240,9 @@ TD1 to TD3 make lines 166, 178 and 226 of `GwzTransportReleasePlanAmendment-2.md
 
 ---
 
-## After the answers
+## Next work after the settled answers
 
-1. Run the approved host work (TD9 about half a day, TD10 about a day, TD12 optional), each inside a booked interval; the rows to run are listed in the delta's section 4. Nothing else needs the host.
+1. Run the approved host work (TD9 about half a day, TD10 about a day, and TD12's bounded real-service test), each inside a booked interval with its stated restoration safeguards; the rows to run are listed in the delta's section 4. These transactions have not been run by recording the decisions.
 2. Write the one design revision from the delta and the answers; remove the claims whose rows stay unexecuted (delta section 5); revise the baseline, user guide and checkpoint (delta section 6).
 3. Step 2.4: the dual Consistency and Safety review plus Surface, with the removed-claims list as part of the reviewers' input.
 4. Steps that can start now regardless: 3.8 (the key-type matrix is measured), 3.5 (the Pageant inspector and PPK writer exist in RS), 3.7 (the drop texts), 4.5 (the helper and URL-password targets).
