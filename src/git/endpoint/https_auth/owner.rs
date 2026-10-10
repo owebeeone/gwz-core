@@ -23,7 +23,7 @@ pub(super) struct PendingWorker {
 }
 
 pub(super) struct PendingChild {
-    pub(super) child: Child,
+    pub(super) child: HelperChild,
     /// The helper's process tree. A helper is retired only when its whole tree is gone, so the tree stays here
     /// until `drained` says so.
     pub(super) tree: Option<ProcessTree>,
@@ -145,8 +145,18 @@ impl AuthOwner {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .retain_mut(|pending| {
-                !(matches!(pending.child.try_wait(), Ok(Some(_)))
-                    && pending.tree.as_ref().is_none_or(ProcessTree::drained))
+                if !matches!(pending.child.try_wait(), Ok(Some(_))) {
+                    return true;
+                }
+                // The leader is gone. A retained tree that still has a member (one that was created as the job
+                // ended) is ended again, so that an abandoned lookup cannot hold a host slot for good.
+                match &pending.tree {
+                    Some(tree) if !tree.drained() => {
+                        tree.kill();
+                        true
+                    }
+                    _ => false,
+                }
             });
     }
 
@@ -192,7 +202,7 @@ impl Drop for ActiveGuard {
 }
 
 pub(super) struct HelperJob {
-    child: Option<Child>,
+    child: Option<HelperChild>,
     permits: Option<Arc<AdmissionPermits>>,
     owner: AuthOwner,
     tree: Option<ProcessTree>,
@@ -200,7 +210,7 @@ pub(super) struct HelperJob {
 
 impl HelperJob {
     pub(super) fn new(
-        (child, tree): (Child, ProcessTree),
+        (child, tree): (HelperChild, ProcessTree),
         permits: Arc<AdmissionPermits>,
         owner: AuthOwner,
     ) -> Self {
@@ -212,7 +222,7 @@ impl HelperJob {
         }
     }
 
-    pub(super) fn child_mut(&mut self) -> &mut Child {
+    pub(super) fn child_mut(&mut self) -> &mut HelperChild {
         self.child.as_mut().expect("active helper child")
     }
 
@@ -222,10 +232,11 @@ impl HelperJob {
         drop(self.permits.take());
     }
 
-    /// A helper that succeeded is retired once its leader has exited and its tree is gone: the owner lets go of
-    /// the tree, and only then of the helper's admission permits. A leader still running, or a tree that does not
-    /// empty within the cleanup grace, stays owned, and dropping the job retains it for the owner to reap.
-    pub(super) async fn retire(&mut self) {
+    /// A helper that succeeded is retired once its leader has exited: the owner lets go of the tree, and then of
+    /// the helper's admission permits. What the helper left running is left running (as under Git, on Unix and
+    /// in 1.0.17), and holds no handle of gwz's. A leader still running stays owned, and dropping the job retains
+    /// it for the owner to reap.
+    pub(super) fn retire(&mut self) {
         if !self
             .child
             .as_mut()
@@ -235,10 +246,6 @@ impl HelperJob {
         }
         if let Some(tree) = &self.tree {
             tree.retire();
-            confirm_drained(tree, Some(Instant::now() + CLEANUP_GRACE)).await;
-            if !tree.drained() {
-                return;
-            }
         }
         self.complete();
     }

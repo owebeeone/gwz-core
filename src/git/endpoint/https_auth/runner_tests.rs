@@ -279,7 +279,7 @@ async fn zero_allocation_with_free_slots_starts_no_helper() {
 async fn timeout_kills_descendants_even_after_git_exited_with_stdout_open() {
     let (home, mut config) = fake_git(
         "\
-/bin/sh -c 'while :; do printf x >> \"$HEARTBEAT\"; /bin/sleep 0.02; done' &
+/bin/sh -c 'while printf x >> \"$HEARTBEAT\"; do /bin/sleep 0.02; done' &
 exit 0",
     );
     let heartbeat = home.path().join("heartbeat");

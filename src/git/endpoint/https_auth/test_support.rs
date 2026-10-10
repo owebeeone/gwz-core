@@ -13,6 +13,7 @@ cfg_if::cfg_if! {
             use super::*;
             use crate::git::endpoint::helper_script::write_git_fixture;
             use std::fs;
+            use tokio::process::Command;
             use tempfile::tempdir;
 
             fn helper(script: &str) -> (tempfile::TempDir, Config) {

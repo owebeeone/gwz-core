@@ -5,7 +5,7 @@
   "entries": [
     {"path": "crates/repo-inspect/src/environment.rs", "kind": "env", "name": "env::var_os", "disposition": "debt",
      "reason": "Environment::Process reads Git's redirecting variables from the ambient process when used. Callers should pass Environment::from_vars(captured) and the variant should go (RemPlan B5)."},
-    {"path": "src/git/endpoint/https_auth/runner.rs", "kind": "process", "name": "Command::new", "disposition": "permanent",
+    {"path": "src/git/endpoint/https_auth/process_tree.rs", "kind": "process", "name": "Command::new", "disposition": "permanent",
      "reason": "Spawns serial supervised native Git root discovery, stdin explicit-file parsing, controlled-origin verification and credential fill under one clock (accepted configuration-view amendment); env_clear plus the exact filtered/controlled snapshot, no repository command or network transport."},
     {"path": "src/git/endpoint/ssh_worker/endpoint.rs", "kind": "static", "name": "NEXT_WORKER", "disposition": "debt", "owner": "CS7.1, the candidate crates' extraction (IdSource)",
      "reason": "Process-wide endpoint ID counter (checked increment): global mutable state, never permanent (GwzCoreSessionCrateMap §1). It takes IDs from the host context's IdSource (crate map §4)."},

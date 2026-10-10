@@ -79,6 +79,7 @@ async fn completed_native_child_and_ready_timeout_or_cancel_never_admit_answer()
     }
     for cancel in [false, true] {
         let fixture = Fixture::new(Behavior::AnswersAndMarks);
+        let argv = fixture.argv();
         let marker = fixture.marker.clone();
         let config = fixture.config.clone();
         let owner = AuthOwner::new(HelperSlots::new());
@@ -102,7 +103,7 @@ async fn completed_native_child_and_ready_timeout_or_cancel_never_admit_answer()
             deadline: Instant::now() + Duration::from_millis(300),
             setup: None,
         };
-        let mut work = std::pin::pin!(runner.run(&[], &[], Some(&[]), OUTPUT_LIMIT, false));
+        let mut work = std::pin::pin!(runner.run(&argv, &[], Some(&[]), OUTPUT_LIMIT, false));
         let waker = Waker::from(Arc::new(Noop));
         assert!(matches!(
             work.as_mut().poll(&mut Context::from_waker(&waker)),
@@ -169,18 +170,18 @@ async fn completed_leader_boundary(boundary: Boundary) {
         deadline: Instant::now() + Duration::from_secs(10),
         setup: None,
     };
-    let mut command = Command::new(&config.executable);
-    command
-        .env_clear()
-        .envs(config.environment.iter().map(|(key, value)| (key, value)))
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
-    let (mut child, tree) = process_tree::spawn(&mut command).unwrap();
+    let command = process_tree::HelperCommand {
+        program: config.executable.clone(),
+        args: fixture.argv().iter().map(OsString::from).collect(),
+        directory: environment::working_directory().unwrap(),
+        environment: environment::Environment::snapshot(&config.environment).into_pairs(),
+    };
+    let (mut child, tree) = process_tree::spawn(&command).unwrap();
+    drop(child.stdin.take());
     let mut stdout = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();
-    // The job owns the tree from here on, and its drop ends the independent descendant even when an assertion
-    // below fails.
+    // The job owns the tree from here on. A refusal ends the independent descendant; a success leaves it running,
+    // and the fixture's drop ends its loop.
     let mut job = HelperJob::new((child, tree), permits.clone(), owner.clone());
     let mut output = SecretBuffer(Vec::new());
     let mut diagnostic = SecretBuffer(Vec::new());
@@ -238,7 +239,13 @@ async fn completed_leader_boundary(boundary: Boundary) {
     );
     assert_eq!(owner.inner.helper_slots.available(), 8);
     assert_eq!(endpoint.available_permits(), 1);
-    if !matches!(boundary, Boundary::Success) {
+    if matches!(boundary, Boundary::Success) {
+        fixture
+            .assert_alive(
+                "a helper that succeeded leaves its descendant running, as on Unix and under Git",
+            )
+            .await;
+    } else {
         assert!(!admitted, "no answer or Authorization may be derived");
         fixture
             .assert_stopped("refused helper's independent descendant must stop writing")

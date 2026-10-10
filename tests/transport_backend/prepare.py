@@ -9,11 +9,18 @@ import re
 import shutil
 
 # The `windows-sys` features the candidate's endpoint code needs beyond the production list in Cargo.toml. A step
-# that needs one more Windows API adds a name here (GwzTransportWindowsParityPlan.md, section 4). The last five
-# serve the test fixtures (a Job Object and thread suspension for the SSH servers, a named pipe in the
-# regular-file test); they are named here as well as in Cargo.toml's Windows dev-dependencies, because
-# `cargo check --lib --profile test`, which scripts/windows_lane_check.py runs, does not enable dev-dependency
-# features.
+# that needs one more Windows API adds a name here (GwzTransportWindowsParityPlan.md, section 4). They serve
+# product code and test fixtures:
+#   product (step 4.2's helper process owner, `https_auth/process_tree/windows*`): Win32_System_JobObjects (the
+#     job), Win32_System_Threading (CreateProcessW, the attribute list, process waits), Win32_System_Pipes (the
+#     overlapped pipes), Win32_Security (inheritable handle attributes), Win32_System_SystemInformation (the Windows
+#     directory), and the production list's own Win32_Foundation and Win32_Storage_FileSystem; Win32_Networking_
+#     WinHttp and Win32_Networking_WinSock serve the HTTPS and SSH code. The candidate-to-production switch must
+#     carry every one of them into Cargo.toml's `windows-sys` list.
+#   test only: Win32_System_Diagnostics_ToolHelp and the named-pipe and job calls of the SSH test servers
+#     (`fixture_job.rs`) and of the regular-file test; they are named here as well as in Cargo.toml's Windows
+#     dev-dependencies, because `cargo check --lib --profile test`, which scripts/windows_lane_check.py runs, does
+#     not enable dev-dependency features.
 CANDIDATE_WINDOWS_FEATURES = (
     "Win32_Networking_WinHttp",
     "Win32_Networking_WinSock",
@@ -21,6 +28,7 @@ CANDIDATE_WINDOWS_FEATURES = (
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_JobObjects",
     "Win32_System_Pipes",
+    "Win32_System_SystemInformation",
     "Win32_System_Threading",
 )
 

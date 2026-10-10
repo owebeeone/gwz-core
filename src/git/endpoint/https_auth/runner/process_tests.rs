@@ -45,8 +45,20 @@ fn runner<'a>(
     }
 }
 
-/// The owner holds nothing: no retained child, and every host slot back.
+/// The owner holds nothing: nothing is retained, and every host slot is back. `reap_ready` alone, which every
+/// lookup runs before it asks for a slot, must be enough once the tree is gone; `reap_pending` then has nothing
+/// left to join.
 async fn assert_reaped(owner: &AuthOwner) {
+    let until = Instant::now() + Duration::from_secs(5);
+    while owner.pending_cleanup_count() > 0 {
+        assert!(
+            Instant::now() < until,
+            "reap_ready did not release a retained helper"
+        );
+        owner.reap_ready();
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(owner.inner.helper_slots.available(), 8);
     assert_eq!(
         owner
             .reap_pending(Instant::now() + Duration::from_secs(2))
@@ -69,7 +81,9 @@ async fn timeout_kills_descendants_even_after_the_helper_exited_with_stdout_open
         permits(&owner).await,
         Instant::now() + Duration::from_millis(1500),
     );
-    let result = runner.run(&[], &[], None, OUTPUT_LIMIT, false).await;
+    let result = runner
+        .run(&fixture.argv(), &[], None, OUTPUT_LIMIT, false)
+        .await;
     assert!(matches!(result, Err(AuthError::Timeout)));
     assert!(fixture.heartbeats() > 0, "the descendant must have started");
     fixture
@@ -82,6 +96,7 @@ async fn timeout_kills_descendants_even_after_the_helper_exited_with_stdout_open
 #[tokio::test]
 async fn cancel_kills_the_helper_and_its_descendants() {
     let fixture = Fixture::new(Behavior::RunsWithDescendantOnOutput);
+    let argv = fixture.argv();
     let owner = AuthOwner::new(HelperSlots::new());
     let cancelled = CancellationToken::new();
     let runner = runner(
@@ -95,7 +110,7 @@ async fn cancel_kills_the_helper_and_its_descendants() {
         fixture.started().await;
         cancelled.cancel();
     };
-    let (result, ()) = tokio::join!(runner.run(&[], &[], None, OUTPUT_LIMIT, false), cancel);
+    let (result, ()) = tokio::join!(runner.run(&argv, &[], None, OUTPUT_LIMIT, false), cancel);
     assert!(matches!(result, Err(AuthError::Cancelled)));
     fixture
         .assert_stopped("the cancelled helper's descendant must stop")
@@ -107,6 +122,7 @@ async fn cancel_kills_the_helper_and_its_descendants() {
 #[tokio::test]
 async fn the_owners_cancel_kills_the_helper_and_its_descendants() {
     let fixture = Fixture::new(Behavior::RunsWithDescendantOnOutput);
+    let argv = fixture.argv();
     let owner = AuthOwner::new(HelperSlots::new());
     let cancelled = CancellationToken::new();
     let runner = runner(
@@ -120,7 +136,7 @@ async fn the_owners_cancel_kills_the_helper_and_its_descendants() {
         fixture.started().await;
         owner.cancel();
     };
-    let (result, ()) = tokio::join!(runner.run(&[], &[], None, OUTPUT_LIMIT, false), cancel);
+    let (result, ()) = tokio::join!(runner.run(&argv, &[], None, OUTPUT_LIMIT, false), cancel);
     assert!(matches!(result, Err(AuthError::Cancelled)));
     fixture
         .assert_stopped("the owner's cancel must end the descendant")
@@ -132,6 +148,7 @@ async fn the_owners_cancel_kills_the_helper_and_its_descendants() {
 #[tokio::test]
 async fn dropping_a_lookup_mid_io_ends_the_tree_and_the_owner_reaps_it() {
     let fixture = Fixture::new(Behavior::RunsWithDescendantOnOutput);
+    let argv = fixture.argv();
     let owner = AuthOwner::new(HelperSlots::new());
     let cancelled = CancellationToken::new();
     let runner = runner(
@@ -141,7 +158,7 @@ async fn dropping_a_lookup_mid_io_ends_the_tree_and_the_owner_reaps_it() {
         permits(&owner).await,
         Instant::now() + Duration::from_secs(60),
     );
-    let mut work = Box::pin(runner.run(&[], &[], None, OUTPUT_LIMIT, false));
+    let mut work = Box::pin(runner.run(&argv, &[], None, OUTPUT_LIMIT, false));
     let waker = Waker::from(Arc::new(Noop));
     assert!(matches!(
         work.as_mut().poll(&mut Context::from_waker(&waker)),
@@ -172,7 +189,9 @@ async fn a_helper_that_never_reads_a_large_request_times_out_instead_of_blocking
         started + Duration::from_secs(2),
     );
     let request = vec![b'x'; 4 * 1024 * 1024];
-    let result = runner.run(&[], &request, None, OUTPUT_LIMIT, false).await;
+    let result = runner
+        .run(&fixture.argv(), &request, None, OUTPUT_LIMIT, false)
+        .await;
     assert!(matches!(result, Err(AuthError::Timeout)));
     assert!(
         started.elapsed() < Duration::from_secs(10),
@@ -196,7 +215,7 @@ async fn diagnostics_over_the_limit_do_not_reject_the_answer() {
     );
     let output = runner
         .run(
-            &[],
+            &fixture.argv(),
             b"url=https://example.test/\n\n",
             None,
             OUTPUT_LIMIT,
@@ -224,13 +243,47 @@ async fn the_answer_of_a_helper_that_exits_normally_is_returned_and_its_slot_is_
         permits(&owner).await,
         Instant::now() + Duration::from_secs(10),
     );
-    let secret = runner
-        .run_secret(b"url=https://example.test/\n\n", &[])
+    let output = runner
+        .run(
+            &fixture.argv(),
+            b"url=https://example.test/\n\n",
+            None,
+            OUTPUT_LIMIT,
+            false,
+        )
         .await
         .unwrap();
+    let secret = runner.parse_answer(&output.0, parse_secret).unwrap();
     assert_eq!(secret.header(), "Basic YWxpY2U6dG9rZW4=");
     drop(runner);
     assert_reaped(&owner).await;
+}
+
+#[tokio::test]
+async fn a_helper_that_succeeded_releases_its_slot_and_leaves_its_survivors_running() {
+    // OQ-A: a success lets go of the tree. What the helper started and left running (a browser that a credential
+    // manager launched) lives on, as on Unix, under Git and in 1.0.17; the helper's slot is free at once.
+    let fixture = Fixture::new(Behavior::AnswersLeavingDetachedDescendant);
+    let owner = AuthOwner::new(HelperSlots::new());
+    let cancelled = CancellationToken::new();
+    let runner = runner(
+        &owner,
+        &fixture.config,
+        &cancelled,
+        permits(&owner).await,
+        Instant::now() + Duration::from_secs(20),
+    );
+    let output = runner
+        .run(&fixture.argv(), b"", None, OUTPUT_LIMIT, false)
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&output.0).contains("password=token"));
+    drop(runner);
+    assert_eq!(owner.inner.helper_slots.available(), 8);
+    assert_eq!(owner.pending_cleanup_count(), 0);
+    fixture
+        .assert_alive("the survivor of a successful helper must keep running")
+        .await;
 }
 
 #[tokio::test]
@@ -246,7 +299,9 @@ async fn a_missing_executable_starts_nothing() {
         permits(&owner).await,
         Instant::now() + Duration::from_secs(10),
     );
-    let result = runner.run(&[], &[], None, OUTPUT_LIMIT, false).await;
+    let result = runner
+        .run(&fixture.argv(), &[], None, OUTPUT_LIMIT, false)
+        .await;
     assert!(matches!(result, Err(AuthError::MissingExecutable)));
     drop(runner);
     assert_reaped(&owner).await;
@@ -274,7 +329,9 @@ async fn askpass_is_never_in_the_helpers_environment() {
         permits(&owner).await,
         Instant::now() + Duration::from_secs(10),
     );
-    let result = runner.run(&[], &[], None, OUTPUT_LIMIT, false).await;
+    let result = runner
+        .run(&fixture.argv(), &[], None, OUTPUT_LIMIT, false)
+        .await;
     assert!(
         result.is_ok(),
         "the helper must not see GIT_ASKPASS in any capitalization"

@@ -91,56 +91,33 @@ impl Runner<'_> {
             preparing,
         } = request;
         self.check()?;
-        let mut command = Command::new(self.executable);
-        command
-            .current_dir(environment::working_directory(self.config)?)
-            .args(args)
-            .env_clear()
-            .envs(
-                self.config
-                    .environment
-                    .iter()
-                    .filter(|(key, _)| {
-                        ![
-                            "GIT_ASKPASS",
-                            "SSH_ASKPASS",
-                            "GIT_DIR",
-                            "GIT_COMMON_DIR",
-                            "GIT_WORK_TREE",
-                        ]
-                        .iter()
-                        .any(|removed| environment::names(key, removed))
-                    })
-                    .map(|(key, value)| (key, value)),
-            )
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
+        let directory = environment::working_directory()?;
+        let mut variables = environment::Environment::snapshot(&self.config.environment);
+        variables.set("GIT_TERMINAL_PROMPT", "0");
+        environment::confine(&mut variables, &directory);
         if let Some(parameters) = parameters {
-            for (key, _) in &self.config.environment {
-                if environment::names(key, "GIT_CONFIG_COUNT")
-                    || environment::starts_with(key, "GIT_CONFIG_KEY_")
-                    || environment::starts_with(key, "GIT_CONFIG_VALUE_")
-                {
-                    command.env_remove(key);
-                }
-            }
-            command
-                .env_remove("GIT_CONFIG_SYSTEM")
-                .env("GIT_CONFIG_GLOBAL", environment::NULL_CONFIG)
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .env(
-                    "GIT_CONFIG_PARAMETERS",
-                    environment::parameters_value(parameters)?,
-                );
+            variables.remove("GIT_CONFIG_COUNT");
+            variables.remove_prefix("GIT_CONFIG_KEY_");
+            variables.remove_prefix("GIT_CONFIG_VALUE_");
+            variables.remove("GIT_CONFIG_SYSTEM");
+            variables.set("GIT_CONFIG_GLOBAL", environment::NULL_CONFIG);
+            variables.set("GIT_CONFIG_NOSYSTEM", "1");
+            variables.set(
+                "GIT_CONFIG_PARAMETERS",
+                environment::parameters_value(parameters)?,
+            );
             if parameters.is_empty() {
-                command.env_remove("GIT_CONFIG_PARAMETERS");
+                variables.remove("GIT_CONFIG_PARAMETERS");
             }
         }
+        let command = process_tree::HelperCommand {
+            program: self.executable.to_path_buf(),
+            args: args.iter().map(OsString::from).collect(),
+            directory,
+            environment: variables.into_pairs(),
+        };
         self.check()?;
-        let started = process_tree::spawn(&mut command).map_err(|error| match error.kind() {
+        let started = process_tree::spawn(&command).map_err(|error| match error.kind() {
             io::ErrorKind::NotFound => AuthError::MissingExecutable,
             io::ErrorKind::ArgumentListTooLong if parameters.is_some() => {
                 AuthError::ConfigurationRefused
@@ -224,7 +201,7 @@ impl Runner<'_> {
         // refusal. Its cleanup capability must still be owned at that point.
         let result = admit(result);
         if result.is_ok() {
-            job.retire().await;
+            job.retire();
         } else {
             job.terminate().await?;
         }
@@ -282,4 +259,14 @@ async fn bounded_output<R: AsyncRead + Unpin>(
     Ok(output)
 }
 
-cfg_if::cfg_if! { if #[cfg(test)] { mod tests; mod process_tests; } }
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        mod process_tests;
+        mod tests;
+        cfg_if::cfg_if! {
+            if #[cfg(windows)] {
+                mod windows_tests;
+            }
+        }
+    }
+}

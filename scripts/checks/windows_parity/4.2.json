@@ -5,9 +5,7 @@
     {"path": "src/git/endpoint/https_auth/process_tree.rs", "kind": "os", "gate": "libc::SIGKILL", "target": "", "state": "paired", "owner": ["4.2"], "appendix": "G9"},
     {"path": "src/git/endpoint/https_auth/process_tree.rs", "kind": "os", "gate": "libc::kill", "target": "", "state": "paired", "owner": ["4.2"], "appendix": "G9"},
     {"path": "src/git/endpoint/https_auth/process_tree.rs", "kind": "os", "gate": "libc::pid_t", "target": "", "state": "paired", "owner": ["4.2"], "appendix": "G9"},
-    {"path": "src/git/endpoint/https_auth/runner/environment.rs", "kind": "gate", "gate": "unix", "target": "arm: use std::os::unix::ffi::OsStrExt", "state": "paired", "owner": ["4.2"], "appendix": "new: step 4.2's per-platform seam of the runner's environment (replaces G10); the Unix arm sits beside the Windows arm"},
-    {"path": "src/git/endpoint/https_auth/runner/environment.rs", "kind": "os", "gate": "os::unix::ffi::OsStrExt", "target": "", "state": "paired", "owner": ["4.2"], "appendix": "G10"},
-    {"path": "src/git/endpoint/https_auth/runner/environment.rs", "kind": "split", "gate": "cfg!(windows)", "target": "", "count": 4, "state": "paired", "owner": ["4.2"], "appendix": "new: a runtime platform split in the seam's unit tests (names, prefixes, the neutral directory, the view); both arms are in one build"},
+    {"path": "src/git/endpoint/https_auth/runner/environment.rs", "kind": "split", "gate": "cfg!(windows)", "target": "", "count": 5, "state": "paired", "owner": ["4.2"], "appendix": "new: a runtime platform split in the seam's unit tests (names, prefixes, the neutral directory, the view); both arms are in one build"},
     {"path": "src/git/endpoint/https_auth/runner/process_tests.rs", "kind": "split", "gate": "cfg!(windows)", "target": "", "state": "paired", "owner": ["4.2"], "appendix": "new: a runtime platform split in step 4.2's tests: the mixed-case ask-pass key exists on Windows only"}
   ]
 }

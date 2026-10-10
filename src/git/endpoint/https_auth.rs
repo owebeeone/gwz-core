@@ -17,7 +17,6 @@ use std::{
 };
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
-    process::{Child, Command},
     sync::{OwnedSemaphorePermit, Semaphore},
     task::JoinHandle,
     time::{Instant, sleep, sleep_until, timeout},
@@ -130,7 +129,7 @@ mod process_tree;
 mod runner;
 pub(crate) use owner::AuthOwner;
 use owner::HelperJob;
-use process_tree::ProcessTree;
+use process_tree::{HelperChild, ProcessTree};
 // The rest of the helper stack is Unix-only until step 4.3 (discovery, the configuration view, file reads) and step
 // 4.4 (admission) bring it to Windows.
 cfg_if::cfg_if! { if #[cfg(unix)] {
