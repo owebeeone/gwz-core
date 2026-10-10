@@ -1,12 +1,16 @@
-//! One anonymous pipe whose parent end is overlapped, as std's child pipes require, and whose child end is the
-//! only inheritable handle: the parent end is never inheritable, so no other process spawn can take it.
+//! One anonymous pipe whose parent end is overlapped (tokio drives it through the I/O completion port) and never
+//! inheritable. The child end is not inheritable either until [`set_inheritable`] opens the creation window, just
+//! before `CreateProcessW`, so a spawn elsewhere in the process cannot take either end while the command line and
+//! the environment are being built.
 use std::{
     io,
-    os::windows::io::{FromRawHandle, OwnedHandle},
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
 };
 use windows_sys::Win32::{
-    Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE},
-    Security::SECURITY_ATTRIBUTES,
+    Foundation::{
+        GENERIC_READ, GENERIC_WRITE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE,
+        SetHandleInformation,
+    },
     Storage::FileSystem::{
         CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED,
         OPEN_EXISTING, PIPE_ACCESS_INBOUND, PIPE_ACCESS_OUTBOUND,
@@ -29,7 +33,7 @@ pub(super) enum Parent {
 pub(super) struct Pipe {
     /// The parent's end: overlapped and not inheritable.
     pub(super) parent: OwnedHandle,
-    /// The child's end: inheritable, to be closed once the child exists.
+    /// The child's end: not inheritable until the creation window opens; closed once the child exists.
     pub(super) child: OwnedHandle,
 }
 
@@ -71,18 +75,14 @@ pub(super) fn create(parent: Parent) -> io::Result<Pipe> {
     }
     // SAFETY: `server` is a new handle that nothing else owns.
     let parent_end = unsafe { OwnedHandle::from_raw_handle(server) };
-    let inheritable = SECURITY_ATTRIBUTES {
-        nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
-        lpSecurityDescriptor: std::ptr::null_mut(),
-        bInheritHandle: 1,
-    };
-    // SAFETY: `name` is NUL-terminated and outlives the call; the attributes are initialized.
+    // SAFETY: `name` is NUL-terminated and outlives the call; no security attributes make the handle
+    // non-inheritable.
     let client = unsafe {
         CreateFileW(
             name.as_ptr(),
             client_access,
             0,
-            &inheritable,
+            std::ptr::null(),
             OPEN_EXISTING,
             FILE_ATTRIBUTE_NORMAL,
             std::ptr::null_mut(),
@@ -96,4 +96,20 @@ pub(super) fn create(parent: Parent) -> io::Result<Pipe> {
         // SAFETY: `client` is a new handle that nothing else owns.
         child: unsafe { OwnedHandle::from_raw_handle(client) },
     })
+}
+
+/// Sets or clears whether a child created with an inherit-handles call can take `handle`.
+pub(super) fn set_inheritable(handle: &OwnedHandle, inheritable: bool) -> io::Result<()> {
+    // SAFETY: the handle is open; the flag changes only whether children inherit it.
+    let changed = unsafe {
+        SetHandleInformation(
+            handle.as_raw_handle(),
+            HANDLE_FLAG_INHERIT,
+            if inheritable { HANDLE_FLAG_INHERIT } else { 0 },
+        )
+    };
+    if changed == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }

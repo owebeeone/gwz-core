@@ -9,7 +9,7 @@ use std::{
     },
     process::ExitStatus,
 };
-use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
+use tokio::net::windows::named_pipe::NamedPipeServer;
 use windows_sys::Win32::{
     Foundation::{HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT},
     System::{
@@ -37,14 +37,14 @@ pub(in crate::git::endpoint::https_auth) struct ProcessTree {
     job: OwnedHandle,
 }
 
-/// The helper's process and its three pipes. The pipes are the standard library's child-pipe types over
-/// overlapped handles, which tokio drives from its blocking pool: a dropped future leaves a thread in the call,
-/// which owns its buffer, and ending the tree closes the helper's end so that the call returns.
+/// The helper's process and its three pipes: tokio named pipes on the runtime's completion port. Dropping one
+/// cancels its pending read, so no thread of a lookup stays parked in a pipe once its futures are gone, even when a
+/// survivor of the helper still holds the other end.
 pub(in crate::git::endpoint::https_auth) struct HelperChild {
     process: OwnedHandle,
-    pub(in crate::git::endpoint::https_auth) stdin: Option<ChildStdin>,
-    pub(in crate::git::endpoint::https_auth) stdout: Option<ChildStdout>,
-    pub(in crate::git::endpoint::https_auth) stderr: Option<ChildStderr>,
+    pub(in crate::git::endpoint::https_auth) stdin: Option<NamedPipeServer>,
+    pub(in crate::git::endpoint::https_auth) stdout: Option<NamedPipeServer>,
+    pub(in crate::git::endpoint::https_auth) stderr: Option<NamedPipeServer>,
 }
 
 /// Creates the helper inside a new job. If anything fails no process is left behind.
@@ -132,9 +132,9 @@ impl ProcessTree {
 impl HelperChild {
     fn new(
         process: OwnedHandle,
-        stdin: ChildStdin,
-        stdout: ChildStdout,
-        stderr: ChildStderr,
+        stdin: NamedPipeServer,
+        stdout: NamedPipeServer,
+        stderr: NamedPipeServer,
     ) -> Self {
         Self {
             process,

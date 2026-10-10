@@ -448,3 +448,111 @@ public static class B {
     // ERROR_ACCESS_DENIED: the job allows no breakaway.
     assert!(seen.contains("ok=False err=5"), "{seen:?}");
 }
+
+#[test]
+fn an_environment_block_keeps_a_drive_variable_and_refuses_an_equals_after_the_first_unit() {
+    let wide = |text: &str| text.encode_utf16().collect::<Vec<u16>>();
+    let pairs = |items: &[(&str, &str)]| -> Vec<(OsString, OsString)> {
+        items
+            .iter()
+            .map(|(n, v)| ((*n).into(), (*v).into()))
+            .collect()
+    };
+    // The snapshot accepts "=C:" (a hidden per-drive directory variable), and so must the block; it sorts first.
+    let block =
+        launch::environment_block(&pairs(&[("b", "2"), ("=C:", r"C:\work"), ("A", "1")])).unwrap();
+    let mut expected = wide(r"=C:=C:\work");
+    expected.push(0);
+    expected.extend(wide("A=1"));
+    expected.push(0);
+    expected.extend(wide("b=2"));
+    expected.push(0);
+    expected.push(0);
+    assert_eq!(block, expected);
+    for refused in [("A=B", "v"), ("", "v"), ("N", "a\0b"), ("N\0", "v")] {
+        let error = launch::environment_block(&pairs(&[refused])).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{refused:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_helper_started_with_a_drive_variable_in_its_snapshot_sees_it() {
+    let mut start = command(&system32().join("cmd.exe"), &["/d", "/c", "echo %=Q:%"]);
+    start
+        .environment
+        .push(("=Q:".into(), r"Q:\drive-variable".into()));
+    let (mut child, tree) = spawn(&start).unwrap();
+    let mut seen = Vec::new();
+    {
+        use tokio::io::AsyncReadExt;
+        child
+            .stdout
+            .take()
+            .unwrap()
+            .read_to_end(&mut seen)
+            .await
+            .unwrap();
+    }
+    child.wait().await.unwrap();
+    tree.kill();
+    assert!(
+        String::from_utf8_lossy(&seen).contains(r"Q:\drive-variable"),
+        "{:?}",
+        String::from_utf8_lossy(&seen)
+    );
+}
+
+#[test]
+fn the_childs_ends_of_a_pipe_are_not_inheritable_until_the_creation_window_opens() {
+    use windows_sys::Win32::Foundation::GetHandleInformation;
+    let inheritable = |handle: &OwnedHandle| {
+        let mut flags = 0;
+        // SAFETY: the handle is open.
+        assert!(unsafe { GetHandleInformation(handle.as_raw_handle(), &mut flags) } != 0);
+        flags & HANDLE_FLAG_INHERIT != 0
+    };
+    for parent in [pipe::Parent::Reads, pipe::Parent::Writes] {
+        let ends = pipe::create(parent).unwrap();
+        assert!(
+            !inheritable(&ends.parent),
+            "the parent end is never inheritable"
+        );
+        assert!(
+            !inheritable(&ends.child),
+            "the child end must not be inheritable while the command line and the environment are built"
+        );
+    }
+}
+
+#[test]
+fn the_creation_window_makes_the_childs_ends_inheritable_only_while_it_is_open() {
+    use windows_sys::Win32::Foundation::GetHandleInformation;
+    let inheritable = |handle: &OwnedHandle| {
+        let mut flags = 0;
+        // SAFETY: the handle is open.
+        assert!(unsafe { GetHandleInformation(handle.as_raw_handle(), &mut flags) } != 0);
+        flags & HANDLE_FLAG_INHERIT != 0
+    };
+    let (a, b, c) = (
+        pipe::create(pipe::Parent::Writes).unwrap(),
+        pipe::create(pipe::Parent::Reads).unwrap(),
+        pipe::create(pipe::Parent::Reads).unwrap(),
+    );
+    {
+        let _window = launch::InheritWindow::open([&a.child, &b.child, &c.child]).unwrap();
+        assert!(inheritable(&a.child) && inheritable(&b.child) && inheritable(&c.child));
+        assert!(!inheritable(&a.parent) && !inheritable(&b.parent) && !inheritable(&c.parent));
+    }
+    assert!(!inheritable(&a.child) && !inheritable(&b.child) && !inheritable(&c.child));
+}
+
+#[tokio::test]
+async fn a_creation_that_fails_leaves_the_childs_ends_closed_to_inheritance() {
+    // A refused creation (a relative program fails before the window; a missing one fails inside it) must leave
+    // no inheritable handle behind: the ends are closed with the failed call, and the window is closed first.
+    let missing = system32().join("no such program.exe");
+    assert_eq!(
+        spawn(&command(&missing, &[])).err().unwrap().kind(),
+        io::ErrorKind::NotFound
+    );
+}

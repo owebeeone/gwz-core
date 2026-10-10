@@ -9,10 +9,10 @@ use std::{
     io,
     os::windows::{
         ffi::OsStrExt,
-        io::{AsRawHandle, FromRawHandle, OwnedHandle},
+        io::{AsRawHandle, FromRawHandle, IntoRawHandle, OwnedHandle},
     },
 };
-use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
+use tokio::net::windows::named_pipe::NamedPipeServer;
 use windows_sys::Win32::System::{
     JobObjects::IsProcessInJob,
     Threading::{
@@ -76,14 +76,18 @@ pub(super) fn command_line(program: &[u16], args: &[Vec<u16>]) -> io::Result<Vec
 }
 
 /// The environment block: `NAME=value` strings, sorted by name without regard to case, ending in a double NUL.
-fn environment_block(
+pub(super) fn environment_block(
     environment: &[(std::ffi::OsString, std::ffi::OsString)],
 ) -> io::Result<Vec<u16>> {
     let mut entries = Vec::with_capacity(environment.len());
     for (name, value) in environment {
         let name = wide(name)?;
-        if name.is_empty() || name.contains(&(b'=' as u16)) {
-            return Err(invalid("an environment name that is empty or holds '='"));
+        // A name may start with '=' (the hidden per-drive variables, "=C:"), as the snapshot accepts; an '=' after
+        // the first unit would end the name early.
+        if name.is_empty() || name[1..].contains(&(b'=' as u16)) {
+            return Err(invalid(
+                "an environment name that is empty or holds '=' after its first unit",
+            ));
         }
         entries.push((name, wide(value)?));
     }
@@ -111,6 +115,32 @@ fn environment_block(
     Ok(block)
 }
 
+/// The creation window: the child's pipe ends are inheritable from [`InheritWindow::open`] to its drop, and are
+/// not inheritable at any other time. It spans exactly the `CreateProcessW` call, including process creation
+/// itself (milliseconds), and is closed on every path, a failed call included.
+pub(super) struct InheritWindow<'a> {
+    ends: [&'a OwnedHandle; 3],
+}
+
+impl<'a> InheritWindow<'a> {
+    pub(super) fn open(ends: [&'a OwnedHandle; 3]) -> io::Result<Self> {
+        // The guard exists before the first end is opened, so that a failure part way closes the ones opened.
+        let window = Self { ends };
+        for end in window.ends {
+            pipe::set_inheritable(end, true)?;
+        }
+        Ok(window)
+    }
+}
+
+impl Drop for InheritWindow<'_> {
+    fn drop(&mut self) {
+        for end in self.ends {
+            let _ = pipe::set_inheritable(end, false);
+        }
+    }
+}
+
 /// Creates the helper in `job`. On any failure no process is left running.
 pub(super) fn create(command: &HelperCommand, job: &OwnedHandle) -> io::Result<HelperChild> {
     if !command.program.is_absolute() {
@@ -132,6 +162,14 @@ pub(super) fn create(command: &HelperCommand, job: &OwnedHandle) -> io::Result<H
     let stdin = pipe::create(pipe::Parent::Writes)?;
     let stdout = pipe::create(pipe::Parent::Reads)?;
     let stderr = pipe::create(pipe::Parent::Reads)?;
+    // The parent ends are registered with the runtime's completion port before the process exists, so that a
+    // refusal (no runtime) starts nothing. They are tokio's named pipes: dropping one cancels its pending read, so
+    // nothing of a lookup stays parked in a thread once its futures are gone, whatever a survivor still holds.
+    let (stdin_parent, stdout_parent, stderr_parent) = (
+        server(stdin.parent)?,
+        server(stdout.parent)?,
+        server(stderr.parent)?,
+    );
     let mut attributes = Attributes::new(
         job,
         [
@@ -148,6 +186,7 @@ pub(super) fn create(command: &HelperCommand, job: &OwnedHandle) -> io::Result<H
     startup.StartupInfo.hStdError = stderr.child.as_raw_handle();
     startup.lpAttributeList = attributes.pointer();
     let mut information = PROCESS_INFORMATION::default();
+    let window = InheritWindow::open([&stdin.child, &stdout.child, &stderr.child])?;
     // SAFETY: every pointer names storage that lives through the call (and, for the attribute list, until it is
     // deleted below): the exact application, a mutable NUL-terminated command line, a double-NUL environment
     // block, the working directory and the startup information.
@@ -166,9 +205,10 @@ pub(super) fn create(command: &HelperCommand, job: &OwnedHandle) -> io::Result<H
         )
     };
     let failure = (created == 0).then(io::Error::last_os_error);
+    // The window closes before anything else is done, created or not.
+    drop(window);
     drop(attributes);
-    let (stdin_parent, stdout_parent, stderr_parent) = (stdin.parent, stdout.parent, stderr.parent);
-    // The child's ends are closed here, created or not: the helper has its own copies.
+    // The child's ends are closed here: the helper has its own copies.
     drop((stdin.child, stdout.child, stderr.child));
     if let Some(error) = failure {
         return Err(error);
@@ -191,10 +231,16 @@ pub(super) fn create(command: &HelperCommand, job: &OwnedHandle) -> io::Result<H
         unsafe { TerminateProcess(process.as_raw_handle(), 1) };
         return Err(io::Error::other("the helper is not a member of its job"));
     }
-    let wrapped = (
-        ChildStdin::from_std(std::process::ChildStdin::from(stdin_parent))?,
-        ChildStdout::from_std(std::process::ChildStdout::from(stdout_parent))?,
-        ChildStderr::from_std(std::process::ChildStderr::from(stderr_parent))?,
-    );
-    Ok(HelperChild::new(process, wrapped.0, wrapped.1, wrapped.2))
+    Ok(HelperChild::new(
+        process,
+        stdin_parent,
+        stdout_parent,
+        stderr_parent,
+    ))
+}
+
+/// Registers a parent pipe end with the runtime's completion port.
+fn server(parent: OwnedHandle) -> io::Result<NamedPipeServer> {
+    // SAFETY: the handle is an open overlapped named-pipe server end, and the server takes ownership of it.
+    unsafe { NamedPipeServer::from_raw_handle(parent.into_raw_handle()) }
 }

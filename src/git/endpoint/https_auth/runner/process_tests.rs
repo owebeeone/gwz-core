@@ -339,3 +339,45 @@ async fn askpass_is_never_in_the_helpers_environment() {
     drop(runner);
     assert_reaped(&owner).await;
 }
+
+#[test]
+fn a_survivor_holding_stderr_keeps_neither_the_lookup_nor_its_runtime_alive() {
+    // The survivor of a successful helper keeps the helper's diagnostic pipe open. The lookup has returned Ok;
+    // nothing of it may stay parked in a thread, so that the runtime that ran it can be dropped (a blocking task
+    // in a pipe read would make the drop wait for the survivor).
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let fixture = Fixture::new(Behavior::AnswersLeavingSurvivorOnStderr);
+    let argv = fixture.argv();
+    runtime.block_on(async {
+        let owner = AuthOwner::new(HelperSlots::new());
+        let cancelled = CancellationToken::new();
+        let runner = runner(
+            &owner,
+            &fixture.config,
+            &cancelled,
+            permits(&owner).await,
+            Instant::now() + Duration::from_secs(30),
+        );
+        let output = runner
+            .run(&argv, b"", None, OUTPUT_LIMIT, false)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&output.0).contains("password=token"));
+        drop(runner);
+        assert_eq!(owner.inner.helper_slots.available(), 8);
+        fixture.assert_alive("the survivor must keep running").await;
+    });
+    let (done, finished) = std::sync::mpsc::channel();
+    let dropper = std::thread::spawn(move || {
+        drop(runtime);
+        let _ = done.send(());
+    });
+    assert!(
+        finished.recv_timeout(Duration::from_secs(10)).is_ok(),
+        "dropping the runtime waited for the survivor: a pipe read stayed parked in a blocking thread"
+    );
+    dropper.join().unwrap();
+}

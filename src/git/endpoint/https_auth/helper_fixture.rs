@@ -18,6 +18,9 @@ pub(super) enum Behavior {
     RunsWithDescendantOnOutput,
     /// Starts a background descendant with no pipes of its own, prints a credential and exits.
     AnswersLeavingDetachedDescendant,
+    /// Starts a background descendant whose standard output goes elsewhere but which keeps the helper's
+    /// diagnostic pipe, prints a credential and exits: the survivor of a successful helper that holds stderr.
+    AnswersLeavingSurvivorOnStderr,
     /// Prints a credential, then creates the marker file and exits.
     AnswersAndMarks,
     /// Runs for a long time and never reads its input.
@@ -163,6 +166,9 @@ cfg_if::cfg_if! {
                 Behavior::AnswersLeavingDetachedDescendant => format!(
                     "{LOOP} 0</dev/null 1>/dev/null 2>/dev/null &\nprintf 'username=alice\\npassword=token\\n'\nexit 0"
                 ),
+                Behavior::AnswersLeavingSurvivorOnStderr => format!(
+                    "{LOOP} 1>/dev/null &\nprintf 'username=alice\\npassword=token\\n'\nexit 0"
+                ),
                 Behavior::AnswersAndMarks => {
                     "printf 'username=alice\\npassword=token\\n'\nexec 1>&-\nprintf x > \"$MARKER\"\nexit 0".to_string()
                 }
@@ -195,12 +201,18 @@ cfg_if::cfg_if! {
         /// `start /b` shares them, so a descendant with no pipe of the helper's is started by PowerShell, which
         /// creates it without inheriting handles.
         const DETACH: &str = "Start-Process -WindowStyle Hidden -FilePath cmd.exe -ArgumentList @('/c', ('\"{0}\"' -f (Join-Path $PSScriptRoot 'loop.cmd')))\r\n";
+        const SURVIVOR_FILE: &str = "survivor.ps1";
+        /// A survivor that closes every pipe handle but its standard error: the helper's stderr pipe stays open in a
+        /// process that outlives the helper, while the answer pipe can reach end of file. (A batch file cannot do
+        /// this, and PowerShell keeps a stray copy of the output pipe, found by closing every pipe handle.)
+        const SURVIVOR: &str = "Add-Type -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern System.IntPtr GetStdHandle(int n); [DllImport(\"kernel32.dll\")] public static extern bool CloseHandle(System.IntPtr h); [DllImport(\"kernel32.dll\")] public static extern uint GetFileType(System.IntPtr h);' -Name K -Namespace W\r\n$err = [W.K]::GetStdHandle(-12).ToInt64()\r\nfor ($h = 4; $h -lt 8192; $h += 4) { if ($h -ne $err -and [W.K]::GetFileType([System.IntPtr]$h) -eq 3) { [void][W.K]::CloseHandle([System.IntPtr]$h) } }\r\nwhile (Test-Path \"$env:HELPER_HOME\\alive\") { Add-Content -Path $env:HEARTBEAT -Value 'x'; Start-Sleep -Milliseconds 20 }\r\n";
         const ANSWER: &str = "echo username=alice\r\necho password=token\r\n";
 
         fn write(home: &Path, behavior: Behavior) -> (PathBuf, Vec<String>) {
             let path = home.join("helper.cmd");
             fs::write(home.join(LOOP_FILE), LOOP).unwrap();
             fs::write(home.join(DETACH_FILE), DETACH).unwrap();
+            fs::write(home.join(SURVIVOR_FILE), SURVIVOR).unwrap();
             let start = format!("start \"\" /b cmd /d /c call \"%~dp0{LOOP_FILE}\"");
             let body = match behavior {
                 Behavior::Answer => ANSWER.to_string(),
@@ -208,6 +220,9 @@ cfg_if::cfg_if! {
                 Behavior::RunsWithDescendantOnOutput => format!("{start}\r\nping -n 30 127.0.0.1 >nul\r\n"),
                 Behavior::AnswersLeavingDetachedDescendant => {
                     format!("powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{DETACH_FILE}\" <nul >nul 2>nul\r\n{ANSWER}exit /b 0\r\n")
+                }
+                Behavior::AnswersLeavingSurvivorOnStderr => {
+                    format!("start \"\" /b powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{SURVIVOR_FILE}\"\r\n{ANSWER}exit /b 0\r\n")
                 }
                 Behavior::AnswersAndMarks => {
                     format!("{ANSWER}echo x> \"%MARKER%\"\r\nexit /b 0\r\n")
