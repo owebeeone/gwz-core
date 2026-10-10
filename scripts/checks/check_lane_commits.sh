@@ -57,7 +57,13 @@ for sha in ${commits}; do
   if [ -f "${tmp}/scripts/checks/check_windows_parity.py" ]; then
     parity_ok=1
     "${python}" "${tmp}/scripts/checks/check_windows_parity.py" --root "${tmp}" > "${tmp}/parity.out" 2>&1 || parity_ok=0
-    if [ -n "${base_inventory}" ]; then
+    # A commit made before the per-step inventory (scripts/checks/windows_parity/) carries a checker
+    # that reads only the single-file form, so it cannot compare against a base in the directory form.
+    # Its count is compared once it is merged: the merge commit has the per-step inventory.
+    if [ -n "${base_inventory}" ] && [ -d "${base_inventory}" ] && [ ! -d "${tmp}/scripts/checks/windows_parity" ]; then
+      echo "lane gate: ${sha}: older inventory form than the base; shrink comparison left to the merge" \
+        >> "${tmp}/parity.out"
+    elif [ -n "${base_inventory}" ]; then
       "${python}" "${tmp}/scripts/checks/check_windows_parity.py" --shrink-from "${base_inventory}" \
         >> "${tmp}/parity.out" 2>&1 || parity_ok=0
     fi
