@@ -125,7 +125,7 @@ fn actual_status_failures_cross_mux_once_before_any_stream() {
     });
 }
 // The automatic open's second attempt is a gh helper open, which Windows refuses (UnsupportedOperation)
-// until step 4.4 gives it a helper owner.
+// until step 4.4 gives it a helper owner; the inventory owns this test under step 4.11.
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
     #[test]
