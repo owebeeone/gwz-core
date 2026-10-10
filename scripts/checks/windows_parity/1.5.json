@@ -1,0 +1,5 @@
+{
+  "entries": [
+    {"path": "src/git/endpoint/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod ssh_close_fixture", "state": "unported", "owner": ["1.5"], "appendix": "new: option A's sshd close fixture; uses ssh_fixture (1.1) and helper_script (4.3)"}
+  ]
+}

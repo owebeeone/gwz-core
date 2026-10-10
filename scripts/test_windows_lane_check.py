@@ -9,6 +9,7 @@ import unittest
 spec = importlib.util.spec_from_file_location('windows_lane_check', Path(__file__).with_name('windows_lane_check.py'))
 gate = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(gate)
+parity = gate.parity
 
 
 class FakeRun:
@@ -114,6 +115,26 @@ class Triggers(unittest.TestCase):
                                          'scripts/run_tests.py', 'src/transport_host_extra.rs', 'docs/Cargo.toml']),
                          ['src/git/endpoint/ssh_network.rs', 'src/transport_host/mod.rs', 'Cargo.toml',
                           'tests/transport_backend/prepare.py'])
+
+    def test_the_trigger_paths_are_the_inventory_roots_plus_the_build_inputs(self):
+        data, _ = parity.load_inventory(parity.DEFAULT_INVENTORY)
+        self.assertEqual(gate.trigger_patterns(), data['roots'] + list(gate.TRIGGER_EXTRA))
+        self.assertEqual(sorted(gate.TRIGGER_EXTRA),
+                         ['.github/*.commit', 'Cargo.lock', 'Cargo.toml', 'tests/transport_backend/prepare.py'])
+
+    def test_every_scope_root_triggers_the_gate(self):
+        """P3-3: the gate fires on every path the parity inventory covers (the old list missed three roots)."""
+        hits = ['src/git/gitbackend/transport_binding.rs', 'src/git/gitbackend/transport_candidate_tests/drivers.rs',
+                'src/git/gitbackend/https_transport_binding_tests.rs', 'src/git/gitbackend.rs',
+                'src/transport_setting.rs', 'src/transport_setting/home.rs', 'Cargo.lock', '.github/gwz-transport.commit',
+                '.github/gwz-sspi.commit']
+        self.assertEqual(gate.triggered(hits), hits)
+
+    def test_neighbours_of_the_roots_do_not_trigger_it(self):
+        for path in ('src/git/gitbackend/preservation.rs', 'src/git/gitbackend/transport.rs', 'src/git/endpoint.rs',
+                     'src/transport_settings.rs', 'src/transport_host_extra.rs', '.github/workflows/ci.yml',
+                     '.github/checkout-git2-rs.sh', 'docs/Cargo.lock', 'scripts/checks/windows_parity/1.4.json'):
+            self.assertEqual(gate.triggered([path]), [], path)
 
     def test_a_lane_that_touches_no_trigger_path_does_not_call_the_host(self):
         runner = FakeRun()

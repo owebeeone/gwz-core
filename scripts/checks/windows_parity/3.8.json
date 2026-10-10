@@ -1,0 +1,7 @@
+{
+  "entries": [
+    {"path": "src/git/endpoint/ssh_tests/key_files.rs", "kind": "gate", "gate": "unix", "target": "arm: use super::key_fixture as keys", "state": "unported", "owner": ["3.8"], "appendix": "G43"},
+    {"path": "src/git/endpoint/ssh_tests/key_types.rs", "kind": "gate", "gate": "unix", "target": "arm: use super::key_fixture::{self as keys, KeyAgent, Sign}", "state": "unported", "owner": ["3.8"], "appendix": "G45"},
+    {"path": "src/git/endpoint/ssh_tests/rsa_sha1.rs", "kind": "gate", "gate": "unix", "target": "arm: use super::key_fixture::{self as keys, KeyAgent, Sign}", "state": "unported", "owner": ["3.8"], "appendix": "G52"}
+  ]
+}

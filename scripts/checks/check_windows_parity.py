@@ -11,8 +11,15 @@ state:
 - `platform`: permanent, with a recorded `reason` (for example `AF_UNIX`, or an
   OpenSSL-only trust branch).
 
+The inventory is the directory windows_parity/ next to this script: meta.json
+(`roots`, `scans`, `steps`, `done_steps`, `step_notes`) and one `<step>.json` per
+owning step, `{"done": true, "entries": [...]}`, so two lanes porting different steps
+edit different files. An entry lives in the file of its first owner step; a step is
+done when meta.json lists it in `done_steps` or its file says `"done": true`. The
+old single windows_parity_inventory.json is still read, as a --shrink-from base.
+
 The scan is lexical and inspects every arm, none compiled (it reuses
-check_cfg_boundaries.py's lexer). Two kinds of occurrence are found:
+check_cfg_boundaries.py's lexer). Three kinds of occurrence are found:
 - `gate`: a `cfg_if!` arm, a `#[cfg(..)]` attribute or an inner `#![cfg(..)]`
   whose predicate is false on Windows. Predicates are evaluated three-valued
   (`unix`, `windows`, `target_os`, `target_family` and `target_vendor` are known
@@ -23,9 +30,14 @@ check_cfg_boundaries.py's lexer). Two kinds of occurrence are found:
   keyed by its file, its predicate text and its target: the `mod name;` of a
   module list, else the first item or statement of the arm or attribute. Layout
   and line numbers never change a key.
-- `os`: a use of `os::unix`, `os::fd` or `libc::..` (the extension traits such as `OsStrExt` come in through
-  `os::unix`), keyed by file and path text, and `side`: `windows` when the use
+- `os`: a use of `os::unix`, `os::fd`, `os::linux`, `os::macos` or `libc::..` (the extension traits such as
+  `OsStrExt` come in through `os::unix`), keyed by file and path text, and `side`: `windows` when the use
   sits in a region that only a Windows build compiles.
+- `split`: a runtime platform split that one build carries both sides of: `cfg!(..)` or `cfg_attr(.., ..)` whose
+  predicate names `unix`, `windows`, `target_os`, `target_family` or `target_vendor`, keyed by its predicate text
+  (and, for `cfg_attr`, the item it sits on). It always has a Windows arm beside it, so `paired` is the natural state;
+  `unported` records a split whose Windows side is a stub or a skip, and counts in the ratchet. A predicate that names
+  `gwz_windows_https_qualification` is left out: those sites are counted by check_candidate_switches.py and step 5.1.
 
 The check fails on: NEW (an occurrence with no entry), COUNT (more occurrences
 than the entry lists), STALE (an entry with no occurrence), PAIRED (a `paired`
@@ -36,9 +48,29 @@ shows it is right, for example step 3.4's CRT-sharing proof) and the
 inventory's own errors (an unknown owner step, a `platform` entry without a
 `reason`, a duplicate key). A step the plan does not name (`0.5b`, the TLS fixture identity on Windows) carries
 its reason in the inventory's `step_notes`. --shrink-from BASE compares the inventory with a
-copy from an earlier commit and fails when the unported count rises, when a
-scope root disappears or when a step is no longer recorded done. --list prints
+copy from an earlier commit (a directory, or the old single file) and fails when the unported count rises, when a
+scope root disappears or when a step is no longer recorded done. Two rules keep the comparison honest:
+- Only the kinds both sides scan are compared (`scans` in meta.json; a single file scanned `gate` and `os`). A kind
+  this checker gained after the base was made, such as `split`, therefore adds rows without raising the count against
+  that base; once the base scans it, the kind is compared like any other. The one-time reclassification passes
+  once, and never again.
+- A row that becomes `platform` (new, or relabelled from `unported` or `paired`, or with a higher count) is listed
+  in the output and fails with PLATFORM unless it carries a `reason` and `"approved_platform": "<where the decision
+  is recorded>"` (an operator decision, a review finding, an open decision of the plan). `true` is refused: a
+  relabel must name a record the reviewer can open. --list prints
 every occurrence as an inventory line, for adding entries.
+
+Maintaining the inventory (one row per line, so lane edits stay line-local):
+- A new Unix-only gate, OS call or split: the check prints NEW with its file and line; --list prints the row as
+  JSON. Put it, with an `owner` list of plan steps and a short `appendix` note naming where it comes from, in
+  the file of its first owner (`1.4.json`); a step the plan does not name goes in meta.json's `steps`, with a
+  `step_notes` reason.
+- Porting a gate (it is ungated, or gains a Windows arm): delete its row, or set `state` to `paired`; lower
+  `count` when only some of a row's occurrences go.
+- A finished step: set `"done": true` in its file (keep the file, with `"entries": []` if it has no rows left), or
+  add the step to meta.json's `done_steps`. A row still `unported` whose owners are all done fails with DONE.
+- Never edit another step's rows to make room for yours; a row moves to another file only when its first owner
+  changes.
 """
 import argparse
 from collections import Counter, namedtuple
@@ -49,7 +81,8 @@ import posixpath
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_INVENTORY = Path(__file__).resolve().with_name('windows_parity_inventory.json')
+DEFAULT_INVENTORY = Path(__file__).resolve().with_name('windows_parity')
+META = 'meta.json'
 
 _spec = importlib.util.spec_from_file_location('check_cfg_boundaries',
                                                Path(__file__).with_name('check_cfg_boundaries.py'))
@@ -58,6 +91,16 @@ sys.modules.setdefault('check_cfg_boundaries', cfg)
 _spec.loader.exec_module(cfg)
 
 STATES = ('unported', 'paired', 'platform')
+# The kinds of occurrence this checker scans. An inventory directory's meta.json lists them as `scans`, and a
+# single-file inventory (the format before the split) scanned only the first two; --shrink-from compares only the
+# kinds both sides scan, so a kind added later never reads as a rise against a base that could not see it.
+SCANS = ('gate', 'os', 'split')
+LEGACY_SCANS = ('gate', 'os')
+# A runtime split `cfg!(..)` or `cfg_attr(..)` is seen when its predicate names the platform. The Windows
+# qualification switch is counted elsewhere (check_candidate_switches.py, plan step 5.1) and is left out here.
+PLATFORM_ATOMS = {'unix', 'windows', 'target_os', 'target_family', 'target_vendor'}
+OS_MODULES = ('unix', 'fd', 'linux', 'macos')
+QUALIFICATION_SWITCH = 'gwz_windows_https_qualification'
 NAMED_ITEMS = {'fn', 'mod', 'struct', 'enum', 'trait', 'type', 'const', 'static', 'union'}
 Occurrence = namedtuple('Occurrence', 'path kind gate target side line windows_arm')
 Region = namedtuple('Region', 'lo hi on_windows on_unix paired')  # token range [lo, hi); the values are True, False or None
@@ -111,6 +154,19 @@ def evaluate(tree, env):
     return None
 
 
+def names_platform(tree) -> bool:
+    """True when the predicate tree mentions the platform (`unix`, `windows`, `target_os` and kin)."""
+    if tree[0] == 'call':
+        return any(names_platform(child) for child in tree[2])
+    return tree[1] in PLATFORM_ATOMS
+
+
+def mentions(tree, name: str) -> bool:
+    if tree[0] == 'call':
+        return any(mentions(child, name) for child in tree[2])
+    return tree[1] == name
+
+
 def both(tree):
     return evaluate(tree, WINDOWS), evaluate(tree, UNIX)
 
@@ -148,6 +204,30 @@ class Scanner:
         inner = self.a.toks[open_paren + 1:close]
         tree, _ = parse_predicate(inner)
         return tree, cfg.render(inner)
+
+    def first_predicate_at(self, open_paren):
+        """The first argument of a `cfg_attr(pred, ..)` whose `(` is at open_paren: its tree and rendered text."""
+        close = self.a.match.get(open_paren)
+        if close is None or open_paren + 1 >= close:
+            return None, ''
+        inner = self.a.toks[open_paren + 1:close]
+        tree, end = parse_predicate(inner)
+        return tree, cfg.render(inner[:end])
+
+    def split(self, gate, target, line):
+        """A runtime split carries both platforms' behaviour in one build, so a Windows arm is always beside it."""
+        self.found.append(Occurrence(self.path, 'split', gate, target, '', line, True))
+
+    def cfg_macro(self, i):
+        """`cfg!(pred)` with a platform predicate (not the qualification switch) is a runtime split."""
+        tree, text = self.predicate_at(i + 2)
+        if tree is not None and names_platform(tree) and not mentions(tree, QUALIFICATION_SWITCH):
+            self.split(f'cfg!({text})', '', self.line(i))
+
+    def cfg_attr_split(self, i, open_paren, target):
+        tree, text = self.first_predicate_at(open_paren)
+        if tree is not None and names_platform(tree) and not mentions(tree, QUALIFICATION_SWITCH):
+            self.split(f'cfg_attr({text})', target, self.line(i))
 
     def label(self, i):
         """A stable name for the item or statement starting at token i."""
@@ -203,10 +283,20 @@ class Scanner:
         for i in range(a.n):
             if a.text(i) == 'cfg_if' and a.text(i + 1) == '!' and a.text(i + 2) in ('{', '(', '[') and i + 2 in a.match:
                 self.cfg_if(i + 2)
+            if a.text(i) == 'cfg' and a.text(i + 1) == '!' and a.text(i + 2) == '(' and i + 2 in a.match:
+                self.cfg_macro(i)
             close = a.attribute(i)
             if close is not None and i not in self.arm_attributes and a.text(i + 2) == 'cfg' \
                     and a.text(i + 3) == '(':
                 self.attribute_gate(i, close)
+            if close is not None and a.text(i + 2) == 'cfg_attr' and a.text(i + 3) == '(' and close + 1 < a.n:
+                after = close + 1
+                while (more := a.attribute(after)) is not None:
+                    after = more + 1
+                self.cfg_attr_split(i, i + 3, self.label(after) if after < a.n else 'file')
+            if a.text(i) == '#' and a.text(i + 1) == '!' and a.text(i + 2) == '[' and a.text(i + 3) == 'cfg_attr' \
+                    and a.text(i + 4) == '(' and i + 2 in a.match:
+                self.cfg_attr_split(i, i + 4, 'file' if a.parent[i] is None else 'mod body')
             if a.text(i) == '#' and a.text(i + 1) == '!' and a.text(i + 2) == '[' and a.text(i + 3) == 'cfg' \
                     and a.text(i + 4) == '(' and i + 2 in a.match:
                 self.inner_gate(i)
@@ -334,7 +424,7 @@ class Scanner:
             start = None
             if word == 'libc' and a.kind(i) == 'id' and a.text(i - 1) != '::' and a.text(i + 1) in ('::', ';', ',', '}'):
                 start = i
-            elif word == 'os' and a.text(i + 1) == '::' and a.text(i + 2) in ('unix', 'fd'):
+            elif word == 'os' and a.text(i + 1) == '::' and a.text(i + 2) in OS_MODULES:
                 start = i
             if start is None:
                 i += 1
@@ -379,24 +469,86 @@ def key_of(entry) -> tuple:
     return (entry['path'], entry['kind'], entry['gate'], entry['target'], entry.get('side', ''))
 
 
-def load_inventory(path: Path):
+def describe(entry) -> str:
+    return f"{entry.get('path')} {entry.get('kind')} {entry.get('gate')} {entry.get('target')}"
+
+
+def step_order(steps: list, stem: str) -> tuple:
+    return (steps.index(stem), '') if stem in steps else (len(steps), stem)
+
+
+def read_file(path: Path):
     try:
         data = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, ValueError) as error:
         return None, [f'cannot read inventory {path}: {error}']
-    errors = []
-    if not isinstance(data, dict) or not isinstance(data.get('roots'), list) or not data['roots']:
-        return None, [f'inventory {path} needs a JSON object with a list of scope roots']
+    if not isinstance(data, dict):
+        return None, [f'inventory {path} needs a JSON object']
+    return data, []
+
+
+def read_directory(path: Path):
+    """An inventory directory as one inventory: meta.json (roots, steps, done_steps, step_notes, scans) and one
+    `<step>.json` per owning step, `{"done": true, "entries": [...]}`. An entry lives in the file of its first owner."""
+    meta, errors = read_file(path / META)
+    if meta is None:
+        return None, errors
+    steps, done = list(meta.get('steps') or []), list(meta.get('done_steps') or [])
+    entries = []
+    for file in sorted((f for f in path.glob('*.json') if f.name != META), key=lambda f: step_order(steps, f.stem)):
+        body, problems = read_file(file)
+        errors += problems
+        if body is None:
+            continue
+        if file.stem not in steps:
+            errors.append(f'{file.name}: {file.stem} is not a step in {META}\'s steps')
+        for key in sorted(set(body) - {'done', 'entries'}):
+            errors.append(f'{file.name}: unknown key {key}; a step file has `done` and `entries`')
+        if body.get('done') not in (None, True, False):
+            errors.append(f'{file.name}: done must be true or false')
+        if body.get('done') is True and file.stem not in done:
+            done.append(file.stem)
+        listed = body.get('entries', [])
+        if not isinstance(listed, list):
+            errors.append(f'{file.name}: entries must be a list')
+            continue
+        for entry in listed:
+            owners = entry.get('owner') if isinstance(entry, dict) else None
+            if isinstance(owners, list) and owners and owners[0] != file.stem:
+                errors.append(f'FILED {describe(entry)}: lives in {file.name}, but its first owner is {owners[0]}; '
+                              f'move it to {owners[0]}.json')
+        entries += listed
+    data = dict(meta, done_steps=done, entries=entries)
+    data.setdefault('scans', list(SCANS))
+    return data, errors
+
+
+def load_inventory(path: Path, current: bool = True):
+    """The inventory at PATH, a directory (see read_directory) or the single file it replaced, and its errors.
+    `current` is False for a base copy from an earlier commit, whose scans need not be the checker's."""
+    if path.is_dir():
+        data, errors = read_directory(path)
+        if data is not None and current and sorted(data['scans']) != sorted(SCANS):
+            errors.append(f'{META}: scans must list exactly the kinds this checker scans, {", ".join(SCANS)}; '
+                          f'got {data["scans"]}')
+    else:
+        data, errors = read_file(path)
+        if data is not None:
+            data.setdefault('scans', list(LEGACY_SCANS))
+    if data is None:
+        return None, errors
+    if not isinstance(data.get('roots'), list) or not data['roots']:
+        return None, [f'inventory {path} needs a list of scope roots']
     steps, done = data.get('steps') or [], data.get('done_steps') or []
     errors += [f'done step {step} is not in steps' for step in done if step not in steps]
     seen = set()
     for entry in data.get('entries', []):
-        where = f"{entry.get('path')} {entry.get('kind')} {entry.get('gate')} {entry.get('target')}"
+        where = describe(entry)
         if not all(isinstance(entry.get(f), str) for f in ('path', 'kind', 'gate', 'target', 'state')):
             errors.append(f'entry needs path, kind, gate, target and state: {entry}')
             continue
-        if entry['kind'] not in ('gate', 'os'):
-            errors.append(f'{where}: kind must be gate or os')
+        if entry['kind'] not in SCANS:
+            errors.append(f'{where}: kind must be one of {", ".join(SCANS)}')
         if entry['state'] not in STATES:
             errors.append(f'{where}: state must be one of {", ".join(STATES)}')
         owners = entry.get('owner')
@@ -462,39 +614,81 @@ def check(root: Path, inventory_path: Path):
     return errors, len(files), entries
 
 
-def unported(data) -> int:
-    return sum(e.get('count', 1) for e in data.get('entries', []) if e.get('state') == 'unported')
+def unported(data, kinds=SCANS) -> int:
+    return sum(e.get('count', 1) for e in data.get('entries', []) if e.get('state') == 'unported' and e['kind'] in kinds)
+
+
+def approval(entry):
+    """The named decision behind a platform row, or None. `true` names nothing, so it does not count."""
+    named = entry.get('approved_platform')
+    return named.strip() if isinstance(named, str) and named.strip() else None
+
+
+def new_platform(now, was, kinds):
+    """(entry, count_before, state_before) for every row whose platform count rises against the base."""
+    before = {key_of(e): e for e in was.get('entries', [])}
+    rows = []
+    for entry in now.get('entries', []):
+        if entry['state'] != 'platform' or entry['kind'] not in kinds:
+            continue
+        old = before.get(key_of(entry))
+        old_count = old.get('count', 1) if old is not None and old['state'] == 'platform' else 0
+        if entry.get('count', 1) > old_count:
+            rows.append((entry, old_count, old['state'] if old is not None else 'absent'))
+    return rows
 
 
 def shrink(inventory: Path, base: Path):
-    """Errors for what the inventory gains over BASE, a copy from an earlier commit, and a summary line."""
+    """Errors for what the inventory gains over BASE, a copy from an earlier commit, and a summary.
+
+    Only the kinds both inventories scan are compared (a kind the base cannot see would otherwise read as a
+    rise), and every row that is newly `platform` is listed and needs a named approval (`approved_platform`)."""
     if not base.exists():
         return [], f'Windows-parity inventory: no base inventory at {base}, so nothing to compare'
     now, errors = load_inventory(inventory)
-    was, base_errors = load_inventory(base)
+    was, base_errors = load_inventory(base, current=False)
     errors += [f'base: {error}' for error in base_errors]
     if now is None or was is None or errors:
         return errors, ''
+    kinds = [kind for kind in now['scans'] if kind in was['scans']]
+    skipped = [kind for kind in now['scans'] if kind not in was['scans']]
     for root in map(posixpath.normpath, was['roots']):
         if not any(root == posixpath.normpath(r) for r in now['roots']):
             errors.append(f'NARROWED scope root {root} is in the base inventory, absent now')
     for step in was.get('done_steps') or []:
         if step not in (now.get('done_steps') or []):
             errors.append(f'REOPENED step {step} is recorded done in the base, not now')
-    if unported(now) > unported(was):
-        errors.append(f'RAISED the unported count is {unported(now)}, the base has {unported(was)}: port the gate, '
-                      'pair it with a Windows arm, or record why it stays (platform)')
-    return errors, (f'Windows-parity inventory: {unported(now)} unported against the base\'s {unported(was)}; '
-                    'no scope root dropped')
+    if unported(now, kinds) > unported(was, kinds):
+        errors.append(f'RAISED the unported count is {unported(now, kinds)}, the base has {unported(was, kinds)}: '
+                      'port the gate, pair it with a Windows arm, or record why it stays (platform)')
+    lines = []
+    for entry, old_count, old_state in new_platform(now, was, kinds):
+        named = approval(entry)
+        row = (f"{describe(entry)} (count {old_count} -> {entry.get('count', 1)}, was {old_state}): "
+               f"{entry.get('reason')}")
+        if named is None:
+            errors.append(f'PLATFORM {row}: a row that becomes platform needs "approved_platform": "<where the '
+                          'decision is recorded>" besides its reason; true alone names nothing')
+        else:
+            lines.append(f'  newly platform: {row} [approved: {named}]')
+    summary = (f"Windows-parity inventory: {unported(now, kinds)} unported against the base's "
+               f'{unported(was, kinds)}; no scope root dropped')
+    if skipped:
+        summary += f'; not compared, the base does not scan them yet: {", ".join(skipped)}'
+    if lines:
+        summary += f'\n{len(lines)} row(s) newly platform, for the reviewer:\n' + '\n'.join(lines)
+    return errors, summary
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     parser.add_argument('--root', type=Path, default=ROOT, help='gwz-core checkout the scope roots start from')
-    parser.add_argument('--inventory', type=Path, help='inventory JSON (default: next to this script)')
+    parser.add_argument('--inventory', type=Path, help='inventory directory, or the old single JSON file '
+                        '(default: windows_parity/ next to this script)')
     parser.add_argument('--list', action='store_true', help='print every occurrence as an inventory line and exit')
     parser.add_argument('--shrink-from', type=Path, metavar='BASE',
-                        help='only compare the inventory with BASE, a copy from an earlier commit; a missing BASE passes')
+                        help='only compare the inventory with BASE, a copy from an earlier commit (a directory, or the old '
+                             'single file); a missing BASE passes')
     options = parser.parse_args(argv)
     inventory = (options.inventory or DEFAULT_INVENTORY).resolve()
     if options.shrink_from is not None:

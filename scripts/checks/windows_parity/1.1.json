@@ -1,0 +1,9 @@
+{
+  "entries": [
+    {"path": "src/git/endpoint/fixture_host.rs", "kind": "gate", "gate": "unix", "target": "arm: use std::process::Command", "state": "paired", "owner": ["1.1"], "appendix": "new: step 1.1's host-specific server and key lookup; the Unix arm sits beside the Windows arm"},
+    {"path": "src/git/endpoint/fixture_job.rs", "kind": "gate", "gate": "else if unix", "target": "arm: use std::{io, process::Child}", "state": "paired", "owner": ["1.1"], "appendix": "new: step 1.1's process control; the Unix arm is a no-op beside the Windows Job Object"},
+    {"path": "src/git/endpoint/ssh_fixture.rs", "kind": "gate", "gate": "unix", "target": "arm: use std::collections::HashMap", "state": "paired", "owner": ["1.1"], "appendix": "new: step 1.1; the Unix pause_process_tree (kill -STOP, ps) sits beside the Windows thread suspension"},
+    {"path": "src/git/endpoint/ssh_fixture.rs", "kind": "split", "gate": "cfg!(windows)", "target": "", "count": 2, "state": "paired", "owner": ["1.1"], "appendix": "new: tooling P3-2, a runtime platform split the gate scan could not see; both arms are in one build, so it is paired: the start-up wait (20 s against 5 s) and the sshd log file"},
+    {"path": "src/git/endpoint/ssh_password_fixture.rs", "kind": "split", "gate": "cfg!(windows)", "target": "", "state": "paired", "owner": ["1.1"], "appendix": "new: tooling P3-2, a runtime platform split the gate scan could not see; both arms are in one build, so it is paired: the Python interpreter's name"}
+  ]
+}

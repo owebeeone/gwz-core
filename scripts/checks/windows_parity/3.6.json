@@ -1,0 +1,7 @@
+{
+  "entries": [
+    {"path": "src/git/endpoint/ssh_tests/local_endpoint.rs", "kind": "gate", "gate": "unix", "target": "arm: use super::agent_fixture as support", "state": "unported", "owner": ["3.6"], "appendix": "G46"},
+    {"path": "src/git/endpoint/ssh_tests/supervised.rs", "kind": "gate", "gate": "unix", "target": "arm: fn worker_shutdown_interrupts_native_sign_without_network_deadline", "state": "unported", "owner": ["3.6"], "appendix": "G55"},
+    {"path": "src/git/endpoint/ssh_tests/supervised.rs", "kind": "gate", "gate": "unix", "target": "arm: use super::agent_fixture as support", "state": "unported", "owner": ["3.6"], "appendix": "G55"}
+  ]
+}

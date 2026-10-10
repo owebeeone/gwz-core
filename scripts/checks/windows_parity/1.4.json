@@ -1,0 +1,19 @@
+{
+  "entries": [
+    {"path": "src/git/endpoint/agent_job.rs", "kind": "gate", "gate": "unix", "target": "arm: fn start_setup", "state": "unported", "owner": ["1.4"], "appendix": "G2"},
+    {"path": "src/git/endpoint/mod.rs", "kind": "gate", "gate": "all(test, unix)", "target": "mod ssh_tests", "state": "unported", "owner": ["1.4"], "appendix": "B.2"},
+    {"path": "src/git/endpoint/mod.rs", "kind": "gate", "gate": "unix", "target": "mod idle_watch", "state": "unported", "owner": ["1.4"], "appendix": "G29"},
+    {"path": "src/git/endpoint/mod.rs", "kind": "gate", "gate": "unix", "target": "mod ssh_password", "state": "unported", "owner": ["1.4"], "appendix": "G29"},
+    {"path": "src/git/endpoint/mod.rs", "kind": "gate", "gate": "unix", "target": "mod ssh_setup", "state": "unported", "owner": ["1.4"], "appendix": "G29"},
+    {"path": "src/git/endpoint/ssh_key_auth.rs", "kind": "gate", "gate": "unix", "target": "arm: fn authenticate_reporting", "state": "unported", "owner": ["1.4"], "appendix": "G32"},
+    {"path": "src/git/endpoint/ssh_local.rs", "kind": "gate", "gate": "unix", "target": "arm: use super::{agent_auth, agent_socket, ssh_key_auth, ssh_handoff::Handoff, ssh_key_snapshot::Registry", "state": "unported", "owner": ["1.4"], "appendix": "G34"},
+    {"path": "src/git/endpoint/ssh_tests/agent_fixture.rs", "kind": "os", "gate": "os::unix::net::{UnixListener, UnixStream}", "target": "", "state": "unported", "owner": ["1.4", "1.7"], "appendix": "G39"},
+    {"path": "src/git/endpoint/ssh_tests/host_case.rs", "kind": "gate", "gate": "unix", "target": "arm: use crate::git::endpoint::{agent_job::Job, ssh_fixture as common, ssh_network}", "state": "unported", "owner": ["1.4"], "appendix": "G41"},
+    {"path": "src/git/endpoint/ssh_tests/key_container.rs", "kind": "gate", "gate": "unix", "target": "arm: use crate::git::endpoint::agent_job", "state": "unported", "owner": ["1.4"], "appendix": "G42"},
+    {"path": "src/git/endpoint/ssh_tests/network.rs", "kind": "gate", "gate": "unix", "target": "arm: use crate::git::endpoint::ssh_fixture as common", "state": "unported", "owner": ["1.4", "3.4"], "appendix": "G49"},
+    {"path": "src/git/endpoint/ssh_tests/selected_key.rs", "kind": "gate", "gate": "unix", "target": "arm: use crate::git::endpoint::ssh_fixture as common", "state": "unported", "owner": ["1.4"], "appendix": "G53"},
+    {"path": "src/git/endpoint/ssh_tests/selected_key.rs", "kind": "os", "gate": "libc::mkfifo", "target": "", "state": "unported", "owner": ["1.4"], "appendix": "G53"},
+    {"path": "src/git/endpoint/ssh_tests/selected_key.rs", "kind": "os", "gate": "os::unix::fs::symlink", "target": "", "state": "unported", "owner": ["1.4"], "appendix": "G53"},
+    {"path": "src/git/endpoint/ssh_tests/selected_pool.rs", "kind": "gate", "gate": "unix", "target": "arm: use super::attachment", "state": "unported", "owner": ["1.4"], "appendix": "G54"}
+  ]
+}
