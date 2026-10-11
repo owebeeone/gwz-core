@@ -156,3 +156,37 @@ fn a_retest_that_succeeds_heals_the_key_and_the_parked_open_is_served() {
         shut(&mut endpoint).await;
     });
 }
+
+#[test]
+fn a_key_going_down_gives_the_notes_reader_one_line_for_the_episode() {
+    runtime().block_on(async {
+        let (port, _) = closing();
+        let mut endpoint = endpoint(https_connection::Config::default(), 1, 1);
+        let lines = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let kept = lines.clone();
+        endpoint.set_notes(crate::git::endpoint::setup_retry::NoteSink::new(
+            move |line| kept.lock().unwrap().push(line.to_owned()),
+        ));
+        for stream in 1..=4 {
+            endpoint
+                .accept("request".into(), open(stream, port, 30_000))
+                .unwrap();
+        }
+        assert!(settle(&mut endpoint, 0).await.is_empty());
+        assert!(lines.lock().unwrap().is_empty(), "retrying is not Down");
+        assert_eq!(settle(&mut endpoint, 1_000).await.len(), 4);
+        assert_eq!(
+            *lines.lock().unwrap(),
+            [format!(
+                "note: 127.0.0.1:{port} is not answering; waiting up to 30 s to retry"
+            )]
+        );
+        // A failed retest is the same episode.
+        endpoint
+            .accept("request".into(), open(5, port, 30_000))
+            .unwrap();
+        assert_eq!(settle(&mut endpoint, 31_000).await.len(), 1);
+        assert_eq!(lines.lock().unwrap().len(), 1);
+        shut(&mut endpoint).await;
+    });
+}

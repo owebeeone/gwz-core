@@ -461,6 +461,11 @@ impl Limit {
         .flatten()
         .min()
     }
+    /// The key is Down (§5.5): the note of this episode, once.
+    pub(crate) fn down(&mut self, now: u64) {
+        self.notes.down();
+        self.flush_notes(now);
+    }
     pub(crate) fn drain_notes(&mut self) -> Vec<Note> {
         self.notes.drain()
     }

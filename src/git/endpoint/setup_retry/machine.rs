@@ -71,11 +71,14 @@ pub(crate) enum Outcome {
 }
 
 /// What a call changed about the key's health, for the limit machine (§5.5's
-/// restore): the key left Cold or Healthy, or came back to Healthy.
+/// restore, §9's note): the key left Cold or Healthy, came back to Healthy, or
+/// went Down. `Machine::take_change` says the first two; `take_down` the
+/// third, which one call can make together with the first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Change {
     Left,
     Healed,
+    Down,
 }
 
 /// Milliseconds between a Down key's retests.
@@ -126,6 +129,8 @@ pub(crate) struct Machine<M> {
     attempts: u32,
     flights: Vec<Flight<M>>,
     change: Option<Change>,
+    /// The budget was spent and the key went Down, not yet told (§9's note).
+    went_down: bool,
 }
 
 impl<M: PartialEq> Machine<M> {
@@ -137,12 +142,20 @@ impl<M: PartialEq> Machine<M> {
             attempts: 0,
             flights: Vec::new(),
             change: None,
+            went_down: false,
         }
     }
 
     /// What the last calls changed about the key's health, once.
     pub(crate) fn take_change(&mut self) -> Option<Change> {
         self.change.take()
+    }
+
+    /// Whether the key went Down (its budget was spent) since the last call,
+    /// once per episode: a failed retest is the same episode. Apart from
+    /// `take_change` because one call can leave Healthy and go Down.
+    pub(crate) fn take_down(&mut self) -> bool {
+        std::mem::take(&mut self.went_down)
     }
 
     /// Whether a member that wants a connection at `now` may start an
@@ -338,6 +351,7 @@ impl<M: PartialEq> Machine<M> {
     fn go_down(&mut self, failure: Failure, attempt: u32, now: u64) -> Final {
         let last = self.last(failure, attempt);
         self.generation += 1;
+        self.went_down = true;
         self.state = State::Down(Down {
             last: last.clone(),
             retest_at: now.saturating_add(RETEST_MS),

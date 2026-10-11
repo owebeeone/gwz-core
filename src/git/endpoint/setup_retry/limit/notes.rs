@@ -1,4 +1,7 @@
-//! The user notes of §9, as data. The endpoint names the host and prints.
+//! The user notes of §9: data from the machine, and the words they are
+//! printed in, with the host and port of the site they are about. The reader
+//! (the CLI) decides whether to print them at all.
+use gwz_transport::pool::Site;
 
 /// The coalescing window of a changed-limit note.
 pub(crate) const CHANGE_NOTE_MS: u64 = 2_000;
@@ -13,6 +16,44 @@ pub(crate) enum Note {
     BackAtCeiling { ceiling: usize },
     /// A `Retry-After` hold longer than 1 s began.
     Hold { wait_ms: u64 },
+    /// The host stopped answering and its members are parked (§5.5).
+    Down,
+}
+
+/// Milliseconds between a Down key's retests, which the note names.
+const DOWN_RETEST_SECONDS: u64 = 30;
+
+impl Note {
+    /// The note as one line of stderr: `note: ` and the words of §9, naming
+    /// the site's host and port, since SSH and HTTPS to one host are separate
+    /// limits.
+    pub(crate) fn render(&self, site: &Site) -> String {
+        let host = if site.host.contains(':') {
+            format!("[{}]:{}", site.host, site.port)
+        } else {
+            format!("{}:{}", site.host, site.port)
+        };
+        match self {
+            Self::Overload { n, ceiling } => format!(
+                "note: {host} refused extra connections; using {n} at a time (ceiling {ceiling} from --max-per-host); continuing, no action needed"
+            ),
+            Self::Changed { n } => {
+                let noun = if *n == 1 { "connection" } else { "connections" };
+                format!("note: {host}: now using {n} {noun}")
+            }
+            Self::BackAtCeiling { ceiling } => {
+                format!("note: {host}: back at the ceiling of {ceiling} connections")
+            }
+            // A part of a second is a whole one: the wait is never understated.
+            Self::Hold { wait_ms } => format!(
+                "note: {host} asked gwz to wait {} s; waiting",
+                wait_ms.div_ceil(1_000)
+            ),
+            Self::Down => format!(
+                "note: {host} is not answering; waiting up to {DOWN_RETEST_SECONDS} s to retry"
+            ),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -24,6 +65,8 @@ pub(crate) struct Notes {
     change_pending: Option<usize>,
     last_at: u64,
     last_n: usize,
+    /// The Down note of this episode has been made.
+    down_noted: bool,
 }
 
 impl Notes {
@@ -48,6 +91,17 @@ impl Notes {
             self.out.push(Note::BackAtCeiling { ceiling });
         }
         self.lowered = false;
+    }
+    /// The key went Down: one note per episode.
+    pub(crate) fn down(&mut self) {
+        if !self.down_noted {
+            self.down_noted = true;
+            self.out.push(Note::Down);
+        }
+    }
+    /// The key is Healthy again: the next Down is a new episode.
+    pub(crate) fn healthy(&mut self) {
+        self.down_noted = false;
     }
     pub(crate) fn hold(&mut self, wait_ms: u64) {
         self.out.push(Note::Hold { wait_ms });

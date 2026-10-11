@@ -5,9 +5,12 @@ mod helper_failure;
 mod https_endpoint;
 mod local_command;
 pub use crate::git::endpoint::https_worker::native::NativeCaller;
+pub use crate::git::endpoint::setup_retry::NoteSink;
 pub use cancellable::with_cancellable_local_transport;
 pub use cancellable::with_cancellable_local_transport_native;
-pub use local_command::{with_local_transport, with_local_transport_native};
+pub use local_command::{
+    with_local_transport, with_local_transport_native, with_local_transport_native_noted,
+};
 mod request;
 mod session;
 cfg_if::cfg_if! { if #[cfg(test)] { mod qualification_tests; } }
@@ -31,6 +34,7 @@ cfg_if::cfg_if! {
         mod throughput_tests;
         mod fault_tests;
         mod message_embedding_tests;
+        mod https_notes_tests;
         mod https_route_scale_tests;
         mod endpoint_environment_tests;
         mod retry_tests;
@@ -310,6 +314,12 @@ impl TransportRuntime {
             connect_timeout_ms,
             https: enabled,
         }))))
+    }
+    /// Has the endpoints this runtime built give their limit machines' notes
+    /// to `notes` (§9). Called once, before the first request.
+    pub(crate) fn set_notes(&self, notes: &NoteSink) {
+        let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        state.local_endpoint.set_notes(notes);
     }
     pub fn install_cli(&self) -> ModelResult<TransportPort> {
         let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());

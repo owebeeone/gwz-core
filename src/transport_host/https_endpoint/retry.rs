@@ -116,7 +116,12 @@ impl Retries {
             (FirstConnect::None, Ok(_)) => machine.succeeded(&member, false),
             _ => true,
         };
-        if let Some(change) = machine.take_change() {
+        let went_down = machine.take_down();
+        for change in machine
+            .take_change()
+            .into_iter()
+            .chain(went_down.then_some(setup_retry::Change::Down))
+        {
             self.health
                 .push((member.0.clone(), entry.pool_key.clone(), change));
         }
@@ -171,7 +176,12 @@ impl Retries {
         let verdict = setup_retry::classify(&failure, phase);
         let jitter = self.jitter.draw();
         let outcome = machine.failed(&member, verdict, failure.clone(), now, jitter);
-        if let Some(change) = machine.take_change() {
+        let went_down = machine.take_down();
+        for change in machine
+            .take_change()
+            .into_iter()
+            .chain(went_down.then_some(setup_retry::Change::Down))
+        {
             self.health
                 .push((member.0.clone(), entry.pool_key.clone(), change));
         }

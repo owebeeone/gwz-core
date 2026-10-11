@@ -1,6 +1,6 @@
 //! Candidate-only synchronous command embedding for the local alpha.
 use super::{
-    CleanupReport, EndpointSettings, HelperSlots, HttpsEndpointConfig, TransportRequest,
+    CleanupReport, EndpointSettings, HelperSlots, HttpsEndpointConfig, NoteSink, TransportRequest,
     TransportRuntime, endpoint_environment, unavailable,
 };
 use crate::session_host::EnvironmentSnapshot;
@@ -13,7 +13,7 @@ pub fn with_local_transport<T>(
     operation: String,
     action: impl FnOnce(&Git2Backend) -> T,
 ) -> ModelResult<(T, CleanupReport)> {
-    run(meta, operation, None, action)
+    run(meta, operation, None, None, action)
 }
 /// Uses the original caller captured by the installed CLI before member fanout.
 pub fn with_local_transport_native<T>(
@@ -22,12 +22,27 @@ pub fn with_local_transport_native<T>(
     native: super::NativeCaller,
     action: impl FnOnce(&Git2Backend) -> T,
 ) -> ModelResult<(T, CleanupReport)> {
-    run(meta, operation, Some(native), action)
+    run(meta, operation, Some(native), None, action)
+}
+/// `with_local_transport_native`, also giving `notes` the `note: ` lines of
+/// the adaptive concurrency design's §9 as the command's endpoints make them
+/// (a host refusing extra connections, a long `Retry-After`, a host that
+/// stops answering). The caller decides whether they are printed: none is
+/// given in a machine-readable output mode.
+pub fn with_local_transport_native_noted<T>(
+    meta: RequestMeta,
+    operation: String,
+    native: super::NativeCaller,
+    notes: NoteSink,
+    action: impl FnOnce(&Git2Backend) -> T,
+) -> ModelResult<(T, CleanupReport)> {
+    run(meta, operation, Some(native), Some(notes), action)
 }
 fn run<T>(
     meta: RequestMeta,
     operation: String,
     native: Option<super::NativeCaller>,
+    notes: Option<NoteSink>,
     action: impl FnOnce(&Git2Backend) -> T,
 ) -> ModelResult<(T, CleanupReport)> {
     let executor = tokio::runtime::Builder::new_current_thread()
@@ -35,14 +50,7 @@ fn run<T>(
         .build()
         .map_err(|_| unavailable("local transport executor unavailable"))?;
     let (ssh, https) = environment_config(native.as_ref())?;
-    // The command is the driver: its host's HTTPS helper slots are created
-    // once here and shared by the endpoints of the sessions it opens.
-    let runtime = match native {
-        Some(caller) => {
-            TransportRuntime::with_https_native(ssh, https, HelperSlots::new(), caller)?
-        }
-        None => TransportRuntime::with_https(ssh, https, HelperSlots::new())?,
-    };
+    let runtime = build_runtime(ssh, https, native, notes.as_ref())?;
     let request = executor.block_on(runtime.request(meta, operation))?;
     let mut command = Command {
         executor,
@@ -52,6 +60,27 @@ fn run<T>(
     let result = action(command.request.as_ref().unwrap().backend());
     let cleanup = command.finish();
     Ok((result, cleanup))
+}
+/// The command's runtime over its endpoints, which give `notes` (if any) the
+/// limit machines' notes (§9).
+fn build_runtime(
+    ssh: EndpointSettings,
+    https: HttpsEndpointConfig,
+    native: Option<super::NativeCaller>,
+    notes: Option<&NoteSink>,
+) -> ModelResult<TransportRuntime> {
+    // The command is the driver: its host's HTTPS helper slots are created
+    // once here and shared by the endpoints of the sessions it opens.
+    let runtime = match native {
+        Some(caller) => {
+            TransportRuntime::with_https_native(ssh, https, HelperSlots::new(), caller)?
+        }
+        None => TransportRuntime::with_https(ssh, https, HelperSlots::new())?,
+    };
+    if let Some(notes) = notes {
+        runtime.set_notes(notes);
+    }
+    Ok(runtime)
 }
 /// The command's endpoint configuration, from the process environment as it
 /// stands at the command's start: the command's environment snapshot.
@@ -90,5 +119,12 @@ impl Command {
 impl Drop for Command {
     fn drop(&mut self) {
         let _ = self.finish();
+    }
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        #[path = "local_command_notes_tests.rs"]
+        mod notes_tests;
     }
 }

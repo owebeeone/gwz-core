@@ -24,6 +24,8 @@ impl Limit {
     /// `N_good`, RESTORING begins (§5.5). Nothing is restored without a
     /// budget to test with.
     pub(crate) fn recovered(&mut self, now: u64) {
+        // A later Down is a new episode.
+        self.notes.healthy();
         let Some(good) = self.outage.take() else {
             return;
         };
