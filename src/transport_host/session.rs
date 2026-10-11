@@ -276,6 +276,17 @@ cfg_if::cfg_if! {
     }
 }
 impl Session {
+    /// Has this session's endpoints give their limit machines' notes to
+    /// `notes` (§9), between passes.
+    pub(super) fn set_notes(&self, notes: &super::NoteSink) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(engine) = state.engine.as_mut() {
+            engine.set_notes(notes.clone());
+        }
+        if let Some(https) = state.https.as_mut() {
+            https.set_notes(notes.clone());
+        }
+    }
     cfg_if::cfg_if! { if #[cfg(test)] {
         pub(super) fn capacity_for_test(&self) -> Option<pool::Capacity> {
             let state = self.state.lock().unwrap_or_else(|error| error.into_inner());

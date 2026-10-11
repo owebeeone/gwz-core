@@ -8,7 +8,8 @@ use super::{
     retry_tests::{OPERATION, endpoint, open, stall, step},
     *,
 };
-use crate::git::endpoint::setup_retry::{Conn, Signal};
+use crate::git::endpoint::setup_retry::{self, Conn, Signal};
+use std::sync::{Arc, Mutex};
 
 fn site_key() -> Key {
     Key::ssh("git", "host", 22)
@@ -394,5 +395,50 @@ fn p2_7_a_request_cancelled_with_an_open_in_flight_leaves_no_machine_behind() {
             .is_some(),
     );
     assert_eq!(endpoint.pool().limit(&site_key().site()), None);
+    endpoint.shutdown();
+}
+
+/// A reader of the notes that keeps its lines.
+fn collecting() -> (setup_retry::NoteSink, Arc<Mutex<Vec<String>>>) {
+    let lines = Arc::new(Mutex::new(Vec::new()));
+    let kept = lines.clone();
+    (
+        setup_retry::NoteSink::new(move |line| kept.lock().unwrap().push(line.to_owned())),
+        lines,
+    )
+}
+
+#[test]
+fn a_long_retry_after_is_given_to_the_notes_reader_as_a_line_on_the_next_pass() {
+    let (mut endpoint, _) = endpoint(stall(), None, 4, 3);
+    let (sink, lines) = collecting();
+    endpoint.set_notes(sink);
+    let mut terminals = Vec::new();
+    endpoint.accept(OPERATION.into(), open(1, 30_000)).unwrap();
+    until(&mut endpoint, 0, &mut terminals, |endpoint| {
+        endpoint
+            .endpoint
+            .governor()
+            .scoped(OPERATION)
+            .view(&site_key(), endpoint.endpoint.pool_now())
+            .is_some_and(|view| view.possible == 1)
+    });
+    assert!(lines.lock().unwrap().is_empty(), "nothing to say yet");
+    let pool_now = endpoint.endpoint.pool_now();
+    endpoint.endpoint.governor().scoped(OPERATION).refused(
+        &site_key(),
+        Conn(1),
+        Signal::Throttle,
+        Some(20_000),
+        false,
+        pool_now,
+    );
+    step(&mut endpoint, 0, &mut terminals);
+    step(&mut endpoint, 1, &mut terminals);
+    assert_eq!(
+        *lines.lock().unwrap(),
+        ["note: host:22 asked gwz to wait 20 s; waiting"],
+        "once"
+    );
     endpoint.shutdown();
 }

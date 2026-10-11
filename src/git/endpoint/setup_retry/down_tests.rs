@@ -205,3 +205,56 @@ fn leaving_cold_or_healthy_is_reported_once_and_a_cold_success_is_no_recovery() 
     assert!(key.succeeded(&"c", true));
     assert_eq!(key.take_change(), Some(Change::Healed));
 }
+
+#[test]
+fn going_down_is_told_once_per_episode_and_a_failed_retest_is_the_same_episode() {
+    // The limit machine's "not answering" note (§9) is made once when the
+    // budget is spent, not when the key first leaves Healthy and not again
+    // when a retest fails.
+    let mut key = Machine::new(3);
+    start(&mut key, "first", 0);
+    assert_eq!(
+        key.failed(&"first", Verdict::Retry, stall(), 100, JITTER),
+        Outcome::Retry
+    );
+    assert!(!key.take_down(), "retrying is not Down");
+    let mut key = down(10_000);
+    assert!(key.take_down());
+    assert!(!key.take_down(), "told once");
+    let retest_at = key.wake_at().unwrap();
+    start(&mut key, "carrier", retest_at);
+    assert!(matches!(
+        key.failed(&"carrier", Verdict::Retry, stall(), retest_at + 10, JITTER),
+        Outcome::Sweep(_)
+    ));
+    assert!(!key.take_down(), "a failed retest is the same episode");
+    // Healed, then spent again: a new episode.
+    let retest_at = key.wake_at().unwrap();
+    start(&mut key, "healer", retest_at);
+    assert!(key.succeeded(&"healer", true));
+    let mut at = retest_at + 100;
+    for attempt in 1..=4 {
+        start(&mut key, "again", at);
+        at += 100;
+        let outcome = key.failed(&"again", Verdict::Retry, stall(), at, JITTER);
+        if attempt < 4 {
+            assert_eq!(outcome, Outcome::Retry);
+            at = key.wake_at().unwrap();
+        }
+    }
+    assert!(key.take_down(), "a new episode");
+}
+
+#[test]
+fn a_key_spent_by_its_first_failure_is_down_and_has_left_healthy_in_one_call() {
+    // `--max-retries 0`: one call leaves Cold and goes Down; neither report
+    // hides the other.
+    let mut key = Machine::new(0);
+    start(&mut key, "only", 0);
+    assert!(matches!(
+        key.failed(&"only", Verdict::Retry, stall(), 100, JITTER),
+        Outcome::Sweep(_)
+    ));
+    assert_eq!(key.take_change(), Some(Change::Left));
+    assert!(key.take_down());
+}

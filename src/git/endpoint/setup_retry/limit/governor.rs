@@ -192,6 +192,8 @@ pub(super) struct Book {
     /// Holds still in force when their operation ended: the server's word
     /// outlasts the operation that heard it.
     held_over: Vec<(Site, Hold)>,
+    /// Notes of operations that have ended, kept for the reader (§9).
+    ended_notes: Vec<(Site, Note)>,
 }
 
 /// A cloneable handle on one pool's limit machines.
@@ -357,6 +359,7 @@ impl Governor {
                 sites: Vec::new(),
                 applied: Vec::new(),
                 held_over: Vec::new(),
+                ended_notes: Vec::new(),
             })),
         }
     }
@@ -406,9 +409,23 @@ impl Governor {
 
     fn drop_scope(&self, book: &mut Book, operation: &str, now: u64) {
         book.held_over.retain(|(_, hold)| hold.in_force(now));
-        let Some(scope) = book.scopes.remove(operation) else {
+        let Some(mut scope) = book.scopes.remove(operation) else {
             return;
         };
+        // What the operation said and no reader has taken yet outlives it.
+        let mut notes = scope.notes;
+        for slot in &mut scope.slots {
+            let site = slot.site.clone();
+            notes.extend(
+                slot.limit
+                    .drain_notes()
+                    .into_iter()
+                    .map(|note| (site.clone(), note)),
+            );
+        }
+        book.ended_notes.extend(notes);
+        let kept = book.ended_notes.len().saturating_sub(NOTES_KEPT);
+        book.ended_notes.drain(..kept);
         for mut slot in scope.slots {
             if slot.limit.holding(now) {
                 let hold = slot.limit.take_hold();
@@ -429,6 +446,27 @@ impl Governor {
         for (operation, index) in at {
             self.sync(&mut book, &operation, index, now);
         }
+    }
+
+    /// Every note the machines have made since the last call, with the site
+    /// each is about, oldest first: the live operations' and those of
+    /// operations that have ended (§9). The reader gets each once.
+    pub(crate) fn drain_all_notes(&self) -> Vec<(Site, Note)> {
+        let mut book = self.book();
+        let mut notes = std::mem::take(&mut book.ended_notes);
+        for scope in book.scopes.values_mut() {
+            notes.append(&mut scope.notes);
+            for slot in &mut scope.slots {
+                let site = slot.site.clone();
+                notes.extend(
+                    slot.limit
+                        .drain_notes()
+                        .into_iter()
+                        .map(|note| (site.clone(), note)),
+                );
+            }
+        }
+        notes
     }
 
     /// The next time anything in any key changes with no event.

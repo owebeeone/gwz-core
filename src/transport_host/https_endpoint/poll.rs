@@ -193,6 +193,9 @@ impl HttpsEndpoint {
         }
         self.apply_retry_effects();
         self.client.governor().tick(self.client.pool_now());
+        if let Some(notes) = &self.notes {
+            notes.deliver(self.client.governor());
+        }
         self.start_held();
         self.entries.retain(|_, entry| {
             !(entry.retired && entry.preparing.is_none() && entry.serving.is_none())

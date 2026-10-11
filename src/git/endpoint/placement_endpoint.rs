@@ -135,6 +135,8 @@ pub(crate) struct PlacementEndpoint {
     /// key.
     retries: Operations<RetryKey, RequestKey>,
     jitter: Jitter,
+    /// Where the limit machines' notes go (§9), if anywhere.
+    notes: Option<setup_retry::NoteSink>,
 }
 impl Drop for PlacementEndpoint {
     fn drop(&mut self) {
@@ -144,6 +146,11 @@ impl Drop for PlacementEndpoint {
 impl PlacementEndpoint {
     pub(crate) fn pool(&self) -> &gwz_transport::pool::Pool {
         self.endpoint.pool()
+    }
+    /// Has the endpoint give its limit machines' notes to `notes` once per
+    /// pass (§9).
+    pub(crate) fn set_notes(&mut self, notes: setup_retry::NoteSink) {
+        self.notes = Some(notes);
     }
     pub(crate) fn set_request_capacity(&self, capacity: usize) {
         self.endpoint.set_request_capacity(capacity);
@@ -178,6 +185,7 @@ impl PlacementEndpoint {
             waker: None,
             retries: Operations::new(),
             jitter: Jitter::random(),
+            notes: None,
         })
     }
     /// The operation's `--max-retries`, which its admission installs before
@@ -209,6 +217,9 @@ impl PlacementEndpoint {
         self.finish_checks(now_ms, cx);
         self.finish_opens(now_ms);
         self.endpoint.governor().tick(self.endpoint.pool_now());
+        if let Some(notes) = &self.notes {
+            notes.deliver(self.endpoint.governor());
+        }
         self.start_queued(now_ms)?;
         self.flush_attachments();
         if self.faulted {

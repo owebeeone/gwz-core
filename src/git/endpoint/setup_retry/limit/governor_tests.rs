@@ -786,4 +786,5 @@ fn a_tokens_late_drop_never_takes_back_a_later_test() {
 
 // The tests that close the adaptive step's review
 // (GwzTransportAdaptiveStep-ReviewCodeState.md) are in the child module.
+mod notes;
 mod review;

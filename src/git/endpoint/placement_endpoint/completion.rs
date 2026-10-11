@@ -268,7 +268,12 @@ impl PlacementEndpoint {
     /// Tells the site's limit machine what the retry machine's last call
     /// changed about the key's health, which freezes or restores `N` (§5.5).
     pub(super) fn health(&mut self, operation: &str, pool_key: &Key, machine: &RetryKey) {
-        if let Some(change) = self.retries.machine(operation, machine).take_change() {
+        let machine = self.retries.machine(operation, machine);
+        let changes = machine
+            .take_change()
+            .into_iter()
+            .chain(machine.take_down().then_some(setup_retry::Change::Down));
+        for change in changes.collect::<Vec<_>>() {
             self.endpoint.governor().scoped(operation).health(
                 pool_key,
                 change,

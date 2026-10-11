@@ -104,3 +104,51 @@ fn queued_members_finish_when_the_budget_is_spent_and_later_ones_park_for_the_re
     assert_eq!(retry_attempt(terminals.last().unwrap()), None);
     endpoint.shutdown();
 }
+
+#[test]
+fn a_key_going_down_gives_the_notes_reader_one_line_for_the_episode() {
+    // Four members, one setup at a time and one retry: the second attempt
+    // spends the budget and the key is Down. The note is made then, once,
+    // and the retests' failures that follow are the same episode.
+    let (mut endpoint, _) = endpoint(stall(), Some(Duration::from_millis(30)), 1, 1);
+    let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let kept = lines.clone();
+    endpoint.set_notes(setup_retry::NoteSink::new(move |line| {
+        kept.lock().unwrap().push(line.to_owned())
+    }));
+    let mut terminals = Vec::new();
+    for id in 1..=4 {
+        endpoint.accept(OPERATION.into(), open(id, 30_000)).unwrap();
+    }
+    let begun = Instant::now();
+    let wake = loop {
+        step(&mut endpoint, 0, &mut terminals);
+        if endpoint.opens.is_empty()
+            && let Some(wake) = endpoint.retries.machine(OPERATION, &key()).wake_at()
+        {
+            break wake;
+        }
+        assert!(begun.elapsed() < Duration::from_secs(10), "never waited");
+    };
+    assert!(
+        lines.lock().unwrap().is_empty(),
+        "retrying is not Down, and nothing is said"
+    );
+    until_terminals(&mut endpoint, wake, &mut terminals, 4);
+    step(&mut endpoint, wake, &mut terminals);
+    assert_eq!(
+        *lines.lock().unwrap(),
+        ["note: host:22 is not answering; waiting up to 30 s to retry"]
+    );
+    // The first retest fails: the same episode.
+    endpoint.accept(OPERATION.into(), open(5, 30_000)).unwrap();
+    let retest_at = endpoint
+        .retries
+        .machine(OPERATION, &key())
+        .wake_at()
+        .unwrap();
+    until_terminals(&mut endpoint, retest_at, &mut terminals, 5);
+    step(&mut endpoint, retest_at, &mut terminals);
+    assert_eq!(lines.lock().unwrap().len(), 1);
+    endpoint.shutdown();
+}

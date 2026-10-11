@@ -101,6 +101,8 @@ pub(super) struct HttpsEndpoint {
     now_ms: u64,
     /// The monotonic clock the publication checks read around the mux lock.
     clock: Clock,
+    /// Where the limit machines' notes go (§9), if anywhere.
+    notes: Option<crate::git::endpoint::setup_retry::NoteSink>,
 }
 impl HttpsEndpoint {
     cfg_if::cfg_if! { if #[cfg(test)] {
@@ -183,7 +185,13 @@ impl HttpsEndpoint {
             retries: Retries::new(),
             now_ms: 0,
             clock: Clock::monotonic(),
+            notes: None,
         })
+    }
+    /// Has the endpoint give its limit machines' notes to `notes` once per
+    /// pass (§9).
+    pub(super) fn set_notes(&mut self, notes: crate::git::endpoint::setup_retry::NoteSink) {
+        self.notes = Some(notes);
     }
     /// The operation's `--max-retries`, which its admission installs before
     /// its first open. An operation never given one retries three times.

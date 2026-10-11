@@ -30,16 +30,28 @@
 //! machine and timer over the setups in flight, fed by [`Signal::SetupDrop`]
 //! and never by `N`'s evidence, with its own window ([`windows`]'s `lo_s` and
 //! `hi_s`) and its test (`AttemptKind::SetupProbe`). The POST-level holds are
-//! the HTTPS worker's `Gate` and [`Scoped::continuing_may_begin`]. The notes
-//! drain to the CLI is still to come, so the module still allows dead code
-//! (its hooks, and `admit`, which only the machine's own tests drive).
-#![allow(dead_code, reason = "the notes drain comes later")]
+//! the HTTPS worker's `Gate` and [`Scoped::continuing_may_begin`].
+//! Cut 6: the notes drain (§9). The machines make [`notes::Note`]s as data;
+//! [`Governor::drain_all_notes`] hands over every operation's, those of ended
+//! operations too, and a [`NoteSink`] the caller injects turns each into its
+//! `note: ` line (host and port from the site) and gives it to the reader. Each
+//! endpoint gives its governor's notes to the sink once per pass; there is no
+//! global, and a command with no reader (machine-readable output) has none.
+//!
+//! The module still allows dead code: `Limit::admit` and `Start` (the whole
+//! admission rule driven by hand), and the views `n`, `state` and
+//! `confirmation_open`, are used by the machine's own tests and by no endpoint.
+#![allow(
+    dead_code,
+    reason = "the machine's tests drive admit and the views; no endpoint does"
+)]
 
 mod control;
 mod filter;
 mod fsm;
 mod governor;
 mod hold;
+mod note_sink;
 mod notes;
 mod scoped;
 mod states;
@@ -50,6 +62,7 @@ pub(crate) use control::Ruling;
 pub(crate) use filter::Signal;
 pub(crate) use fsm::State;
 pub(crate) use governor::{Admission, Conn, Governor, Scoped, TestToken, View, label};
+pub use note_sink::NoteSink;
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {

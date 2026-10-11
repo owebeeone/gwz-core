@@ -135,3 +135,64 @@ fn a_hold_note_is_passed_through() {
     notes.hold(20_000);
     assert_eq!(notes.drain(), [Note::Hold { wait_ms: 20_000 }]);
 }
+
+fn ssh(host: &str, port: u16) -> gwz_transport::pool::Site {
+    gwz_transport::pool::Site {
+        scheme: gwz_transport::protocol::Scheme::Ssh,
+        host: host.into(),
+        port,
+    }
+}
+
+#[test]
+fn each_note_reads_as_section_9_words_it_with_the_host_and_port() {
+    let site = ssh("github.com", 443);
+    let line = |note: Note| note.render(&site);
+    assert_eq!(
+        line(Note::Overload { n: 8, ceiling: 32 }),
+        "note: github.com:443 refused extra connections; using 8 at a time (ceiling 32 from --max-per-host); continuing, no action needed"
+    );
+    assert_eq!(
+        line(Note::Changed { n: 12 }),
+        "note: github.com:443: now using 12 connections"
+    );
+    assert_eq!(
+        line(Note::Changed { n: 1 }),
+        "note: github.com:443: now using 1 connection"
+    );
+    assert_eq!(
+        line(Note::BackAtCeiling { ceiling: 32 }),
+        "note: github.com:443: back at the ceiling of 32 connections"
+    );
+    assert_eq!(
+        line(Note::Hold { wait_ms: 20_000 }),
+        "note: github.com:443 asked gwz to wait 20 s; waiting"
+    );
+    assert_eq!(
+        line(Note::Hold { wait_ms: 1_500 }),
+        "note: github.com:443 asked gwz to wait 2 s; waiting",
+        "a part of a second is a whole one: the wait is never understated"
+    );
+    assert_eq!(
+        Note::Down.render(&ssh("github.com", 22)),
+        "note: github.com:22 is not answering; waiting up to 30 s to retry"
+    );
+    assert_eq!(
+        Note::Down.render(&ssh("::1", 22)),
+        "note: [::1]:22 is not answering; waiting up to 30 s to retry",
+        "an IPv6 literal is bracketed"
+    );
+}
+
+#[test]
+fn the_down_note_is_made_once_per_episode_until_the_key_is_healthy_again() {
+    let mut notes = Notes::default();
+    notes.down();
+    notes.down();
+    assert_eq!(notes.drain(), [Note::Down]);
+    notes.down();
+    assert_eq!(notes.drain(), [], "the same episode");
+    notes.healthy();
+    notes.down();
+    assert_eq!(notes.drain(), [Note::Down], "a new episode");
+}

@@ -6,13 +6,12 @@ use super::{
     control::{Outcome, Ruling},
     filter::Signal,
     governor::{Admission, Book, Conn, Scoped, Stage, TestToken, View, label},
-    notes::Note,
     states::ConnEvent,
     timer::T0_MS,
     windows::{AttemptId, AttemptKind, Own},
 };
 use crate::git::endpoint::setup_retry::machine::Change;
-use gwz_transport::pool::{Key, Site};
+use gwz_transport::pool::Key;
 
 impl Scoped {
     /// The tag a request of this operation's member `member` carries.
@@ -75,6 +74,7 @@ impl Scoped {
         self.with(key, now, |slot, _| match change {
             Change::Left => slot.limit.outage(),
             Change::Healed => slot.limit.recovered(now),
+            Change::Down => slot.limit.down(now),
         });
     }
 
@@ -306,15 +306,5 @@ impl Scoped {
                 outage: slot.limit.in_outage(),
             }
         })
-    }
-
-    /// The notes this operation's machines have made since the last call
-    /// (§9).
-    pub(crate) fn drain_notes(&self) -> Vec<(Site, Note)> {
-        let mut book = self.governor.book();
-        book.scopes
-            .get_mut(&self.operation)
-            .map(|scope| std::mem::take(&mut scope.notes))
-            .unwrap_or_default()
     }
 }
