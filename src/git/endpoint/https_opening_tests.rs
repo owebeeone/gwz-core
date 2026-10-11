@@ -124,104 +124,113 @@ fn actual_status_failures_cross_mux_once_before_any_stream() {
         }
     });
 }
-// The automatic open's second attempt is a gh helper open, which Windows refuses (UnsupportedOperation)
-// until step 4.4 gives it a helper owner; the inventory owns this test under step 4.11.
-cfg_if::cfg_if! {
-    if #[cfg(unix)] {
-    #[test]
-    fn anonymous_failure_crosses_mux_before_distinct_gh_open() {
-        runtime().block_on(async {
-            let server = Server::start(Arc::new(|_| {
-                Box::pin(async { response(401, GitService::UploadPackAdvertisement, "") })
-            }))
-            .await;
-            let mut endpoint = Endpoint::new(
-                server.config(),
-                None,
-                gwz_transport::pool::Config::default(),
-            )
-            .unwrap();
-            let (outcome, session) = opening(
-                &endpoint.client,
-                input(&server, GitService::UploadPackAdvertisement),
-                true,
-            )
-            .await;
-            match &outcome {
-                Outcome::Failed {
-                    first_failure: Some(first),
-                    ..
-                } => assert_eq!(first.facts.as_ref().unwrap().http_status, Some(401)),
-                _ => panic!("missing first failure"),
-            }
-            failed(outcome, ErrorCode::Unavailable);
-            assert_eq!(session.receipts().len(), 2);
-            assert_ne!(
-                session.receipts()[0].stream_id,
-                session.receipts()[1].stream_id
-            );
-            assert!(
-                session
-                    .receipts()
-                    .iter()
-                    .all(|r| r.kind == MessageKind::OpenFailed)
-            );
-            assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
-        });
-    }
-    }
-}
-cfg_if::cfg_if! {
-    if #[cfg(unix)] {
-        #[test]
-        fn automatic_gh_open_keeps_the_challenge_socket_across_mux_receipts() {
-            runtime().block_on(async {
-                let seen = Arc::new(Mutex::new(Vec::new()));
-                let records = seen.clone();
-                let server = Server::start(Arc::new(move |request| {
-                    let records = records.clone();
-                    Box::pin(async move {
-                        let auth = request.headers().contains_key(hyper::header::AUTHORIZATION);
-                        let id = request.extensions().get::<ConnectionId>().unwrap().0;
-                        records.lock().unwrap().push((auth, id));
-                        response(if auth { 200 } else { 401 }, GitService::UploadPackAdvertisement, "ok")
-                    })
-                })).await;
-                let helper = tempfile::tempdir().unwrap();
-                let executable = helper.path().join("git");
-                crate::git::endpoint::helper_script::write_git_fixture(&executable, "cat >/dev/null\nprintf 'username=fixture\\npassword=token\\n\\n'\n");
-                let auth = crate::git::endpoint::https_auth::Config { executable, environment: Vec::new() };
-                let mut endpoint = Endpoint::new(server.config(), Some(auth), gwz_transport::pool::Config::default()).unwrap();
-                let (outcome, session) = opening(
-                    &endpoint.client,
-                    input(&server, GitService::UploadPackAdvertisement),
-                    true,
-                ).await;
-                let prepared = match outcome {
-                    Outcome::Ready { prepared, first_failure: Some(first), .. } => {
-                        assert_eq!(first.facts.unwrap().http_status, Some(401));
-                        assert!(prepared.opened.reused);
-                        prepared
-                    }
-                    _ => panic!("expected authenticated Opened receipt"),
-                };
-                assert_eq!(session.receipts().len(), 2);
-                assert_ne!(session.receipts()[0].stream_id, session.receipts()[1].stream_id);
-                let (stream, task) = attach(prepared);
-                stream.end_write().await.unwrap();
-                let mut data = [0; 8];
-                while stream.read(&mut data).await.unwrap() != 0 {}
-                stream.close().await.unwrap();
-                task.await.unwrap();
-                let records = seen.lock().unwrap().clone();
-                assert_eq!(records.len(), 2);
-                assert_eq!(records[0].0, false);
-                assert_eq!(records[1].0, true);
-                assert_eq!(records[0].1, records[1].1);
-                assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
-            });
+#[test]
+fn anonymous_failure_crosses_mux_before_distinct_gh_open() {
+    runtime().block_on(async {
+        let server = Server::start(Arc::new(|_| {
+            Box::pin(async { response(401, GitService::UploadPackAdvertisement, "") })
+        }))
+        .await;
+        let mut endpoint = Endpoint::new(
+            server.config(),
+            None,
+            gwz_transport::pool::Config::default(),
+        )
+        .unwrap();
+        let (outcome, session) = opening(
+            &endpoint.client,
+            input(&server, GitService::UploadPackAdvertisement),
+            true,
+        )
+        .await;
+        match &outcome {
+            Outcome::Failed {
+                first_failure: Some(first),
+                ..
+            } => assert_eq!(first.facts.as_ref().unwrap().http_status, Some(401)),
+            _ => panic!("missing first failure"),
         }
-    }
+        failed(outcome, ErrorCode::Unavailable);
+        assert_eq!(session.receipts().len(), 2);
+        assert_ne!(
+            session.receipts()[0].stream_id,
+            session.receipts()[1].stream_id
+        );
+        assert!(
+            session
+                .receipts()
+                .iter()
+                .all(|r| r.kind == MessageKind::OpenFailed)
+        );
+        assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
+    });
+}
+#[test]
+fn automatic_gh_open_keeps_the_challenge_socket_across_mux_receipts() {
+    runtime().block_on(async {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let records = seen.clone();
+        let server = Server::start(Arc::new(move |request| {
+            let records = records.clone();
+            Box::pin(async move {
+                let auth = request.headers().contains_key(hyper::header::AUTHORIZATION);
+                let id = request.extensions().get::<ConnectionId>().unwrap().0;
+                records.lock().unwrap().push((auth, id));
+                response(
+                    if auth { 200 } else { 401 },
+                    GitService::UploadPackAdvertisement,
+                    "ok",
+                )
+            })
+        }))
+        .await;
+        let helper = tempfile::tempdir().unwrap();
+        let auth = crate::git::endpoint::helper_script::git_fixture(
+            helper.path(),
+            "cat >/dev/null\nprintf 'username=fixture\\npassword=token\\n\\n'\n",
+        );
+        let mut endpoint = Endpoint::new(
+            server.config(),
+            Some(auth),
+            gwz_transport::pool::Config::default(),
+        )
+        .unwrap();
+        let (outcome, session) = opening(
+            &endpoint.client,
+            input(&server, GitService::UploadPackAdvertisement),
+            true,
+        )
+        .await;
+        let prepared = match outcome {
+            Outcome::Ready {
+                prepared,
+                first_failure: Some(first),
+                ..
+            } => {
+                assert_eq!(first.facts.unwrap().http_status, Some(401));
+                assert!(prepared.opened.reused);
+                prepared
+            }
+            _ => panic!("expected authenticated Opened receipt"),
+        };
+        assert_eq!(session.receipts().len(), 2);
+        assert_ne!(
+            session.receipts()[0].stream_id,
+            session.receipts()[1].stream_id
+        );
+        let (stream, task) = attach(prepared);
+        stream.end_write().await.unwrap();
+        let mut data = [0; 8];
+        while stream.read(&mut data).await.unwrap() != 0 {}
+        stream.close().await.unwrap();
+        task.await.unwrap();
+        let records = seen.lock().unwrap().clone();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].0, false);
+        assert_eq!(records[1].0, true);
+        assert_eq!(records[0].1, records[1].1);
+        assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
+    });
 }
 #[test]
 fn successful_headers_cross_mux_before_stream_construction() {
@@ -324,14 +333,17 @@ fn trust_and_exhausted_network_budget_are_open_failed() {
         }
     });
 }
-cfg_if::cfg_if! { if #[cfg(unix)] {
-mod unix {
+mod helpers {
     use super::*;
-    use crate::git::endpoint::{helper_script::write_git_fixture, https_auth};
-    fn helper(body: &str, environment: Vec<(std::ffi::OsString,std::ffi::OsString)>) -> (tempfile::TempDir, https_auth::Config) {
-        let dir=tempfile::tempdir().unwrap(); let path=dir.path().join("git");
-        write_git_fixture(&path,&format!("{body}\n"));
-        (dir,https_auth::Config{executable:path,environment})
+    use crate::git::endpoint::{helper_script::git_fixture, https_auth};
+    fn helper(
+        body: &str,
+        environment: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    ) -> (tempfile::TempDir, https_auth::Config) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = git_fixture(dir.path(), &format!("{body}\n"));
+        config.environment.extend(environment);
+        (dir, config)
     }
     #[test]
     fn redirected_helper_failure_preserves_earlier_credential_offer_in_open_failed() {
@@ -363,14 +375,52 @@ mod unix {
         // scheduling slack; at 40 ms against 65 ms it had 25 ms, which the
         // parallel suite's load overran (16 of 100 runs beside 200 busy processes).
         runtime().block_on(async {
-            let server=Server::start(Arc::new(|request|Box::pin(async move {tokio::time::sleep(Duration::from_millis(400)).await;response(if request.headers().contains_key("Authorization"){200}else{401},GitService::UploadPackAdvertisement,"ok")}))).await;
-            let (_dir,auth)=helper("/bin/cat >/dev/null\nprintf 'username=fixture\\npassword=token\\n\\n'",vec![]);
-            let mut endpoint=Endpoint::new_with_io_timeout(server.config(),Some(auth),gwz_transport::pool::Config::default(),790).unwrap();
-            let (outcome,session)=opening(&endpoint.client,input(&server,GitService::UploadPackAdvertisement),true).await;
-            failed(outcome,ErrorCode::Timeout);
-            assert_eq!(session.receipts().len(),2);assert_eq!(session.receipts()[0].open_failed.as_ref().unwrap().facts.as_ref().unwrap().http_status,Some(401));
-            assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await,0);
+            let server = Server::start(Arc::new(|request| {
+                Box::pin(async move {
+                    tokio::time::sleep(Duration::from_millis(400)).await;
+                    response(
+                        if request.headers().contains_key("Authorization") {
+                            200
+                        } else {
+                            401
+                        },
+                        GitService::UploadPackAdvertisement,
+                        "ok",
+                    )
+                })
+            }))
+            .await;
+            let (_dir, auth) = helper(
+                "/bin/cat >/dev/null\nprintf 'username=fixture\\npassword=token\\n\\n'",
+                vec![],
+            );
+            let mut endpoint = Endpoint::new_with_io_timeout(
+                server.config(),
+                Some(auth),
+                gwz_transport::pool::Config::default(),
+                790,
+            )
+            .unwrap();
+            let (outcome, session) = opening(
+                &endpoint.client,
+                input(&server, GitService::UploadPackAdvertisement),
+                true,
+            )
+            .await;
+            failed(outcome, ErrorCode::Timeout);
+            assert_eq!(session.receipts().len(), 2);
+            assert_eq!(
+                session.receipts()[0]
+                    .open_failed
+                    .as_ref()
+                    .unwrap()
+                    .facts
+                    .as_ref()
+                    .unwrap()
+                    .http_status,
+                Some(401)
+            );
+            assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
         });
     }
 }
-} }

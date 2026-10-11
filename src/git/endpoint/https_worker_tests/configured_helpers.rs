@@ -9,11 +9,7 @@ use std::{
 };
 
 fn git_path() -> std::path::PathBuf {
-    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-        .filter(|entry| entry.is_absolute())
-        .map(|entry| entry.join("git"))
-        .find(|path| path.is_file())
-        .expect("git must be installed for the credential-helper fixture")
+    crate::git::endpoint::helper_script::real_git()
 }
 
 fn configured_gh(
@@ -21,6 +17,7 @@ fn configured_gh(
     host: &str,
     helper_on_path: bool,
 ) -> (https_auth::Config, std::path::PathBuf) {
+    use crate::git::endpoint::helper_script::script_path;
     let gh = directory.join("gh");
     let seen = directory.join("gh-seen");
     crate::git::endpoint::helper_script::write_helper_script(
@@ -35,7 +32,7 @@ printf 'username=fixture\\npassword=token\\n\\n'\n",
     let helper = if helper_on_path {
         "!gh auth git-credential".to_owned()
     } else {
-        format!("!{} auth git-credential", gh.display())
+        format!("!{} auth git-credential", script_path(&gh))
     };
     fs::write(
         &config_file,
@@ -47,16 +44,21 @@ printf 'username=fixture\\npassword=token\\n\\n'\n",
     } else {
         std::env::join_paths([git_dir]).unwrap()
     };
+    let mut environment = vec![
+        ("HOME".into(), directory.as_os_str().into()),
+        ("PATH".into(), path),
+        ("GIT_CONFIG_GLOBAL".into(), config_file.as_os_str().into()),
+        ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+        ("GH_SEEN".into(), script_path(&seen).into()),
+    ];
+    // A Windows process is started with no `SystemRoot` unless it is given one.
+    if let Some(root) = std::env::var_os("SystemRoot") {
+        environment.push(("SystemRoot".into(), root));
+    }
     (
         https_auth::Config {
             executable: git,
-            environment: vec![
-                ("HOME".into(), directory.as_os_str().into()),
-                ("PATH".into(), path),
-                ("GIT_CONFIG_GLOBAL".into(), config_file.as_os_str().into()),
-                ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
-                ("GH_SEEN".into(), seen.as_os_str().into()),
-            ],
+            environment,
         },
         seen,
     )

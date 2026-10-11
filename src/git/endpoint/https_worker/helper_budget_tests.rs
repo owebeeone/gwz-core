@@ -88,19 +88,17 @@ async fn endpoint_helper_saturation_reports_original_captured_allocation() {
     drop(held);
 }
 
-cfg_if::cfg_if! {
-    if #[cfg(unix)] {
-        #[tokio::test]
-        async fn started_helper_timeout_reports_full_effective_interaction() {
-            let home = tempfile::tempdir().unwrap();
-            let executable = home.path().join("git");
-            crate::git::endpoint::helper_script::write_git_fixture(&executable, "/bin/sleep 1\n");
-            let endpoint = endpoint(https_auth::Config { executable, environment: Vec::new() });
-            let mut budget = endpoint.client.budget();
-            budget.helper = Duration::from_millis(25);
-            let (result, _) = endpoint.client.prepare_attempt(input(), &CancellationToken::new(), &mut budget, &mut None).await;
-            assert_timing(&result.err().unwrap(), SetupFailureCause::Interaction, 25);
-            assert_eq!(endpoint.client.auth_owner.pending_cleanup_count(), 0);
-        }
-    }
+#[tokio::test]
+async fn started_helper_timeout_reports_full_effective_interaction() {
+    let home = tempfile::tempdir().unwrap();
+    let auth = crate::git::endpoint::helper_script::git_fixture(home.path(), "/bin/sleep 1\n");
+    let endpoint = endpoint(auth);
+    let mut budget = endpoint.client.budget();
+    budget.helper = Duration::from_millis(25);
+    let (result, _) = endpoint
+        .client
+        .prepare_attempt(input(), &CancellationToken::new(), &mut budget, &mut None)
+        .await;
+    assert_timing(&result.err().unwrap(), SetupFailureCause::Interaction, 25);
+    assert_eq!(endpoint.client.auth_owner.pending_cleanup_count(), 0);
 }

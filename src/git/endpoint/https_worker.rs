@@ -60,7 +60,6 @@ pub(crate) struct Client {
     routes: Arc<Mutex<Routes>>,
     config: pool::Config,
     io_timeout_ms: u64,
-    #[cfg(unix)]
     auth_owner: https_auth::AuthOwner,
     native: Option<native::NativeCaller>,
     native_cleanup: native::Cleanup,
@@ -98,10 +97,6 @@ impl Endpoint {
         if io_timeout_ms > i32::MAX as u64 {
             return Err(failure(ErrorCode::InvalidRequest));
         }
-        cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
-            if auth.is_some() { return Err(failure(ErrorCode::UnsupportedOperation)); }
-            drop(helper_slots);
-        } }
         let pool = RunningPool::with_authority(config.clone(), tls, authority)?;
         let routes = Arc::new(Mutex::new(Routes::new()));
         let operations = super::https_operation::Operations::new(routes.clone());
@@ -114,7 +109,6 @@ impl Endpoint {
             operations,
             ids: Arc::new(crate::operation_context::new_id_source()),
             attempts: Arc::new(AtomicUsize::new(0)),
-            #[cfg(unix)]
             auth_owner: https_auth::AuthOwner::new(helper_slots),
             native: None,
             native_cleanup: Arc::new(Mutex::new(native::CleanupState::default())),
@@ -129,12 +123,12 @@ impl Endpoint {
         // slot through helper/network work and through the resulting stream.
         self.client.slots.close();
         self.client.helpers.close();
-        cfg_if::cfg_if! { if #[cfg(unix)] { self.client.auth_owner.cancel(); } }
+        self.client.auth_owner.cancel();
         self.client.pool.shutdown();
         while self.client.slots.available_permits() != 64 && Instant::now() < until {
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
-        cfg_if::cfg_if! { if #[cfg(unix)] { self.client.auth_owner.reap_pending(until).await; } }
+        self.client.auth_owner.reap_pending(until).await;
         let physical = self
             .pool
             .shutdown(until.saturating_duration_since(Instant::now()))
@@ -151,7 +145,7 @@ impl Drop for Endpoint {
     fn drop(&mut self) {
         self.client.slots.close();
         self.client.helpers.close();
-        cfg_if::cfg_if! { if #[cfg(unix)] { self.client.auth_owner.cancel(); } }
+        self.client.auth_owner.cancel();
         self.client.pool.shutdown();
     }
 }
@@ -250,6 +244,9 @@ pub(crate) struct Budget {
     network: Option<Duration>,
     cleanup: Duration,
     redirect_hops: usize,
+    /// The request rounds the operation's native exchanges have used: the eight are the operation's, not one
+    /// exchange's, so a retry of the open resumes this count (design 8).
+    native_rounds: usize,
     logical_deadline: Option<Instant>,
     logical_started: bool,
 }
@@ -263,16 +260,14 @@ impl Client {
         &self.pool.pool
     }
     fn helper_pending(&self) -> usize {
-        cfg_if::cfg_if! { if #[cfg(unix)] { self.auth_owner.pending_cleanup_count() } else { 0 } }
+        self.auth_owner.pending_cleanup_count()
     }
     pub(crate) fn pending_cleanup(&self) -> usize {
         self.helper_pending() + native::reap(&self.native_cleanup) + self.pool.pool.counts().closing
     }
 
     pub(crate) async fn reap_cleanup(&self, limit: Duration) -> usize {
-        cfg_if::cfg_if! { if #[cfg(unix)] {
-            self.auth_owner.reap_pending(Instant::now() + limit).await;
-        } }
+        self.auth_owner.reap_pending(Instant::now() + limit).await;
         self.helper_pending() + native::reap(&self.native_cleanup) + self.pool.pool.counts().closing
     }
 
@@ -435,11 +430,10 @@ fn validate_content(response: &Response<Incoming>, service: GitService) -> Resul
     }
     Ok(())
 }
-cfg_if::cfg_if! { if #[cfg(all(test, unix))] { #[path="https_worker_tests.rs"] mod tests; } }
-cfg_if::cfg_if! { if #[cfg(all(test, unix))] { #[path="https_budget_tests.rs"] mod budget_tests; } }
-cfg_if::cfg_if! { if #[cfg(all(test, unix))] { mod retry_tests; mod helper_budget_tests; mod credential_tests; } }
+cfg_if::cfg_if! { if #[cfg(test)] { #[path="https_worker_tests.rs"] mod tests; } }
+cfg_if::cfg_if! { if #[cfg(test)] { #[path="https_budget_tests.rs"] mod budget_tests; } }
+cfg_if::cfg_if! { if #[cfg(test)] { mod retry_tests; mod helper_budget_tests; mod credential_tests; } }
 cfg_if::cfg_if! { if #[cfg(test)] { mod setup_slot_tests; mod tls_share_tests; mod supervisor_tests; } }
-// Needs no HTTPS server, so it runs on Windows too.
 cfg_if::cfg_if! { if #[cfg(test)] { mod close_tests; } }
 
 cfg_if::cfg_if! {

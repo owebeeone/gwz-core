@@ -220,15 +220,10 @@ fn a_stalled_handshake_is_an_aggregate_timeout_and_a_full_pool_an_allocation_one
 fn a_helper_that_runs_out_of_the_interaction_allowance_has_that_origin() {
     runtime().block_on(async {
         let root = tempfile::tempdir().unwrap();
-        let executable = root.path().join("gh");
-        crate::git::endpoint::helper_script::write_helper_script(&executable, "sleep 5\n");
+        let auth = crate::git::endpoint::helper_script::git_fixture(root.path(), "sleep 5\n");
         let config = pool::Config {
             interaction_timeout_ms: 100,
             ..Default::default()
-        };
-        let auth = https_auth::Config {
-            executable,
-            environment: Vec::new(),
         };
         let mut endpoint =
             Endpoint::new(https_connection::Config::default(), Some(auth), config).unwrap();

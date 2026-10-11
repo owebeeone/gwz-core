@@ -60,8 +60,17 @@ impl Drop for Server {
 /// persisted CAPI and CNG keys: access denied), so a native-tls server cannot run there. The
 /// clients under test stay native-tls, the product's stack, and verify against this CA.
 fn identity() -> (Vec<u8>, TlsAcceptor) {
-    static IDENTITY: OnceLock<(Vec<u8>, Arc<ServerConfig>)> = OnceLock::new();
-    let (ca, config) = IDENTITY.get_or_init(|| {
+    let (ca, config, _) = identity_parts();
+    (ca.clone(), TlsAcceptor::from(config.clone()))
+}
+/// The SHA-256 of the fixture's leaf certificate: the digest of the `tls-server-end-point` channel binding that a
+/// client of the fixture sends when its certificate is signed with SHA-256, as this one is (RFC 5929 section 4.1).
+pub(crate) fn leaf_digest() -> Vec<u8> {
+    identity_parts().2.clone()
+}
+fn identity_parts() -> &'static (Vec<u8>, Arc<ServerConfig>, Vec<u8>) {
+    static IDENTITY: OnceLock<(Vec<u8>, Arc<ServerConfig>, Vec<u8>)> = OnceLock::new();
+    IDENTITY.get_or_init(|| {
         let dir = tempfile::tempdir().unwrap();
         let run = |args: &[&str]| {
             let output = std::process::Command::new("openssl").current_dir(dir.path()).args(args).output().expect("the openssl program starts");
@@ -75,6 +84,10 @@ fn identity() -> (Vec<u8>, TlsAcceptor) {
         run(&["x509","-in","ca.pem","-outform","DER","-out","ca.der"]);
         run(&["pkcs8","-topk8","-nocrypt","-in","key.pem","-outform","DER","-out","key.der"]);
         let read = |name: &str| std::fs::read(dir.path().join(name)).unwrap();
+        let leaf_digest = {
+            use sha2::{Digest as _, Sha256};
+            Sha256::digest(read("cert.der")).to_vec()
+        };
         let chain = vec![CertificateDer::from(read("cert.der")), CertificateDer::from(read("ca.der"))];
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(read("key.der")));
         // The ring provider is named here, so that no process-wide default is installed.
@@ -85,9 +98,8 @@ fn identity() -> (Vec<u8>, TlsAcceptor) {
             .with_no_client_auth()
             .with_single_cert(chain, key)
             .unwrap();
-        (read("ca.pem"), Arc::new(config))
-    });
-    (ca.clone(), TlsAcceptor::from(config.clone()))
+        (read("ca.pem"), Arc::new(config), leaf_digest)
+    })
 }
 impl Server {
     pub async fn start(handler: Handler) -> Self {

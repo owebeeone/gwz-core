@@ -25,6 +25,9 @@ pub(super) enum Behavior {
     AnswersAndMarks,
     /// Runs for a long time and never reads its input.
     Hangs,
+    /// Runs for a moment (about a tenth of a second on Unix, about a second on Windows, where the shortest wait a batch
+    /// file has is one) and exits with no answer.
+    EndsSoon,
     /// Writes 40,000 bytes to its diagnostic output, prints a credential and exits.
     FloodsDiagnosticsThenAnswers,
     /// Exits with failure if the environment holds `GIT_ASKPASS` under any capitalization.
@@ -173,6 +176,7 @@ cfg_if::cfg_if! {
                     "printf 'username=alice\\npassword=token\\n'\nexec 1>&-\nprintf x > \"$MARKER\"\nexit 0".to_string()
                 }
                 Behavior::Hangs => "/bin/sleep 30".to_string(),
+                Behavior::EndsSoon => "/bin/sleep 0.1".to_string(),
                 Behavior::FloodsDiagnosticsThenAnswers => {
                     "/usr/bin/head -c 40000 /dev/zero >&2\nprintf 'username=alice\\npassword=token\\n'".to_string()
                 }
@@ -228,6 +232,7 @@ cfg_if::cfg_if! {
                     format!("{ANSWER}echo x> \"%MARKER%\"\r\nexit /b 0\r\n")
                 }
                 Behavior::Hangs => "ping -n 30 127.0.0.1 >nul\r\n".to_string(),
+                Behavior::EndsSoon => "ping -n 2 127.0.0.1 >nul\r\n".to_string(),
                 Behavior::FloodsDiagnosticsThenAnswers => format!(
                     "for /l %%i in (1,1,400) do echo 0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789>&2\r\n{ANSWER}"
                 ),

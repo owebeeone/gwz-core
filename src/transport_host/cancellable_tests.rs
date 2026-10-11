@@ -15,7 +15,6 @@ use std::{
     cell::{Cell, RefCell},
     io::Read,
     path::Path,
-    process::Command,
     sync::mpsc,
     thread,
     time::{Duration, Instant},
@@ -235,11 +234,8 @@ fn a_cancel_while_running_fails_its_io_and_returns_its_cleanup_report() {
         &meta,
         &environment(&home),
         || stalled().is_some(),
-        || {
-            if let Some(pid) = stalled() {
-                common::run(Command::new("kill").args(["-9", pid.trim()]));
-            }
-        },
+        // The fixture's command ends when it is released, which closes its channel as ending the command did.
+        || std::fs::write(fixture.temp.path().join("release"), b"").unwrap(),
         |backend| {
             backend
                 .with_transport(&home, meta.transport.as_ref())
@@ -312,22 +308,15 @@ fn a_cancel_the_peer_never_answers_waits_out_the_cleanup_bound() {
 }
 
 /// An SSH fixture whose every exec writes its PID to `stalled` and then holds
-/// its channel open without writing, until the client closes it.
+/// its channel open without writing, until the test writes `release` (or 20 seconds pass).
 fn stalling_fixture() -> common::SshdFixture {
-    let fixture = common::SshdFixture::new();
-    let script = fixture.temp.path().join("stall.sh");
-    let started = fixture.temp.path().join("stalled");
-    crate::git::endpoint::helper_script::write_helper_script(
-        &script,
-        &format!("echo $$ > '{}'\nexec cat >/dev/null\n", started.display()),
-    );
-    let public = std::fs::read_to_string(fixture.temp.path().join("client_ed25519.pub")).unwrap();
-    std::fs::write(
-        fixture.temp.path().join("authorized_keys"),
-        format!("command=\"{}\" {}", script.display(), public),
-    )
-    .unwrap();
-    fixture
+    // The fixture's directory is where the forced script is, so the file it writes is named beside it.
+    use crate::git::endpoint::ssh_close_fixture::{FIXTURE_DIRECTORY, forced};
+    // The command holds the channel by reading its input, which ends when the client's EOF arrives, and it also
+    // ends when the test writes `release`.
+    forced(&format!(
+        "echo $$ > {FIXTURE_DIRECTORY}/stalled\ncat <&0 >/dev/null &\nreader=$!\ni=0\nwhile [ ! -e {FIXTURE_DIRECTORY}/release ] && kill -0 \"$reader\" 2>/dev/null && [ \"$i\" -lt 2000 ]; do\nsleep 0.01\ni=$((i+1))\ndone\nkill \"$reader\" 2>/dev/null\n"
+    ))
 }
 
 /// A fault-injected panic in finish after a panic in the operation. The

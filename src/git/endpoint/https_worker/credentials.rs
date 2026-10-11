@@ -16,7 +16,6 @@ impl Drop for Credential {
 pub(crate) type Answers = tokio::sync::Mutex<BTreeMap<String, Result<Arc<Credential>, Failure>>>;
 
 impl Client {
-    cfg_if::cfg_if! { if #[cfg(unix)] {
     pub(super) async fn credential(
         &self,
         key: &RouteKey,
@@ -129,19 +128,8 @@ impl Client {
         answers.insert(destination.base(), result.clone());
         result
     }
-    } else {
-        pub(super) async fn credential(&self, _: &RouteKey, _: &Destination, _: &mut Budget, _: &CancellationToken) -> Result<Arc<Credential>, Failure> {
-            Err(failure(ErrorCode::UnsupportedOperation))
-        }
-    } }
 }
 impl Credential {
-    pub(super) fn has_native_identity(&self) -> bool {
-        self.secret.has_native_identity()
-    }
-    pub(super) fn native_identity(&self) -> Result<gwz_sspi::Identity, ErrorCode> {
-        self.secret.native_identity()
-    }
     pub(super) fn header(&self) -> https_auth::SecretHeader {
         self.secret.header()
     }

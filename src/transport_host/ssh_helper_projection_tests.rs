@@ -1,8 +1,8 @@
 //! Real operation projection from trusted password-only SSH helper failures.
 use super::https_tests::{endpoint_home, meta, repository};
 use super::*;
-mod workspace;
 mod enablement;
+mod workspace;
 use crate::git::{
     GitBackend,
     endpoint::{helper_script, https_auth, ssh_password_fixture::PasswordSshd},
@@ -25,12 +25,16 @@ fn ssh_clone_fetch_and_push_keep_typed_helper_outcomes() {
             let server = PasswordSshd::start(&root.path().join("server"), "private-answer-sentinel", &["password"], &[]);
             let home = endpoint_home(root.path());
             std::fs::write(home.join(".ssh/known_hosts"), server.known_host("127.0.0.1")).unwrap();
-            let executable = root.path().join("git");
+            let mut config = https_auth::Config {
+                executable: root.path().join(format!("git{}", std::env::consts::EXE_SUFFIX)),
+                environment: Vec::new(),
+            };
             if matches!(fault, Fault::UnexecutableGit) {
-                std::fs::write(&executable, b"non executable fixture").unwrap();
+                std::fs::write(&config.executable, b"non executable fixture").unwrap();
             } else if !matches!(fault, Fault::MissingGit) {
-                helper_script::write_git_fixture(&executable, "printf started > \"$HOME/started\"\nsleep 30\nprintf 'username=private-user-sentinel\\npassword=private-answer-sentinel\\n'\n");
+                config = helper_script::git_fixture(root.path(), "printf started > \"$HOME/started\"\nsleep 30\nprintf 'username=private-user-sentinel\\npassword=private-answer-sentinel\\n'\n");
             }
+            config.environment.push(("HOME".into(), helper_script::script_path(root.path()).into()));
             let slots = HelperSlots::new();
             let held = if matches!(fault, Fault::Allocation) { Some(slots.hold_all().await) } else { None };
             let mut local = SshEndpointConfig::fixture(home, None);
@@ -39,9 +43,9 @@ fn ssh_clone_fetch_and_push_keep_typed_helper_outcomes() {
                 local.pool.allocation_timeout_ms = 1_250;
             }
             let runtime = TransportRuntime::with_https(local, HttpsEndpointConfig {
-                tls: Default::default(), auth: Some(https_auth::Config { executable, environment: vec![("HOME".into(), root.path().as_os_str().into())] }),
+                tls: Default::default(), auth: Some(config),
             }, slots.clone()).unwrap();
-            let url = format!("ssh://git@127.0.0.1:{}{}", server.port, bare.display());
+            let url = format!("ssh://git@127.0.0.1:{}{}", server.port, crate::git::endpoint::ssh_fixture::server_path(&bare));
             let work = root.path().join("work");
             let repo = git2::Repository::clone(bare.to_str().unwrap(), &work).unwrap();
             repo.remote_set_url("origin", &url).unwrap();

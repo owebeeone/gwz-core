@@ -45,28 +45,19 @@ cfg_if::cfg_if! {
 // the Windows qualification admits only SSH and HTTPS; retiring the switch ungates it.
 cfg_if::cfg_if! { if #[cfg(all(test, unix))] { mod https_compat_tests; } }
 
-// Step 4.11: the helper-dependent modules. `driver_tests` and `https_tests` also hold the shared fixtures of the step 1.8
-// modules above (`block_on`, `endpoint_home`, `repository`, `git_http_backend` and the rest), which need no helper, so
-// they compile everywhere (step 1.8) and only their helper-script items stay Unix (rows in 4.11.json).
+// Step 4.11: the helper-dependent modules. They run on every platform: a test's fake `git` is a script on Unix and
+// the test executable running it under Git for Windows' shell on Windows (`helper_script::git_fixture`).
 cfg_if::cfg_if! {
     if #[cfg(test)] {
         mod driver_tests;
         mod https_tests;
-    }
-}
-cfg_if::cfg_if! {
-    if #[cfg(all(test, unix))] {
         mod close_tests;
         mod command_tests;
         mod fetch_preflight_tests;
         mod https_policy_tests;
-        cfg_if::cfg_if! {
-            if #[cfg(unix)] {
-                mod https_helper_projection_tests;
-                mod ssh_helper_projection_tests;
-                mod https_negotiate_projection_tests;
-            }
-        }
+        mod https_helper_projection_tests;
+        mod ssh_helper_projection_tests;
+        mod https_negotiate_projection_tests;
         mod cancellable_tests;
         mod cancellable_https_tests;
         mod ca_bundle_tests;
@@ -94,7 +85,7 @@ pub use request::{ClientRequest, TransportCancellation, TransportRequest};
 pub fn validate_request_context(meta: &RequestMeta, operation_id: &str) -> ModelResult<()> {
     request::validate_meta(meta, operation_id)
 }
-pub(crate) use request::{HttpsAttemptReceipt, HttpsOpenFailure, RequestContext};
+pub(crate) use request::{HttpsAttemptReceipt, HttpsOpenFailure, RequestContext, policy_words};
 use session::Session;
 pub use session::{Attachment, TransportPort};
 pub(crate) use session::{SshLimitFailure, SshOpenFailure};
@@ -116,14 +107,15 @@ cfg_if::cfg_if! {
             ]
         }
     } else {
-        /// The policies an SSH and HTTPS runtime offers in the Windows qualification: `Gh` and `WindowsConfigured`
-        /// wait for the helper runner (WH2, plan steps 4.1 to 4.5); the SSH policies end in a refusal at setup
-        /// when they need an agent, which Windows has none of until Phase 3.
+        /// The policies an SSH and HTTPS runtime offers on Windows: the Unix ones, whose `Gh` is the helper over
+        /// `Basic`, and the two Windows ones, the logon session with the configured helper and without it.
         fn ssh_and_https_policies() -> Vec<AuthPolicy> {
             vec![
                 AuthPolicy::SshAmbient,
                 AuthPolicy::SshExplicit,
                 AuthPolicy::Anonymous,
+                AuthPolicy::Gh,
+                AuthPolicy::WindowsConfigured,
                 AuthPolicy::WindowsDefault,
             ]
         }
@@ -242,6 +234,8 @@ struct RuntimeState {
     io_timeout_ms: u64,
     connect_timeout_ms: u64,
     https: bool,
+    /// Where the command's warnings and notes go, if it gave a reader.
+    notes: Option<NoteSink>,
 }
 impl Drop for RuntimeState {
     fn drop(&mut self) {
@@ -313,13 +307,15 @@ impl TransportRuntime {
             io_timeout_ms,
             connect_timeout_ms,
             https: enabled,
+            notes: None,
         }))))
     }
     /// Has the endpoints this runtime built give their limit machines' notes
     /// to `notes` (§9). Called once, before the first request.
     pub(crate) fn set_notes(&self, notes: &NoteSink) {
-        let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
         state.local_endpoint.set_notes(notes);
+        state.notes = Some(notes.clone());
     }
     pub fn install_cli(&self) -> ModelResult<TransportPort> {
         let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -416,7 +412,7 @@ impl TransportRuntime {
                 "--max-retries is not carried to the Cli placement's endpoint",
             ));
         }
-        let (session, local_endpoint) = {
+        let (session, local_endpoint, notes) = {
             let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
             if state.closed {
                 return Err(unavailable("transport runtime is closed"));
@@ -428,9 +424,14 @@ impl TransportRuntime {
                         .clone()
                         .ok_or_else(|| unavailable("client endpoint is not installed"))?,
                     None,
+                    state.notes.clone(),
                 )
             } else {
-                (state.local.clone(), Some(state.local_endpoint.clone()))
+                (
+                    state.local.clone(),
+                    Some(state.local_endpoint.clone()),
+                    state.notes.clone(),
+                )
             }
         };
         // Endpoint registration precedes the driver Bind even for the in-process route.
@@ -457,7 +458,7 @@ impl TransportRuntime {
         } else {
             None
         };
-        let context = RequestContext::new(session, meta, operation_id)?;
+        let context = RequestContext::new(session, meta, operation_id, notes)?;
         let mut guard = TransportRequest::pending(context, client_guard);
         if let Some(token) = token {
             guard.attach(token)?;
@@ -467,11 +468,7 @@ impl TransportRuntime {
             .session
             .begin(&guard.context.meta.request_id)?;
         guard.context.session.ready().await?;
-        cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
-            guard.backend = Some(Git2Backend::without_credential_helpers().with_host_context(guard.context.clone()));
-        } else {
-            guard.backend = Some(Git2Backend::new().with_host_context(guard.context.clone()));
-        } }
+        guard.backend = Some(Git2Backend::new().with_host_context(guard.context.clone()));
         Ok(guard)
     }
     pub async fn remove_cli(&self) -> CleanupReport {

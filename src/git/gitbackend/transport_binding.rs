@@ -38,10 +38,17 @@ cfg_if::cfg_if! {
                 pub(crate) fn with_windows_policy_for_test(mut self) -> Self { self.1 = true; self }
                 pub(crate) fn https_policy_for_test(&self, policy: super::CredentialHelperPolicy) -> Option<AuthPolicy> { self.https_policy(policy) }
             } }
+            /// Whether this runtime acts as Windows: the platform, or in a test the platform it is told to be.
+            fn windows(&self) -> bool {
+                cfg_if::cfg_if! { if #[cfg(test)] { cfg!(windows) || self.1 } else { cfg!(windows) } }
+            }
             fn https_policy(&self, policy: super::CredentialHelperPolicy) -> Option<AuthPolicy> {
-                cfg_if::cfg_if! { if #[cfg(test)] {
-                    https_policy_for_platform(policy, cfg!(windows) || self.1)
-                } else { https_policy_for(policy) } }
+                https_policy_for_platform(policy, self.windows())
+            }
+            /// Whether `url` is a plain `http://` remote that this platform carries on the native route: Windows,
+            /// where the transport serves `https://` only (design 7, decision D2). Elsewhere it never was refused.
+            fn serves_http_natively(&self, url: &str) -> bool {
+                self.windows() && is_http_remote(url)
             }
             pub(crate) fn host_context(&self) -> Option<RequestContext> {
                 self.0.clone()
@@ -87,9 +94,10 @@ cfg_if::cfg_if! {
         }
         impl OpenRpc for HostHttpsRoute {
             fn report_failure(&self, failure: gwz_transport::protocol::Failure, service: GitService) {
+                let (helpers_disabled, windows) = crate::transport_host::policy_words(self.policy);
                 let message = crate::transport_host::HttpsOpenFailure {
                     failure, anonymous: None, attempts: None, service: Some(service),
-                    helpers_disabled: self.policy == Some(AuthPolicy::Anonymous), cli_hint: self.context.is_cli(),
+                    helpers_disabled, cli_hint: self.context.is_cli(), windows, host: None,
                 };
                 if let Some(error) = message.model_error()
                     && let Some(attempt) = &self.attempt {
@@ -136,6 +144,32 @@ cfg_if::cfg_if! {
         }
         pub(super) fn is_https_remote(url: &str) -> bool {
             url.split_once("://").is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("https"))
+        }
+        pub(super) fn is_http_remote(url: &str) -> bool {
+            url.split_once("://").is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("http"))
+        }
+        /// The URL a warning shows: the remote without the user name and password it may carry, which no message
+        /// repeats.
+        fn http_warning_url(url: &str) -> String {
+            match url::Url::parse(url) {
+                Ok(mut parsed) => {
+                    let _ = parsed.set_username("");
+                    let _ = parsed.set_password(None);
+                    parsed.to_string()
+                }
+                Err(_) => "an http:// remote".to_owned(),
+            }
+        }
+        /// The warning for an `http://` remote (text T2, TR1.8 section 14 item 13).
+        pub(super) fn http_warning(url: &str) -> String {
+            format!(
+                "warning: {} is an http:// remote. GWZ carries it on the native transport: a Basic password is sent unencrypted and a Windows sign-in has no channel binding. Use an https:// address if the server offers one.",
+                http_warning_url(url)
+            )
+        }
+        /// What makes two remotes of one operation one warning.
+        pub(super) fn http_warning_key(url: &str) -> String {
+            format!("http-remote:{}", http_warning_url(url))
         }
         pub(super) fn https_policy_for(
             policy: super::CredentialHelperPolicy,
@@ -226,7 +260,13 @@ cfg_if::cfg_if! {
                 return;
             }
             if matches!(Destination::parse(url), Ok(None)) {
-                // Neither SSH nor HTTPS (`http:`, a file): the Windows qualification serves no other remote.
+                // A plain `http://` remote on Windows goes by libgit2's native route, which is installed by leaving
+                // the callbacks alone, and says so first (design 7, decision D2).
+                if backend.ssh.serves_http_natively(url) {
+                    context.warn_once(&http_warning_key(url), &http_warning(url));
+                    return;
+                }
+                // Neither SSH nor HTTPS (a file): the Windows qualification serves no other remote.
                 cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
                     callbacks.smart_transport(false, |_| -> Result<RemoteTransport, git2::Error> {
                         Err(git2::Error::new(git2::ErrorCode::Invalid, git2::ErrorClass::Net, "Windows qualification supports only SSH and HTTPS remotes"))

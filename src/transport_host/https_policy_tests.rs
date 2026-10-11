@@ -9,15 +9,10 @@ use std::{
 };
 
 fn auth(root: &std::path::Path) -> https_auth::Config {
-    let executable = root.join("fake-gh");
-    crate::git::endpoint::helper_script::write_git_fixture(
-        &executable,
+    crate::git::endpoint::helper_script::git_fixture(
+        root,
         "while IFS= read -r line; do [ -z \"$line\" ] && break; done\nprintf 'username=fixture\\npassword=sentinel-h2-token\\n\\n'\n",
-    );
-    https_auth::Config {
-        executable,
-        environment: Vec::new(),
-    }
+    )
 }
 fn run(test: impl Future<Output = ()>) {
     tokio::runtime::Builder::new_current_thread()

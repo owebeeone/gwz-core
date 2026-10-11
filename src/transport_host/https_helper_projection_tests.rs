@@ -21,15 +21,14 @@ impl Fault {
         match self {
             Self::MissingGit => None,
             Self::Interaction => {
-                let executable = root.join("slow-git");
-                helper_script::write_git_fixture(
-                    &executable,
+                let mut config = helper_script::git_fixture(
+                    root,
                     "cat >/dev/null\nprintf started > \"$HOME/started\"\nsleep 30\n",
                 );
-                Some(https_auth::Config {
-                    executable,
-                    environment: vec![("HOME".into(), root.as_os_str().into())],
-                })
+                config
+                    .environment
+                    .push(("HOME".into(), helper_script::script_path(root).into()));
+                Some(config)
             }
             Self::ConfigurationSize => {
                 let helper = root.join("helper");
@@ -40,20 +39,25 @@ impl Fault {
                 let global = root.join("global");
                 let mut source = format!(
                     "[credential]\n helper = {}\n[spike]\n large = ",
-                    helper.display()
+                    helper_script::script_path(&helper)
                 )
                 .into_bytes();
                 // Escaping expands this below the adopted cap, above OS env limits.
                 source.resize(source.len() + 525_000, b'\'');
                 source.push(b'\n');
                 std::fs::write(&global, source).unwrap();
+                let mut environment = vec![
+                    ("HOME".into(), root.as_os_str().into()),
+                    ("GIT_CONFIG_GLOBAL".into(), global.as_os_str().into()),
+                    ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
+                ];
+                // A Windows process is started with no `SystemRoot` unless it is given one.
+                if let Some(system) = std::env::var_os("SystemRoot") {
+                    environment.push(("SystemRoot".into(), system));
+                }
                 Some(https_auth::Config {
-                    executable: "/usr/bin/git".into(),
-                    environment: vec![
-                        ("HOME".into(), root.as_os_str().into()),
-                        ("GIT_CONFIG_GLOBAL".into(), global.as_os_str().into()),
-                        ("GIT_CONFIG_NOSYSTEM".into(), "1".into()),
-                    ],
+                    executable: helper_script::real_git(),
+                    environment,
                 })
             }
         }
@@ -69,6 +73,10 @@ impl Fault {
         match self {
             Self::MissingGit => "HTTPS authentication needs `git` on PATH",
             Self::Interaction => "No credential helper answered within 0.5 seconds",
+            // A Windows policy words a credential the helper did not give as text T4 (TR1.8 section 14, item 13).
+            Self::ConfigurationSize if cfg!(windows) => {
+                "The server asks for a user name and password (Basic) and no git credential helper is configured"
+            }
             Self::ConfigurationSize => {
                 "The server asked for an HTTPS credential, and no credential helper gave one"
             }
@@ -288,7 +296,9 @@ fn real_fetch_push_and_private_clone_project_helper_outcomes_without_suppression
                         root.path().join("global"),
                         format!(
                             "[credential]\n helper = {}\n",
-                            root.path().join("helper").display()
+                            crate::git::endpoint::helper_script::script_path(
+                                &root.path().join("helper")
+                            )
                         ),
                     )
                     .unwrap();

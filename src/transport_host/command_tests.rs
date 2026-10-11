@@ -65,7 +65,7 @@ fn url(harness: &CliHarness) -> String {
         "ssh://{}@127.0.0.1:{}{}",
         harness.fixture.user,
         harness.fixture.port,
-        harness.fixture.repository.to_string_lossy()
+        super::driver_tests::common::server_path(&harness.fixture.url_repository)
     )
 }
 
@@ -247,7 +247,7 @@ fn all_workspace_command_funnels_keep_one_endpoint_and_fresh_scopes() {
                     "ssh://{}@127.0.0.1:{}{}",
                     harness.fixture.user,
                     harness.fixture.port,
-                    root.display()
+                    super::driver_tests::common::server_path(&root)
                 ),
                 target: copy.to_string_lossy().into_owned(),
             },
@@ -277,102 +277,104 @@ fn member_meta(harness: &CliHarness, id: &str) -> RequestMeta {
     meta
 }
 
+// This row serves several commands over one connection, a refusal for one repository among them. A forced command per
+// channel is how it asks a server for that, and Windows' `sshd.exe` repeats the first channel's command to every later
+// channel of a connection (plan 12.4), so on Windows the row waits for a test-controlled server that refuses a path
+// (the inventory owns it under step 4.11).
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
 #[test]
-fn cli_repository_refusal_is_quiet_only_for_private_members() {
-    let harness = CliHarness::new();
-    let server = git2::Repository::open_bare(&harness.fixture.repository).unwrap();
-    commit(&server, "private fixture");
-    let script = harness.fixture.temp.path().join("service.sh");
-    crate::git::endpoint::helper_script::write_helper_script(
-        &script,
-        "case \"$SSH_ORIGINAL_COMMAND\" in\n *inaccessible.git*) echo 'ERROR: Repository not found.' >&2; exit 1 ;;\n *) eval \"$SSH_ORIGINAL_COMMAND\" ;;\nesac\n",
-    );
-    let public =
-        std::fs::read_to_string(harness.fixture.temp.path().join("client_ed25519.pub")).unwrap();
-    std::fs::write(
-        harness.fixture.temp.path().join("authorized_keys"),
-        format!("command=\"{}\" {}", script.display(), public),
-    )
-    .unwrap();
-    let denied = format!(
-        "ssh://{}@127.0.0.1:{}/inaccessible.git",
-        harness.fixture.user, harness.fixture.port
-    );
-    let root = harness.fixture.temp.path().join("private-workspace");
-    std::fs::create_dir(&root).unwrap();
-    let meta = harness.meta("private-init");
-    with_scope(&harness, meta.clone(), "init", |backend| {
-        handle_init_from_sources(
-            backend,
-            &root,
-            crate::InitFromSourcesRequest {
-                meta,
-                workspace_root: root.to_string_lossy().into(),
-                sources: vec![crate::SourceUrl {
-                    url: url(&harness),
-                    path: Some("secret".into()),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            },
-            "init",
-            &NullSink,
-        )
-    });
-    git2::Repository::open(root.join("secret"))
-        .unwrap()
-        .remote_set_url("origin", &denied)
-        .unwrap();
-    let mut meta = member_meta(&harness, "private-sync");
-    meta.transport = None;
-    with_scope(&harness, meta.clone(), "private", |backend| {
-        handle_repo_sync(
-            backend,
-            &root,
-            crate::RepoSyncRequest {
-                meta,
-                private: Some(true),
-            },
-            "private",
-        )
-    });
-    checkpoint(&root);
-    std::fs::remove_dir_all(root.join("secret")).unwrap();
-    let meta = member_meta(&harness, "private-materialize");
-    let result = with_scope(&harness, meta.clone(), "materialize", |backend| {
-        handle_materialize(
-            backend,
-            &root,
-            crate::MaterializeRequest {
-                meta,
-                target: crate::MaterializeTarget {
-                    kind: crate::MaterializeTargetKind::Lock,
+    fn cli_repository_refusal_is_quiet_only_for_private_members() {
+        let harness = CliHarness::with_fixture(crate::git::endpoint::ssh_close_fixture::forced(
+            "case \"$SSH_ORIGINAL_COMMAND\" in\n *inaccessible.git*) echo 'ERROR: Repository not found.' >&2; exit 1 ;;\n *) eval \"$SSH_ORIGINAL_COMMAND\" ;;\nesac\n",
+        ));
+        let server = git2::Repository::open_bare(&harness.fixture.repository).unwrap();
+        commit(&server, "private fixture");
+        let denied = format!(
+            "ssh://{}@127.0.0.1:{}/inaccessible.git",
+            harness.fixture.user, harness.fixture.port
+        );
+        let root = harness.fixture.temp.path().join("private-workspace");
+        std::fs::create_dir(&root).unwrap();
+        let meta = harness.meta("private-init");
+        with_scope(&harness, meta.clone(), "init", |backend| {
+            handle_init_from_sources(
+                backend,
+                &root,
+                crate::InitFromSourcesRequest {
+                    meta,
+                    workspace_root: root.to_string_lossy().into(),
+                    sources: vec![crate::SourceUrl {
+                        url: url(&harness),
+                        path: Some("secret".into()),
+                        ..Default::default()
+                    }],
                     ..Default::default()
                 },
-            },
-            "materialize",
-            &NullSink,
-        )
-    });
-    assert!(
-        matches!(
-            result.response.meta.aggregate_status,
-            crate::AggregateStatus::Ok | crate::AggregateStatus::Noop
-        ),
-        "{result:?}"
-    );
-    assert!(!root.join("secret").exists());
-    assert!(
-        result
-            .response
-            .meta
-            .transport
-            .as_ref()
-            .is_none_or(Vec::is_empty),
-        "{result:?}"
-    );
-    assert!(
-        result.response.members.is_empty(),
-        "private refusal must remain quiet: {result:?}"
-    );
+                "init",
+                &NullSink,
+            )
+        });
+        git2::Repository::open(root.join("secret"))
+            .unwrap()
+            .remote_set_url("origin", &denied)
+            .unwrap();
+        let mut meta = member_meta(&harness, "private-sync");
+        meta.transport = None;
+        with_scope(&harness, meta.clone(), "private", |backend| {
+            handle_repo_sync(
+                backend,
+                &root,
+                crate::RepoSyncRequest {
+                    meta,
+                    private: Some(true),
+                },
+                "private",
+            )
+        });
+        checkpoint(&root);
+        std::fs::remove_dir_all(root.join("secret")).unwrap();
+        let meta = member_meta(&harness, "private-materialize");
+        let result = with_scope(&harness, meta.clone(), "materialize", |backend| {
+            handle_materialize(
+                backend,
+                &root,
+                crate::MaterializeRequest {
+                    meta,
+                    target: crate::MaterializeTarget {
+                        kind: crate::MaterializeTargetKind::Lock,
+                        ..Default::default()
+                    },
+                },
+                "materialize",
+                &NullSink,
+            )
+        });
+        assert!(
+            matches!(
+                result.response.meta.aggregate_status,
+                crate::AggregateStatus::Ok | crate::AggregateStatus::Noop
+            ),
+            "{result:?}"
+        );
+        assert!(
+            !root.join("secret").exists(),
+            "{:?}",
+            std::fs::read_dir(root.join("secret")).map(|entries| entries.flatten().map(|e| e.path()).collect::<Vec<_>>())
+        );
+        assert!(
+            result
+                .response
+                .meta
+                .transport
+                .as_ref()
+                .is_none_or(Vec::is_empty),
+            "{result:?}"
+        );
+        assert!(
+            result.response.members.is_empty(),
+            "private refusal must remain quiet: {result:?}"
+        );
+    }
+    }
 }

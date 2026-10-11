@@ -1,7 +1,12 @@
 //! Native authentication tests: the fake Port/Session seam and the real SSPI request validator.
 mod exchange;
+mod precedence;
 mod protocol;
+mod rejection;
 mod retention;
+
+// Real Windows SSPI against an SSPI-accepting HTTPS fixture (plan step 4.8): a Windows-only module, not a skip.
+cfg_if::cfg_if! { if #[cfg(windows)] { mod real_sspi; } }
 
 // Where the validator child runs as the leader of its own process group on Unix, and
 // what ends its tree when the 30 s bound passes. Windows has no process groups: the
@@ -73,6 +78,8 @@ cfg_if::cfg_if! { if #[cfg(test)] {
     impl Port for FakePort {
         fn start(&self, request: gwz_sspi::AuthRequest, deadline: Instant, _: gwz_sspi::Cancellation) -> Work<'static, Result<Box<dyn Session>, BridgeError>> {
             assert!(!request.channel_binding.as_bytes().is_empty());
+            // Only the logon session answers: a helper's identity is never an SSPI identity in 1.1.0 (design 8).
+            assert!(matches!(request.identity, gwz_sspi::Identity::CurrentLogon));
             assert_eq!(request.target.as_str(), "HTTP/localhost");
             self.starts.fetch_add(1, Ordering::Relaxed);
             self.deadlines.lock().unwrap().push(deadline);

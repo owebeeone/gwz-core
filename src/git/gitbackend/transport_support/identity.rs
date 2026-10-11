@@ -205,9 +205,11 @@ pub(crate) fn for_remote(
     url: &str,
 ) -> ModelResult<Option<SelectedIdentity>> {
     cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
-        // Neither SSH nor HTTPS (`http:`, a file): the Windows qualification serves no other remote.
+        // Neither SSH nor HTTPS (a file): the Windows qualification serves no other remote. A plain `http://` remote
+        // is not refused: it goes by the native route, with a warning (design 7, decision D2).
         if backend.ssh.host_context().is_some()
             && !super::super::transport_binding::is_https_remote(url)
+            && !super::super::transport_binding::is_http_remote(url)
             && matches!(crate::git::endpoint::ssh_destination::Destination::parse(url), Ok(None))
         {
             return Err(ModelError::new(ErrorCode::UnsupportedOperation, "Windows qualification supports only SSH and HTTPS remotes"));

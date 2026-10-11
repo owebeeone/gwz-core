@@ -4,6 +4,7 @@
 //! output and child lifetime are all bounded by this module; no credential
 //! bytes leave the endpoint adapter.
 
+use super::https_destination::Destination;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::{
     ffi::{OsStr, OsString},
@@ -22,9 +23,6 @@ use tokio::{
     time::{Instant, sleep, sleep_until, timeout},
 };
 use tokio_util::sync::CancellationToken;
-cfg_if::cfg_if! { if #[cfg(unix)] {
-    use super::https_destination::Destination;
-} }
 const OUTPUT_LIMIT: usize = 16 * 1024;
 const CLEANUP_GRACE: Duration = Duration::from_millis(500);
 /// How often a helper's owner looks again at a process tree that has not yet emptied.
@@ -113,7 +111,7 @@ impl AuthError {
 mod secret;
 pub(crate) use secret::{Secret, SecretHeader};
 use secret::{SecretBuffer, parse_secret};
-/// Real host helper admission ledger; Windows qualification never acquires it.
+/// Real host helper admission ledger.
 #[derive(Clone)]
 pub(crate) struct HelperSlots(pub(super) Arc<Semaphore>);
 impl HelperSlots {
@@ -131,34 +129,21 @@ pub(crate) use owner::AuthOwner;
 use owner::HelperJob;
 use process_tree::{HelperChild, ProcessTree};
 // Executable discovery, the configuration view, the file reads behind it and the lookup that drives them (step
-// 4.3) compile on both platforms. What admits HTTPS to the lookup on Windows is step 4.4's; SSH's password route
-// (step 4.5) uses `lookup_setup`.
+// 4.3) compile on both platforms. HTTPS's lookup is `lookup_until` (step 4.4); SSH's password route (step 4.5)
+// uses `lookup_setup`.
 mod executable;
 mod file_worker;
 mod lookup;
 mod view;
-cfg_if::cfg_if! { if #[cfg(unix)] {
-    pub(crate) use lookup::{lookup_until, lookup_setup, LookupAdmission};
-    use owner::ActiveGuard;
-} else {
-    pub(crate) use lookup::{lookup_setup, LookupAdmission};
-    use owner::ActiveGuard;
-} }
+pub(crate) use lookup::{LookupAdmission, lookup_setup, lookup_until};
+use owner::ActiveGuard;
 cfg_if::cfg_if! {
     if #[cfg(test)] {
         mod helper_fixture;
-    }
-}
-cfg_if::cfg_if! {
-    if #[cfg(all(test, unix))] {
         use lookup::{lookup_owned, lookup_with_budget};
         use owner::PendingChild;
         use pipes::write_request;
         mod test_support;
-        cfg_if::cfg_if! {
-            if #[cfg(unix)] {
-                mod runner_tests;
-            }
-        }
+        mod runner_tests;
     }
 }

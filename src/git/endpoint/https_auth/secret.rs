@@ -84,33 +84,6 @@ impl PartialEq<&str> for SecretHeader {
     }
 }
 impl Secret {
-    pub(crate) fn has_native_identity(&self) -> bool {
-        let username = self.username.strip_suffix(&[0]).unwrap_or(&self.username);
-        let user = username
-            .split(|byte| *byte == b'\\')
-            .next_back()
-            .unwrap_or(username);
-        !user.is_empty()
-    }
-    pub(crate) fn native_identity(
-        &self,
-    ) -> Result<gwz_sspi::Identity, gwz_transport::protocol::ErrorCode> {
-        use gwz_transport::protocol::ErrorCode;
-        let username =
-            std::str::from_utf8(self.username.strip_suffix(&[0]).unwrap_or(&self.username))
-                .map_err(|_| ErrorCode::Authentication)?;
-        let password =
-            std::str::from_utf8(&self.password).map_err(|_| ErrorCode::Authentication)?;
-        let (domain, user) = username.split_once('\\').unwrap_or(("", username));
-        if user.is_empty() || user.len() > 8192 || domain.len() > 8192 || password.len() > 8192 {
-            return Err(ErrorCode::Authentication);
-        }
-        Ok(gwz_sspi::Identity::Explicit {
-            user: gwz_sspi::SecretText::new(user).map_err(|_| ErrorCode::Authentication)?,
-            domain: gwz_sspi::SecretText::new(domain).map_err(|_| ErrorCode::Authentication)?,
-            password: gwz_sspi::SecretText::new(password).map_err(|_| ErrorCode::Authentication)?,
-        })
-    }
     pub(crate) fn ssh_parts(&mut self) -> (&std::ffi::CStr, &[u8]) {
         if self.username.last() != Some(&0) {
             self.username.push(0);

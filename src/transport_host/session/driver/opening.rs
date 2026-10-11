@@ -84,16 +84,6 @@ impl Session {
         observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
         facts: Arc<dyn Fn(&Facts) + Send + Sync>,
     ) -> Result<BlockingStream, Failure> {
-        if cfg!(all(
-            windows,
-            gwz_transport_candidate,
-            gwz_windows_https_qualification
-        )) && !matches!(policy, AuthPolicy::Anonymous | AuthPolicy::WindowsDefault)
-        {
-            return Err(protocol_failure(
-                gwz_transport::protocol::ErrorCode::UnsupportedOperation,
-            ));
-        }
         let destination = crate::git::endpoint::https_destination::Destination::parse(url)
             .map_err(protocol_failure)?;
         self.open_stream(

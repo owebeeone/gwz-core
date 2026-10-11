@@ -52,6 +52,10 @@ pub(crate) enum Ending {
     /// The server reads nothing more from the connection once the client's EOF arrives, so the CHANNEL_CLOSE a
     /// client sends after its EOF (libssh2 sends the EOF first, always) is never read, and never answered.
     Stuck,
+    /// The EOF is sent at once, and the exit status and the close follow after this long: a server whose session
+    /// process is slow to exit after it has closed its output. (`sshd` on Windows sends the EOF only when the
+    /// process exits, so a script under it cannot make this state.)
+    Late(Duration),
 }
 
 /// A running controlled server and the files a client of it needs.

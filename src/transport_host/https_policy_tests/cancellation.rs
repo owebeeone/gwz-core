@@ -89,20 +89,20 @@ fn cancelling_receive_pack_challenge_helper_has_no_publication_effect() {
             })
         }))
         .await;
-        let executable = root.path().join("git-gated");
         let blocked = root.path().join("blocked");
-        crate::git::endpoint::helper_script::write_git_fixture(
-            &executable,
+        let mut config = crate::git::endpoint::helper_script::git_fixture(
+            root.path(),
             "touch \"$BLOCKED\"; exec /bin/sleep 10",
         );
+        config.environment.push((
+            "BLOCKED".into(),
+            crate::git::endpoint::helper_script::script_path(&blocked).into(),
+        ));
         let runtime = TransportRuntime::with_https(
             SshEndpointConfig::fixture(endpoint_home(root.path()), None),
             HttpsEndpointConfig {
                 tls: server.config(),
-                auth: Some(https_auth::Config {
-                    executable,
-                    environment: vec![("BLOCKED".into(), blocked.clone().into_os_string())],
-                }),
+                auth: Some(config),
             },
             HelperSlots::new(),
         )

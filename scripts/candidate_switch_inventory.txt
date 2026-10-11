@@ -18,8 +18,6 @@
 # a site updates it in the same change.
 #
 # switch  file  symbol
-gwz_transport_candidate  src/git/endpoint/https_worker.rs  fn with_authority
-gwz_transport_candidate  src/git/endpoint/https_worker/prepare.rs  fn run_attempt
 gwz_transport_candidate  src/git/gitbackend.rs  fn with_transport
 gwz_transport_candidate  src/git/gitbackend.rs  fn with_transport
 gwz_transport_candidate  src/git/gitbackend.rs  mod transport_candidate_tests
@@ -47,11 +45,8 @@ gwz_transport_candidate  src/transport_host/endpoint_environment.rs  fn endpoint
 gwz_transport_candidate  src/transport_host/endpoint_environment.rs  mod platform
 gwz_transport_candidate  src/transport_host/mod.rs  fn capabilities
 gwz_transport_candidate  src/transport_host/mod.rs  fn capabilities
-gwz_transport_candidate  src/transport_host/mod.rs  fn open_request
-gwz_transport_candidate  src/transport_host/qualification_tests.rs  fn https_only_request_retains_context_and_selects_the_builds_actual_backend
 gwz_transport_candidate  src/transport_host/qualification_tests.rs  fn https_only_request_retains_context_and_selects_the_builds_actual_backend
 gwz_transport_candidate  src/transport_host/qualification_tests.rs  fn qualification_capabilities_and_forged_opens_agree_before_effects
-gwz_transport_candidate  src/transport_host/session/driver/opening.rs  fn open_https
 gwz_transport_candidate  src/workspace_ops/merge/validate.rs  fn max_retries_is_refused_like_every_policy_field_merge_does_not_act_on
 gwz_transport_candidate  src/workspace_ops/merge/validate.rs  fn validate_common_meta
 gwz_transport_candidate  src/workspace_ops/tests/g00/private_members.rs  fn private_materialize_keeps_production_native_identity_refusal_visible

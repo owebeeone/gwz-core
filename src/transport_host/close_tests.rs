@@ -13,7 +13,7 @@ use super::driver_tests::{block_on, commit, endpoint_home, fixture_url, local_me
 use super::*;
 use crate::git::endpoint::{
     ssh_channel::GitService,
-    ssh_close_fixture::{delayed_close_fixture, read_advertisement},
+    ssh_close_fixture::{delayed_close_fixture, late_close_server, read_advertisement},
 };
 use gwz_transport::{protocol::Disposition, stream::CloseResult};
 use std::{
@@ -149,18 +149,33 @@ fn thirty_two_streams_closing_together_wait_out_one_delayed_close() {
 #[test]
 fn command_exit_does_not_wait_for_a_close_in_flight() {
     let delay = Duration::from_secs(3);
-    let fixture = delayed_close_fixture(delay);
+    // The test-controlled server: this test reads the output to its end, so the server must send its EOF at once
+    // and close later, which `sshd` on Windows cannot do (the EOF comes with the exit).
+    let fixture = late_close_server(delay);
     let server = git2::Repository::open_bare(&fixture.repository).unwrap();
     commit(&server, "advertised");
-    let home = endpoint_home(&fixture);
+    let home = fixture.temp.path().join("endpoint-home");
+    std::fs::create_dir_all(home.join(".ssh")).unwrap();
+    std::fs::copy(&fixture.known_hosts, home.join(".ssh/known_hosts")).unwrap();
+    std::fs::copy(
+        fixture.temp.path().join("client_ed25519"),
+        home.join("client_ed25519"),
+    )
+    .unwrap();
     let runtime = TransportRuntime::new(SshEndpointConfig::fixture(home.clone(), None)).unwrap();
     let meta = local_meta("command-exit", &home);
     let request = block_on(runtime.request(meta, "push".into())).unwrap();
     let identity = home.join("client_ed25519").to_string_lossy().into_owned();
+    let url = format!(
+        "ssh://{}@127.0.0.1:{}{}",
+        fixture.user,
+        fixture.port,
+        crate::git::endpoint::ssh_fixture::server_path(&fixture.repository)
+    );
     let mut stream = request
         .context
         .open(
-            &fixture_url(&fixture),
+            &url,
             GitService::ReceivePack,
             Some(identity),
             Arc::new(|_, _| {}),

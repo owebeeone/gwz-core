@@ -8,6 +8,9 @@ mod exchange;
 mod owners;
 mod sspi;
 
+/// The request rounds one operation's native exchanges may use (design 8).
+const NATIVE_ROUNDS: usize = 8;
+
 pub use sspi::NativeCaller;
 
 /// Initialized fixed output; secrets never grow or move through a String.
@@ -83,6 +86,7 @@ fn prefix(scheme: NativeScheme) -> Result<&'static [u8], ErrorCode> {
     match scheme {
         NativeScheme::Negotiate => Ok(b"Negotiate "),
         NativeScheme::Ntlm => Ok(b"NTLM "),
+        // The wire enum names Digest, but 1.1.0 never answers it (design 7): no offer holds it.
         NativeScheme::Digest => Err(ErrorCode::UnsupportedOperation),
     }
 }
@@ -123,16 +127,17 @@ struct Offer {
 }
 impl Offer {
     fn initial(&self) -> Result<(), ErrorCode> {
-        if !self.token.bytes().is_empty() || self.scheme == NativeScheme::Digest {
+        if !self.token.bytes().is_empty() {
             return Err(ErrorCode::UnsupportedOperation);
         }
         Ok(())
     }
 }
+/// What a challenge offers that this transport answers: `Negotiate` and `NTLM` with the logon session, and
+/// `Basic` with a configured helper. Anything else, `Digest` included, is not an offer.
 struct Offers {
     native: Vec<Offer>,
     basic: bool,
-    helper: bool,
 }
 impl Offers {
     fn parse(headers: &HeaderMap) -> Result<Self, ErrorCode> {
@@ -142,7 +147,6 @@ impl Offers {
         let mut result = Self {
             native: Vec::new(),
             basic: false,
-            helper: false,
         };
         let mut total = 0usize;
         for value in headers.get_all(WWW_AUTHENTICATE) {
@@ -187,16 +191,9 @@ impl Offers {
         let scheme = if name.eq_ignore_ascii_case("Negotiate") {
             Some(NativeScheme::Negotiate)
         } else if name.eq_ignore_ascii_case("NTLM") {
-            self.helper = true;
             Some(NativeScheme::Ntlm)
-        } else if name.eq_ignore_ascii_case("Digest") {
-            self.helper = true;
-            Some(NativeScheme::Digest)
         } else {
-            if name.eq_ignore_ascii_case("Basic") {
-                self.basic = true;
-                self.helper = true;
-            }
+            self.basic |= name.eq_ignore_ascii_case("Basic");
             None
         };
         if let Some(scheme) = scheme {
@@ -211,18 +208,11 @@ impl Offers {
         }
         Ok(())
     }
-    fn helper_allowed(&self) -> bool {
-        self.helper
-    }
-    fn select(&self, configured: bool) -> Option<&Offer> {
-        [
-            NativeScheme::Negotiate,
-            NativeScheme::Ntlm,
-            NativeScheme::Digest,
-        ]
-        .into_iter()
-        .filter(|scheme| configured || *scheme != NativeScheme::Digest)
-        .find_map(|scheme| self.native.iter().find(|offer| offer.scheme == scheme))
+    /// The logon session's scheme: `Negotiate` first, then `NTLM` (design 7, TD1). The helper is not asked.
+    fn select(&self) -> Option<&Offer> {
+        [NativeScheme::Negotiate, NativeScheme::Ntlm]
+            .into_iter()
+            .find_map(|scheme| self.native.iter().find(|offer| offer.scheme == scheme))
     }
 }
 struct History {
@@ -230,12 +220,12 @@ struct History {
     complete: bool,
 }
 impl History {
-    fn new(source: NativeSource, scheme: NativeScheme) -> Self {
+    fn new(scheme: NativeScheme) -> Self {
         Self {
             facts: Facts {
                 method: AuthMethod::Sspi,
                 native: Some(NativeFacts {
-                    source,
+                    source: NativeSource::CurrentLogon,
                     scheme,
                     observation: NativeObservation::NotStarted,
                     mechanism: None,
