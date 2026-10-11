@@ -228,6 +228,14 @@ fn a_stall_bound_is_worded_in_the_seconds_ssh_timeout_takes_and_zero_has_no_word
 }
 
 #[test]
+fn one_second_is_singular_and_every_other_bound_plural() {
+    assert_eq!(seconds_unit("1"), "second");
+    for seconds in ["9", "0.3", "1.5", "10", "86400"] {
+        assert_eq!(seconds_unit(seconds), "seconds", "{seconds}");
+    }
+}
+
+#[test]
 fn each_timeout_origin_has_its_word_on_both_schemes_and_allocation_is_returned_once() {
     for (cause, word) in [
         (SetupFailureCause::Stall, Some("stall")),

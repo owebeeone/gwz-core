@@ -83,9 +83,10 @@ pub(crate) struct StreamStall {
 impl std::fmt::Display for StreamStall {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let seconds = &self.seconds;
+        let unit = super::setup_retry::seconds_unit(seconds);
         write!(
             f,
-            "no progress for {seconds} seconds (--ssh-timeout {seconds})"
+            "no progress for {seconds} {unit} (--ssh-timeout {seconds})"
         )
     }
 }

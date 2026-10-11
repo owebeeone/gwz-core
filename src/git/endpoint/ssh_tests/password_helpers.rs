@@ -306,11 +306,13 @@ fn run_fault(
     if let Some(helpers) = &helpers {
         assert_eq!(helpers.available(), 8);
     }
-    if marker.exists() {
-        assert!(
-            has_ended(&fs::read_to_string(&marker).unwrap()),
-            "helper was not reaped"
-        );
+    // The helper's shell creates the marker before it writes its PID into it: a
+    // helper killed between the two (a 75 ms interaction budget under load)
+    // leaves an empty marker and no PID to look for. Its reaping is then the
+    // cleanup completion asserted above.
+    let pid = fs::read_to_string(&marker).unwrap_or_default();
+    if !pid.trim().is_empty() {
+        assert!(has_ended(&pid), "helper was not reaped");
     }
     (result, server.attempts(), marker.exists())
 }

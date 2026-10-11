@@ -101,9 +101,10 @@ impl std::fmt::Display for SshOpenFailure {
             .flatten();
             if let Some(seconds) = stall {
                 // The attempt goes inside the brackets that name the flag.
+                let unit = setup_retry::seconds_unit(&seconds);
                 write!(
                     f,
-                    "ssh setup timeout: no progress for {seconds} seconds (--ssh-timeout {seconds}"
+                    "ssh setup timeout: no progress for {seconds} {unit} (--ssh-timeout {seconds}"
                 )?;
                 if let Some((attempt, attempts)) = self.1 {
                     write!(f, "; attempt {attempt} of {attempts}")?;
@@ -317,7 +318,7 @@ cfg_if::cfg_if! {
             let reported = failure_io(stamped(TimeoutReason::Stall), None, 1_000);
             assert_eq!(
                 reported.to_string(),
-                "ssh setup timeout: no progress for 1 seconds (--ssh-timeout 1)"
+                "ssh setup timeout: no progress for 1 second (--ssh-timeout 1)"
             );
             // Only a test fixture sets a bound that is not whole seconds.
             let reported = failure_io(stamped(TimeoutReason::Stall), None, 300);

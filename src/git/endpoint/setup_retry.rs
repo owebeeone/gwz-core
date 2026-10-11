@@ -132,6 +132,11 @@ pub(crate) fn stall_seconds(stall_ms: u64) -> Option<String> {
             .to_owned()
     })
 }
+/// The unit after a [`stall_seconds`] value: `1 second`, and `seconds` for
+/// every other value, `0.3 seconds` included.
+pub(crate) fn seconds_unit(seconds: &str) -> &'static str {
+    if seconds == "1" { "second" } else { "seconds" }
+}
 
 /// The attempt a final failure ended, as `(N, M)` for its display's
 /// `attempt N of M` (the retry plan's §5), when the failure alone says so.
