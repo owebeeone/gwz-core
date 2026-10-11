@@ -93,6 +93,8 @@ def test_candidate_adds_the_windows_networking_features_the_endpoint_needs(tmp_p
     # Production names none of them.
     assert set(production["features"]) < set(prepared["features"])
     assert set(prepared["features"]) - set(production["features"]) == {
+        "Win32_NetworkManagement_IpHelper",
+        "Win32_NetworkManagement_Ndis",
         "Win32_Networking_WinHttp",
         "Win32_Networking_WinSock",
         "Win32_Security",

@@ -164,11 +164,11 @@ impl Owned {
         environment: &EnvironmentSnapshot,
         native: Option<super::NativeCaller>,
     ) -> ModelResult<Self> {
-        let direct = native
+        let machine = native
             .as_ref()
-            .map(super::NativeCaller::qualification_direct)
-            .unwrap_or_else(endpoint_environment::capture_qualification_proxy);
-        let (ssh, https) = endpoint_environment::endpoint_config_native(environment, direct)?;
+            .map(super::NativeCaller::machine_proxy)
+            .unwrap_or_else(endpoint_environment::capture_machine_proxy);
+        let (ssh, https) = endpoint_environment::endpoint_config_native(environment, machine)?;
         let executor = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

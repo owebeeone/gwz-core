@@ -4,6 +4,8 @@ pub(crate) mod endpoint_environment;
 mod helper_failure;
 mod https_endpoint;
 mod local_command;
+// Step 4.6: the WinHTTP machine proxy. The grammar is portable and its tests run everywhere; Unix builds have no use for it.
+cfg_if::cfg_if! { if #[cfg(any(windows, test))] { mod machine_proxy; } }
 pub use crate::git::endpoint::https_worker::native::NativeCaller;
 pub use crate::git::endpoint::setup_retry::NoteSink;
 pub use cancellable::with_cancellable_local_transport;

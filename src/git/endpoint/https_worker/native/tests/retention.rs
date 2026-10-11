@@ -24,7 +24,7 @@ cfg_if::cfg_if! { if #[cfg(test)] {
                 }))).await;
                 let mut endpoint = Endpoint::new(server.config(), None, pool::Config::default()).unwrap();
                 let port = Arc::new(HeldStart { entered: Arc::new(AtomicUsize::new(0)), gate: Arc::new(AtomicUsize::new(0)), cleanup: Arc::new(AtomicUsize::new(0)), registered, steps: Arc::new(AtomicUsize::new(0)) });
-                endpoint.client.set_native(NativeCaller { port: Ok(port.clone()), qualification_direct: None });
+                endpoint.client.set_native(NativeCaller { port: Ok(port.clone()), machine_proxy: None });
                 let mut request = input(&server, GitService::UploadPackAdvertisement); request.policy = AuthPolicy::WindowsDefault;
                 let client = endpoint.client.clone(); let task = tokio::spawn(async move { client.prepare_attempt(request, &CancellationToken::new(), &mut client.budget(), &mut None).await });
                 while port.entered.load(Ordering::Acquire) == 0 { tokio::task::yield_now().await; }

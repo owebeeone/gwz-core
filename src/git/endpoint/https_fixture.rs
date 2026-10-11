@@ -69,7 +69,7 @@ fn identity() -> (Vec<u8>, TlsAcceptor) {
         };
         run(&["req","-x509","-newkey","rsa:2048","-nodes","-keyout","ca-key.pem","-out","ca.pem","-days","2","-subj","/CN=GWZ Fixture CA","-addext","basicConstraints=critical,CA:TRUE","-addext","keyUsage=critical,keyCertSign,cRLSign"]);
         run(&["req","-new","-newkey","rsa:2048","-nodes","-keyout","key.pem","-out","request.pem","-subj","/CN=localhost"]);
-        std::fs::write(dir.path().join("extensions"),"subjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n").unwrap();
+        std::fs::write(dir.path().join("extensions"),"subjectAltName=DNS:localhost,DNS:proxied.test,IP:127.0.0.1\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n").unwrap();
         run(&["x509","-req","-in","request.pem","-CA","ca.pem","-CAkey","ca-key.pem","-CAcreateserial","-out","cert.pem","-days","1","-extfile","extensions"]);
         run(&["x509","-in","cert.pem","-outform","DER","-out","cert.der"]);
         run(&["x509","-in","ca.pem","-outform","DER","-out","ca.der"]);
@@ -217,6 +217,8 @@ impl Server {
 }
 pub(crate) struct Tunnel {
     pub config: https_connection::Proxy,
+    /// The port of the proxy itself, on 127.0.0.1.
+    pub port: u16,
     pub seen: Arc<Mutex<Vec<String>>>,
     task: JoinHandle<()>,
 }
@@ -232,8 +234,20 @@ impl Tunnel {
         Self::with_tls(status, false).await
     }
     pub async fn with_tls(status: u16, secure: bool) -> Self {
+        Self::build(status, secure, None, 0).await
+    }
+    /// A proxy that tunnels every CONNECT to 127.0.0.1:`origin`, whatever authority the CONNECT names, as a proxy
+    /// that resolves a name the client cannot (`proxied.test`, a name of the fixture's certificate) would.
+    pub async fn forwarding(status: u16, origin: u16) -> Self {
+        Self::forwarding_on(0, status, origin).await
+    }
+    /// `forwarding` on 127.0.0.1:`port` (0 for any), the port a machine setting under test names.
+    pub async fn forwarding_on(port: u16, status: u16, origin: u16) -> Self {
+        Self::build(status, false, Some(origin), port).await
+    }
+    async fn build(status: u16, secure: bool, origin: Option<u16>, bind: u16) -> Self {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = TcpListener::bind(("127.0.0.1", bind)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let (_, acceptor) = identity();
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -245,7 +259,7 @@ impl Tunnel {
                     accepted=listener.accept()=>{let (socket,_)=accepted.unwrap();let requests=requests.clone();let acceptor=acceptor.clone();children.spawn(async move {
                 let mut socket:Box<dyn TunnelIo>=if secure {match acceptor.accept(socket).await{Ok(tls)=>Box::new(tls),Err(_)=>return}}else{Box::new(socket)};
                         let mut request=Vec::new();while !request.ends_with(b"\r\n\r\n") && request.len()<65536 {let Ok(b)=socket.read_u8().await else{return;};request.push(b);}
-                        let request=String::from_utf8(request).unwrap();let authority=request.split_whitespace().nth(1).unwrap().to_owned();requests.lock().unwrap().push(request);
+                        let request=String::from_utf8(request).unwrap();let authority=origin.map_or_else(||request.split_whitespace().nth(1).unwrap().to_owned(),|port|format!("127.0.0.1:{port}"));requests.lock().unwrap().push(request);
                         let reply=format!("HTTP/1.1 {status} Tunnel\r\n\r\n");socket.write_all(reply.as_bytes()).await.unwrap();
                         if status==200 {let mut origin=tokio::net::TcpStream::connect(authority).await.unwrap();let _=tokio::io::copy_bidirectional(&mut socket,&mut origin).await;}
                     });},
@@ -260,6 +274,7 @@ impl Tunnel {
                 tls: secure,
                 authorization: Some("Basic fixture-proxy-only".into()),
             },
+            port,
             seen,
             task,
         }
