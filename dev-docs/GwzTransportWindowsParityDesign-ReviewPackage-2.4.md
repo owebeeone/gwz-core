@@ -13,9 +13,9 @@ All paths are under `gwz-core/dev-docs/` of the lane `gwz-dev-tr18freeze`. SHA-2
 | **Object** | `GwzTransportWindowsParityDesign.md` | `8d34c609196f3211` |
 | Controlling record | `GwzTransportTR18-OperatorDecisions.md` ("Operator discussion record" controls over its per-item narrative) | `61e787a87c9e5a26` |
 | Delta (what MAIN and the evidence changed) | `GwzTransportWindowsParityDesign-Delta.md` | `3a1596fdfa9a0c54` |
-| Amendment 2, revision 8 DRAFT (skim review not run) | `GwzTransportReleasePlanAmendment-2.md` | `5d462c6902e7c26c` |
-| Its skim package | `GwzTransportReleasePlanAmendment-2-SkimPackage-8.md` | `8d5b4fa8ebaa1172` |
-| Plan, step 2.4 and section 8 (OQ1 to OQ16) | `GwzTransportWindowsParityPlan.md` | `91783076ef12a7d9` |
+| Amendment 2, revision 8 DRAFT (skim review not run) | `GwzTransportReleasePlanAmendment-2.md` | `d3f19c26d4d44d94` |
+| Its skim package | `GwzTransportReleasePlanAmendment-2-SkimPackage-8.md` | `e4a30d010560db63` |
+| Plan, step 2.4 and section 8 (OQ1 to OQ16) | `GwzTransportWindowsParityPlan.md` | `82cc6a5776633dfd` |
 | Baseline and dispositions | `GwzTransportWindowsBaseline.md`, `GwzTransportWindowsProofDispositions-DRAFT.md` | `d3eb823109122df2`, `feb7e9916e9bf3d1` |
 | **Surface object** | `GwzTransportWindowsUserGuide-DRAFT.md` | `6752211da4bdc1e1` |
 | Accepted contracts the design must agree with | `GwzTransportCredentialHelperTimingAmendment.md`, `GwzTransportCredentialHelperConfigurationViewAmendment.md`, `GwzTransportSshHelperClockAmendment.md`; `../../dev-docs/GwzSspiDesign.md`, `GwzSspiAcceptance.md`; `../../dev-docs/GwzWindowsHttpsIntegrationImplementation-Verdict-3.md` | n/a (accepted) |
