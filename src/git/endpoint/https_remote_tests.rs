@@ -112,6 +112,75 @@ fn rpc_reports_retained_close_failure_with_timing_and_retry_provenance() {
     );
     assert_eq!(state.lock().unwrap().failure, Some(failure));
 }
+/// A stream whose read stalls: the stream's own error, worded for the
+/// `--ssh-timeout` bound it ran under, and the endpoint's retained timeout.
+struct Stalled {
+    stall_ms: u64,
+    failure: gwz_transport::protocol::Failure,
+}
+impl Read for Stalled {
+    fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+        Err(super::super::stream_io::io_error(
+            gwz_transport::stream::Error::Timeout,
+            self.stall_ms,
+        ))
+    }
+}
+impl Write for Stalled {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        Ok(data.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+impl HalfClose for Stalled {
+    fn end_write(&self) -> io::Result<()> {
+        Ok(())
+    }
+    fn finish(&self) -> io::Result<()> {
+        Ok(())
+    }
+    fn cancel(&self) {}
+    fn retained_failure(&self) -> Option<gwz_transport::protocol::Failure> {
+        Some(self.failure.clone())
+    }
+}
+
+#[test]
+fn an_https_body_stall_names_the_flag_and_its_value_and_is_still_reported() {
+    use gwz_transport::protocol::*;
+    for stall_ms in [9_000, 30_000] {
+        let failure = Failure {
+            code: ErrorCode::Timeout,
+            effect: Effect::None,
+            ..Default::default()
+        };
+        let report = Arc::new(Mutex::new(None));
+        let received = report.clone();
+        let mut rpc = RpcIo::new(
+            Stalled {
+                stall_ms,
+                failure: failure.clone(),
+            },
+            false,
+        );
+        rpc.report = Some(Arc::new(move |failed, service| {
+            *received.lock().unwrap() = Some((failed, service));
+        }));
+        let error = rpc.read(&mut [0]).unwrap_err();
+        let seconds = stall_ms / 1000;
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        assert_eq!(
+            error.to_string(),
+            format!("no progress for {seconds} seconds (--ssh-timeout {seconds})")
+        );
+        assert_eq!(
+            *report.lock().unwrap(),
+            Some((failure, GitService::UploadPackExchange))
+        );
+    }
+}
 #[test]
 fn rpc_keeps_failed_facts_in_preference_to_later_close_facts() {
     use gwz_transport::protocol::*;

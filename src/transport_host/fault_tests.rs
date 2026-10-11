@@ -247,6 +247,7 @@ fn carrier_drop_wakes_blocking_open() {
                 code: gwz_transport::protocol::ErrorCode::CarrierLost,
                 ..
             },
+            _,
             _
         ))
     ));
@@ -380,6 +381,7 @@ fn cancellation_wakes_open_and_late_terminals_cannot_close_sibling_binding() {
                 code: gwz_transport::protocol::ErrorCode::Cancelled,
                 ..
             },
+            _,
             _
         ))
     ));

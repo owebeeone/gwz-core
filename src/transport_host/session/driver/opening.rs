@@ -32,6 +32,13 @@ impl Session {
                     .with_helpers(helpers_allowed)
             });
         let shown = (destination.key.host.clone(), destination.key.port);
+        // The stall bound this open's deadlines carry (`network_deadlines`
+        // takes the same field), for a stall's message to name.
+        let stall_ms = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .io_timeout_ms;
         let policy = if identity.mode == IdentityMode::ExplicitKey {
             AuthPolicy::SshExplicit
         } else {
@@ -62,7 +69,7 @@ impl Session {
         )
         .map_err(|failure| {
             let attempts = setup_retry::reported_attempt(&failure);
-            open_failure_io(failure, attempts, shown.0, shown.1)
+            open_failure_io(failure, attempts, stall_ms, shown.0, shown.1)
         })
     }
     pub(in crate::transport_host) fn open_https(
@@ -195,8 +202,11 @@ impl Session {
                 }
                 None => 30_000,
             };
+            // The stall bound: the open's deadlines carry it, and so does its
+            // stream, for a stall's message to name.
+            let stall_ms = state.io_timeout_ms;
             let mut deadlines =
-                network_deadlines(state.io_timeout_ms, state.connect_timeout_ms, allocation_ms);
+                network_deadlines(stall_ms, state.connect_timeout_ms, allocation_ms);
             if ssh {
                 deadlines.interaction_ms = state.ssh_interaction_ms as i64;
             }
@@ -262,6 +272,7 @@ impl Session {
                 id,
                 Entry {
                     request: request.into(),
+                    stall_ms,
                     stream,
                     peer: Arc::new(peer),
                     opened: false,

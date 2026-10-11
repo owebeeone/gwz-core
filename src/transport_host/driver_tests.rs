@@ -414,13 +414,20 @@ fn cli_a_server_stall_after_done_reaches_the_client_as_a_timeout() {
         let read = std::io::Write::write_all(&mut stream, &clone_request(&head))
             .and_then(|()| std::io::Write::flush(&mut stream))
             .and_then(|()| std::io::Read::read(&mut stream, &mut [0_u8; 1]));
-        let _ = done.send(read.map_err(|error| error.kind()));
+        let _ = done.send(read.map_err(|error| (error.kind(), error.to_string())));
     });
     let outcome = outcome
         .recv_timeout(Duration::from_secs(20))
         .expect("the endpoint's timeout never reached the client");
     paused.resume();
-    assert_eq!(outcome, Err(std::io::ErrorKind::TimedOut));
+    // The body-read stall names the flag and the fixture's 3 s bound (T7).
+    assert_eq!(
+        outcome,
+        Err((
+            std::io::ErrorKind::TimedOut,
+            "no progress for 3 seconds (--ssh-timeout 3)".to_string()
+        ))
+    );
     block_on(request.finish());
     block_on(client.finish());
     block_on(harness.endpoint.shutdown());
@@ -459,6 +466,7 @@ fn cli_open_rechecks_a_selected_file_after_successful_preflight() {
                 code: gwz_transport::protocol::ErrorCode::Unavailable,
                 ..
             },
+            _,
             _
         ))
     ));

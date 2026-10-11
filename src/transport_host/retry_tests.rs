@@ -88,7 +88,10 @@ fn the_operations_max_retries_reaches_its_endpoint_and_its_open_waits_out_every_
         // The final failure's display names the attempt it ended (§5).
         assert_eq!(
             error.to_string(),
-            format!("ssh setup timeout: stall (attempt {attempts} of {attempts})")
+            // The endpoint's stall bound is the 300 ms this runtime was built with.
+            format!(
+                "ssh setup timeout: no progress for 0.3 seconds (--ssh-timeout 0.3; attempt {attempts} of {attempts})"
+            )
         );
         super::driver_tests::block_on(request.finish());
         super::driver_tests::block_on(runtime.shutdown());
