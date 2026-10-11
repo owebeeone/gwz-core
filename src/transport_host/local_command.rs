@@ -124,7 +124,6 @@ impl Drop for Command {
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
-        #[path = "local_command_notes_tests.rs"]
         mod notes_tests;
     }
 }
