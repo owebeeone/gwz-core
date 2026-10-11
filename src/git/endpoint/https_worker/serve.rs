@@ -8,6 +8,13 @@ impl Prepared {
             }
         }
     }
+    /// Tells the key's limit machine what the POST's response said.
+    fn tell_gate(&self, response: &Response<Incoming>) {
+        if let Some(connection) = self.lease.as_ref().and_then(HttpLease::pool_connection) {
+            self.gate
+                .posted(connection, response.status().as_u16(), response.headers());
+        }
+    }
     pub(crate) fn io_timeout_ms(&self) -> u64 {
         self.io_ms
     }
@@ -127,6 +134,10 @@ impl Prepared {
         let mut response = if let Some(response) = self.response.take() {
             response
         } else {
+            // The server has throttled exactly the POSTs when a POST response
+            // set a hold: this one waits for its end before its first byte
+            // (§4.5).
+            self.gate.wait_for_continuing().await;
             let (tx, body) = body_channel();
             let request = self.request(body).map_err(|e| e.code)?;
             *facts.lock().unwrap_or_else(|e| e.into_inner()) = self.opened.facts.clone();
@@ -176,6 +187,7 @@ impl Prepared {
                     let response=result?;
                     self.reject_credential(&response);
                     record_response(&response,&facts);
+                    self.tell_gate(&response);
                     check_response(&response,self.input.service)?;
                     // A final rejection is returned immediately, even when Git is
                     // blocked writing a body. Successful responses still require
@@ -187,6 +199,7 @@ impl Prepared {
                     let response=send.await?;
                     self.reject_credential(&response);
                     record_response(&response,&facts);
+                    self.tell_gate(&response);
                     check_response(&response,self.input.service)?;
                     result?;
                     response

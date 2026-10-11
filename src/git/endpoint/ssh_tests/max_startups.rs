@@ -24,10 +24,13 @@
 //! Linux a scripted server that answers as 9.6p1 does stands in for it.
 use crate::git::endpoint::{
     agent_job::Job,
-    setup_retry::{Phase, Verdict, classify},
+    setup_retry::{Phase, Signal, Verdict, classify, suspect},
     ssh_network, ssh_setup,
 };
-use gwz_transport::{pool::Key, protocol::ErrorCode};
+use gwz_transport::{
+    pool::Key,
+    protocol::{ErrorCode, Facts, Failure},
+};
 use std::{
     io::{self, Read, Write},
     net::{Shutdown, TcpListener},
@@ -64,6 +67,17 @@ fn assert_dropped(error: &io::Error, context: &str) {
     assert_eq!(
         classify(&failure, Phase::Setup),
         Verdict::Retry,
+        "{context}"
+    );
+    // And, as the open's progress facts say no credential was offered, the
+    // evidence of the setup limit `Ns`, not of `N` (§4.10).
+    let before_authentication = Failure {
+        facts: Some(Facts::default()),
+        ..failure
+    };
+    assert_eq!(
+        suspect(&before_authentication, Phase::Setup, true),
+        Some(Signal::SetupDrop),
         "{context}"
     );
 }

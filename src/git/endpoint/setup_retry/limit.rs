@@ -25,14 +25,15 @@
 //! to start the tests of the limit with a queued member as carrier (§4.7).
 //! Cut 4: RESTORING (§5.5), in [`control`] and [`fsm`]: after an outage that
 //! lowered `N`, judged doubling steps back up to `N_good`, which the endpoints
-//! start when the retry machine's health changes ([`Scoped::health`]). The
-//! setup limit `Ns`, the POST-level holds and the notes drain are the next
-//! steps, so the module still allows dead code (their hooks, and `admit`,
-//! which only the machine's own tests drive).
-#![allow(
-    dead_code,
-    reason = "the setup limit, POST-level holds and the notes drain come later"
-)]
+//! start when the retry machine's health changes ([`Scoped::health`]).
+//! Cut 5: SSH's setup limit `Ns` (§4.10), in `control::setup_limit`: a second
+//! machine and timer over the setups in flight, fed by [`Signal::SetupDrop`]
+//! and never by `N`'s evidence, with its own window ([`windows`]'s `lo_s` and
+//! `hi_s`) and its test (`AttemptKind::SetupProbe`). The POST-level holds are
+//! the HTTPS worker's `Gate` and [`Scoped::continuing_may_begin`]. The notes
+//! drain to the CLI is still to come, so the module still allows dead code
+//! (its hooks, and `admit`, which only the machine's own tests drive).
+#![allow(dead_code, reason = "the notes drain comes later")]
 
 mod control;
 mod filter;
@@ -55,6 +56,7 @@ cfg_if::cfg_if! {
         mod control_hold_tests;
         mod control_pool_tests;
         mod control_restore_tests;
+        mod control_setup_tests;
         mod control_tests;
         mod filter_tests;
         mod fsm_tests;

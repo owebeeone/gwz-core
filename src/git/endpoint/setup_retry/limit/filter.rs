@@ -8,6 +8,9 @@ use super::windows::AttemptKind;
 pub(crate) enum Signal {
     Throttle,
     Suspect,
+    /// An SSH setup dropped before authentication: the evidence of the setup
+    /// limit `Ns` (§4.10), never of `N`.
+    SetupDrop,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,8 +47,12 @@ pub(crate) struct Refusal {
 /// `lo` and `hi` others (§4.4's table).
 pub(crate) fn judge(kind: AttemptKind, target: usize, lo: usize, hi: usize) -> Judgement {
     match kind {
-        AttemptKind::Ordinary | AttemptKind::Restore if hi < target => Judgement::Conclusive,
-        AttemptKind::Ordinary | AttemptKind::Restore => Judgement::Inconclusive,
+        AttemptKind::Ordinary | AttemptKind::Restore | AttemptKind::SetupProbe if hi < target => {
+            Judgement::Conclusive
+        }
+        AttemptKind::Ordinary | AttemptKind::Restore | AttemptKind::SetupProbe => {
+            Judgement::Inconclusive
+        }
         // Nothing else was counted, so a refusal at k = 1 is no limit.
         AttemptKind::Confirming if target <= 1 => Judgement::NotALimit,
         AttemptKind::Probe | AttemptKind::Confirming if fair(target, lo) => Judgement::Fair,
@@ -71,7 +78,11 @@ pub(crate) fn evidence(refusal: &Refusal) -> Evidence {
         hi,
         adaptive,
     } = *refusal;
-    if !kind.is_test() && hi == 0 {
+    // A setup drop is the setup limit's evidence (§4.10), none for `N`.
+    if signal == Signal::SetupDrop {
+        return Evidence::RetryMachine;
+    }
+    if !kind.is_n_test() && hi == 0 {
         return Evidence::RetryMachine;
     }
     // Nothing can be tested without a budget (`--max-retries 0`): a Suspect
@@ -87,6 +98,6 @@ pub(crate) fn evidence(refusal: &Refusal) -> Evidence {
         (Judgement::Fair, _, _) => Evidence::Overload,
         (Judgement::Conclusive, _, _) if !adaptive => Evidence::HoldOnly,
         (Judgement::Conclusive, _, Signal::Throttle) => Evidence::Overload,
-        (Judgement::Conclusive, _, Signal::Suspect) => Evidence::Confirm,
+        (Judgement::Conclusive, _, _) => Evidence::Confirm,
     }
 }

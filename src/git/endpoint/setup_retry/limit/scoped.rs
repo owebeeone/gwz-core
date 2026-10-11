@@ -56,6 +56,7 @@ impl Scoped {
             room: slot.limit.has_room(),
             connected: slot.limit.table().connected(),
             restoring: slot.limit.restoring(),
+            setups: slot.limit.setup_allowance(),
         })
         .unwrap_or_else(|| Admission {
             gate_open: true,
@@ -63,6 +64,7 @@ impl Scoped {
             room: true,
             connected: 0,
             restoring: false,
+            setups: usize::MAX,
         })
     }
 
@@ -80,6 +82,14 @@ impl Scoped {
     /// connection: not during a hold (§4.5).
     pub(crate) fn exchange_may_begin(&self, key: &Key, now: u64) -> bool {
         self.with(key, now, |slot, _| slot.limit.admits_first_exchange(now))
+            .unwrap_or(true)
+    }
+
+    /// Whether a member past its discovery may send its next exchange (a
+    /// POST) before its first byte: not while a hold that a POST response set
+    /// is in force (§4.5). A hold a discovery set does not hold it.
+    pub(crate) fn continuing_may_begin(&self, key: &Key, now: u64) -> bool {
+        self.with(key, now, |slot, _| slot.limit.admits_continuing(now))
             .unwrap_or(true)
     }
 
@@ -286,6 +296,7 @@ impl Scoped {
             View {
                 state: slot.limit.state(),
                 n: slot.limit.n(),
+                setup_limit: slot.limit.setup_limit(),
                 ceiling,
                 connected: table.connected(),
                 possible: table.possible(),

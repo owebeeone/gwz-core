@@ -210,6 +210,10 @@ impl PlacementEndpoint {
                 let governor = self.endpoint.governor().scoped(&queued.key.0);
                 let pool_now = self.endpoint.pool_now();
                 let mut admission = governor.admission(&queued.pool_key, pool_now);
+                // The machine counts setups as the host reports them, which
+                // lags this endpoint's own starts: the opens in flight bound
+                // them too (§4.10).
+                admission.room &= !self.setups_full(&queued.pool_key, admission.setups);
                 // A due test of the site's limit starts through this member
                 // when it cannot start otherwise, the gate shut or the site
                 // full (§4.5, §4.7): never a probe on its final attempt.
@@ -223,6 +227,7 @@ impl PlacementEndpoint {
                     admission = Admission {
                         gate_open: true,
                         target,
+                        setups: governor.admission(&queued.pool_key, pool_now).setups,
                         ..admission
                     };
                     carries_test = Some(token);
@@ -505,6 +510,16 @@ impl PlacementEndpoint {
             .filter(|state| state.attachment.is_some() && state.site.as_ref() == Some(&site))
             .count();
         admission.connected > streaming
+    }
+
+    /// Whether the opens in flight on `key`'s host and port already fill the
+    /// `setups` the operation may have in setup there (SSH's `Ns`).
+    fn setups_full(&self, key: &Key, setups: usize) -> bool {
+        self.opens
+            .iter()
+            .filter(|open| open.pool_key.host == key.host && open.pool_key.port == key.port)
+            .count()
+            >= setups
     }
 
     /// An open starts while the opens in flight stay within the operation's

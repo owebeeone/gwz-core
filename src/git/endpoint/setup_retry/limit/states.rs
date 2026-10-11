@@ -183,6 +183,19 @@ impl Table {
             .map(|entry| entry.until)
             .min()
     }
+    /// Every setup in flight, clocked or not: what `MaxStartups` counts.
+    pub(crate) fn setting_up(&self) -> usize {
+        self.count(|entry| entry.phase == Phase::SettingUp)
+    }
+    pub(crate) fn setting_up_ids(&self) -> BTreeSet<ConnId> {
+        self.ids(|entry| entry.phase == Phase::SettingUp)
+    }
+    /// Whether `conn` is a setup in flight that has a clock.
+    pub(crate) fn is_clocked_setup(&self, conn: ConnId) -> bool {
+        self.conns
+            .get(&conn)
+            .is_some_and(|entry| entry.phase == Phase::SettingUp && entry.clocked)
+    }
     pub(crate) fn connected_ids(&self) -> BTreeSet<ConnId> {
         self.ids(|entry| entry.phase == Phase::Connected)
     }

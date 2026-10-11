@@ -3,7 +3,7 @@
 //! server saying slow down; any other status is an answer. Reading the headers
 //! is here; the machine's judgement is the governor's.
 use super::*;
-use crate::git::endpoint::setup_retry::Signal;
+use crate::git::endpoint::setup_retry::{Conn, Signal};
 use hyper::{
     HeaderMap,
     header::{DATE, RETRY_AFTER},
@@ -134,20 +134,10 @@ impl Client {
         key: &Key,
         cancel: &CancellationToken,
     ) -> Result<(), Failure> {
-        let governor = self.pool.governor();
-        let scoped = governor.scoped(operation);
-        loop {
-            let now = self.pool.now();
-            if scoped.exchange_may_begin(key, now) {
-                return Ok(());
-            }
-            let pause = governor
-                .next_deadline(now)
-                .map_or(20, |at| at.saturating_sub(now).clamp(5, 100));
-            tokio::select! {
-                _ = cancel.cancelled() => return Err(failure(ErrorCode::Cancelled)),
-                _ = tokio::time::sleep(Duration::from_millis(pause)) => {}
-            }
+        let scoped = self.pool.governor().scoped(operation);
+        tokio::select! {
+            _ = cancel.cancelled() => Err(failure(ErrorCode::Cancelled)),
+            () = pause_until(&self.pool, |now| scoped.exchange_may_begin(key, now)) => Ok(()),
         }
     }
     /// A connect failed: if it looks like the host's limit, the site's machine
@@ -210,6 +200,77 @@ impl Client {
                 throttled: false,
                 ruling: governor.refused(key, connection, Signal::Suspect, None, false, now),
             }),
+        }
+    }
+}
+
+/// Waits, driving the machines' clock, until `admitted` says yes at the
+/// pool's time. The caller cancels by dropping the future.
+async fn pause_until(pool: &HttpsPool, admitted: impl Fn(u64) -> bool) {
+    loop {
+        let now = pool.now();
+        if admitted(now) {
+            return;
+        }
+        let pause = pool
+            .governor()
+            .next_deadline(now)
+            .map_or(20, |at| at.saturating_sub(now).clamp(5, 100));
+        tokio::time::sleep(Duration::from_millis(pause)).await;
+    }
+}
+
+/// What a POST needs of its key's limit machine (§4.5): the member past its
+/// discovery is not held by a hold a discovery set, but the server has
+/// throttled exactly the POSTs when a POST response set it, so the next POST
+/// waits for the hold's end before its first byte, and a POST's own throttle
+/// sets that hold.
+#[derive(Clone)]
+pub(crate) struct Gate {
+    pool: HttpsPool,
+    operation: String,
+    key: Key,
+}
+
+impl Gate {
+    pub(super) fn new(pool: &HttpsPool, operation: &str, key: Key) -> Self {
+        Self {
+            pool: pool.clone(),
+            operation: operation.to_owned(),
+            key,
+        }
+    }
+    /// Waits until no POST-set hold is in force on the key. Cancelled by
+    /// dropping the future.
+    pub(super) async fn wait_for_continuing(&self) {
+        let scoped = self.pool.governor().scoped(&self.operation);
+        pause_until(&self.pool, |now| {
+            scoped.continuing_may_begin(&self.key, now)
+        })
+        .await;
+    }
+    /// A POST's response arrived on the pool connection `connection`: a
+    /// throttle holds the key for the other POSTs, for as long as the server
+    /// said (§4.5), or `T0` if it did not; any answer sets up a new
+    /// connection.
+    pub(super) fn posted(&self, connection: Conn, status: u16, headers: &HeaderMap) {
+        let scoped = self.pool.governor().scoped(&self.operation);
+        let now = self.pool.now();
+        match said(status, headers) {
+            Said::Throttle { retry_after_ms } => {
+                scoped.refused(
+                    &self.key,
+                    connection,
+                    Signal::Throttle,
+                    retry_after_ms,
+                    true,
+                    now,
+                );
+            }
+            // A POST that is the first exchange on a new connection is what
+            // sets it up (§4.1).
+            Said::Answered => scoped.answered(&self.key, connection, now),
+            Said::Unanswered => {}
         }
     }
 }

@@ -13,11 +13,18 @@ pub(crate) enum AttemptKind {
     Probe,
     Confirming,
     Restore,
+    /// A setup test of SSH's setup limit `Ns` (§4.10): one more setup in
+    /// flight than `Ns`, a new connection like any start.
+    SetupProbe,
 }
 
 impl AttemptKind {
     /// A test uses the key's one test slot and must be a new connection.
     pub(crate) fn is_test(self) -> bool {
+        matches!(self, Self::Probe | Self::Confirming | Self::SetupProbe)
+    }
+    /// A test of `N`: the setup test is judged against `Ns` only.
+    pub(crate) fn is_n_test(self) -> bool {
         matches!(self, Self::Probe | Self::Confirming)
     }
 }
@@ -36,6 +43,10 @@ struct Window {
     own: ConnId,
     lo: BTreeSet<ConnId>,
     hi: BTreeSet<ConnId>,
+    /// §4.10's `S_lo_s` and `S_hi_s`: the other setups in progress for the
+    /// whole window, and at any time during it.
+    lo_s: BTreeSet<ConnId>,
+    hi_s: BTreeSet<ConnId>,
     winding_down: BTreeSet<ConnId>,
     /// The attempt's connection ended: the sets stop where they are, though
     /// the verdict on it is still to come.
@@ -48,6 +59,8 @@ pub(crate) struct Closed {
     pub(crate) kind: AttemptKind,
     pub(crate) lo: usize,
     pub(crate) hi: usize,
+    pub(crate) lo_s: BTreeSet<ConnId>,
+    pub(crate) hi_s: usize,
     /// Every connection that was Closing or Settling at any time in the
     /// window: the next start waits until they have settled (§4.4).
     pub(crate) winding_down: BTreeSet<ConnId>,
@@ -95,6 +108,8 @@ impl Windows {
                 own,
                 lo: others(table.connected_ids()),
                 hi: others(table.possible_ids()),
+                lo_s: others(table.setting_up_ids()),
+                hi_s: others(table.setting_up_ids()),
                 winding_down: others(table.winding_down_ids()),
                 frozen: false,
             },
@@ -110,6 +125,12 @@ impl Windows {
         {
             if change.from == Some(Phase::Connected) {
                 window.lo.remove(&change.conn);
+            }
+            if change.from == Some(Phase::SettingUp) {
+                window.lo_s.remove(&change.conn);
+            }
+            if change.to == Phase::SettingUp {
+                window.hi_s.insert(change.conn);
             }
             match change.to {
                 Phase::Gone => {}
@@ -137,6 +158,8 @@ impl Windows {
             kind: window.kind,
             lo: window.lo.len(),
             hi: window.hi.len(),
+            lo_s: window.lo_s,
+            hi_s: window.hi_s.len(),
             winding_down: window.winding_down,
         })
     }

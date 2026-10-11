@@ -100,6 +100,11 @@ pub(crate) struct Admission {
     /// A restore after an outage is under way (§5.5): a new connection is
     /// started only by a member not on its final attempt.
     pub(crate) restoring: bool,
+    /// How many setups the operation may have in flight: SSH's setup limit
+    /// `Ns`, one more for a setup test (§4.10). The machine counts setups from
+    /// the host's reports, which lag the endpoint's own opens; the endpoint
+    /// bounds its opens in flight by this too.
+    pub(crate) setups: usize,
 }
 
 impl Admission {
@@ -122,6 +127,8 @@ impl Admission {
 pub(crate) struct View {
     pub(crate) state: State,
     pub(crate) n: usize,
+    /// SSH's setup limit `Ns` (§4.10).
+    pub(crate) setup_limit: usize,
     pub(crate) ceiling: usize,
     pub(crate) connected: usize,
     pub(crate) possible: usize,
