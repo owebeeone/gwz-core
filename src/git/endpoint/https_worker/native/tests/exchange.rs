@@ -1,5 +1,5 @@
 //! Endpoint exchanges: deadlines, identity sources, rounds, publication and Basic fallback.
-cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
+cfg_if::cfg_if! { if #[cfg(test)] {
     use super::*;
     #[test]
     fn production_pool_wait_cannot_extend_fixed_deadline() {
@@ -15,39 +15,6 @@ cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
             let (result, connect) = endpoint.client.prepare_attempt(request, &CancellationToken::new(), &mut budget, &mut None).await;
             let error = result.err().unwrap(); assert_eq!(error.code, ErrorCode::Timeout); assert!(error.setup_cause.is_none());
             assert_eq!(connect, FirstConnect::None); assert!(started.elapsed() < Duration::from_millis(200)); drop(held);
-        });
-    }
-    #[test]
-    fn production_source_matrix_uses_current_logon_only_when_no_identity() {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-            use crate::git::endpoint::https_fixture::{Server, input, response};
-            for (offer, policy, answer, source) in [
-                ("Negotiate", AuthPolicy::WindowsConfigured, "exit 17", NativeSource::CurrentLogon),
-                ("Basic realm=x, NTLM, Negotiate", AuthPolicy::WindowsDefault, "exit 17", NativeSource::CurrentLogon),
-                ("NTLM", AuthPolicy::WindowsConfigured, "printf 'username=fixture@example.test\npassword=fixture\n\n'", NativeSource::Configured),
-                ("NTLM", AuthPolicy::WindowsConfigured, "printf 'username=\npassword=fixture\n\n'", NativeSource::CurrentLogon),
-                ("NTLM", AuthPolicy::WindowsConfigured, "printf '\n'", NativeSource::CurrentLogon),
-                ("NTLM", AuthPolicy::WindowsConfigured, "NO_EXECUTABLE", NativeSource::CurrentLogon),
-                ("NTLM", AuthPolicy::WindowsConfigured, "exit 17", NativeSource::CurrentLogon),
-                ("NTLM", AuthPolicy::WindowsConfigured, "printf 'username=a\nusername=b\npassword=x\n\n'", NativeSource::CurrentLogon),
-                ("NTLM", AuthPolicy::WindowsConfigured, "UNSTARTABLE", NativeSource::CurrentLogon),
-            ] {
-                let server = Server::start(Arc::new(move |request| Box::pin(async move {
-                    let mut result = response(if request.headers().contains_key(AUTHORIZATION) { 200 } else { 401 }, GitService::UploadPackAdvertisement, Bytes::new());
-                    if result.status() == 401 { result.headers_mut().insert(WWW_AUTHENTICATE, offer.parse().unwrap()); } result
-                }))).await;
-                let dir = tempfile::tempdir().unwrap(); let helper = dir.path().join("git");
-                crate::git::endpoint::helper_script::write_git_fixture(&helper, answer);
-                if answer == "UNSTARTABLE" { std::fs::write(&helper, b"invalid executable fixture").unwrap(); }
-                let auth = (answer != "NO_EXECUTABLE").then_some(https_auth::Config { executable: helper, environment: Vec::new() });
-                let mut endpoint = Endpoint::new(server.config(), auth, pool::Config::default()).unwrap();
-                let (caller, port) = fake(true, 2); endpoint.client.set_native(caller);
-                let mut request = input(&server, GitService::UploadPackAdvertisement); request.policy = policy;
-                let (prepared, _) = endpoint.client.prepare_attempt(request, &CancellationToken::new(), &mut endpoint.client.budget(), &mut None).await;
-                let prepared = prepared.unwrap(); assert_eq!(prepared.opened.facts.native.as_ref().unwrap().source, source);
-                assert_eq!(port.starts.load(Ordering::Acquire), 1); drop(prepared); endpoint.client.finish_operation("operation");
-                assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
-            }
         });
     }
     #[test]
@@ -137,22 +104,25 @@ cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
             use crate::git::endpoint::https_fixture::{Server, input, response};
             for cancel_request in [false, true] {
+                // Basic is the one challenge the helper is asked about (the logon session answers the others).
                 let server = Server::start(Arc::new(|_| Box::pin(async {
                     let mut result = response(401, GitService::UploadPackAdvertisement, Bytes::new());
-                    result.headers_mut().insert(WWW_AUTHENTICATE, "NTLM".parse().unwrap()); result
+                    result.headers_mut().insert(WWW_AUTHENTICATE, "Basic realm=x".parse().unwrap()); result
                 }))).await;
-                let dir = tempfile::tempdir().unwrap(); let helper = dir.path().join("git"); let entered = dir.path().join("entered");
-                let script = format!("touch '{}'; sleep 1; printf 'username=fixture\npassword=fixture\n\n'", entered.display());
-                crate::git::endpoint::helper_script::write_git_fixture(&helper, &script);
-                let mut endpoint = Endpoint::new(server.config(), Some(https_auth::Config { executable: helper, environment: Vec::new() }), pool::Config::default()).unwrap();
+                let dir = tempfile::tempdir().unwrap(); let entered = dir.path().join("entered");
+                let script = format!("touch '{}'; sleep 30; printf 'username=fixture\npassword=fixture\n\n'", crate::git::endpoint::helper_script::script_path(&entered));
+                let helper = crate::git::endpoint::helper_script::git_fixture(dir.path(), &script);
+                let mut endpoint = Endpoint::new(server.config(), Some(helper), pool::Config::default()).unwrap();
                 let (caller, port) = fake(true, 2); endpoint.client.set_native(caller);
                 let mut request = input(&server, GitService::UploadPackAdvertisement); request.policy = AuthPolicy::WindowsConfigured;
                 let client = endpoint.client.clone(); let cancel = CancellationToken::new(); let signal = cancel.clone();
                 let task = tokio::spawn(async move {
-                    let mut budget = client.budget(); budget.connect = Some(Duration::from_millis(if cancel_request { 1000 } else { 250 }));
+                    let mut budget = client.budget(); budget.connect = Some(Duration::from_millis(if cancel_request { 20_000 } else { 5_000 }));
                     client.prepare_attempt(request, &cancel, &mut budget, &mut None).await
                 });
-                while !entered.exists() { tokio::time::sleep(Duration::from_millis(1)).await; }
+                // Starting a helper takes longer on Windows than the deadline of a test that was written for Unix.
+                let until = Instant::now() + Duration::from_secs(15);
+                while !entered.exists() { assert!(Instant::now() < until, "the helper never started"); tokio::time::sleep(Duration::from_millis(1)).await; }
                 if cancel_request { signal.cancel(); }
                 let (result, connect) = task.await.unwrap(); let error = result.err().unwrap();
                 assert_eq!(error.code, if cancel_request { ErrorCode::Cancelled } else { ErrorCode::Timeout });
@@ -186,9 +156,9 @@ cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
                     result
                 })
             })).await;
-            let dir = tempfile::tempdir().unwrap(); let helper = dir.path().join("git");
-            crate::git::endpoint::helper_script::write_git_fixture(&helper, "printf 'username=fixture\npassword=fixture\n\n'");
-            let endpoint = Endpoint::new(source.config(), Some(https_auth::Config { executable: helper, environment: Vec::new() }), pool::Config::default()).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let helper = crate::git::endpoint::helper_script::git_fixture(dir.path(), "printf 'username=fixture\npassword=fixture\n\n'");
+            let endpoint = Endpoint::new(source.config(), Some(helper), pool::Config::default()).unwrap();
             let mut request = input(&source, GitService::UploadPackAdvertisement); request.policy = AuthPolicy::WindowsConfigured;
             let mut budget = endpoint.client.budget();
             let (prepared, _) = endpoint.client.prepare_attempt(request, &CancellationToken::new(), &mut budget, &mut None).await;
@@ -228,9 +198,9 @@ cfg_if::cfg_if! { if #[cfg(all(test, unix))] {
                     response(if request.headers().contains_key(AUTHORIZATION) { 200 } else { 401 }, service, Bytes::new())
                 })
             })).await;
-            let dir = tempfile::tempdir().unwrap(); let helper = dir.path().join("git");
-            crate::git::endpoint::helper_script::write_git_fixture(&helper, "printf 'username=fixture\\npassword=fixture\\n\\n'");
-            let endpoint = Endpoint::new(server.config(), Some(https_auth::Config { executable: helper, environment: Vec::new() }), pool::Config::default()).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let helper = crate::git::endpoint::helper_script::git_fixture(dir.path(), "printf 'username=fixture\\npassword=fixture\\n\\n'");
+            let endpoint = Endpoint::new(server.config(), Some(helper), pool::Config::default()).unwrap();
             for service in [GitService::UploadPackAdvertisement, GitService::UploadPackExchange] {
                 let mut request = input(&server, service); request.policy = AuthPolicy::WindowsConfigured;
                 let (prepared, _) = endpoint.client.prepare_attempt(request, &CancellationToken::new(), &mut endpoint.client.budget(), &mut None).await;

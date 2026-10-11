@@ -7,6 +7,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use super::{Found, Location, Refusal, Setting, Source, Transport, last_value};
+use crate::git::endpoint::ssh_home;
 use crate::session_host::EnvironmentSnapshot;
 
 /// The transport the global files select, or the default when none holds the
@@ -62,18 +63,25 @@ pub(super) fn resolve(environment: &EnvironmentSnapshot) -> Result<Setting, Refu
 /// git's `--global` files in the order read, where `git config --global`
 /// writes them (design §2, D5): `$XDG_CONFIG_HOME/git/config`, or
 /// `$HOME/.config/git/config` when that variable is unset or empty, then
-/// `$HOME/.gitconfig`. Both variables come from the snapshot. A `HOME` that is
-/// empty or relative names no file, and neither does a relative
-/// `XDG_CONFIG_HOME`, since the caller's directory, perhaps a workspace, would
-/// otherwise supply the value. No passwd entry is consulted.
+/// `$HOME/.gitconfig`. Both variables come from the snapshot, and `$HOME` is
+/// the home of the SSH home contract (`git::endpoint::ssh_home`, plan step
+/// 3.1; design `GwzTransportWindowsParityDesign.md` §3, §10): `HOME`, else
+/// `USERPROFILE`, with Windows' `HOMEDRIVE` and `HOMEPATH` between them and
+/// its candidates required to exist, as libgit2 reads them. A home that
+/// cannot be chosen (an empty or relative `HOME`, nothing set) names no file,
+/// and neither does a relative `XDG_CONFIG_HOME`, since the caller's
+/// directory, perhaps a workspace, would otherwise supply the value. No
+/// current directory is given to the choice, so a relative home is never
+/// resolved against one. No passwd entry is consulted.
 fn files(environment: &EnvironmentSnapshot) -> Vec<PathBuf> {
-    let directory = |name: &str| {
-        environment
-            .get(name)
-            .map(|value| PathBuf::from(value.as_os_str()))
-    };
-    let home = directory("HOME").filter(|home| home.is_absolute());
-    let xdg = match directory("XDG_CONFIG_HOME").filter(|base| !base.as_os_str().is_empty()) {
+    let home = ssh_home::resolve(ssh_home::PLATFORM, environment, None, &ssh_home::Disk)
+        .ok()
+        .map(|home| home.path);
+    let xdg = match environment
+        .get("XDG_CONFIG_HOME")
+        .map(|value| PathBuf::from(value.as_os_str()))
+        .filter(|base| !base.as_os_str().is_empty())
+    {
         Some(base) => base.is_absolute().then(|| base.join("git/config")),
         None => home.as_ref().map(|home| home.join(".config/git/config")),
     };

@@ -164,7 +164,8 @@ impl PlacementEndpoint {
         if endpoint_id.is_empty()
             || trust_owner.is_empty()
             || !home.is_absolute()
-            || home.to_str().is_none_or(|value| value.contains('\0'))
+            // A native path: only a NUL, which no file name holds, makes the home unusable (TD6).
+            || home.as_os_str().as_encoded_bytes().contains(&0)
         {
             return Err(io::ErrorKind::InvalidInput.into());
         }

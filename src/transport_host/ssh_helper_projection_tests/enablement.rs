@@ -23,24 +23,27 @@ fn remediation_disabled_backend_cannot_lookup_or_reuse_helper_authenticated_ssh(
                 )
                 .unwrap();
                 let marker = root.path().join("lookups");
-                let executable = root.path().join("git");
-                helper_script::write_git_fixture(
-                    &executable,
+                let mut config = helper_script::git_fixture(
+                    root.path(),
                     "printf x >> \"$MARKER\"\nprintf 'username=git\\npassword=fixture-answer\\n'",
                 );
+                config
+                    .environment
+                    .push(("MARKER".into(), helper_script::script_path(&marker).into()));
                 let runtime = TransportRuntime::with_https(
                     SshEndpointConfig::fixture(home, None),
                     HttpsEndpointConfig {
                         tls: Default::default(),
-                        auth: Some(https_auth::Config {
-                            executable,
-                            environment: vec![("MARKER".into(), marker.as_os_str().into())],
-                        }),
+                        auth: Some(config),
                     },
                     HelperSlots::new(),
                 )
                 .unwrap();
-                let url = format!("ssh://git@127.0.0.1:{}{}", server.port, bare.display());
+                let url = format!(
+                    "ssh://git@127.0.0.1:{}{}",
+                    server.port,
+                    crate::git::endpoint::ssh_fixture::server_path(&bare)
+                );
                 for (n, enabled) in order.into_iter().enumerate() {
                     let mut metadata = meta(&format!("enablement-{n}"));
                     metadata.policy = Some(crate::OperationPolicy {
@@ -88,17 +91,17 @@ fn disabled_operation_preserves_selected_key_and_isolates_pool_reuse() {
     use super::super::driver_tests::{block_on, common, endpoint_home, fixture_url, local_meta};
     let fixture = common::SshdFixture::new();
     let home = endpoint_home(&fixture);
-    let executable = fixture.temp.path().join("git");
     let marker = fixture.temp.path().join("helper-ran");
-    helper_script::write_git_fixture(&executable, "printf x > \"$MARKER\"\nexit 1");
+    let mut config =
+        helper_script::git_fixture(fixture.temp.path(), "printf x > \"$MARKER\"\nexit 1");
+    config
+        .environment
+        .push(("MARKER".into(), helper_script::script_path(&marker).into()));
     let runtime = TransportRuntime::with_https(
         SshEndpointConfig::fixture(home.clone(), None),
         HttpsEndpointConfig {
             tls: Default::default(),
-            auth: Some(https_auth::Config {
-                executable,
-                environment: vec![("MARKER".into(), marker.as_os_str().into())],
-            }),
+            auth: Some(config),
         },
         HelperSlots::new(),
     )

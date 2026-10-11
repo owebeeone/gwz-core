@@ -21,9 +21,9 @@ cfg_if::cfg_if! { if #[cfg(test)] {
         let mut headers = HeaderMap::new();
         headers.insert(WWW_AUTHENTICATE, "Negotiate c3ludGhldGlj".parse().unwrap());
         let offers = Offers::parse(&headers).unwrap();
-        let selected = offers.select(false).unwrap();
+        let selected = offers.select().unwrap();
         assert_eq!(selected.scheme, NativeScheme::Negotiate);
-        let facts = History::new(NativeSource::CurrentLogon, selected.scheme).facts;
+        let facts = History::new(selected.scheme).facts;
         assert_eq!(facts.native.as_ref().unwrap().observation, NativeObservation::NotStarted);
         assert!(!facts.credential_offered);
         assert_eq!(selected.initial().unwrap_err(), ErrorCode::UnsupportedOperation);
@@ -33,9 +33,8 @@ cfg_if::cfg_if! { if #[cfg(test)] {
         let mut headers = HeaderMap::new();
         headers.insert(WWW_AUTHENTICATE, "Basic realm=\"x\", NTLM, Negotiate".parse().unwrap());
         let offers = Offers::parse(&headers).unwrap();
-        assert!(offers.helper_allowed());
-        assert_eq!(offers.select(true).unwrap().scheme, NativeScheme::Negotiate);
-        assert_eq!(offers.select(false).unwrap().scheme, NativeScheme::Negotiate);
+        assert!(offers.basic);
+        assert_eq!(offers.select().unwrap().scheme, NativeScheme::Negotiate);
         assert_eq!(decode_challenge(b"YQ==", 1).unwrap().as_bytes(), b"a");
         assert!(decode_challenge(b"YQ==", 0).is_err());
         for invalid in [b"YQ".as_slice(), b"YR==", b" YQ==", b"YQ== ", b""] {
@@ -43,8 +42,23 @@ cfg_if::cfg_if! { if #[cfg(test)] {
         }
     }
     #[test]
+    fn digest_is_never_an_offer_and_the_logon_session_takes_ntlm_when_negotiate_is_absent() {
+        let parse = |text: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(WWW_AUTHENTICATE, text.parse().unwrap());
+            Offers::parse(&headers).unwrap()
+        };
+        let digest_only = parse("Digest realm=\"x\", nonce=\"y\"");
+        assert!(digest_only.select().is_none() && !digest_only.basic && digest_only.native.is_empty());
+        let beside_basic = parse("Digest realm=\"x\", Basic realm=\"x\"");
+        assert!(beside_basic.select().is_none() && beside_basic.basic);
+        let beside_ntlm = parse("Digest realm=\"x\", NTLM");
+        assert_eq!(beside_ntlm.select().unwrap().scheme, NativeScheme::Ntlm);
+        assert_eq!(parse("Bearer, NTLM, Basic").select().unwrap().scheme, NativeScheme::Ntlm);
+    }
+    #[test]
     fn authority_continue_is_preserved_but_does_not_authorize_remote_success() {
-        let mut history = History::new(NativeSource::CurrentLogon, NativeScheme::Ntlm);
+        let mut history = History::new(NativeScheme::Ntlm);
         let step = gwz_sspi::TokenStep {
             status: gwz_sspi::TokenStatus::Continue, attributes: 0,
             observation: gwz_sspi::MechanismObservation::Selected { mechanism: gwz_sspi::Mechanism::Ntlm, authoritative: true },
@@ -62,7 +76,7 @@ cfg_if::cfg_if! { if #[cfg(test)] {
     fn direct_ntlm_observation_cannot_be_unresolved_or_kerberos() {
         for observation in [gwz_sspi::MechanismObservation::Unresolved,
             gwz_sspi::MechanismObservation::Selected { mechanism: gwz_sspi::Mechanism::Kerberos, authoritative: true }] {
-            let mut history = History::new(NativeSource::CurrentLogon, NativeScheme::Ntlm);
+            let mut history = History::new(NativeScheme::Ntlm);
             let step = gwz_sspi::TokenStep { status: gwz_sspi::TokenStatus::Continue, attributes: 0,
                 observation, payload: gwz_sspi::SecretBytes::new(b"synthetic") };
             assert_eq!(history.observe(&step), Err(ErrorCode::Protocol));
@@ -72,7 +86,7 @@ cfg_if::cfg_if! { if #[cfg(test)] {
     fn provisional_resolution_cannot_switch_or_become_unresolved() {
         for observation in [gwz_sspi::MechanismObservation::Unresolved,
             gwz_sspi::MechanismObservation::Selected { mechanism: gwz_sspi::Mechanism::Kerberos, authoritative: false }] {
-            let mut history = History::new(NativeSource::CurrentLogon, NativeScheme::Negotiate);
+            let mut history = History::new(NativeScheme::Negotiate);
             let mut step = gwz_sspi::TokenStep { status: gwz_sspi::TokenStatus::Continue, attributes: 0,
                 observation: gwz_sspi::MechanismObservation::Selected { mechanism: gwz_sspi::Mechanism::Ntlm, authoritative: false },
                 payload: gwz_sspi::SecretBytes::new(b"synthetic") };

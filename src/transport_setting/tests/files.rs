@@ -3,12 +3,26 @@
 
 use std::ffi::OsStr;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
-use super::fixture::{GWZ, NATIVE, fifo, home, libgit2_home, snapshot, within, write};
+use super::fixture::{GWZ, NATIVE, Unreadable, home, link, snapshot, write};
 use crate::test_support::TempDir;
 use crate::transport_setting::{Location, Refusal, Setting, Source, Transport, resolve};
+
+cfg_if::cfg_if! {
+    if #[cfg(windows)] {
+        /// `path` as libgit2's messages name it: with `/` separators, since the transport setting hands libgit2 such a
+        /// path on Windows (its `dirname` knows no other).
+        fn libgit2_text(path: &Path) -> String {
+            path.display().to_string().replace('\\', "/")
+        }
+    } else {
+        /// `path` as libgit2's messages name it.
+        fn libgit2_text(path: &Path) -> String {
+            path.display().to_string()
+        }
+    }
+}
 
 /// A setting that `file` decided, with the files read and none skipped.
 fn decided_by(transport: Transport, file: &Path, included: bool, read: &[&Path]) -> Setting {
@@ -165,6 +179,75 @@ fn an_empty_relative_or_unset_home_names_no_file() {
     }
 }
 
+/// With `HOME` unset the home contract's fallback applies (plan step 3.1; operator, 2026-10-11): `USERPROFILE` is the
+/// home, so `$USERPROFILE/.gitconfig` and `$USERPROFILE/.config/git/config` are the files, and an `XDG_CONFIG_HOME`
+/// that is set still names its own.
+#[test]
+fn with_home_unset_the_userprofile_names_the_files() {
+    let dir = TempDir::new("setting-userprofile");
+    let (xdg, gitconfig) = (
+        dir.path().join(".config/git/config"),
+        dir.path().join(".gitconfig"),
+    );
+    let environment = snapshot([("USERPROFILE", dir.path().as_os_str())]);
+    write(&xdg, NATIVE);
+    write(&gitconfig, GWZ);
+    assert_eq!(
+        resolve(None, &environment),
+        Ok(decided_by(
+            Transport::Gwz,
+            &gitconfig,
+            false,
+            &[&xdg, &gitconfig]
+        ))
+    );
+    let xdg_home = dir.path().join("elsewhere");
+    let named = xdg_home.join("git/config");
+    write(&named, NATIVE);
+    let with_xdg = snapshot([
+        ("USERPROFILE", dir.path().as_os_str()),
+        ("XDG_CONFIG_HOME", xdg_home.as_os_str()),
+    ]);
+    assert_eq!(
+        resolve(None, &with_xdg),
+        Ok(decided_by(
+            Transport::Gwz,
+            &gitconfig,
+            false,
+            &[&named, &gitconfig]
+        ))
+    );
+}
+
+/// `HOME` keeps precedence over `USERPROFILE`, and an explicitly empty `HOME` is no reason to use it: the lookup
+/// names no file from the profile, as it names none for an empty `HOME` alone.
+#[test]
+fn home_wins_over_userprofile_and_an_empty_home_does_not_fall_back() {
+    let dir = TempDir::new("setting-home-over-profile");
+    let (user, profile) = (dir.path().join("user"), dir.path().join("profile"));
+    write(&user.join(".gitconfig"), NATIVE);
+    write(&profile.join(".gitconfig"), GWZ);
+    let both = snapshot([
+        ("HOME", user.as_os_str()),
+        ("USERPROFILE", profile.as_os_str()),
+    ]);
+    let gitconfig = user.join(".gitconfig");
+    assert_eq!(
+        resolve(None, &both),
+        Ok(decided_by(
+            Transport::Native,
+            &gitconfig,
+            false,
+            &[&gitconfig]
+        ))
+    );
+    let empty = snapshot([
+        ("HOME", OsStr::new("")),
+        ("USERPROFILE", profile.as_os_str()),
+    ]);
+    assert_eq!(resolve(None, &empty), Ok(by_default(&[])));
+}
+
 /// `GIT_CONFIG_GLOBAL`, which git honours and libgit2 does not, and the
 /// command scope's variables are not read, even when they hold the key.
 #[test]
@@ -257,37 +340,13 @@ fn include_path_is_followed_and_its_value_reported_as_included() {
 }
 
 /// A `~/` include resolves against libgit2's process-wide home, not the
-/// snapshot's `HOME`.
+/// snapshot's `HOME`: a name that only the snapshot's `HOME` holds is not found.
+/// (That the process's own home does find a file is Unix's row, below.)
 #[test]
-fn a_tilde_include_resolves_against_libgit2s_process_wide_home() {
+fn a_tilde_include_does_not_resolve_against_the_snapshots_home() {
     let dir = TempDir::new("setting-include-tilde");
     let user = dir.path().join("home");
     let gitconfig = user.join(".gitconfig");
-    let target = dir.path().join("target.inc");
-    write(&target, NATIVE);
-    // Walk up from libgit2's home to the root, then down to the target, on
-    // real paths, so the walk does not depend on any link on the way.
-    let process_home = fs::canonicalize(libgit2_home()).unwrap();
-    let up = process_home
-        .components()
-        .filter(|component| matches!(component, Component::Normal(_)))
-        .count();
-    let down = fs::canonicalize(&target).unwrap();
-    let down = down.strip_prefix("/").unwrap().to_str().unwrap();
-    write(
-        &gitconfig,
-        format!("[include]\n\tpath = ~/{}{down}\n", "../".repeat(up)),
-    );
-    assert_eq!(
-        resolve(None, &home(&user)),
-        Ok(decided_by(
-            Transport::Native,
-            &gitconfig,
-            true,
-            &[&gitconfig]
-        ))
-    );
-    // A name that only the snapshot's HOME holds is not found.
     let name = format!("{}.inc", dir.path().file_name().unwrap().to_str().unwrap());
     write(&user.join(&name), NATIVE);
     write(&gitconfig, format!("[include]\n\tpath = ~/{name}\n"));
@@ -320,11 +379,10 @@ fn an_unreadable_file_carries_no_value_and_is_listed_as_skipped() {
     let dir = TempDir::new("setting-unreadable");
     let gitconfig = dir.path().join(".gitconfig");
     write(&gitconfig, NATIVE);
-    fs::set_permissions(&gitconfig, fs::Permissions::from_mode(0o000)).unwrap();
-    if fs::File::open(&gitconfig).is_ok() {
+    let Some(unreadable) = Unreadable::new(&gitconfig) else {
         eprintln!("skipped: this process reads a file of mode 000, as root does");
         return;
-    }
+    };
     assert_eq!(
         resolve(None, &home(dir.path())),
         Ok(Setting {
@@ -334,10 +392,10 @@ fn an_unreadable_file_carries_no_value_and_is_listed_as_skipped() {
             skipped: vec![gitconfig.clone()],
         })
     );
+    drop(unreadable);
     let xdg = dir.path().join(".config/git/config");
     write(&xdg, NATIVE);
-    fs::set_permissions(&xdg, fs::Permissions::from_mode(0o000)).unwrap();
-    fs::set_permissions(&gitconfig, fs::Permissions::from_mode(0o600)).unwrap();
+    let _unreadable = Unreadable::new(&xdg).unwrap();
     assert_eq!(
         resolve(None, &home(dir.path())),
         Ok(Setting {
@@ -350,37 +408,20 @@ fn an_unreadable_file_carries_no_value_and_is_listed_as_skipped() {
             skipped: vec![xdg.clone()],
         })
     );
-    // A directory that cannot be searched hides the file it holds.
-    fs::set_permissions(&gitconfig, fs::Permissions::from_mode(0o600)).unwrap();
-    fs::set_permissions(
-        dir.path().join(".config/git"),
-        fs::Permissions::from_mode(0o000),
-    )
-    .unwrap();
-    let skipped = resolve(None, &home(dir.path())).unwrap().skipped;
-    fs::set_permissions(
-        dir.path().join(".config/git"),
-        fs::Permissions::from_mode(0o700),
-    )
-    .unwrap();
-    assert_eq!(skipped, vec![xdg]);
 }
 
-/// A global file that is not a regular file once links are followed, such as
-/// a directory or a FIFO, cannot be read as configuration: it is skipped
-/// without being opened, so a FIFO cannot block. A link to a regular file is
-/// followed, as git follows it.
+/// A global file that is a directory cannot be read as configuration: it is
+/// skipped without being opened. A link to a regular file is followed, as git
+/// follows it.
 #[test]
-fn a_global_file_that_is_not_a_regular_file_is_skipped_without_blocking() {
+fn a_global_directory_is_skipped_and_a_link_to_a_file_is_followed() {
     let dir = TempDir::new("setting-not-regular");
     let gitconfig = dir.path().join(".gitconfig");
     fs::create_dir_all(&gitconfig).unwrap();
     let xdg = dir.path().join(".config/git/config");
-    fifo(&xdg);
-    let user = dir.path().to_path_buf();
-    let setting = within(move || resolve(None, &home(&user)));
+    fs::create_dir_all(&xdg).unwrap();
     assert_eq!(
-        setting,
+        resolve(None, &home(dir.path())),
         Ok(Setting {
             transport: Transport::Gwz,
             source: Source::Default,
@@ -391,7 +432,10 @@ fn a_global_file_that_is_not_a_regular_file_is_skipped_without_blocking() {
     fs::remove_dir(&gitconfig).unwrap();
     let real = dir.path().join("dotfiles/gitconfig");
     write(&real, NATIVE);
-    std::os::unix::fs::symlink(&real, &gitconfig).unwrap();
+    if !link(&real, &gitconfig) {
+        eprintln!("skipped: this process may not create a symbolic link");
+        return;
+    }
     let setting = resolve(None, &home(dir.path())).unwrap();
     assert_eq!(
         (setting.transport, setting.read),
@@ -412,7 +456,7 @@ fn an_unparsable_file_is_refused_with_libgit2s_file_and_line() {
     };
     assert_eq!(file, gitconfig);
     assert!(
-        cause.contains(&format!("{}:3", gitconfig.display())),
+        cause.contains(&format!("{}:3", libgit2_text(&gitconfig))),
         "{cause}"
     );
     let included: PathBuf = dir.path().join("broken.inc");
@@ -423,7 +467,7 @@ fn an_unparsable_file_is_refused_with_libgit2s_file_and_line() {
     };
     assert_eq!(file, gitconfig);
     assert!(
-        cause.contains(&format!("{}:3", included.display())),
+        cause.contains(&format!("{}:3", libgit2_text(&included))),
         "{cause}"
     );
     // The XDG file is read too, so its error refuses even when .gitconfig
@@ -435,4 +479,90 @@ fn an_unparsable_file_is_refused_with_libgit2s_file_and_line() {
         panic!("not refused as unparsable");
     };
     assert_eq!(file, xdg);
+}
+
+// The rows that are Unix's: libgit2's home is walked to from the root by components that Windows' drives do not share;
+// a directory without the search permission hides its files, which Windows' access control does not model this way; and
+// a FIFO is a file in a directory only on Unix (a Windows named pipe lives in its own namespace).
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        use std::os::unix::fs::PermissionsExt;
+        use std::path::Component;
+
+        use super::fixture::{fifo, libgit2_home, within};
+
+        /// A `~/` include resolves against libgit2's process-wide home, not the snapshot's `HOME`.
+        #[test]
+        fn a_tilde_include_resolves_against_libgit2s_process_wide_home() {
+            let dir = TempDir::new("setting-include-tilde-process");
+            let user = dir.path().join("home");
+            let gitconfig = user.join(".gitconfig");
+            let target = dir.path().join("target.inc");
+            write(&target, NATIVE);
+            // Walk up from libgit2's home to the root, then down to the target, on
+            // real paths, so the walk does not depend on any link on the way.
+            let process_home = fs::canonicalize(libgit2_home()).unwrap();
+            let up = process_home
+                .components()
+                .filter(|component| matches!(component, Component::Normal(_)))
+                .count();
+            let down = fs::canonicalize(&target).unwrap();
+            let down = down.strip_prefix("/").unwrap().to_str().unwrap();
+            write(
+                &gitconfig,
+                format!("[include]\n\tpath = ~/{}{down}\n", "../".repeat(up)),
+            );
+            assert_eq!(
+                resolve(None, &home(&user)),
+                Ok(decided_by(
+                    Transport::Native,
+                    &gitconfig,
+                    true,
+                    &[&gitconfig]
+                ))
+            );
+        }
+
+        /// A directory that cannot be searched hides the file it holds.
+        #[test]
+        fn a_directory_that_cannot_be_searched_hides_its_file() {
+            let dir = TempDir::new("setting-unsearchable");
+            let gitconfig = dir.path().join(".gitconfig");
+            write(&gitconfig, GWZ);
+            let xdg = dir.path().join(".config/git/config");
+            write(&xdg, NATIVE);
+            let directory = dir.path().join(".config/git");
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o000)).unwrap();
+            let hidden = fs::File::open(&xdg).is_err();
+            let skipped = resolve(None, &home(dir.path())).map(|setting| setting.skipped);
+            fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+            if !hidden {
+                eprintln!("skipped: this process searches a directory of mode 000, as root does");
+                return;
+            }
+            assert_eq!(skipped, Ok(vec![xdg]));
+        }
+
+        /// A FIFO where a global file is expected is skipped without being opened, so a FIFO cannot block the
+        /// resolution.
+        #[test]
+        fn a_global_fifo_is_skipped_without_blocking() {
+            let dir = TempDir::new("setting-fifo");
+            let gitconfig = dir.path().join(".gitconfig");
+            fs::create_dir_all(&gitconfig).unwrap();
+            let xdg = dir.path().join(".config/git/config");
+            fifo(&xdg);
+            let user = dir.path().to_path_buf();
+            let setting = within(move || resolve(None, &home(&user)));
+            assert_eq!(
+                setting,
+                Ok(Setting {
+                    transport: Transport::Gwz,
+                    source: Source::Default,
+                    read: Vec::new(),
+                    skipped: vec![xdg, gitconfig],
+                })
+            );
+        }
+    }
 }

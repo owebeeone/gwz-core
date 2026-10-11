@@ -83,6 +83,10 @@ pub(crate) mod agent_source;
 // Step 3.3: the OpenSSH agent's named pipe, Windows' channel to the service (`agent_socket` is Unix's).
 cfg_if::cfg_if! { if #[cfg(windows)] { pub(crate) mod agent_pipe; } }
 
+// Step 3.1: the SSH home resolver and the words of a refused host key (pure; they compile everywhere).
+pub(crate) mod ssh_home;
+pub(crate) mod ssh_host_key;
+
 // Step 3.5: Pageant's exchange primitive. Its pure rules compile everywhere; the OS calls are Windows'.
 pub(crate) mod pageant_exchange;
 

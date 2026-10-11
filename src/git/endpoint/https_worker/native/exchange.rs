@@ -42,6 +42,15 @@ impl Drop for Guard {
         }
     }
 }
+/// The channel binding an SSPI attempt carries: the connection's own, and never an empty or substituted one. A
+/// connection with none cannot be authenticated over `Negotiate` or `NTLM`; an anonymous or Basic exchange does
+/// not need one.
+pub(super) fn channel_binding(
+    held: Option<&gwz_sspi::SecretBytes>,
+) -> Option<gwz_sspi::SecretBytes> {
+    held.map(|bytes| gwz_sspi::SecretBytes::new(bytes.as_bytes()))
+        .filter(|bytes| !bytes.as_bytes().is_empty())
+}
 fn deadline(budget: &Budget) -> Result<Instant, ErrorCode> {
     let deadline = budget
         .logical_deadline
@@ -73,95 +82,28 @@ impl Client {
         cancel: &CancellationToken,
     ) -> Result<Response<Incoming>, Failure> {
         let offers = Offers::parse(response.headers()).map_err(failure)?;
-        // OD10: only NTLM/Basic/Digest trigger a helper; Negotiate alone does not.
-        let credential =
-            if prepared.input.policy == AuthPolicy::WindowsConfigured && offers.helper_allowed() {
-                let fixed = budget.logical_deadline;
-                let lookup = self.credential(key, &prepared.destination, budget, cancel);
-                let result = match fixed {
-                    Some(until) => tokio::time::timeout_at(until, lookup)
-                        .await
-                        .map_err(|_| failure(ErrorCode::Timeout))?,
-                    None => lookup.await,
-                };
-                match result {
-                    Ok(credential) => credential.has_native_identity().then_some(credential),
-                    // Windows parity/TR1.6 §4: unusable helper output and absent
-                    // or unstartable git are absence before credential publication.
-                    // Io (including CleanupPending), timeout and cancel stay terminal.
-                    Err(error)
-                        if error.code == ErrorCode::Unavailable
-                            || (error.code == ErrorCode::Authentication
-                                && error.facts.as_ref().is_some_and(|facts| {
-                                    !facts.credential_offered && facts.authenticated != Some(false)
-                                })) =>
-                    {
-                        None
-                    }
-                    Err(error) => return Err(error),
-                }
-            } else {
-                None
-            };
-        let source = if credential.is_some() {
-            NativeSource::Configured
-        } else {
-            NativeSource::CurrentLogon
+        // TD1: the logon session answers Negotiate and NTLM, alone or beside Basic or Digest, and the helper is
+        // not asked. Only a challenge that has nothing for the logon session goes on to Basic.
+        let Some(offer) = offers.select() else {
+            return self
+                .answer_basic(prepared, response, &offers, key, budget, cancel)
+                .await;
         };
-        let Some(offer) = offers.select(credential.is_some()) else {
-            if offers.basic
-                && let Some(credential) = credential
-            {
-                prepared.opened.facts = Facts {
-                    method: AuthMethod::Gh,
-                    ..Default::default()
-                };
-                prepared.lease.as_ref().unwrap().scope(&credential.scope)?;
-                prepared.authorization = Some(credential.header());
-                prepared.credential = Some(credential);
-                let response = self.auth_send(prepared, response, budget, cancel).await?;
-                prepared.opened.facts.credential_offered = true;
-                if matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
-                    // Basic follows TR1.6 OQ4(a): validated discovery at the new
-                    // location, with no forwarded header and a new helper lookup.
-                    return Ok(response);
-                }
-                if response.status() != 200 {
-                    prepared
-                        .credential
-                        .as_ref()
-                        .unwrap()
-                        .rejected
-                        .store(true, Ordering::Release);
-                    prepared.opened.facts.authenticated = Some(false);
-                    return Err(with_facts(
-                        ErrorCode::Authentication,
-                        Effect::None,
-                        &prepared.opened.facts,
-                    ));
-                }
-                validate_content(&response, prepared.input.service)
-                    .map_err(|code| with_facts(code, Effect::None, &prepared.opened.facts))?;
-                self.routes
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .basic_install(key)
-                    .map_err(failure)?;
-                return Ok(response);
-            }
-            return Err(with_facts(
-                ErrorCode::Authentication,
-                Effect::None,
-                &prepared.opened.facts,
-            ));
-        };
-        let mut history = History::new(source, offer.scheme);
+        let mut history = History::new(offer.scheme);
         prepared.opened.facts = history.facts.clone();
         let until =
             deadline(budget).map_err(|code| with_facts(code, Effect::None, &history.facts))?;
         offer
             .initial()
             .map_err(|code| with_facts(code, Effect::None, &history.facts))?;
+        // An operation whose rounds are spent starts no further exchange, and no SSPI work.
+        if budget.native_rounds >= NATIVE_ROUNDS {
+            return Err(with_facts(
+                ErrorCode::Protocol,
+                Effect::None,
+                &history.facts,
+            ));
+        }
         let url = prepared.destination.request(prepared.input.service);
         let overhead = url[url::Position::BeforePath..].len() + prepared.destination.authority().len()
             + https_policy::response_type(prepared.input.service).len()
@@ -186,14 +128,9 @@ impl Client {
             .as_ref()
             .unwrap()
             .clone();
-        let binding = connection
-            .lock()
-            .await
-            .binding
-            .as_ref()
-            .map(|bytes| gwz_sspi::SecretBytes::new(bytes.as_bytes()))
-            .filter(|bytes| !bytes.as_bytes().is_empty())
-            .ok_or_else(|| {
+        // The binding of this physical connection's final origin handshake, or no attempt at all (design 8).
+        let binding =
+            channel_binding(connection.lock().await.binding.as_ref()).ok_or_else(|| {
                 with_facts(
                     ErrorCode::UnsupportedOperation,
                     Effect::None,
@@ -208,12 +145,8 @@ impl Client {
             },
             target: gwz_sspi::SecretText::new(&format!("HTTP/{}", prepared.destination.host()))
                 .map_err(|_| failure(ErrorCode::InvalidRequest))?,
-            identity: credential
-                .as_ref()
-                .map_or(Ok(gwz_sspi::Identity::CurrentLogon), |credential| {
-                    credential.native_identity()
-                })
-                .map_err(failure)?,
+            // The identity is always the logon session's: a helper's credential answers Basic only.
+            identity: gwz_sspi::Identity::CurrentLogon,
             channel_binding: binding,
             token_limit: limit,
             digest: None,
@@ -248,7 +181,8 @@ impl Client {
         let scope = self.ids.unique().to_string();
         prepared.lease.as_ref().unwrap().scope(&scope)?;
         let mut challenge = None;
-        for _ in 0..8 {
+        while budget.native_rounds < NATIVE_ROUNDS {
+            budget.native_rounds += 1;
             control(cancel, prepared.lease.as_ref().unwrap(), until)
                 .map_err(|code| with_facts(code, Effect::None, &history.facts))?;
             let step = guard.session.as_mut().unwrap().step(challenge.take());
@@ -351,6 +285,15 @@ impl Client {
                 .ok_or_else(|| {
                     with_facts(ErrorCode::Authentication, Effect::None, &history.facts)
                 })?;
+            // A 401 that carries no continuation token for the scheme is the server's rejection of the identity:
+            // terminal, with no replay and no other identity (design 7).
+            if offer.token.bytes().is_empty() {
+                return Err(with_facts(
+                    ErrorCode::Authentication,
+                    Effect::None,
+                    &history.facts,
+                ));
+            }
             challenge = Some(
                 decode_challenge(offer.token.bytes(), limit.raw_bytes() as usize)
                     .map_err(|code| with_facts(code, Effect::None, &history.facts))?,
@@ -361,6 +304,79 @@ impl Client {
             Effect::None,
             &history.facts,
         ))
+    }
+    /// A challenge with nothing for the logon session (TD1, TD2). `Basic` goes to the configured helper, once
+    /// for the destination the credential is sent to, and a usable answer goes over `Basic`; whatever the helper
+    /// cannot give ends the request. `Digest` is never answered, so a challenge that offers nothing else is
+    /// refused here, naming the schemes it named, and so is `Basic` when helpers are off.
+    async fn answer_basic(
+        &self,
+        prepared: &mut Prepared,
+        response: Response<Incoming>,
+        offers: &Offers,
+        key: &RouteKey,
+        budget: &mut Budget,
+        cancel: &CancellationToken,
+    ) -> Result<Response<Incoming>, Failure> {
+        if !offers.basic || prepared.input.policy != AuthPolicy::WindowsConfigured {
+            // The challenge is what is being refused, so its status is what the refusal reports.
+            let facts = Facts {
+                http_status: Some(401),
+                ..prepared.opened.facts.clone()
+            };
+            let mut refused = with_facts(ErrorCode::Authentication, Effect::None, &facts);
+            if !offers.basic {
+                refused.detail = Some(Box::new(FailureDetail {
+                    schemes: Some(challenges::schemes(response.headers()).1),
+                    ..Default::default()
+                }));
+            }
+            return Err(refused);
+        }
+        let fixed = budget.logical_deadline;
+        let lookup = self.credential(key, &prepared.destination, budget, cancel);
+        let credential = match fixed {
+            Some(until) => tokio::time::timeout_at(until, lookup)
+                .await
+                .map_err(|_| failure(ErrorCode::Timeout))??,
+            None => lookup.await?,
+        };
+        prepared.opened.facts = Facts {
+            method: AuthMethod::Gh,
+            ..Default::default()
+        };
+        prepared.lease.as_ref().unwrap().scope(&credential.scope)?;
+        prepared.authorization = Some(credential.header());
+        prepared.credential = Some(credential);
+        let response = self.auth_send(prepared, response, budget, cancel).await?;
+        prepared.opened.facts.credential_offered = true;
+        if matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
+            // Basic follows TR1.6 OQ4(a): validated discovery at the new
+            // location, with no forwarded header and a new helper lookup.
+            return Ok(response);
+        }
+        if response.status() != 200 {
+            prepared
+                .credential
+                .as_ref()
+                .unwrap()
+                .rejected
+                .store(true, Ordering::Release);
+            prepared.opened.facts.authenticated = Some(false);
+            return Err(with_facts(
+                ErrorCode::Authentication,
+                Effect::None,
+                &prepared.opened.facts,
+            ));
+        }
+        validate_content(&response, prepared.input.service)
+            .map_err(|code| with_facts(code, Effect::None, &prepared.opened.facts))?;
+        self.routes
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .basic_install(key)
+            .map_err(failure)?;
+        Ok(response)
     }
     async fn auth_send(
         &self,

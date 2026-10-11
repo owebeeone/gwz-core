@@ -39,16 +39,11 @@ fn https_only_request_retains_context_and_selects_the_builds_actual_backend() {
             .await
             .unwrap();
         let backend = request.backend();
-        let expected = if cfg!(all(
-            windows,
-            gwz_transport_candidate,
-            gwz_windows_https_qualification
-        )) {
-            CredentialHelperPolicy::Disabled
-        } else {
+        // The configured helpers are on in every build, Windows qualification included (plan step 4.4).
+        assert_eq!(
+            backend.credential_helpers,
             CredentialHelperPolicy::AllowConfigured
-        };
-        assert_eq!(backend.credential_helpers, expected);
+        );
         let mapped = backend
             .ssh
             .https_policy_for_test(backend.credential_helpers);
@@ -57,7 +52,7 @@ fn https_only_request_retains_context_and_selects_the_builds_actual_backend() {
             gwz_transport_candidate,
             gwz_windows_https_qualification
         )) {
-            Some(AuthPolicy::WindowsDefault)
+            Some(AuthPolicy::WindowsConfigured)
         } else {
             None
         };
@@ -106,7 +101,8 @@ cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_htt
             let runtime = TransportRuntime::build_native(settings, Some((HttpsEndpointConfig { tls: Default::default(), auth: None }, HelperSlots::new())), None).unwrap();
             let caps = runtime.capabilities(TransportCapabilitiesRequest { schema_version: "gwz.protocol/v0".into(), ..Default::default() }).unwrap();
             assert_eq!(caps.schemes, Some(vec![Scheme::Ssh, Scheme::Https]));
-            assert_eq!(caps.auth_policies, Some(vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit, AuthPolicy::Anonymous, AuthPolicy::WindowsDefault]));
+            // The helper policies are offered since plan step 4.4: `Gh`, and the logon session with the helper and without.
+            assert_eq!(caps.auth_policies, Some(vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit, AuthPolicy::Anonymous, AuthPolicy::Gh, AuthPolicy::WindowsConfigured, AuthPolicy::WindowsDefault]));
             assert!(!caps.file_identity);
             assert!(!caps.exact_agent_identity);
             let request = runtime.request(meta("qualification-refusal"), "operation".into()).await.unwrap();
@@ -114,9 +110,9 @@ cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_htt
             let (_, bound) = endpoint.endpoint_offer_for_test();
             assert_eq!(Some(bound.schemes.clone()), caps.schemes);
             assert_eq!(Some(bound.policies.clone()), caps.auth_policies);
-            for policy in [AuthPolicy::Gh, AuthPolicy::WindowsConfigured, AuthPolicy::SshAmbient, AuthPolicy::SshExplicit] {
+            // A forged Open with an SSH policy over HTTPS is refused before any effect.
+            for policy in [AuthPolicy::SshAmbient, AuthPolicy::SshExplicit] {
                 let failure = endpoint.open_https("qualification-refusal", "operation", "https://example.invalid/repo", gwz_transport::protocol::GitService::UploadPackAdvertisement, policy, None, None, Arc::new(|_, _| {}), Arc::new(|_| {})).err().unwrap();
-                assert_eq!(failure.code, gwz_transport::protocol::ErrorCode::UnsupportedOperation);
                 assert_eq!(failure.effect, gwz_transport::protocol::Effect::None);
             }
             assert_eq!(endpoint.https_counts_for_test().unwrap().total(), 0);
@@ -126,7 +122,9 @@ cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_htt
             // SSH is no longer refused by the qualification boundary (plan step 1.6); remotes that are neither SSH nor HTTPS still are.
             request.backend().validate_url_identity(None, "origin", "ssh://git@example.invalid/repo").unwrap();
             request.backend().validate_url_identity(None, "origin", "git@example.invalid:repo").unwrap();
-            for url in ["http://example.invalid/repo", "file:///unavailable/repo"] {
+            // A plain `http://` remote is no longer refused: it goes by the native route, with a warning (decision D2).
+            request.backend().validate_url_identity(None, "origin", "http://example.invalid/repo").unwrap();
+            for url in ["file:///unavailable/repo"] {
                 let refused = request.backend().validate_url_identity(None, "origin", url).unwrap_err();
                 assert_eq!(refused.code, ErrorCode::UnsupportedOperation);
                 let refused = request.backend().clone_repo(url, &target).unwrap_err();
@@ -138,17 +136,6 @@ cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_htt
             if let Err(error) = request.backend().with_transport(&target, Some(&options)) {
                 assert_ne!(error.code, ErrorCode::UnsupportedOperation, "{error:?}");
             }
-            let authority = crate::git::endpoint::shared_reservation::Authority::new(8, 8);
-            let mut http = crate::git::endpoint::https_worker::Endpoint::with_authority(Default::default(), None, Default::default(), 3000, authority, HelperSlots::new()).unwrap();
-            for policy in [AuthPolicy::Gh, AuthPolicy::WindowsConfigured] {
-                let input = crate::git::endpoint::https_worker::Input { destination: "https://example.invalid/repo".into(), service: gwz_transport::protocol::GitService::UploadPackAdvertisement, policy, session: "session".into(), operation: "operation".into() };
-                let failure = http.client.prepare_budget_for_transition(input, &tokio_util::sync::CancellationToken::new(), &mut http.client.budget(), &mut None).await.err().unwrap();
-                assert_eq!(failure.code, gwz_transport::protocol::ErrorCode::UnsupportedOperation);
-                assert_eq!(failure.effect, gwz_transport::protocol::Effect::None);
-                assert_eq!(http.client.pool().counts().total(), 0);
-                assert_eq!(http.client.pending_cleanup(), 0);
-            }
-            assert_eq!(http.shutdown(Duration::from_secs(1)).await, 0);
             request.finish().await;
             assert_eq!(runtime.shutdown().await.pending_local_work, 0);
         });

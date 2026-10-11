@@ -43,16 +43,6 @@ impl Client {
         connect: &mut FirstConnect,
         refusal: &mut Option<Rejection>,
     ) -> Result<Prepared, Failure> {
-        if cfg!(all(
-            windows,
-            gwz_transport_candidate,
-            gwz_windows_https_qualification
-        )) && !matches!(
-            input.policy,
-            AuthPolicy::Anonymous | AuthPolicy::WindowsDefault
-        ) {
-            return Err(failure(ErrorCode::UnsupportedOperation));
-        }
         let original = Destination::parse(&input.destination).map_err(failure)?;
         if input.session.is_empty()
             || input.session.len() > 128
@@ -263,6 +253,15 @@ impl Client {
                     Ok(lease) => lease,
                     Err((error, phase)) => {
                         let mut failed = with_facts(error.code, error.effect, &facts);
+                        // The one authentication failure a connection setup has is the proxy's own 407 to the
+                        // CONNECT. The machine proxy's is named so: it asks for a sign-in, which is not supported.
+                        if self.machine_proxy
+                            && phase == Phase::Setup
+                            && error.code == ErrorCode::Authentication
+                            && let Some(facts) = failed.facts.as_mut()
+                        {
+                            facts.http_status = Some(407);
+                        }
                         if first {
                             failed.setup_cause = error.setup_cause;
                             if phase == Phase::Setup {

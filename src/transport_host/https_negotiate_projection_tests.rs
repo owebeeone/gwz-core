@@ -26,16 +26,16 @@ fn negotiate_after_four_schemes_is_loud_for_real_private_materialize_without_hel
             }))
             .await;
             let marker = root.path().join("helper-ran");
-            let executable = root.path().join("git");
-            helper_script::write_git_fixture(&executable, "printf x > \"$MARKER\"\nexit 1");
+            let mut config =
+                helper_script::git_fixture(root.path(), "printf x > \"$MARKER\"\nexit 1");
+            config
+                .environment
+                .push(("MARKER".into(), helper_script::script_path(&marker).into()));
             let runtime = TransportRuntime::with_https(
                 SshEndpointConfig::fixture(endpoint_home(root.path()), None),
                 HttpsEndpointConfig {
                     tls: server.config(),
-                    auth: Some(crate::git::endpoint::https_auth::Config {
-                        executable,
-                        environment: vec![("MARKER".into(), marker.as_os_str().into())],
-                    }),
+                    auth: Some(config),
                 },
                 HelperSlots::new(),
             )

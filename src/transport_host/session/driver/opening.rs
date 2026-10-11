@@ -43,11 +43,16 @@ impl Session {
             .unwrap_or_default();
         // The stall bound this open's deadlines carry (`network_deadlines`
         // takes the same field), for a stall's message to name.
-        let stall_ms = self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .io_timeout_ms;
+        let (stall_ms, known_hosts) = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                state.io_timeout_ms,
+                state
+                    .home
+                    .as_ref()
+                    .map(|home| KnownHostsFile::under(&home.path, home.source)),
+            )
+        };
         let policy = if identity.mode == IdentityMode::ExplicitKey {
             AuthPolicy::SshExplicit
         } else {
@@ -78,7 +83,7 @@ impl Session {
         )
         .map_err(|failure| {
             let attempts = setup_retry::reported_attempt(&failure);
-            open_failure_io(failure, attempts, stall_ms, shown.0, shown.1, &agent)
+            open_failure_io(failure, attempts, stall_ms, shown.0, shown.1, known_hosts, &agent)
         })
     }
     pub(in crate::transport_host) fn open_https(
@@ -93,16 +98,6 @@ impl Session {
         observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
         facts: Arc<dyn Fn(&Facts) + Send + Sync>,
     ) -> Result<BlockingStream, Failure> {
-        if cfg!(all(
-            windows,
-            gwz_transport_candidate,
-            gwz_windows_https_qualification
-        )) && !matches!(policy, AuthPolicy::Anonymous | AuthPolicy::WindowsDefault)
-        {
-            return Err(protocol_failure(
-                gwz_transport::protocol::ErrorCode::UnsupportedOperation,
-            ));
-        }
         let destination = crate::git::endpoint::https_destination::Destination::parse(url)
             .map_err(protocol_failure)?;
         self.open_stream(

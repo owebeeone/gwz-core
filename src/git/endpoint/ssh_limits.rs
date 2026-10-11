@@ -6,6 +6,7 @@
 //! `failed to authenticate SSH session:`); the transport keeps the limits and replaces both texts (the migration
 //! register's item 8). The wire's failure vocabulary is closed and carries no text, so a limit travels as
 //! `UnsupportedOperation` and the host words it from what the open had offered ([`SshLimit::of_failure`]).
+use super::ssh_home::KnownHostsFile;
 use gwz_transport::protocol::{AuthMethod, ErrorCode, Failure};
 use std::io;
 
@@ -64,8 +65,15 @@ impl SshLimit {
         }
     }
 
-    /// The message: the cause, then the fix. `host` and `port` are the open's destination.
-    pub(crate) fn reason(self, host: &str, port: u16) -> String {
+    /// The message: the cause, then the fix. `host` and `port` are the open's destination, and `known_hosts` is the
+    /// file the endpoint read with the variable that named its home (design section 14, item 13, U8): a host-key limit
+    /// prints both, so the user edits the file gwz actually read.
+    pub(crate) fn reason(
+        self,
+        host: &str,
+        port: u16,
+        known_hosts: Option<&KnownHostsFile>,
+    ) -> String {
         match self {
             Self::HostKeys => {
                 let port = if port == 22 {
@@ -73,11 +81,26 @@ impl SshLimit {
                 } else {
                     format!("-p {port} ")
                 };
-                format!(
+                let cause = format!(
                     "gwz cannot verify {host}: the only host keys your known_hosts file holds for it are ECDSA or Ed25519 \
                      keys, and the SSH library gwz uses on Windows (libssh2 with WinCNG, as gwz 1.0) verifies RSA host keys \
-                     only. Add an RSA host key for the server, for example with `ssh-keyscan -t rsa {port}{host}` (compare \
-                     the fingerprint it prints with one you trust before adding it to your known_hosts file), then retry."
+                     only."
+                );
+                let Some(file) = known_hosts else {
+                    return format!(
+                        "{cause} Add an RSA host key for the server, for example with `ssh-keyscan -t rsa {port}{host}` \
+                         (compare the fingerprint it prints with one you trust before adding it to your known_hosts file), \
+                         then retry."
+                    );
+                };
+                let path = file.path.display();
+                format!(
+                    "{cause} gwz read {path}; its home came from {}. Add an RSA host key for the server. In PowerShell: \
+                     ssh-keyscan -t rsa {port}{host} | Add-Content -Encoding ascii \"{path}\"  In Git Bash: \
+                     ssh-keyscan -t rsa {port}{host} >> \"{path}\"  Then compare the fingerprint, ssh-keygen -lf \"{path}\", \
+                     with one you trust before you rely on it (a key fetched over the network proves nothing by itself), \
+                     and retry.",
+                    file.source.variables()
                 )
             }
             Self::KeyFile => "gwz on Windows reads an explicit SSH key file only when it is an RSA key in PEM form, a file \

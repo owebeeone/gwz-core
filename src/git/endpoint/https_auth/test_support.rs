@@ -11,22 +11,37 @@ cfg_if::cfg_if! {
         }
         mod tests {
             use super::*;
-            use crate::git::endpoint::helper_script::write_git_fixture;
+            use super::helper_fixture::{Behavior, Fixture};
+            use crate::git::endpoint::helper_script::git_fixture;
             use std::fs;
-            use tokio::process::Command;
             use tempfile::tempdir;
 
             fn helper(script: &str) -> (tempfile::TempDir, Config) {
                 let directory = tempdir().unwrap();
-                let path = directory.path().join("gh-helper");
-                write_git_fixture(&path, &format!("{script}\n"));
-                (
-                    directory,
-                    Config {
-                        executable: path,
-                        environment: Vec::new(),
-                    },
-                )
+                let config = git_fixture(directory.path(), &format!("{script}\n"));
+                (directory, config)
+            }
+
+            /// A helper that never answers, started as the product starts one, as a child an owner can retain,
+            /// holding one of `slots`.
+            fn retained_helper(behavior: Behavior, slots: &Arc<Semaphore>) -> (Fixture, PendingChild) {
+                let fixture = Fixture::new(behavior);
+                let (child, tree) = super::super::process_tree::spawn(&super::super::process_tree::HelperCommand {
+                    program: fixture.config.executable.clone(),
+                    args: fixture.argv().iter().map(Into::into).collect(),
+                    directory: fixture.directory().to_owned(),
+                    environment: fixture.config.environment.clone(),
+                })
+                .unwrap();
+                let pending = PendingChild {
+                    child,
+                    tree: Some(tree),
+                    _permits: Arc::new(super::super::owner::AdmissionPermits {
+                        _endpoint_slot: None,
+                        _helper_slot: slots.clone().try_acquire_owned().unwrap(),
+                    }),
+                };
+                (fixture, pending)
             }
 
             #[test]
@@ -156,15 +171,15 @@ cfg_if::cfg_if! {
                 let owner = AuthOwner::new(HelperSlots::new());
                 let slots = owner.inner.helper_slots.0.clone();
                 let before = slots.available_permits();
-                let child = Command::new("/bin/sleep").arg("5").kill_on_drop(true).spawn().unwrap();
-                owner.retain_pending(PendingChild { child, tree: None, _permits: Arc::new(super::super::owner::AdmissionPermits { _endpoint_slot: None, _helper_slot: slots.clone().try_acquire_owned().unwrap() }) });
+                let (_fixture, pending) = retained_helper(Behavior::Hangs, &slots);
+                owner.retain_pending(pending);
                 let reaper = owner.clone();
                 let task = tokio::spawn(async move { reaper.reap_pending(Instant::now()+Duration::from_secs(5)).await });
                 while !owner.inner.pending.lock().unwrap().is_empty() { tokio::task::yield_now().await; }
                 task.abort(); let _ = task.await;
                 let retained = owner.pending_cleanup_count();
                 let permits = slots.available_permits();
-                let _ = owner.reap_pending(Instant::now()+Duration::from_secs(1)).await;
+                let _ = owner.reap_pending(Instant::now()+Duration::from_secs(5)).await;
                 assert_eq!(retained, 1, "aborting reap lost its owned child");
                 assert_eq!(permits, before-1, "permit released before actual reap");
                 assert_eq!(owner.pending_cleanup_count(), 0);
@@ -179,15 +194,10 @@ cfg_if::cfg_if! {
                 let owner = AuthOwner::new(host.clone());
                 let slots = host.0.clone();
                 let before = slots.available_permits();
-                let mut child = Command::new("/bin/sleep").arg("5").spawn().unwrap();
+                let (_fixture, mut pending) = retained_helper(Behavior::Hangs, &slots);
                 // A helper is killed before its owner retains it.
-                child.start_kill().unwrap();
-                owner.retain_pending(PendingChild {
-                    child,
-                    tree: None,
-                    _permits: Arc::new(super::super::owner::AdmissionPermits { _endpoint_slot: None,
-                        _helper_slot: slots.clone().try_acquire_owned().unwrap() }),
-                });
+                pending.child.start_kill().unwrap();
+                owner.retain_pending(pending);
                 assert_eq!(slots.available_permits(), before - 1);
                 drop(owner);
                 assert_eq!(slots.available_permits(), before, "the dropped owner kept its helper's slot");
@@ -196,17 +206,18 @@ cfg_if::cfg_if! {
             #[tokio::test]
             async fn reap_reports_children_arriving_while_it_waits() {
                 let owner = AuthOwner::new(HelperSlots::new());
-                let child = Command::new("/bin/sleep").arg("0.1").kill_on_drop(true).spawn().unwrap();
-                owner.retain_pending(PendingChild { child, tree: None, _permits: Arc::new(super::super::owner::AdmissionPermits { _endpoint_slot: None, _helper_slot: owner.inner.helper_slots.0.clone().try_acquire_owned().unwrap() }) });
+                let slots = owner.inner.helper_slots.0.clone();
+                let (_first, pending) = retained_helper(Behavior::EndsSoon, &slots);
+                owner.retain_pending(pending);
                 let reaper = owner.clone();
-                let task = tokio::spawn(async move { reaper.reap_pending(Instant::now()+Duration::from_secs(1)).await });
+                let task = tokio::spawn(async move { reaper.reap_pending(Instant::now()+Duration::from_secs(10)).await });
                 while !owner.inner.pending.lock().unwrap().is_empty() { tokio::task::yield_now().await; }
-                let child = Command::new("/bin/sleep").arg("5").kill_on_drop(true).spawn().unwrap();
-                owner.retain_pending(PendingChild { child, tree: None, _permits: Arc::new(super::super::owner::AdmissionPermits { _endpoint_slot: None, _helper_slot: owner.inner.helper_slots.0.clone().try_acquire_owned().unwrap() }) });
+                let (_second, pending) = retained_helper(Behavior::Hangs, &slots);
+                owner.retain_pending(pending);
                 let reported = task.await.unwrap();
                 let actual = owner.pending_cleanup_count();
                 for pending in owner.inner.pending.lock().unwrap().iter_mut() { let _ = pending.child.start_kill(); }
-                let _ = owner.reap_pending(Instant::now()+Duration::from_secs(1)).await;
+                let _ = owner.reap_pending(Instant::now()+Duration::from_secs(5)).await;
                 assert_eq!(reported, actual, "reap omitted a child transferred during its wait");
                 assert_eq!(reported, 1);
             }
@@ -245,15 +256,11 @@ cfg_if::cfg_if! {
             ) -> (tempfile::TempDir, Vec<tokio::task::JoinHandle<Result<Secret, AuthError>>>) {
                 let directory = tempdir().unwrap();
                 let started = directory.path().join("started");
-                let executable = directory.path().join("busy-helper");
-                write_git_fixture(
-                    &executable,
+                let mut config = git_fixture(
+                    directory.path(),
                     "printf '%s\\n' \"$$\" >> \"$GWZ_HELPER_STARTED\"\nexec /bin/sleep 3600\n",
                 );
-                let config = Config {
-                    executable,
-                    environment: vec![("GWZ_HELPER_STARTED".into(), started.as_os_str().into())],
-                };
+                config.environment.push(("GWZ_HELPER_STARTED".into(), started.as_os_str().into()));
                 let destination = Destination::parse("https://example.com/owner/repo").unwrap();
                 let mut tasks = Vec::new();
                 for _ in 0..8 {
@@ -331,18 +338,11 @@ cfg_if::cfg_if! {
             async fn abort_after_helper_start_retains_permit_until_owner_reap() {
                 let directory = tempdir().unwrap();
                 let started = directory.path().join("started");
-                let executable = directory.path().join("abort-helper");
-                write_git_fixture(
-                    &executable,
+                let mut config = git_fixture(
+                    directory.path(),
                     "printf started > \"$GWZ_HELPER_STARTED\"\nexec /bin/sleep 3600\n",
                 );
-                let config = Config {
-                    executable,
-                    environment: vec![(
-                        "GWZ_HELPER_STARTED".into(),
-                        started.as_os_str().into(),
-                    )],
-                };
+                config.environment.push(("GWZ_HELPER_STARTED".into(), started.as_os_str().into()));
                 let owner = AuthOwner::new(HelperSlots::new());
                 let destination = Destination::parse("https://example.com/owner/repo").unwrap();
                 let available_before = owner.inner.helper_slots.0.available_permits();

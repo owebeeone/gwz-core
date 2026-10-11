@@ -11,6 +11,14 @@
 //! mode says and never reaches the harness, whose banner would otherwise go into the channel. Test-only: the
 //! product has no such process.
 //!
+//! [`Mode::FakeGit`] is a `git` for the credential-helper tests (plan step 4.11). A Windows helper is created as a
+//! program, never as a script, so a test cannot write its fake `git` as a script as a Unix test does. The fake is
+//! the test executable run in this mode, named by the helper's `Config`: [`GIT_SCRIPT_ENV`] names a POSIX `sh`
+//! script and [`GIT_SH_ENV`] the `sh.exe` that runs it (Git for Windows', which also provides the tools such a
+//! script calls), and the mode runs the script with the arguments `git` was given, the helper's own standard
+//! handles and environment, and exits with the script's status. The script is the body the Unix test writes, so a
+//! test reads the same on both platforms (`helper_script::git_fixture`).
+//!
 //! [`Mode::DropSession`] ends the server's session processes. It does not look at the processes around it: the
 //! fixture put the server in a named Job Object ([`JOB_ENV`] names it, in the server's environment, which its
 //! sessions inherit), and the helper lists that job's members and ends the `sshd.exe` ones whose parent is also a
@@ -49,6 +57,12 @@ pub(crate) const JOB_ENV: &str = "GWZ_FIXTURE_JOB";
 /// The environment variable that turns a run of the test executable into the helper; its value is a [`Mode`] name.
 pub(crate) const HELPER_ENV: &str = "GWZ_FIXTURE_HELPER";
 
+/// Names the `sh` script a [`Mode::FakeGit`] run executes.
+pub(crate) const GIT_SCRIPT_ENV: &str = "GWZ_FIXTURE_GIT_SCRIPT";
+
+/// Names the `sh.exe` that runs a [`Mode::FakeGit`] script.
+pub(crate) const GIT_SH_ENV: &str = "GWZ_FIXTURE_GIT_SH";
+
 /// The variable that holds the `PATH` the server was started with, which `cmd-session` gives `cmd.exe` as its own.
 pub(crate) const SERVER_PATH_ENV: &str = "GWZ_FIXTURE_SERVER_PATH";
 
@@ -63,18 +77,22 @@ pub(crate) enum Mode {
     /// `cmd.exe /c` and the raw command line. For a host whose own default shell is another, where it stands in
     /// for the one it does not have.
     CmdSession,
+    /// Run the script [`GIT_SCRIPT_ENV`] names under the `sh` [`GIT_SH_ENV`] names, with this process's arguments, as
+    /// a fake `git` does, and return its exit status.
+    FakeGit,
 }
 
 impl Mode {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::DropSession => "drop-session",
             Self::CmdSession => "cmd-session",
+            Self::FakeGit => "fake-git",
         }
     }
 
     fn parse(name: &str) -> Option<Self> {
-        [Self::DropSession, Self::CmdSession]
+        [Self::DropSession, Self::CmdSession, Self::FakeGit]
             .into_iter()
             .find(|mode| mode.name() == name)
     }
@@ -106,6 +124,9 @@ extern "C" fn constructor() {
     if mode == Mode::CmdSession {
         std::process::exit(cmd_session());
     }
+    if mode == Mode::FakeGit {
+        std::process::exit(fake_git());
+    }
     run(mode);
     std::thread::sleep(LIFETIME);
     std::process::exit(0);
@@ -122,6 +143,35 @@ fn note(line: &str) {
         .open(path)
     {
         let _ = writeln!(log, "{line}");
+    }
+}
+
+/// Runs the fake `git`'s script under its `sh`, with the arguments this process was started with, and returns the
+/// script's exit status: 255 when the script cannot run, which the note says.
+fn fake_git() -> i32 {
+    let (Some(shell), Some(script)) = (env::var_os(GIT_SH_ENV), env::var_os(GIT_SCRIPT_ENV)) else {
+        note("fake-git: no shell or script named");
+        return 255;
+    };
+    let mut command = std::process::Command::new(&shell);
+    // The tools a script calls are beside its shell; the helper's environment, which a test gives, may name none.
+    let mut path = std::ffi::OsString::new();
+    if let Some(directory) = std::path::Path::new(&shell).parent() {
+        path.push(directory);
+    }
+    if let Some(existing) = env::var_os("PATH") {
+        path.push(";");
+        path.push(existing);
+    }
+    command.env("PATH", path);
+    // The helper's mode is this process's and not the script's.
+    command.env_remove(HELPER_ENV);
+    match command.arg(&script).args(env::args_os().skip(1)).status() {
+        Ok(status) => status.code().unwrap_or(255),
+        Err(error) => {
+            note(&format!("fake-git: {error}"));
+            255
+        }
     }
 }
 
@@ -150,7 +200,7 @@ fn cmd_session() -> i32 {
 
 fn run(mode: Mode) {
     match mode {
-        Mode::CmdSession => {}
+        Mode::CmdSession | Mode::FakeGit => {}
         Mode::DropSession => {
             let Some(name) = env::var(JOB_ENV).ok() else {
                 note("drop-session: no fixture job named");
@@ -275,7 +325,7 @@ mod tests {
 
     #[test]
     fn the_mode_names_are_the_modes_it_parses() {
-        for mode in [Mode::DropSession, Mode::CmdSession] {
+        for mode in [Mode::DropSession, Mode::CmdSession, Mode::FakeGit] {
             assert_eq!(Mode::parse(mode.name()), Some(mode));
         }
         assert_eq!(Mode::parse("sleep"), None);
@@ -347,6 +397,69 @@ mod tests {
             String::from_utf8_lossy(&output.stdout).contains("carried"),
             "{output:?}"
         );
+    }
+
+    #[test]
+    fn the_fake_git_runs_its_script_with_the_arguments_the_environment_and_the_standard_handles_it_was_given() {
+        use crate::git::endpoint::helper_script::git_fixture;
+        use std::io::Write;
+        let directory = tempfile::tempdir().unwrap();
+        let config = git_fixture(
+            directory.path(),
+            "input=$(cat)\nprintf 'args=%s|%s|%s\\n' \"$1\" \"$2\" \"$3\"\nprintf 'input=%s\\n' \"$input\"\nprintf 'kept=%s\\n' \"$KEPT\"\nprintf 'diagnostic\\n' >&2\nexit 7",
+        );
+        let mut child = Command::new(&config.executable)
+            .args(["-c", "core.askPass=", "credential", "fill"])
+            .env_clear()
+            .envs(config.environment.iter().cloned())
+            .env("KEPT", "snapshot")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(b"url=https://example.test/repo\n").unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(7), "{output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("args=-c|core.askPass=|credential"), "{stdout}");
+        assert!(stdout.contains("input=url=https://example.test/repo"), "{stdout}");
+        assert!(stdout.contains("kept=snapshot"), "{stdout}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("diagnostic"), "{output:?}");
+    }
+
+    #[test]
+    fn the_fake_git_hands_the_config_subcommand_to_the_real_git_with_no_configuration_of_the_host() {
+        use crate::git::endpoint::helper_script::git_fixture;
+        let directory = tempfile::tempdir().unwrap();
+        let config = git_fixture(directory.path(), "exit 9");
+        let output = Command::new(&config.executable)
+            .args(["config", "--list"])
+            .env_clear()
+            .envs(config.environment.iter().cloned())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        // The real Git answered (an empty list: no system or global file), not the script (which exits 9).
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert!(output.stdout.is_empty(), "{output:?}");
+    }
+
+    #[test]
+    fn a_fake_git_with_no_script_fails_and_says_so() {
+        let output = Command::new(env::current_exe().unwrap())
+            .env(HELPER_ENV, Mode::FakeGit.name())
+            .env_remove(GIT_SCRIPT_ENV)
+            .env_remove(GIT_SH_ENV)
+            .env(
+                "GWZ_FIXTURE_HELPER_LOG",
+                env::temp_dir().join("gwz-helper-noscript.log"),
+            )
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(255));
+        let _ = std::fs::remove_file(env::temp_dir().join("gwz-helper-noscript.log"));
     }
 
     #[test]

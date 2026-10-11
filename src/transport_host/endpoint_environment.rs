@@ -7,15 +7,19 @@
 //! entry from the snapshot its caller passes, and `with_local_transport` from
 //! the process environment it captures once, at its command's start.
 //!
-//! Unix uses its captured environment proxy settings. Windows WH1 admits only
-//! a verified WinHTTP DIRECT snapshot captured on the original caller entry.
-//! Its SSH settings take `HOME` when it is absolute, as an interim until the
-//! Windows home resolver (plan step 3.1), and the agent that step 3.2b selects. It
-//! never derives a HOME or agent for HTTPS. On both platforms the credential
-//! helper is `git` with the snapshot as its environment (plan step 4.3).
+//! Unix uses its captured environment proxy settings. Windows reads the WinHTTP
+//! machine proxy once on the original caller entry (`machine_proxy`, plan step
+//! 4.6) and never the environment's: a direct setting is admitted, an unusable
+//! one refuses the configuration with a text that names it, and a named proxy
+//! (with its bypass rules) is the HTTPS endpoint's proxy for every https
+//! connection (plan step 4.7). Its SSH home is chosen by the home contract on
+//! every platform (`git::endpoint::ssh_home`, plan step 3.1), and its agent is chosen
+//! by `git::endpoint::agent_source` (plan step 3.2b). It never derives a HOME or agent for HTTPS. On both platforms
+//! the credential helper is `git` with the snapshot as its environment (plan
+//! step 4.3).
 
-use super::{EndpointSettings, HttpsEndpointConfig, apply_native_timeout, invalid};
-use crate::git::endpoint::{ca_bundle, https_connection};
+use super::{EndpointSettings, HttpsEndpointConfig, apply_native_timeout, invalid, unsupported};
+use crate::git::endpoint::{ca_bundle, https_connection, ssh_home};
 cfg_if::cfg_if! { if #[cfg(not(any(windows, target_vendor = "apple")))] {
     use crate::git::endpoint::{https_tls, verify_paths};
 } }
@@ -27,6 +31,22 @@ use crate::session_host::EnvironmentSnapshot;
 use gwz_transport::pool;
 use std::ffi::OsString;
 use std::path::PathBuf;
+
+cfg_if::cfg_if! {
+    if #[cfg(any(windows, test))] {
+        pub(crate) use super::machine_proxy::MachineProxy;
+    } else {
+        /// Unix takes its proxy from the environment, so it never captures a machine proxy.
+        #[derive(Clone, Debug)]
+        pub(crate) enum MachineProxy {}
+
+        impl MachineProxy {
+            pub(crate) fn apply(&self, _: &mut https_connection::Config) -> ModelResult<()> {
+                match *self {}
+            }
+        }
+    }
+}
 
 cfg_if::cfg_if! { if #[cfg(test)] {
 /// The SSH and HTTPS endpoint configuration of one runtime, from
@@ -41,28 +61,45 @@ cfg_if::cfg_if! { if #[cfg(test)] {
 pub(super) fn endpoint_config(
     environment: &EnvironmentSnapshot,
 ) -> ModelResult<(EndpointSettings, HttpsEndpointConfig)> {
-    endpoint_config_native(environment, capture_qualification_proxy())
+    endpoint_config_native(environment, None, capture_machine_proxy())
+}
+
+/// `endpoint_config`, with the current directory a driver captured beside the snapshot.
+pub(super) fn endpoint_config_in(
+    environment: &EnvironmentSnapshot,
+    cwd: &std::path::Path,
+) -> ModelResult<(EndpointSettings, HttpsEndpointConfig)> {
+    endpoint_config_native(environment, Some(cwd), capture_machine_proxy())
 }
 
 } }
+
+/// `cwd` is the current directory that the driver captured beside `environment`, against which a relative home is
+/// resolved where the home contract allows one (design section 3); a driver that captured none passes `None`, and a
+/// relative home is then skipped.
 pub(super) fn endpoint_config_native(
     environment: &EnvironmentSnapshot,
-    direct: Option<bool>,
+    cwd: Option<&std::path::Path>,
+    machine: Option<MachineProxy>,
 ) -> ModelResult<(EndpointSettings, HttpsEndpointConfig)> {
     if cfg!(all(
         windows,
         gwz_transport_candidate,
         gwz_windows_https_qualification
-    )) && direct != Some(true)
+    )) && machine.is_none()
     {
-        return Err(super::unsupported(
-            "Windows HTTPS qualification requires verified WinHTTP DIRECT",
+        return Err(unsupported(
+            "Windows HTTPS qualification requires the WinHTTP machine proxy setting, captured on the original entry",
         ));
     }
-    let tls = tls_config(environment)?;
+    let tls = tls_config(environment, machine.as_ref())?;
+    // The one home contract (plan step 3.1): `known_hosts` and `~/` identities resolve under the home chosen here,
+    // once, from the snapshot and the current directory its driver captured.
+    let home = ssh_home::resolve(ssh_home::PLATFORM, environment, cwd, &ssh_home::Disk)
+        .map_err(|refusal| invalid(&refusal.to_string()))?;
     let ssh = Some(SshSettings {
-        home: platform::ssh_home(environment)
-            .ok_or_else(|| invalid("endpoint HOME is unavailable"))?,
+        home: home.path,
+        home_source: home.source,
         agent: agent(environment),
     });
     let timeout = crate::git::transport_timeout_ms();
@@ -137,8 +174,17 @@ cfg_if::cfg_if! {
     }
 }
 
-fn tls_config(environment: &EnvironmentSnapshot) -> ModelResult<https_connection::Config> {
+/// The HTTPS endpoint's TLS and proxy configuration. The proxy comes from the machine setting whenever one was
+/// captured (and a setting that cannot be used refuses the configuration here, before the CA file is read); the
+/// environment's proxy is read only where no machine setting is (design §6).
+fn tls_config(
+    environment: &EnvironmentSnapshot,
+    machine: Option<&MachineProxy>,
+) -> ModelResult<https_connection::Config> {
     let mut config = https_connection::Config::default();
+    if let Some(machine) = machine {
+        machine.apply(&mut config)?;
+    }
     if let Some(path) = value(environment, CA_FILE_VARIABLES) {
         use std::io::Read;
         let file =
@@ -160,80 +206,20 @@ fn tls_config(environment: &EnvironmentSnapshot) -> ModelResult<https_connection
     cfg_if::cfg_if! { if #[cfg(not(any(windows, target_vendor = "apple")))] {
         config.platform_roots = Some(platform_roots(environment));
     } }
-    cfg_if::cfg_if! { if #[cfg(unix)] { platform::proxy(environment, &mut config)?; } }
+    if machine.is_none() {
+        platform::proxy(environment, &mut config)?;
+    }
     config
         .validate()
         .map_err(|_| invalid("unsupported endpoint TLS/proxy configuration"))?;
     Ok(config)
 }
 
-cfg_if::cfg_if! { if #[cfg(unix)] {
-/// The proxy and bypass list named in the captured Unix environment.
-fn environment_proxy(
-    environment: &EnvironmentSnapshot,
-    config: &mut https_connection::Config,
-) -> ModelResult<()> {
-    if let Some(raw) = value(
-        environment,
-        &["https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"],
-    ) {
-        let raw = raw
-            .to_str()
-            .ok_or_else(|| invalid("invalid endpoint proxy"))?;
-        let proxy = url::Url::parse(raw).map_err(|_| invalid("invalid endpoint proxy"))?;
-        if !matches!(proxy.scheme(), "http" | "https")
-            || !proxy.username().is_empty()
-            || proxy.password().is_some()
-            || proxy.query().is_some()
-            || proxy.fragment().is_some()
-            || proxy.path() != "/"
-        {
-            return Err(invalid(
-                "alpha supports HTTP(S) proxies without URL credentials or paths",
-            ));
-        }
-        config.proxy = Some(https_connection::Proxy {
-            host: proxy
-                .host_str()
-                .ok_or_else(|| invalid("proxy host required"))?
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .into(),
-            port: proxy
-                .port_or_known_default()
-                .ok_or_else(|| invalid("proxy port required"))?,
-            tls: proxy.scheme() == "https",
-            authorization: None,
-        });
-    }
-    if let Some(raw) = value(environment, &["no_proxy", "NO_PROXY"]) {
-        config.no_proxy = raw
-            .to_str()
-            .ok_or_else(|| invalid("invalid endpoint no_proxy"))?
-            .split(',')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(String::from)
-            .collect();
-    }
-    Ok(())
-}
-
-} }
-
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
         /// Unix: the snapshot's variables alone.
         mod platform {
-            use super::{EnvironmentSnapshot, ModelResult, PathBuf, environment_proxy, https_connection, value};
-
-            /// The SSH home, whose `.ssh/known_hosts` the endpoint reads:
-            /// `HOME`, when it is absolute.
-            pub(super) fn ssh_home(environment: &EnvironmentSnapshot) -> Option<PathBuf> {
-                value(environment, &["HOME"])
-                    .map(PathBuf::from)
-                    .filter(|home| home.is_absolute())
-            }
+            use super::{EnvironmentSnapshot, ModelResult, PathBuf, https_connection, invalid, value};
 
             /// The HTTPS proxy and its bypass list: the environment's.
             pub(super) fn proxy(
@@ -242,53 +228,75 @@ cfg_if::cfg_if! {
             ) -> ModelResult<()> {
                 environment_proxy(environment, config)
             }
+
+            /// The proxy and bypass list named in the captured Unix environment.
+            fn environment_proxy(
+            environment: &EnvironmentSnapshot,
+            config: &mut https_connection::Config,
+        ) -> ModelResult<()> {
+            if let Some(raw) = value(
+                environment,
+                &["https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"],
+            ) {
+                let raw = raw
+                    .to_str()
+                    .ok_or_else(|| invalid("invalid endpoint proxy"))?;
+                let proxy = url::Url::parse(raw).map_err(|_| invalid("invalid endpoint proxy"))?;
+                if !matches!(proxy.scheme(), "http" | "https")
+                    || !proxy.username().is_empty()
+                    || proxy.password().is_some()
+                    || proxy.query().is_some()
+                    || proxy.fragment().is_some()
+                    || proxy.path() != "/"
+                {
+                    return Err(invalid(
+                        "alpha supports HTTP(S) proxies without URL credentials or paths",
+                    ));
+                }
+                config.proxy = Some(https_connection::Proxy {
+                    host: proxy
+                        .host_str()
+                        .ok_or_else(|| invalid("proxy host required"))?
+                        .trim_start_matches('[')
+                        .trim_end_matches(']')
+                        .into(),
+                    port: proxy
+                        .port_or_known_default()
+                        .ok_or_else(|| invalid("proxy port required"))?,
+                    tls: proxy.scheme() == "https",
+                    authorization: None,
+                });
+            }
+            if let Some(raw) = value(environment, &["no_proxy", "NO_PROXY"]) {
+                config.no_proxy = raw
+                    .to_str()
+                    .ok_or_else(|| invalid("invalid endpoint no_proxy"))?
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+                    .collect();
+            }
+            Ok(())
+        }
         }
     } else if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
         mod platform {
-            use super::{EnvironmentSnapshot, PathBuf, value};
-            use windows_sys::Win32::Foundation::GlobalFree;
-            use windows_sys::Win32::Networking::WinHttp::{WinHttpGetDefaultProxyConfiguration, WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_PROXY_INFO};
-            /// The SSH home, whose `.ssh/known_hosts` the endpoint reads: `HOME`, when it is absolute. An interim
-            /// (plan step 1.6): step 3.1 replaces it with the Windows home resolver (`HOMEDRIVE` and
-            /// `HOMEPATH`, `USERPROFILE`).
-            pub(super) fn ssh_home(environment: &EnvironmentSnapshot) -> Option<PathBuf> {
-                value(environment, &["HOME"])
-                    .map(PathBuf::from)
-                    .filter(|home| home.is_absolute())
+            use super::{EnvironmentSnapshot, ModelResult, https_connection};
+            /// Windows reads no proxy from the environment: the machine setting is the proxy source (design §6), and
+            /// the qualification refuses to build a configuration without one.
+            pub(super) fn proxy(
+                _: &EnvironmentSnapshot,
+                _: &mut https_connection::Config,
+            ) -> ModelResult<()> {
+                Ok(())
             }
-
-            pub(super) fn direct() -> bool {
-                // SAFETY: initialized exclusive output. Every returned allocation,
-                // including partial failure outputs, is disposed below.
-                let mut info: WINHTTP_PROXY_INFO = unsafe { std::mem::zeroed() };
-                let ok = unsafe { WinHttpGetDefaultProxyConfiguration(&mut info) };
-                let direct = verified_direct(ok != 0, info.dwAccessType, !info.lpszProxy.is_null(), !info.lpszProxyBypass.is_null());
-                for pointer in [info.lpszProxy, info.lpszProxyBypass] {
-                    if !pointer.is_null() {
-                        // SAFETY: WinHTTP returns storage allocated for GlobalFree.
-                        unsafe { GlobalFree(pointer.cast()); }
-                    }
-                }
-                direct
-            }
-            pub(super) fn verified_direct(ok: bool, access: u32, named: bool, bypass: bool) -> bool {
-                ok && access == WINHTTP_ACCESS_TYPE_NO_PROXY && !named && !bypass
-            }
-            cfg_if::cfg_if! { if #[cfg(test)] {
-                #[test]
-                fn only_verified_direct_without_named_outputs_is_admitted() {
-                    assert!(verified_direct(true, WINHTTP_ACCESS_TYPE_NO_PROXY, false, false));
-                    assert!(!verified_direct(false, WINHTTP_ACCESS_TYPE_NO_PROXY, false, false));
-                    assert!(!verified_direct(true, 3, false, false));
-                    assert!(!verified_direct(true, WINHTTP_ACCESS_TYPE_NO_PROXY, true, false));
-                    assert!(!verified_direct(true, WINHTTP_ACCESS_TYPE_NO_PROXY, false, true));
-                }
-            } }
         }
     } else { compile_error!("unsupported transport endpoint platform"); }
 }
 
-/// Read once at original entry beside the environment; never on HTTP worker poll.
-pub(crate) fn capture_qualification_proxy() -> Option<bool> {
-    cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] { Some(platform::direct()) } else { None } }
+/// Read once at original entry beside the environment; never on HTTP worker poll. Only the Windows qualification
+/// reads the machine setting; Unix has none, and other builds have no HTTPS transport on Windows to configure.
+pub(crate) fn capture_machine_proxy() -> Option<MachineProxy> {
+    cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] { Some(super::machine_proxy::capture_machine()) } else { None } }
 }

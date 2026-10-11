@@ -94,6 +94,8 @@ impl<S: HalfClose> RpcIo<S> {
             service: Some(service),
             helpers_disabled: false,
             cli_hint: true,
+            windows: false,
+            host: None,
         };
         // A body stall says what ran out and which flag sets it (T7); the
         // generic failure line would say less. A helper's timeout keeps its

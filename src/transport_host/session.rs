@@ -6,6 +6,7 @@ use crate::git::endpoint::{
     ssh_channel::GitService,
     ssh_destination::Destination,
     ssh_handoff::{Handoff, UrlExtras},
+    ssh_home::{Home, KnownHostsFile},
     ssh_worker::ThreadWake,
     stream_io::BlockingStream,
 };
@@ -30,6 +31,8 @@ use std::{
 mod capacity;
 mod close;
 mod driver;
+/// The missing-git message's closing hint, shared with the HTTPS twin in `request/https_failure.rs`.
+pub(in crate::transport_host) use driver::native_hint::native_switch_hint;
 mod local_link;
 mod passes;
 mod port;
@@ -45,30 +48,16 @@ const CLEANUP: Duration = Duration::from_secs(5);
 /// it can miss a deadline. Whatever gives a pass work wakes it before that.
 const PARK: Duration = Duration::from_millis(5);
 const CHECK_MS: u64 = 120_000;
-cfg_if::cfg_if! {
-    if #[cfg(not(windows))] {
-        /// The policies a driver or endpoint with SSH and HTTPS binds.
-        fn ssh_and_https_endpoint_policies() -> Vec<AuthPolicy> {
-            vec![
-                AuthPolicy::SshAmbient,
-                AuthPolicy::SshExplicit,
-                AuthPolicy::Anonymous,
-                AuthPolicy::Gh,
-                AuthPolicy::WindowsConfigured,
-                AuthPolicy::WindowsDefault,
-            ]
-        }
-    } else {
-        /// The same in the Windows qualification, where the helper policies wait for WH2 (plan steps 4.1 to 4.5).
-        fn ssh_and_https_endpoint_policies() -> Vec<AuthPolicy> {
-            vec![
-                AuthPolicy::SshAmbient,
-                AuthPolicy::SshExplicit,
-                AuthPolicy::Anonymous,
-                AuthPolicy::WindowsDefault,
-            ]
-        }
-    }
+/// The policies a driver or endpoint with SSH and HTTPS binds.
+fn ssh_and_https_endpoint_policies() -> Vec<AuthPolicy> {
+    vec![
+        AuthPolicy::SshAmbient,
+        AuthPolicy::SshExplicit,
+        AuthPolicy::Anonymous,
+        AuthPolicy::Gh,
+        AuthPolicy::WindowsConfigured,
+        AuthPolicy::WindowsDefault,
+    ]
 }
 
 pub(super) fn limits() -> Limits {
@@ -170,6 +159,9 @@ struct State {
     /// A driver's handoff to the endpoint session in its process, when it
     /// has one: each SSH open's URL extras go through it (TR2.18).
     handoff: Option<Handoff>,
+    /// The SSH home the endpoint in this process reads under, and the variable that named it (plan step 3.1): a driver
+    /// prints the `known_hosts` file when it words a host-key failure, and expands `~/` identity paths under it.
+    home: Option<Home>,
 }
 struct Event {
     wakes: Mutex<BTreeMap<u64, Waker>>,
@@ -290,6 +282,21 @@ impl Session {
             https.set_notes(notes.clone());
         }
     }
+    /// Tells this driver which SSH home its runtime's endpoint reads under, and where that home came from.
+    pub(super) fn set_home(&self, home: Option<Home>) {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .home = home;
+    }
+    /// The SSH home the endpoint reads under: the one place `known_hosts` and `~/` identities are read from.
+    pub(super) fn home(&self) -> Option<Home> {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .home
+            .clone()
+    }
     cfg_if::cfg_if! { if #[cfg(test)] {
         pub(super) fn capacity_for_test(&self) -> Option<pool::Capacity> {
             let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
@@ -391,6 +398,7 @@ impl Session {
             ssh_allocation_ms: 30_000,
             ssh_interaction_ms: 120_000,
             handoff: None,
+            home: None,
         }
     }
     /// A driver session. `handoff` is shared with the endpoint session its
@@ -460,7 +468,8 @@ impl Session {
             });
             let ssh = ssh_local::connect_with_helpers(
                 config.pool.clone(),
-                ssh_settings.home.join(".ssh/known_hosts"),
+                // The file the driver names when it words a host-key failure (`KnownHostsFile`).
+                KnownHostsFile::under(&ssh_settings.home, ssh_settings.home_source).path,
                 ssh_settings.agent.clone(),
                 config.io_timeout_ms,
                 authority.clone(),
@@ -473,12 +482,6 @@ impl Session {
                     .map_err(|_| unavailable("endpoint supervisor unavailable"))?,
             );
         }
-        // The helper configuration serves SSH's password route above. Until step 4.4 admits the configured-helper
-        // policies to HTTPS on Windows, the qualification boundary keeps the HTTPS endpoint from holding one.
-        // (The qualification switch exists only with the candidate on Windows, `lib.rs`.)
-        cfg_if::cfg_if! { if #[cfg(all(windows, gwz_windows_https_qualification))] {
-            let https = https.map(|(config, slots)| (HttpsEndpointConfig { auth: None, ..config }, slots));
-        } }
         if let Some((https, helper_slots)) = https {
             state.https = Some(super::https_endpoint::HttpsEndpoint::new_native(
                 https,

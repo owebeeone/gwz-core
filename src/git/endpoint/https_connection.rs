@@ -72,6 +72,11 @@ pub(crate) struct Proxy {
     /// Endpoint-owned value, never part of an Open or Debug output.
     pub(crate) authorization: Option<String>,
 }
+/// The destinations a machine proxy does not serve (Windows, plan step 4.7): the rules are the machine setting's,
+/// not the environment's, and are matched against the canonical destination as text.
+pub(crate) trait ProxyBypass: Send + Sync {
+    fn bypasses(&self, host: &str, port: u16) -> bool;
+}
 #[derive(Clone, Default)]
 pub(crate) struct Config {
     /// The CA file's certificates (`super::ca_bundle`), each a root beside the
@@ -84,6 +89,9 @@ pub(crate) struct Config {
     pub(crate) proxy: Option<Proxy>,
     /// Exact DNS hosts/IPs or leading-dot suffixes. No caller/core environment.
     pub(crate) no_proxy: Vec<String>,
+    /// The machine proxy's bypass rules, which replace `no_proxy` when set. The proxy is then the machine setting's:
+    /// its 407 to a CONNECT is refused as proxy sign-in, which is not supported (`Client::machine_proxy`).
+    pub(crate) machine_bypass: Option<Arc<dyn ProxyBypass>>,
 }
 impl Config {
     pub(crate) fn validate(&self) -> Result<(), Failure> {
@@ -110,7 +118,14 @@ impl Config {
         }
         Ok(())
     }
-    fn proxy_for(&self, host: &str) -> Option<Proxy> {
+    pub(crate) fn proxy_for(&self, host: &str, port: u16) -> Option<Proxy> {
+        if let Some(bypass) = &self.machine_bypass {
+            return if bypass.bypasses(host, port) {
+                None
+            } else {
+                self.proxy.clone()
+            };
+        }
         if self.no_proxy.iter().any(|entry| {
             entry == "*"
                 || entry.eq_ignore_ascii_case(host)
@@ -358,7 +373,7 @@ impl HttpResource {
             move |control| {
                 let _permit = permit;
                 control.check()?;
-                let proxy = config.proxy_for(&key.host);
+                let proxy = config.proxy_for(&key.host, key.port);
                 let (host, port) = proxy
                     .as_ref()
                     .map_or((key.host.as_str(), key.port), |p| (p.host.as_str(), p.port));

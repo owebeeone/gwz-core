@@ -3,6 +3,7 @@ use super::{
     agent_job::Control,
     socket_wait::{self, Interest},
     ssh_connection::SshConnection,
+    ssh_host_key::HostKeyRefused,
     ssh_limits::SshLimit,
 };
 use crate::git::regular_file;
@@ -68,7 +69,13 @@ where
         &both[..]
     };
     control.check()?;
-    let text = load(known_path, control)?;
+    let text = match load(known_path, control) {
+        // A missing `known_hosts` lists no host: it is the refusal of an unknown one (U8).
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(HostKeyRefused.into_error());
+        }
+        loaded => loaded?,
+    };
     control.check()?;
     validate_lines(&text, control)?;
     control.check()?;
@@ -310,7 +317,8 @@ fn handshake(
         .iter()
         .any(|name| matches!(known.check_port(name, port, &host_key), CheckResult::Match))
     {
-        return Err(io::ErrorKind::PermissionDenied.into());
+        // Not listed, or listed with a different key: the host words it with the file it read (U8).
+        return Err(HostKeyRefused.into_error());
     }
     Ok((connection, host_key))
 }

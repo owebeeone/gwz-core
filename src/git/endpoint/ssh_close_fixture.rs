@@ -22,17 +22,17 @@ const CLOSE_RELEASE: &str = "close-release";
 
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
-        /// The release file as the script names it: beside the script, which is `$0`.
-        const RELEASE_FILE: &str = "${0%/*}/close-release";
+        /// The fixture's directory as the script names it: the script's own, `$0`.
+        pub(crate) const FIXTURE_DIRECTORY: &str = "${0%/*}";
     } else {
-        /// The release file as the script names it: in the working directory, which is the fixture's.
-        const RELEASE_FILE: &str = "close-release";
+        /// The fixture's directory as the script names it: the working directory, which is the fixture's.
+        pub(crate) const FIXTURE_DIRECTORY: &str = ".";
     }
 }
 
 /// Every channel of the server runs `body`, in which `$SSH_ORIGINAL_COMMAND`
 /// is the Git service to run.
-fn forced(body: &str) -> SshdFixture {
+pub(crate) fn forced(body: &str) -> SshdFixture {
     let fixture = SshdFixture::new_forced();
     let script = fixture.temp.path().join(SCRIPT);
     install(
@@ -80,7 +80,7 @@ pub(crate) fn delayed_close_fixture(delay: Duration) -> SshdFixture {
 pub(crate) fn gated_close_fixture() -> (SshdFixture, std::path::PathBuf) {
     let fixture = forced(&format!(
         "eval \"$SSH_ORIGINAL_COMMAND\"\nstatus=$?\nexec 1>&- 2>&-\ni=0\n\
-         while [ ! -e \"{RELEASE_FILE}\" ] && [ \"$i\" -lt 1000 ]; do\n\
+         while [ ! -e \"{FIXTURE_DIRECTORY}/{CLOSE_RELEASE}\" ] && [ \"$i\" -lt 1000 ]; do\n\
          sleep 0.01\ni=$((i+1))\ndone\nexit $status\n"
     ));
     let release = fixture.temp.path().join(CLOSE_RELEASE);
@@ -138,6 +138,13 @@ pub(crate) fn dropped_close_fixture() -> SshdFixture {
 /// it can end the output and keep the channel open. It is the same server on every platform.
 pub(crate) fn stuck_close_fixture() -> ControlledSshd {
     ControlledSshd::start(Ending::Stuck)
+}
+
+/// The service exits and its output ends, and the channel's exit status and close follow `delay` later: the
+/// test-controlled server's version of [`delayed_close_fixture`] for a test that reads the output to its end, which a
+/// Windows `sshd.exe` (no EOF before the session process exits) cannot show.
+pub(crate) fn late_close_server(delay: Duration) -> ControlledSshd {
+    ControlledSshd::start(Ending::Late(delay))
 }
 
 /// The server never runs the service and never ends its output.

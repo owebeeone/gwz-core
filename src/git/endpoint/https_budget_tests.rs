@@ -13,7 +13,6 @@ fn runtime() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
-cfg_if::cfg_if! { if #[cfg(unix)] {
 #[test]
 fn delayed_helper_is_charged_to_interaction_not_allocation() {
     runtime().block_on(async {
@@ -22,18 +21,13 @@ fn delayed_helper_is_charged_to_interaction_not_allocation() {
         }))
         .await;
         let dir = tempfile::tempdir().unwrap();
-        let helper = dir.path().join("gh");
         // The helper outlasts the whole allocation allowance: charged to
         // allocation it would exhaust it, charged to interaction it fits. The
         // allowance still covers admission before the helper on a loaded host.
-        crate::git::endpoint::helper_script::write_git_fixture(
-            &helper,
+        let auth = crate::git::endpoint::helper_script::git_fixture(
+            dir.path(),
             "/bin/cat >/dev/null\n/bin/sleep 0.5\nprintf 'username=fixture\\npassword=token\\n\\n'\n",
         );
-        let auth = https_auth::Config {
-            executable: helper,
-            environment: Vec::new(),
-        };
         let mut pool = gwz_transport::pool::Config::default();
         pool.allocation_timeout_ms = 250;
         pool.interaction_timeout_ms = 5_000;
@@ -85,8 +79,6 @@ fn a_stale_supervisor_tick_never_expires_a_fresh_one_millisecond_allowance() {
         assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
     });
 }
-
-} }
 
 #[test]
 fn active_io_custom_timeout_expires_delayed_headers() {

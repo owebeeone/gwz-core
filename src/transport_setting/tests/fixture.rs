@@ -1,14 +1,10 @@
 //! What the transport setting's tests share: snapshots of explicit pairs,
-//! configuration files, FIFOs, a workspace on disk, a guard for calls that
-//! must not block, and `sh` runs of the commands §10 prints.
+//! configuration files, a workspace on disk and, where the platform has them, FIFOs, a guard for calls that must not
+//! block, and `sh` runs of the commands §10 prints.
 
-use std::ffi::{CString, OsStr, OsString};
+use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
-use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::Duration;
 
 use crate::artifact::{
     self, ArtifactSourceKind, ManifestArtifact, ManifestMember, WorkspaceHeader,
@@ -45,83 +41,158 @@ pub(super) fn write(path: &Path, contents: impl AsRef<[u8]>) {
     fs::write(path, contents).unwrap();
 }
 
-/// Makes a FIFO at `path`. Opening it to read blocks until a writer opens it.
-pub(super) fn fifo(path: &Path) {
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let name = CString::new(path.as_os_str().as_bytes()).unwrap();
-    // SAFETY: `name` is a NUL-terminated path that outlives the call.
-    let made = unsafe { libc::mkfifo(name.as_ptr(), 0o600) };
-    assert_eq!(made, 0, "mkfifo {}", path.display());
-}
+// The helpers of the rows that are Unix's: a FIFO is a file in a directory only there (a Windows named pipe lives in its
+// own namespace), the printed commands of design section 10 are POSIX shell, and libgit2's home is walked to from the
+// root by components that Windows' drives do not share.
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        use std::process::{Command, Output};
+        use std::sync::mpsc::{self, RecvTimeoutError};
+        use std::time::Duration;
 
-/// `call`'s result, or a failure if it has not returned within 20 seconds: a
-/// call that opens a FIFO to read never returns.
-pub(super) fn within<T: Send + 'static>(call: impl FnOnce() -> T + Send + 'static) -> T {
-    let (sender, receiver) = mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = sender.send(call());
-    });
-    match receiver.recv_timeout(Duration::from_secs(20)) {
-        Ok(value) => value,
-        Err(RecvTimeoutError::Timeout) => {
-            panic!("blocked: the call opened a file it must not open")
+        /// Makes a FIFO at `path`. Opening it to read blocks until a writer opens it.
+        pub(super) fn fifo(path: &Path) {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+            // SAFETY: `name` is a NUL-terminated path that outlives the call.
+            let made = unsafe { libc::mkfifo(name.as_ptr(), 0o600) };
+            assert_eq!(made, 0, "mkfifo {}", path.display());
         }
-        Err(RecvTimeoutError::Disconnected) => panic!("the call panicked"),
+
+        /// `call`'s result, or a failure if it has not returned within 20 seconds: a
+        /// call that opens a FIFO to read never returns.
+        pub(super) fn within<T: Send + 'static>(call: impl FnOnce() -> T + Send + 'static) -> T {
+            let (sender, receiver) = mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = sender.send(call());
+            });
+            match receiver.recv_timeout(Duration::from_secs(20)) {
+                Ok(value) => value,
+                Err(RecvTimeoutError::Timeout) => {
+                    panic!("blocked: the call opened a file it must not open")
+                }
+                Err(RecvTimeoutError::Disconnected) => panic!("the call panicked"),
+            }
+        }
+
+        /// Runs `command` through `sh -c` in `cwd`, with `HOME` at `home` and git's
+        /// system file off, as a user would paste it.
+        pub(super) fn sh(command: &str, cwd: &Path, home: &Path) -> Output {
+            Command::new("sh")
+                .arg("-c")
+                .arg(command)
+                .current_dir(cwd)
+                .env("HOME", home)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .unwrap()
+        }
+
+        /// Asserts that `output` succeeded and returns its standard output's lines.
+        pub(super) fn lines(output: &Output) -> Vec<String> {
+            assert!(
+                output.status.success(),
+                "{:?}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout.clone())
+                .unwrap()
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        }
+
+        /// libgit2's process-wide home, which it fixed when it first initialised in
+        /// this process and against which it resolves a `~/` include.
+        pub(super) fn libgit2_home() -> PathBuf {
+            // Any git2 call initialises libgit2 first.
+            git2::Config::new().unwrap();
+            let mut buffer = libgit2_sys::git_buf {
+                ptr: std::ptr::null_mut(),
+                reserved: 0,
+                size: 0,
+            };
+            // SAFETY: GIT_OPT_GET_HOMEDIR (37 in libgit2's enum and libgit2-sys's)
+            // writes the home into `buffer`, which libgit2 allocates and
+            // `git_buf_dispose` frees, and nothing in gwz-core sets the home.
+            let bytes = unsafe {
+                let status = libgit2_sys::git_libgit2_opts(
+                    libgit2_sys::GIT_OPT_GET_HOMEDIR as std::ffi::c_int,
+                    &mut buffer as *mut libgit2_sys::git_buf,
+                );
+                assert_eq!(status, 0, "GIT_OPT_GET_HOMEDIR");
+                let bytes = std::slice::from_raw_parts(buffer.ptr as *const u8, buffer.size).to_vec();
+                libgit2_sys::git_buf_dispose(&mut buffer);
+                bytes
+            };
+            PathBuf::from(OsString::from_vec(bytes))
+        }
     }
 }
 
-/// Runs `command` through `sh -c` in `cwd`, with `HOME` at `home` and git's
-/// system file off, as a user would paste it.
-pub(super) fn sh(command: &str, cwd: &Path, home: &Path) -> Output {
-    Command::new("sh")
-        .arg("-c")
-        .arg(command)
-        .current_dir(cwd)
-        .env("HOME", home)
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .output()
-        .unwrap()
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        use std::os::unix::fs::PermissionsExt;
+
+        /// A file that this process cannot open for reading while the value lives (git and libgit2 skip such a
+        /// file): mode 000 on Unix, restored on drop.
+        pub(super) struct Unreadable(PathBuf);
+
+        impl Unreadable {
+            /// `None` when the process reads the file anyway, as root does.
+            pub(super) fn new(path: &Path) -> Option<Self> {
+                fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
+                let guard = Self(path.to_path_buf());
+                fs::File::open(path).is_err().then_some(guard)
+            }
+        }
+
+        impl Drop for Unreadable {
+            fn drop(&mut self) {
+                let _ = fs::set_permissions(&self.0, fs::Permissions::from_mode(0o600));
+            }
+        }
+    } else {
+        use std::os::windows::fs::OpenOptionsExt;
+
+        /// A file that this process cannot open for reading while the value lives: Windows holds it open with no
+        /// sharing, so another open meets a sharing violation. The file's attributes can still be read, as a
+        /// file with no read permission shows them on Unix.
+        pub(super) struct Unreadable {
+            _held: fs::File,
+        }
+
+        impl Unreadable {
+            pub(super) fn new(path: &Path) -> Option<Self> {
+                let held = fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode(0)
+                    .open(path)
+                    .unwrap();
+                Some(Self { _held: held })
+            }
+        }
+    }
 }
 
-/// Asserts that `output` succeeded and returns its standard output's lines.
-pub(super) fn lines(output: &Output) -> Vec<String> {
-    assert!(
-        output.status.success(),
-        "{:?}: {}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout.clone())
-        .unwrap()
-        .lines()
-        .map(str::to_owned)
-        .collect()
-}
-
-/// libgit2's process-wide home, which it fixed when it first initialised in
-/// this process and against which it resolves a `~/` include.
-pub(super) fn libgit2_home() -> PathBuf {
-    // Any git2 call initialises libgit2 first.
-    git2::Config::new().unwrap();
-    let mut buffer = libgit2_sys::git_buf {
-        ptr: std::ptr::null_mut(),
-        reserved: 0,
-        size: 0,
-    };
-    // SAFETY: GIT_OPT_GET_HOMEDIR (37 in libgit2's enum and libgit2-sys's)
-    // writes the home into `buffer`, which libgit2 allocates and
-    // `git_buf_dispose` frees, and nothing in gwz-core sets the home.
-    let bytes = unsafe {
-        let status = libgit2_sys::git_libgit2_opts(
-            libgit2_sys::GIT_OPT_GET_HOMEDIR as libc::c_int,
-            &mut buffer as *mut libgit2_sys::git_buf,
-        );
-        assert_eq!(status, 0, "GIT_OPT_GET_HOMEDIR");
-        let bytes = std::slice::from_raw_parts(buffer.ptr as *const u8, buffer.size).to_vec();
-        libgit2_sys::git_buf_dispose(&mut buffer);
-        bytes
-    };
-    PathBuf::from(OsString::from_vec(bytes))
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        /// Makes `link` a symbolic link to the file `real`. Always true on Unix.
+        pub(super) fn link(real: &Path, link: &Path) -> bool {
+            fs::create_dir_all(link.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(real, link).unwrap();
+            true
+        }
+    } else {
+        /// Makes `link` a symbolic link to the file `real`, or says it may not: creating one takes a privilege on
+        /// Windows that an ordinary account lacks unless Developer Mode is on.
+        pub(super) fn link(real: &Path, link: &Path) -> bool {
+            fs::create_dir_all(link.parent().unwrap()).unwrap();
+            std::os::windows::fs::symlink_file(real, link).is_ok()
+        }
+    }
 }
 
 /// The workspace ID of every `Workspace`.

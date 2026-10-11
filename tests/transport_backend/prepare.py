@@ -15,7 +15,9 @@ import shutil
 #     job), Win32_System_Threading (CreateProcessW, the attribute list, process waits), Win32_System_Pipes (the
 #     overlapped pipes), Win32_Security (inheritable handle attributes), Win32_System_SystemInformation (the Windows
 #     directory), and the production list's own Win32_Foundation and Win32_Storage_FileSystem; Win32_Networking_
-#     WinHttp and Win32_Networking_WinSock serve the HTTPS and SSH code; step 3.5's Pageant exchange
+#     WinHttp and Win32_Networking_WinSock serve the HTTPS and SSH code; step 4.6's machine proxy lists the
+#     interface addresses with Win32_NetworkManagement_IpHelper (GetAdaptersAddresses, whose records need
+#     Win32_NetworkManagement_Ndis); step 3.5's Pageant exchange
 #     (`pageant_exchange/sys.rs`) needs Win32_Security_Authorization, Win32_System_DataExchange, Win32_System_Memory
 #     and Win32_UI_WindowsAndMessaging, and step 3.3's agent pipe (`agent_pipe.rs`) needs Win32_System_IO
 #     (overlapped I/O: `CancelIoEx`, `GetOverlappedResult`) beside the Pipes, Threading and FileSystem ones above.
@@ -23,14 +25,19 @@ import shutil
 #   test only: Win32_System_Diagnostics_ToolHelp and Win32_System_Ioctl, for the Job Object,
 #     thread suspension and process lists of the SSH test servers and their native helper (`fixture_job.rs`), a
 #     named pipe in the regular-file test, pipe reads and writes in the agent fixture, and the directory junction of
-#     the URL tests; they are named here as well as in Cargo.toml's Windows
+#     the URL tests; Win32_Security_Authentication_Identity and Win32_Security_Credentials, for the SSPI acceptor of
+#     step 4.8's real-SSPI rows (`native/tests/real_sspi.rs`); they are named here as well as in Cargo.toml's Windows
 #     dev-dependencies, because `cargo check --lib --profile test`, which scripts/windows_lane_check.py runs, does
 #     not enable dev-dependency features.
 CANDIDATE_WINDOWS_FEATURES = (
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinHttp",
     "Win32_Networking_WinSock",
     "Win32_Security",
+    "Win32_Security_Authentication_Identity",
     "Win32_Security_Authorization",
+    "Win32_Security_Credentials",
     "Win32_System_DataExchange",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",

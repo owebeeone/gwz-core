@@ -4,6 +4,8 @@ pub(crate) mod endpoint_environment;
 mod helper_failure;
 mod https_endpoint;
 mod local_command;
+// Step 4.6: the WinHTTP machine proxy. The grammar is portable and its tests run everywhere; Unix builds have no use for it.
+cfg_if::cfg_if! { if #[cfg(any(windows, test))] { mod machine_proxy; } }
 pub use crate::git::endpoint::https_worker::native::NativeCaller;
 pub use crate::git::endpoint::setup_retry::NoteSink;
 pub use cancellable::with_cancellable_local_transport;
@@ -48,28 +50,19 @@ cfg_if::cfg_if! { if #[cfg(test)] { mod agent_source_tests; } }
 // the Windows qualification admits only SSH and HTTPS; retiring the switch ungates it.
 cfg_if::cfg_if! { if #[cfg(all(test, unix))] { mod https_compat_tests; } }
 
-// Step 4.11: the helper-dependent modules. `driver_tests` and `https_tests` also hold the shared fixtures of the step 1.8
-// modules above (`block_on`, `endpoint_home`, `repository`, `git_http_backend` and the rest), which need no helper, so
-// they compile everywhere (step 1.8) and only their helper-script items stay Unix (rows in 4.11.json).
+// Step 4.11: the helper-dependent modules. They run on every platform: a test's fake `git` is a script on Unix and
+// the test executable running it under Git for Windows' shell on Windows (`helper_script::git_fixture`).
 cfg_if::cfg_if! {
     if #[cfg(test)] {
         mod driver_tests;
         mod https_tests;
-    }
-}
-cfg_if::cfg_if! {
-    if #[cfg(all(test, unix))] {
         mod close_tests;
         mod command_tests;
         mod fetch_preflight_tests;
         mod https_policy_tests;
-        cfg_if::cfg_if! {
-            if #[cfg(unix)] {
-                mod https_helper_projection_tests;
-                mod ssh_helper_projection_tests;
-                mod https_negotiate_projection_tests;
-            }
-        }
+        mod https_helper_projection_tests;
+        mod ssh_helper_projection_tests;
+        mod https_negotiate_projection_tests;
         mod cancellable_tests;
         mod cancellable_https_tests;
         mod ca_bundle_tests;
@@ -78,6 +71,7 @@ cfg_if::cfg_if! {
 
 use crate::git::endpoint::agent_source::AgentSource;
 use crate::git::endpoint::https_auth::HelperSlots;
+use crate::git::endpoint::ssh_home::{self, Home, HomeSource};
 use crate::git::endpoint::ssh_local;
 use crate::{
     RequestMeta, TransportCapabilitiesRequest, TransportCapabilitiesResponse, TransportPlacement,
@@ -98,7 +92,7 @@ pub use request::{ClientRequest, TransportCancellation, TransportRequest};
 pub fn validate_request_context(meta: &RequestMeta, operation_id: &str) -> ModelResult<()> {
     request::validate_meta(meta, operation_id)
 }
-pub(crate) use request::{HttpsAttemptReceipt, HttpsOpenFailure, RequestContext};
+pub(crate) use request::{HttpsAttemptReceipt, HttpsOpenFailure, RequestContext, policy_words};
 use session::Session;
 pub(crate) use session::{AgentFailure, SshLimitFailure, SshOpenFailure};
 pub use session::{Attachment, TransportPort};
@@ -120,14 +114,15 @@ cfg_if::cfg_if! {
             ]
         }
     } else {
-        /// The policies an SSH and HTTPS runtime offers in the Windows qualification: `Gh` and `WindowsConfigured`
-        /// wait for the helper runner (WH2, plan steps 4.1 to 4.5); the SSH policies end in a refusal at setup
-        /// when they need an agent, which Windows cannot sign with until step 3.4 (its sources are chosen by 3.2b).
+        /// The policies an SSH and HTTPS runtime offers on Windows: the Unix ones, whose `Gh` is the helper over
+        /// `Basic`, and the two Windows ones, the logon session with the configured helper and without it.
         fn ssh_and_https_policies() -> Vec<AuthPolicy> {
             vec![
                 AuthPolicy::SshAmbient,
                 AuthPolicy::SshExplicit,
                 AuthPolicy::Anonymous,
+                AuthPolicy::Gh,
+                AuthPolicy::WindowsConfigured,
                 AuthPolicy::WindowsDefault,
             ]
         }
@@ -147,22 +142,31 @@ fn apply_native_timeout(pool: &mut pool::Config, native_ms: u64) {
 #[derive(Clone)]
 pub struct SshEndpointConfig {
     home: PathBuf,
+    home_source: HomeSource,
     agent: AgentSource,
     pool: pool::Config,
     io_timeout_ms: u64,
 }
 impl SshEndpointConfig {
     pub fn from_environment() -> ModelResult<Self> {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .ok_or_else(|| invalid("endpoint HOME is unavailable"))?;
+        // The same home contract as the snapshot-derived configuration (plan step 3.1), over the live process: its
+        // variables and its current directory, read once, here.
+        struct Live;
+        impl ssh_home::Variables for Live {
+            fn get(&self, name: &str) -> Option<std::ffi::OsString> {
+                std::env::var_os(name)
+            }
+        }
+        let cwd = std::env::current_dir().ok();
+        let home = ssh_home::resolve(ssh_home::PLATFORM, &Live, cwd.as_deref(), &ssh_home::Disk)
+            .map_err(|refusal| invalid(&refusal.to_string()))?;
         let agent = agent_from_environment();
         let timeout = crate::git::transport_timeout_ms();
         let mut pool = pool::Config::default();
         apply_native_timeout(&mut pool, timeout);
         Ok(Self {
-            home,
+            home: home.path,
+            home_source: home.source,
             agent,
             pool,
             io_timeout_ms: timeout,
@@ -173,6 +177,7 @@ impl SshEndpointConfig {
             pub(crate) fn fixture(home: PathBuf, agent: Option<PathBuf>) -> Self {
                 Self {
                     home,
+                    home_source: HomeSource::Home,
                     agent: AgentSource::from_path(agent),
                     pool: pool::Config::default(),
                     io_timeout_ms: 3000,
@@ -205,6 +210,8 @@ pub(super) struct EndpointSettings {
 #[derive(Clone)]
 pub(super) struct SshSettings {
     home: PathBuf,
+    /// The variable that named `home` (design section 3), which a `known_hosts` message prints.
+    home_source: HomeSource,
     agent: AgentSource,
 }
 impl From<SshEndpointConfig> for EndpointSettings {
@@ -212,6 +219,7 @@ impl From<SshEndpointConfig> for EndpointSettings {
         Self {
             ssh: Some(SshSettings {
                 home: config.home,
+                home_source: config.home_source,
                 agent: config.agent,
             }),
             pool: config.pool,
@@ -239,6 +247,8 @@ struct RuntimeState {
     io_timeout_ms: u64,
     connect_timeout_ms: u64,
     https: bool,
+    /// Where the command's warnings and notes go, if it gave a reader.
+    notes: Option<NoteSink>,
 }
 impl Drop for RuntimeState {
     fn drop(&mut self) {
@@ -288,6 +298,12 @@ impl TransportRuntime {
         let connect_timeout_ms = local.pool.connect_timeout_ms;
         let allocation_ms = local.pool.allocation_timeout_ms;
         let interaction_ms = local.pool.interaction_timeout_ms;
+        // The home the endpoint reads under, for the driver to name the file when it words a host-key failure and to
+        // expand `~/` identities under.
+        let home = local.ssh.as_ref().map(|ssh| Home {
+            path: ssh.home.clone(),
+            source: ssh.home_source,
+        });
         // The driver and the endpoint share this process, so each SSH open's
         // URL extras go from one to the other through this (TR2.18).
         let handoff = crate::git::endpoint::ssh_handoff::Handoff::with_agent(
@@ -306,6 +322,7 @@ impl TransportRuntime {
             allocation_ms,
             interaction_ms,
         )?;
+        driver.set_home(home);
         let link = session::LocalLink::new(core_port, peer_port)?;
         Ok(Self(Arc::new(Mutex::new(RuntimeState {
             local: driver,
@@ -316,13 +333,21 @@ impl TransportRuntime {
             io_timeout_ms,
             connect_timeout_ms,
             https: enabled,
+            notes: None,
         }))))
     }
+    cfg_if::cfg_if! { if #[cfg(test)] {
+        /// The SSH home the runtime's driver names and expands `~/` under.
+        pub(crate) fn driver_home_for_test(&self) -> Option<Home> {
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).local.home()
+        }
+    } }
     /// Has the endpoints this runtime built give their limit machines' notes
     /// to `notes` (§9). Called once, before the first request.
     pub(crate) fn set_notes(&self, notes: &NoteSink) {
-        let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
         state.local_endpoint.set_notes(notes);
+        state.notes = Some(notes.clone());
     }
     pub fn install_cli(&self) -> ModelResult<TransportPort> {
         let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -419,7 +444,7 @@ impl TransportRuntime {
                 "--max-retries is not carried to the Cli placement's endpoint",
             ));
         }
-        let (session, local_endpoint) = {
+        let (session, local_endpoint, notes) = {
             let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
             if state.closed {
                 return Err(unavailable("transport runtime is closed"));
@@ -431,9 +456,14 @@ impl TransportRuntime {
                         .clone()
                         .ok_or_else(|| unavailable("client endpoint is not installed"))?,
                     None,
+                    state.notes.clone(),
                 )
             } else {
-                (state.local.clone(), Some(state.local_endpoint.clone()))
+                (
+                    state.local.clone(),
+                    Some(state.local_endpoint.clone()),
+                    state.notes.clone(),
+                )
             }
         };
         // Endpoint registration precedes the driver Bind even for the in-process route.
@@ -460,7 +490,7 @@ impl TransportRuntime {
         } else {
             None
         };
-        let context = RequestContext::new(session, meta, operation_id)?;
+        let context = RequestContext::new(session, meta, operation_id, notes)?;
         let mut guard = TransportRequest::pending(context, client_guard);
         if let Some(token) = token {
             guard.attach(token)?;
@@ -470,11 +500,7 @@ impl TransportRuntime {
             .session
             .begin(&guard.context.meta.request_id)?;
         guard.context.session.ready().await?;
-        cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
-            guard.backend = Some(Git2Backend::without_credential_helpers().with_host_context(guard.context.clone()));
-        } else {
-            guard.backend = Some(Git2Backend::new().with_host_context(guard.context.clone()));
-        } }
+        guard.backend = Some(Git2Backend::new().with_host_context(guard.context.clone()));
         Ok(guard)
     }
     pub async fn remove_cli(&self) -> CleanupReport {

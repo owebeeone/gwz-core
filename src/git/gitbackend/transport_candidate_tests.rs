@@ -5,6 +5,7 @@ use super::*;
 use crate::git::endpoint::ssh_fixture as common;
 use crate::transport_host::{SshEndpointConfig, TransportRequest, TransportRuntime};
 mod drivers;
+mod home_rows;
 mod host_context;
 mod known_hosts_case;
 mod url_parity;
@@ -77,7 +78,12 @@ fn request_meta(f: &common::SshdFixture, request_id: &str) -> crate::RequestMeta
 /// The fixture, its host, an open request, and that request's backend scoped
 /// to the fixture's key. The request must outlive every use of the backend.
 fn fixture() -> (common::SshdFixture, Host, TransportRequest, Git2Backend) {
-    let f = common::SshdFixture::new();
+    fixture_of(common::SshdFixture::new())
+}
+/// `fixture`, over a server of the test's own making.
+fn fixture_of(
+    f: common::SshdFixture,
+) -> (common::SshdFixture, Host, TransportRequest, Git2Backend) {
     let host = Host::new(&f);
     let meta = request_meta(&f, "candidate");
     let request = host.request(meta.clone(), "candidate");

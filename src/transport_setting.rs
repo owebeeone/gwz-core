@@ -268,7 +268,7 @@ struct Found {
 /// error names the file, the included one for an error in an included file,
 /// and the line.
 fn last_value(file: &Path) -> Result<Option<Found>, git2::Error> {
-    let config = git2::Config::open(file)?;
+    let config = git2::Config::open(&libgit2_path(file))?;
     match config.get_entry(KEY) {
         Ok(entry) => Ok(Some(Found {
             included: entry.include_depth() > 0,
@@ -280,7 +280,26 @@ fn last_value(file: &Path) -> Result<Option<Found>, git2::Error> {
 }
 
 cfg_if::cfg_if! {
-    if #[cfg(all(test, unix))] {
+    if #[cfg(windows)] {
+        /// `file` as libgit2 takes a path on Windows: with `/` separators. libgit2's own `dirname`, which resolves a
+        /// relative `include.path` against the including file, knows no other separator, so a path with `\` would
+        /// resolve the include against the process's current directory instead. A path that is not Unicode cannot be
+        /// rewritten and stays as it is.
+        fn libgit2_path(file: &Path) -> std::path::PathBuf {
+            file.to_str()
+                .map(|text| std::path::PathBuf::from(text.replace('\\', "/")))
+                .unwrap_or_else(|| file.to_path_buf())
+        }
+    } else {
+        /// `file` as libgit2 takes a path: as it is.
+        fn libgit2_path(file: &Path) -> std::path::PathBuf {
+            file.to_path_buf()
+        }
+    }
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
         mod tests;
     }
 }

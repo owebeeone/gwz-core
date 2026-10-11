@@ -35,7 +35,7 @@ pub fn handle_remote_identity<B: GitBackend + MergeAuthorityBackend>(
     }
     let desired = match (request.op, request.private_key_path.as_deref()) {
         (crate::RemoteIdentityOp::Set, Some(value)) => {
-            let path = resolve_ssh_identity_path(&start, value)?;
+            let path = resolve_ssh_identity_path(&start, None, value)?;
             validate_ssh_identity_file(&path)?;
             Some(
                 path.to_str()

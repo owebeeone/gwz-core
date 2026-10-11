@@ -4,6 +4,7 @@ use super::{
     idle_watch::{IdleReactor, IdleSocket},
     ssh_channel::{GitService, SshChannel},
     ssh_connection::SshConnection,
+    ssh_host_key::HostKeyRefused,
     ssh_key_auth::Verified,
     ssh_key_snapshot::Entry,
     ssh_limits::SshLimit,
@@ -586,6 +587,9 @@ pub(crate) fn failure_from_io(error: &io::Error) -> Failure {
     }
     if let Some(limit) = SshLimit::of_error(error) {
         return limit.failure();
+    }
+    if HostKeyRefused::of_error(error) {
+        return HostKeyRefused::failure();
     }
     failure(error.kind())
 }

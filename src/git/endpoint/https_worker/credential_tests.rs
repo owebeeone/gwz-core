@@ -3,15 +3,16 @@ use crate::git::endpoint::https_fixture::{self as fixture, Server, input, respon
 use hyper::header::{AUTHORIZATION, WWW_AUTHENTICATE};
 use std::fs;
 
-fn fake_git(path: &std::path::Path, counter: &std::path::Path) -> https_auth::Config {
-    crate::git::endpoint::helper_script::write_git_fixture(
-        path,
+fn fake_git(directory: &std::path::Path, counter: &std::path::Path) -> https_auth::Config {
+    let mut config = crate::git::endpoint::helper_script::git_fixture(
+        directory,
         "printf 'lookup\\n' >> \"$COUNTER\"\nprintf 'username=fixture\\npassword=private-fixture\\n\\n'",
     );
-    https_auth::Config {
-        executable: path.into(),
-        environment: vec![("COUNTER".into(), counter.as_os_str().into())],
-    }
+    config.environment.push((
+        "COUNTER".into(),
+        crate::git::endpoint::helper_script::script_path(counter).into(),
+    ));
+    config
 }
 async fn finish(prepared: Prepared) {
     let (stream, task) = fixture::attach(prepared);
@@ -46,7 +47,7 @@ async fn route_owns_one_lookup_and_other_routes_operations_never_get_its_connect
     .await;
     let dir = tempfile::tempdir().unwrap();
     let counter = dir.path().join("count");
-    let config = fake_git(&dir.path().join("git"), &counter);
+    let config = fake_git(dir.path(), &counter);
     let mut endpoint =
         Endpoint::new(server.config(), Some(config), pool::Config::default()).unwrap();
     let first = input(&server, GitService::UploadPackAdvertisement);
@@ -115,11 +116,15 @@ async fn missing_git_latches_only_this_operation_without_starting_a_repaired_hel
     }))
     .await;
     let dir = tempfile::tempdir().unwrap();
-    let executable = dir.path().join("git");
     let counter = dir.path().join("count");
+    // The helper to be repaired in, and a Config that names it where it is not yet.
+    let repaired = fake_git(dir.path(), &counter);
+    let executable = dir
+        .path()
+        .join(format!("absent{}", std::env::consts::EXE_SUFFIX));
     let config = https_auth::Config {
         executable: executable.clone(),
-        environment: vec![("COUNTER".into(), counter.as_os_str().into())],
+        environment: repaired.environment.clone(),
     };
     let mut endpoint =
         Endpoint::new(server.config(), Some(config), pool::Config::default()).unwrap();
@@ -137,7 +142,7 @@ async fn missing_git_latches_only_this_operation_without_starting_a_repaired_hel
         .err()
         .unwrap();
     assert_eq!(failed.code, ErrorCode::Unavailable);
-    fake_git(&executable, &counter);
+    crate::git::endpoint::helper_script::install(&repaired.executable, &executable);
     request.destination = request.destination.replace("/repo", "/other");
     assert_eq!(
         endpoint
@@ -193,7 +198,7 @@ async fn unsupported_or_absent_challenge_scheme_never_runs_helper_or_exposes_rea
         .await;
         let dir = tempfile::tempdir().unwrap();
         let counter = dir.path().join("count");
-        let config = fake_git(&dir.path().join("git"), &counter);
+        let config = fake_git(dir.path(), &counter);
         let mut endpoint =
             Endpoint::new(server.config(), Some(config), pool::Config::default()).unwrap();
         let failed = endpoint
@@ -231,7 +236,7 @@ async fn a_seventh_destination_on_one_route_is_unsupported_and_never_capacity() 
     use crate::git::endpoint::https_policy::RouteKey;
     let dir = tempfile::tempdir().unwrap();
     let counter = dir.path().join("count");
-    let config = fake_git(&dir.path().join("git"), &counter);
+    let config = fake_git(dir.path(), &counter);
     let mut endpoint = Endpoint::new(
         https_connection::Config::default(),
         Some(config),

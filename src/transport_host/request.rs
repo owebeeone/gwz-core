@@ -4,7 +4,7 @@ mod ssh_opening;
 use crate::git::endpoint::{setup_retry, ssh_channel::GitService, stream_io::BlockingStream};
 use gwz_session_host::{CancelRegistration, CancellationToken};
 use gwz_transport::protocol::{Facts, Opened};
-pub(crate) use https_failure::{HttpsAttemptReceipt, HttpsOpenFailure};
+pub(crate) use https_failure::{HttpsAttemptReceipt, HttpsOpenFailure, policy_words};
 use std::{
     io,
     sync::atomic::{AtomicBool, Ordering},
@@ -17,12 +17,17 @@ pub(crate) struct RequestContext {
     operation: String,
     active: Arc<AtomicBool>,
     https_routes: Arc<Mutex<std::collections::BTreeMap<String, Arc<Mutex<HttpsRouteState>>>>>,
+    /// The reader of the command's notes, if it gave one; a warning goes to it, and to standard error without one.
+    notes: Option<NoteSink>,
+    /// The warnings this operation has already given, by key: each is given once per operation.
+    warned: Arc<Mutex<std::collections::BTreeSet<String>>>,
 }
 impl RequestContext {
     pub(super) fn new(
         session: Arc<Session>,
         meta: RequestMeta,
         operation: String,
+        notes: Option<NoteSink>,
     ) -> ModelResult<Self> {
         session.register(&meta.request_id, Some(operation.clone()))?;
         session.set_max_retries(&meta.request_id, max_retries(&meta));
@@ -32,10 +37,34 @@ impl RequestContext {
             operation,
             active: Arc::new(AtomicBool::new(true)),
             https_routes: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
+            notes,
+            warned: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
         })
+    }
+    /// Gives `line` as a warning, once per `key` for this operation. A warning is not a note: it is not gated by
+    /// verbosity or by output mode. The command's note reader (the CLI's human output) takes it above the live
+    /// progress block; without one, which is every machine-readable mode and the Python entry, it goes to standard
+    /// error, so no caller loses it and nothing turns it off.
+    pub(crate) fn warn_once(&self, key: &str, line: &str) {
+        let first = self
+            .warned
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key.to_owned());
+        if !first {
+            return;
+        }
+        match &self.notes {
+            Some(notes) => notes.tell(line),
+            None => eprintln!("{line}"),
+        }
     }
     pub(crate) fn is_cli(&self) -> bool {
         is_cli(&self.meta)
+    }
+    /// The SSH home of the runtime this request runs on, which `~/` identity paths expand under (plan step 3.1).
+    pub(crate) fn ssh_home(&self) -> Option<PathBuf> {
+        self.session.home().map(|home| home.path)
     }
     pub(crate) fn validate(&self, meta: &RequestMeta, operation: &str) -> ModelResult<()> {
         if !self.active.load(Ordering::Acquire) || self.session.is_closed() {
@@ -86,11 +115,15 @@ impl RequestContext {
         allocation_observer: Option<Arc<dyn Fn(i64) + Send + Sync>>,
     ) -> io::Result<BlockingStream> {
         use gwz_transport::protocol::{AuthPolicy, Effect, ErrorCode, Failure};
+        let (helpers_disabled, windows) = https_failure::policy_words(policy);
+        let host = https_failure::host_of(url);
         let early = |code| {
             io::Error::other(HttpsOpenFailure {
                 service: Some(service),
-                helpers_disabled: policy == Some(AuthPolicy::Anonymous),
+                helpers_disabled,
                 cli_hint: self.is_cli(),
+                windows,
+                host: host.clone(),
                 failure: Failure {
                     detail: None,
                     setup_cause: None,
@@ -127,8 +160,10 @@ impl RequestContext {
             if std::time::Instant::now() >= until {
                 return Err(io::Error::other(HttpsOpenFailure {
                     service: Some(service),
-                    helpers_disabled: policy == Some(AuthPolicy::Anonymous),
+                    helpers_disabled,
                     cli_hint: self.is_cli(),
+                    windows,
+                    host: host.clone(),
                     failure: setup_retry::allocation_timeout(),
                     anonymous: None,
                     attempts: None,
@@ -229,8 +264,10 @@ impl RequestContext {
                 let attempts = setup_retry::reported_attempt(&failure);
                 Err(io::Error::other(HttpsOpenFailure {
                     service: Some(service),
-                    helpers_disabled: policy == Some(AuthPolicy::Anonymous),
+                    helpers_disabled,
                     cli_hint: self.is_cli(),
+                    windows,
+                    host: host.clone(),
                     failure,
                     anonymous,
                     attempts,

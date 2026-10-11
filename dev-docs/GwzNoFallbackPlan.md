@@ -368,6 +368,75 @@ verification where signature bytes are nondeterministic. Exercise supported
 platforms and linked-worktree behavior. Tests with controlled helpers must pass
 with Git unavailable during the product operation.
 
+### Operator decision 2026-10-12 — libgit2 fast path for commit and tag
+
+`gwz commit` and `gwz tag` (the backend's `commit`, `tag_create` and `tag_delete`) use
+libgit2 when nothing in play needs the Git CLI, and the CLI otherwise. This is a narrower
+step than this lane: hooks, signing, filters and the rest of the list above still run
+through Git, and **lane 3's full removal of the CLI route remains future work**. The
+decision records no change to what a commit or tag stores: the native result must equal
+Git's for the same inputs, and anything native cannot prove equal goes to Git.
+
+The rule lives in `src/git/gitbackend/native_commit/route.rs`; every refusal names its reason
+(`CliReason`), so a test or an operator can see why Git ran. Fail safe: the CLI is used when
+any of these holds.
+
+1. **A hook would fire.** The hooks directory is `core.hooksPath` (relative to the worktree
+   root; a leading `~/` expanded; an empty, `~user/` or `%(prefix)` form is Git's to read),
+   else `hooks` in the repository directory and in the common directory of a linked worktree.
+   For a commit: `pre-commit`, `prepare-commit-msg`, `commit-msg`, `post-commit`,
+   `reference-transaction`, and also `post-index-change`. For a tag create or delete:
+   `reference-transaction` only. On Unix a hook counts only when it has an executable bit; on
+   Windows any file with the hook's exact name counts, and so does `<name>.exe`. `*.sample`
+   files never count.
+2. **Signing is configured.** Commit: `commit.gpgSign` true (or a value native cannot read as
+   false). Tag create: `-s`, `tag.gpgSign`, or `tag.forceSignAnnotated` for an annotated tag.
+3. **State or configuration native cannot reproduce exactly.**
+   * Commit state: a merge, cherry-pick, revert, rebase, sequencer or bisect state
+     (`MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `rebase-merge`, `rebase-apply`,
+     `sequencer`, `BISECT_LOG`), a leftover `MERGE_MSG` or `SQUASH_MSG`, unmerged index entries,
+     an intent-to-add entry, and an `index.lock` (Git reports the lock; so does the CLI route).
+   * `commit -a`: any `filter.*` key; `core.autocrlf` other than an explicit `false` (on
+     Windows an unset value also goes to Git, since Git for Windows ships `true` in a system
+     file libgit2 may not find); `core.eol` other than `lf`; `core.fsmonitor`; a changed path with
+     a `text`, `eol`, `crlf`, `filter`, `ident` or `working-tree-encoding` attribute; a
+     submodule, skip-worktree or assume-unchanged index entry; a type change or unreadable path.
+   * Every operation: `core.sparseCheckout`, `index.sparse`, `core.splitIndex`,
+     `info/sparse-checkout`, `sharedindex.*` files, `extensions.worktreeConfig`,
+     `core.sharedRepository`, `core.logAllRefUpdates` other than the default, a bare or SHA-256
+     repository, a repository libgit2 does not open, an `includeIf` other than `gitdir:` and
+     `gitdir/i:` (libgit2 has no `hasconfig:`; Windows `gitdir:` goes to Git), a `GIT_*` variable
+     native does not honour (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`,
+     `GIT_OBJECT_DIRECTORY`, `GIT_NAMESPACE`, `GIT_REFLOG_ACTION`, `GIT_CONFIG_COUNT`,
+     `GIT_CONFIG_PARAMETERS`, any other not known to be harmless), and `GIT_CONFIG_GLOBAL` while an XDG
+     configuration file exists (Git ignores that file then; libgit2 does not).
+   * System configuration: libgit2 reads one system file, while a Git on the machine may read
+     others. Unless `GIT_CONFIG_NOSYSTEM` is true, any of `/etc/gitconfig`,
+     `/opt/homebrew/etc/gitconfig`, `/usr/local/etc/gitconfig`, Apple's command-line-tools
+     `gitconfig` (Windows: the Git for Windows `etc/gitconfig` under `%PROGRAMFILES%`, and
+     `%PROGRAMDATA%/Git/config`) that exists and is not the file libgit2 reads, or that exists
+     and cannot be opened, sends the operation to Git; so does an unparsable
+     `GIT_CONFIG_NOSYSTEM`. With `GIT_CONFIG_SYSTEM` set, that one file is read by both Git and
+     libgit2 and is checked only for readability.
+   * Identity: name or email not given by `GIT_AUTHOR_*` / `GIT_COMMITTER_*`, `author.*` /
+     `committer.*` or `user.*` (so Git guesses from the account or fails, and the CLI does
+     either); `EMAIL` alone; a name or email Git would strip or reject; a date other than Git's raw
+     `[@]<seconds> <+-hhmm>` or ISO 8601 `<date>T<time> <offset>`.
+   * Message: empty after cleanup (the CLI leaves the same index and `COMMIT_EDITMSG` effects
+     Git does), a NUL byte, `commit.cleanup` other than `default`, `whitespace`, `strip`,
+     `scissors` or `verbatim`, `core.commentChar` / `core.commentString` under `strip` or for a tag,
+     `i18n.commitEncoding` other than UTF-8.
+   * Tag: a name outside `[A-Za-z0-9._+/-]` or of a shape Git and libgit2 judge differently
+     (`HEAD`, `..`, `@{`, a leading `-`, `.` or `/`, a trailing `.` or `/`, `.lock`), and an unborn
+     HEAD.
+4. **Pre-existing behaviour.** Nothing that already refused or checked configuration changes:
+   a tag with `tag.gpgSign` or a commit with `commit.gpgSign` still fails or succeeds exactly as
+   Git does, because it runs Git.
+
+Known differences on the native route, none visible in a commit, a tag or a reference: it does
+not write `.git/COMMIT_EDITMSG`, does not run `git gc --auto`, and does not refresh the index's
+cached stat data on a commit without `-a`.
+
 ## 7. Lane 4 — Path-filtered history without rev-list
 
 1. Freeze the existing log contract, including revision pushes/hides, ordering,

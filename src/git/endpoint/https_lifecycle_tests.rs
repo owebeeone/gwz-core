@@ -137,57 +137,151 @@ fn dropping_one_remote_preserves_the_other_remotes_pinned_route() {
         });
 }
 
-cfg_if::cfg_if! { if #[cfg(unix)] {
-mod unix {
+mod helpers {
     use super::*;
     fn helper() -> (tempfile::TempDir, https_auth::Config, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("started");
-        let executable = dir.path().join("gh");
-        crate::git::endpoint::helper_script::write_helper_script(&executable, "/bin/cat >/dev/null\nprintf 'started\\n' >> \"$MARKER\"\nexec /bin/sleep 30\n");
-        let config = https_auth::Config { executable, environment: vec![("MARKER".into(), marker.clone().into())] };
+        let mut config = crate::git::endpoint::helper_script::git_fixture(
+            dir.path(),
+            "/bin/cat >/dev/null\nprintf 'started\\n' >> \"$MARKER\"\nexec /bin/sleep 30\n",
+        );
+        config.environment.push((
+            "MARKER".into(),
+            crate::git::endpoint::helper_script::script_path(&marker).into(),
+        ));
         (dir, config, marker)
     }
     async fn started(path: &std::path::Path) {
-        timeout(Duration::from_secs(2), async { while !path.exists() { tokio::time::sleep(Duration::from_millis(2)).await; } }).await.unwrap();
+        timeout(Duration::from_secs(2), async {
+            while !path.exists() {
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .unwrap();
     }
-    fn request() -> Input { Input { destination: "https://localhost/repo".into(), service: GitService::UploadPackAdvertisement, policy: AuthPolicy::Gh, session: "s".into(), operation: "op".into() } }
+    fn request() -> Input {
+        Input {
+            destination: "https://localhost/repo".into(),
+            service: GitService::UploadPackAdvertisement,
+            policy: AuthPolicy::Gh,
+            session: "s".into(),
+            operation: "op".into(),
+        }
+    }
     #[test]
     fn endpoint_shutdown_owns_active_helpers_and_rejects_later_preparations() {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-            let (_dir, config, marker) = helper();
-            let mut endpoint = Endpoint::new(https_connection::Config::default(), Some(config), gwz_transport::pool::Config::default()).unwrap();
-            let client = endpoint.client.clone();
-            let task = tokio::spawn(async move { client.prepare_budget_for_transition(request(), &CancellationToken::new(), &mut client.budget(), &mut None).await });
-            started(&marker).await;
-            let pending = endpoint.shutdown(Duration::from_secs(1)).await;
-            assert!(task.is_finished() || pending != 0, "shutdown reported clean with active helper");
-            let result = timeout(Duration::from_secs(2), task).await.expect("shutdown left helper alive").unwrap();
-            assert!(matches!(result, Err(Failure { code: ErrorCode::Cancelled, .. })));
-            let before = std::fs::read(&marker).unwrap();
-            let result = endpoint.client.prepare_budget_for_transition(request(), &CancellationToken::new(), &mut endpoint.client.budget(), &mut None).await;
-            assert!(matches!(result, Err(Failure { code: ErrorCode::Cancelled, .. })));
-            assert_eq!(std::fs::read(&marker).unwrap(), before, "post-shutdown helper ran");
-            assert_eq!(endpoint.shutdown(Duration::from_secs(1)).await, 0);
-        });
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let (_dir, config, marker) = helper();
+                let mut endpoint = Endpoint::new(
+                    https_connection::Config::default(),
+                    Some(config),
+                    gwz_transport::pool::Config::default(),
+                )
+                .unwrap();
+                let client = endpoint.client.clone();
+                let task = tokio::spawn(async move {
+                    client
+                        .prepare_budget_for_transition(
+                            request(),
+                            &CancellationToken::new(),
+                            &mut client.budget(),
+                            &mut None,
+                        )
+                        .await
+                });
+                started(&marker).await;
+                let pending = endpoint.shutdown(Duration::from_secs(1)).await;
+                assert!(
+                    task.is_finished() || pending != 0,
+                    "shutdown reported clean with active helper"
+                );
+                let result = timeout(Duration::from_secs(2), task)
+                    .await
+                    .expect("shutdown left helper alive")
+                    .unwrap();
+                assert!(matches!(
+                    result,
+                    Err(Failure {
+                        code: ErrorCode::Cancelled,
+                        ..
+                    })
+                ));
+                let before = std::fs::read(&marker).unwrap();
+                let result = endpoint
+                    .client
+                    .prepare_budget_for_transition(
+                        request(),
+                        &CancellationToken::new(),
+                        &mut endpoint.client.budget(),
+                        &mut None,
+                    )
+                    .await;
+                assert!(matches!(
+                    result,
+                    Err(Failure {
+                        code: ErrorCode::Cancelled,
+                        ..
+                    })
+                ));
+                assert_eq!(
+                    std::fs::read(&marker).unwrap(),
+                    before,
+                    "post-shutdown helper ran"
+                );
+                assert_eq!(endpoint.shutdown(Duration::from_secs(1)).await, 0);
+            });
     }
     #[test]
     fn shutdown_does_not_cancel_or_count_another_endpoints_helper() {
-        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-            let (_dir, config, marker) = helper();
-            let mut a = Endpoint::new(https_connection::Config::default(), None, gwz_transport::pool::Config::default()).unwrap();
-            let mut b = Endpoint::new(https_connection::Config::default(), Some(config), gwz_transport::pool::Config::default()).unwrap();
-            let client = b.client.clone();
-            let cancel = CancellationToken::new();
-            let token = cancel.clone();
-            let task = tokio::spawn(async move { client.prepare_budget_for_transition(request(), &token, &mut client.budget(), &mut None).await });
-            started(&marker).await;
-            assert_eq!(a.shutdown(Duration::from_millis(20)).await, 0);
-            assert!(!task.is_finished(), "A shutdown touched B's helper");
-            cancel.cancel();
-            assert!(timeout(Duration::from_secs(2), task).await.unwrap().unwrap().is_err());
-            assert_eq!(b.shutdown(Duration::from_secs(1)).await, 0);
-        });
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let (_dir, config, marker) = helper();
+                let mut a = Endpoint::new(
+                    https_connection::Config::default(),
+                    None,
+                    gwz_transport::pool::Config::default(),
+                )
+                .unwrap();
+                let mut b = Endpoint::new(
+                    https_connection::Config::default(),
+                    Some(config),
+                    gwz_transport::pool::Config::default(),
+                )
+                .unwrap();
+                let client = b.client.clone();
+                let cancel = CancellationToken::new();
+                let token = cancel.clone();
+                let task = tokio::spawn(async move {
+                    client
+                        .prepare_budget_for_transition(
+                            request(),
+                            &token,
+                            &mut client.budget(),
+                            &mut None,
+                        )
+                        .await
+                });
+                started(&marker).await;
+                assert_eq!(a.shutdown(Duration::from_millis(20)).await, 0);
+                assert!(!task.is_finished(), "A shutdown touched B's helper");
+                cancel.cancel();
+                assert!(
+                    timeout(Duration::from_secs(2), task)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .is_err()
+                );
+                assert_eq!(b.shutdown(Duration::from_secs(1)).await, 0);
+            });
     }
 }
-} }

@@ -14,6 +14,10 @@ pub struct Git2Repository {
     pub(crate) identities: super::transport_support::identity::Selection,
     pub(crate) observations: super::transport_observations::TransportObservations,
     pub(crate) ssh: super::transport_binding::Runtime,
+    /// The `GIT_*` variables the native commit and tag route reads, captured
+    /// when the backend is built.
+    pub(crate) environment: super::native_commit::GitEnvironment,
+    pub(crate) route_policy: super::native_commit::RoutePolicy,
 }
 
 /// Compatibility name for existing callers.
@@ -46,6 +50,8 @@ impl Git2Backend {
             identities: Default::default(),
             observations: Default::default(),
             ssh: Default::default(),
+            environment: super::native_commit::GitEnvironment::process(),
+            route_policy: Default::default(),
         }
     }
 
@@ -57,6 +63,8 @@ impl Git2Backend {
             identities: Default::default(),
             observations: Default::default(),
             ssh: Default::default(),
+            environment: super::native_commit::GitEnvironment::process(),
+            route_policy: Default::default(),
         }
     }
 

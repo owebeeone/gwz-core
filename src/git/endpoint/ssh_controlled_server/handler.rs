@@ -97,7 +97,7 @@ impl Handler for Client {
         let spawned = Command::new("git")
             .arg(request.service)
             .arg("--")
-            .arg(&request.path)
+            .arg(native_path(&request.path))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -134,6 +134,11 @@ impl Handler for Client {
             let _ = handle.eof(channel).await;
             match ending {
                 Ending::Prompt => {
+                    let _ = handle.exit_status_request(channel, status as u32).await;
+                    let _ = handle.close(channel).await;
+                }
+                Ending::Late(delay) => {
+                    tokio::time::sleep(delay).await;
                     let _ = handle.exit_status_request(channel, status as u32).await;
                     let _ = handle.close(channel).await;
                 }
@@ -180,6 +185,26 @@ impl Handler for Client {
     ) -> Result<(), Self::Error> {
         self.stdin.remove(&channel);
         Ok(())
+    }
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(windows)] {
+        /// The path a native Git takes for the path a client named: a URL carries a drive path in its POSIX form
+        /// (`/c/Users/x`, the fixtures' `server_path`), which a native Windows Git does not read.
+        fn native_path(path: &str) -> String {
+            match path.as_bytes() {
+                [b'/', letter, b'/', ..] if letter.is_ascii_alphabetic() => {
+                    format!("{}:{}", *letter as char, &path[2..])
+                }
+                _ => path.to_owned(),
+            }
+        }
+    } else {
+        /// The path a native Git takes for the path a client named: the same.
+        fn native_path(path: &str) -> String {
+            path.to_owned()
+        }
     }
 }
 

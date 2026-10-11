@@ -23,9 +23,14 @@ mod agent_client;
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
         mod agent_fixture;
+        // The login fixture of the agent rows (`agent_auth`, `network_agent`): the server and an agent that lists a
+        // rejected key and the trusted one.
+        use agent_fixture as login_fixture;
     } else {
         mod agent_fixture_pipe;
         mod agent_pipe_server;
+        mod agent_login_fixture_pipe;
+        use agent_login_fixture_pipe as login_fixture;
     }
 }
 mod agent_keys;
@@ -51,11 +56,7 @@ mod key_types;
 mod local_endpoint;
 mod max_startups;
 mod network;
-cfg_if::cfg_if! {
-    if #[cfg(unix)] {
-        mod network_agent;
-    }
-}
+mod network_agent;
 mod no_agent;
 mod password_helpers;
 mod placement_endpoint;

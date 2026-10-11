@@ -1,7 +1,12 @@
 //! Native authentication tests: the fake Port/Session seam and the real SSPI request validator.
 mod exchange;
+mod precedence;
 mod protocol;
+mod rejection;
 mod retention;
+
+// Real Windows SSPI against an SSPI-accepting HTTPS fixture (plan step 4.8): a Windows-only module, not a skip.
+cfg_if::cfg_if! { if #[cfg(windows)] { mod real_sspi; } }
 
 // Where the validator child runs as the leader of its own process group on Unix, and
 // what ends its tree when the 30 s bound passes. Windows has no process groups: the
@@ -73,6 +78,8 @@ cfg_if::cfg_if! { if #[cfg(test)] {
     impl Port for FakePort {
         fn start(&self, request: gwz_sspi::AuthRequest, deadline: Instant, _: gwz_sspi::Cancellation) -> Work<'static, Result<Box<dyn Session>, BridgeError>> {
             assert!(!request.channel_binding.as_bytes().is_empty());
+            // Only the logon session answers: a helper's identity is never an SSPI identity in 1.1.0 (design 8).
+            assert!(matches!(request.identity, gwz_sspi::Identity::CurrentLogon));
             assert_eq!(request.target.as_str(), "HTTP/localhost");
             self.starts.fetch_add(1, Ordering::Relaxed);
             self.deadlines.lock().unwrap().push(deadline);
@@ -108,7 +115,7 @@ cfg_if::cfg_if! { if #[cfg(test)] {
     fn fake(complete: bool, cleanup: usize) -> (NativeCaller, Arc<FakePort>) {
         let port = Arc::new(FakePort { complete, starts: Arc::new(AtomicUsize::new(0)), steps: Arc::new(AtomicUsize::new(0)), finishes: Arc::new(AtomicUsize::new(0)),
             cleanup: Arc::new(AtomicUsize::new(cleanup)), deadlines: Arc::new(Mutex::new(Vec::new())) });
-        (NativeCaller { port: Ok(port.clone()), qualification_direct: None }, port)
+        (NativeCaller { port: Ok(port.clone()), machine_proxy: None }, port)
     }
     pub(super) fn publication_caller() -> NativeCaller { fake(true, 2).0 }
     struct ValidatorPort(Arc<FakePort>);
@@ -127,7 +134,7 @@ cfg_if::cfg_if! { if #[cfg(test)] {
                 if r.status() == 401 { r.headers_mut().insert(WWW_AUTHENTICATE, "NTLM".parse().unwrap()); } r
             }))).await;
             let mut endpoint = Endpoint::new(server.config(), None, pool::Config::default()).unwrap();
-            let (_, port) = fake(true, 2); endpoint.client.set_native(NativeCaller { port: Ok(Arc::new(ValidatorPort(port))), qualification_direct: None });
+            let (_, port) = fake(true, 2); endpoint.client.set_native(NativeCaller { port: Ok(Arc::new(ValidatorPort(port))), machine_proxy: None });
             let mut request = input(&server, GitService::UploadPackAdvertisement); request.policy = AuthPolicy::WindowsDefault;
             let (prepared, _) = endpoint.client.prepare_attempt(request, &CancellationToken::new(), &mut endpoint.client.budget(), &mut None).await;
             assert_eq!(prepared.unwrap().opened.facts.authenticated, Some(true));
