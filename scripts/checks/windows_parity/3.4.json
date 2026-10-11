@@ -1,12 +1,10 @@
 {
   "entries": [
-    {"path": "src/git/endpoint/agent_auth.rs", "kind": "gate", "gate": "unix", "target": "arm: mod unix", "state": "unported", "owner": ["3.4"], "appendix": "G1"},
-    {"path": "src/git/endpoint/agent_auth.rs", "kind": "os", "gate": "libc::malloc", "target": "", "state": "unported", "owner": ["3.4"], "appendix": "G1"},
+    {"path": "src/git/endpoint/agent_auth.rs", "kind": "os", "gate": "libc::malloc", "target": "", "state": "paired", "owner": ["3.4"], "appendix": "G1"},
     {"path": "src/git/endpoint/ssh_local.rs", "kind": "gate", "gate": "unix", "target": "arm: fn agent_authenticate", "state": "paired", "owner": ["3.4", "3.6"], "appendix": "new: step 1.4's agent step; the Windows arm refuses a needed agent with the no-agent refusal until the Windows agent sources land"},
-    {"path": "src/git/endpoint/ssh_tests/agent_auth.rs", "kind": "gate", "gate": "unix", "target": "arm: use crate::git::endpoint::agent_auth", "state": "unported", "owner": ["3.4"], "appendix": "G37"},
-    {"path": "src/git/endpoint/ssh_tests/agent_auth.rs", "kind": "os", "gate": "os::unix::net::UnixStream", "target": "", "state": "unported", "owner": ["3.4"], "appendix": "G37"},
-    {"path": "src/git/endpoint/ssh_tests/agent_auth.rs", "kind": "os", "gate": "os::unix::net::UnixStream::connect", "target": "", "state": "unported", "owner": ["3.4"], "appendix": "G37"},
-    {"path": "src/git/endpoint/ssh_tests/mod.rs", "kind": "gate", "gate": "unix", "target": "mod network_agent", "state": "unported", "owner": ["3.4"], "appendix": "new: the agent rows of network.rs"},
-    {"path": "src/git/endpoint/ssh_tests/network_agent.rs", "kind": "gate", "gate": "unix", "target": "arm: use super::network::{finish, key}", "state": "unported", "owner": ["3.4"], "appendix": "new: the agent rows of network.rs"}
+    {"path": "src/git/endpoint/agent_auth.rs", "kind": "gate", "gate": "unix", "target": "arm: fn allocate", "state": "paired", "owner": ["3.4"], "appendix": "new: step 3.4: the signature buffer's allocation, one arm per platform; the Windows arm's CRT sharing is proved (evidence run 2026-10-12-sshsmall)"},
+    {"path": "src/git/endpoint/agent_auth.rs", "kind": "os", "gate": "libc::malloc", "target": "", "side": "windows", "state": "unported", "owner": ["3.4"], "appendix": "new: step 3.4: a Unix-only part of a test module whose other rows run on Windows", "proof": "sshsmall-20261012-crt"},
+    {"path": "src/git/endpoint/agent_auth/tests.rs", "kind": "gate", "gate": "else", "target": "arm: fn assert_heaps_intact", "state": "paired", "owner": ["3.4"], "appendix": "new: step 3.4: the allocator proof's heap check, one arm per platform"},
+    {"path": "src/git/endpoint/ssh_tests/mod.rs", "kind": "gate", "gate": "unix", "target": "arm: use agent_fixture as login_fixture", "state": "paired", "owner": ["3.4"], "appendix": "new: step 3.4: the login fixture of the agent rows (a Unix socket, or a named pipe on Windows)"}
   ]
 }

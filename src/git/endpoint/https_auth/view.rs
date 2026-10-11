@@ -1,5 +1,6 @@
 //! Native Git parses each bounded source; core walks only unconditional includes.
 use super::*;
+use crate::git::endpoint::ssh_home;
 use std::path::Path;
 
 mod framing;
@@ -153,21 +154,36 @@ fn accept<'a>(
     })
 }
 
+/// The captured environment of a helper, as variables of the home contract. Names compare as the platform's do.
+struct Captured<'a>(&'a [(OsString, OsString)]);
+
+impl ssh_home::Variables for Captured<'_> {
+    fn get(&self, name: &str) -> Option<OsString> {
+        self.0
+            .iter()
+            .find(|(key, _)| runner::environment::names(key, name))
+            .map(|(_, value)| value.clone())
+    }
+}
+
 fn include_path(config: &Config, anchor: &[u8], value: &[u8]) -> Result<SecretBuffer, AuthError> {
     if value.contains(&0) {
         return Err(AuthError::ConfigurationRefused);
     }
+    let home;
     let (base, value) = if let Some(rest) = value.strip_prefix(b"~/") {
-        let home = config
-            .environment
-            .iter()
-            .find(|(key, _)| runner::environment::names(key, "HOME"))
-            .map(|(_, value)| paths::value_bytes(value))
-            .ok_or(AuthError::ConfigurationRefused)??;
-        if home.is_empty() || !paths::path(home)?.is_absolute() {
-            return Err(AuthError::ConfigurationRefused);
-        }
-        (home, rest)
+        // `~/` is the home of the home contract (plan step 3.1): `HOME`, else `USERPROFILE` (operator, 2026-10-11),
+        // with `HOMEDRIVE` and `HOMEPATH` between them on Windows. The view reads paths as Git wrote them and asks the
+        // file system nothing (`Assumed`), as Git takes `HOME` as written; a relative or empty home is refused, so is
+        // one that is not text on Windows (`paths::bytes`).
+        home = ssh_home::resolve(
+            ssh_home::PLATFORM,
+            &Captured(&config.environment),
+            None,
+            &ssh_home::Assumed,
+        )
+        .map_err(|_| AuthError::ConfigurationRefused)?;
+        (paths::bytes(&home.path)?, rest)
     } else {
         if value.starts_with(b"~") || value.starts_with(b"%(prefix)") {
             return Err(AuthError::ConfigurationRefused);

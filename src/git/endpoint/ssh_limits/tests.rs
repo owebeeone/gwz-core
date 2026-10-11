@@ -1,8 +1,10 @@
 //! The two Windows limits TD5 keeps, their failures and their words; pure, so they run on every platform.
 use super::*;
 use crate::git::endpoint::setup_retry::{Phase, Verdict, classify};
+use crate::git::endpoint::ssh_home::HomeSource;
 use crate::git::endpoint::ssh_setup::failure_from_io;
 use gwz_transport::protocol::{AuthMethod, ErrorCode, Facts};
+use std::path::PathBuf;
 
 const PEM: &str = "-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE KEY-----\n";
 
@@ -101,9 +103,17 @@ fn the_host_tells_the_two_limits_apart_by_what_the_open_had_offered() {
     assert_eq!(SshLimit::of_failure(&agent), None);
 }
 
+/// A `known_hosts` file as the home contract names it, for the words that quote it.
+fn trust_file(source: HomeSource) -> KnownHostsFile {
+    KnownHostsFile {
+        path: PathBuf::from("C:\\Users\\Ana Lee\\.ssh\\known_hosts"),
+        source,
+    }
+}
+
 #[test]
 fn the_words_name_the_cause_and_the_fix_and_nothing_secret() {
-    let keys = SshLimit::HostKeys.reason("git.example.com", 22);
+    let keys = SshLimit::HostKeys.reason("git.example.com", 22, None);
     assert!(keys.contains("git.example.com"), "{keys}");
     assert!(keys.contains("RSA"), "{keys}");
     assert!(
@@ -111,13 +121,13 @@ fn the_words_name_the_cause_and_the_fix_and_nothing_secret() {
         "{keys}"
     );
     assert!(!keys.contains("-p 22"), "{keys}");
-    let keys = SshLimit::HostKeys.reason("git.example.com", 2222);
+    let keys = SshLimit::HostKeys.reason("git.example.com", 2222, None);
     assert!(
         keys.contains("ssh-keyscan -t rsa -p 2222 git.example.com"),
         "{keys}"
     );
     assert!(!keys.contains("failed to set hostkey preference"), "{keys}");
-    let file = SshLimit::KeyFile.reason("git.example.com", 22);
+    let file = SshLimit::KeyFile.reason("git.example.com", 22, None);
     for needle in [
         "RSA",
         "PEM",
@@ -130,6 +140,47 @@ fn the_words_name_the_cause_and_the_fix_and_nothing_secret() {
         assert!(file.contains(needle), "{needle}: {file}");
     }
     assert!(!file.ends_with(':'), "{file}");
+}
+
+#[test]
+fn the_known_hosts_words_print_the_file_the_home_source_and_the_commands_to_run() {
+    // The user guide's promise (design section 14, item 13, U8): the file gwz read, which home it came from, and what
+    // to run, in both shells, with the fingerprint check.
+    let words = SshLimit::HostKeys.reason(
+        "git.example.com",
+        2222,
+        Some(&trust_file(HomeSource::UserProfile)),
+    );
+    let path = "C:\\Users\\Ana Lee\\.ssh\\known_hosts";
+    for needle in [
+        path,
+        "USERPROFILE",
+        "ssh-keyscan -t rsa -p 2222 git.example.com | Add-Content -Encoding ascii \"C:\\Users\\Ana Lee\\.ssh\\known_hosts\"",
+        "ssh-keyscan -t rsa -p 2222 git.example.com >> \"C:\\Users\\Ana Lee\\.ssh\\known_hosts\"",
+        "ssh-keygen -lf \"C:\\Users\\Ana Lee\\.ssh\\known_hosts\"",
+        "PowerShell",
+        "Git Bash",
+    ] {
+        assert!(words.contains(needle), "{needle}: {words}");
+    }
+    // Each home source is named as the variable or variables that supplied it.
+    for (source, named) in [
+        (HomeSource::Home, "HOME"),
+        (HomeSource::HomeDrivePath, "HOMEDRIVE and HOMEPATH"),
+        (HomeSource::UserProfile, "USERPROFILE"),
+    ] {
+        let words = SshLimit::HostKeys.reason("h.example", 22, Some(&trust_file(source)));
+        assert!(
+            words.contains(&format!("home came from {named}")),
+            "{named}: {words}"
+        );
+    }
+    // The key-file limit has no known_hosts file to name.
+    assert!(
+        !SshLimit::KeyFile
+            .reason("h.example", 22, Some(&trust_file(HomeSource::Home)))
+            .contains("known_hosts")
+    );
 }
 
 #[test]

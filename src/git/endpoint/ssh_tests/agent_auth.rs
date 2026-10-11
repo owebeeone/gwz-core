@@ -1,411 +1,456 @@
-cfg_if::cfg_if! {
-    if #[cfg(unix)] {
-        use crate::git::endpoint::agent_auth;
-        use crate::git::endpoint::agent_client;
-        use crate::git::endpoint::agent_job;
-        use crate::git::endpoint::agent_socket;
-        use crate::git::endpoint::ssh_fixture as common;
-        use super::agent_fixture as support;
-        use agent_job::Job;
-        use std::{
-            io,
-            sync::Arc,
-            task::{Context, Poll, Waker},
-            time::{Duration, Instant},
-        };
-        fn finish<T: Send + 'static>(job: &mut Job<T>) -> io::Result<T> {
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
-                if let Poll::Ready(result) = job.poll_result(&mut Context::from_waker(Waker::noop())) {
-                    return result;
-                }
-                assert!(Instant::now() < deadline);
-                std::thread::sleep(Duration::from_millis(1));
-            }
+use super::login_fixture as support;
+use crate::git::endpoint::agent_auth;
+use crate::git::endpoint::agent_client;
+use crate::git::endpoint::agent_job;
+use crate::git::endpoint::ssh_fixture as common;
+use agent_job::Job;
+use std::{
+    io,
+    sync::Arc,
+    task::{Context, Poll, Waker},
+    time::{Duration, Instant},
+};
+fn finish<T: Send + 'static>(job: &mut Job<T>) -> io::Result<T> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Poll::Ready(result) = job.poll_result(&mut Context::from_waker(Waker::noop())) {
+            return result;
         }
-        #[test]
-        fn authenticates_ed25519_and_rsa_sha2_and_transfers_a_usable_connection() {
-            for method in ["ssh-ed25519", "rsa-sha2-256", "rsa-sha2-512"] {
-                let fixture = support::Fixture::new(method, false);
-                let (connection, host) = fixture.prepared(method);
-                let path = fixture.path.clone();
-                let user = fixture.ssh.user.clone();
-                let mut job = Job::start_isolated(
-                    Some(Instant::now() + Duration::from_secs(3)),
-                    Duration::from_secs(1),
-                    move |control| {
-                        agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || {
-                            agent_socket::connect(&path, control)
-                        }, || {}, || {})
-                    },
-                )
-                .unwrap();
-                let connection = finish(&mut job).unwrap();
-                drop(job);
-                let mut channel = common::SshChannel::new(
-                    connection,
-                    common::GitService::UploadPack,
-                    fixture.ssh.repository.to_str().unwrap(),
-                )
-                .unwrap();
-                common::open(&mut channel);
-                let (_, stderr, status) = common::exchange(&mut channel);
-                assert_eq!(status, 0, "{stderr:?}");
-                drop(channel);
-                fixture.assert_requests(method, 1);
-            }
-        }
-
-        #[test]
-        fn wrong_host_is_rejected_before_agent_access() {
-            let fixture = support::Fixture::new("ssh-ed25519", false);
-            let (connection, mut host) = fixture.prepared("ssh-ed25519");
-            host[0] ^= 1;
-            let path = fixture.path.clone();
-            let user = fixture.ssh.user.clone();
-            let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| {
-                agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || {
-                    agent_socket::connect(&path, control)
-                }, || {}, || {})
-            })
-            .unwrap();
-            assert_eq!(
-                finish(&mut job).err().unwrap().kind(),
-                io::ErrorKind::PermissionDenied
-            );
-            fixture.no_requests();
-            fixture.assert_tcp_closed();
-        }
-        #[test]
-        fn stalled_sign_can_be_cancelled_or_expired_and_does_not_stop_an_active_stream() {
-            for timed in [false, true] {
-                let fixture = support::Fixture::new("ssh-ed25519", true);
-                let (connection, host) = fixture.prepared("ssh-ed25519");
-                let path = fixture.path.clone();
-                let user = fixture.ssh.user.clone();
-                let deadline = timed.then(|| Instant::now() + Duration::from_millis(800));
-                let mut job = Job::start_isolated(deadline, Duration::from_secs(1), move |control| {
-                    agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || {
-                        agent_socket::connect(&path, control)
-                    }, || {}, || {})
-                })
-                .unwrap();
-                fixture
-                    .signing
-                    .recv_timeout(Duration::from_secs(3))
-                    .unwrap();
-                if !timed {
-                    let mut other = common::SshdFixture::new();
-                    let connection = other.session();
-                    let mut channel = common::SshChannel::new(
-                        connection,
-                        common::GitService::UploadPack,
-                        other.repository.to_str().unwrap(),
-                    )
-                    .unwrap();
-                    common::open(&mut channel);
-                    assert_eq!(common::exchange(&mut channel).2, 0);
-                    assert!(
-                        job.poll_result(&mut Context::from_waker(Waker::noop()))
-                            .is_pending()
-                    );
-                    job.cancel();
-                }
-                assert_eq!(
-                    finish(&mut job).err().unwrap().kind(),
-                    if timed {
-                        io::ErrorKind::TimedOut
-                    } else {
-                        io::ErrorKind::ConnectionAborted
-                    }
-                );
-                fixture.assert_tcp_closed();
-                fixture.wait_closed();
-                fixture.assert_requests("ssh-ed25519", 1);
-                assert!(matches!(
-                    job.poll_disposed(&mut Context::from_waker(Waker::noop())),
-                    Poll::Ready(Ok(()))
-                ));
-            }
-        }
-        #[test]
-        fn all_rejected_keys_end_without_signing_or_retry() {
-            let fixture = support::Fixture::new("ssh-ed25519", false);
-            std::fs::write(fixture.ssh.temp.path().join("authorized_keys"), "").unwrap();
-            let (connection, host) = fixture.prepared("ssh-ed25519");
-            let path = fixture.path.clone();
-            let user = fixture.ssh.user.clone();
-            let mut job = Job::start_isolated(
-                Some(Instant::now() + Duration::from_secs(3)),
-                Duration::from_secs(1),
-                move |control| {
-                    agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || {
-                        agent_socket::connect(&path, control)
-                    }, || {}, || {})
-                },
-            )
-            .unwrap();
-            assert_eq!(
-                finish(&mut job).err().unwrap().kind(),
-                io::ErrorKind::PermissionDenied
-            );
-            fixture.assert_requests("ssh-ed25519", 0);
-            fixture.assert_tcp_closed();
-        }
-        #[test]
-        fn signing_callback_contains_rust_panic_and_destroys_connection() {
-            use std::io::{Read, Write};
-            struct Panics {
-                socket: std::os::unix::net::UnixStream,
-                writes: usize,
-            }
-            impl Read for Panics {
-                fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
-                    self.socket.read(b)
-                }
-            }
-            impl Write for Panics {
-                fn write(&mut self, b: &[u8]) -> io::Result<usize> {
-                    if self.writes >= 5 {
-                        panic!("injected signing-channel panic");
-                    }
-                    let n = self.socket.write(b)?;
-                    self.writes += n;
-                    Ok(n)
-                }
-                fn flush(&mut self) -> io::Result<()> {
-                    Ok(())
-                }
-            }
-            impl agent_client::Channel for Panics {
-                fn wait(&mut self, _: bool, c: &agent_job::Control) -> io::Result<()> {
-                    std::thread::sleep(c.quantum()?);
-                    c.check()
-                }
-            }
-            let fixture = support::Fixture::new("ssh-ed25519", false);
-            let (connection, host) = fixture.prepared("ssh-ed25519");
-            let socket = std::os::unix::net::UnixStream::connect(&fixture.path).unwrap();
-            socket.set_nonblocking(true).unwrap();
-            let user = fixture.ssh.user.clone();
-            let mut job = Job::start_isolated(
-                Some(Instant::now() + Duration::from_secs(3)),
-                Duration::from_secs(1),
-                move |control| {
-                    agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || {
-                        Ok(agent_client::Agent::new(
-                            Panics { socket, writes: 0 },
-                            control,
-                        ))
-                    }, || {}, || {})
-                },
-            )
-            .unwrap();
-            assert_eq!(finish(&mut job).err().unwrap().kind(), io::ErrorKind::Other);
-            fixture.assert_tcp_closed();
-            fixture.wait_closed();
-            fixture.assert_requests("ssh-ed25519", 0);
-        }
-
-        #[test]
-        fn malformed_signature_shape_and_algorithm_fail_without_second_sign_request() {
-            for (method, fault) in [("ssh-ed25519", 1), ("ssh-ed25519", 2), ("rsa-sha2-256", 1), ("rsa-sha2-512", 3), ("rsa-sha2-512", 4)] {
-                let fixture = support::Fixture::new(method, false);
-                fixture
-                    .fault
-                    .store(fault, std::sync::atomic::Ordering::SeqCst);
-                let (connection, host) = fixture.prepared(method);
-                let path = fixture.path.clone();
-                let user = fixture.ssh.user.clone();
-                let mut job = Job::start_isolated(
-                    Some(Instant::now() + Duration::from_secs(3)),
-                    Duration::from_secs(1),
-                    move |control| {
-                        agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || {
-                            agent_socket::connect(&path, control)
-                        }, || {}, || {})
-                    },
-                )
-                .unwrap();
-                assert_eq!(
-                    finish(&mut job).err().unwrap().kind(),
-                    io::ErrorKind::InvalidData
-                );
-                fixture.assert_requests(method, 1);
-                fixture.assert_tcp_closed();
-            }
-        }
-
-        #[test]
-        fn native_network_wait_retries_with_stable_state_and_is_cancellable() {
-            for cancel in [false, true] {
-                let fixture = support::Fixture::new("ssh-ed25519", false);
-                let (connection, host) = fixture.prepared("ssh-ed25519");
-                let mut paused = common::pause_process_tree(fixture.ssh.child.id());
-                let path = fixture.path.clone();
-                let user = fixture.ssh.user.clone();
-                let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| {
-                    agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || {
-                        agent_socket::connect(&path, control)
-                    }, || {}, || {})
-                })
-                .unwrap();
-                fixture.listed.recv_timeout(Duration::from_secs(3)).unwrap();
-                std::thread::sleep(Duration::from_millis(60));
-                assert!(
-                    job.poll_result(&mut Context::from_waker(Waker::noop()))
-                        .is_pending()
-                );
-                if cancel {
-                    job.cancel();
-                    assert_eq!(
-                        finish(&mut job).err().unwrap().kind(),
-                        io::ErrorKind::ConnectionAborted
-                    );
-                    fixture.assert_requests("ssh-ed25519", 0);
-                } else {
-                    paused.resume();
-                    let connection = finish(&mut job).unwrap();
-                    drop(connection);
-                    fixture.assert_requests("ssh-ed25519", 1);
-                }
-                fixture.assert_tcp_closed();
-                fixture.wait_closed();
-                paused.resume();
-            }
-        }
-
-        #[test]
-        fn native_disconnect_is_terminal_before_a_second_identity() {
-            use std::sync::Mutex;
-            let fixture = support::Fixture::new("ssh-ed25519", false);
-            let (connection, host) = fixture.prepared("ssh-ed25519");
-            let mut paused = common::pause_process_tree(fixture.ssh.child.id());
-            let breaker = fixture.network_handle();
-            let calls = Arc::new(Mutex::new(Vec::new()));
-            let observed = calls.clone();
-            let path = fixture.path.clone();
-            let user = fixture.ssh.user.clone();
-            let mut disconnected = false;
-            let mut job = Job::start_isolated(
-                Some(Instant::now() + Duration::from_secs(3)),
-                Duration::from_secs(1),
-                move |control| {
-                    agent_auth::observed_authenticate(
-                        connection,
-                        &user,
-                        &host,
-                        control.clone(),
-                        || agent_socket::connect(&path, control),
-                        |key, rc| {
-                            observed.lock().unwrap().push((key.to_vec(), rc));
-                            if !disconnected && rc == libssh2_sys::LIBSSH2_ERROR_EAGAIN {
-                                breaker.shutdown(std::net::Shutdown::Both).unwrap();
-                                disconnected = true;
-                            }
-                        },
-                    )
-                },
-            )
-            .unwrap();
-            assert_eq!(finish(&mut job).err().unwrap().kind(), io::ErrorKind::Other);
-            let calls = calls.lock().unwrap();
-            assert!(
-                calls
-                    .iter()
-                    .any(|(_, rc)| *rc == libssh2_sys::LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED)
-            );
-            assert!(
-                calls.iter().all(|(key, _)| *key == calls[0].0),
-                "native failure must not offer a second identity"
-            );
-            assert_eq!(
-                calls.last().unwrap().1,
-                libssh2_sys::LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED
-            );
-            fixture.assert_requests("ssh-ed25519", 0);
-            fixture.assert_tcp_closed();
-            fixture.wait_closed();
-            paused.resume();
-        }
-
-        /// A wait for the server's reply ends when the reply arrives. A sleep
-        /// of a control quantum (20 ms) instead puts that much on every
-        /// exchange of a login (a query and a signed request per key), which
-        /// is every command of TR8.1's fetch, where it was a tenth of the gap
-        /// to 1.0.17. A loopback server answers a request in a few
-        /// milliseconds, so the shortest wait, from a native call that returned
-        /// EAGAIN to the next call, over several logins is far below a quantum
-        /// unless one is slept: then no wait is under 20 ms.
-        #[test]
-        fn a_wait_for_the_server_ends_when_it_replies_not_after_a_quantum() {
-            let mut shortest = Duration::MAX;
-            for _ in 0..5 {
-                // The fixture's agent serves one connection.
-                let fixture = support::Fixture::new("ssh-ed25519", false);
-                let (connection, host) = fixture.prepared("ssh-ed25519");
-                let control = agent_job::Control::scripted(
-                    None,
-                    Duration::ZERO,
-                    Duration::from_secs(5),
-                    agent_job::wall_clock(),
-                );
-                let path = fixture.path.clone();
-                let user = fixture.ssh.user.clone();
-                let mut waiting: Option<Instant> = None;
-                let connection = agent_auth::observed_authenticate(
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+#[test]
+fn authenticates_ed25519_and_rsa_sha2_and_transfers_a_usable_connection() {
+    for method in ["ssh-ed25519", "rsa-sha2-256", "rsa-sha2-512"] {
+        let fixture = support::Fixture::new(method, false);
+        let (connection, host) = fixture.prepared(method);
+        let path = fixture.path.clone();
+        let user = fixture.ssh.user.clone();
+        let mut job = Job::start_isolated(
+            Some(Instant::now() + Duration::from_secs(3)),
+            Duration::from_secs(1),
+            move |control| {
+                agent_auth::authenticate_reporting(
                     connection,
                     &user,
                     &host,
                     control.clone(),
-                    || agent_socket::connect(&path, control),
-                    |_, rc| {
-                        let now = Instant::now();
-                        if let Some(since) = waiting.take() {
-                            shortest = shortest.min(now - since);
-                        }
-                        if rc == libssh2_sys::LIBSSH2_ERROR_EAGAIN {
-                            waiting = Some(now);
-                        }
-                    },
+                    || support::connect(&path, control),
+                    || {},
+                    || {},
                 )
-                .unwrap();
-                drop(connection);
-            }
-            println!("shortest wait for the server in a login: {shortest:?}");
-            assert!(
-                shortest < Duration::from_millis(10),
-                "no wait for the server ended in under {shortest:?}: a quantum is slept, not the server awaited"
-            );
-        }
+            },
+        )
+        .unwrap();
+        let connection = finish(&mut job).unwrap();
+        drop(job);
+        let mut channel = common::SshChannel::new(
+            connection,
+            common::GitService::UploadPack,
+            fixture.ssh.repository.to_str().unwrap(),
+        )
+        .unwrap();
+        common::open(&mut channel);
+        let (_, stderr, status) = common::exchange(&mut channel);
+        assert_eq!(status, 0, "{stderr:?}");
+        drop(channel);
+        fixture.assert_requests(method, 1);
+    }
+}
 
-        /// The stall clock still runs while a login waits on a server that
-        /// never replies: readiness, not sleeping, is what completes a wait.
-        #[test]
-        fn a_login_against_a_silent_server_expires_as_a_stall() {
-            use agent_job::{TimeoutReason, timeout_reason};
-            let fixture = support::Fixture::new("ssh-ed25519", false);
-            let (connection, host) = fixture.prepared("ssh-ed25519");
-            let mut paused = common::pause_process_tree(fixture.ssh.child.id());
-            let path = fixture.path.clone();
-            let user = fixture.ssh.user.clone();
-            let mut job = Job::start_timed(
-                agent_job::Place::Take(&agent_job::Supervisor::new()),
-                Some(Instant::now() + Duration::from_secs(5)),
-                Duration::from_millis(300),
-                Duration::from_secs(1),
-                agent_job::wall_clock(),
-                move |control| {
-                    agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || {
-                        agent_socket::connect(&path, control)
-                    }, || {}, || {})
-                },
+#[test]
+fn wrong_host_is_rejected_before_agent_access() {
+    let fixture = support::Fixture::new("ssh-ed25519", false);
+    let (connection, mut host) = fixture.prepared("ssh-ed25519");
+    host[0] ^= 1;
+    let path = fixture.path.clone();
+    let user = fixture.ssh.user.clone();
+    let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| {
+        agent_auth::authenticate_reporting(
+            connection,
+            &user,
+            &host,
+            control.clone(),
+            || support::connect(&path, control),
+            || {},
+            || {},
+        )
+    })
+    .unwrap();
+    assert_eq!(
+        finish(&mut job).err().unwrap().kind(),
+        io::ErrorKind::PermissionDenied
+    );
+    fixture.no_requests();
+    fixture.assert_tcp_closed();
+}
+#[test]
+fn stalled_sign_can_be_cancelled_or_expired_and_does_not_stop_an_active_stream() {
+    for timed in [false, true] {
+        let fixture = support::Fixture::new("ssh-ed25519", true);
+        let (connection, host) = fixture.prepared("ssh-ed25519");
+        let path = fixture.path.clone();
+        let user = fixture.ssh.user.clone();
+        let deadline = timed.then(|| Instant::now() + Duration::from_millis(800));
+        let mut job = Job::start_isolated(deadline, Duration::from_secs(1), move |control| {
+            agent_auth::authenticate_reporting(
+                connection,
+                &user,
+                &host,
+                control.clone(),
+                || support::connect(&path, control),
+                || {},
+                || {},
+            )
+        })
+        .unwrap();
+        fixture.wait_signing(Duration::from_secs(3));
+        if !timed {
+            let mut other = common::SshdFixture::new();
+            let connection = other.session();
+            let mut channel = common::SshChannel::new(
+                connection,
+                common::GitService::UploadPack,
+                other.repository.to_str().unwrap(),
             )
             .unwrap();
-            let error = finish(&mut job).err().unwrap();
-            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-            assert_eq!(timeout_reason(&error), Some(TimeoutReason::Stall));
-            paused.resume();
+            common::open(&mut channel);
+            assert_eq!(common::exchange(&mut channel).2, 0);
+            assert!(
+                job.poll_result(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            job.cancel();
+        }
+        assert_eq!(
+            finish(&mut job).err().unwrap().kind(),
+            if timed {
+                io::ErrorKind::TimedOut
+            } else {
+                io::ErrorKind::ConnectionAborted
+            }
+        );
+        fixture.assert_tcp_closed();
+        fixture.wait_closed();
+        fixture.assert_requests("ssh-ed25519", 1);
+        assert!(matches!(
+            job.poll_disposed(&mut Context::from_waker(Waker::noop())),
+            Poll::Ready(Ok(()))
+        ));
+    }
+}
+#[test]
+fn all_rejected_keys_end_without_signing_or_retry() {
+    let fixture = support::Fixture::new("ssh-ed25519", false);
+    std::fs::write(fixture.ssh.temp.path().join("authorized_keys"), "").unwrap();
+    let (connection, host) = fixture.prepared("ssh-ed25519");
+    let path = fixture.path.clone();
+    let user = fixture.ssh.user.clone();
+    let mut job = Job::start_isolated(
+        Some(Instant::now() + Duration::from_secs(3)),
+        Duration::from_secs(1),
+        move |control| {
+            agent_auth::authenticate_reporting(
+                connection,
+                &user,
+                &host,
+                control.clone(),
+                || support::connect(&path, control),
+                || {},
+                || {},
+            )
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        finish(&mut job).err().unwrap().kind(),
+        io::ErrorKind::PermissionDenied
+    );
+    fixture.assert_requests("ssh-ed25519", 0);
+    fixture.assert_tcp_closed();
+}
+#[test]
+fn signing_callback_contains_rust_panic_and_destroys_connection() {
+    use std::io::{Read, Write};
+    struct Panics<S> {
+        socket: S,
+        writes: usize,
+    }
+    impl<S: Read> Read for Panics<S> {
+        fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
+            self.socket.read(b)
         }
     }
+    impl<S: Write> Write for Panics<S> {
+        fn write(&mut self, b: &[u8]) -> io::Result<usize> {
+            if self.writes >= 5 {
+                panic!("injected signing-channel panic");
+            }
+            let n = self.socket.write(b)?;
+            self.writes += n;
+            Ok(n)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<S: Read + Write> agent_client::Channel for Panics<S> {
+        fn wait(&mut self, _: bool, c: &agent_job::Control) -> io::Result<()> {
+            std::thread::sleep(c.quantum()?);
+            c.check()
+        }
+    }
+    let fixture = support::Fixture::new("ssh-ed25519", false);
+    let (connection, host) = fixture.prepared("ssh-ed25519");
+    let socket = fixture.raw_channel();
+    let user = fixture.ssh.user.clone();
+    let mut job = Job::start_isolated(
+        Some(Instant::now() + Duration::from_secs(3)),
+        Duration::from_secs(1),
+        move |control| {
+            agent_auth::authenticate_reporting(
+                connection,
+                &user,
+                &host,
+                control.clone(),
+                || {
+                    Ok(agent_client::Agent::new(
+                        Panics { socket, writes: 0 },
+                        control,
+                    ))
+                },
+                || {},
+                || {},
+            )
+        },
+    )
+    .unwrap();
+    assert_eq!(finish(&mut job).err().unwrap().kind(), io::ErrorKind::Other);
+    fixture.assert_tcp_closed();
+    fixture.wait_closed();
+    fixture.assert_requests("ssh-ed25519", 0);
+}
+
+#[test]
+fn malformed_signature_shape_and_algorithm_fail_without_second_sign_request() {
+    for (method, fault) in [
+        ("ssh-ed25519", 1),
+        ("ssh-ed25519", 2),
+        ("rsa-sha2-256", 1),
+        ("rsa-sha2-512", 3),
+        ("rsa-sha2-512", 4),
+    ] {
+        let fixture = support::Fixture::new(method, false);
+        fixture.damage(fault);
+        let (connection, host) = fixture.prepared(method);
+        let path = fixture.path.clone();
+        let user = fixture.ssh.user.clone();
+        let mut job = Job::start_isolated(
+            Some(Instant::now() + Duration::from_secs(3)),
+            Duration::from_secs(1),
+            move |control| {
+                agent_auth::authenticate_reporting(
+                    connection,
+                    &user,
+                    &host,
+                    control.clone(),
+                    || support::connect(&path, control),
+                    || {},
+                    || {},
+                )
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            finish(&mut job).err().unwrap().kind(),
+            io::ErrorKind::InvalidData
+        );
+        fixture.assert_requests(method, 1);
+        fixture.assert_tcp_closed();
+    }
+}
+
+#[test]
+fn native_network_wait_retries_with_stable_state_and_is_cancellable() {
+    for cancel in [false, true] {
+        let fixture = support::Fixture::new("ssh-ed25519", false);
+        let (connection, host) = fixture.prepared("ssh-ed25519");
+        let mut paused = common::pause_process_tree(fixture.ssh.child.id());
+        let path = fixture.path.clone();
+        let user = fixture.ssh.user.clone();
+        let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| {
+            agent_auth::authenticate_reporting(
+                connection,
+                &user,
+                &host,
+                control.clone(),
+                || support::connect(&path, control),
+                || {},
+                || {},
+            )
+        })
+        .unwrap();
+        fixture.wait_listed(Duration::from_secs(3));
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(
+            job.poll_result(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        if cancel {
+            job.cancel();
+            assert_eq!(
+                finish(&mut job).err().unwrap().kind(),
+                io::ErrorKind::ConnectionAborted
+            );
+            fixture.assert_requests("ssh-ed25519", 0);
+        } else {
+            paused.resume();
+            let connection = finish(&mut job).unwrap();
+            drop(connection);
+            fixture.assert_requests("ssh-ed25519", 1);
+        }
+        fixture.assert_tcp_closed();
+        fixture.wait_closed();
+        paused.resume();
+    }
+}
+
+#[test]
+fn native_disconnect_is_terminal_before_a_second_identity() {
+    use std::sync::Mutex;
+    let fixture = support::Fixture::new("ssh-ed25519", false);
+    let (connection, host) = fixture.prepared("ssh-ed25519");
+    let mut paused = common::pause_process_tree(fixture.ssh.child.id());
+    let breaker = fixture.network_handle();
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let observed = calls.clone();
+    let path = fixture.path.clone();
+    let user = fixture.ssh.user.clone();
+    let mut disconnected = false;
+    let mut job = Job::start_isolated(
+        Some(Instant::now() + Duration::from_secs(3)),
+        Duration::from_secs(1),
+        move |control| {
+            agent_auth::observed_authenticate(
+                connection,
+                &user,
+                &host,
+                control.clone(),
+                || support::connect(&path, control),
+                |key, rc| {
+                    observed.lock().unwrap().push((key.to_vec(), rc));
+                    if !disconnected && rc == libssh2_sys::LIBSSH2_ERROR_EAGAIN {
+                        breaker.shutdown(std::net::Shutdown::Both).unwrap();
+                        disconnected = true;
+                    }
+                },
+            )
+        },
+    )
+    .unwrap();
+    assert_eq!(finish(&mut job).err().unwrap().kind(), io::ErrorKind::Other);
+    let calls = calls.lock().unwrap();
+    assert!(
+        calls
+            .iter()
+            .any(|(_, rc)| *rc == libssh2_sys::LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED)
+    );
+    assert!(
+        calls.iter().all(|(key, _)| *key == calls[0].0),
+        "native failure must not offer a second identity"
+    );
+    assert_eq!(
+        calls.last().unwrap().1,
+        libssh2_sys::LIBSSH2_ERROR_PUBLICKEY_UNVERIFIED
+    );
+    fixture.assert_requests("ssh-ed25519", 0);
+    fixture.assert_tcp_closed();
+    fixture.wait_closed();
+    paused.resume();
+}
+
+/// A wait for the server's reply ends when the reply arrives. A sleep
+/// of a control quantum (20 ms) instead puts that much on every
+/// exchange of a login (a query and a signed request per key), which
+/// is every command of TR8.1's fetch, where it was a tenth of the gap
+/// to 1.0.17. A loopback server answers a request in a few
+/// milliseconds, so the shortest wait, from a native call that returned
+/// EAGAIN to the next call, over several logins is far below a quantum
+/// unless one is slept: then no wait is under 20 ms.
+#[test]
+fn a_wait_for_the_server_ends_when_it_replies_not_after_a_quantum() {
+    let mut shortest = Duration::MAX;
+    for _ in 0..5 {
+        // The fixture's agent serves one connection.
+        let fixture = support::Fixture::new("ssh-ed25519", false);
+        let (connection, host) = fixture.prepared("ssh-ed25519");
+        let control = agent_job::Control::scripted(
+            None,
+            Duration::ZERO,
+            Duration::from_secs(5),
+            agent_job::wall_clock(),
+        );
+        let path = fixture.path.clone();
+        let user = fixture.ssh.user.clone();
+        let mut waiting: Option<Instant> = None;
+        let connection = agent_auth::observed_authenticate(
+            connection,
+            &user,
+            &host,
+            control.clone(),
+            || support::connect(&path, control),
+            |_, rc| {
+                let now = Instant::now();
+                if let Some(since) = waiting.take() {
+                    shortest = shortest.min(now - since);
+                }
+                if rc == libssh2_sys::LIBSSH2_ERROR_EAGAIN {
+                    waiting = Some(now);
+                }
+            },
+        )
+        .unwrap();
+        drop(connection);
+    }
+    println!("shortest wait for the server in a login: {shortest:?}");
+    assert!(
+        shortest < Duration::from_millis(10),
+        "no wait for the server ended in under {shortest:?}: a quantum is slept, not the server awaited"
+    );
+}
+
+/// The stall clock still runs while a login waits on a server that
+/// never replies: readiness, not sleeping, is what completes a wait.
+#[test]
+fn a_login_against_a_silent_server_expires_as_a_stall() {
+    use agent_job::{TimeoutReason, timeout_reason};
+    let fixture = support::Fixture::new("ssh-ed25519", false);
+    let (connection, host) = fixture.prepared("ssh-ed25519");
+    let mut paused = common::pause_process_tree(fixture.ssh.child.id());
+    let path = fixture.path.clone();
+    let user = fixture.ssh.user.clone();
+    let mut job = Job::start_timed(
+        agent_job::Place::Take(&agent_job::Supervisor::new()),
+        Some(Instant::now() + Duration::from_secs(5)),
+        Duration::from_millis(300),
+        Duration::from_secs(1),
+        agent_job::wall_clock(),
+        move |control| {
+            agent_auth::authenticate_reporting(
+                connection,
+                &user,
+                &host,
+                control.clone(),
+                || support::connect(&path, control),
+                || {},
+                || {},
+            )
+        },
+    )
+    .unwrap();
+    let error = finish(&mut job).err().unwrap();
+    assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+    assert_eq!(timeout_reason(&error), Some(TimeoutReason::Stall));
+    paused.resume();
 }

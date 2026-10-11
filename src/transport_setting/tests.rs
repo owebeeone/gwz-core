@@ -10,4 +10,7 @@ mod files;
 mod fixture;
 mod precedence;
 mod scan;
-mod text;
+// The words and the printed commands of design section 10 are POSIX shell, and their rows quote POSIX paths and run
+// the commands through `sh`. What a Windows shell is told to run is not designed yet (plan step 3.1's report), so these
+// rows wait for it.
+cfg_if::cfg_if! { if #[cfg(unix)] { mod text; } }

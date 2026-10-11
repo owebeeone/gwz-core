@@ -44,14 +44,17 @@ pub(crate) fn has_options(options: Option<&crate::TransportOptions>) -> bool {
 }
 
 impl Selection {
+    /// `home` is the SSH home of the transport that will use the identities, where there is one: `~/` expands under
+    /// it, so that `known_hosts` and `~/` identity paths share one home (design section 3; plan step 3.1).
     pub(crate) fn from_options(
         start: &Path,
+        home: Option<&Path>,
         options: &crate::TransportOptions,
     ) -> ModelResult<Self> {
         let default = options
             .default_identity
             .as_deref()
-            .map(|path| resolve_path(start, path))
+            .map(|path| resolve_path(start, home, path))
             .transpose()?;
         let mut remotes = BTreeMap::new();
         for entry in &options.remote_identities {
@@ -63,7 +66,7 @@ impl Selection {
             if remotes
                 .insert(
                     entry.remote.clone(),
-                    resolve_path(start, &entry.private_key_path)?,
+                    resolve_path(start, home, &entry.private_key_path)?,
                 )
                 .is_some()
             {
@@ -167,12 +170,16 @@ impl Selection {
     }
 }
 
-pub(crate) fn resolve_path(start: &Path, path: &str) -> ModelResult<PathBuf> {
+/// `path` as an absolute path: `~/` expands under `home`, the SSH home of the transport that will use it where there
+/// is one, else under the process's own home (the native route, which is libgit2's); anything else is relative to
+/// `start`.
+pub(crate) fn resolve_path(start: &Path, home: Option<&Path>, path: &str) -> ModelResult<PathBuf> {
     if path.trim().is_empty() || path.contains('\0') {
         return Err(invalid("SSH identity requires a nonempty file path"));
     }
     let path = if path == "~" || path.starts_with("~/") {
-        std::env::home_dir()
+        home.map(Path::to_path_buf)
+            .or_else(std::env::home_dir)
             .ok_or_else(|| invalid("cannot resolve home directory for SSH identity"))?
             .join(path.strip_prefix("~/").unwrap_or(""))
     } else if path.starts_with('~') {
@@ -288,7 +295,11 @@ fn resolve_remote(
                 Ok(value) => Some(if backend.ssh.is_cli_context() {
                     opaque_path(&value)?
                 } else {
-                    resolve_path(repo.workdir().unwrap_or(repo.path()), &value)?
+                    resolve_path(
+                        repo.workdir().unwrap_or(repo.path()),
+                        backend.ssh.ssh_home().as_deref(),
+                        &value,
+                    )?
                 }),
                 Err(error) if error.code() == git2::ErrorCode::NotFound => None,
                 Err(error) => return Err(crate::git::git_error(error)),
@@ -515,7 +526,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let selection = Selection::from_options(temp.path(), &options).unwrap();
+        let selection = Selection::from_options(temp.path(), None, &options).unwrap();
         let local = temp.path().join("configured");
         assert_eq!(
             selection
@@ -542,6 +553,40 @@ mod tests {
     }
 
     #[test]
+    fn tilde_expands_under_the_transports_home_and_otherwise_under_the_processs() {
+        let root = std::env::temp_dir();
+        let (start, home) = (root.join("start"), root.join("the").join("ssh").join("home"));
+        let under_home = |path: &str| resolve_path(&start, Some(&home), path).unwrap();
+        assert_eq!(under_home("~/.ssh/id"), home.join(".ssh/id"));
+        assert_eq!(under_home("~"), home);
+        // A path that is not a `~` one is relative to the start, whatever the home.
+        assert_eq!(under_home("key"), start.join("key"));
+        assert!(resolve_path(&start, Some(&home), "~user/key").is_err());
+        // Without a transport home it is the process's, as the native route has it.
+        if let Some(process) = std::env::home_dir() {
+            assert_eq!(resolve_path(&start, None, "~/k").unwrap(), process.join("k"));
+        }
+        // A `Selection` built for a transport carries the transport's home.
+        let options = crate::TransportOptions {
+            default_identity: Some("~/id".into()),
+            remote_identities: vec![crate::RemoteSshIdentity {
+                remote: "origin".into(),
+                private_key_path: "~/special".into(),
+            }],
+            ..Default::default()
+        };
+        let selection = Selection::from_options(&start, Some(&home), &options).unwrap();
+        assert_eq!(
+            selection.resolve(Some("origin"), None).unwrap().path,
+            home.join("special")
+        );
+        assert_eq!(
+            selection.resolve(Some("other"), None).unwrap().path,
+            home.join("id")
+        );
+    }
+
+    #[test]
     fn duplicate_empty_and_unknown_overrides_refuse() {
         let temp = tempfile::tempdir().unwrap();
         let entry = crate::RemoteSshIdentity {
@@ -555,12 +600,12 @@ mod tests {
             remote_identities: vec![entry.clone(), entry.clone()],
             ..Default::default()
         };
-        assert!(Selection::from_options(temp.path(), &options).is_err());
+        assert!(Selection::from_options(temp.path(), None, &options).is_err());
         options.remote_identities = vec![entry];
         options.default_identity = Some("".into());
-        assert!(Selection::from_options(temp.path(), &options).is_err());
+        assert!(Selection::from_options(temp.path(), None, &options).is_err());
         options.default_identity = None;
-        let selection = Selection::from_options(temp.path(), &options).unwrap();
+        let selection = Selection::from_options(temp.path(), None, &options).unwrap();
         assert!(
             selection
                 .validate_remote_names(&["upstream".into()])

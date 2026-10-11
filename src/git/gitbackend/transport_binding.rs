@@ -49,6 +49,10 @@ cfg_if::cfg_if! {
             pub(crate) fn is_cli_context(&self) -> bool {
                 self.host_context().is_some_and(|context| context.is_cli())
             }
+            /// The SSH home of the transport this backend's operation runs on, if it has one.
+            pub(crate) fn ssh_home(&self) -> Option<std::path::PathBuf> {
+                self.host_context().and_then(|context| context.ssh_home())
+            }
             pub(crate) fn validate_scope(
                 &self,
                 meta: &crate::RequestMeta,
@@ -281,6 +285,9 @@ cfg_if::cfg_if! {
         impl Runtime {
             pub(crate) fn is_cli_context(&self) -> bool {
                 false
+            }
+            pub(crate) fn ssh_home(&self) -> Option<std::path::PathBuf> {
+                None
             }
             pub(crate) fn validate_scope(
                 &self,

@@ -244,13 +244,16 @@ impl GitBackend for Git2Backend {
                 } else {
                     identities = transport_support::identity::Selection::from_options(
                         start,
+                        None,
                         options.unwrap_or(&empty),
                     )?;
                 }
             }
         } else {
+            // A host context's `~/` is its endpoint's SSH home, the one `known_hosts` is read from.
             identities = transport_support::identity::Selection::from_options(
                 start,
+                self.ssh.ssh_home().as_deref(),
                 options.unwrap_or(&empty),
             )?;
             identities.validate_files()?;

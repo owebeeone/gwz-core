@@ -37,6 +37,10 @@ impl RequestContext {
     pub(crate) fn is_cli(&self) -> bool {
         is_cli(&self.meta)
     }
+    /// The SSH home of the runtime this request runs on, which `~/` identity paths expand under (plan step 3.1).
+    pub(crate) fn ssh_home(&self) -> Option<PathBuf> {
+        self.session.home().map(|home| home.path)
+    }
     pub(crate) fn validate(&self, meta: &RequestMeta, operation: &str) -> ModelResult<()> {
         if !self.active.load(Ordering::Acquire) || self.session.is_closed() {
             return Err(unavailable("transport request is closed"));
