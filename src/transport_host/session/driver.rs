@@ -1,7 +1,7 @@
 use super::*;
 use crate::git::endpoint::ssh_host_key::{HostKeyRefused, WINDOWS_SHELLS};
 
-mod native_hint;
+pub(in crate::transport_host) mod native_hint;
 mod opening;
 mod pump;
 /// The endpoint messages one pass hands to the mux, at most.

@@ -4,7 +4,10 @@
 
 /// The end of the missing-git message. `cli_hint` is whether the caller has `--transport`; `windows_shells` whether
 /// the switch is set in `cmd` or PowerShell.
-pub(super) fn native_switch_hint(cli_hint: bool, windows_shells: bool) -> &'static str {
+pub(in crate::transport_host) fn native_switch_hint(
+    cli_hint: bool,
+    windows_shells: bool,
+) -> &'static str {
     if cli_hint {
         "run with --transport native to use libgit2's native transport, as gwz 1.0 did"
     } else if windows_shells {

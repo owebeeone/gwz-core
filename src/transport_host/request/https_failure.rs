@@ -118,14 +118,9 @@ impl HttpsOpenFailure {
             } else {
                 "could not start the `git` it found"
             };
-            let hint = if self.cli_hint {
-                "run with --transport native to use libgit2's native transport, as gwz 1.0 did"
-            } else if self.windows {
-                // Two shells set a variable two ways, and the message cannot know which one the caller is in.
-                "set GWZ_TRANSPORT=native (cmd) or $env:GWZ_TRANSPORT = \"native\" (PowerShell) to use libgit2's native transport, as gwz 1.0 did"
-            } else {
-                "set GWZ_TRANSPORT=native to use libgit2's native transport, as gwz 1.0 did"
-            };
+            // The one hint of the SSH twin (lane B, 2026-10-11): the flag, else the switch in both Windows shells.
+            let hint =
+                crate::transport_host::session::native_switch_hint(self.cli_hint, self.windows);
             return format!(
                 "HTTPS authentication needs `git` on PATH: gwz runs `git credential fill` to ask your credential helpers, and {what}. Install or repair git, or {hint}."
             );
@@ -286,7 +281,7 @@ cfg_if::cfg_if! {
                     code: ErrorCode::Authentication,
                     facts: Some(Facts { http_status: Some(407), ..Default::default() }),
                     ..Default::default()
-                }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true };
+                }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true, windows: true, host: None };
                 let reason = failure.reason();
                 assert!(reason.contains("Windows machine proxy setting"), "{reason}");
                 assert!(reason.contains("does not support proxy sign-in"), "{reason}");

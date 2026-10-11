@@ -31,6 +31,8 @@ use std::{
 mod capacity;
 mod close;
 mod driver;
+/// The missing-git message's closing hint, shared with the HTTPS twin in `request/https_failure.rs`.
+pub(in crate::transport_host) use driver::native_hint::native_switch_hint;
 mod local_link;
 mod passes;
 mod port;
