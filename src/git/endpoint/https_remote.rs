@@ -95,8 +95,20 @@ impl<S: HalfClose> RpcIo<S> {
             helpers_disabled: false,
             cli_hint: true,
         };
+        // A body stall says what ran out and which flag sets it (T7); the
+        // generic failure line would say less. A helper's timeout keeps its
+        // own words.
+        if failure_is_body_stall(&error) && !message.helper_timeout() {
+            return error;
+        }
         io::Error::new(error.kind(), message)
     }
+}
+/// Whether `error` is a read stall that names `--ssh-timeout`.
+fn failure_is_body_stall(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|cause| cause.is::<super::stream_io::StreamStall>())
 }
 impl<S: HalfClose> Read for RpcIo<S> {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {

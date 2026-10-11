@@ -58,7 +58,7 @@ fn pool_observer_waits_only_until_exact_detail_is_associated_even_on_publisher_u
         assert_eq!(observer.join().unwrap(), failed);
         assert_eq!(context.failure(record), failed);
         if zero {
-            let model = crate::transport_host::SshOpenFailure(failed, None)
+            let model = crate::transport_host::SshOpenFailure(failed, None, 9_000)
                 .model_error(false)
                 .unwrap();
             assert_eq!(model.code, crate::model::ErrorCode::CredentialHelperTimeout);

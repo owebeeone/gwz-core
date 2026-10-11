@@ -36,10 +36,17 @@ fn network_deadlines(io_timeout_ms: u64, connect_timeout_ms: u64, allocation_ms:
         cleanup_ms: OPEN_CLEANUP_MS as i64,
     }
 }
-/// An SSH open's failure, and the attempt it ended as `(N, M)` when that is
-/// known: its display then ends `(attempt N of M)` (the retry plan's §5).
+/// An SSH open's failure, the attempt it ended as `(N, M)` when that is
+/// known, and the stall bound the open ran under, in milliseconds (the
+/// `--ssh-timeout` it was given; 0 when the stall clock is off). A stall's
+/// display names that bound, and the attempt ends the display
+/// `(attempt N of M)` (the retry plan's §5; T7).
 #[derive(Debug)]
-pub(crate) struct SshOpenFailure(pub(crate) Failure, pub(crate) Option<(u32, u32)>);
+pub(crate) struct SshOpenFailure(
+    pub(crate) Failure,
+    pub(crate) Option<(u32, u32)>,
+    pub(crate) u64,
+);
 impl SshOpenFailure {
     fn helper_reason(&self, cli_hint: bool) -> Option<String> {
         use gwz_transport::protocol::{AuthMethod, Effect, ErrorCode, SetupFailureCause};
@@ -88,6 +95,21 @@ impl std::fmt::Display for SshOpenFailure {
         if let Some(reason) = self.helper_reason(false) {
             f.write_str(&reason)?;
         } else if self.0.code == gwz_transport::protocol::ErrorCode::Timeout {
+            let stall = (self.0.setup_cause
+                == Some(gwz_transport::protocol::SetupFailureCause::Stall))
+            .then(|| setup_retry::stall_seconds(self.2))
+            .flatten();
+            if let Some(seconds) = stall {
+                // The attempt goes inside the brackets that name the flag.
+                write!(
+                    f,
+                    "ssh setup timeout: no progress for {seconds} seconds (--ssh-timeout {seconds}"
+                )?;
+                if let Some((attempt, attempts)) = self.1 {
+                    write!(f, "; attempt {attempt} of {attempts}")?;
+                }
+                return f.write_str(")");
+            }
             let label = setup_retry::timeout_origin(self.0.setup_cause).unwrap_or("unknown");
             write!(f, "ssh setup timeout: {label}")?;
         } else {
@@ -130,10 +152,12 @@ impl std::fmt::Display for SshLimitFailure {
     }
 }
 impl std::error::Error for SshLimitFailure {}
-/// The error for an open that failed with `failure` for `host` and `port`.
+/// The error for an open that failed with `failure` for `host` and `port`,
+/// under the stall bound `stall_ms`.
 fn open_failure_io(
     failure: Failure,
     attempts: Option<(u32, u32)>,
+    stall_ms: u64,
     host: String,
     port: u16,
 ) -> io::Error {
@@ -142,16 +166,16 @@ fn open_failure_io(
             io::ErrorKind::Unsupported,
             SshLimitFailure { limit, host, port },
         ),
-        None => failure_io(failure, attempts),
+        None => failure_io(failure, attempts, stall_ms),
     }
 }
-fn failure_io(failure: Failure, attempts: Option<(u32, u32)>) -> io::Error {
+fn failure_io(failure: Failure, attempts: Option<(u32, u32)>, stall_ms: u64) -> io::Error {
     let kind = match failure.code {
         gwz_transport::protocol::ErrorCode::Authentication => io::ErrorKind::PermissionDenied,
         gwz_transport::protocol::ErrorCode::Timeout => io::ErrorKind::TimedOut,
         _ => io::ErrorKind::Other,
     };
-    io::Error::new(kind, SshOpenFailure(failure, attempts))
+    io::Error::new(kind, SshOpenFailure(failure, attempts, stall_ms))
 }
 cfg_if::cfg_if! {
     if #[cfg(test)] {
@@ -234,9 +258,9 @@ cfg_if::cfg_if! {
             clock.advance(std::time::Duration::from_secs(3));
             let error = control.end_slice(false).unwrap_err();
             assert_eq!(timeout_reason(&error), Some(TimeoutReason::Stall));
-            let reported = failure_io(stamped(TimeoutReason::Stall), None);
+            let reported = failure_io(stamped(TimeoutReason::Stall), None, 3_000);
             assert_eq!(reported.kind(), io::ErrorKind::TimedOut);
-            assert!(reported.to_string().contains("ssh setup timeout: stall"));
+            assert!(reported.to_string().contains("ssh setup timeout: no progress for 3 seconds (--ssh-timeout 3)"));
             assert_eq!(reported.get_ref().unwrap().downcast_ref::<SshOpenFailure>().unwrap().0.setup_cause, Some(gwz_transport::protocol::SetupFailureCause::Stall));
         }
 
@@ -259,7 +283,7 @@ cfg_if::cfg_if! {
             clock.advance(std::time::Duration::from_millis(900));
             let error = control.end_slice(true).unwrap_err();
             assert_eq!(timeout_reason(&error), Some(TimeoutReason::Aggregate));
-            let reported = failure_io(stamped(TimeoutReason::Aggregate), None);
+            let reported = failure_io(stamped(TimeoutReason::Aggregate), None, 1_000);
             assert_eq!(reported.kind(), io::ErrorKind::TimedOut);
             assert!(reported.to_string().contains("ssh setup timeout: aggregate"));
             assert_eq!(reported.get_ref().unwrap().downcast_ref::<SshOpenFailure>().unwrap().0.setup_cause, Some(gwz_transport::protocol::SetupFailureCause::Aggregate));
@@ -267,12 +291,50 @@ cfg_if::cfg_if! {
 
         #[test]
         fn a_spent_budget_ends_the_display_with_its_attempt() {
-            let reported = failure_io(stamped(TimeoutReason::Stall), Some((4, 4)));
-            assert_eq!(reported.to_string(), "ssh setup timeout: stall (attempt 4 of 4)");
-            let reported = failure_io(stamped(TimeoutReason::Aggregate), Some((1, 1)));
+            // T7: a stall names the flag and its value, and the attempt follows inside the brackets.
+            let reported = failure_io(stamped(TimeoutReason::Stall), Some((4, 4)), 9_000);
+            assert_eq!(
+                reported.to_string(),
+                "ssh setup timeout: no progress for 9 seconds (--ssh-timeout 9; attempt 4 of 4)"
+            );
+            let reported = failure_io(stamped(TimeoutReason::Aggregate), Some((1, 1)), 9_000);
             assert_eq!(reported.to_string(), "ssh setup timeout: aggregate (attempt 1 of 1)");
-            // The reason string stays as it was where the attempt is not known.
-            let reported = failure_io(stamped(TimeoutReason::Stall), None);
+            // Without an attempt count, the flag alone.
+            let reported = failure_io(stamped(TimeoutReason::Stall), None, 9_000);
+            assert_eq!(
+                reported.to_string(),
+                "ssh setup timeout: no progress for 9 seconds (--ssh-timeout 9)"
+            );
+        }
+
+        #[test]
+        fn a_stall_names_the_bound_the_user_set() {
+            let reported = failure_io(stamped(TimeoutReason::Stall), Some((2, 4)), 20_000);
+            assert_eq!(
+                reported.to_string(),
+                "ssh setup timeout: no progress for 20 seconds (--ssh-timeout 20; attempt 2 of 4)"
+            );
+            let reported = failure_io(stamped(TimeoutReason::Stall), None, 1_000);
+            assert_eq!(
+                reported.to_string(),
+                "ssh setup timeout: no progress for 1 seconds (--ssh-timeout 1)"
+            );
+            // Only a test fixture sets a bound that is not whole seconds.
+            let reported = failure_io(stamped(TimeoutReason::Stall), None, 300);
+            assert_eq!(
+                reported.to_string(),
+                "ssh setup timeout: no progress for 0.3 seconds (--ssh-timeout 0.3)"
+            );
+        }
+
+        #[test]
+        fn no_stall_message_names_a_zero_bound() {
+            // `--ssh-timeout 0` turns the stall clock off, so a stall cannot be its doing.
+            // Should a failure stamped as a stall reach the display with no bound, it
+            // keeps the old label rather than say "no progress for 0 seconds".
+            let reported = failure_io(stamped(TimeoutReason::Stall), Some((1, 4)), 0);
+            assert_eq!(reported.to_string(), "ssh setup timeout: stall (attempt 1 of 4)");
+            let reported = failure_io(stamped(TimeoutReason::Stall), None, 0);
             assert_eq!(reported.to_string(), "ssh setup timeout: stall");
         }
 
@@ -287,6 +349,7 @@ cfg_if::cfg_if! {
                     facts: None,
                 },
                 None,
+                9_000,
             );
             assert_eq!(reported.kind(), io::ErrorKind::PermissionDenied);
             assert!(
@@ -308,7 +371,7 @@ cfg_if::cfg_if! {
             for (limit, method) in [(SshLimit::HostKeys, AuthMethod::None), (SshLimit::KeyFile, AuthMethod::SshKey)] {
                 let mut failure = limit.failure();
                 failure.facts = Some(Facts { method, ..Facts::default() });
-                let reported = open_failure_io(failure, Some((1, 4)), "git.example.com".into(), 2222);
+                let reported = open_failure_io(failure, Some((1, 4)), 9_000, "git.example.com".into(), 2222);
                 assert_eq!(reported.kind(), io::ErrorKind::Unsupported, "{limit:?}");
                 let words = limit.reason("git.example.com", 2222);
                 assert_eq!(reported.to_string(), words, "{limit:?}");
@@ -318,7 +381,7 @@ cfg_if::cfg_if! {
                 assert_eq!(model.message, words);
             }
             // The driver's own refusal of the same code carries no facts and keeps its generic display.
-            let own = open_failure_io(limit_free_unsupported(), None, "git.example.com".into(), 22);
+            let own = open_failure_io(limit_free_unsupported(), None, 9_000, "git.example.com".into(), 22);
             assert!(own.get_ref().unwrap().downcast_ref::<SshOpenFailure>().is_some());
         }
 

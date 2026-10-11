@@ -114,6 +114,25 @@ pub(crate) fn timeout_origin(cause: Option<SetupFailureCause>) -> Option<&'stati
     }
 }
 
+/// The stall bound, in seconds as `--ssh-timeout` takes it, for a message
+/// that names the flag and its value (T7): `9` for 9000 ms, and `0.3` for the
+/// 300 ms only a test fixture sets. `None` when the bound is 0: `--ssh-timeout
+/// 0` turns the stall clock off, so no stall can be its doing and no message
+/// may name it.
+pub(crate) fn stall_seconds(stall_ms: u64) -> Option<String> {
+    if stall_ms == 0 {
+        return None;
+    }
+    let (whole, rest) = (stall_ms / 1000, stall_ms % 1000);
+    Some(if rest == 0 {
+        whole.to_string()
+    } else {
+        format!("{whole}.{rest:03}")
+            .trim_end_matches('0')
+            .to_owned()
+    })
+}
+
 /// The attempt a final failure ended, as `(N, M)` for its display's
 /// `attempt N of M` (the retry plan's §5), when the failure alone says so.
 /// The endpoint's reported count. No cause or driver-local retry budget

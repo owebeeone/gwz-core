@@ -115,9 +115,13 @@ impl Session {
                             let value = opened.clone();
                             let reply = entry.reply.clone();
                             let stream = entry.stream.clone();
+                            let stall_ms = entry.stall_ms;
                             reports.push(Box::new(move || {
                                 reply.complete_with(
-                                    Ok((BlockingStream::new(stream), opened)),
+                                    Ok((
+                                        BlockingStream::new(stream).with_stall_ms(stall_ms),
+                                        opened,
+                                    )),
                                     || {
                                         observe(message.stream_id, &value);
                                     },

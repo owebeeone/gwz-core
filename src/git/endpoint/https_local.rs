@@ -143,12 +143,12 @@ impl OpenRpc for LocalRpc {
                 }
             };
             if auto {*resolved.lock().unwrap_or_else(|e|e.into_inner())=Some(if prepared.opened.facts.method==AuthMethod::Gh {AuthPolicy::Gh}else{AuthPolicy::Anonymous});}
-            let mut config=Config::new(mux.session_id(),mux.stream_id(),Side::Initiator);config.profile_version=2;config.io_timeout_ms=prepared.io_timeout_ms();
+            let mut config=Config::new(mux.session_id(),mux.stream_id(),Side::Initiator);config.profile_version=2;config.io_timeout_ms=prepared.io_timeout_ms();let stall_ms=config.io_timeout_ms;
             let (stream,left)=match Stream::new(config.clone()){Ok(pair)=>pair,Err(e)=>{let _=tx.send(Err(io::Error::other(e)));return;}};
             config.side=Side::Endpoint;
             let (endpoint,right)=match Stream::new(config){Ok(pair)=>pair,Err(e)=>{let _=tx.send(Err(io::Error::other(e)));return;}};
             let left=Arc::new(left);let right=Arc::new(right);
-            if tx.send(Ok(BlockingStream::new(stream))).is_err(){return;}
+            if tx.send(Ok(BlockingStream::new(stream).with_stall_ms(stall_ms))).is_err(){return;}
             let _endpoint_owner=endpoint.clone();
             let ready=CloseWake::default();let work=prepared.serve(endpoint,right.clone(),cancel.clone(),ready.clone());tokio::pin!(work);
             let start=tokio::time::Instant::now();let mut timer=tokio::time::interval(Duration::from_millis(2));let mut finished=false;

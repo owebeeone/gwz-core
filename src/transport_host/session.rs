@@ -118,6 +118,9 @@ fn mux_error(error: mux::Error) -> ModelError {
 }
 struct Entry {
     request: String,
+    /// The stall bound this stream's open ran under (`--ssh-timeout`, in
+    /// milliseconds; 0 when the clock is off): its reads name it when they stall.
+    stall_ms: u64,
     stream: Stream,
     peer: Arc<MessageEndpoint>,
     opened: bool,

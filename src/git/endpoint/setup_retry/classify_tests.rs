@@ -215,6 +215,19 @@ fn a_members_attempts_merge_into_its_one_diagnostic_row() {
 }
 
 #[test]
+fn a_stall_bound_is_worded_in_the_seconds_ssh_timeout_takes_and_zero_has_no_words() {
+    assert_eq!(stall_seconds(9_000).as_deref(), Some("9"));
+    assert_eq!(stall_seconds(1_000).as_deref(), Some("1"));
+    assert_eq!(stall_seconds(86_400_000).as_deref(), Some("86400"));
+    assert_eq!(stall_seconds(1_500).as_deref(), Some("1.5"));
+    assert_eq!(stall_seconds(10_050).as_deref(), Some("10.05"));
+    assert_eq!(stall_seconds(300).as_deref(), Some("0.3"));
+    assert_eq!(stall_seconds(1).as_deref(), Some("0.001"));
+    // `--ssh-timeout 0` is no bound: no message names it.
+    assert_eq!(stall_seconds(0), None);
+}
+
+#[test]
 fn each_timeout_origin_has_its_word_on_both_schemes_and_allocation_is_returned_once() {
     for (cause, word) in [
         (SetupFailureCause::Stall, Some("stall")),
