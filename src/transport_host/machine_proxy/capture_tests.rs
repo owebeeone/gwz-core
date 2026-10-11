@@ -162,6 +162,7 @@ fn the_machine_setting_wins_over_the_environment_and_git_configuration() {
     let direct = Fixed::new(Access::Direct, None, None).capture();
     let (_, https) = crate::transport_host::endpoint_environment::endpoint_config_native(
         &snapshot,
+        None,
         Some(direct),
     )
     .expect("a direct machine setting ignores the environment");
@@ -179,6 +180,7 @@ fn a_refused_setting_refuses_the_endpoint_configuration_naming_the_setting() {
     let machine = Fixed::named("http=proxy:8080", None).capture();
     let error = crate::transport_host::endpoint_environment::endpoint_config_native(
         &snapshot,
+        None,
         Some(machine),
     )
     .err()
@@ -211,6 +213,7 @@ fn a_named_machine_proxy_is_the_endpoints_proxy_and_the_environment_is_not_read(
     let machine = Fixed::named("proxy.example:8080", Some("intranet")).capture();
     let (_, https) = crate::transport_host::endpoint_environment::endpoint_config_native(
         &snapshot,
+        None,
         Some(machine),
     )
     .expect("the machine setting alone decides");
