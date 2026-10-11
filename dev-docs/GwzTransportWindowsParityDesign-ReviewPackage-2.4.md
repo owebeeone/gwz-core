@@ -1,28 +1,29 @@
 # Review package: Windows transport parity design (TR1.8), plan step 2.4
 
-Date: 2026-10-11. Status: **a package for the step 2.4 dual review plus Surface; no review has run.** It decides nothing and authorizes no implementation, commit, tag, push or publication. The lane owner dispatches the reviewers; this package does not.
+Date: 2026-10-11. Status: **the package for step 2.4's dual review plus Surface, restated for round 2 of 2.** Round 1 ran on 2026-10-11 against the first tuple of this package: Consistency, Safety and Surface (blind) were all NO-GO. The remediation (section 2b) is documents only and is uncommitted in the lane `gwz-dev-tr18fix`; the tuple below is the lane's working tree. It decides nothing and authorizes no implementation, commit, tag, push or publication. The lane owner dispatches the reviewers; this package does not.
 
 The object is [`GwzTransportWindowsParityDesign.md`](GwzTransportWindowsParityDesign.md), the DRAFT revision of 2026-10-11 (plan step 2.1's output, with the 2026-10-10 host rows filled in). The plan's step 2.4 says what the three reviews are: Consistency and Safety on the design with the evidence from steps 2.2, 2.3 and 2.3b, and Surface on the user guide alone. At most two architectural remediation rounds follow. All P0, P1 and P2 findings block.
 
 ## 1. The exact documents and the tuple
 
-All paths are under `gwz-core/dev-docs/` of the lane `gwz-dev-tr18freeze`. SHA-256 values are of the files as they stand when this package was written; the lane owner recomputes them at the commit that settles the tuple and replaces them here.
+All paths are under `gwz-core/dev-docs/` of the lane `gwz-dev-tr18fix`. SHA-256 values are of the files as they stand in that lane's working tree after the round 1 remediation, recomputed on 2026-10-11 (the objects are uncommitted); the lane owner recomputes them again at the commit that settles the tuple and replaces them here.
 
 | Role | Document | SHA-256 (first 16) |
 |---|---|---|
-| **Object** | `GwzTransportWindowsParityDesign.md` | `8d34c609196f3211` |
-| Controlling record | `GwzTransportTR18-OperatorDecisions.md` ("Operator discussion record" controls over its per-item narrative) | `61e787a87c9e5a26` |
+| **Object** | `GwzTransportWindowsParityDesign.md` | `cc175664e3383ca0` |
+| Round 1's findings and the operator's decisions D1 to D4, with the dispositions | `GwzTransportWindowsParityDesign-RemPlan-2.4.md` | `03760d35dbf787fd` |
+| Controlling record | `GwzTransportTR18-OperatorDecisions.md` ("Operator discussion record" controls over its per-item narrative; it now also records the TD12 in-session run approval and D1 to D4) | `5f94d1595fa6f37c` |
 | Delta (what MAIN and the evidence changed) | `GwzTransportWindowsParityDesign-Delta.md` | `3a1596fdfa9a0c54` |
-| Amendment 2, revision 8 DRAFT (skim review not run) | `GwzTransportReleasePlanAmendment-2.md` | `d3f19c26d4d44d94` |
-| Its skim package | `GwzTransportReleasePlanAmendment-2-SkimPackage-8.md` | `e4a30d010560db63` |
-| Plan, step 2.4 and section 8 (OQ1 to OQ16) | `GwzTransportWindowsParityPlan.md` | `82cc6a5776633dfd` |
+| Amendment 2, revision 8 DRAFT (skim review not run; three wording changes of 2026-10-11) | `GwzTransportReleasePlanAmendment-2.md` | `8784fb33f914d1dc` |
+| Its skim package | `GwzTransportReleasePlanAmendment-2-SkimPackage-8.md` | `4fcb9a84df2a8c9c` |
+| Plan, revision 4, step 2.4 and section 8 (OQ1 to OQ16), with the round 1 changes to steps 3.1, 4.4, 4.6 to 4.8 and 6.2 | `GwzTransportWindowsParityPlan.md` | `fae6156c3d7caea0` |
 | Baseline and dispositions | `GwzTransportWindowsBaseline.md`, `GwzTransportWindowsProofDispositions-DRAFT.md` | `d3eb823109122df2`, `feb7e9916e9bf3d1` |
-| **Surface object** | `GwzTransportWindowsUserGuide-DRAFT.md` | `6752211da4bdc1e1` |
-| Accepted contracts the design must agree with | `GwzTransportCredentialHelperTimingAmendment.md`, `GwzTransportCredentialHelperConfigurationViewAmendment.md`, `GwzTransportSshHelperClockAmendment.md`; `../../dev-docs/GwzSspiDesign.md`, `GwzSspiAcceptance.md`; `../../dev-docs/GwzWindowsHttpsIntegrationImplementation-Verdict-3.md` | n/a (accepted) |
+| **Surface object** | `GwzTransportWindowsUserGuide-DRAFT.md` | `9d46b4aaca22dbc9` |
+| Accepted contracts the design must agree with | `GwzTransportCredentialHelperTimingAmendment.md`, `GwzTransportCredentialHelperConfigurationViewAmendment.md`, `GwzTransportSshHelperClockAmendment.md`; `../../dev-docs/GwzSspiDesign.md` (now carrying the D3 annotation of 2026-10-11, text otherwise unchanged), `GwzSspiAcceptance.md`; `../../dev-docs/GwzWindowsHttpsIntegrationImplementation-Verdict-3.md` | n/a (accepted) |
 
-**Repository tuple of the lane** (read-only `git rev-parse` at writing): workspace root `72922e4c`; gwz-core `2f27c05f` (the design and amendment revision 8 are in commit `03438559`; this package and the filled design are uncommitted in the lane until the lane owner commits them); gwz-transport `6146bd58`; gwz-cli `21d62310`; gwz-py `5950ba38`; gwz-sspi `364ccc77`; git2-rs `d13951f7`; gwz-core-evidence `12b46d90`. The design's own "evidence tuple" paragraph still quotes the delta's older tuple (gwz-transport `77f89cdf`, evidence `d7ca6a38`); the root owner records the settled tuple.
+**Repository tuple of the lane `gwz-dev-tr18fix`** (read-only `git rev-parse` on 2026-10-11, restated as current): workspace root `abf76ab7`; gwz-core `3b8e0d70` **plus the uncommitted round 1 remediation** (this package, the design, the guide, the decision list, the plan, amendment 2 and its skim package, and the remediation plan `...-RemPlan-2.4.md`, which is a new untracked file); the workspace root's `dev-docs/GwzSspiDesign.md` carries the D3 annotation, uncommitted; gwz-transport `6146bd58`; gwz-cli `21d62310`; gwz-py `5950ba38`; gwz-sspi `73de8c8e`; git2-rs `d13951f7`; gwz-core-evidence `46b770f0` **plus the uncommitted run `2026-10-11-tr18-r13-https-proxy` and two README corrections** (RH's "5 rows", RN's "each identity is tried"). Round 1 pinned gwz-core `e5e8e804` and evidence `46b770f`; the paperwork lane's `abf76ab7` has since updated the plan and amendment 2 on main. The design's own "evidence tuple" paragraph quotes the delta's older sources and says where each run landed; the root owner records the settled tuple.
 
-**Evidence** (private, `gwz-core-evidence/campaigns/transport-qualification/runs/`, access required; the public record is the design, delta, decision list and baseline). Short names are the design's: RS `2026-10-10-tr18-windows-ssh-rows` (90 rows), RA `...-windows-auth-rows` (35, HTTP), RR `...-redirect-parity`, RM `...-b17-macos-linux`, **RH** `...-td9-user-root-trust` (52 HTTPS rows plus a 10-row redirect supplement), **RP** `...-td10-machine-proxy` (82 rows), **RN** `...-td12-agent-service` (first run partial; the run of record is `raw/native-run2-interactive`). Released Windows 1.0.17 is `gwz.exe` SHA-256 `cbab5e9b...`. RH and RP are committed in gwz-core-evidence `12b46d90`; **RN's second run is not in that commit** (it landed in the source workspace after the lane was cloned), so the evidence commit the reviewers receive must include it (section 8, item 6).
+**Evidence** (private, `gwz-core-evidence/campaigns/transport-qualification/runs/`, access required; the public record is the design, delta, decision list and baseline). Short names are the design's: RS `2026-10-10-tr18-windows-ssh-rows` (90 rows), RA `...-windows-auth-rows` (35, HTTP), RR `...-redirect-parity`, RM `...-b17-macos-linux`, **RH** `...-td9-user-root-trust` (52 HTTPS rows plus a 10-row redirect supplement), **RP** `...-td10-machine-proxy` (82 rows), **RN** `...-td12-agent-service` (first run partial; the run of record is `raw/native-run2-interactive`). Released Windows 1.0.17 is `gwz.exe` SHA-256 `cbab5e9b...`. RH and RP landed in gwz-core-evidence `12b46d9` and RN's run of record in `e07f516` (both are in the lane's history); **RX** `2026-10-11-tr18-r13-https-proxy` (40 rows plus a guard drill: the machine proxy against a public https origin, decision D1) is new and uncommitted, so the evidence commit the reviewers receive must include it.
 
 **Who receives what.**
 
@@ -49,6 +50,35 @@ The 2026-10-03 text was NO-GO and carried provisional clauses. The 2026-10-11 re
    - *B16 and EPA.* Channel binding is enforced and satisfied over Negotiate and NTLM, and the negative controls are refused, with the loopback NTLM caveat (88-byte Type 3, AV pair unreadable).
    - *Digest-only with no helper* already fails at once on 1.0.17; the register's Digest row is refined (15 replays only with a helper configured).
    - *B08 native service* is qualified for the cells run; the earlier same-SID server-token rule is shown unworkable by measurement (the server is LocalSystem).
+
+## 2b. What changed after round 1 (2026-10-11), for round 2
+
+**Round 1.** Consistency, Safety and Surface read the first tuple blind; all three were NO-GO. Two findings converged: the HTTPS origin through a named machine proxy (Consistency P2-1, Safety S3, Surface U1; reading R13) and the plain-HTTP boundary (Safety S1, rated P0, Consistency P2-2, Surface U9). The operator then decided D1 to D4. The findings and decisions are in `GwzTransportWindowsParityDesign-RemPlan-2.4.md` (IDs as each reviewer gave them; Surface's S1 to S20 are U1 to U20 there).
+
+| Decision | What it did to the documents |
+|---|---|
+| D1 | Measured on released 1.0.17: run RX, 40 rows and a guard drill against a public https origin (every restore byte-identical). The design admits a bare or `https=` entry for an https URL by WinHTTP's rule and **refuses a mapping with no entry for https** (register item 9). The Annex S sentence "not yet tested end to end" is gone. |
+| D2 | The transport serves `https://` only and refuses an HTTPS to HTTP redirect; an `http://` remote goes by the native route with a warning (register item 10; L18). Design section 7, the guide, amendment 2's redirect rows (relative-`Location` form over HTTPS only). |
+| D3 | gwz-sspi's `Identity::Explicit` and Digest code is kept for after 1.1.0 (the SSPI design is annotated in the workspace root, not amended). Plan steps 4.4, 4.8 and 6.2 no longer build or test helper-identity SSPI or Digest. This answers reading R9 differently from the first package, which proposed removal. |
+| D4 | The `GIT_SSL_CAINFO` and `SSL_CERT_FILE` roots stay beside Schannel's. Design section 7 states the trust sources; register item 11; the guide warns. |
+
+**Documents changed in the lane (all documents; no code):** the design (sections 3 to 8, 11 to 14, with the owed code changes listed in section 14 item 13), the guide (rewritten against U1 to U20), the decision list (TD12 in-session approval; D1 to D4), the plan (steps 3.1, 4.4, 4.6, 4.7, 4.8 and 6.2, OQ4 note, section 9, 12.5), amendment 2 revision 8 and its skim package (three wording changes), the workspace root's `GwzSspiDesign.md` (annotation), and in gwz-core-evidence the new run RX plus two README corrections. The design's finding-by-finding dispositions are in the remediation plan; the unclosed items are the limitations L17 to L20 and the items marked as owed code.
+
+**Readings after round 1** (the originals stand in section 4; this is where each moved):
+
+| Reading | Round 1 disposition |
+|---|---|
+| R3 | Defined: a 401 with no continuation token for the selected scheme, or a 3xx, is rejection; the eight rounds are per operation; no new exchange except TR2.1's retry on network loss before effect (design section 7). Repeated NTLM attempts across operations is limitation L19. |
+| R5 | A passphrase-protected key gets the agent remedy, or `ssh-keygen -p -m PEM` with an empty passphrase on a copy (design section 3, guide). |
+| R8 | The redirect bound is the accepted five-hop sequence (HTTPS design section 5; TR1.6 C2), not "one"; origin means scheme, host and port; the non-forwarding rule is still unmeasured against 1.0.17, with two product tests named and a native redirect-after-exchange test owed to step 4.9. |
+| R9 | Not removed: D3. The code stays for after 1.1.0 and has no 1.1.0 caller. |
+| R10 | The Pageant confirmation wait is the clock amendment's LocalInteraction phase at its interaction allowance, not a new figure; L20 records that the clock amendment admits only the password-helper route today, so the extension is owed to step 3.6. |
+| R12 (b) | Register item 12 records the refusal of more than one bare entry. (d), accept-and-ignore of `<-loopback>`, is unchanged. |
+| R13 | Measured (RX) and decided (D1). The design no longer lists the https case as unmeasured except for the rows RX did not run (L8). |
+| R14 | The transport's own rule is stated: an IP-literal host equal to an interface address enumerated once at capture goes direct; names are never resolved; anything else goes through the proxy. Still one observed address on 1.0.17. |
+| R15 | Unchanged, with the header sizes corrected (88 to 103 bytes for NTLM, 119 to 121 for Negotiate). |
+| R16 | Plain HTTP is moot for the transport under D2 (native route); register item 4 is now only the relative `Location` over HTTPS. |
+| R17 | P01 is now labelled P (partial); the others stand. |
 
 ## 3. The operator decisions (2026-10-10), as the design carries them
 
@@ -119,7 +149,7 @@ R1 to R11 are the eleven items of the tr18docs drafter's report (the drafter fla
 4. **Design to amendment 2 revision 8.** Sections 3.5, 3.11, 3.14 and 3.19 agree with design sections 7, 8 and 9; no mechanism is stated twice with different bounds. The redirect row (amendment line 179 and 227) is checked against RH (R16, section 8 item 1).
 5. **Design to accepted contracts.** Section 10's helper paragraphs agree with the helper timing and configuration-view amendments and with step 4.1's WH2 contract; section 5's bound agrees with the SSH clock amendment (R10); sections 2 and 8 agree with the SSPI design and acceptance.
 6. **Internal.** Section 11's table, section 12's register, section 13's limitations and section 14's lists agree row by row (each removed claim has a row or a decision; each limitation points to a section; each register difference points to a decision). Cross-references resolve. The GO rule's reading in section 11 matches the plan's.
-7. **Plan.** Step 2.4's scope, and the steps the plan says consume TR1.8 (3.1, 3.2b, 3.3, 3.5, 3.6, 4.4, 4.6, 4.7, 4.8), are served by clauses that are specific enough to implement; step 4.8's explicit-identity residual is removed (R9).
+7. **Plan.** Step 2.4's scope, and the steps the plan says consume TR1.8 (3.1, 3.2b, 3.3, 3.5, 3.6, 4.4, 4.6, 4.7, 4.8), are served by clauses that are specific enough to implement; step 4.8 builds no explicit-identity SSPI and no Digest, and steps 4.4 and 6.2 test neither (D3); gwz-sspi keeps that code for after 1.1.0 with no 1.1.0 caller (R9).
 8. **Counts.** Row counts, run sizes and the delta's tallies match the archives (R6, R7, R17).
 
 ### 5.2 Safety
@@ -131,7 +161,7 @@ Judge explicitly, each with a verdict and the counterexample you tried:
 3. **Default credentials to any host (OD16) and NTLM exposure.** The logon session answers any host that challenges Negotiate or NTLM, including an Internet host. Does the design bound the hazard it accepts (certificate trust first, no CONNECT credential, rejected identity terminal, no replay, eight rounds), and are the cross-origin redirect rules sufficient given they are unmeasured (R8)?
 4. **Channel binding.** Capture from the actual final TLS handshake, per physical connection, for proxy and origin separately; native `None` or error refuses the SSPI attempt (R4); weak-hash upgrade; EPA satisfied and refused in the executed rows, loopback caveat (R15).
 5. **Redirect and POST.** Credentials never cross origins; a challenged POST is refused and the body is never resent (1.0.17 resends an empty body); no credentialed retry of a partial or complete POST.
-6. **Machine proxy.** Grammar admission and refusal (R12), the implicit bypass including the machine's own address (R14), the unmeasured https-origin selection and CONNECT (R13), an unresolvable proxy sends nothing direct, a parser failure never sends direct, every 407 refused with no credential offered, environment and git-configuration proxies ignored (and beaten by a named machine proxy).
+6. **Machine proxy.** Grammar admission and refusal (R12), the implicit bypass including the machine's own address (R14), the https-origin selection and CONNECT as RX measured them for one public origin, and the `http=`-only refusal (R13, D1), an unresolvable proxy sends nothing direct, a parser failure never sends direct, every 407 refused with no credential offered, environment and git-configuration proxies ignored (and beaten by a named machine proxy).
 7. **Paths and trust files.** One captured home; a relative `HOME` resolved against the captured working directory so a later change cannot redirect `known_hosts`; an explicit empty `HOME` refuses; host-key checking mandatory before any authentication and no trust failure invokes another agent or the native transport; native paths on every platform.
 8. **Secrets.** Mapping contents, agent comments, key bytes, signatures, tokens and OS error strings never reach logs or failure text; SSPI runs in an owned process whose forced exit guarantees reaping, not secret erasure (is that stated honestly?); wipe-before-unmap rules for the Pageant mapping.
 9. **Process and handle ownership.** Job Object assignment before resume for git; Pageant receiver boundary (GWZ retires only its own ownership, never terminates an operator's Pageant); `CancelIoEx` and buffer retention until completion; no thread cancellation relied on.
@@ -149,7 +179,7 @@ Judge explicitly, each with a verdict and the counterexample you tried:
 
 ## 6. How to read the GO rule (input (b))
 
-The design's section 11 reads the GO rule as follows. Every row B01 to B18 and P01 to P08 needs an executed result or a recorded disposition, and every provisional clause is replaced by one physically proved design. **A row that cannot run discharges the rule by having its claim removed and listed in section 14.** After this fill every row approved on 2026-10-10 has executed; the rows with no execution are P01 (claim removed, TD11 B), P02 (stays UNEXECUTED, claim revised), P05 and P07 (dispositioned), the Mac trusted-HTTPS B17 (TD7 B), a real hardware key, Pageant-held certificates, Kerberos, and the https-origin machine-proxy selection and CONNECT leg. The reviewers say whether they accept this reading; if not, the fallback is an amendment of the rule by the lane owner or the operator.
+The design's section 11 reads the GO rule as follows. Every row B01 to B18 and P01 to P08 needs an executed result or a recorded disposition, and every provisional clause is replaced by one physically proved design. **A row that cannot run discharges the rule by having its claim removed and listed in section 14.** After this fill every row approved on 2026-10-10 has executed; the rows with no execution are P01 (claim removed, TD11 B), P02 (stays UNEXECUTED, claim revised), P05 and P07 (dispositioned), the Mac trusted-HTTPS B17 (TD7 B), a real hardware key, Pageant-held certificates, native-agent certificates (L3), Kerberos (L1), a remote NTLMv2 Extended Protection exchange (L7), the target name of the logon exchange (L15), the interface addresses that count as the machine's own beyond one (L8), a redirect through a proxy and its interplay with the bypass list (L8), a multi-hop redirect chain and a 303 on 1.0.17, and the proxy variables not set in RX or RP (L8); the https-origin machine-proxy selection and CONNECT leg is no longer in this list, because RX executed it for one public origin. The reviewers say whether they accept this reading; if not, the fallback is an amendment of the rule by the lane owner or the operator.
 
 ## 7. Procedure
 
@@ -162,55 +192,62 @@ These are outside this task's edits (documents it was not asked to change) or ne
 1. **Stale redirect sentences in amendment 2 revision 8: done (2026-10-11).** Amendment lines 179 and 227, its status bullet and a new changelog line, and the skim package (update note, table row, items 2 and 3, checklist question 5) now say that 1.0.17 follows an absolute `Location` over HTTPS and that the redirect row is transport-only only in its relative-`Location` and plain-HTTP forms. The hash of revision 8 changed (`a39f4764...` to the value in section 1), the skim package pins the new one, and this package pins both. The decision list's TD3 narrative (lines 103 to 114) still says "follows none"; its discussion record controls, so it needs no edit, but the delta's section 2 row 7 and section 4 B15 row are superseded for HTTPS.
 2. **TD12's second run and the `HKCU` residue.** The service created empty `HKCU\Software\OpenSSH\Agent\...` keys on its first key add (zero subkeys; owned by SYSTEM). They were not deleted. The exact command is `reg delete HKCU\Software\OpenSSH /f` from an elevated session; the lane owner decides whether to run it.
 3. **Companion documents the delta (section 6) says change at the refresh.** The baseline, the checkpoint, the plan's Appendix A and the user guide were not part of this task. In particular the baseline still lists B06, B08, B09, B11 to B18, P01 and P03 to P07 at their 2026-10-04 statuses.
-4. **User guide: filled where settled (2026-10-11).** The guide now covers the RSA-only host-key and key-file limits and their fix messages (TD5), the ignored `HTTP_PROXY`, `http.proxy` and the other proxy variables with the machine proxy winning, the accepted machine proxy forms, the implicit local bypass and bypass-list syntax, the 407 refusal, redirect behaviour, the non-ASCII and `HOME`/`USERPROFILE` points, the agent service needing to be running, and that Kerberos, hardware keys, agent certificates and remote-host EPA are not tested. Two items are left as visible `OPEN ITEM` placeholders because they are not settled: the Pageant confirmation bound (R10) and the https-origin machine proxy and own-address bypass (R13, R14). Other placeholders in the guide are the accepted helper-timing wording. Surface may still find more.
-5. **Evidence archive to fix.** RN's first-run table and `summary.json` label the refused add row `added`; RH's README says five authenticating EPA rows and the list has four; the README of RN now describes run 2 as the run of record.
-6. **The evidence commit must include `raw/native-run2-interactive`** and the README update; the lane's gwz-core-evidence `12b46d90` does not. The design cites rows from it.
-7. **The tuple.** Commit the design, this package and any amendment edit, then recompute the hashes in section 1 and record the settled tuple. The proposed gwz-core commit message is in the preparing agent's report.
-8. **Exclude** `GwzRemoteTransportBugReport.md` (R11).
+4. **User guide: rewritten for round 2 (2026-10-11).** The guide now answers Surface's U1 to U20: it opens the proxy section with what is supported, states the `http=`-only refusal, the https-origin measurement, the own-address rule, trust sources, the redirect bound, the setup limits with their options, the agent steps and commands, the pinned-key remedy, the `known_hosts` commands, the allocation-budget message, a changes table and the unchanged-on-purpose disclosures. The OPEN ITEM placeholders for R10, R13 and R14 are gone. Texts in quotation marks are proposals for messages that are owed code (design section 14, item 13). Surface may still find more.
+5. **Evidence archive: fixed (2026-10-11).** RH's README now says four authenticating EPA rows (it said five), and RN's README no longer says each identity is tried (the authorized ed25519 key is the first the agent lists). RN's first-run results table and `summary.json` still label the refused `ssh-add` row `added`, left as raw output; the README and the design say the row was refused.
+6. **The evidence commit must include run RX** (`2026-10-11-tr18-r13-https-proxy`) and the two README corrections of item 5; RN's run of record is already in `e07f516`.
+7. **The tuple.** Commit the remediation (the proposed messages are in the lane owner's report), then recompute the hashes in section 1 and record the settled tuple.
+8. **Exclude** `GwzRemoteTransportBugReport.md` (R11): it is untracked in this lane's gwz-core; leave it out of the commit.
+9. **Code owed, not done.** The messages and behaviours the design and guide promise are listed with their owner steps in design section 14, item 13. None is implemented, and no reviewer should read the guide's quoted texts as shipped.
 
 ---
 
 # Annex S: what a Windows user sees (for the Surface reviewer)
 
-This annex describes the behaviour the proposed Windows release (1.1.0) is meant to have, compared with gwz 1.0.17 on Windows. It is a statement of intended behaviour, not a statement that anything is implemented or released. Read it with the user guide. It uses no internal design vocabulary on purpose.
+This annex describes the behaviour the proposed Windows release (1.1.0) is meant to have, compared with gwz 1.0.17 on Windows. It is a statement of intended behaviour, not a statement that anything is implemented or released. Read it with the user guide. It uses no internal design vocabulary on purpose. It was revised on 2026-10-11 after the first review round, to match the guide.
 
 ## S.1 How GWZ chooses who logs in
 
 - GWZ first asks the server without any credentials. If the server offers **Negotiate or NTLM** (Windows sign-in), alone or beside Basic or Digest, GWZ signs in with **your Windows account** and does not ask your configured git credential helper.
-- If the only scheme the server offers that GWZ can use is **Basic**, GWZ asks your configured git helper once and sends what it returns. A GitHub token held by a helper is sent this way.
-- GWZ **never answers Digest**. A server that offers only Digest is refused at once with a message naming Digest and how to switch transports. If the server offers Digest and another scheme, Digest is ignored and the other scheme is used.
-- If the server rejects your Windows account, the operation stops with an error naming the scheme. GWZ does not try it again and does not turn to a helper credential.
+- If the only scheme the server offers that GWZ can use is **Basic**, GWZ asks your configured git helper once and sends what it returns. A GitHub token held by a helper is sent this way. If no helper is configured, the message says so and how to configure one.
+- GWZ **never answers Digest**. A server that offers only Digest is refused at once with a message that says Digest is not supported by either transport and suggests SSH or a change on the server. If the server offers Digest and another scheme, Digest is ignored and the other scheme is used.
+- If the server rejects your Windows account, the operation stops with an error naming the scheme. GWZ does not try it again and does not turn to a helper credential. No setting changes this.
 - A helper that times out or is cancelled ends the operation.
 - If the server challenges the upload step of a fetch (after the first request succeeded), GWZ refuses with a message and does not send the data again.
-- **Warning:** your Windows sign-in can be offered to any web host that asks for it, including a host on the Internet. This is what gwz 1.0.17 already does.
+- **Warning:** your Windows sign-in can be offered to any web host that asks for it, including a host on the Internet. What the host receives can be cracked offline and relayed to services that do not require extra protections. This is what gwz 1.0.17 already does, no setting turns it off, and the native transport does the same.
 
-## S.2 Redirects
+## S.2 Redirects, plain `http://` and certificates
 
-GWZ follows a redirect when it first contacts a repository, to another address or to another path. It does not forward a sign-in from the first address to a different address; a different address that asks for credentials is answered as if you had gone there directly. On gwz 1.0.17 on Windows, a redirect that gives a full address is followed over HTTPS and one that gives only a path is not, and no redirect is followed over plain HTTP.
+- GWZ follows a redirect when it first contacts a repository, to another address or to another path: at most five, only from `https://` to `https://` (a redirect to `http://` is refused), and none after a Windows sign-in exchange has started. It does not forward a sign-in from the first address to a different address (a different scheme, host or port); a different address that asks for credentials is answered as if you had gone there directly. With `--verbose` GWZ prints each redirect it follows.
+- On gwz 1.0.17 on Windows, a redirect that gives a full address is followed over HTTPS and one that gives only a path is not.
+- A plain `http://` remote is carried by the native transport, with a warning that a Basic password travels unencrypted and a Windows sign-in is answered without channel binding.
+- GWZ trusts the Windows certificate store **and** the certificates in the files named by `GIT_SSL_CAINFO` and `SSL_CERT_FILE`; gwz 1.0.17 on Windows ignores those two variables. A CA file named in your environment is trusted, including a corporate interception CA.
 
 ## S.3 Proxy
 
-- On Windows only the **machine** proxy (the one `netsh winhttp show proxy` shows) controls GWZ. `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` (and lowercase forms) and git's `http.proxy` have no effect, even when a machine proxy is set. This is the opposite of macOS and Linux.
-- Requests to `localhost` (any case), any `127.x.x.x` address, `[::1]` and this computer's own address go direct without a bypass list. `localhost.` with a trailing dot does not. The token `<-loopback>` in a bypass list does nothing.
-- A bypass list can be separated by semicolons, spaces or commas and may use `*` wildcards, `<local>` (names without a dot), a port, or a leading `http://`.
-- If the machine proxy setting uses a form GWZ cannot interpret, GWZ refuses and names the machine proxy setting; it never guesses or goes direct.
-- **If the proxy asks for a login (407), GWZ refuses.** Proxy sign-in is not supported.
-- Not yet tested end to end: reaching an HTTPS repository through a machine proxy. The proxy rules above were measured with plain HTTP addresses and are expected to apply to HTTPS ones.
+- What is supported: one static proxy in the machine's WinHTTP settings (`netsh winhttp show proxy`), and a proxy that does not ask for a login. PAC scripts are not supported. Only the **machine** proxy controls GWZ. `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` (and lowercase forms) and git's `http.proxy` have no effect, even when a machine proxy is set. This is the opposite of macOS and Linux.
+- An `https://` repository goes through the machine proxy by asking it to open a tunnel; this was measured with gwz 1.0.17 against one public HTTPS server. A bare `host:port` or an `https=` entry in a list applies; a list with no entry for https (for example `http=` only or `socks=` only) is **refused by GWZ**, naming the machine proxy setting (gwz 1.0.17 connects directly and ignores the proxy).
+- Requests to `localhost` (any case), any `127.x.x.x` address, `[::1]` and this computer's own address written as an IP address go direct without a bypass list. `localhost.` with a trailing dot does not. The token `<-loopback>` in a bypass list does nothing.
+- A bypass list can be separated by semicolons, spaces or commas and may use `*` wildcards, `<local>` (names without a dot), a port, or a leading `http://` or `https://` (for an `https://` repository, `https://host` matches and `http://host` does not).
+- If the machine proxy setting uses a form GWZ cannot interpret (including more than one bare entry), GWZ refuses and names the machine proxy setting; it never guesses or goes direct.
+- **If the proxy asks for a login (407), GWZ refuses** and says proxy sign-in is not supported. The message does not point to the native transport, which refuses a 407 too.
 
 ## S.4 SSH
 
-- GWZ uses **Pageant** if it is running, otherwise the OpenSSH agent named by `SSH_AUTH_SOCK`, otherwise the default OpenSSH agent. It chooses once per operation and does not switch agent if one fails. If Pageant is running but has no usable key, GWZ reports that and does not try the OpenSSH agent.
-- The OpenSSH Authentication Agent service must be **running** for GWZ to use it; it may be disabled on your machine (it was on the test machine).
+- GWZ uses **Pageant** if it is running, otherwise the OpenSSH agent named by `SSH_AUTH_SOCK`, otherwise the default OpenSSH agent. It chooses once per operation and does not switch agent if one fails. If Pageant is running but has no usable key, GWZ reports that and does not try the OpenSSH agent. When Pageant is chosen over a set `SSH_AUTH_SOCK`, the message says so; to use the OpenSSH agent, close Pageant (gwz 1.0.17 also prefers Pageant).
+- The OpenSSH Authentication Agent service must be **running** for GWZ to use it; it may be disabled on your machine (it was on the test machine). The message for a stopped service gives the commands to start it.
 - Remote machine pipes and Unix-style socket paths in `SSH_AUTH_SOCK` are refused, and the message names `SSH_AUTH_SOCK`.
-- The SSH home is chosen from `HOME`, then `HOMEDRIVE` plus `HOMEPATH`, then `USERPROFILE`. It supplies both `known_hosts` and `~/` key paths, so **a key path starting with `~/` now uses the same home as `known_hosts`** (on gwz 1.0.17 it used `USERPROFILE`). An empty `HOME` is an error, not a missing one.
+- While Pageant waits for your confirmation, the stall and setup-budget clocks stop and the wait ends at the same fixed limit as a git helper's sign-in window.
+- A key pinned with `--identity`, `--remote-identity` or `gwz auth identity` is the only key offered; the message names the pin and how to remove it.
+- The SSH home is chosen from `HOME`, then `HOMEDRIVE` plus `HOMEPATH`, then `USERPROFILE`. It supplies both `known_hosts` and `~/` key paths, so **a key path starting with `~/` now uses the same home as `known_hosts`** (on gwz 1.0.17 it used `USERPROFILE`). An empty `HOME` is an error, not a missing one. A host missing from `known_hosts` gets the printed path and the commands to add an RSA entry.
 - **Folder and key names with non-ASCII characters now work** (on gwz 1.0.17 they fail).
-- Host keys and key files are limited on Windows: **only RSA host keys and unencrypted RSA keys in PEM format** work. An `ecdsa` or `ed25519`-only `known_hosts` entry fails; the message tells you to add an RSA entry with `ssh-keyscan -t rsa`. A key file that is not RSA PEM fails; the message says so, and for an RSA key tells you to convert it with `ssh-keygen -p -m PEM`, and for other key types to load the key into an agent. Agents can hold RSA, ECDSA and ed25519 keys. RSA keys from an agent are signed with `rsa-sha2-512` only, so a server that accepts only `ssh-rsa` or `rsa-sha2-256` is refused.
+- Host keys and key files are limited on Windows: **only RSA host keys and unencrypted RSA keys in PEM format** work. An `ecdsa` or `ed25519`-only `known_hosts` entry fails; the message tells you to add an RSA entry with `ssh-keyscan -t rsa`. A key file that is not RSA PEM fails; the message says so, and for an RSA key tells you to convert **a copy** with `ssh-keygen -p -m PEM` (which removes a passphrase from the copy), and for other key types to load the key into an agent. Agents can hold RSA, ECDSA and ed25519 keys. RSA keys from an agent are signed with `rsa-sha2-512` only, so a server that accepts only `ssh-rsa` or `rsa-sha2-256` is refused, and the message says why.
 - A dropped connection before login is retried; on gwz 1.0.17 it was a single attempt.
 - Messages now say what failed, in place of `failed to set hostkey preference`, an empty `failed to authenticate SSH session:`, and the shared "no agent" text for unsupported `SSH_AUTH_SOCK` forms.
+- GWZ does not check who created the agent pipe or who owns a Pageant. Another account on the same computer could create the default agent pipe while the service is stopped and see who you are, which keys it offers and what GWZ asks it to sign, but it cannot sign for you.
 
 ## S.5 What is not promised
 
-Kerberos (the successful tests used NTLM); a hardware security key; certificates held in Pageant or in the OpenSSH agent; Pageant and the OpenSSH agent together; SSH host keys other than RSA; key files other than unencrypted RSA PEM; proxy sign-in; a server that requires channel binding on a remote machine (it has been tested on this computer only); the OpenSSH agent beyond RSA, ECDSA and ed25519 keys through its default pipe; filenames on macOS and Linux (not audited).
+Kerberos (the successful tests used NTLM); a hardware security key; certificates held in Pageant or in the OpenSSH agent; Pageant and the OpenSSH agent together; SSH host keys other than RSA; key files other than unencrypted RSA PEM; proxy sign-in; PAC scripts (and whether the native transport follows them); a server that requires channel binding on a remote machine (it has been tested on this computer only); an IP-address HTTPS server, or a redirect, through a machine proxy (the HTTPS proxy test used one public server); the OpenSSH agent beyond RSA, ECDSA and ed25519 keys through its default pipe; filenames on macOS and Linux (not audited).
 
 ## S.6 Differences from gwz 1.0.17 on Windows, in one list
 
@@ -218,11 +255,16 @@ Kerberos (the successful tests used NTLM); a hardware security key; certificates
 |---|---|---|---|
 | 1 | Non-ASCII folder and key names | fails | works |
 | 2 | Digest | Digest-only: with a git helper configured, 15 retries then an error; with no helper it fails at once. Digest beside Basic fails the same way | Digest-only fails at once; Digest beside another scheme is ignored and the other scheme is used |
-| 3 | Server rejects your Windows account | retried up to 15 times; may ask a helper each time | one error naming the scheme; no retry; no helper |
-| 4 | Redirects | full-address redirects followed over HTTPS only; path-only redirects never; none over HTTP | all followed; credentials never cross to another address |
+| 3 | Server rejects your Windows account | retried up to 15 times; may ask a helper each time | one error naming the scheme; no retry; no helper; no setting changes this |
+| 4 | Redirects | full-address redirects followed over HTTPS only; path-only redirects never; none over HTTP | path-only redirects are followed too (at most five); credentials never cross to another address |
 | 5 | Server challenges the upload step | fails (empty resend, or "request must be resent") | refused with a plain message; data never resent |
 | 6 | `~/` in `--identity` | uses `USERPROFILE` | uses the same home as `known_hosts` |
 | 7 | SSH drop before login | one attempt | retried |
 | 8 | Error messages | opaque or shared text | text that names the cause and the fix |
+| 9 | Machine proxy list with no entry for https | connects directly, ignoring the proxy | refused, naming the machine proxy setting |
+| 10 | Plain `http://` remote | carried like any remote | carried by the native transport, with a warning |
+| 11 | Trusted certificates | the Windows store only | the Windows store plus the files named by `GIT_SSL_CAINFO` and `SSL_CERT_FILE` |
+| 12 | Machine proxy with more than one bare entry | uses the first | refused as ambiguous |
+| 13 | A proxy answering 407 | opaque error | one plain message: proxy sign-in is not supported |
 
-Unchanged on purpose: environment and git proxies are ignored on Windows; your Windows account can be offered to any host that asks; RSA-only host keys and unencrypted RSA PEM keys; RSA agent signatures at `rsa-sha2-512` only; no refusal of a Pageant owned by another user; the agent pipe's server is not identity-checked.
+Unchanged on purpose: environment and git proxies are ignored on Windows; your Windows account can be offered to any host that asks; RSA-only host keys and unencrypted RSA PEM keys; RSA agent signatures at `rsa-sha2-512` only; no refusal of a Pageant owned by another user; the agent pipe's creator is not checked.

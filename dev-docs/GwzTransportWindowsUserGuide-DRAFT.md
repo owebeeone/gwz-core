@@ -1,167 +1,375 @@
-# Windows authentication and proxy settings
+# Windows: authentication, proxy and SSH settings
 
-2026-10-03 MAIN import: original experimental records and provisional clauses
-remain historical/DRAFT. Full Windows NO-GO persists. The separately accepted
-[SSPI-only design](../../dev-docs/GwzSspiDesign.md) has its own mechanism review;
-it does not accept these whole-platform dispositions, guide or proof rows.
-Read SSPI lifetime claims through Windows parity's explicit SSPI-only amendment.
-Current MAIN accepted helper timing/configuration/SSH clock govern their domains.
+Proposed 1.1.0 user documentation, 2026-10-03; revised 2026-10-11. **DRAFT: these
+capabilities are not enabled in the current candidate build.** Texts in quotation
+marks are the messages GWZ is meant to print; they are proposals until the release.
 
+GWZ's own transport is the default. On Windows it uses Pageant, the OpenSSH
+agent, the machine's WinHTTP proxy (Windows' own HTTP proxy setting) and Windows
+authentication. If you need the behavior of gwz 1.0, choose the native transport
+(libgit2's, as gwz 1.0 used) before an operation. GWZ reports a failed operation;
+it never changes transports while it runs.
 
-Proposed 1.1.0 user documentation, 2026-10-03; revised 2026-10-11 for the
-SSH key limits, the proxy rules, redirects and the 407 refusal. Text marked
-OPEN ITEM names a review-package question that is not settled. **DRAFT: these capabilities
-are not enabled in the current candidate build.** The final wording awaits
-the native Windows baseline and design review.
+GWZ's transport carries `https://` and SSH remotes. A plain `http://` remote is
+carried by the native transport instead, and GWZ prints a warning: over `http://`
+a Basic password travels unencrypted, and a Windows sign-in is answered without
+channel binding (a protection that ties the sign-in to the encrypted connection).
+Use `https://` where you can. GWZ also refuses a redirect from `https://` to
+`http://`.
 
-GWZ's transport is the default. It uses Windows Pageant, the local OpenSSH
-agent, the machine's WinHTTP proxy and Windows authentication. You choose the
-native transport before an operation if you need the behavior of gwz 1.0.
-GWZ reports a failed operation; it never changes transports while it runs.
+If an authentication or trust error is unclear, run the command again with
+`--verbose`, which prints authentication diagnostics.
 
 ## Choose or remove a transport setting
 
 For one command, use `gwz fetch --transport native`. Omit the option or use
-`--transport gwz` to use GWZ's transport. The command option wins over the
-environment and global git configuration.
+`--transport gwz` to use GWZ's transport.
+
+The order, highest first: the `--transport` option, the `GWZ_TRANSPORT`
+environment variable, your global git configuration (`gwz.transport`), then the
+default, GWZ's transport. The environment variable beats the global configuration.
+Accepted values are `gwz` and `native`; unset means use the next source. An invalid
+value is refused, not ignored, with a message such as:
+
+```
+GWZ_TRANSPORT must be gwz or native, not "bogus"; --transport decides without it
+gwz.transport in <file> must be gwz or native, not "true"; remove it with
+  git config --file '<file>' --unset-all gwz.transport, or fix it;
+  --transport or GWZ_TRANSPORT decides without it
+```
 
 In PowerShell, `$env:GWZ_TRANSPORT = 'native'` selects native for commands
-started from that shell. `Remove-Item Env:GWZ_TRANSPORT` removes it. In mingw
-Bash, use `export GWZ_TRANSPORT=native`, then `unset GWZ_TRANSPORT` to remove
-it. Accepted values are `gwz` and `native`; unset means use global configuration
-or the default.
+started from that shell, and `Remove-Item Env:GWZ_TRANSPORT` removes it. In Git
+Bash, use `export GWZ_TRANSPORT=native`, then `unset GWZ_TRANSPORT`.
 
-For your account, run `git config --global gwz.transport native`. Remove it
-with `git config --global --unset-all gwz.transport`; setting `gwz` also selects
-GWZ. Workspace and member repository values do not select the transport.
-GWZ names ignored settings and the selected native transport as TR1.5 specifies.
+For your account, run `git config --global gwz.transport native`. Remove it with
+`git config --global --unset-all gwz.transport`; setting `gwz` also selects GWZ.
+Workspace and member repository values do not select the transport. GWZ tells you
+when it ignores one:
 
-Native defaults in the CLI are 50 jobs, 8 connections per host and a 3-second
-connect/read timeout. It has no pooling, setup retry or 30-second setup budget;
-`--max-retries` has no effect. Python uses its process's configured timeout,
-9 seconds by default, on either transport. Selecting native does not prevent
-Windows from offering your logon credentials.
+```
+gwz: note: ignoring <setting> in <file> (<scope>): only --transport, GWZ_TRANSPORT and your global git configuration select the transport; <how to remove it>
+```
+
+### Setup limits
+
+These are command-line options only; there is no environment variable or git
+configuration key for them. They apply to GWZ's transport.
+
+| Option | Default | What it does |
+|---|---|---|
+| `--ssh-timeout <secs>` | 9 | The stall limit for one setup attempt (SSH setup only) and for a stalled read of a fetch, push or pull body on SSH and HTTPS. `0` removes the stall limit **and** the 30-second setup budget below |
+| (no option) | 30 s | The setup budget. HTTPS setup has no stall limit, only this budget; SSH setup has both. Only `--ssh-timeout 0` clears it |
+| `--max-retries <n>` | 3 | Extra setup attempts after the first failure (four attempts). Waits of 1, 2 then 4 seconds, doubling and capped at 30 seconds, plus up to 0.25 second. `0` retries nothing. `--ssh-timeout 0` does not turn retries off |
+
+With `--transport native` the defaults are 50 jobs, 8 connections per host and a
+3-second connect and read timeout (`--ssh-timeout` is libgit2's connect and read
+timeout there), as in gwz 1.0. Native has no pooling, no setup retry and no
+30-second setup budget, so `--max-retries` has no effect. The Python package `gwz`
+(`pip install gwz`) uses the timeout configured for its process, 9 seconds by
+default, on either transport; see that package's documentation to change it.
 
 ## SSH agent and home
 
-A Pageant window in your Windows logon session wins over the OpenSSH agent.
-GWZ selects that source once when the operation starts. If it disappears,
-rejects a request or cannot provide a usable key, GWZ reports the failure.
-It does not try another agent. With no Pageant, SSH_AUTH_SOCK selects a local
-named pipe, or GWZ uses `\\.\pipe\openssh-ssh-agent` when it is unset.
-Remote machine pipes and unsupported mingw Unix socket paths are refused, and
-the message names `SSH_AUTH_SOCK`. The OpenSSH Authentication Agent service must
-be running to be used; it may be disabled on your machine (it was on the test
-machine), and starting it is up to you or your administrator.
+GWZ picks **one** agent source when the operation starts and does not switch if it
+fails:
 
-When Pageant has no usable key, load a key accepted by the server into Pageant,
-then retry. When a request expires during confirmation, confirm promptly on
-the next operation or adjust the existing setup limits. OPEN ITEM (review
-package R10): how a Pageant confirmation wait counts against the setup time
-limits is not settled, so this guide does not yet name the bound.
+1. **Pageant**, if a Pageant window is running in your Windows logon session. It
+   wins even when `SSH_AUTH_SOCK` is set, and even when the OpenSSH agent is also
+   running (gwz 1.0.17 does the same). When `SSH_AUTH_SOCK` is set, the message when
+   Pageant is selected names Pageant and says `SSH_AUTH_SOCK` was not consulted. To use the OpenSSH agent
+   instead, close Pageant.
+2. Otherwise, the local named pipe `SSH_AUTH_SOCK` names.
+3. Otherwise, the default pipe `\\.\pipe\openssh-ssh-agent`.
 
-SSH home is selected from HOME, then HOMEDRIVE plus HOMEPATH, then USERPROFILE.
-The selected home supplies `.ssh/known_hosts` and `~/` identity paths; gwz 1.0.17
-read `~/` identity paths from `USERPROFILE` instead, which differs when `HOME`
-and `USERPROFILE` differ. A missing or unusable home reports which home source
-needs correction, and an empty `HOME` is an error rather than being skipped.
-Folder and key names with non-ASCII characters work; gwz 1.0.17 fails on them.
-Host-key checking is still required; choosing native does not repair a
-mismatched host key.
+`SSH_AUTH_SOCK` must be a pipe on this computer in the form `\\.\pipe\<name>`.
+A pipe on another machine (`\\server\pipe\...`, including `\\localhost\pipe\...`)
+and Git Bash's Unix-style socket paths are refused, and the message names
+`SSH_AUTH_SOCK`.
+
+**The OpenSSH Authentication Agent service must be running** to use the OpenSSH
+agent, and on many Windows machines it is disabled. Starting it is up to you or
+your administrator. In PowerShell:
+
+```
+Get-Service ssh-agent
+# as administrator:
+Set-Service ssh-agent -StartupType Manual
+Start-Service ssh-agent
+# then, as yourself:
+ssh-add "$HOME\.ssh\id_rsa"
+```
+
+When the service is stopped, GWZ says:
+
+```
+The OpenSSH Authentication Agent service (ssh-agent) is not running. As administrator
+run: Set-Service ssh-agent -StartupType Manual; Start-Service ssh-agent. Then add a
+key with ssh-add. To use Pageant instead, load the key into Pageant.
+```
+
+For Pageant, load the key into Pageant ("Add Key") instead.
+
+If the agent has no key the server accepts, GWZ reports that and does not try
+another agent. If you pinned a key with `--identity`, `--remote-identity` or
+`gwz auth identity`, GWZ offers only that key, and the message names the pin: remove
+it first (`gwz auth identity <remote> --unset`, or drop `--identity`), or load that
+key into the agent.
+
+While Pageant waits for your confirmation, the time counts as interaction time, as
+a git helper's sign-in window does: the connection's stall and setup-budget clocks
+stop for the wait, and the wait ends at the same fixed interaction limit that
+applies to a helper's sign-in window (the error names the number of seconds). It
+is not an extra setting; you cannot lengthen it.
+
+**What GWZ does not check about the agent.** GWZ does not refuse a Pageant that
+belongs to another user on the same desktop, and it does not check who created
+the agent pipe. It does check that the Pageant window is still the same program it
+first found, and it creates the memory it shares with Pageant so that only your
+account and the system can open it; code running as you at a lower privilege level
+is not separated from you. Because GWZ does not check who owns the pipe, another
+account on the same computer can create `\\.\pipe\openssh-ssh-agent` while the
+agent service is not running. GWZ would then connect to it, and that account could
+learn who you are, which keys it offers and what GWZ asks it to sign. It cannot
+sign for you, because your keys are not in it.
+
+### Home
+
+The SSH home is selected from `HOME`, then `HOMEDRIVE` plus `HOMEPATH`, then
+`USERPROFILE`; the first one that exists is used. It supplies both
+`.ssh\known_hosts` and `~/` key paths, so **a key path that starts with `~/`
+now uses the same home as `known_hosts`** (gwz 1.0.17 expanded `~/` from
+`USERPROFILE`, which differs when `HOME` and `USERPROFILE` differ). A missing or
+unusable home reports which home source needs correcting, and an empty `HOME` is
+an error rather than being skipped. Folder and key names with non-ASCII
+characters work; gwz 1.0.17 fails on them.
+
+Host-key checking is required before any login, and choosing native does not
+repair a mismatched host key. When a host is not in `known_hosts`, the message
+prints the file GWZ read, which home it came from, and what to run. To add an RSA
+entry (see the next section for why RSA), replace `<path>` with the printed path
+and `<host>` with the server's name:
+
+```
+# PowerShell
+ssh-keyscan -t rsa <host> | Add-Content -Encoding ascii "<path>"
+# Git Bash
+ssh-keyscan -t rsa <host> >> "<path>"
+```
+
+Then compare the fingerprint, `ssh-keygen -lf "<path>"`, with the one the provider
+publishes before you rely on it: a key fetched over the network proves nothing by
+itself.
 
 ## SSH host keys and key files
 
-On Windows GWZ has the same limits as gwz 1.0.17. Only RSA host keys are used:
-a `known_hosts` entry that is `ecdsa` or `ed25519` with no RSA entry for the
-host fails before connecting. The message names the cause and tells you to add
-an RSA entry with `ssh-keyscan -t rsa`. Only an unencrypted RSA key file in PEM
-format is offered. A new-format RSA key, an ECDSA or ed25519 key file, or a
-passphrase-protected key file is not used; the message says so. For an RSA key
-it tells you to convert it with `ssh-keygen -p -m PEM`; for other key types it
-tells you to load the key into an agent. Keys held by Pageant or the OpenSSH
-agent can be RSA, ECDSA or ed25519. RSA keys from an agent are signed with
-`rsa-sha2-512` only, so a server that accepts only `ssh-rsa` or `rsa-sha2-256`
-is refused. A connection that drops before login is retried; gwz 1.0.17 made
-one attempt. Not tested: a hardware security key, and certificates held by
-Pageant or by the OpenSSH agent. An RSA certificate from an agent does not
-authenticate.
+On Windows GWZ has the same limits as gwz 1.0.17. Only **RSA host keys** are used:
+a `known_hosts` entry that is `ecdsa` or `ed25519`, with no RSA entry for the
+host, fails before connecting. The message names the cause and tells you to add an
+RSA entry with `ssh-keyscan -t rsa` (above).
 
-## Proxy and authentication
+Only an **unencrypted RSA key file in PEM format** is offered. A new-format RSA key
+(what `ssh-keygen -t rsa` writes today), an ECDSA or ed25519 key file, and a
+passphrase-protected key file are not used, and the message says so. Your options:
 
-On Windows, the machine WinHTTP proxy controls GWZ and nothing else does.
+- **Load the key into an agent** (best; it works for RSA, ECDSA and ed25519 keys,
+  protected or not).
+- For an RSA key, convert **a copy** to PEM. `ssh-keygen -p -m PEM` rewrites the
+  file it is given in place, so never run it on your only copy:
+
+  ```
+  # PowerShell
+  Copy-Item "$HOME\.ssh\id_rsa" "$HOME\.ssh\id_rsa_pem"
+  ssh-keygen -p -m PEM -f "$HOME\.ssh\id_rsa_pem"
+  # Git Bash
+  cp ~/.ssh/id_rsa ~/.ssh/id_rsa_pem && ssh-keygen -p -m PEM -f ~/.ssh/id_rsa_pem
+  ```
+
+  Press Enter for the new passphrase. That **removes the passphrase**, so the copy
+  is unprotected: store it with care and delete it when you no longer need it.
+  Your original is unchanged. To turn a file back into the new format, run
+  `ssh-keygen -p -o -f <file>` (tested with OpenSSH 10.3 on macOS, not with
+  Windows' OpenSSH).
+
+Keys held by Pageant or the OpenSSH agent can be RSA, ECDSA or ed25519. RSA keys
+from an agent are signed with `rsa-sha2-512` only, so a server that accepts only
+`ssh-rsa` or `rsa-sha2-256` is refused, with a message that names the signature
+type the server lacks; use an ECDSA or ed25519 key, or have the server accept
+`rsa-sha2-512`. An RSA **certificate** held by an agent does not authenticate; the
+message says so. Not tested: a hardware security key, and certificates held by
+Pageant or by the OpenSSH agent itself (an ed25519 certificate served by a test
+agent on a pipe did authenticate).
+A connection that drops before login is retried; gwz 1.0.17 made one attempt.
+
+## Proxy
+
+**What is supported:** one static proxy set in the machine's WinHTTP settings, and
+a proxy that does not ask for a login. Nothing else controls GWZ's proxy use.
+Check the setting with `netsh winhttp show proxy`. If it says "Direct access", GWZ
+connects directly, and when a direct connection fails the error says that WinHTTP
+has no proxy. Your administrator can set it with `netsh winhttp set proxy
+proxy-server="host:port" bypass-list="..."` or, to copy your Internet Options
+settings, `netsh winhttp import proxy source=ie`. A proxy that exists only as a PAC
+script (automatic configuration) is not supported; restate it as a static proxy.
+Whether the native transport follows a PAC script was not tested here, so do not
+assume it does.
+
 `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` and `NO_PROXY` (and their lowercase
 forms) and git's `http.proxy` setting are ignored, whether or not a machine proxy
 is set. This is the reverse of macOS and Linux. `NO_PROXY` does not stop a machine
-proxy, and an empty `http.proxy` does not turn it off. Browser proxy and PAC
-settings are separate. Your administrator can inspect the machine configuration
-with `netsh winhttp show proxy`.
+proxy, and an empty `http.proxy` does not turn it off.
 
-GWZ uses these machine proxy forms: `host:port` (or `host` alone, which uses the
-default port), optionally `http://host:port`, or a list such as
-`http=host:port;https=host:port`. In a list, the entry for the connection's
-scheme is used and a list without one means no proxy. A proxy host that does not
-resolve fails the operation; GWZ does not then go direct. It refuses, naming the
-machine proxy setting, any form it cannot interpret: more than one bare entry,
-a bad port, a user name, a path, PAC or automatic settings, or a proxy address
-that is not `http://`. It never goes direct because it could not read a setting.
-Do not reset an administrator's proxy merely to bypass a GWZ error.
+GWZ accepts these machine proxy forms: `host:port` (or `host` alone, which uses
+the default port), `http://host:port`, or a list such as
+`http=host:port;https=host:port`. An `https://` repository goes through the proxy
+by asking it to open a tunnel to the server (a CONNECT request); this was measured
+with gwz 1.0.17 against one public HTTPS server. In a list, the entry for the
+connection's scheme is used (a bare entry beside a list applies to https, and an
+explicit `https=` entry beats it). **If the setting is a list with no entry for
+`https` (for example `http=proxy:8080` or `socks=proxy:1080` only), GWZ refuses
+and names the machine proxy setting.** gwz 1.0.17 connects directly in that case
+and ignores the proxy. A proxy host that does not resolve fails the operation;
+GWZ does not then go direct. GWZ also refuses, naming the setting, any form it
+cannot interpret: more than one bare entry, a bad port, a user name, a path, PAC or
+automatic settings, or a proxy address that is not `http://`. It never goes
+direct because it could not read a setting. Do not reset an administrator's proxy
+merely to bypass a GWZ error.
 
-These go direct even with no bypass list: `localhost` in any case, any
-`127.x.x.x` address, `[::1]` and this computer's own address. `localhost.` with a
-trailing dot does not, and the `<-loopback>` token has no effect. A bypass list
-may be separated by semicolons, spaces or commas. An entry may be a name, a
-name with `*` wildcards (which match across dots), `<local>` (names without a
-dot), `host:port` (only that port) or a name with a leading `http://`. Names
-compare without regard to case, and a trailing dot must match exactly.
+These go direct even with no bypass list: `localhost` in any case, any `127.x.x.x`
+address, `[::1]`, and this computer's own address when it is written as an IP
+address (GWZ lists the computer's addresses once, when the operation starts, and
+never looks a name up to decide this). `localhost.` with a trailing dot does not,
+and the `<-loopback>` token has no effect. A bypass list may be separated by
+semicolons, spaces or commas. An entry may be a name, a name with `*` wildcards
+(which match across dots), `<local>` (names without a dot), `host:port` (only
+that port) or a name with a leading `http://` or `https://` (for an `https://`
+repository, `https://host` matches and `http://host` does not). Names compare
+without regard to case, and a trailing dot must match exactly.
 
-OPEN ITEM (review package R13): these proxy rules were measured with plain-HTTP
-addresses. Reaching an HTTPS repository through a machine proxy, and the
-`https=` list entry, have not been tested end to end, so treat them as
-unverified until the proxy product tests run. OPEN ITEM (review package R14):
-which addresses count as this computer's own is measured for one address only.
+If a proxy answers 407 and asks for credentials, GWZ refuses and says that proxy
+sign-in is not supported, naming the machine proxy setting. The message does not
+point to the native transport, because the native transport refuses a 407 the same
+way (measured with gwz 1.0.17). GWZ sends no credentials to the proxy: not your
+Windows identity, not a helper's, and an origin credential is never sent to the
+proxy.
 
-If a proxy answers 407 and asks for credentials, GWZ refuses and says so,
-naming the machine proxy setting and the native transport option. It sends no
-credentials to the proxy: not your Windows identity, not a helper's, and an
-origin credential is never sent to the proxy. Proxy sign-in is not supported.
+## Web (HTTPS) authentication
 
-GWZ starts HTTPS discovery without credentials. If the server offers
-Negotiate or NTLM, alone or beside Basic or Digest, GWZ uses your Windows logon
-identity and does not ask your configured git helper. If Basic is the only
-scheme the server offers that GWZ can use, your configured git helper is asked;
-a GitHub token held by a helper is sent this way. GWZ never answers Digest: a
-server that offers only Digest is refused at once, and Digest is ignored when
-the server offers another scheme. If the server rejects your logon identity, the
-operation stops with an error naming the scheme; GWZ does not try it again or
-turn to a helper credential. A helper timeout or cancellation ends the
-operation. A server that challenges the upload step of a fetch is refused with a
-message, and GWZ does not send the data again.
+GWZ starts discovery without credentials. What answers a login challenge depends
+on what the server offers:
 
-Your configured helper can show its sign-in window. Git does not prompt on
-the terminal, and the helper interaction has a 120-second bound. At most eight
-helper lookups run at once; a queued lookup can exhaust its allocation budget
-before a window opens. Sign in with the helper once, then retry. A missing git
-error names git and the native transport setting as possible next actions.
+- If the server offers **Negotiate or NTLM** (Windows sign-in), alone or beside
+  Basic or Digest, GWZ uses **your Windows account** and does not ask your
+  configured git helper.
+- If **Basic** is the only scheme the server offers that GWZ can use, your
+  configured git helper is asked once and what it returns is sent. A GitHub token
+  held by a helper is sent this way.
+- GWZ **never answers Digest**. A server that offers only Digest is refused at
+  once, with a message that says Digest is not supported by either transport and
+  suggests using SSH or having the server offer another scheme; the native
+  transport does not help. If the server offers Digest and another scheme, Digest
+  is ignored.
+- If the server **rejects your Windows account**, the operation stops with an error
+  naming the scheme. GWZ does not try it again and does not turn to a helper
+  credential, and no setting changes this in 1.1.0. (Selecting the native
+  transport behaves differently only in that, with a server that offers just NTLM
+  or Negotiate with Basic, it repeats the attempt and asks your helper each time;
+  no helper sign-in was ever seen to succeed that way, so this guide does not
+  promise it helps.)
+- If the server offers only Basic and no helper is configured, GWZ says so:
 
-**Windows logon credentials can be offered to any HTTPS host that challenges
-with Negotiate or NTLM, including an Internet host.** NTLM exposes a response
-that a hostile server can try to crack or relay. This matches gwz 1.0.17's
-offer and is an explicit product decision. The native transport has the same
-hazard. Review the remote URL and any discovery redirect before using it.
-GWZ validates the HTTPS certificate and stops a redirect during a Windows
-authentication exchange; it does not forward that exchange to a new location.
+  ```
+  The server asks for a user name and password (Basic) and no git credential helper
+  is configured. Configure one (git config --global credential.helper <name>) and retry.
+  ```
+
+  If the server offers a scheme GWZ does not support at all, the message names the
+  offered scheme and the native transport option. On macOS and Linux the Windows
+  logon identity is unavailable, so a Negotiate-only server is refused there the
+  same way.
+- If a helper times out or is cancelled, the operation ends. If the server
+  challenges the upload step of a fetch (after the first request succeeded), GWZ
+  refuses with a message and does not send the data again.
+
+Your configured helper can show its sign-in window. Git does not prompt on the
+terminal. At most eight helper lookups run at once, and a lookup that queues too
+long fails before a window opens, with:
+
+```
+No credential helper could start in the <m> seconds available to wait for resources.
+Other helpers may be busy, waiting for sign-ins or stuck. Finish any open sign-in,
+or sign in once with `git ls-remote` and this member's URL, then retry.
+```
+
+Warm up the credential before a large operation: run `git ls-remote <url>` for one
+repository, or fetch one repository first, and sign in; the others reuse it. Whether
+`--max-per-host 1` avoids the queue was not measured. A sign-in window that stays
+unanswered ends at the helper's fixed interaction limit, and the error names the
+number of seconds. A missing git is reported with the native transport setting as
+a possible next action.
+
+**Warning: Windows logon credentials can be offered to any host that challenges
+with Negotiate or NTLM, including an Internet host, over `https://` (and over
+`http://` through the native transport).** What the host receives is a NetNTLMv2
+response: an attacker who gets it can try to crack it offline, and can relay it to
+services that do not require Extended Protection or signing. Administrators can
+restrict outgoing NTLM by Windows policy. This matches gwz 1.0.17's offer and is
+an explicit product decision. **No setting turns off offering your Windows
+credentials in 1.1.0, and the native transport offers them too.** Review the remote
+URL and any redirect before using it. GWZ validates the HTTPS certificate and ends
+the operation if a redirect arrives during a Windows authentication exchange; it
+does not forward that exchange to a new location.
+
+**Which certificates are trusted.** GWZ trusts the Windows certificate store (the
+current user's and the machine's) **and also the certificates in the files named by
+the `GIT_SSL_CAINFO` and `SSL_CERT_FILE` environment variables.** gwz 1.0.17 on
+Windows ignores both variables. A CA file named in your environment is trusted, so
+a corporate interception CA placed there will be trusted too: check what those
+variables point to.
+
+### Redirects
 
 GWZ follows a redirect on its first request, whether the new location is a full
-address or only a path, and whether it is another host or the same one. It never
-sends the first address's credentials to a different address; a different
-address that asks for credentials is answered as if you had gone there
-directly. gwz 1.0.17 on Windows follows only a full-address redirect, and only
-over HTTPS.
+address or only a path, and whether it is another host or the same one: at most
+five redirects (301, 302, 303, 307 or 308), never from `https://` to `http://`, and
+none after a Windows authentication exchange has started. With `--verbose`, GWZ
+prints each redirect it follows. A different **origin** (a different scheme, host
+or port, so a changed host name counts even if both names reach the same server)
+gets none of the first origin's credentials; a different origin that asks for
+credentials is answered as if you had gone there directly. gwz 1.0.17 on Windows
+follows a full-address redirect over HTTPS and never a path-only one.
 
 Kerberos is not tested; the Windows sign-in tests used NTLM. A server that
 requires channel binding (Extended Protection) was tested only against this
 computer.
 
-On macOS and Linux, this Windows logon identity is unavailable. Unsupported
-schemes name the offered scheme and the native transport option. The final
-migration notes will give the measured gwz 1.0.17 outcome on each platform.
+## What changed from gwz 1.0.17 on Windows
+
+| # | Change | gwz 1.0.17 | The new transport |
+|---|---|---|---|
+| 1 | Non-ASCII folder and key names | fails | works |
+| 2 | Digest | Digest only: with a git helper configured, 15 retries then an error; with none, fails at once. Digest beside Basic fails the same way | Digest only fails at once; Digest beside another scheme is ignored |
+| 3 | Server rejects your Windows account | retried up to 15 times; may ask a helper each time | one error naming the scheme; no retry; no helper fallback; no setting changes this |
+| 4 | Redirects | full-address redirects followed over HTTPS only; path-only never; none over `http://` | path-only redirects are followed too (within five); credentials never cross to another origin |
+| 5 | Server challenges the upload step | fails (empty resend, or "request must be resent") | refused with a plain message; data never resent |
+| 6 | `~/` in `--identity` | uses `USERPROFILE` | uses the same home as `known_hosts` |
+| 7 | SSH drop before login | one attempt | retried |
+| 8 | Error messages | opaque or shared text | text that names the cause and the fix |
+| 9 | Machine proxy with no entry for `https` | connects directly | refused, naming the machine proxy setting |
+| 10 | Plain `http://` remote | carried like any remote | carried by the native transport, with a warning |
+| 11 | Trusted certificates | the Windows store only | the Windows store plus the files named by `GIT_SSL_CAINFO` and `SSL_CERT_FILE` |
+| 12 | Machine proxy with more than one bare entry | uses the first | refused as ambiguous, naming the machine proxy setting |
+| 13 | A proxy answering 407 | opaque error | one plain message: proxy sign-in is not supported |
+
+**Unchanged on purpose:** environment and git proxies are ignored on Windows; your
+Windows account can be offered to any host that asks; only RSA host keys and
+unencrypted RSA PEM key files; RSA agent signatures at `rsa-sha2-512` only; a
+Pageant owned by another user is not refused; the agent pipe's creator is not
+checked.
+
+**Not promised:** Kerberos; a hardware security key; certificates held in Pageant
+or in the OpenSSH agent; Pageant and the OpenSSH agent together; SSH host keys
+other than RSA; key files other than unencrypted RSA PEM; proxy sign-in; PAC
+scripts; a server that requires channel binding on a remote machine; the OpenSSH
+agent beyond RSA, ECDSA and ed25519 keys through its default pipe; filenames on
+macOS and Linux (not audited).
