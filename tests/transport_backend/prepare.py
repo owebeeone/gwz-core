@@ -131,6 +131,8 @@ dev_extra = '\n'.join([
     'pyo3 = { version = "=0.28.3", features = ["auto-initialize"] }',
     'rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }',
     'tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring", "tls12"] }',
+    # The test-controlled SSH server (src/git/endpoint/ssh_controlled_server): pure Rust over the same ring.
+    'russh = { version = "=0.63.3", default-features = false, features = ["ring", "rsa"] }',
 ])
 manifest = replace_once(manifest, '[dev-dependencies]\n', '[dev-dependencies]\n' + dev_extra + '\n')
 # openssl-probe 0.1 is the crate git2 runs at its start; the transport resolves

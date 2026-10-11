@@ -145,6 +145,18 @@ def test_tls_test_servers_are_rustls_dev_dependencies_and_product_tls_stays_nati
     assert "rustls" not in (ROOT / "Cargo.toml").read_text()
 
 
+def test_ssh_test_server_is_a_russh_dev_dependency_over_ring_and_the_product_has_none(tmp_path):
+    # The controlled SSH server (src/git/endpoint/ssh_controlled_server): test-only, pure Rust over the same ring as the
+    # TLS servers, so no C toolchain beyond ring's own; the product's manifest and its normal dependencies gain nothing.
+    manifest = _manifest(prepare(tmp_path / "backend"))
+    russh = manifest["dev-dependencies"]["russh"]
+    assert russh["version"].startswith("=")
+    assert russh["default-features"] is False
+    assert set(russh["features"]) == {"ring", "rsa"}
+    assert "russh" not in manifest["dependencies"]
+    assert "russh" not in (ROOT / "Cargo.toml").read_text()
+
+
 def test_prepared_path_dependencies_resolve_from_a_fresh_destination(tmp_path):
     destination = prepare(tmp_path / "backend")
     workspace = {destination}

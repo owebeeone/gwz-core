@@ -89,33 +89,18 @@ impl SshdFixture {
 
     fn build_with(debug: bool, startups: &str, extra: &str, forced: bool) -> Self {
         let programs = fixture_host::programs();
-        let temp = TempDir::new().unwrap();
-        let host_key = temp.path().join("host_ed25519");
-        let client_key = temp.path().join("client_ed25519");
-        run_fixture_keygen(&programs, &host_key);
-        run_fixture_keygen(&programs, &client_key);
-        let authorized = temp.path().join("authorized_keys");
-        fs::copy(client_key.with_extension("pub"), &authorized).unwrap();
-        let marker = temp.path().join("injection-marker");
-        let known_hosts = temp.path().join("known_hosts");
-        let repository = temp.path().join(fixture_host::repository_name(&marker));
-        run(Command::new("git")
-            .args(["init", "--bare", "--initial-branch=main", "--"])
-            .arg(&repository));
-        let url_repository = fixture_host::url_repository(temp.path(), &repository);
-        let port = TcpListener::bind(("127.0.0.1", 0))
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let host_public = fs::read_to_string(host_key.with_extension("pub")).unwrap();
-        fs::write(
-            &known_hosts,
-            fixture_host::known_hosts_line(&format!("[127.0.0.1]:{port}"), &host_public),
-        )
-        .unwrap();
+        let port = free_port();
+        let Layout {
+            temp,
+            host_key,
+            authorized,
+            marker,
+            known_hosts,
+            repository,
+            url_repository,
+            user,
+        } = Layout::new(port);
         let config = temp.path().join("sshd_config");
-        let user = fixture_host::login_name();
         let session = if forced {
             fixture_host::forced_session_directives(temp.path())
         } else {
@@ -244,33 +229,141 @@ impl SshdFixture {
         &self,
         port: u16,
     ) -> impl Fn() -> io::Result<SshConnection> + Send + Sync + 'static {
-        let (server_port, user, known_hosts) =
-            (self.port, self.user.clone(), self.known_hosts.clone());
-        let key = self.temp.path().join("client_ed25519");
-        move || {
-            let (mut connection, _) = handshaken(port, 5_000)?;
-            {
-                let session = connection.session();
-                let (host_key, _) = session
-                    .host_key()
-                    .ok_or_else(|| io::Error::other("sshd did not provide a host key"))?;
-                let host_key = host_key.to_owned();
-                let mut known = session.known_hosts()?;
-                known.read_file(&known_hosts, KnownHostFileKind::OpenSSH)?;
-                if !matches!(
-                    known.check_port("127.0.0.1", server_port, &host_key),
-                    CheckResult::Match
-                ) {
-                    return Err(io::Error::other("temporary host key did not match"));
-                }
-                session.userauth_pubkey_file(&user, None, &key, None)?;
-                if !session.authenticated() {
-                    return Err(io::Error::other("temporary SSH authentication failed"));
-                }
+        dialer(
+            port,
+            self.port,
+            self.user.clone(),
+            self.known_hosts.clone(),
+            self.temp.path().join("client_ed25519"),
+        )
+    }
+}
+
+/// An authenticated, nonblocking session through `port`, which may be a proxy in front of the server that listens
+/// on `server_port`: the host key checked is that server's own, from `known_hosts`, and the client authenticates
+/// as `user` with the key file `key`.
+pub(crate) fn dialer(
+    port: u16,
+    server_port: u16,
+    user: String,
+    known_hosts: PathBuf,
+    key: PathBuf,
+) -> impl Fn() -> io::Result<SshConnection> + Send + Sync + 'static {
+    move || {
+        let (mut connection, _) = handshaken(port, 5_000)?;
+        {
+            let session = connection.session();
+            let (host_key, _) = session
+                .host_key()
+                .ok_or_else(|| io::Error::other("sshd did not provide a host key"))?;
+            let host_key = host_key.to_owned();
+            let mut known = session.known_hosts()?;
+            known.read_file(&known_hosts, KnownHostFileKind::OpenSSH)?;
+            if !matches!(
+                known.check_port("127.0.0.1", server_port, &host_key),
+                CheckResult::Match
+            ) {
+                return Err(io::Error::other("temporary host key did not match"));
             }
-            connection.set_nonblocking()?;
-            Ok(connection)
+            session.userauth_pubkey_file(&user, None, &key, None)?;
+            if !session.authenticated() {
+                return Err(io::Error::other("temporary SSH authentication failed"));
+            }
         }
+        connection.set_nonblocking()?;
+        Ok(connection)
+    }
+}
+
+/// A port nothing listens on at the moment: bound and released, so a server can take it.
+fn free_port() -> u16 {
+    TcpListener::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// The directory every fixture server stands in, whichever server it is (the system's `sshd`, or the test-controlled
+/// one in `ssh_controlled_server`): its host key and the client key it trusts, a bare repository whose name carries
+/// a shell-injection marker, and a `known_hosts` that trusts only the host key at `port`.
+pub(crate) struct Layout {
+    pub(crate) temp: TempDir,
+    pub(crate) host_key: PathBuf,
+    pub(crate) authorized: PathBuf,
+    pub(crate) marker: PathBuf,
+    pub(crate) known_hosts: PathBuf,
+    pub(crate) repository: PathBuf,
+    /// The path a URL names the repository by (see [`SshdFixture::url_repository`]).
+    pub(crate) url_repository: PathBuf,
+    pub(crate) user: String,
+}
+
+impl Layout {
+    pub(crate) fn new(port: u16) -> Self {
+        let programs = fixture_host::programs();
+        let temp = TempDir::new().unwrap();
+        let host_key = temp.path().join("host_ed25519");
+        let client_key = temp.path().join("client_ed25519");
+        run_fixture_keygen(&programs, &host_key);
+        run_fixture_keygen(&programs, &client_key);
+        let authorized = temp.path().join("authorized_keys");
+        fs::copy(client_key.with_extension("pub"), &authorized).unwrap();
+        let marker = temp.path().join("injection-marker");
+        let known_hosts = temp.path().join("known_hosts");
+        let repository = temp.path().join(fixture_host::repository_name(&marker));
+        run(Command::new("git")
+            .args(["init", "--bare", "--initial-branch=main", "--"])
+            .arg(&repository));
+        let url_repository = fixture_host::url_repository(temp.path(), &repository);
+        let host_public = fs::read_to_string(host_key.with_extension("pub")).unwrap();
+        fs::write(
+            &known_hosts,
+            fixture_host::known_hosts_line(&format!("[127.0.0.1]:{port}"), &host_public),
+        )
+        .unwrap();
+        Self {
+            temp,
+            host_key,
+            authorized,
+            marker,
+            known_hosts,
+            repository,
+            url_repository,
+            user: fixture_host::login_name(),
+        }
+    }
+}
+
+/// What a test needs to reach a fixture server as the transport's client does: where it listens, who logs in, what
+/// the client trusts and the key it presents, and the repository it serves.
+pub(crate) trait Reach {
+    fn port(&self) -> u16;
+    fn user(&self) -> &str;
+    fn known_hosts(&self) -> &Path;
+    fn client_key(&self) -> PathBuf;
+    fn repository(&self) -> &Path;
+}
+
+impl Reach for SshdFixture {
+    fn port(&self) -> u16 {
+        self.port
+    }
+
+    fn user(&self) -> &str {
+        &self.user
+    }
+
+    fn known_hosts(&self) -> &Path {
+        &self.known_hosts
+    }
+
+    fn client_key(&self) -> PathBuf {
+        self.temp.path().join("client_ed25519")
+    }
+
+    fn repository(&self) -> &Path {
+        &self.repository
     }
 }
 

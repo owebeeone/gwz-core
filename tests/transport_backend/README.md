@@ -45,6 +45,16 @@ or a POSIX shell, and Git and a POSIX `sh` (`GWZ_TEST_SH`, or `sh.exe` on `PATH`
 test's `PATH`, as Git for Windows provides. Every process the server starts is in a Job Object
 that the test owns and closes.
 
+The stuck-close rows (`ssh_tests::background_close`, `ssh_tests::channel`) need a channel whose output ends while the
+server's session process lives, which a Windows `sshd.exe` 9.5p2 never does (it sends EOF when the process exits). They
+run against a small SSH server a test controls instead, on every platform: `src/git/endpoint/ssh_controlled_server`,
+test code over [russh](https://crates.io/crates/russh), a dev-dependency that `prepare.py` adds to the candidate manifest
+(`default-features = false`, features `ring` and `rsa`, so it shares `ring` with the TLS servers and needs no C
+toolchain). It serves the fixture's host key, public-key authentication for the fixture's one client key, and exec
+requests for `git-upload-pack` and `git-receive-pack`, which it runs with Git; its `Ending` says whether the channel then
+closes as `sshd`'s does or sends the EOF and nothing more. russh is Apache-2.0 licensed, and nothing of it is compiled
+into a product build or linked into a binary the package ships.
+
 Stock `sshd` checks only system passwords, which no test may send, so the
 URL-password tests (TR2.18) run `password_sshd.py` instead: a loopback SSH
 server on Python's standard library alone that accepts one fixed test password
