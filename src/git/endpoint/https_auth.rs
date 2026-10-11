@@ -130,14 +130,18 @@ mod runner;
 pub(crate) use owner::AuthOwner;
 use owner::HelperJob;
 use process_tree::{HelperChild, ProcessTree};
-// The rest of the helper stack is Unix-only until step 4.3 (discovery, the configuration view, file reads) and step
-// 4.4 (admission) bring it to Windows.
+// Executable discovery, the configuration view, the file reads behind it and the lookup that drives them (step
+// 4.3) compile on both platforms. What admits HTTPS to the lookup on Windows is step 4.4's; SSH's password route
+// (step 4.5) uses `lookup_setup`.
+mod executable;
+mod file_worker;
+mod lookup;
+mod view;
 cfg_if::cfg_if! { if #[cfg(unix)] {
-    mod executable;
-    mod lookup;
-    mod view;
-    mod file_worker;
     pub(crate) use lookup::{lookup_until, lookup_setup, LookupAdmission};
+    use owner::ActiveGuard;
+} else {
+    pub(crate) use lookup::{lookup_setup, LookupAdmission};
     use owner::ActiveGuard;
 } }
 cfg_if::cfg_if! {

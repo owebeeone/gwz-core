@@ -1,5 +1,6 @@
 //! Bounded credential subprocess interaction.
 use super::*;
+use crate::git::endpoint::https_destination::Destination;
 
 pub(crate) struct LookupAdmission {
     pub(crate) until: Instant,

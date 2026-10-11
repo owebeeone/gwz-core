@@ -1,11 +1,8 @@
 //! Bounded regular-file reads retain their lookup admissions through completion.
 use super::*;
+use crate::git::regular_file;
 use owner::PendingWorker;
-use std::{
-    io::Read,
-    os::unix::{ffi::OsStrExt, fs::OpenOptionsExt},
-    path::Path,
-};
+use std::io::Read;
 
 struct Worker<'a> {
     pending: Option<PendingWorker>,
@@ -44,26 +41,16 @@ pub(super) async fn read(
             Ok(())
         };
         check()?;
-        let path = Path::new(OsStr::from_bytes(&path.0));
+        let path = super::view::paths::path(&path.0)?;
         if !path.is_absolute() {
             return Err(AuthError::ConfigurationRefused);
         }
-        let mut file = match std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NONBLOCK)
-            .open(path)
-        {
+        // A FIFO, a device or a pipe is refused by what it is, and opening it never waits.
+        let mut file = match regular_file::open(path) {
             Ok(file) => file,
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(SecretBuffer(Vec::new())),
             Err(_) => return Err(AuthError::ConfigurationRefused),
         };
-        if !file
-            .metadata()
-            .map_err(|_| AuthError::ConfigurationRefused)?
-            .is_file()
-        {
-            return Err(AuthError::ConfigurationRefused);
-        }
         let mut bytes = SecretBuffer(vec![0; super::view::SOURCE_LIMIT + 1]);
         let mut used = 0;
         loop {

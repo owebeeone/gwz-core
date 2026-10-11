@@ -70,7 +70,7 @@ fn names_os(left: &OsStr, right: &OsStr) -> bool {
 }
 
 /// Whether the environment variable `key` is `name`.
-pub(super) fn names(key: &OsStr, name: &str) -> bool {
+pub(in crate::git::endpoint::https_auth) fn names(key: &OsStr, name: &str) -> bool {
     names_pair(key, OsStr::new(name))
 }
 

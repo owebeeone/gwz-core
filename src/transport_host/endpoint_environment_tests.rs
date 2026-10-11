@@ -71,30 +71,6 @@ cfg_if::cfg_if! {
         fn expected_agent(socket: &PathBuf) -> Option<PathBuf> {
             Some(socket.clone())
         }
-
-        // TR1.6 §3.2/configuration-view amendment: supervised Git receives the
-        // captured snapshot; helper selection is performed in its controlled view.
-        fn check_configured_authentication(
-            auth: Option<crate::git::endpoint::https_auth::Config>,
-            ca: &PathBuf,
-            home: &PathBuf,
-            agent: &PathBuf,
-        ) {
-            let auth = auth.expect("configured credential authentication");
-            assert_eq!(auth.executable, PathBuf::from("git"));
-            let mut entries = auth.environment;
-            entries.sort();
-            assert_eq!(
-                entries,
-                [
-                    ("GIT_SSL_CAINFO".into(), ca.clone().into_os_string()),
-                    ("HOME".into(), home.clone().into_os_string()),
-                    ("HTTPS_PROXY".into(), "http://proxy.example:3128".into()),
-                    ("NO_PROXY".into(), "internal.example, .corp.example".into()),
-                    ("SSH_AUTH_SOCK".into(), agent.clone().into()),
-                ]
-            );
-        }
     } else {
         /// Windows takes its proxy from the machine, not from the environment (steps 4.6 and 4.7 capture it).
         fn check_proxy(tls: &crate::git::endpoint::https_connection::Config) {
@@ -106,17 +82,32 @@ cfg_if::cfg_if! {
         fn expected_agent(_socket: &PathBuf) -> Option<PathBuf> {
             None
         }
-
-        /// Windows configures no credential helper until the helper runner (WH2, steps 4.3 and 4.4).
-        fn check_configured_authentication(
-            auth: Option<crate::git::endpoint::https_auth::Config>,
-            _ca: &PathBuf,
-            _home: &PathBuf,
-            _agent: &PathBuf,
-        ) {
-            assert!(auth.is_none(), "a Windows runtime configures no credential helper yet");
-        }
     }
+}
+
+// TR1.6 §3.2/configuration-view amendment: supervised Git receives the captured snapshot; helper selection is
+// performed in its controlled view. On Windows too (plan step 4.3): the helper is `git`, which the lookup finds on
+// the snapshot's `PATH`, and its environment is the snapshot.
+fn check_configured_authentication(
+    auth: Option<crate::git::endpoint::https_auth::Config>,
+    ca: &PathBuf,
+    home: &PathBuf,
+    agent: &PathBuf,
+) {
+    let auth = auth.expect("configured credential authentication");
+    assert_eq!(auth.executable, PathBuf::from("git"));
+    let mut entries = auth.environment;
+    entries.sort();
+    assert_eq!(
+        entries,
+        [
+            ("GIT_SSL_CAINFO".into(), ca.clone().into_os_string()),
+            ("HOME".into(), home.clone().into_os_string()),
+            ("HTTPS_PROXY".into(), "http://proxy.example:3128".into()),
+            ("NO_PROXY".into(), "internal.example, .corp.example".into()),
+            ("SSH_AUTH_SOCK".into(), agent.clone().into()),
+        ]
+    );
 }
 
 // The snapshot's agent is an `ssh-agent` on a Unix socket, which Windows has no form of until the agent sources of

@@ -101,8 +101,8 @@ cfg_if::cfg_if! {
     }
 }
 
-// Step 4.3: the helper script warm-up.
-cfg_if::cfg_if! { if #[cfg(all(test, unix))] { pub(crate) mod helper_script; } }
+// Step 4.3: the fixture scripts of the helper tests (Unix runs them; Windows writes the script Git's shell runs).
+cfg_if::cfg_if! { if #[cfg(test)] { pub(crate) mod helper_script; } }
 
 // The SSH test servers run on every platform: Windows' own `sshd.exe` stands in for `/usr/sbin/sshd` (step 1.1).
 cfg_if::cfg_if! {
