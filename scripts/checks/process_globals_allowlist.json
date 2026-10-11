@@ -9,6 +9,8 @@
      "reason": "Spawns serial supervised native Git root discovery, stdin explicit-file parsing, controlled-origin verification and credential fill under one clock (accepted configuration-view amendment); env_clear plus the exact filtered/controlled snapshot, no repository command or network transport."},
     {"path": "src/git/endpoint/ssh_worker/endpoint.rs", "kind": "static", "name": "NEXT_WORKER", "disposition": "debt", "owner": "CS7.1, the candidate crates' extraction (IdSource)",
      "reason": "Process-wide endpoint ID counter (checked increment): global mutable state, never permanent (GwzCoreSessionCrateMap §1). It takes IDs from the host context's IdSource (crate map §4)."},
+    {"path": "src/git/gitbackend/native_commit/environment.rs", "kind": "env", "name": "env::vars_os", "disposition": "debt",
+     "reason": "GitEnvironment::process() captures the GIT_* variables, EMAIL and the Windows program directories once, when a Git2Backend is built, for the native commit and tag route decision (2026-10-12). The decision itself reads only that snapshot; the driver should pass the snapshot in at session open, as for the other environment reads (RemPlan B5)."},
     {"path": "src/git/gitbackend/refs.rs", "kind": "process", "name": "Command::new(\"git\")", "count": 2, "disposition": "debt",
      "reason": "git tag and git tag -d each inherits the live process environment; spawn it with env_clear() plus the session's snapshot (GwzCoreSessionDesign RemPlan-1, Safety P3-11)."},
     {"path": "src/git/gitbackend/repository.rs", "kind": "process", "name": "Command::new(\"git\")", "disposition": "debt",

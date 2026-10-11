@@ -288,14 +288,15 @@ pub(super) fn stage_paths_allowing_other_conflicts(
     Ok(GitStageResult { staged })
 }
 
-pub(super) fn commit(
+/// The Git CLI route of `commit`: run porcelain `git commit` so hooks, signing
+/// and committer configuration are honored. `native_commit` picks it when the
+/// route rule says libgit2 cannot reproduce Git exactly.
+pub(super) fn commit_cli(
     backend: &Git2Backend,
     path: &Path,
     message: &str,
     all: bool,
 ) -> ModelResult<GitCommitResult> {
-    // AD1 CLI fallback: run porcelain `git commit` so hooks / signing / committer
-    // config are honored (libgit2's commit honors none of them).
     let before = backend.head(path)?.commit;
     let mut command = std::process::Command::new("git");
     // The child's directory is explicit: it never inherits the host's.
