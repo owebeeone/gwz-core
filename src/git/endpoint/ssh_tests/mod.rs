@@ -56,6 +56,7 @@ cfg_if::cfg_if! {
     }
 }
 mod no_agent;
+mod password_helpers;
 mod placement_endpoint;
 mod platform_limits;
 mod pool_host;
@@ -72,4 +73,3 @@ mod selected_key;
 mod selected_pool;
 mod supervised;
 mod worker;
-cfg_if::cfg_if! { if #[cfg(unix)] { mod password_helpers; } }

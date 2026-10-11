@@ -459,6 +459,12 @@ impl Session {
                     .map_err(|_| unavailable("endpoint supervisor unavailable"))?,
             );
         }
+        // The helper configuration serves SSH's password route above. Until step 4.4 admits the configured-helper
+        // policies to HTTPS on Windows, the qualification boundary keeps the HTTPS endpoint from holding one.
+        // (The qualification switch exists only with the candidate on Windows, `lib.rs`.)
+        cfg_if::cfg_if! { if #[cfg(all(windows, gwz_windows_https_qualification))] {
+            let https = https.map(|(config, slots)| (HttpsEndpointConfig { auth: None, ..config }, slots));
+        } }
         if let Some((https, helper_slots)) = https {
             state.https = Some(super::https_endpoint::HttpsEndpoint::new_native(
                 https,

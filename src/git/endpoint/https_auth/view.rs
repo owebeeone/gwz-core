@@ -1,8 +1,9 @@
 //! Native Git parses each bounded source; core walks only unconditional includes.
 use super::*;
-use std::{os::unix::ffi::OsStrExt, path::Path};
+use std::path::Path;
 
 mod framing;
+pub(super) mod paths;
 use framing::{Entry, Root, discovery, entries, parameters};
 
 pub(super) const SOURCE_LIMIT: usize = 1024 * 1024;
@@ -64,7 +65,7 @@ pub(super) async fn prepare(runner: &runner::Runner<'_>) -> Result<SecretBuffer,
                 if bounds.entries > 4096 {
                     return Err(AuthError::ConfigurationRefused);
                 }
-                accept(runner, entry, b"/", 0, &mut bounds, &mut flattened).await?;
+                accept(runner, entry, paths::ROOT, 0, &mut bounds, &mut flattened).await?;
             }
         }
     }
@@ -101,10 +102,10 @@ fn walk<'a>(
         if depth > 10 || bounds.visits > 128 {
             return Err(AuthError::ConfigurationRefused);
         }
-        let anchor = Path::new(OsStr::from_bytes(&path.0))
+        let anchor = paths::path(&path.0)?
             .parent()
             .ok_or(AuthError::ConfigurationRefused)?;
-        let anchor = SecretBuffer(anchor.as_os_str().as_bytes().to_vec());
+        let anchor = SecretBuffer(paths::bytes(anchor)?.to_vec());
         let source = super::file_worker::read(runner, path).await?;
         bounds.charge(source.0.len())?;
         if source.0.is_empty() {
@@ -160,10 +161,10 @@ fn include_path(config: &Config, anchor: &[u8], value: &[u8]) -> Result<SecretBu
         let home = config
             .environment
             .iter()
-            .find(|(key, _)| key == "HOME")
-            .map(|(_, value)| value.as_os_str().as_bytes())
-            .ok_or(AuthError::ConfigurationRefused)?;
-        if home.is_empty() || !Path::new(OsStr::from_bytes(home)).is_absolute() {
+            .find(|(key, _)| runner::environment::names(key, "HOME"))
+            .map(|(_, value)| paths::value_bytes(value))
+            .ok_or(AuthError::ConfigurationRefused)??;
+        if home.is_empty() || !paths::path(home)?.is_absolute() {
             return Err(AuthError::ConfigurationRefused);
         }
         (home, rest)
@@ -176,4 +177,4 @@ fn include_path(config: &Config, anchor: &[u8], value: &[u8]) -> Result<SecretBu
     framing::absolute(base, value)
 }
 
-cfg_if::cfg_if! { if #[cfg(test)] { mod tests; } }
+cfg_if::cfg_if! { if #[cfg(test)] { mod path_tests; mod tests; } }

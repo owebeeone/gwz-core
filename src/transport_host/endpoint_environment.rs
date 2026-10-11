@@ -11,7 +11,8 @@
 //! a verified WinHTTP DIRECT snapshot captured on the original caller entry.
 //! Its SSH settings take `HOME` when it is absolute, as an interim until the
 //! Windows home resolver (plan step 3.1), and have no agent until Phase 3. It
-//! never derives a HOME or agent for HTTPS.
+//! never derives a HOME or agent for HTTPS. On both platforms the credential
+//! helper is `git` with the snapshot as its environment (plan step 4.3).
 
 use super::{EndpointSettings, HttpsEndpointConfig, apply_native_timeout, invalid};
 use crate::git::endpoint::{ca_bundle, https_connection};
@@ -19,14 +20,12 @@ cfg_if::cfg_if! { if #[cfg(not(any(windows, target_vendor = "apple")))] {
     use crate::git::endpoint::{https_tls, verify_paths};
 } }
 use super::SshSettings;
+use crate::git::endpoint::https_auth;
 use crate::model::ModelResult;
 use crate::session_host::EnvironmentSnapshot;
 use gwz_transport::pool;
 use std::ffi::OsString;
 use std::path::PathBuf;
-cfg_if::cfg_if! { if #[cfg(unix)] {
-    use crate::git::endpoint::https_auth;
-} }
 
 cfg_if::cfg_if! { if #[cfg(test)] {
 /// The SSH and HTTPS endpoint configuration of one runtime, from
@@ -73,15 +72,15 @@ pub(super) fn endpoint_config_native(
         pool,
         io_timeout_ms: timeout,
     };
-    let auth = {
-        cfg_if::cfg_if! { if #[cfg(unix)] {
-            // The Unix helper is spawned with env_clear and exactly this snapshot.
-            Some(https_auth::Config {
-                executable: PathBuf::from("git"),
-                environment: environment.entries().map(|(name, value)| (name.to_owned(), value.to_owned())).collect(),
-            })
-        } else { None } }
-    };
+    // The helper is spawned with exactly this snapshot as its environment, on either platform; Windows finds
+    // `git.exe` on the snapshot's own `PATH` (`https_auth::executable`).
+    let auth = Some(https_auth::Config {
+        executable: PathBuf::from("git"),
+        environment: environment
+            .entries()
+            .map(|(name, value)| (name.to_owned(), value.to_owned()))
+            .collect(),
+    });
     Ok((local, HttpsEndpointConfig { tls, auth }))
 }
 

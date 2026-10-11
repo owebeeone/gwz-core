@@ -27,7 +27,6 @@ impl Helpers {
             endpoint: Arc::new(Semaphore::new(8)),
         }
     }
-    cfg_if::cfg_if! { if #[cfg(unix)] {
     pub(crate) fn lookup(
         &self,
         key: &Key,
@@ -136,24 +135,6 @@ impl Helpers {
             },
         )
         .await
-    }
-    } else {
-        /// Configured password helpers need WH2's helper runner on Windows (Job Object owner, paths, framing;
-        /// plan steps 4.1 to 4.5), so a setup that reaches one is refused, naming it.
-        pub(crate) fn lookup(&self, _: &Key, _: &Opening, _: &Control) -> io::Result<https_auth::Secret> {
-            Err(io::Error::new(io::ErrorKind::Unsupported, WINDOWS_HELPERS_UNSUPPORTED))
-        }
-    } }
-}
-cfg_if::cfg_if! {
-    if #[cfg(not(unix))] {
-        const WINDOWS_HELPERS_UNSUPPORTED: &str =
-            "configured password helpers are not supported on Windows until WH2";
-    }
-}
-cfg_if::cfg_if! {
-    if #[cfg(all(test, windows))] {
-        mod windows_tests;
     }
 }
 cfg_if::cfg_if! {

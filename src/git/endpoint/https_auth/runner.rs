@@ -2,7 +2,7 @@
 use super::*;
 use std::path::Path;
 
-mod environment;
+pub(super) mod environment;
 
 pub(super) struct Runner<'a> {
     pub(super) owner: &'a AuthOwner,
@@ -265,6 +265,7 @@ cfg_if::cfg_if! {
         mod tests;
         cfg_if::cfg_if! {
             if #[cfg(windows)] {
+                mod ceiling_tests;
                 mod windows_tests;
             }
         }

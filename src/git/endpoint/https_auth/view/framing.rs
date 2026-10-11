@@ -1,7 +1,6 @@
 //! Git output framing and its process-lifetime parameter quoting, not config grammar.
 use super::super::*;
-use super::PREPARATION_LIMIT;
-use std::{os::unix::ffi::OsStrExt, path::Path};
+use super::{PREPARATION_LIMIT, paths};
 
 pub(super) struct Entry {
     pub(super) name: SecretBuffer,
@@ -68,7 +67,7 @@ pub(super) fn discovery(bytes: &[u8]) -> Result<Vec<Root>, AuthError> {
                 .as_ref()
                 .is_some_and(|(scope, origin)| scope.0 == triple[0] && origin.0 == triple[1]);
             if !duplicate_run {
-                roots.push(Root::File(absolute(b"/", path)?));
+                roots.push(Root::File(absolute(paths::ROOT, path)?));
                 last = Some((
                     SecretBuffer(triple[0].to_vec()),
                     SecretBuffer(triple[1].to_vec()),
@@ -81,12 +80,19 @@ pub(super) fn discovery(bytes: &[u8]) -> Result<Vec<Root>, AuthError> {
     Ok(roots)
 }
 
+/// The path that `value` names, joined to `anchor` when it is relative. An absolute `value` needs no anchor; a
+/// relative one needs an absolute anchor, and joins it with one separator. A value that cannot be a path (a NUL,
+/// or on Windows bytes that are not UTF-8, or a path that depends on the current drive or directory) is refused.
 pub(super) fn absolute(anchor: &[u8], value: &[u8]) -> Result<SecretBuffer, AuthError> {
-    if !Path::new(OsStr::from_bytes(anchor)).is_absolute() || value.contains(&0) {
+    if value.contains(&0) {
         return Err(AuthError::ConfigurationRefused);
     }
-    if Path::new(OsStr::from_bytes(value)).is_absolute() {
+    let relative = paths::path(value)?;
+    if relative.is_absolute() {
         return Ok(SecretBuffer(value.to_vec()));
+    }
+    if !paths::path(anchor)?.is_absolute() || !paths::is_plain_relative(relative) {
+        return Err(AuthError::ConfigurationRefused);
     }
     let size = anchor
         .len()
@@ -97,7 +103,7 @@ pub(super) fn absolute(anchor: &[u8], value: &[u8]) -> Result<SecretBuffer, Auth
     }
     let mut bytes = SecretBuffer(Vec::with_capacity(size));
     bytes.0.extend_from_slice(anchor);
-    if !anchor.ends_with(b"/") {
+    if !anchor.last().is_some_and(|last| paths::is_separator(*last)) {
         bytes.0.push(b'/');
     }
     bytes.0.extend_from_slice(value);
