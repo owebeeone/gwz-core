@@ -1,0 +1,7 @@
+{
+  "entries": [
+    {"path": "src/git/endpoint/agent_source.rs", "kind": "gate", "gate": "unix", "target": "arm: fn capture_platform", "state": "paired", "owner": ["3.2a", "3.2b"], "appendix": "new: step 3.2a's AgentSource, step 3.2b's capture; the Unix arm takes the socket path SSH_AUTH_SOCK names and opens it, the else arm applies the Windows rule (select) and has no socket path form (its agents are 3.3's pipe and 3.6's Pageant)"},
+    {"path": "src/git/endpoint/agent_source/tests.rs", "kind": "gate", "gate": "unix", "target": "arm: use std::io::{Read, Write}", "state": "paired", "owner": ["3.2a"], "appendix": "new: step 3.2a's rows; the Unix arm serves a socket, the else arm shows that Windows has no path form"},
+    {"path": "src/git/endpoint/agent_source/tests.rs", "kind": "os", "gate": "os::unix::net::UnixListener", "target": "", "state": "paired", "owner": ["3.2a"], "appendix": "new: step 3.2a's rows; the Unix arm serves a socket, the else arm shows that Windows has no path form"}
+  ]
+}

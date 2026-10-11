@@ -41,6 +41,9 @@ cfg_if::cfg_if! {
     }
 }
 
+// Step 3.2b: the agent step's refusals, worded from the runtime's agent source.
+cfg_if::cfg_if! { if #[cfg(test)] { mod agent_source_tests; } }
+
 // Step 5.1: the qualification refuses the remotes this module's one test clones (plain HTTP and the git protocol), as
 // the Windows qualification admits only SSH and HTTPS; retiring the switch ungates it.
 cfg_if::cfg_if! { if #[cfg(all(test, unix))] { mod https_compat_tests; } }
@@ -73,6 +76,7 @@ cfg_if::cfg_if! {
     }
 }
 
+use crate::git::endpoint::agent_source::AgentSource;
 use crate::git::endpoint::https_auth::HelperSlots;
 use crate::git::endpoint::ssh_local;
 use crate::{
@@ -96,8 +100,8 @@ pub fn validate_request_context(meta: &RequestMeta, operation_id: &str) -> Model
 }
 pub(crate) use request::{HttpsAttemptReceipt, HttpsOpenFailure, RequestContext};
 use session::Session;
+pub(crate) use session::{AgentFailure, SshLimitFailure, SshOpenFailure};
 pub use session::{Attachment, TransportPort};
-pub(crate) use session::{SshLimitFailure, SshOpenFailure};
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -118,7 +122,7 @@ cfg_if::cfg_if! {
     } else {
         /// The policies an SSH and HTTPS runtime offers in the Windows qualification: `Gh` and `WindowsConfigured`
         /// wait for the helper runner (WH2, plan steps 4.1 to 4.5); the SSH policies end in a refusal at setup
-        /// when they need an agent, which Windows has none of until Phase 3.
+        /// when they need an agent, which Windows cannot sign with until step 3.4 (its sources are chosen by 3.2b).
         fn ssh_and_https_policies() -> Vec<AuthPolicy> {
             vec![
                 AuthPolicy::SshAmbient,
@@ -130,21 +134,9 @@ cfg_if::cfg_if! {
     }
 }
 
-cfg_if::cfg_if! {
-    if #[cfg(unix)] {
-        /// The agent: the socket `SSH_AUTH_SOCK` names, when it is set.
-        fn agent_from_environment() -> Option<PathBuf> {
-            std::env::var_os("SSH_AUTH_SOCK")
-                .filter(|p| !p.is_empty())
-                .map(PathBuf::from)
-        }
-    } else {
-        /// Windows has no agent source until Phase 3 of the Windows parity plan: a setup that needs an agent is
-        /// refused as one with no agent is.
-        fn agent_from_environment() -> Option<PathBuf> {
-            None
-        }
-    }
+/// The agent the process environment's `SSH_AUTH_SOCK` selects (plan step 3.2b chooses on Windows).
+fn agent_from_environment() -> AgentSource {
+    AgentSource::capture(std::env::var_os("SSH_AUTH_SOCK").as_deref())
 }
 
 fn apply_native_timeout(pool: &mut pool::Config, native_ms: u64) {
@@ -155,7 +147,7 @@ fn apply_native_timeout(pool: &mut pool::Config, native_ms: u64) {
 #[derive(Clone)]
 pub struct SshEndpointConfig {
     home: PathBuf,
-    agent: Option<PathBuf>,
+    agent: AgentSource,
     pool: pool::Config,
     io_timeout_ms: u64,
 }
@@ -181,10 +173,15 @@ impl SshEndpointConfig {
             pub(crate) fn fixture(home: PathBuf, agent: Option<PathBuf>) -> Self {
                 Self {
                     home,
-                    agent,
+                    agent: AgentSource::from_path(agent),
                     pool: pool::Config::default(),
                     io_timeout_ms: 3000,
                 }
+            }
+            /// A runtime whose agent is `agent`, whatever form it has on the platform under test.
+            pub(crate) fn with_agent_source(mut self, agent: AgentSource) -> Self {
+                self.agent = agent;
+                self
             }
             pub(crate) fn with_io_timeout_ms(mut self, io_timeout_ms: u64) -> Self {
                 self.io_timeout_ms = io_timeout_ms;
@@ -208,7 +205,7 @@ pub(super) struct EndpointSettings {
 #[derive(Clone)]
 pub(super) struct SshSettings {
     home: PathBuf,
-    agent: Option<PathBuf>,
+    agent: AgentSource,
 }
 impl From<SshEndpointConfig> for EndpointSettings {
     fn from(config: SshEndpointConfig) -> Self {
@@ -293,7 +290,13 @@ impl TransportRuntime {
         let interaction_ms = local.pool.interaction_timeout_ms;
         // The driver and the endpoint share this process, so each SSH open's
         // URL extras go from one to the other through this (TR2.18).
-        let handoff = crate::git::endpoint::ssh_handoff::Handoff::default();
+        let handoff = crate::git::endpoint::ssh_handoff::Handoff::with_agent(
+            local
+                .ssh
+                .as_ref()
+                .map(|ssh| ssh.agent.clone())
+                .unwrap_or_default(),
+        );
         let (endpoint, peer_port) =
             Session::endpoint_with_https_native(local, https, handoff.clone(), native)?;
         let (driver, core_port) = Session::driver_with_ssh_budgets(

@@ -1,4 +1,5 @@
 use super::*;
+use crate::git::endpoint::agent_source::AgentSource;
 
 mod opening;
 mod pump;
@@ -153,15 +154,51 @@ impl std::fmt::Display for SshLimitFailure {
     }
 }
 impl std::error::Error for SshLimitFailure {}
+/// An SSH open whose agent step could not start (plan step 3.2b): `SSH_AUTH_SOCK` refused, or the selected agent not
+/// usable. Its display is the whole message, worded from the agent source the runtime chose.
+#[derive(Debug)]
+pub(crate) struct AgentFailure {
+    reason: String,
+}
+impl AgentFailure {
+    pub(crate) fn model_error(&self) -> crate::model::ModelError {
+        crate::model::ModelError::new(
+            crate::model::ErrorCode::UnsupportedOperation,
+            self.reason.clone(),
+        )
+    }
+}
+impl std::fmt::Display for AgentFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.reason)
+    }
+}
+impl std::error::Error for AgentFailure {}
+/// The words for an open that ended at its agent step before a key was offered, when `agent` has some. The endpoint
+/// marks that step by the method its facts name (`ssh_local`); the wire carries no text, so the source supplies it.
+fn agent_reason(failure: &Failure, agent: &AgentSource) -> Option<String> {
+    use gwz_transport::protocol::{AuthMethod, Effect, ErrorCode};
+    let facts = failure.facts.as_ref()?;
+    (failure.code == ErrorCode::Unavailable
+        && failure.effect == Effect::None
+        && facts.method == AuthMethod::SshAgent
+        && !facts.credential_offered)
+        .then(|| agent.unavailable_reason(failure.setup_cause))
+        .flatten()
+}
 /// The error for an open that failed with `failure` for `host` and `port`,
-/// under the stall bound `stall_ms`.
+/// under the stall bound `stall_ms`; `agent` is the source its runtime chose.
 fn open_failure_io(
     failure: Failure,
     attempts: Option<(u32, u32)>,
     stall_ms: u64,
     host: String,
     port: u16,
+    agent: &AgentSource,
 ) -> io::Error {
+    if let Some(reason) = agent_reason(&failure, agent) {
+        return io::Error::new(io::ErrorKind::Unsupported, AgentFailure { reason });
+    }
     match crate::git::endpoint::ssh_limits::SshLimit::of_failure(&failure) {
         Some(limit) => io::Error::new(
             io::ErrorKind::Unsupported,
@@ -372,7 +409,7 @@ cfg_if::cfg_if! {
             for (limit, method) in [(SshLimit::HostKeys, AuthMethod::None), (SshLimit::KeyFile, AuthMethod::SshKey)] {
                 let mut failure = limit.failure();
                 failure.facts = Some(Facts { method, ..Facts::default() });
-                let reported = open_failure_io(failure, Some((1, 4)), 9_000, "git.example.com".into(), 2222);
+                let reported = open_failure_io(failure, Some((1, 4)), 9_000, "git.example.com".into(), 2222, &AgentSource::None);
                 assert_eq!(reported.kind(), io::ErrorKind::Unsupported, "{limit:?}");
                 let words = limit.reason("git.example.com", 2222);
                 assert_eq!(reported.to_string(), words, "{limit:?}");
@@ -382,8 +419,57 @@ cfg_if::cfg_if! {
                 assert_eq!(model.message, words);
             }
             // The driver's own refusal of the same code carries no facts and keeps its generic display.
-            let own = open_failure_io(limit_free_unsupported(), None, 9_000, "git.example.com".into(), 22);
+            let own = open_failure_io(limit_free_unsupported(), None, 9_000, "git.example.com".into(), 22, &AgentSource::None);
             assert!(own.get_ref().unwrap().downcast_ref::<SshOpenFailure>().is_some());
+        }
+
+        /// The agent step's failure is worded from the agent the runtime chose, which only the host knows (plan step
+        /// 3.2b); the wire says no more than that the step failed before a credential was offered.
+        #[test]
+        fn an_agent_step_failure_is_worded_from_the_source_the_runtime_chose() {
+            use crate::git::endpoint::agent_source::{AgentSource, select};
+            use gwz_transport::protocol::AuthMethod;
+            let AgentSource::Refused(refusal) = select(Some(std::ffi::OsStr::new("/tmp/agent")), || false) else {
+                panic!("refused");
+            };
+            let step = |offered: bool, method: AuthMethod| Failure {
+                code: ErrorCode::Unavailable,
+                facts: Some(Facts { method, credential_offered: offered, ..Facts::default() }),
+                ..Failure::default()
+            };
+            let source = AgentSource::Refused(refusal.clone());
+            let reported = open_failure_io(step(false, AuthMethod::SshAgent), Some((1, 4)), 9_000, "git.example.com".into(), 22, &source);
+            assert_eq!(reported.kind(), io::ErrorKind::Unsupported);
+            assert_eq!(reported.to_string(), refusal.to_string());
+            let failed = reported.get_ref().unwrap().downcast_ref::<AgentFailure>().unwrap();
+            let model = failed.model_error();
+            assert_eq!(model.code, crate::model::ErrorCode::UnsupportedOperation);
+            assert_eq!(model.message, refusal.to_string());
+            // A failure that was not the agent step, or that came after a key was offered, keeps its generic words.
+            for other in [step(false, AuthMethod::None), step(true, AuthMethod::SshAgent), step(false, AuthMethod::Gh)] {
+                let generic = open_failure_io(other, None, 9_000, "git.example.com".into(), 22, &source);
+                assert!(generic.get_ref().unwrap().downcast_ref::<SshOpenFailure>().is_some());
+            }
+            // So does a source with no words of its own.
+            let generic = open_failure_io(step(false, AuthMethod::SshAgent), None, 9_000, "git.example.com".into(), 22, &AgentSource::None);
+            assert!(generic.get_ref().unwrap().downcast_ref::<SshOpenFailure>().is_some());
+        }
+
+        /// A default pipe that is not there is the stopped service, told from the wire's cause alone (plan step 3.3).
+        #[test]
+        fn a_pipe_that_is_not_there_is_worded_from_the_source_and_the_cause() {
+            use crate::git::endpoint::agent_source::{AgentSource, PipeName};
+            use gwz_transport::protocol::{AuthMethod, SetupFailureCause};
+            let missing = Failure {
+                code: ErrorCode::Unavailable,
+                setup_cause: Some(SetupFailureCause::NotFound),
+                facts: Some(Facts { method: AuthMethod::SshAgent, ..Facts::default() }),
+                ..Failure::default()
+            };
+            let source = AgentSource::NamedPipe(PipeName::default_pipe());
+            let reported = open_failure_io(missing, Some((1, 4)), 9_000, "git.example.com".into(), 22, &source);
+            let failed = reported.get_ref().unwrap().downcast_ref::<AgentFailure>().unwrap();
+            assert!(failed.to_string().starts_with("The OpenSSH Authentication Agent service (ssh-agent) is not running."), "{failed}");
         }
 
         fn limit_free_unsupported() -> Failure {

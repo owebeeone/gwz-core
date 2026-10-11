@@ -25,6 +25,7 @@ cfg_if::cfg_if! {
         mod agent_fixture;
     } else {
         mod agent_fixture_pipe;
+        mod agent_pipe_server;
     }
 }
 mod agent_keys;

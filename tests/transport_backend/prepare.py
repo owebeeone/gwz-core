@@ -17,9 +17,10 @@ import shutil
 #     directory), and the production list's own Win32_Foundation and Win32_Storage_FileSystem; Win32_Networking_
 #     WinHttp and Win32_Networking_WinSock serve the HTTPS and SSH code; step 3.5's Pageant exchange
 #     (`pageant_exchange/sys.rs`) needs Win32_Security_Authorization, Win32_System_DataExchange, Win32_System_Memory
-#     and Win32_UI_WindowsAndMessaging. The candidate-to-production switch must
-#     carry every one of them into Cargo.toml's `windows-sys` list.
-#   test only: Win32_System_Diagnostics_ToolHelp, Win32_System_IO and Win32_System_Ioctl, for the Job Object,
+#     and Win32_UI_WindowsAndMessaging, and step 3.3's agent pipe (`agent_pipe.rs`) needs Win32_System_IO
+#     (overlapped I/O: `CancelIoEx`, `GetOverlappedResult`) beside the Pipes, Threading and FileSystem ones above.
+#     The candidate-to-production switch must carry every one of them into Cargo.toml's `windows-sys` list.
+#   test only: Win32_System_Diagnostics_ToolHelp and Win32_System_Ioctl, for the Job Object,
 #     thread suspension and process lists of the SSH test servers and their native helper (`fixture_job.rs`), a
 #     named pipe in the regular-file test, pipe reads and writes in the agent fixture, and the directory junction of
 #     the URL tests; they are named here as well as in Cargo.toml's Windows

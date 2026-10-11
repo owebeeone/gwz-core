@@ -24,6 +24,18 @@ impl<C: Channel> Agent<C> {
             enumerated: false,
         }
     }
+    /// The same agent with its channel behind a pointer, for a caller that chooses the channel's type at run time.
+    pub(crate) fn boxed(self) -> Agent<Box<dyn Channel>>
+    where
+        C: 'static,
+    {
+        Agent {
+            channel: Box::new(self.channel),
+            control: self.control,
+            failed: self.failed,
+            enumerated: self.enumerated,
+        }
+    }
     pub(crate) fn identities(&mut self) -> io::Result<Vec<Vec<u8>>> {
         if self.enumerated {
             return Err(invalid());

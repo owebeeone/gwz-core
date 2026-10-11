@@ -68,5 +68,8 @@ cfg_if::cfg_if! {
                 child.0.wait().unwrap();
             }
         }
+    } else {
+        // Windows: the same characterization over the agent pipe (plan step 3.3).
+        mod pipe;
     }
 }

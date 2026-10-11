@@ -10,7 +10,7 @@
 //! Unix uses its captured environment proxy settings. Windows WH1 admits only
 //! a verified WinHTTP DIRECT snapshot captured on the original caller entry.
 //! Its SSH settings take `HOME` when it is absolute, as an interim until the
-//! Windows home resolver (plan step 3.1), and have no agent until Phase 3. It
+//! Windows home resolver (plan step 3.1), and the agent that step 3.2b selects. It
 //! never derives a HOME or agent for HTTPS. On both platforms the credential
 //! helper is `git` with the snapshot as its environment (plan step 4.3).
 
@@ -20,6 +20,7 @@ cfg_if::cfg_if! { if #[cfg(not(any(windows, target_vendor = "apple")))] {
     use crate::git::endpoint::{https_tls, verify_paths};
 } }
 use super::SshSettings;
+use crate::git::endpoint::agent_source::AgentSource;
 use crate::git::endpoint::https_auth;
 use crate::model::ModelResult;
 use crate::session_host::EnvironmentSnapshot;
@@ -62,7 +63,7 @@ pub(super) fn endpoint_config_native(
     let ssh = Some(SshSettings {
         home: platform::ssh_home(environment)
             .ok_or_else(|| invalid("endpoint HOME is unavailable"))?,
-        agent: platform::agent(environment),
+        agent: agent(environment),
     });
     let timeout = crate::git::transport_timeout_ms();
     let mut pool = pool::Config::default();
@@ -82,6 +83,13 @@ pub(super) fn endpoint_config_native(
             .collect(),
     });
     Ok((local, HttpsEndpointConfig { tls, auth }))
+}
+
+/// The agent the snapshot's `SSH_AUTH_SOCK` selects: a socket path on Unix, and on Windows the one agent of TR1.8 §4
+/// (plan step 3.2b). A value Windows refuses is carried as a refused source, so that the runtime is built and only a
+/// setup that needs an agent is refused.
+fn agent(environment: &EnvironmentSnapshot) -> AgentSource {
+    AgentSource::capture(value(environment, &["SSH_AUTH_SOCK"]).as_deref())
 }
 
 /// The value of the first of `names` that is set and not empty, under the
@@ -227,11 +235,6 @@ cfg_if::cfg_if! {
                     .filter(|home| home.is_absolute())
             }
 
-            /// The agent: the socket `SSH_AUTH_SOCK` names, when it is set.
-            pub(super) fn agent(environment: &EnvironmentSnapshot) -> Option<PathBuf> {
-                value(environment, &["SSH_AUTH_SOCK"]).map(PathBuf::from)
-            }
-
             /// The HTTPS proxy and its bypass list: the environment's.
             pub(super) fn proxy(
                 environment: &EnvironmentSnapshot,
@@ -252,11 +255,6 @@ cfg_if::cfg_if! {
                 value(environment, &["HOME"])
                     .map(PathBuf::from)
                     .filter(|home| home.is_absolute())
-            }
-
-            /// Windows has no agent source until Phase 3 (the OpenSSH pipe, 3.3, and Pageant, 3.6).
-            pub(super) fn agent(_: &EnvironmentSnapshot) -> Option<PathBuf> {
-                None
             }
 
             pub(super) fn direct() -> bool {

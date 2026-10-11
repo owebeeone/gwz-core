@@ -77,6 +77,12 @@ pub(crate) mod ssh_password;
 pub(crate) mod ssh_setup;
 cfg_if::cfg_if! { if #[cfg(test)] { mod ssh_tests; } }
 
+// Step 3.2a: the agent source a runtime chooses once, before any connection, and opens when a setup needs an agent.
+pub(crate) mod agent_source;
+
+// Step 3.3: the OpenSSH agent's named pipe, Windows' channel to the service (`agent_socket` is Unix's).
+cfg_if::cfg_if! { if #[cfg(windows)] { pub(crate) mod agent_pipe; } }
+
 // Step 3.5: Pageant's exchange primitive. Its pure rules compile everywhere; the OS calls are Windows'.
 pub(crate) mod pageant_exchange;
 

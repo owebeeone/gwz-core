@@ -32,6 +32,15 @@ impl Session {
                     .with_helpers(helpers_allowed)
             });
         let shown = (destination.key.host.clone(), destination.key.port);
+        // The agent this runtime's endpoint uses, which words a failure of the agent step.
+        let agent = self
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .handoff
+            .as_ref()
+            .map(|handoff| handoff.agent().clone())
+            .unwrap_or_default();
         // The stall bound this open's deadlines carry (`network_deadlines`
         // takes the same field), for a stall's message to name.
         let stall_ms = self
@@ -69,7 +78,7 @@ impl Session {
         )
         .map_err(|failure| {
             let attempts = setup_retry::reported_attempt(&failure);
-            open_failure_io(failure, attempts, stall_ms, shown.0, shown.1)
+            open_failure_io(failure, attempts, stall_ms, shown.0, shown.1, &agent)
         })
     }
     pub(in crate::transport_host) fn open_https(

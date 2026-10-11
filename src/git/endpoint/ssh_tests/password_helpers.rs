@@ -240,7 +240,7 @@ fn run_fault(
     let endpoint = ssh_local::connect_with_helpers(
         config.clone(),
         known,
-        None,
+        crate::git::endpoint::agent_source::AgentSource::None,
         2000,
         Authority::new(config.total, config.per_host),
         Default::default(),
@@ -465,7 +465,7 @@ fn x6(
     let endpoint = ssh_local::connect_with_helpers(
         pool.clone(),
         known,
-        None,
+        crate::git::endpoint::agent_source::AgentSource::None,
         10_000,
         Authority::new(pool.total, pool.per_host),
         Default::default(),

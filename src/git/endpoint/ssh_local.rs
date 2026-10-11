@@ -2,6 +2,7 @@
 //! shared worker does no trust, key, environment or agent I/O on the caller.
 use super::shared_reservation::{Authority, ReservedConnector};
 use super::{
+    agent_source::{AgentFault, AgentSource},
     ssh_handoff::Handoff,
     ssh_key_auth,
     ssh_key_snapshot::Registry,
@@ -28,13 +29,14 @@ pub(crate) fn connect_with_authority(
     authority: Authority,
     handoff: Handoff,
 ) -> io::Result<Endpoint> {
-    connect_with_helpers(config, known_hosts, agent_socket, io_timeout_ms, authority, handoff, None)
+    let agent = AgentSource::from_path(agent_socket);
+    connect_with_helpers(config, known_hosts, agent, io_timeout_ms, authority, handoff, None)
 }
 } }
 pub(crate) fn connect_with_helpers(
     config: Config,
     known_hosts: PathBuf,
-    agent_socket: Option<PathBuf>,
+    agent: AgentSource,
     io_timeout_ms: u64,
     authority: Authority,
     handoff: Handoff,
@@ -81,7 +83,7 @@ pub(crate) fn connect_with_helpers(
                         let written =
                             url.map_or_else(|| key.host.clone(), |url| url.host().to_owned());
                         let known_hosts = known_hosts.clone();
-                        let agent_socket = agent_socket.clone();
+                        let agent = agent.clone();
                         let helpers = helpers.clone();
                         Ok(Box::new(move |control| {
                             let offered = |method| {
@@ -168,10 +170,19 @@ pub(crate) fn connect_with_helpers(
                                 user,
                                 &trusted,
                                 &control,
-                                agent_socket,
+                                agent,
                                 || offered(AuthMethod::SshAgent),
                                 rejected,
-                            )?;
+                            )
+                            .map_err(|error| {
+                                // The agent step could not start: the failure says it was the agent, which the host
+                                // words from the source it chose. No credential was offered.
+                                if AgentFault::of_error(&error).is_some() {
+                                    progress.lock().unwrap_or_else(|e| e.into_inner()).method =
+                                        AuthMethod::SshAgent;
+                                }
+                                error
+                            })?;
                             Authenticated::new(
                                 connection,
                                 requested,
@@ -195,28 +206,31 @@ pub(crate) fn connect_with_helpers(
 
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
-        /// The ambient agent step: the socket the endpoint was given, or a refusal when it has none.
+        /// The ambient agent step: the agent the endpoint was given, or a refusal when it has none.
         fn agent_authenticate(
             connection: super::ssh_connection::SshConnection, user: &str, trusted: &[u8],
-            control: &std::sync::Arc<super::agent_job::Control>, socket: Option<PathBuf>,
+            control: &std::sync::Arc<super::agent_job::Control>, agent: AgentSource,
             offered: impl FnMut(), rejected: impl FnMut(),
         ) -> io::Result<super::ssh_connection::SshConnection> {
-            let socket = socket.ok_or(io::ErrorKind::NotFound)?;
+            if agent == AgentSource::None {
+                return Err(io::ErrorKind::NotFound.into());
+            }
             super::agent_auth::authenticate_reporting(
                 connection, user, trusted, control.clone(),
-                || super::agent_socket::connect(&socket, control.clone()),
+                || agent.open(control.clone()),
                 offered, rejected,
             )
         }
     } else {
-        /// Windows has no agent source until Phase 3 of the Windows parity plan (the OpenSSH pipe, 3.3,
-        /// and Pageant, 3.6), so a setup that needs an agent is refused as one with no agent is: the
-        /// socket the endpoint was given, which is always `None` here, is not used.
+        /// Windows has no agent signing until step 3.4 ungates `agent_auth`, which then replaces this arm with the Unix
+        /// one. Until then the agent is opened, so that a source that cannot be used (a refused `SSH_AUTH_SOCK`, a
+        /// pipe that is not there) says why, and one that opens is refused as an open with no agent is.
         fn agent_authenticate(
             _connection: super::ssh_connection::SshConnection, _user: &str, _trusted: &[u8],
-            _control: &std::sync::Arc<super::agent_job::Control>, _socket: Option<PathBuf>,
+            control: &std::sync::Arc<super::agent_job::Control>, agent: AgentSource,
             _offered: impl FnMut(), _rejected: impl FnMut(),
         ) -> io::Result<super::ssh_connection::SshConnection> {
+            let _channel = agent.open(control.clone())?;
             Err(io::ErrorKind::NotFound.into())
         }
     }

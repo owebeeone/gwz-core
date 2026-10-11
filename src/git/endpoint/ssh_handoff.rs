@@ -14,6 +14,7 @@
 //! carrier session and stream while it queues the `Open`, and the endpoint
 //! takes them as it starts that open. Nothing here crosses a carrier, so an
 //! endpoint in another process gets none.
+use super::agent_source::AgentSource;
 use std::{
     collections::BTreeMap,
     fmt,
@@ -93,9 +94,25 @@ impl UrlExtras {
 /// holds the extras of opens queued and not yet started, under their carrier
 /// session and stream.
 #[derive(Clone, Default)]
-pub(crate) struct Handoff(Arc<Mutex<BTreeMap<(String, i64), UrlExtras>>>);
+pub(crate) struct Handoff {
+    extras: Arc<Mutex<BTreeMap<(String, i64), UrlExtras>>>,
+    agent: AgentSource,
+}
 
 impl Handoff {
+    /// A handoff for a runtime whose endpoint uses `agent`: the driver words the agent step's failures from it, since
+    /// a failure crosses to the driver as a code with no text (plan step 3.2b).
+    pub(crate) fn with_agent(agent: AgentSource) -> Self {
+        Self {
+            extras: Arc::default(),
+            agent,
+        }
+    }
+
+    pub(crate) fn agent(&self) -> &AgentSource {
+        &self.agent
+    }
+
     /// Queues an open with `open`, which returns its stream, and deposits
     /// `extras` under `session` and that stream, holding the handoff
     /// throughout: an `Open` can reach the endpoint only once `open` has
@@ -108,7 +125,7 @@ impl Handoff {
         extras: &mut Option<UrlExtras>,
         open: impl FnOnce() -> Result<i64, E>,
     ) -> Result<(i64, Option<Deposit>), E> {
-        let mut deposits = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        let mut deposits = self.extras.lock().unwrap_or_else(|e| e.into_inner());
         let stream = open()?;
         let deposit = extras.take().map(|extras| {
             deposits.insert((session.to_owned(), stream), extras);
@@ -124,7 +141,7 @@ impl Handoff {
     /// The extras deposited for `session`'s `stream`, once: the endpoint's,
     /// as it starts that open.
     pub(crate) fn take(&self, session: &str, stream: i64) -> Option<UrlExtras> {
-        self.0
+        self.extras
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&(session.to_owned(), stream))
@@ -158,7 +175,7 @@ cfg_if::cfg_if! {
             assert_eq!(handoff.take("s", 7).unwrap().host(), "GitHost.Example");
             assert!(handoff.take("s", 7).is_none());
             drop(deposit);
-            assert!(handoff.0.lock().unwrap().is_empty());
+            assert!(handoff.extras.lock().unwrap().is_empty());
         }
 
         #[test]
@@ -167,16 +184,16 @@ cfg_if::cfg_if! {
             let mut extras = Some(UrlExtras::new("GitHost.Example".into(), None));
             assert!(matches!(handoff.open("s", &mut extras, || Err::<i64, _>("full")), Err("full")));
             assert!(extras.is_some());
-            assert!(handoff.0.lock().unwrap().is_empty());
+            assert!(handoff.extras.lock().unwrap().is_empty());
             let (stream, deposit) = handoff.open("s", &mut extras, || Ok::<_, ()>(9)).unwrap();
             assert_eq!(stream, 9);
-            assert_eq!(handoff.0.lock().unwrap().len(), 1);
+            assert_eq!(handoff.extras.lock().unwrap().len(), 1);
             // The endpoint never took them: the driver's deposit drops them.
             drop(deposit);
-            assert!(handoff.0.lock().unwrap().is_empty());
+            assert!(handoff.extras.lock().unwrap().is_empty());
             let mut none = None;
             let (_, deposit) = handoff.open("s", &mut none, || Ok::<_, ()>(10)).unwrap();
-            assert!(deposit.is_none() && handoff.0.lock().unwrap().is_empty());
+            assert!(deposit.is_none() && handoff.extras.lock().unwrap().is_empty());
         }
 
         #[test]

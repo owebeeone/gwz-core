@@ -351,6 +351,9 @@ cfg_if::cfg_if! {
                 assert_eq!(connected.load(Ordering::SeqCst), 0, "fixture must stall at connect");
             }
         }
+    } else {
+        // Windows: the same rows over the agent pipe (plan step 3.3).
+        mod pipe;
     }
 }
 

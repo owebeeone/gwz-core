@@ -7,6 +7,7 @@
 use super::endpoint_environment::endpoint_config;
 use super::*;
 use crate::git::GitBackend;
+use crate::git::endpoint::agent_source::AgentSource;
 use crate::session_host::EnvironmentSnapshot;
 use crate::{TransportOptions, TransportPlacement};
 use std::{
@@ -32,7 +33,7 @@ fn caller_token() -> (CallControls<()>, CancellationToken) {
 fn the_endpoint_configuration_comes_from_the_snapshot() {
     let root = tempfile::TempDir::new().unwrap();
     let home = root.path().join("home");
-    let agent = root.path().join("agent.sock");
+    let agent = snapshot_agent(root.path());
     let ca = root.path().join("ca.pem");
     let pem = super::https_tests::unrelated_ca(root.path(), "snapshot-ca");
     std::fs::write(&ca, &pem).unwrap();
@@ -52,7 +53,26 @@ fn the_endpoint_configuration_comes_from_the_snapshot() {
     let expected = crate::git::endpoint::ca_bundle::certificates(&pem).unwrap();
     assert_eq!(der(&https.tls.ca_roots), der(&expected));
     check_proxy(&https.tls);
-    check_configured_authentication(https.auth, &ca, &home, &root.path().join("agent.sock"));
+    check_configured_authentication(https.auth, &ca, &home, &agent);
+}
+
+/// The agent source is chosen once for a runtime and travels in its configuration as the enum, whatever form the
+/// caller handed the fixture (plan step 3.2a).
+#[test]
+fn the_agent_source_round_trips_through_the_runtime_configuration() {
+    let home = PathBuf::from("endpoint-home");
+    for (given, expected) in [
+        (None, AgentSource::None),
+        (
+            Some(PathBuf::from("agent.sock")),
+            AgentSource::Path(PathBuf::from("agent.sock")),
+        ),
+    ] {
+        let settings = EndpointSettings::from(SshEndpointConfig::fixture(home.clone(), given));
+        let ssh = settings.ssh.expect("an SSH runtime");
+        assert_eq!(ssh.agent, expected);
+        assert_eq!(ssh.home, home);
+    }
 }
 
 cfg_if::cfg_if! {
@@ -68,19 +88,44 @@ cfg_if::cfg_if! {
         }
 
         /// The agent socket the snapshot's `SSH_AUTH_SOCK` names.
-        fn expected_agent(socket: &PathBuf) -> Option<PathBuf> {
-            Some(socket.clone())
+        fn expected_agent(socket: &PathBuf) -> AgentSource {
+            AgentSource::Path(socket.clone())
+        }
+
+        /// What the snapshot's `SSH_AUTH_SOCK` holds: a socket path.
+        fn snapshot_agent(root: &std::path::Path) -> PathBuf {
+            root.join("agent.sock")
         }
     } else {
+        /// What the snapshot's `SSH_AUTH_SOCK` holds: a pipe on this computer.
+        fn snapshot_agent(_root: &std::path::Path) -> PathBuf {
+            PathBuf::from(r"\\.\pipe\gwz-snapshot-agent")
+        }
+
+        /// A `SSH_AUTH_SOCK` that is not a local pipe refuses the agent, when a setup needs one, and nothing else:
+        /// the runtime is built, so an operation that needs no agent is not refused for it (plan step 3.2b).
+        #[test]
+        fn a_variable_that_is_not_a_local_pipe_leaves_the_runtime_built_with_a_refused_agent() {
+            let root = tempfile::TempDir::new().unwrap();
+            let environment = snapshot(&[
+                ("HOME", root.path().as_os_str()),
+                ("SSH_AUTH_SOCK", OsStr::new("/tmp/ssh-abc/agent.1")),
+            ]);
+            let (ssh, _) = endpoint_config(&environment).unwrap();
+            assert!(matches!(ssh.ssh.unwrap().agent, AgentSource::Refused(_)));
+        }
+
         /// Windows takes its proxy from the machine, not from the environment (steps 4.6 and 4.7 capture it).
         fn check_proxy(tls: &crate::git::endpoint::https_connection::Config) {
             assert!(tls.proxy.is_none() && tls.no_proxy.is_empty());
         }
 
-        /// Windows takes no agent from `SSH_AUTH_SOCK`: an agent there is a pipe or Pageant, which the agent
-        /// sources of step 3.2b choose (an interim the step replaces).
-        fn expected_agent(_socket: &PathBuf) -> Option<PathBuf> {
-            None
+        /// Windows takes the pipe the snapshot's `SSH_AUTH_SOCK` names (step 3.2b), when no Pageant window is
+        /// visible, which the capture here never finds until step 3.6 supplies the probe.
+        fn expected_agent(pipe: &PathBuf) -> AgentSource {
+            AgentSource::NamedPipe(
+                crate::git::endpoint::agent_source::PipeName::parse(pipe.as_os_str()).unwrap(),
+            )
         }
     }
 }
