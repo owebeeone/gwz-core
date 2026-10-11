@@ -1,6 +1,5 @@
 use crate::git::endpoint::agent_client;
 use crate::git::endpoint::agent_job;
-use crate::git::endpoint::agent_socket;
 use agent_client::{Agent, Channel};
 use agent_job::{Control, Job};
 use std::{
@@ -277,6 +276,7 @@ cfg_if::cfg_if! {
     if #[cfg(unix)] {
         mod native {
             use super::*;
+            use crate::git::endpoint::agent_socket;
             use std::os::unix::net::UnixListener;
             #[test]
             fn cancellation_interrupts_every_partial_reply_and_closes_agent_socket() {

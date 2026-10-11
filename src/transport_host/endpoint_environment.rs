@@ -219,7 +219,7 @@ cfg_if::cfg_if! {
     if #[cfg(unix)] {
         /// Unix: the snapshot's variables alone.
         mod platform {
-            use super::{EnvironmentSnapshot, ModelResult, PathBuf, https_connection, invalid, value};
+            use super::{EnvironmentSnapshot, ModelResult, https_connection, invalid, value};
 
             /// The HTTPS proxy and its bypass list: the environment's.
             pub(super) fn proxy(

@@ -156,132 +156,138 @@ fn check_configured_authentication(
     );
 }
 
-// The snapshot's agent is an `ssh-agent` on a Unix socket, which Windows has no form of until the agent sources of
-// plan Phase 3 (step 3.2b); the pipe agent fixture of step 1.7 is their test twin.
+// The snapshot's agent is an `ssh-agent` on a Unix socket, or on Windows the pipe agent fixture of step 1.7, which the
+// runtime reaches through the product's pipe channel (plan steps 3.2b and 3.3, joined with 3.4's signing).
+use super::driver_tests::{commit, common, endpoint_home, fixture_url};
+use std::{path::Path, process::Command};
+
+/// Set in the child that runs the snapshot test, to the directory that holds
+/// the child's own `HOME` and agent path.
+const CHILD: &str = "GWZ_S6_1_SNAPSHOT_CHILD";
+
+/// The runtime uses the snapshot's `HOME` and `SSH_AUTH_SOCK`, not the
+/// process's, which differ from them. The body runs in a child of this test
+/// binary whose own environment holds a home without `known_hosts`, an agent
+/// nobody serves, and a proxy and CA file the runtime would refuse.
+#[test]
+fn the_runtime_takes_home_and_the_agent_from_the_snapshot_not_the_process() {
+    let Some(decoys) = std::env::var_os(CHILD) else {
+        return run_in_child(
+            "the_runtime_takes_home_and_the_agent_from_the_snapshot_not_the_process",
+        );
+    };
+    let decoys = PathBuf::from(decoys);
+    let (process_home, process_agent) = (decoys.join("home"), decoy_agent(&decoys));
+    assert_eq!(std::env::var_os("HOME"), Some(process_home.clone().into()));
+    assert_eq!(
+        std::env::var_os("SSH_AUTH_SOCK"),
+        Some(process_agent.clone().into())
+    );
+
+    let fixture = common::SshdFixture::new();
+    let server = git2::Repository::open_bare(&fixture.repository).unwrap();
+    commit(&server, "snapshot");
+    let home = endpoint_home(&fixture);
+    let agent = Agent::start(fixture.temp.path(), &home.join("client_ed25519"));
+    assert_ne!(home, process_home);
+    assert_ne!(agent.socket, process_agent);
+    let clone = |home: &Path, socket: &Path, name: &str| {
+        let environment = snapshot(&[
+            ("HOME", home.as_os_str()),
+            ("SSH_AUTH_SOCK", socket.as_os_str()),
+        ]);
+        let options = TransportOptions {
+            placement: Some(TransportPlacement::Local),
+            ..Default::default()
+        };
+        let meta = RequestMeta {
+            request_id: name.into(),
+            schema_version: "gwz.protocol/v0".into(),
+            transport: Some(options.clone()),
+            ..Default::default()
+        };
+        let (_controls, token) = caller_token();
+        let (result, cleanup) = with_cancellable_local_transport(
+            meta,
+            "clone".into(),
+            &environment,
+            &token,
+            |backend| {
+                let backend = backend
+                    .with_transport(fixture.temp.path(), Some(&options))
+                    .unwrap()
+                    .unwrap();
+                backend
+                    .clone_repo(&fixture_url(&fixture), &fixture.temp.path().join(name))
+                    .map(|_| backend.transport_observations().unwrap().snapshot())
+            },
+        );
+        (result.expect("the entry ran the clone"), cleanup)
+    };
+
+    // Each of the process's values, in a snapshot, fails the clone: its home
+    // does not know the fixture's host key, and nothing serves its agent.
+    let (result, _) = clone(&process_home, &agent.socket, "process-home");
+    assert!(result.is_err(), "the process's HOME has no known_hosts");
+    let (result, _) = clone(&home, &process_agent, "process-agent");
+    assert!(
+        result.is_err(),
+        "the process's SSH_AUTH_SOCK serves no agent"
+    );
+
+    // The snapshot's values clone through the transport, authenticated by the
+    // snapshot's agent, while the process's own values stay as above.
+    let (result, cleanup) = clone(&home, &agent.socket, "snapshot");
+    let rows = result.expect("the snapshot's HOME and agent reach the fixture");
+    assert!(!rows.is_empty());
+    assert!(
+        rows.iter()
+            .all(|row| row.endpoint_id.is_some() && row.authenticated == Some(true)),
+        "{rows:?}"
+    );
+    assert_eq!(cleanup.pending_local_work, 0);
+    assert!(!fixture.marker.exists());
+}
+
+/// Runs `test` alone in a child of this test binary, with the process values
+/// the snapshot test must not use, and asserts that it passed.
+fn run_in_child(test: &str) {
+    let decoys = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir(decoys.path().join("home")).unwrap();
+    let name = format!("{}::{test}", module_path!().split_once("::").unwrap().1);
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", &name, "--nocapture", "--test-threads", "1"])
+        .env(CHILD, decoys.path())
+        .env("HOME", decoys.path().join("home"))
+        .env("SSH_AUTH_SOCK", decoy_agent(decoys.path()))
+        .env("HTTPS_PROXY", "http://user:secret@proxy.invalid:3128")
+        .env("GIT_SSL_CAINFO", decoys.path().join("missing-ca.pem"))
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "the snapshot test's child failed:\n{stdout}\n{stderr}"
+    );
+    assert_eq!(
+        stdout.matches(&format!("test {name} ... ok")).count(),
+        1,
+        "the child ran no single test:\n{stdout}"
+    );
+}
+
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
-        use super::driver_tests::{commit, common, endpoint_home, fixture_url};
         use std::{
-            path::Path,
-            process::{Child, Command, Stdio},
+            process::{Child, Stdio},
             thread,
             time::Instant,
         };
 
-        /// Set in the child that runs the snapshot test, to the directory that holds
-        /// the child's own `HOME` and agent socket path.
-        const CHILD: &str = "GWZ_S6_1_SNAPSHOT_CHILD";
-
-        /// The runtime uses the snapshot's `HOME` and `SSH_AUTH_SOCK`, not the
-        /// process's, which differ from them. The body runs in a child of this test
-        /// binary whose own environment holds a home without `known_hosts`, an agent
-        /// socket nobody serves, and a proxy and CA file the runtime would refuse.
-        #[test]
-        fn the_runtime_takes_home_and_the_agent_from_the_snapshot_not_the_process() {
-            let Some(decoys) = std::env::var_os(CHILD) else {
-                return run_in_child(
-                    "the_runtime_takes_home_and_the_agent_from_the_snapshot_not_the_process",
-                );
-            };
-            let decoys = PathBuf::from(decoys);
-            let (process_home, process_agent) = (decoys.join("home"), decoys.join("agent.sock"));
-            assert_eq!(std::env::var_os("HOME"), Some(process_home.clone().into()));
-            assert_eq!(
-                std::env::var_os("SSH_AUTH_SOCK"),
-                Some(process_agent.clone().into())
-            );
-
-            let fixture = common::SshdFixture::new();
-            let server = git2::Repository::open_bare(&fixture.repository).unwrap();
-            commit(&server, "snapshot");
-            let home = endpoint_home(&fixture);
-            let agent = Agent::start(fixture.temp.path(), &home.join("client_ed25519"));
-            assert_ne!(home, process_home);
-            assert_ne!(agent.socket, process_agent);
-            let clone = |home: &Path, socket: &Path, name: &str| {
-                let environment = snapshot(&[
-                    ("HOME", home.as_os_str()),
-                    ("SSH_AUTH_SOCK", socket.as_os_str()),
-                ]);
-                let options = TransportOptions {
-                    placement: Some(TransportPlacement::Local),
-                    ..Default::default()
-                };
-                let meta = RequestMeta {
-                    request_id: name.into(),
-                    schema_version: "gwz.protocol/v0".into(),
-                    transport: Some(options.clone()),
-                    ..Default::default()
-                };
-                let (_controls, token) = caller_token();
-                let (result, cleanup) = with_cancellable_local_transport(
-                    meta,
-                    "clone".into(),
-                    &environment,
-                    &token,
-                    |backend| {
-                        let backend = backend
-                            .with_transport(fixture.temp.path(), Some(&options))
-                            .unwrap()
-                            .unwrap();
-                        backend
-                            .clone_repo(&fixture_url(&fixture), &fixture.temp.path().join(name))
-                            .map(|_| backend.transport_observations().unwrap().snapshot())
-                    },
-                );
-                (result.expect("the entry ran the clone"), cleanup)
-            };
-
-            // Each of the process's values, in a snapshot, fails the clone: its home
-            // does not know the fixture's host key, and nothing serves its agent.
-            let (result, _) = clone(&process_home, &agent.socket, "process-home");
-            assert!(result.is_err(), "the process's HOME has no known_hosts");
-            let (result, _) = clone(&home, &process_agent, "process-agent");
-            assert!(
-                result.is_err(),
-                "the process's SSH_AUTH_SOCK serves no agent"
-            );
-
-            // The snapshot's values clone through the transport, authenticated by the
-            // snapshot's agent, while the process's own values stay as above.
-            let (result, cleanup) = clone(&home, &agent.socket, "snapshot");
-            let rows = result.expect("the snapshot's HOME and agent reach the fixture");
-            assert!(!rows.is_empty());
-            assert!(
-                rows.iter()
-                    .all(|row| row.endpoint_id.is_some() && row.authenticated == Some(true)),
-                "{rows:?}"
-            );
-            assert_eq!(cleanup.pending_local_work, 0);
-            assert!(!fixture.marker.exists());
-        }
-
-        /// Runs `test` alone in a child of this test binary, with the process values
-        /// the snapshot test must not use, and asserts that it passed.
-        fn run_in_child(test: &str) {
-            let decoys = tempfile::TempDir::new().unwrap();
-            std::fs::create_dir(decoys.path().join("home")).unwrap();
-            let name = format!("{}::{test}", module_path!().split_once("::").unwrap().1);
-            let output = Command::new(std::env::current_exe().unwrap())
-                .args(["--exact", &name, "--nocapture", "--test-threads", "1"])
-                .env(CHILD, decoys.path())
-                .env("HOME", decoys.path().join("home"))
-                .env("SSH_AUTH_SOCK", decoys.path().join("agent.sock"))
-                .env("HTTPS_PROXY", "http://user:secret@proxy.invalid:3128")
-                .env("GIT_SSL_CAINFO", decoys.path().join("missing-ca.pem"))
-                .output()
-                .unwrap();
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                output.status.success(),
-                "the snapshot test's child failed:\n{stdout}\n{stderr}"
-            );
-            assert_eq!(
-                stdout.matches(&format!("test {name} ... ok")).count(),
-                1,
-                "the child ran no single test:\n{stdout}"
-            );
+        /// The agent the process environment of the child names, which nobody serves: a socket path.
+        fn decoy_agent(dir: &Path) -> PathBuf {
+            dir.join("agent.sock")
         }
 
         /// An ssh-agent of the test's own, holding one key, on a socket in `dir`.
@@ -320,6 +326,36 @@ cfg_if::cfg_if! {
             fn drop(&mut self) {
                 let _ = self.child.kill();
                 let _ = self.child.wait();
+            }
+        }
+    } else {
+        use crate::git::endpoint::ssh_tests::agent_fixture_pipe::{
+            Behavior, Identity, PipeAgent, pipe_name,
+        };
+
+        /// The agent the process environment of the child names, which nobody serves: a pipe nobody created.
+        fn decoy_agent(dir: &Path) -> PathBuf {
+            PathBuf::from(format!(r"\\.\pipe\gwz-decoy-{}", dir.file_name().unwrap().to_string_lossy()))
+        }
+
+        /// The pipe agent fixture of step 1.7, serving one key on a pipe of its own: the product's pipe channel
+        /// reaches it, and `agent_auth` signs through it (plan steps 3.3 and 3.4).
+        struct Agent {
+            socket: PathBuf,
+            _agent: PipeAgent,
+        }
+
+        impl Agent {
+            fn start(dir: &Path, key: &Path) -> Self {
+                let name = pipe_name(dir);
+                // The fixture's own key file, beside its `.pub`: the endpoint's home holds a copy of the key alone.
+                let key = dir.join(key.file_name().unwrap());
+                let entries = vec![(Identity::from_key_file(&key), Behavior::Signs)];
+                let agent = PipeAgent::start(&name, entries).unwrap();
+                Self {
+                    socket: PathBuf::from(name),
+                    _agent: agent,
+                }
             }
         }
     }

@@ -1,7 +1,7 @@
 {
   "entries": [
-    {"path": "src/transport_host/endpoint_environment_tests.rs", "kind": "gate", "gate": "unix", "target": "arm: use super::driver_tests::{commit, common, endpoint_home, fixture_url}", "state": "unported", "owner": ["3.2b"], "appendix": "moved from mod endpoint_environment_tests (step 1.8 ungated the module): the test that serves the snapshot an ssh-agent on a Unix socket; the pipe agent fixture of step 1.7 is its Windows twin"},
     {"path": "src/git/endpoint/agent_source/select_tests.rs", "kind": "gate", "gate": "unix", "target": "arm: use std::os::unix::ffi::OsStrExt", "state": "paired", "owner": ["3.2b"], "appendix": "new: step 3.2b's rows; the else arm builds the same non-Unicode name from UTF-16 (OsStringExt::from_wide)"},
-    {"path": "src/git/endpoint/agent_source/select_tests.rs", "kind": "os", "gate": "os::unix::ffi::OsStrExt", "target": "", "state": "paired", "owner": ["3.2b"], "appendix": "new: step 3.2b's rows; the else arm builds the same non-Unicode name from UTF-16 (OsStringExt::from_wide)"}
+    {"path": "src/git/endpoint/agent_source/select_tests.rs", "kind": "os", "gate": "os::unix::ffi::OsStrExt", "target": "", "state": "paired", "owner": ["3.2b"], "appendix": "new: step 3.2b's rows; the else arm builds the same non-Unicode name from UTF-16 (OsStringExt::from_wide)"},
+    {"path": "src/transport_host/endpoint_environment_tests.rs", "kind": "gate", "gate": "unix", "target": "arm: use std::{process::{Child, Stdio}, thread, time::Instant}", "state": "paired", "owner": ["3.2b"], "appendix": "the snapshot-serves-an-agent test, ported (the join of 3.2b, 3.3 and 3.4): the Unix arm starts an ssh-agent on a socket, the else arm serves the pipe agent fixture of step 1.7, which the product's pipe channel reaches"}
   ]
 }

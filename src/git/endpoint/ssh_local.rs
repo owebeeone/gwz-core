@@ -204,34 +204,27 @@ pub(crate) fn connect_with_helpers(
     )
 }
 
-cfg_if::cfg_if! {
-    if #[cfg(unix)] {
-        /// The ambient agent step: the agent the endpoint was given, or a refusal when it has none.
-        fn agent_authenticate(
-            connection: super::ssh_connection::SshConnection, user: &str, trusted: &[u8],
-            control: &std::sync::Arc<super::agent_job::Control>, agent: AgentSource,
-            offered: impl FnMut(), rejected: impl FnMut(),
-        ) -> io::Result<super::ssh_connection::SshConnection> {
-            if agent == AgentSource::None {
-                return Err(io::ErrorKind::NotFound.into());
-            }
-            super::agent_auth::authenticate_reporting(
-                connection, user, trusted, control.clone(),
-                || agent.open(control.clone()),
-                offered, rejected,
-            )
-        }
-    } else {
-        /// Windows has no agent signing until step 3.4 ungates `agent_auth`, which then replaces this arm with the Unix
-        /// one. Until then the agent is opened, so that a source that cannot be used (a refused `SSH_AUTH_SOCK`, a
-        /// pipe that is not there) says why, and one that opens is refused as an open with no agent is.
-        fn agent_authenticate(
-            _connection: super::ssh_connection::SshConnection, _user: &str, _trusted: &[u8],
-            control: &std::sync::Arc<super::agent_job::Control>, agent: AgentSource,
-            _offered: impl FnMut(), _rejected: impl FnMut(),
-        ) -> io::Result<super::ssh_connection::SshConnection> {
-            let _channel = agent.open(control.clone())?;
-            Err(io::ErrorKind::NotFound.into())
-        }
+/// The ambient agent step: the agent the endpoint was given, or a refusal when it has none. A source that cannot be
+/// used says why (`AgentFault`, worded by the host); the signing is `agent_auth`'s, on every platform.
+fn agent_authenticate(
+    connection: super::ssh_connection::SshConnection,
+    user: &str,
+    trusted: &[u8],
+    control: &std::sync::Arc<super::agent_job::Control>,
+    agent: AgentSource,
+    offered: impl FnMut(),
+    rejected: impl FnMut(),
+) -> io::Result<super::ssh_connection::SshConnection> {
+    if agent == AgentSource::None {
+        return Err(io::ErrorKind::NotFound.into());
     }
+    super::agent_auth::authenticate_reporting(
+        connection,
+        user,
+        trusted,
+        control.clone(),
+        || agent.open(control.clone()),
+        offered,
+        rejected,
+    )
 }

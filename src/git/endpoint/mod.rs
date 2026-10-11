@@ -75,7 +75,7 @@ cfg_if::cfg_if! {
 pub(crate) mod idle_watch;
 pub(crate) mod ssh_password;
 pub(crate) mod ssh_setup;
-cfg_if::cfg_if! { if #[cfg(test)] { mod ssh_tests; } }
+cfg_if::cfg_if! { if #[cfg(test)] { pub(crate) mod ssh_tests; } }
 
 // Step 3.2a: the agent source a runtime chooses once, before any connection, and opens when a setup needs an agent.
 pub(crate) mod agent_source;

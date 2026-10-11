@@ -27,7 +27,7 @@ cfg_if::cfg_if! {
         // rejected key and the trusted one.
         use agent_fixture as login_fixture;
     } else {
-        mod agent_fixture_pipe;
+        pub(crate) mod agent_fixture_pipe;
         mod agent_pipe_server;
         mod agent_login_fixture_pipe;
         use agent_login_fixture_pipe as login_fixture;
