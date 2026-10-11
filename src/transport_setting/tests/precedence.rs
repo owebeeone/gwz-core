@@ -1,11 +1,9 @@
 //! Precedence and values (design §2; §9's "precedence" and "values" rows).
 
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::PermissionsExt;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
-use super::fixture::{GWZ, NATIVE, home, snapshot, write};
+use super::fixture::{GWZ, NATIVE, Unreadable, home, snapshot, write};
 use crate::test_support::TempDir;
 use crate::transport_setting::{Location, Refusal, Setting, Source, Transport, resolve};
 
@@ -36,6 +34,27 @@ fn decided(transport: Transport, source: Source) -> Setting {
         source,
         read: Vec::new(),
         skipped: Vec::new(),
+    }
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        /// A value that is not text: `bytes` as they stand, on Unix, where a value is bytes.
+        fn not_text(bytes: &[u8]) -> OsString {
+            use std::os::unix::ffi::OsStringExt;
+            OsString::from_vec(bytes.to_vec())
+        }
+    } else {
+        /// A value that is not text: on Windows, where a value is UTF-16, `bytes` with each byte that is not ASCII
+        /// replaced by a lone surrogate, which is a legal value and has no UTF-8.
+        fn not_text(bytes: &[u8]) -> OsString {
+            use std::os::windows::ffi::OsStringExt;
+            let units: Vec<u16> = bytes
+                .iter()
+                .map(|&byte| if byte.is_ascii() { u16::from(byte) } else { 0xD800 })
+                .collect();
+            OsString::from_wide(&units)
+        }
     }
 }
 
@@ -119,12 +138,12 @@ fn of_each_pair_of_forms_the_higher_decides_both_ways() {
 fn a_form_below_the_deciding_one_is_neither_read_nor_checked() {
     let dir = TempDir::new("setting-unread");
     for value in [
-        OsStr::new("bogus"),
-        OsStr::new("true"),
-        OsStr::from_bytes(b"nat\xffive"),
+        OsString::from("bogus"),
+        OsString::from("true"),
+        not_text(b"nat\xffive"),
     ] {
         assert_eq!(
-            resolve(Some(Transport::Native), &with_variable(dir.path(), value)),
+            resolve(Some(Transport::Native), &with_variable(dir.path(), &value)),
             Ok(decided(Transport::Native, Source::Flag))
         );
     }
@@ -145,7 +164,10 @@ fn a_form_below_the_deciding_one_is_neither_read_nor_checked() {
         );
     }
     let file = gitconfig(dir.path(), NATIVE);
-    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let Some(_unreadable) = Unreadable::new(&file) else {
+        eprintln!("skipped: this process reads a file of mode 000, as root does");
+        return;
+    };
     assert_eq!(
         resolve(Some(Transport::Gwz), &home(dir.path())),
         Ok(decided(Transport::Gwz, Source::Flag))
@@ -226,7 +248,7 @@ fn a_variable_that_is_not_utf8_is_refused() {
     gitconfig(dir.path(), NATIVE);
     for value in [&b"native\xff"[..], b"\xff", b" \xfe "] {
         assert_eq!(
-            resolve(None, &with_variable(dir.path(), OsStr::from_bytes(value))),
+            resolve(None, &with_variable(dir.path(), &not_text(value))),
             Err(Refusal::EnvironmentNotUtf8)
         );
     }

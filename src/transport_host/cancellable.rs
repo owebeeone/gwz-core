@@ -168,7 +168,9 @@ impl Owned {
             .as_ref()
             .map(super::NativeCaller::qualification_direct)
             .unwrap_or_else(endpoint_environment::capture_qualification_proxy);
-        let (ssh, https) = endpoint_environment::endpoint_config_native(environment, direct)?;
+        // The caller's snapshot carries no current directory (the session contract has none to capture), so a relative
+        // home names none here; an absolute one is what a driver passes.
+        let (ssh, https) = endpoint_environment::endpoint_config_native(environment, None, direct)?;
         let executor = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

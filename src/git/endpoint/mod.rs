@@ -77,6 +77,10 @@ pub(crate) mod ssh_password;
 pub(crate) mod ssh_setup;
 cfg_if::cfg_if! { if #[cfg(test)] { mod ssh_tests; } }
 
+// Step 3.1: the SSH home resolver and the words of a refused host key (pure; they compile everywhere).
+pub(crate) mod ssh_home;
+pub(crate) mod ssh_host_key;
+
 // Step 3.5: Pageant's exchange primitive. Its pure rules compile everywhere; the OS calls are Windows'.
 pub(crate) mod pageant_exchange;
 

@@ -66,7 +66,15 @@ impl SmartSubtransport for RemoteTransport {
             Service::ReceivePackLs | Service::ReceivePack => GitService::ReceivePack,
         };
         let stream = self.endpoint.open(url, service).map_err(|error| {
+            // A host key the endpoint does not trust is libgit2's own failure of the SSH class (the native route's
+            // "invalid or unknown remote ssh hostkey"), carrying the host's words.
             if error.get_ref().is_some_and(|cause| {
+                cause
+                    .source()
+                    .is_some_and(|source| source.is::<super::ssh_host_key::HostKeyRefused>())
+            }) {
+                Error::new(ErrorCode::GenericError, ErrorClass::Ssh, error.to_string())
+            } else if error.get_ref().is_some_and(|cause| {
                 cause.is::<AuthenticationRejected>()
                     || cause
                         .source()
