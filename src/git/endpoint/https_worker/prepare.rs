@@ -263,6 +263,15 @@ impl Client {
                     Ok(lease) => lease,
                     Err((error, phase)) => {
                         let mut failed = with_facts(error.code, error.effect, &facts);
+                        // The one authentication failure a connection setup has is the proxy's own 407 to the
+                        // CONNECT. The machine proxy's is named so: it asks for a sign-in, which is not supported.
+                        if self.machine_proxy
+                            && phase == Phase::Setup
+                            && error.code == ErrorCode::Authentication
+                            && let Some(facts) = failed.facts.as_mut()
+                        {
+                            facts.http_status = Some(407);
+                        }
                         if first {
                             failed.setup_cause = error.setup_cause;
                             if phase == Phase::Setup {

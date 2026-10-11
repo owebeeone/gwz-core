@@ -90,10 +90,10 @@ fn environment_config(
     let environment = EnvironmentSnapshot::from_os_pairs(std::env::vars_os())?;
     // The current directory is captured beside the environment, for a relative home (design section 3).
     let cwd = std::env::current_dir().ok();
-    let direct = native
-        .map(super::NativeCaller::qualification_direct)
-        .unwrap_or_else(endpoint_environment::capture_qualification_proxy);
-    endpoint_environment::endpoint_config_native(&environment, cwd.as_deref(), direct)
+    let machine = native
+        .map(super::NativeCaller::machine_proxy)
+        .unwrap_or_else(endpoint_environment::capture_machine_proxy);
+    endpoint_environment::endpoint_config_native(&environment, cwd.as_deref(), machine)
 }
 struct Command {
     executor: tokio::runtime::Runtime,

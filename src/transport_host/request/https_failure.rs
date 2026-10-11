@@ -3,6 +3,11 @@ use crate::transport_host::helper_failure::{
     self, HELPER_ALLOCATION_PREFIX, HELPER_INTERACTION_PREFIX, MEMBER_URL,
 };
 
+/// The machine proxy asked for a sign-in (HTTP 407 to the CONNECT). Only the Windows machine proxy produces this
+/// failure, so the text names it; it points to no native option, because the native route refuses a 407 the same way
+/// (design §6, "407").
+const PROXY_SIGN_IN_UNSUPPORTED: &str = "The proxy in the Windows machine proxy setting (netsh winhttp show proxy) asked for a sign-in before it would connect to the server (HTTP 407), and GWZ does not support proxy sign-in. No credential was sent to the proxy. Ask your administrator for access through the proxy that does not need a sign-in for this server.";
+
 #[derive(Clone, Debug)]
 pub(crate) struct HttpsAttemptReceipt {
     pub(crate) failure: gwz_transport::protocol::Failure,
@@ -27,7 +32,10 @@ impl HttpsOpenFailure {
         } else if self.failure.code == ErrorCode::Unavailable && facts.method == AuthMethod::Gh {
             crate::model::ErrorCode::ExternalToolMissing
         } else if self.failure.code == ErrorCode::Authentication {
-            if facts.method == AuthMethod::Sspi
+            if facts.http_status == Some(407) {
+                // A proxy's sign-in demand is not a refusal by the remote.
+                crate::model::ErrorCode::GitCommandFailed
+            } else if facts.method == AuthMethod::Sspi
                 || facts.authenticated == Some(false)
                 || self
                     .failure
@@ -75,6 +83,9 @@ impl HttpsOpenFailure {
         let facts = self.failure.facts.as_ref();
         let helper = facts.is_some_and(|f| f.method == AuthMethod::Gh);
         let status = facts.and_then(|f| f.http_status);
+        if self.failure.code == ErrorCode::Authentication && status == Some(407) {
+            return PROXY_SIGN_IN_UNSUPPORTED.into();
+        }
         if helper && self.failure.code == ErrorCode::Unavailable {
             let what = if self.failure.setup_cause == Some(SetupFailureCause::NotFound) {
                 "found no `git`"
@@ -206,6 +217,24 @@ cfg_if::cfg_if! {
                 assert!(allocation.contains("Other helpers may be busy"));
                 assert!(!allocation.contains("all busy"));
                 assert!(allocation.ends_with("See Troubleshooting: HTTPS Credential Failure."));
+            }
+
+            #[test]
+            fn a_proxy_407_names_the_machine_proxy_setting_and_points_to_no_native_option() {
+                let failure = HttpsOpenFailure { failure: Failure {
+                    code: ErrorCode::Authentication,
+                    facts: Some(Facts { http_status: Some(407), ..Default::default() }),
+                    ..Default::default()
+                }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true };
+                let reason = failure.reason();
+                assert!(reason.contains("Windows machine proxy setting"), "{reason}");
+                assert!(reason.contains("does not support proxy sign-in"), "{reason}");
+                assert!(reason.contains("No credential was sent to the proxy"), "{reason}");
+                for pointer in ["--transport", "GWZ_TRANSPORT", "native"] {
+                    assert!(!reason.contains(pointer), "{pointer} in {reason}");
+                }
+                // The proxy's demand is not a refusal by the remote, and it is not retried as one.
+                assert_eq!(failure.model_error().unwrap().code, crate::model::ErrorCode::GitCommandFailed);
             }
 
             #[test]
