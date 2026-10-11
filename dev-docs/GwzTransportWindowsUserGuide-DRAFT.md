@@ -141,8 +141,10 @@ While Pageant waits for your confirmation, the connection's stall and setup-budg
 clocks **keep running**, as for any other wait on the network. The wait ends the
 attempt at the stall limit, `--ssh-timeout` (9 seconds by default on GWZ's
 transport), or at the 30-second setup budget, whichever comes first; `--ssh-timeout
-0` removes both. The fixed limit that applies to a git helper's sign-in window
-(120 seconds) does not apply to Pageant.
+0` removes both. Even then, each Pageant request has a finite upper limit of its
+own (never zero), so one request cannot wait forever; Ctrl-C returns sooner. The
+fixed limit that applies to a git helper's sign-in window (120 seconds) does not
+apply to Pageant.
 
 **If your Pageant is set to confirm every use and its prompt stays open longer than
 that, the attempt fails**, with:
@@ -184,8 +186,9 @@ an error rather than being skipped. Folder and key names with non-ASCII
 characters work; gwz 1.0.17 fails on them.
 
 Host-key checking is required before any login, and choosing native does not
-repair a mismatched host key. When a host is not in `known_hosts`, the message
-prints the file GWZ read, which home it came from, and what to run. To add an RSA
+repair a mismatched host key. Every `known_hosts` message (a host that is not in the
+file, a mismatched key, or a file with no RSA entry for the host) prints the file GWZ
+read, which home it came from, and what to run. To add an RSA
 entry (see the next section for why RSA), replace `<path>` with the printed path
 and `<host>` with the server's name:
 
@@ -297,26 +300,23 @@ setting is a list with no entry for `https` (for example `http=proxy:8080` or
 The Windows machine proxy setting has no entry for https: "<the setting as netsh winhttp
 show proxy prints it>". GWZ does not send https traffic around a proxy that was set up
 for other protocols only. Ask your administrator to add an https entry, for example
-netsh winhttp set proxy proxy-server="http=proxy:8080;https=proxy:8080", or run with
---transport native, which connects directly as gwz 1.0 did, if a direct connection is
-acceptable.
+netsh winhttp set proxy proxy-server="http=proxy:8080;https=proxy:8080". Only if a
+direct connection is acceptable on your network, --transport native connects directly
+as gwz 1.0 did.
 ```
 
-gwz 1.0.17 connects directly in that case and ignores the proxy. If your
-network blocks direct connections, `--transport native` fails too, and only the
-administrator's fix helps. A proxy host that does not resolve fails
+The administrator's fix comes first. gwz 1.0.17 connects directly in that case and
+ignores the proxy, and `--transport native` does the same for one command, without
+changing any setting on the computer; use it only where your network allows direct
+connections and your administrator accepts that. If your network blocks direct
+connections, `--transport native` fails too, and only the administrator's fix helps.
+A proxy host that does not resolve fails
 the operation; GWZ does not then go direct. GWZ also refuses, naming the setting,
 any form it cannot interpret: more than one bare entry, a bad port, a user name, a
 path, PAC or automatic settings, or a proxy address that is not `http://`. It
 never goes direct because it could not read a setting. Do not reset an
-administrator's proxy merely to bypass a GWZ error.
-
-Some cases were not measured even with gwz 1.0.17: an HTTPS server written as an IP
-address, a redirect from one HTTPS server to another through a proxy, this
-computer's own address as an HTTPS server, and a proxy entry with no port. For them
-GWZ follows one rule: it applies the rules on this page, so the request goes to the
-proxy, or GWZ refuses and names the setting. It does not go direct because it could
-not decide.
+administrator's proxy merely to bypass a GWZ error: `--transport native` is a choice
+for one command that leaves the proxy setting alone, not a way to change it.
 
 These go direct even with no bypass list: `localhost` in any case, any `127.x.x.x`
 address, `[::1]`, and this computer's own address when it is written as an IP
@@ -328,6 +328,14 @@ semicolons, spaces or commas. An entry may be a name, a name with `*` wildcards
 that port) or a name with a leading `http://` or `https://` (for an `https://`
 repository, `https://host` matches and `http://host` does not). Names compare
 without regard to case, and a trailing dot must match exactly.
+
+Some cases were not measured even with gwz 1.0.17: an HTTPS server written as an IP
+address, a redirect from one HTTPS server to another through a proxy, this
+computer's own address as an HTTPS server, and a proxy entry with no port. For them
+GWZ follows one rule: it applies the rules on this page, so the request goes to the
+proxy, goes direct only where a bypass rule above matches (this computer's own
+address included), or GWZ refuses and names the setting. It does not go direct
+because it could not decide.
 
 If a proxy answers 407 and asks for credentials, GWZ refuses and says that proxy
 sign-in is not supported, naming the machine proxy setting. The message does not
@@ -418,21 +426,26 @@ the operation if a redirect arrives during a Windows authentication exchange; it
 does not forward that exchange to a new location.
 
 **Which certificates are trusted.** GWZ trusts the Windows certificate store (the
-current user's and the machine's) **and also the certificates in the files named by
-the `GIT_SSL_CAINFO` and `SSL_CERT_FILE` environment variables.** gwz 1.0.17 on
-Windows ignores both variables. A CA file named in your environment is trusted, so
-a corporate interception CA placed there will be trusted too: check what those
+current user's and the machine's) **and also the certificates in one CA file**: the
+file named by `GIT_SSL_CAINFO` if that variable is set and not empty, otherwise the
+file named by `SSL_CERT_FILE`. Only that one file is used. gwz 1.0.17 on Windows
+ignores both variables. A CA file named in your environment is trusted, so a
+corporate interception CA placed there will be trusted too: check what those
 variables point to.
 
-**A stale variable now fails.** Because gwz 1.0.17 ignored those variables, a leftover
-value that never mattered there can stop GWZ. Before it connects, GWZ refuses a file
-named by either variable that is empty, has no certificate, is garbled or
-malformed, or is in the `TRUSTED CERTIFICATE` format (measured: the run
-`2026-10-08-ca-trust-parity` refused all four for each variable on Windows, where
-gwz 1.0.17 cloned anyway). A file that is missing, cannot be read or is over 1 MiB
-is also refused (`cannot read endpoint CA file`); that case is from the code and
-was not measured on Windows. To clear the problem, correct or remove the variable
-(PowerShell: `Remove-Item Env:GIT_SSL_CAINFO`, `Remove-Item Env:SSL_CERT_FILE`).
+**A stale variable can now fail.** Because gwz 1.0.17 ignored those variables, a
+leftover value that never mattered there can stop GWZ. Before it connects, GWZ
+refuses the one CA file it uses if that file is empty, has no certificate, is
+garbled or malformed, or is in the `TRUSTED CERTIFICATE` format (measured: the run
+`2026-10-08-ca-trust-parity` refused all four on Windows, each variable set on its
+own, where gwz 1.0.17 cloned anyway). A file that is missing or cannot be read is
+refused with `cannot read endpoint CA file`, and one over 1 MiB with `endpoint CA
+file exceeds 1 MiB`; those two cases are from the code and were not measured on
+Windows. If `GIT_SSL_CAINFO` is set and not empty, a bad file named by
+`SSL_CERT_FILE` is not read and does not stop GWZ; it matters only when
+`GIT_SSL_CAINFO` is unset or empty. To clear the problem, correct or remove the
+variable that is in use (PowerShell: `Remove-Item Env:GIT_SSL_CAINFO`,
+`Remove-Item Env:SSL_CERT_FILE`).
 
 ### Redirects
 
@@ -452,11 +465,14 @@ never a path-only one.
 A redirect from `https://` to `http://` is refused, with:
 
 ```
-<url> redirected to <new url>, which is not https. GWZ does not follow a redirect from
-https to http, because the request would then travel unencrypted. Ask the server's
-administrator to fix the redirect or, if you accept the risk, set the remote to the
-http:// address, which GWZ carries on the native transport with a warning.
+<url> redirected to "<new url>", which is not https. GWZ does not follow a redirect from
+https to http, because the request would then travel unencrypted. The address in quotes
+was sent by the server: treat it as untrusted text, and do not use it. Ask the server's
+administrator to fix the redirect.
 ```
+
+The address in the message is only shown to you; it is the server's choice, not
+something to copy into a remote.
 
 Kerberos is not tested; the Windows sign-in tests used NTLM. A server that
 requires channel binding (Extended Protection) was tested only against this
@@ -476,7 +492,7 @@ computer.
 | 8 | Error messages | opaque or shared text | text that names the cause and the fix |
 | 9 | Machine proxy with no entry for `https` | connects directly | refused, naming the machine proxy setting |
 | 10 | Plain `http://` remote | carried like any remote | carried by the native transport, with a warning printed before the first request that nothing turns off |
-| 11 | Trusted certificates | the Windows store only | the Windows store plus the files named by `GIT_SSL_CAINFO` and `SSL_CERT_FILE` |
+| 11 | Trusted certificates | the Windows store only | the Windows store plus one CA file: the one `GIT_SSL_CAINFO` names if it is not empty, otherwise the one `SSL_CERT_FILE` names |
 | 12 | Machine proxy with more than one bare entry | uses the first | refused as ambiguous, naming the machine proxy setting |
 | 13 | A proxy answering 407 | opaque error | one plain message: proxy sign-in is not supported |
 | 14 | A Pageant prompt that stays open longer than `--ssh-timeout` | waits for the prompt | the attempt fails with a message naming `--ssh-timeout` (`--transport native` waits as 1.0.17 did) |
@@ -494,7 +510,8 @@ scripts (and whether the native transport follows them); GWZ's own transport thr
 a proxy (so far measured only with gwz 1.0.17, against one public HTTPS server);
 through a proxy, an HTTPS server written as an IP address, a redirect from one HTTPS
 server to another, this computer's own address as an HTTPS server, and a proxy entry
-with no port (GWZ uses the proxy or refuses for these; it does not go direct on a
-guess); a server that requires channel binding on a remote machine; the OpenSSH
+with no port (the request goes to the proxy, goes direct only where a bypass rule
+above matches (this computer's own address included), or GWZ refuses; it does not go
+direct on a guess); a server that requires channel binding on a remote machine; the OpenSSH
 agent beyond RSA, ECDSA and ed25519 keys through its default pipe; filenames on
 macOS and Linux (not audited).
