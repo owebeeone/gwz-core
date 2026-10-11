@@ -1,10 +1,9 @@
 //! The scan for repository values (design §3; §9's "the scan" row).
 
 use std::fs;
-use std::os::unix::fs::symlink;
 use std::path::PathBuf;
 
-use super::fixture::{NATIVE, Workspace, fifo, home, within, write};
+use super::fixture::{NATIVE, Workspace, home, link, write};
 use crate::transport_scope::Operation;
 use crate::transport_setting::{IgnoredValue, Location, Scope, Transport, ignored_values, resolve};
 
@@ -64,35 +63,13 @@ fn the_root_and_a_targeted_members_files_are_each_reported_once() {
     );
 }
 
-/// A member the request does not target is never read: a value in its
-/// `config.worktree` gets no note, and a FIFO at its `.git/config` blocks
-/// nothing.
+/// A symbolic link and a file over 1 MiB are skipped without a note, a file of exactly 1 MiB is read, and an
+/// untargeted member is never read. (A symbolic link needs a privilege that an ordinary Windows account may lack: then
+/// that member's files are not made, and the row is the rest.)
 #[test]
-fn an_untargeted_member_is_never_read() {
-    let ws = Workspace::new("setting-untargeted", &[("mem_a", "a"), ("mem_b", "b")]);
-    write(&ws.git_dir("a").join("config"), NATIVE);
-    fifo(&ws.git_dir("b").join("config"));
-    write(&ws.git_dir("b").join("config.worktree"), NATIVE);
-    let (root, meta) = (ws.root.clone(), ws.meta(&["mem_a"]));
-    assert_eq!(
-        within(move || ignored_values(Operation::Push, &root, &meta)),
-        vec![ignored(
-            member("mem_a"),
-            ws.git_dir("a").join("config"),
-            false,
-            Some("native")
-        )]
-    );
-}
-
-/// A FIFO, a symbolic link and a file over 1 MiB are skipped without a note,
-/// a FIFO at `.git/config` included, since the scan finds the git directory
-/// from text and never opens the repository; a file of exactly 1 MiB is
-/// read.
-#[test]
-fn fifos_links_and_files_over_1_mib_are_skipped_without_a_note() {
+fn links_and_files_over_1_mib_are_skipped_without_a_note_and_an_untargeted_member_is_not_read() {
     let ws = Workspace::new(
-        "setting-guard",
+        "setting-guard-portable",
         &[
             ("mem_a", "a"),
             ("mem_b", "b"),
@@ -100,12 +77,13 @@ fn fifos_links_and_files_over_1_mib_are_skipped_without_a_note() {
             ("mem_d", "d"),
         ],
     );
-    fifo(&ws.git_dir("").join("config"));
-    fifo(&ws.git_dir("").join("config.worktree"));
     let real = ws.root.join("real.config");
     write(&real, NATIVE);
-    symlink(&real, ws.git_dir("a").join("config")).unwrap();
-    symlink(&real, ws.git_dir("a").join("config.worktree")).unwrap();
+    let linked = link(&real, &ws.git_dir("a").join("config"))
+        && link(&real, &ws.git_dir("a").join("config.worktree"));
+    if !linked {
+        eprintln!("skipped the links: this process may not create a symbolic link");
+    }
     let mut big = NATIVE.as_bytes().to_vec();
     big.resize(ONE_MIB + 1, b'\n');
     write(&ws.git_dir("b").join("config"), &big);
@@ -114,13 +92,14 @@ fn fifos_links_and_files_over_1_mib_are_skipped_without_a_note() {
     exact.resize(ONE_MIB - 1, b'x');
     exact.push(b'\n');
     write(&ws.git_dir("c").join("config"), &exact);
-    fifo(&ws.git_dir("d").join("config"));
-    let (root, meta) = (
-        ws.root.clone(),
-        ws.meta(&["@root", "mem_a", "mem_b", "mem_c", "mem_d"]),
-    );
+    // The fourth member holds a value and is not targeted.
+    write(&ws.git_dir("d").join("config"), NATIVE);
     assert_eq!(
-        within(move || ignored_values(Operation::Fetch, &root, &meta)),
+        ignored_values(
+            Operation::Fetch,
+            &ws.root,
+            &ws.meta(&["mem_a", "mem_b", "mem_c"])
+        ),
         vec![ignored(
             member("mem_c"),
             ws.git_dir("c").join("config"),
@@ -171,43 +150,6 @@ fn a_gitfile_and_commondir_locate_the_files() {
                 Some("native")
             ),
         ]
-    );
-}
-
-/// A `.git` or `commondir` that is not a regular file of at most 1 MiB, or
-/// that does not say where the git directory is, gives the repository no
-/// note.
-#[test]
-fn a_git_directory_that_cannot_be_located_from_text_gives_no_note() {
-    let ws = Workspace::new(
-        "setting-gitfile-bad",
-        &[
-            ("mem_a", "a"),
-            ("mem_b", "b"),
-            ("mem_c", "c"),
-            ("mem_d", "d"),
-        ],
-    );
-    let elsewhere = ws.root.join("elsewhere.git");
-    write(&elsewhere.join("config"), NATIVE);
-    fs::remove_dir(ws.git_dir("a")).unwrap();
-    fifo(&ws.git_dir("a"));
-    fs::remove_dir(ws.git_dir("b")).unwrap();
-    write(
-        &ws.git_dir("b"),
-        format!("git dir: {}\n", elsewhere.display()),
-    );
-    fs::remove_dir(ws.git_dir("c")).unwrap();
-    symlink(&elsewhere, ws.git_dir("c")).unwrap();
-    write(&ws.git_dir("d").join("config"), NATIVE);
-    fifo(&ws.git_dir("d").join("commondir"));
-    let (root, meta) = (
-        ws.root.clone(),
-        ws.meta(&["mem_a", "mem_b", "mem_c", "mem_d"]),
-    );
-    assert_eq!(
-        within(move || ignored_values(Operation::Fetch, &root, &meta)),
-        Vec::new()
     );
 }
 
@@ -364,22 +306,136 @@ fn a_file_two_targets_share_gets_one_note() {
     );
 }
 
-/// A member at a path that holds a newline is scanned, and its file is
-/// reported under that path; the notes escape it (`text.rs`).
-#[test]
-fn a_member_under_a_newline_is_scanned() {
-    let ws = Workspace::new("setting-scan-newline", &[("mem_a", "line\nbreak")]);
-    write(&ws.git_dir("line\nbreak").join("config"), NATIVE);
-    let found = ignored_values(Operation::Fetch, &ws.root, &ws.meta(&["mem_a"]));
-    assert_eq!(
-        found,
-        vec![ignored(
-            member("mem_a"),
-            ws.git_dir("line\nbreak").join("config"),
-            false,
-            Some("native")
-        )]
-    );
-    assert_eq!(found[0].location.remove_text(), "remove it from that file");
-    assert!(!found[0].location.where_text().contains('\n'));
+// The rows that are Unix's: a FIFO is a file in a directory only there (a Windows named pipe lives in its own
+// namespace), a symbolic link to a directory is made without the privilege that Windows asks for, and Windows forbids a
+// newline in a name.
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        use std::os::unix::fs::symlink;
+
+        use super::fixture::{fifo, within};
+
+        /// A member the request does not target is never read: a value in its
+        /// `config.worktree` gets no note, and a FIFO at its `.git/config` blocks
+        /// nothing.
+        #[test]
+        fn an_untargeted_member_is_never_read() {
+            let ws = Workspace::new("setting-untargeted", &[("mem_a", "a"), ("mem_b", "b")]);
+            write(&ws.git_dir("a").join("config"), NATIVE);
+            fifo(&ws.git_dir("b").join("config"));
+            write(&ws.git_dir("b").join("config.worktree"), NATIVE);
+            let (root, meta) = (ws.root.clone(), ws.meta(&["mem_a"]));
+            assert_eq!(
+                within(move || ignored_values(Operation::Push, &root, &meta)),
+                vec![ignored(
+                    member("mem_a"),
+                    ws.git_dir("a").join("config"),
+                    false,
+                    Some("native")
+                )]
+            );
+        }
+
+        /// A FIFO, a symbolic link and a file over 1 MiB are skipped without a note,
+        /// a FIFO at `.git/config` included, since the scan finds the git directory
+        /// from text and never opens the repository; a file of exactly 1 MiB is
+        /// read.
+        #[test]
+        fn fifos_links_and_files_over_1_mib_are_skipped_without_a_note() {
+            let ws = Workspace::new(
+                "setting-guard",
+                &[
+                    ("mem_a", "a"),
+                    ("mem_b", "b"),
+                    ("mem_c", "c"),
+                    ("mem_d", "d"),
+                ],
+            );
+            fifo(&ws.git_dir("").join("config"));
+            fifo(&ws.git_dir("").join("config.worktree"));
+            let real = ws.root.join("real.config");
+            write(&real, NATIVE);
+            symlink(&real, ws.git_dir("a").join("config")).unwrap();
+            symlink(&real, ws.git_dir("a").join("config.worktree")).unwrap();
+            let mut big = NATIVE.as_bytes().to_vec();
+            big.resize(ONE_MIB + 1, b'\n');
+            write(&ws.git_dir("b").join("config"), &big);
+            let mut exact = NATIVE.as_bytes().to_vec();
+            exact.push(b'#');
+            exact.resize(ONE_MIB - 1, b'x');
+            exact.push(b'\n');
+            write(&ws.git_dir("c").join("config"), &exact);
+            fifo(&ws.git_dir("d").join("config"));
+            let (root, meta) = (
+                ws.root.clone(),
+                ws.meta(&["@root", "mem_a", "mem_b", "mem_c", "mem_d"]),
+            );
+            assert_eq!(
+                within(move || ignored_values(Operation::Fetch, &root, &meta)),
+                vec![ignored(
+                    member("mem_c"),
+                    ws.git_dir("c").join("config"),
+                    false,
+                    Some("native")
+                )]
+            );
+        }
+
+        /// A `.git` or `commondir` that is not a regular file of at most 1 MiB, or
+        /// that does not say where the git directory is, gives the repository no
+        /// note.
+        #[test]
+        fn a_git_directory_that_cannot_be_located_from_text_gives_no_note() {
+            let ws = Workspace::new(
+                "setting-gitfile-bad",
+                &[
+                    ("mem_a", "a"),
+                    ("mem_b", "b"),
+                    ("mem_c", "c"),
+                    ("mem_d", "d"),
+                ],
+            );
+            let elsewhere = ws.root.join("elsewhere.git");
+            write(&elsewhere.join("config"), NATIVE);
+            fs::remove_dir(ws.git_dir("a")).unwrap();
+            fifo(&ws.git_dir("a"));
+            fs::remove_dir(ws.git_dir("b")).unwrap();
+            write(
+                &ws.git_dir("b"),
+                format!("git dir: {}\n", elsewhere.display()),
+            );
+            fs::remove_dir(ws.git_dir("c")).unwrap();
+            symlink(&elsewhere, ws.git_dir("c")).unwrap();
+            write(&ws.git_dir("d").join("config"), NATIVE);
+            fifo(&ws.git_dir("d").join("commondir"));
+            let (root, meta) = (
+                ws.root.clone(),
+                ws.meta(&["mem_a", "mem_b", "mem_c", "mem_d"]),
+            );
+            assert_eq!(
+                within(move || ignored_values(Operation::Fetch, &root, &meta)),
+                Vec::new()
+            );
+        }
+
+        /// A member at a path that holds a newline is scanned, and its file is
+        /// reported under that path; the notes escape it (`text.rs`).
+        #[test]
+        fn a_member_under_a_newline_is_scanned() {
+            let ws = Workspace::new("setting-scan-newline", &[("mem_a", "line\nbreak")]);
+            write(&ws.git_dir("line\nbreak").join("config"), NATIVE);
+            let found = ignored_values(Operation::Fetch, &ws.root, &ws.meta(&["mem_a"]));
+            assert_eq!(
+                found,
+                vec![ignored(
+                    member("mem_a"),
+                    ws.git_dir("line\nbreak").join("config"),
+                    false,
+                    Some("native")
+                )]
+            );
+            assert_eq!(found[0].location.remove_text(), "remove it from that file");
+            assert!(!found[0].location.where_text().contains('\n'));
+        }
+    }
 }

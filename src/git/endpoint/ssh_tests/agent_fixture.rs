@@ -17,6 +17,15 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+/// An agent client over the socket at `path`, for `agent_auth`'s `open` argument.
+pub fn connect(
+    path: &std::path::Path,
+    control: Arc<crate::git::endpoint::agent_job::Control>,
+) -> io::Result<
+    crate::git::endpoint::agent_client::Agent<impl crate::git::endpoint::agent_client::Channel>,
+> {
+    crate::git::endpoint::agent_socket::connect(path, control)
+}
 pub struct Fixture {
     pub ssh: SshdFixture,
     pub path: PathBuf,
@@ -212,6 +221,25 @@ impl Fixture {
             .method_pref(ssh2::MethodType::SignAlgo, method)
             .unwrap();
         (connection, key)
+    }
+    /// Waits for the agent to have been asked to sign.
+    pub fn wait_signing(&self, within: Duration) {
+        self.signing.recv_timeout(within).unwrap();
+    }
+    /// Waits for the agent to have been asked for its keys.
+    pub fn wait_listed(&self, within: Duration) {
+        self.listed.recv_timeout(within).unwrap();
+    }
+    /// Damages the next signature: 1 is a short signature, 2 a wrong algorithm name, 3 a one-byte `ssh-rsa` and 4 a
+    /// 257-byte one.
+    pub fn damage(&self, kind: u8) {
+        self.fault.store(kind, Ordering::SeqCst);
+    }
+    /// A raw, nonblocking client of the agent, for a test that wraps its own channel.
+    pub fn raw_channel(&self) -> UnixStream {
+        let socket = UnixStream::connect(&self.path).unwrap();
+        socket.set_nonblocking(true).unwrap();
+        socket
     }
     pub fn assert_requests(&self, method: &str, signatures: usize) {
         let mut expected = vec![11];

@@ -34,11 +34,16 @@ impl Session {
         let shown = (destination.key.host.clone(), destination.key.port);
         // The stall bound this open's deadlines carry (`network_deadlines`
         // takes the same field), for a stall's message to name.
-        let stall_ms = self
-            .state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .io_timeout_ms;
+        let (stall_ms, known_hosts) = {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                state.io_timeout_ms,
+                state
+                    .home
+                    .as_ref()
+                    .map(|home| KnownHostsFile::under(&home.path, home.source)),
+            )
+        };
         let policy = if identity.mode == IdentityMode::ExplicitKey {
             AuthPolicy::SshExplicit
         } else {
@@ -69,7 +74,7 @@ impl Session {
         )
         .map_err(|failure| {
             let attempts = setup_retry::reported_attempt(&failure);
-            open_failure_io(failure, attempts, stall_ms, shown.0, shown.1)
+            open_failure_io(failure, attempts, stall_ms, shown.0, shown.1, known_hosts)
         })
     }
     pub(in crate::transport_host) fn open_https(

@@ -40,7 +40,7 @@ gwz_transport_candidate  src/lib.rs  mod transport_host
 gwz_transport_candidate  src/lib.rs  mod transport_setting
 gwz_transport_candidate  src/lib.rs  use gwz_transport::cbor
 gwz_transport_candidate  src/protocol/mod.rs  mod generated
-gwz_transport_candidate  src/transport_host/endpoint_environment.rs  fn capture_qualification_proxy
+gwz_transport_candidate  src/transport_host/endpoint_environment.rs  fn capture_machine_proxy
 gwz_transport_candidate  src/transport_host/endpoint_environment.rs  fn endpoint_config_native
 gwz_transport_candidate  src/transport_host/endpoint_environment.rs  mod platform
 gwz_transport_candidate  src/transport_host/mod.rs  fn capabilities

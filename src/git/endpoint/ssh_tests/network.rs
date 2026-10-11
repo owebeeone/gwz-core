@@ -77,7 +77,15 @@ fn missing_unknown_and_mismatched_trust_never_reach_authentication() {
             )
             .unwrap(),
         );
-        assert!(result.is_err());
+        let error = result.err().expect("trust was refused");
+        // Every one of them is the refusal that the host words with the file it read (U8), except that a foreign
+        // ECDSA or Ed25519 key is, where the SSH library verifies RSA keys only (Windows), the limit of step 3.8
+        // that is met before any connection and has its own words.
+        assert!(
+            crate::git::endpoint::ssh_host_key::HostKeyRefused::of_error(&error)
+                || crate::git::endpoint::ssh_limits::SshLimit::of_error(&error).is_some(),
+            "sample {i}: {error:?}"
+        );
         assert!(!reached.load(Ordering::SeqCst));
     }
 }

@@ -157,6 +157,66 @@ fn a_nul_a_missing_anchor_and_a_relative_anchor_are_refused() {
     }
 }
 
+/// A configuration whose captured environment is exactly `pairs`.
+fn with_environment(pairs: &[(&str, &str)]) -> Config {
+    Config {
+        executable: git(),
+        environment: pairs
+            .iter()
+            .map(|(name, value)| ((*name).into(), (*value).into()))
+            .collect(),
+    }
+}
+
+/// `~/` is expanded under the home of the shared home contract (plan step 3.1; `git::endpoint::ssh_home`), which is
+/// `HOME` when it is set and `USERPROFILE` when it is not (operator, 2026-10-11).
+#[test]
+fn a_tilde_include_falls_back_to_userprofile_when_home_is_unset() {
+    let profile = rooted("profile dir");
+    let config = with_environment(&[("USERPROFILE", &profile)]);
+    let expected = format!("{profile}/included");
+    assert!(
+        include_path(&config, rooted("anchor").as_bytes(), b"~/included")
+            .unwrap()
+            .0
+            == expected.as_bytes()
+    );
+}
+
+#[test]
+fn a_tilde_include_prefers_home_to_userprofile() {
+    let (home, profile) = (rooted("home"), rooted("profile"));
+    let config = with_environment(&[("USERPROFILE", &profile), ("HOME", &home)]);
+    let expected = format!("{home}/included");
+    assert!(
+        include_path(&config, rooted("anchor").as_bytes(), b"~/included")
+            .unwrap()
+            .0
+            == expected.as_bytes()
+    );
+}
+
+#[test]
+fn a_tilde_include_is_refused_for_an_empty_home_a_relative_one_and_no_home_at_all() {
+    // An explicitly empty HOME is an error and not a reason to use the profile; a relative one is no home, and
+    // neither is a profile that is relative or empty.
+    let profile = rooted("profile");
+    for pairs in [
+        vec![("HOME", ""), ("USERPROFILE", profile.as_str())],
+        vec![("HOME", "relative-home")],
+        vec![("USERPROFILE", "relative-profile")],
+        vec![("USERPROFILE", "")],
+        vec![],
+    ] {
+        let config = with_environment(&pairs);
+        assert_eq!(
+            include_path(&config, rooted("anchor").as_bytes(), b"~/included").err(),
+            Some(AuthError::ConfigurationRefused),
+            "{pairs:?}"
+        );
+    }
+}
+
 #[test]
 fn the_origin_of_a_configuration_file_is_the_path_git_wrote() {
     let origin = rooted("home/.gitconfig");

@@ -65,3 +65,39 @@ fn open_failure_preserves_a_network_error_and_does_not_fall_back() {
     assert!(error.message().contains("fixture refused"));
     assert!(remote.close().is_ok());
 }
+
+/// A host key the endpoint does not trust reaches libgit2 as the native route reports one: the SSH class, with the
+/// host's words (design section 14, item 13, U8). Any other permission error stays a network one.
+#[test]
+fn a_refused_host_key_is_an_ssh_class_failure_carrying_the_hosts_words() {
+    #[derive(Debug)]
+    struct Worded;
+    impl std::fmt::Display for Worded {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("gwz cannot trust the host key of host.example")
+        }
+    }
+    impl std::error::Error for Worded {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&crate::git::endpoint::ssh_host_key::HostKeyRefused)
+        }
+    }
+    struct Refuse;
+    impl OpenStream for Refuse {
+        fn open(&self, _: &str, _: GitService) -> io::Result<BlockingStream> {
+            Err(io::Error::new(io::ErrorKind::PermissionDenied, Worded))
+        }
+    }
+    let remote = RemoteTransport::new(Arc::new(Refuse));
+    let error = match remote.action("ssh://git@host.example/repo", Service::UploadPackLs) {
+        Err(error) => error,
+        Ok(_) => panic!("a refused host key opened a stream"),
+    };
+    assert_eq!(error.class(), git2::ErrorClass::Ssh);
+    assert_eq!(error.code(), git2::ErrorCode::GenericError);
+    assert!(
+        error
+            .message()
+            .contains("cannot trust the host key of host.example")
+    );
+}

@@ -60,6 +60,9 @@ pub(crate) struct Client {
     routes: Arc<Mutex<Routes>>,
     config: pool::Config,
     io_timeout_ms: u64,
+    /// The endpoint's proxy is the machine setting's (Windows; plan step 4.7): a connection setup that ends in
+    /// `Authentication` was answered 407 by that proxy.
+    machine_proxy: bool,
     auth_owner: https_auth::AuthOwner,
     native: Option<native::NativeCaller>,
     native_cleanup: native::Cleanup,
@@ -97,6 +100,7 @@ impl Endpoint {
         if io_timeout_ms > i32::MAX as u64 {
             return Err(failure(ErrorCode::InvalidRequest));
         }
+        let machine_proxy = tls.machine_bypass.is_some();
         let pool = RunningPool::with_authority(config.clone(), tls, authority)?;
         let routes = Arc::new(Mutex::new(Routes::new()));
         let operations = super::https_operation::Operations::new(routes.clone());
@@ -114,6 +118,7 @@ impl Endpoint {
             native_cleanup: Arc::new(Mutex::new(native::CleanupState::default())),
             config,
             io_timeout_ms,
+            machine_proxy,
         };
         Ok(Self { client, pool })
     }

@@ -8,13 +8,15 @@
 //! answer to an `rsa-sha2` request (libssh2 on Windows offers only `rsa-sha2-512`, and the agent signs RSA with
 //! `ring`, which has no SHA-1 RSA). It signs Ed25519 and ECDSA keys (P-256, P-384, P-521) too.
 //!
-//! [`KeyAgent::authenticate`] is the Windows twin of the Unix `authenticate` only in what it proves: the transport's
-//! own agent signing (`agent_auth`) is Unix-only until step 3.4, so it authenticates with libssh2's own agent client
-//! pointed at this agent's pipe, which is how gwz 1.0.17 does it and what the TR1.8 baseline measured.
+//! [`KeyAgent::authenticate`] is the Windows twin of the Unix `authenticate`: the endpoint's own trust setup, then
+//! `agent_auth::authenticate_reporting` over a pipe channel to this agent (plan step 3.4). It authenticates on the
+//! production path, and signs with the agent as the transport does.
 use super::agent_fixture_pipe::{
     Behavior, Identity, PipeAgent, PipeChannel, Request, Stage, pipe_name,
 };
-use crate::git::endpoint::{agent_job::Job, ssh_fixture as common, ssh_network};
+use crate::git::endpoint::{
+    agent_auth, agent_client::Agent, agent_job::Job, ssh_fixture as common, ssh_network,
+};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use gwz_transport::pool::Key;
 use std::{
@@ -24,7 +26,6 @@ use std::{
     task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
-use windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW;
 
 /// How the agent answers a sign request for one listed key.
 pub(crate) enum Sign<'a> {
@@ -125,15 +126,6 @@ pub(crate) fn keygen_pem_rsa(dir: &Path, name: &str, bits: u32) -> PathBuf {
     path
 }
 
-/// Whether a Pageant window exists. libssh2 tries Pageant before the pipe it is given, so a fixture that
-/// authenticates through libssh2's agent client must not run beside one: it would offer the user's keys.
-fn pageant_is_running() -> bool {
-    let wide = |text: &str| -> Vec<u16> { text.encode_utf16().chain([0]).collect() };
-    let (class, title) = (wide("Pageant"), wide("Pageant"));
-    // SAFETY: both strings are NUL-terminated and outlive the call.
-    !unsafe { FindWindowW(class.as_ptr(), title.as_ptr()) }.is_null()
-}
-
 /// The transport's setup (connect, handshake, trust), connecting again when libssh2 on Windows (CNG) ends the key
 /// exchange on its own side, about one connection in a hundred, whatever the server (`ssh_fixture::handshaken`). The
 /// setup reports that as `Other`, the only kind it gives a handshake failure; any other failure is returned at once.
@@ -152,39 +144,28 @@ fn establish(
 }
 
 impl KeyAgent {
-    /// Authenticates as `user` to the server at `port`, trusted through `known_hosts`: the transport's own trust setup,
-    /// then libssh2's agent client against this agent's pipe, trying each listed key in order, as libgit2 does for
-    /// gwz 1.0.17. `PermissionDenied` when no key authenticates.
+    /// Authenticates as `user` to the server at `port`, trusted through `known_hosts`, on the production path: the
+    /// endpoint's own trust setup, then `agent_auth::authenticate_reporting` over this agent's pipe. `PermissionDenied`
+    /// when no key authenticates.
     pub(crate) fn authenticate(&self, port: u16, known_hosts: &Path, user: &str) -> io::Result<()> {
-        assert!(
-            !pageant_is_running(),
-            "Pageant is running, and libssh2's agent client would try its keys before this fixture's pipe: stop it"
-        );
         let key = Key::ssh(user, "127.0.0.1", port);
-        let (known, pipe, user) = (
-            known_hosts.to_owned(),
-            self.agent.name().to_owned(),
-            user.to_owned(),
-        );
+        let (known, user) = (known_hosts.to_owned(), user.to_owned());
+        let channel = self.agent.connect();
         let mut job = Job::start_isolated(
             Some(Instant::now() + Duration::from_secs(20)),
             Duration::from_secs(1),
             move |control| {
-                let (mut connection, _trusted) = establish(&key, &known, &control)?;
-                let session = connection.session();
-                // libssh2's agent client blocks; the session was left nonblocking by the setup.
-                session.set_blocking(true);
-                session.set_timeout(10_000);
-                let mut agent = session.agent()?;
-                agent.set_identity_path(Path::new(&pipe))?;
-                agent.connect()?;
-                agent.list_identities()?;
-                for identity in agent.identities()? {
-                    if agent.userauth(&user, &identity).is_ok() && session.authenticated() {
-                        return Ok(());
-                    }
-                }
-                Err(io::ErrorKind::PermissionDenied.into())
+                let (connection, trusted) = establish(&key, &known, &control)?;
+                agent_auth::authenticate_reporting(
+                    connection,
+                    &user,
+                    &trusted,
+                    control.clone(),
+                    || Ok(Agent::new(channel, control)),
+                    || {},
+                    || {},
+                )
+                .map(drop)
             },
         )?;
         let deadline = Instant::now() + Duration::from_secs(30);

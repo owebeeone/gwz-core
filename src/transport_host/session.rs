@@ -6,6 +6,7 @@ use crate::git::endpoint::{
     ssh_channel::GitService,
     ssh_destination::Destination,
     ssh_handoff::{Handoff, UrlExtras},
+    ssh_home::{Home, KnownHostsFile},
     ssh_worker::ThreadWake,
     stream_io::BlockingStream,
 };
@@ -156,6 +157,9 @@ struct State {
     /// A driver's handoff to the endpoint session in its process, when it
     /// has one: each SSH open's URL extras go through it (TR2.18).
     handoff: Option<Handoff>,
+    /// The SSH home the endpoint in this process reads under, and the variable that named it (plan step 3.1): a driver
+    /// prints the `known_hosts` file when it words a host-key failure, and expands `~/` identity paths under it.
+    home: Option<Home>,
 }
 struct Event {
     wakes: Mutex<BTreeMap<u64, Waker>>,
@@ -276,6 +280,21 @@ impl Session {
             https.set_notes(notes.clone());
         }
     }
+    /// Tells this driver which SSH home its runtime's endpoint reads under, and where that home came from.
+    pub(super) fn set_home(&self, home: Option<Home>) {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .home = home;
+    }
+    /// The SSH home the endpoint reads under: the one place `known_hosts` and `~/` identities are read from.
+    pub(super) fn home(&self) -> Option<Home> {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .home
+            .clone()
+    }
     cfg_if::cfg_if! { if #[cfg(test)] {
         pub(super) fn capacity_for_test(&self) -> Option<pool::Capacity> {
             let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
@@ -377,6 +396,7 @@ impl Session {
             ssh_allocation_ms: 30_000,
             ssh_interaction_ms: 120_000,
             handoff: None,
+            home: None,
         }
     }
     /// A driver session. `handoff` is shared with the endpoint session its
@@ -446,7 +466,8 @@ impl Session {
             });
             let ssh = ssh_local::connect_with_helpers(
                 config.pool.clone(),
-                ssh_settings.home.join(".ssh/known_hosts"),
+                // The file the driver names when it words a host-key failure (`KnownHostsFile`).
+                KnownHostsFile::under(&ssh_settings.home, ssh_settings.home_source).path,
                 ssh_settings.agent.clone(),
                 config.io_timeout_ms,
                 authority.clone(),

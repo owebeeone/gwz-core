@@ -5,6 +5,7 @@ use super::*;
 use crate::git::endpoint::ssh_fixture as common;
 use crate::transport_host::{SshEndpointConfig, TransportRequest, TransportRuntime};
 mod drivers;
+mod home_rows;
 mod host_context;
 mod known_hosts_case;
 mod url_parity;

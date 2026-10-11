@@ -5,6 +5,9 @@ use std::{
 };
 
 fn fixture() -> PlacementEndpoint {
+    fixture_at(std::env::temp_dir()).unwrap()
+}
+fn fixture_at(home: PathBuf) -> io::Result<PlacementEndpoint> {
     struct NoConnect;
     impl super::super::ssh_pool::Connector for NoConnect {
         type Resource = super::super::ssh_setup::NativeResource;
@@ -25,11 +28,10 @@ fn fixture() -> PlacementEndpoint {
             100,
         )
         .unwrap(),
-        std::env::temp_dir(),
+        home,
         "endpoint".into(),
         "owner".into(),
     )
-    .unwrap()
 }
 fn check(path: &Path, timeout_ms: i64) -> Envelope {
     Envelope {
@@ -477,5 +479,32 @@ cfg_if::cfg_if! {
     } else {
         /// A device path is refused before any open, so nothing can be blocked in one.
         fn release_a_blocked_open(_path: &Path) {}
+    }
+}
+
+/// TD6: the SSH home is a native path. The endpoint refuses a home that cannot be one (relative, or holding a NUL) and
+/// nothing else: a home that is not valid Unicode is kept, as the file operations below it take native bytes.
+#[test]
+fn a_home_is_a_native_path_and_only_a_nul_or_a_relative_one_is_refused() {
+    assert!(fixture_at(std::env::temp_dir()).is_ok());
+    assert!(fixture_at(PathBuf::from("relative")).is_err());
+    let absolute = std::env::temp_dir();
+    let mut with_nul = absolute.clone().into_os_string();
+    with_nul.push("\0x");
+    assert!(fixture_at(PathBuf::from(with_nul)).is_err());
+    cfg_if::cfg_if! {
+        if #[cfg(unix)] {
+            use std::os::unix::ffi::OsStringExt;
+            let mut bytes = absolute.into_os_string().into_vec();
+            bytes.extend_from_slice(b"/h\xff\xfe");
+            assert!(fixture_at(PathBuf::from(std::ffi::OsString::from_vec(bytes))).is_ok());
+        } else if #[cfg(windows)] {
+            use std::os::windows::ffi::{OsStrExt, OsStringExt};
+            // A lone surrogate is a legal Windows name with no UTF-8.
+            let mut units: Vec<u16> = absolute.as_os_str().encode_wide().collect();
+            units.extend("\\h".encode_utf16());
+            units.push(0xD800);
+            assert!(fixture_at(PathBuf::from(std::ffi::OsString::from_wide(&units))).is_ok());
+        }
     }
 }

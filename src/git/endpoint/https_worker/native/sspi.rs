@@ -6,15 +6,18 @@ use super::*;
 #[derive(Clone)]
 pub struct NativeCaller {
     pub(super) port: Result<Arc<dyn Port>, gwz_sspi::ErrorKind>,
-    pub(super) qualification_direct: Option<bool>,
+    /// The WinHTTP machine proxy, read with the caller (Windows qualification only; plan step 4.6).
+    pub(super) machine_proxy: Option<crate::transport_host::endpoint_environment::MachineProxy>,
 }
 impl NativeCaller {
     cfg_if::cfg_if! { if #[cfg(test)] {
-        pub(crate) fn refused_for_test(kind: gwz_sspi::ErrorKind) -> Self { Self { port: Err(kind), qualification_direct: None } }
+        pub(crate) fn refused_for_test(kind: gwz_sspi::ErrorKind) -> Self { Self { port: Err(kind), machine_proxy: None } }
     } }
 
-    pub(crate) fn qualification_direct(&self) -> Option<bool> {
-        self.qualification_direct
+    pub(crate) fn machine_proxy(
+        &self,
+    ) -> Option<crate::transport_host::endpoint_environment::MachineProxy> {
+        self.machine_proxy.clone()
     }
 
     pub fn capture(supervisor: &Result<Arc<gwz_sspi::Supervisor>, gwz_sspi::ErrorKind>) -> Self {
@@ -32,11 +35,10 @@ impl NativeCaller {
                     })
                     .map_err(|error| error.kind())
             });
-        let qualification_direct =
-            crate::transport_host::endpoint_environment::capture_qualification_proxy();
+        let machine_proxy = crate::transport_host::endpoint_environment::capture_machine_proxy();
         Self {
             port,
-            qualification_direct,
+            machine_proxy,
         }
     }
 }

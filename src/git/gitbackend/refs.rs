@@ -161,14 +161,16 @@ pub(super) fn switch_branch(
     })
 }
 
-pub(super) fn tag_create(
+/// The Git CLI route of `tag_create`: `git tag`, so hooks, signing and tagger
+/// configuration are honored. `native_commit` picks it when the route rule
+/// says libgit2 cannot reproduce Git exactly.
+pub(super) fn tag_create_cli(
     backend: &Git2Backend,
     path: &Path,
     name: &str,
     message: Option<&str>,
     signed: bool,
 ) -> ModelResult<GitTagResult> {
-    // AD1 CLI fallback: `git tag` so hooks / signing / tagger config are honored.
     let mut command = std::process::Command::new("git");
     // The child's directory is explicit: it never inherits the host's.
     command.current_dir(path).arg("-C").arg(path).arg("tag");
@@ -196,7 +198,15 @@ pub(super) fn tag_create(
             ),
         ));
     }
-    // AD1 self-verify: the tag exists (read fresh) and resolves to a commit.
+    verify_tag_created(backend, path, name)
+}
+
+/// AD1 self-verify: the tag exists (read fresh) and resolves to a commit.
+pub(super) fn verify_tag_created(
+    backend: &Git2Backend,
+    path: &Path,
+    name: &str,
+) -> ModelResult<GitTagResult> {
     if !backend.tag_list(path)?.iter().any(|tag| tag == name) {
         return Err(ModelError::new(
             ErrorCode::GitCommandFailed,
@@ -230,7 +240,8 @@ pub(super) fn tag_list(_backend: &Git2Backend, path: &Path) -> ModelResult<Vec<S
     Ok(tags)
 }
 
-pub(super) fn tag_delete(backend: &Git2Backend, path: &Path, name: &str) -> ModelResult<()> {
+/// The Git CLI route of `tag_delete`; see [`tag_create_cli`].
+pub(super) fn tag_delete_cli(backend: &Git2Backend, path: &Path, name: &str) -> ModelResult<()> {
     let output = std::process::Command::new("git")
         .current_dir(path)
         .arg("-C")
@@ -254,7 +265,15 @@ pub(super) fn tag_delete(backend: &Git2Backend, path: &Path, name: &str) -> Mode
             ),
         ));
     }
-    // AD1 self-verify: the tag is gone.
+    verify_tag_deleted(backend, path, name)
+}
+
+/// AD1 self-verify: the tag is gone.
+pub(super) fn verify_tag_deleted(
+    backend: &Git2Backend,
+    path: &Path,
+    name: &str,
+) -> ModelResult<()> {
     if backend.tag_list(path)?.iter().any(|tag| tag == name) {
         return Err(ModelError::new(
             ErrorCode::GitCommandFailed,
