@@ -206,6 +206,20 @@ impl Client {
             {
                 return Err(with_facts(ErrorCode::Timeout, Effect::None, &facts));
             }
+            // A POST waits for a hold a POST response set before it takes a
+            // connection, so that after a long hold it is on a fresh one: the
+            // hold's end discards the idle ones (§4.5).
+            if !https_policy::advertisement(input.service) && challenge.is_none() {
+                let gate = throttle::Gate::new(
+                    &self.pool,
+                    &input.operation,
+                    Key::https(destination.host(), destination.port()),
+                );
+                tokio::select! {
+                    () = gate.wait_for_continuing() => {}
+                    _ = cancel.cancelled() => return Err(with_facts(ErrorCode::Cancelled, Effect::None, &facts)),
+                }
+            }
             let carried_lease = challenge.is_some();
             let lease = if let Some(carried) = challenge.take() {
                 let mut carried = carried;
@@ -317,6 +331,11 @@ impl Client {
                 io_ms: budget.network.map_or(0, duration_ms),
                 cleanup_ms: duration_ms(budget.cleanup),
                 discard: false,
+                gate: throttle::Gate::new(
+                    &self.pool,
+                    &input.operation,
+                    Key::https(destination.host(), destination.port()),
+                ),
             };
             if !https_policy::advertisement(input.service) {
                 return Ok(prepared);

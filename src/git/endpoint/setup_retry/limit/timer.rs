@@ -1,15 +1,19 @@
 //! The probe timer (§4.7): `T0` doubling to `Tmax`, each expiry drawn with
 //! jitter. Time is a number the caller supplies.
 
+use std::sync::{Arc, Mutex};
+
 pub(crate) const T0_MS: u64 = 500;
 pub(crate) const TMAX_MS: u64 = 30_000;
 
-/// The jitter factor of each expiry, in thousandths: 800 to 1200.
-pub(crate) struct Spread(Box<dyn FnMut() -> u64 + Send>);
+/// The jitter factor of each expiry, in thousandths: 800 to 1200. A clone
+/// draws from the same source, so a key's two timers share one.
+#[derive(Clone)]
+pub(crate) struct Spread(Arc<Mutex<Box<dyn FnMut() -> u64 + Send>>>);
 
 impl Spread {
     pub(crate) fn new(draw: impl FnMut() -> u64 + Send + 'static) -> Self {
-        Self(Box::new(draw))
+        Self(Arc::new(Mutex::new(Box::new(draw))))
     }
     pub(crate) fn fixed(permille: u64) -> Self {
         Self::new(move || permille)
@@ -19,7 +23,7 @@ impl Spread {
         Self::new(|| 800 + getrandom::u64().map_or(200, |value| value % 401))
     }
     fn draw(&mut self) -> u64 {
-        (self.0)().clamp(800, 1_200)
+        (self.0.lock().unwrap_or_else(|e| e.into_inner()))().clamp(800, 1_200)
     }
 }
 

@@ -551,3 +551,39 @@ fn what_the_socket_reports_decides_whether_a_dropped_setup_is_retried() {
         (Cancelled, Return)
     );
 }
+
+#[test]
+fn a_connection_the_os_aborts_or_resets_before_authentication_is_the_setup_limits_evidence() {
+    // F3: Windows reports a `MaxStartups` drop as WSAECONNABORTED where Unix
+    // reports a reset; both must reach the setup limit, per platform.
+    use crate::git::endpoint::{
+        setup_retry::{Phase, Signal, suspect},
+        ssh_setup::failure_from_io,
+    };
+    use gwz_transport::protocol::Facts;
+    let before_authentication = |error: io::Error| {
+        let mut failure = failure_from_io(&clean(error));
+        failure.facts = Some(Facts::default());
+        suspect(&failure, Phase::Setup, true)
+    };
+    for (raw, kind) in os_errors() {
+        let expected = match kind {
+            io::ErrorKind::ConnectionAborted | io::ErrorKind::ConnectionReset => {
+                Some(Signal::SetupDrop)
+            }
+            io::ErrorKind::ConnectionRefused => Some(Signal::Suspect),
+            _ => continue,
+        };
+        assert_eq!(
+            before_authentication(io::Error::from_raw_os_error(raw)),
+            expected,
+            "{kind:?} ({raw})"
+        );
+    }
+    // The transport's own cancellation is a `ConnectionAborted` that is not the
+    // OS's: it ends the member and is no evidence.
+    assert_eq!(
+        before_authentication(io::ErrorKind::ConnectionAborted.into()),
+        None
+    );
+}

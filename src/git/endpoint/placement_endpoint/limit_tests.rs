@@ -247,6 +247,80 @@ fn a_refused_wave_is_requeued_not_counted_and_its_confirming_test_is_the_first_c
     endpoint.shutdown();
 }
 
+/// A drop at the banner or key exchange, before any credential was offered.
+fn dropped() -> Failure {
+    Failure {
+        detail: None,
+        setup_cause: None,
+        code: ErrorCode::Io,
+        effect: Effect::None,
+        facts: None,
+    }
+}
+
+#[test]
+fn a_wave_dropped_before_authentication_is_requeued_not_counted_and_sets_the_setup_limit() {
+    // Case 3 at the endpoint: four setups at once, every one dropped. The
+    // first has three others in setup for its whole window (3 < Ns = 4), so it
+    // is conclusive; the rest are the same wave. All four are requeued and none
+    // is counted, `N` is untouched, and when the window resolves with no
+    // co-setup through, `Ns` is 1 (never 0). The next start, alone in setup
+    // (hi_s = 0), is the retry machine's first counted failure.
+    let (mut endpoint, starts) = endpoint(dropped(), Some(Duration::from_millis(30)), 4, 3);
+    let mut terminals = Vec::new();
+    for id in 1..=4 {
+        endpoint.accept(OPERATION.into(), open(id, 30_000)).unwrap();
+    }
+    until(&mut endpoint, 0, &mut terminals, |_| {
+        *starts.lock().unwrap() == 5
+    });
+    assert_eq!(
+        endpoint.opens.len(),
+        1,
+        "one setup at a time once Ns = 1: the endpoint's own opens bound it"
+    );
+    quiesce(&mut endpoint, 0, &mut terminals);
+    assert!(terminals.is_empty());
+    assert!(
+        endpoint
+            .retries
+            .machine(OPERATION, &super::retry_tests::key())
+            .wake_at()
+            .is_some(),
+        "the lone start was the key's first counted failure"
+    );
+    let view = endpoint
+        .endpoint
+        .governor()
+        .scoped(OPERATION)
+        .view(&site_key(), endpoint.endpoint.pool_now())
+        .unwrap();
+    assert_eq!((view.setup_limit, view.n), (1, 4));
+    assert!(!view.confirmation);
+    endpoint.shutdown();
+}
+
+#[test]
+fn at_max_retries_zero_a_dropped_member_is_the_retry_machines_and_the_setup_limit_stays() {
+    let (mut endpoint, _) = endpoint(dropped(), Some(Duration::from_millis(30)), 4, 0);
+    let mut terminals = Vec::new();
+    for id in 1..=4 {
+        endpoint.accept(OPERATION.into(), open(id, 30_000)).unwrap();
+    }
+    let begun = Instant::now();
+    while terminals.len() < 4 {
+        assert!(begun.elapsed() < Duration::from_secs(10), "never finished");
+        step(&mut endpoint, 0, &mut terminals);
+    }
+    let view = endpoint
+        .endpoint
+        .governor()
+        .scoped(OPERATION)
+        .view(&site_key(), endpoint.endpoint.pool_now());
+    assert!(view.is_none_or(|view| view.setup_limit == 4));
+    endpoint.shutdown();
+}
+
 #[test]
 fn at_max_retries_zero_a_refused_member_finishes_at_once_and_nothing_adapts() {
     let (mut endpoint, _) = endpoint(refused(), Some(Duration::from_millis(30)), 4, 0);

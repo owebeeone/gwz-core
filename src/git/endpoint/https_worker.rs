@@ -172,6 +172,8 @@ pub(crate) struct Prepared {
     /// The connection serves this exchange and is then discarded, never
     /// returned to the pool for reuse.
     discard: bool,
+    /// The key's limit machine as a POST needs it (§4.5).
+    gate: throttle::Gate,
 }
 impl Prepared {
     pub(crate) fn native_publication_route(&self) -> Option<Arc<native::Authenticated>> {

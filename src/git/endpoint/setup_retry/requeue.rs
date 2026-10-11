@@ -10,16 +10,26 @@ use gwz_transport::protocol::{ErrorCode, Failure, FailureDetail, RetryAttempt, S
 /// is one. A failure that is not a candidate returns `None` and stays the
 /// retry machine's.
 ///
-/// On SSH only a refused connect and a connect stall or aggregate timeout are
-/// candidates for `N`: a drop at the banner or key exchange (`Io`,
-/// `CarrierLost`) is the setup limit `Ns`'s evidence (§4.10), which a later
-/// step takes.
+/// On SSH a refused connect and a connect stall or aggregate timeout are
+/// candidates for `N`; a drop at the banner or key exchange (`Io`,
+/// `CarrierLost`, which `ssh_network` also makes of a Windows abort) is the
+/// setup limit `Ns`'s evidence (§4.10) when it came before authentication:
+/// the setup had offered no credential. A failure with no facts says nothing
+/// of its stage and stays the retry machine's.
 pub(crate) fn suspect(failure: &Failure, phase: Phase, ssh: bool) -> Option<Signal> {
     if phase != Phase::Setup {
         return None;
     }
     match (failure.code, failure.setup_cause) {
         (ErrorCode::Io | ErrorCode::CarrierLost, _) if !ssh => Some(Signal::Suspect),
+        (ErrorCode::Io | ErrorCode::CarrierLost, _)
+            if failure
+                .facts
+                .as_ref()
+                .is_some_and(|facts| !facts.credential_offered) =>
+        {
+            Some(Signal::SetupDrop)
+        }
         (ErrorCode::Unavailable, Some(SetupFailureCause::ConnectionRefused))
         | (ErrorCode::Timeout, Some(SetupFailureCause::Stall | SetupFailureCause::Aggregate)) => {
             Some(Signal::Suspect)
@@ -60,7 +70,7 @@ cfg_if::cfg_if! {
     if #[cfg(test)] {
         mod tests {
             use super::*;
-            use gwz_transport::protocol::Effect;
+            use gwz_transport::protocol::{Effect, Facts};
 
             fn failure(code: ErrorCode, cause: Option<SetupFailureCause>) -> Failure {
                 Failure { detail: None, setup_cause: cause, code, effect: Effect::None, facts: None }
@@ -77,10 +87,27 @@ cfg_if::cfg_if! {
                         assert_eq!(suspect(suspect_failure, Phase::Setup, ssh), Some(Signal::Suspect));
                     }
                 }
-                // A reset or an end of stream is a limit's evidence over HTTPS;
-                // over SSH it is the setup limit's, a later step.
+                // A reset or an end of stream is a limit's evidence over HTTPS.
                 assert_eq!(suspect(&reset, Phase::Setup, false), Some(Signal::Suspect));
-                assert_eq!(suspect(&reset, Phase::Setup, true), None);
+            }
+
+            fn with_facts(mut failed: Failure, credential_offered: bool) -> Failure {
+                failed.facts = Some(Facts { credential_offered, ..Facts::default() });
+                failed
+            }
+
+            #[test]
+            fn an_ssh_drop_before_authentication_is_the_setup_limits_and_never_ns_for_n() {
+                for code in [ErrorCode::Io, ErrorCode::CarrierLost] {
+                    let dropped = with_facts(failure(code, None), false);
+                    assert_eq!(suspect(&dropped, Phase::Setup, true), Some(Signal::SetupDrop), "{code:?}");
+                    // After a credential was offered it is not a setup drop; nor
+                    // is a failure that says nothing of its stage.
+                    let later = with_facts(failure(code, None), true);
+                    assert_eq!(suspect(&later, Phase::Setup, true), None, "{code:?}");
+                    assert_eq!(suspect(&failure(code, None), Phase::Setup, true), None, "{code:?}");
+                    assert_eq!(suspect(&dropped, Phase::Other, true), None, "{code:?}");
+                }
             }
 
             #[test]

@@ -1,17 +1,28 @@
 //! One key's limit discovery: the state table, the windows, the evidence
 //! filter, the machine, the probe timer, the hold, the confirmation and the
 //! test slot, behind events and queries (§4.5 to §4.7). Time is a number
-//! the caller supplies; the clock and the jitter are injected.
+//! the caller supplies; the clock and the jitter are injected. The parts of a
+//! key are in the child modules: RESTORING's steps (`restore`), SSH's setup
+//! limit `Ns` (`setup_limit`), the test slot (`test_slot`) and an attempt's
+//! result (`verdict`).
 use super::{
-    filter::{Evidence, Refusal, Signal, evidence, fair},
-    fsm::{Backoff, Fsm, State},
+    filter::Signal,
+    fsm::{Fsm, State},
     hold::{Hold, Origin},
     notes::{Note, Notes},
     states::{ConnEvent, ConnId, Table},
     timer::{Spread, Timer},
-    windows::{AttemptId, AttemptKind, Closed, Own, Windows},
+    windows::{AttemptId, AttemptKind, Own, Windows},
 };
 use std::collections::{BTreeMap, BTreeSet};
+
+mod restore;
+mod setup_limit;
+mod test_slot;
+mod verdict;
+
+use restore::Restore;
+use setup_limit::SetupLimit;
 
 /// What an admitted attempt is. A restore step carries its target `S`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,7 +30,11 @@ pub(crate) enum Start {
     Ordinary,
     Probe,
     Confirming,
-    Restore { target: usize },
+    Restore {
+        target: usize,
+    },
+    /// A test of the setup limit `Ns` (§4.10).
+    SetupProbe,
 }
 
 /// How an attempt ended.
@@ -56,6 +71,9 @@ pub(crate) enum Ruling {
     },
     Confirmation,
     RefusedTest,
+    /// A drop before authentication opened a setup window: new setups are
+    /// held until the co-setups it overlapped have results (§4.10).
+    SetupLimit,
 }
 
 /// A test that is due.
@@ -104,22 +122,14 @@ pub(crate) struct Limit {
     /// for the length of an outage.
     outage: Option<usize>,
     restore: Option<Restore>,
-}
-
-/// RESTORING's step: a judged doubling toward `N_good` (§5.5).
-struct Restore {
-    good: usize,
-    /// The step's target `S`: starts are admitted up to it.
-    target: usize,
-    /// The step's starts that have no result yet.
-    step: BTreeSet<AttemptId>,
-    started: bool,
-    refused: bool,
+    /// SSH's setup limit `Ns` (§4.10).
+    setups: SetupLimit,
 }
 
 impl Limit {
     /// A key with ceiling `C`. `adaptive` is false at `--max-retries 0`.
     pub(crate) fn new(ceiling: usize, adaptive: bool, spread: Spread) -> Self {
+        let setups = SetupLimit::new(ceiling, spread.clone());
         Self {
             ceiling,
             adaptive,
@@ -140,6 +150,7 @@ impl Limit {
             last_good: ceiling,
             outage: None,
             restore: None,
+            setups,
         }
     }
     pub(crate) fn n(&self) -> usize {
@@ -169,93 +180,6 @@ impl Limit {
             self.end_restore(now);
         }
     }
-    /// The retry machine left Cold or Healthy (§5.5): `N_good` is the `N` in
-    /// force at the last success, kept for the length of the outage.
-    pub(crate) fn outage(&mut self) {
-        self.outage.get_or_insert(self.last_good);
-    }
-    /// The retry machine is Healthy again: when the outage left `N` below
-    /// `N_good`, RESTORING begins (§5.5). Nothing is restored without a
-    /// budget to test with.
-    pub(crate) fn recovered(&mut self, now: u64) {
-        let Some(good) = self.outage.take() else {
-            return;
-        };
-        if !self.adaptive || self.fsm.n() >= good || self.restore.is_some() {
-            return;
-        }
-        self.table.advance(now);
-        // The probe timer needs no stopping: no probe is due while RESTORING,
-        // and its exit arms the timer afresh.
-        self.fsm.begin_restore();
-        self.restore = Some(Restore {
-            good,
-            target: self.step_target(good),
-            step: BTreeSet::new(),
-            started: false,
-            refused: false,
-        });
-    }
-    /// `S := max(N, min(N_good, 2 x max(1, Connected)))`.
-    fn step_target(&self, good: usize) -> usize {
-        let doubled = 2 * self.table.connected().max(1);
-        self.fsm.n().max(good.min(doubled))
-    }
-    /// Whether the key's retry machine has left Cold or Healthy and not come
-    /// back (§5.5): `N_good` is frozen.
-    pub(crate) fn in_outage(&self) -> bool {
-        self.outage.is_some()
-    }
-    /// Whether a restore is under way: the endpoints let only members not on
-    /// their final attempt start new connections then.
-    pub(crate) fn restoring(&self) -> bool {
-        self.restore.is_some()
-    }
-    /// What a new connection that is not a test starts as: a restore step's
-    /// start while RESTORING (§4.4), else an ordinary start at the pool's
-    /// limit.
-    pub(crate) fn start_kind(&self) -> (AttemptKind, usize) {
-        match &self.restore {
-            Some(restore) => (AttemptKind::Restore, restore.target),
-            None => (AttemptKind::Ordinary, self.pool_limit()),
-        }
-    }
-    /// The restore is over: STABLE at the current `N`, `T := T0`.
-    fn end_restore(&mut self, now: u64) {
-        self.restore = None;
-        self.fsm.end_restore();
-        self.timer.reset();
-        self.timer.arm(now);
-    }
-    /// A step's result: when every start of the step has one, a refusal ends
-    /// the restore, reaching `N_good` ends it, and otherwise the next step
-    /// doubles. An Overload or the ceiling ended it already.
-    fn restore_progress(&mut self, attempt: AttemptId, kind: AttemptKind, refused: bool, now: u64) {
-        if self.fsm.state() != State::Restoring {
-            self.restore = None;
-            return;
-        }
-        let Some(restore) = &mut self.restore else {
-            return;
-        };
-        if kind == AttemptKind::Restore {
-            restore.step.remove(&attempt);
-            restore.refused |= refused;
-        }
-        if !restore.started || !restore.step.is_empty() {
-            return;
-        }
-        if restore.refused || self.fsm.n() >= restore.good {
-            self.end_restore(now);
-            return;
-        }
-        let good = restore.good;
-        let target = self.step_target(good);
-        if let Some(restore) = &mut self.restore {
-            restore.target = target;
-            restore.started = false;
-        }
-    }
     /// Starts from the table of connections the site already has, which no
     /// event of this machine's own life told it about.
     pub(crate) fn seed(&mut self, table: Table) {
@@ -278,6 +202,7 @@ impl Limit {
     pub(crate) fn conn(&mut self, conn: ConnId, event: ConnEvent, now: u64) {
         if let Some(change) = self.table.apply(conn, event, now) {
             self.windows.observe(&change);
+            self.setup_changed(&change, now);
         }
         self.flush_notes(now);
     }
@@ -289,6 +214,10 @@ impl Limit {
         if !self.gate_open(now) {
             return false;
         }
+        self.n_room() && self.setup_room()
+    }
+    /// The room `N` leaves: SATURATED's ceiling rule, else `Possible < N`.
+    pub(super) fn n_room(&self) -> bool {
         match self.fsm.state() {
             State::Saturated => self.table.held() < self.ceiling,
             _ => self.table.possible() < self.room_target(),
@@ -302,7 +231,8 @@ impl Limit {
     /// Whether the site has room for one more connection of this operation
     /// below `N` (§4.5). At the ceiling the pool's own limit says so.
     pub(crate) fn has_room(&self) -> bool {
-        self.fsm.state() == State::Saturated || self.table.possible() < self.room_target()
+        (self.fsm.state() == State::Saturated || self.table.possible() < self.room_target())
+            && self.setup_room()
     }
     /// Whether new connections may start at all: no hold, no confirmation,
     /// no test in flight, and no connection of an inconclusive refusal's
@@ -313,6 +243,7 @@ impl Limit {
         self.table.advance(now);
         if self.hold.in_force(now)
             || self.confirmation
+            || self.setups.holds()
             || self.test_slot.is_some()
             || self.armed.is_some()
         {
@@ -337,79 +268,6 @@ impl Limit {
     pub(crate) fn admits_continuing(&mut self, now: u64) -> bool {
         self.table.advance(now);
         !self.hold.blocks_continuing(now)
-    }
-    /// The test that is due, if one is (§4.5 "test pending"), and whether it
-    /// can start. A probe needs a carrier not on its final attempt, a
-    /// confirming test any member that needs a new connection.
-    pub(crate) fn test_due(&mut self, now: u64) -> Option<TestPlan> {
-        self.table.advance(now);
-        if self.test_slot.is_some() || self.armed.is_some() || self.hold.in_force(now) {
-            return None;
-        }
-        let (connected, quiet) = (self.table.connected(), self.table.is_quiet());
-        if self.confirmation {
-            return (self.needing_new > 0).then_some(TestPlan {
-                kind: AttemptKind::Confirming,
-                target: connected + 1,
-                ready: quiet,
-            });
-        }
-        let n = self.fsm.n();
-        let due = match self.fsm.state() {
-            State::Discovering => true,
-            State::Stable => self.timer.expired(now),
-            // The probe timer is suspended during a restore (§4.6).
-            State::Probing | State::Saturated | State::Restoring => false,
-        };
-        (due && self.non_final > 0).then_some(TestPlan {
-            kind: AttemptKind::Probe,
-            target: n + 1,
-            ready: quiet && connected == n,
-        })
-    }
-    /// Starts the due test for a carrier, when it is ready: the next
-    /// connection on the site is the test. A probe is never carried by a
-    /// member on its final attempt (`carrier_final`), a confirming test is
-    /// (§4.7). Returns the admission target, which the pool's limit follows.
-    pub(crate) fn arm_test(&mut self, carrier_final: bool, now: u64) -> Option<(usize, u64)> {
-        let plan = self.test_due(now)?;
-        if !plan.ready || (carrier_final && plan.kind == AttemptKind::Probe) {
-            return None;
-        }
-        self.arms += 1;
-        self.armed = Some((plan.kind, plan.target, self.arms));
-        Some((plan.target, self.arms))
-    }
-    /// The connection the host has begun is the armed test.
-    pub(crate) fn take_armed(&mut self) -> Option<(AttemptKind, usize)> {
-        self.armed.take().map(|(kind, target, _)| (kind, target))
-    }
-    /// The carrier of arming `arm` ended with no connection of its own (it
-    /// leased an idle one, failed or was cancelled): a probe is due again as
-    /// soon as the key is quiet. Does nothing if that test was taken, or
-    /// another has been armed since.
-    pub(crate) fn disarm(&mut self, arm: u64) {
-        if let Some((kind, _, armed)) = self.armed
-            && armed == arm
-        {
-            self.armed = None;
-            if kind == AttemptKind::Probe {
-                // Expired already, whatever the time.
-                self.rearm(0);
-            }
-        }
-    }
-    /// Whether the client must close and evict nothing on the key: a due
-    /// test has reached its base and waits for quiet.
-    pub(crate) fn closes_suppressed(&mut self, now: u64) -> bool {
-        let Some(plan) = self.test_due(now) else {
-            return false;
-        };
-        let n = self.fsm.n();
-        let base_failed = self.table.is_quiet() && self.table.connected() != n;
-        !plan.ready
-            && (plan.kind == AttemptKind::Confirming
-                || (self.table.possible() >= n && !base_failed))
     }
     /// Admits an attempt, opens its window, and starts its connection in the
     /// table when it is new. Returns the admission target (the pool's
@@ -449,6 +307,12 @@ impl Limit {
                     .filter(|plan| plan.kind == wanted && plan.ready)?;
                 matches!(own, Own::New(_)).then_some((wanted, plan.target))?
             }
+            Start::SetupProbe => {
+                let plan = self
+                    .setup_test(now)
+                    .filter(|plan| plan.ready && matches!(own, Own::New(_)))?;
+                (AttemptKind::SetupProbe, plan.target)
+            }
             Start::Restore { target } => (
                 self.admits_first_exchange(now)
                     .then_some(AttemptKind::Restore)?,
@@ -484,6 +348,9 @@ impl Limit {
         }
         if kind == AttemptKind::Probe {
             self.fsm.test_started();
+        }
+        if kind == AttemptKind::SetupProbe {
+            self.setup_test_began(attempt);
         }
         if kind == AttemptKind::Restore
             && let Some(restore) = &mut self.restore
@@ -524,9 +391,15 @@ impl Limit {
     /// machine's `N`, or the target of the test in flight. In SATURATED it is
     /// the ceiling.
     pub(crate) fn pool_limit(&self) -> usize {
+        // A setup test counts setups, not connections: the pool's limit is
+        // what `N` says.
         self.test_slot
+            .filter(|attempt| !self.setups.is_test(*attempt))
             .and_then(|attempt| self.targets.get(&attempt).copied())
-            .or(self.armed.map(|(_, target, _)| target))
+            .or(self
+                .armed
+                .filter(|(kind, ..)| *kind != AttemptKind::SetupProbe)
+                .map(|(_, target, _)| target))
             .unwrap_or_else(|| self.room_target())
     }
     /// How long the pool holds a freed slot of the key (§4.5): `Ts` outside
@@ -537,73 +410,6 @@ impl Limit {
         } else {
             self.table.settle().ts()
         }
-    }
-    /// An attempt's result. `None` if the attempt is not in flight.
-    pub(crate) fn result(
-        &mut self,
-        attempt: AttemptId,
-        outcome: Outcome,
-        now: u64,
-    ) -> Option<Ruling> {
-        self.table.advance(now);
-        let closed = self.windows.close(attempt)?;
-        let stored = self.targets.remove(&attempt)?;
-        // An ordinary refusal is judged against the N in force at its result
-        // (R3: a wave's later refusals have hi >= the lowered N).
-        let target = if closed.kind == AttemptKind::Ordinary {
-            self.fsm.n()
-        } else {
-            stored
-        };
-        if self.test_slot == Some(attempt) {
-            self.test_slot = None;
-        }
-        let before = (self.fsm.n(), self.fsm.state());
-        let ruling = match outcome {
-            Outcome::Ended => self.ended(closed.kind, now),
-            Outcome::Succeeded { fresh } => self.succeeded(&closed, target, fresh, now),
-            Outcome::Refused {
-                signal,
-                retry_after_ms,
-                post,
-            } => {
-                if let Some(wait) = retry_after_ms.and_then(|ms| {
-                    let origin = if post {
-                        Origin::Post
-                    } else {
-                        Origin::Discovery
-                    };
-                    self.hold.set(ms, origin, now)
-                }) {
-                    self.notes.hold(wait);
-                }
-                let refusal = Refusal {
-                    kind: closed.kind,
-                    signal,
-                    target,
-                    lo: closed.lo,
-                    hi: closed.hi,
-                    adaptive: self.adaptive,
-                };
-                self.refused(evidence(&refusal), &closed, now)
-            }
-        };
-        let refused = matches!(outcome, Outcome::Refused { .. });
-        self.restore_progress(attempt, closed.kind, refused, now);
-        self.settled(before, now);
-        Some(ruling)
-    }
-    /// Notes what a result did to `N` and the state, and flushes the notes.
-    fn settled(&mut self, before: (usize, State), now: u64) {
-        let (n, state) = (self.fsm.n(), self.fsm.state());
-        if n != before.0 {
-            self.notes.n_changed(n);
-        }
-        if state == State::Saturated && before.1 != State::Saturated {
-            self.timer.disarm();
-            self.notes.saturated(self.ceiling);
-        }
-        self.flush_notes(now);
     }
     /// A `Retry-After` that came on a response with no attempt in flight (a
     /// second request on a carried connection): the hold, and nothing else
@@ -620,99 +426,6 @@ impl Limit {
             self.notes.hold(wait);
         }
         self.flush_notes(now);
-    }
-    /// A test that said nothing is due again when the key is next quiet.
-    fn rearm(&mut self, now: u64) {
-        self.fsm.test_inconclusive();
-        self.timer.make_due(now);
-    }
-    fn ended(&mut self, kind: AttemptKind, now: u64) -> Ruling {
-        if kind.is_test() {
-            self.rearm(now);
-        }
-        Ruling::Ended
-    }
-    fn succeeded(&mut self, closed: &Closed, target: usize, fresh: bool, now: u64) -> Ruling {
-        let ruling = self.succeeded_as(closed, target, fresh, now);
-        if fresh {
-            self.last_good = self.fsm.n();
-        }
-        ruling
-    }
-    fn succeeded_as(&mut self, closed: &Closed, target: usize, fresh: bool, now: u64) -> Ruling {
-        let connected = self.table.connected();
-        match closed.kind {
-            AttemptKind::Probe if !fresh => {
-                self.rearm(now);
-                Ruling::Unfair
-            }
-            AttemptKind::Probe => {
-                let fair = fair(target, closed.lo);
-                self.fsm.test_succeeded(connected, fair);
-                if fair {
-                    self.timer.reset();
-                    Ruling::Succeeded
-                } else {
-                    self.timer.make_due(now);
-                    Ruling::Unfair
-                }
-            }
-            AttemptKind::Confirming if !fresh => Ruling::Unfair,
-            AttemptKind::Confirming => {
-                // Refuted, fair or not (§4.5 rule 3).
-                self.fsm.success(connected);
-                self.confirmation = false;
-                Ruling::Refuted
-            }
-            AttemptKind::Ordinary | AttemptKind::Restore => {
-                self.fsm.success(connected);
-                Ruling::Succeeded
-            }
-        }
-    }
-    fn refused(&mut self, evidence: Evidence, closed: &Closed, now: u64) -> Ruling {
-        let confirming = closed.kind == AttemptKind::Confirming;
-        match evidence {
-            Evidence::RetryMachine => {
-                self.confirmation &= !confirming;
-                Ruling::RetryMachine
-            }
-            Evidence::Inconclusive => {
-                // The barrier belongs to the adaptive machine: with N pinned
-                // at the ceiling nothing is learned from the overlap, and a
-                // bare refusal must not delay the next start.
-                if self.adaptive {
-                    self.barrier.extend(closed.winding_down.iter().copied());
-                }
-                Ruling::Inconclusive
-            }
-            Evidence::HoldOnly => Ruling::HoldOnly,
-            Evidence::Overload => {
-                self.fsm.overload(self.table.connected(), closed.hi);
-                self.confirmation = false;
-                self.timer.reset();
-                self.timer.arm(now);
-                self.notes.overload();
-                Ruling::Overload { n: self.fsm.n() }
-            }
-            Evidence::Confirm if self.confirmation => Ruling::Inconclusive,
-            Evidence::Confirm => {
-                self.confirmation = true;
-                Ruling::Confirmation
-            }
-            Evidence::UnfairTest => {
-                self.rearm(now);
-                Ruling::Unfair
-            }
-            Evidence::RefusedTest => {
-                match self.fsm.probe_refused() {
-                    Backoff::Double => self.timer.back_off(),
-                    Backoff::Reset => self.timer.reset(),
-                }
-                self.timer.arm(now);
-                Ruling::RefusedTest
-            }
-        }
     }
     fn flush_notes(&mut self, now: u64) {
         let resolved = self.table.setups_in_flight() == 0;
@@ -741,6 +454,7 @@ impl Limit {
             self.hold.deadline(now),
             self.table.next_settle_deadline(),
             probe,
+            self.setups.deadline().filter(|deadline| *deadline > now),
             self.notes.deadline(),
         ]
         .into_iter()
