@@ -9,7 +9,12 @@
 //! On Unix the script is a forced command in `authorized_keys`. On Windows the server's own forced command
 //! (`fixture_host`) sources the script from the fixture's directory when it is there, whichever default shell the
 //! host has.
-use super::{fixture_host, ssh_fixture::SshdFixture, stream_io::BlockingStream};
+use super::{
+    fixture_host,
+    ssh_controlled_server::{ControlledSshd, Ending},
+    ssh_fixture::SshdFixture,
+    stream_io::BlockingStream,
+};
 use std::{fs, io::Read, time::Duration};
 
 const SCRIPT: &str = fixture_host::FORCED_SCRIPT;
@@ -126,11 +131,13 @@ pub(crate) fn dropped_close_fixture() -> SshdFixture {
     ))
 }
 
-/// The service exits and its output closes, and the channel then never
-/// closes: the server's process does not exit. (On Windows the output does not end until the process does; see
-/// the rows that stay Unix in `ssh_tests`.)
-pub(crate) fn stuck_close_fixture() -> SshdFixture {
-    forced("eval \"$SSH_ORIGINAL_COMMAND\"\nexec 1>&- 2>&-\nexec sleep 20\n")
+/// The service exits and its output ends, and the channel then never closes: the server's session process has not
+/// exited. This is the one fixture here that is not `sshd`: it is the test-controlled server
+/// ([`ssh_controlled_server`](super::ssh_controlled_server)), because a Windows `sshd.exe` 9.5p2 sends a channel's EOF
+/// only when the session process exits (run `2026-10-11-winp1c`, `raw/stuck-close-experiments`), so no script under
+/// it can end the output and keep the channel open. It is the same server on every platform.
+pub(crate) fn stuck_close_fixture() -> ControlledSshd {
+    ControlledSshd::start(Ending::Stuck)
 }
 
 /// The server never runs the service and never ends its output.

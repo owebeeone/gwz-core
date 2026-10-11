@@ -13,7 +13,10 @@
 //! keys, agent or `known_hosts`. On Windows the server is the system's
 //! `sshd.exe` (`fixture_host`), the agent twins are `agent_fixture_pipe` and
 //! `key_fixture_pipe` (an in-process agent on a named pipe), and the
-//! close fixtures' hard cases use `fixture_helper`.
+//! close fixtures' hard cases use `fixture_helper`. The rows that need a
+//! channel whose output ends while the server's session lives (the stuck-close
+//! rows) run on every platform against `ssh_controlled_server`, a small
+//! test-controlled SSH server, since a Windows `sshd.exe` cannot serve them.
 mod agent_auth;
 mod agent_capacity;
 mod agent_client;

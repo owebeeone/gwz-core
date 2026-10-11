@@ -111,5 +111,7 @@ cfg_if::cfg_if! {
         pub(crate) mod fixture_job;
         pub(crate) mod ssh_fixture;
         pub(crate) mod ssh_password_fixture;
+        // The one server whose channel ends when a test says (the stuck-close rows): russh, a test-only dependency.
+        pub(crate) mod ssh_controlled_server;
     }
 }

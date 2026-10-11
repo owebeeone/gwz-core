@@ -1,6 +1,6 @@
 use crate::git::endpoint::ssh_fixture as common;
 
-use crate::git::endpoint::ssh_close_fixture::delayed_eof_fixture;
+use crate::git::endpoint::ssh_close_fixture::{delayed_eof_fixture, stuck_close_fixture};
 use common::*;
 use std::io::{self, Read, Write};
 use std::thread;
@@ -151,62 +151,52 @@ fn an_early_close_waits_only_for_the_servers_close() {
     assert!(channel.into_session().is_ok());
 }
 
-// A Windows sshd.exe sends a channel's EOF only when the session's process exits, whatever has happened to the pipes
-// (step 1.5's native helper, run 2026-10-11, closed every handle to the output pipes in every process and got no
-// EOF until the process exited, when EOF, exit status and CLOSE came together), so no server process can end the
-// output and keep the channel open, and the row has nothing to wait for.
-cfg_if::cfg_if! {
-    if #[cfg(unix)] {
-        use crate::git::endpoint::ssh_close_fixture::stuck_close_fixture;
-
-        #[test]
-        fn disposing_a_closing_channel_does_not_wait_for_the_server() {
-            let mut fixture = stuck_close_fixture();
-            let session = fixture.session();
-            let repository = fixture.repository.to_str().unwrap().to_owned();
-            let mut channel = SshChannel::new(session, GitService::ReceivePack, &repository).unwrap();
-            open(&mut channel);
-            send_request_and_eof(&mut channel);
-            let deadline = Instant::now() + Duration::from_secs(5);
-            let mut stdout = [0_u8; 4096];
-            let (mut stdout_eof, mut stderr_eof) = (false, false);
-            while !(stdout_eof && stderr_eof) {
-                if !stdout_eof {
-                    match channel.read(&mut stdout) {
-                        Ok(0) => stdout_eof = true,
-                        Ok(_) => {}
-                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-                        Err(error) => panic!("stdout read failed: {error}"),
-                    }
-                }
-                if !stderr_eof {
-                    match channel.read_stderr(&mut stdout) {
-                        Ok(0) => stderr_eof = true,
-                        Ok(_) => {}
-                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-                        Err(error) => panic!("stderr read failed: {error}"),
-                    }
-                }
-                assert!(Instant::now() < deadline, "the outputs never ended");
-                thread::sleep(Duration::from_millis(2));
+#[test]
+fn disposing_a_closing_channel_does_not_wait_for_the_server() {
+    let mut fixture = stuck_close_fixture();
+    let session = fixture.session();
+    let repository = fixture.repository.to_str().unwrap().to_owned();
+    let mut channel = SshChannel::new(session, GitService::ReceivePack, &repository).unwrap();
+    open(&mut channel);
+    send_request_and_eof(&mut channel);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut stdout = [0_u8; 4096];
+    let (mut stdout_eof, mut stderr_eof) = (false, false);
+    while !(stdout_eof && stderr_eof) {
+        if !stdout_eof {
+            match channel.read(&mut stdout) {
+                Ok(0) => stdout_eof = true,
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(error) => panic!("stdout read failed: {error}"),
             }
-            // Both outputs have ended and the server's process has not exited: the
-            // close waits for its CHANNEL_CLOSE.
-            let waiting = Instant::now() + Duration::from_millis(100);
-            while Instant::now() < waiting {
-                let error = channel.finish().expect_err("the server has not closed");
-                assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
-                thread::sleep(Duration::from_millis(5));
-            }
-            // A second libssh2 close would wait for a packet the server will not send.
-            let started = Instant::now();
-            channel
-                .poll_dispose()
-                .expect("a closing channel is terminated, not closed twice");
-            assert!(channel.is_disposed());
-            assert!(started.elapsed() < Duration::from_millis(500));
         }
+        if !stderr_eof {
+            match channel.read_stderr(&mut stdout) {
+                Ok(0) => stderr_eof = true,
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(error) => panic!("stderr read failed: {error}"),
+            }
+        }
+        assert!(Instant::now() < deadline, "the outputs never ended");
+        thread::sleep(Duration::from_millis(2));
     }
+    // Both outputs have ended and the server's process has not exited: the
+    // close waits for its CHANNEL_CLOSE.
+    let waiting = Instant::now() + Duration::from_millis(100);
+    while Instant::now() < waiting {
+        let error = channel.finish().expect_err("the server has not closed");
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        thread::sleep(Duration::from_millis(5));
+    }
+    // A second libssh2 close would wait for a packet the server will not send.
+    let started = Instant::now();
+    channel
+        .poll_dispose()
+        .expect("a closing channel is terminated, not closed twice");
+    assert!(channel.is_disposed());
+    assert!(started.elapsed() < Duration::from_millis(500));
 }
 
 #[test]

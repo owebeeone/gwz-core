@@ -77,6 +77,53 @@ fn a_signature_verifies_against_the_keys_public_part_and_not_against_other_data(
 }
 
 #[test]
+fn ed25519_and_ecdsa_keys_sign_as_their_own_algorithm_and_verify_only_that() {
+    // The three ECDSA curves, which `ring` cannot all sign, and Ed25519, from the key files OpenSSH writes.
+    let dir = tempfile::tempdir().unwrap();
+    let keygen = crate::git::endpoint::fixture_host::programs().keygen;
+    let mut identities = Vec::new();
+    for (name, kind, bits, algorithm) in [
+        ("ed25519", "ed25519", None, "ssh-ed25519"),
+        ("p256", "ecdsa", Some("256"), "ecdsa-sha2-nistp256"),
+        ("p384", "ecdsa", Some("384"), "ecdsa-sha2-nistp384"),
+        ("p521", "ecdsa", Some("521"), "ecdsa-sha2-nistp521"),
+    ] {
+        let path = dir.path().join(name);
+        let mut command = std::process::Command::new(&keygen);
+        command.args(["-q", "-t", kind, "-N", "", "-f"]).arg(&path);
+        if let Some(bits) = bits {
+            command.args(["-b", bits]);
+        }
+        ssh_fixture::run(&mut command);
+        let identity = Identity::from_key_file(&path);
+        let signature = identity.sign(0, DATA).expect("the key signs with flags 0");
+        assert_eq!(
+            split_signature(&signature).unwrap().0,
+            algorithm.as_bytes(),
+            "{name}"
+        );
+        assert!(identity.verify(0, DATA, &signature), "{name}");
+        assert!(!identity.verify(0, b"other data", &signature), "{name}");
+        // The flags select a hash for RSA only: a SHA-2 request for these keys is refused.
+        assert!(
+            identity.sign(2, DATA).is_none() && identity.sign(4, DATA).is_none(),
+            "{name}"
+        );
+        assert!(!identity.verify(4, DATA, &signature), "{name}");
+        identities.push((name, identity, signature));
+    }
+    for (name, _, signature) in &identities {
+        for (other, identity, _) in &identities {
+            assert_eq!(
+                identity.verify(0, DATA, signature),
+                name == other,
+                "{name} against {other}"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_sha1_request_is_refused_and_leaves_the_connection_usable() {
     let fixture = Fixture::new();
     let key = fixture.blobs()[1].clone();

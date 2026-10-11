@@ -13,7 +13,7 @@ use crate::git::endpoint::{
         delayed_close_fixture, delayed_eof_fixture, dropped_close_fixture, gated_close_fixture,
         read_advertisement, silent_fixture, stuck_close_fixture,
     },
-    ssh_fixture::SshdFixture,
+    ssh_fixture::{Reach, SshdFixture},
     ssh_local,
     ssh_worker::Endpoint,
     stream_io::BlockingStream,
@@ -63,12 +63,12 @@ fn config(per_host: usize, cleanup_ms: u64) -> Config {
 }
 
 /// The endpoint as the transport host builds it, over `fixture`.
-fn endpoint(fixture: &SshdFixture, per_host: usize, cleanup_ms: u64, io_ms: u64) -> Endpoint {
+fn endpoint(fixture: &impl Reach, per_host: usize, cleanup_ms: u64, io_ms: u64) -> Endpoint {
     let config = config(per_host, cleanup_ms);
     let authority = Authority::new(config.total, config.per_host);
     ssh_local::connect_with_authority(
         config,
-        fixture.known_hosts.clone(),
+        fixture.known_hosts().to_owned(),
         None,
         io_ms,
         authority,
@@ -77,29 +77,29 @@ fn endpoint(fixture: &SshdFixture, per_host: usize, cleanup_ms: u64, io_ms: u64)
     .unwrap()
 }
 
-fn key(fixture: &SshdFixture) -> Key {
-    Key::ssh(&fixture.user, "127.0.0.1", fixture.port)
+fn key(fixture: &impl Reach) -> Key {
+    Key::ssh(fixture.user(), "127.0.0.1", fixture.port())
 }
 
-fn identity(fixture: &SshdFixture) -> PathBuf {
-    fixture.temp.path().join("client_ed25519")
+fn identity(fixture: &impl Reach) -> PathBuf {
+    fixture.client_key()
 }
 
 /// One server, one endpoint over it, and the identity that opens use.
-struct Rig {
-    fixture: SshdFixture,
+struct Rig<S: Reach = SshdFixture> {
+    fixture: S,
     endpoint: Endpoint,
     cleanup_ms: u64,
     io_ms: u64,
     per_host: usize,
 }
 
-impl Rig {
-    fn new(fixture: SshdFixture, per_host: usize, cleanup_ms: u64) -> Self {
+impl<S: Reach> Rig<S> {
+    fn new(fixture: S, per_host: usize, cleanup_ms: u64) -> Self {
         Self::with_io(fixture, per_host, cleanup_ms, 3_000)
     }
 
-    fn with_io(fixture: SshdFixture, per_host: usize, cleanup_ms: u64, io_ms: u64) -> Self {
+    fn with_io(fixture: S, per_host: usize, cleanup_ms: u64, io_ms: u64) -> Self {
         let endpoint = endpoint(&fixture, per_host, cleanup_ms, io_ms);
         Self {
             fixture,
@@ -128,7 +128,7 @@ impl Rig {
 
     /// An open that carries a test of the site's limit.
     fn open_carrier(&self, service: GitService) -> (BlockingStream, Opened) {
-        let path = self.fixture.repository.to_str().unwrap().to_owned();
+        let path = self.fixture.repository().to_str().unwrap().to_owned();
         attachment::open_carrier(
             &self.endpoint,
             key(&self.fixture),
@@ -141,7 +141,7 @@ impl Rig {
     }
 
     fn open_as(&self, service: GitService, identity: PathBuf) -> (BlockingStream, Opened) {
-        let path = self.fixture.repository.to_str().unwrap().to_owned();
+        let path = self.fixture.repository().to_str().unwrap().to_owned();
         self.open_path(service, identity, &path).unwrap()
     }
 
@@ -362,35 +362,27 @@ fn a_stream_timeout_terminal_is_released_at_once() {
     );
 }
 
-// A Windows sshd.exe sends a channel's EOF only when the session's process exits, whatever has happened to the pipes
-// (step 1.5's native helper, run 2026-10-11, closed every handle to the output pipes in every process and got no
-// EOF until the process exited, when EOF, exit status and CLOSE came together), so no server process can end the
-// output and keep the channel open, and the row has nothing to wait for.
-cfg_if::cfg_if! {
-    if #[cfg(unix)] {
-        #[test]
-        fn a_closing_exchange_is_released_at_its_deadline() {
-            let cleanup = 900;
-            let rig = Rig::new(stuck_close_fixture(), 1, cleanup);
-            let (stream, _) = rig.open(GitService::ReceivePack);
-            let (closed_in, result) = rig.push(stream);
-            result.expect("the push's result is final at the server's EOF");
-            assert!(closed_in < ms(cleanup / 3), "close() took {closed_in:?}");
-            thread::sleep(ms(cleanup / 3));
-            assert_eq!(
-                rig.counts().leased,
-                1,
-                "released before its bound: {:?}",
-                rig.counts()
-            );
-            // No worker stop: the exchange's own bound, from the handoff, ends it.
-            let ended = rig.wait("released at its bound", |counts| counts.total() == 0);
-            assert!(
-                ended < ms(cleanup) + ms(1_500),
-                "the bound was {cleanup} ms and the close ended after {ended:?} more"
-            );
-        }
-    }
+#[test]
+fn a_closing_exchange_is_released_at_its_deadline() {
+    let cleanup = 900;
+    let rig = Rig::new(stuck_close_fixture(), 1, cleanup);
+    let (stream, _) = rig.open(GitService::ReceivePack);
+    let (closed_in, result) = rig.push(stream);
+    result.expect("the push's result is final at the server's EOF");
+    assert!(closed_in < ms(cleanup / 3), "close() took {closed_in:?}");
+    thread::sleep(ms(cleanup / 3));
+    assert_eq!(
+        rig.counts().leased,
+        1,
+        "released before its bound: {:?}",
+        rig.counts()
+    );
+    // No worker stop: the exchange's own bound, from the handoff, ends it.
+    let ended = rig.wait("released at its bound", |counts| counts.total() == 0);
+    assert!(
+        ended < ms(cleanup) + ms(1_500),
+        "the bound was {cleanup} ms and the close ended after {ended:?} more"
+    );
 }
 
 #[test]
@@ -416,39 +408,31 @@ fn a_background_close_that_times_out_is_discarded() {
     }
 }
 
-// A Windows sshd.exe sends a channel's EOF only when the session's process exits, whatever has happened to the pipes
-// (step 1.5's native helper, run 2026-10-11, closed every handle to the output pipes in every process and got no
-// EOF until the process exited, when EOF, exit status and CLOSE came together), so no server process can end the
-// output and keep the channel open, and the row has nothing to wait for.
-cfg_if::cfg_if! {
-    if #[cfg(unix)] {
-        #[test]
-        fn shutdown_discards_a_close_in_flight() {
-            let rig = Rig::new(stuck_close_fixture(), 1, 5_000);
-            let (stream, _) = rig.open(GitService::ReceivePack);
-            let (closed_in, result) = rig.push(stream);
-            result.expect("the push's result is final at the server's EOF");
-            assert!(closed_in < ms(2_000), "close() took {closed_in:?}");
-            assert_eq!(rig.counts().leased, 1);
-            let watch = rig.endpoint.shutdown_watch();
-            let started = Instant::now();
-            rig.endpoint.shutdown();
-            while !watch.status().cleanup_complete {
-                assert!(
-                    started.elapsed() < ms(2_500),
-                    "shutdown waited for the server: {:?}",
-                    watch.status()
-                );
-                thread::sleep(ms(2));
-            }
-            assert!(
-                started.elapsed() < ms(500),
-                "cleanup took {:?} against a close that is 5 s from its bound",
-                started.elapsed()
-            );
-            assert_eq!(watch.status().pending_connections, 0);
-        }
+#[test]
+fn shutdown_discards_a_close_in_flight() {
+    let rig = Rig::new(stuck_close_fixture(), 1, 5_000);
+    let (stream, _) = rig.open(GitService::ReceivePack);
+    let (closed_in, result) = rig.push(stream);
+    result.expect("the push's result is final at the server's EOF");
+    assert!(closed_in < ms(2_000), "close() took {closed_in:?}");
+    assert_eq!(rig.counts().leased, 1);
+    let watch = rig.endpoint.shutdown_watch();
+    let started = Instant::now();
+    rig.endpoint.shutdown();
+    while !watch.status().cleanup_complete {
+        assert!(
+            started.elapsed() < ms(2_500),
+            "shutdown waited for the server: {:?}",
+            watch.status()
+        );
+        thread::sleep(ms(2));
     }
+    assert!(
+        started.elapsed() < ms(500),
+        "cleanup took {:?} against a close that is 5 s from its bound",
+        started.elapsed()
+    );
+    assert_eq!(watch.status().pending_connections, 0);
 }
 
 #[test]
@@ -524,7 +508,7 @@ fn late_cancel_and_attachment_drop_do_not_discard_a_clean_close() {
 
 /// An ls-remote on the rig's URL and identity, which has its result and is
 /// closing, and the open of the next exchange on it.
-fn closing_fetch(rig: &Rig) {
+fn closing_fetch(rig: &Rig<impl Reach>) {
     let (stream, _) = rig.open(GitService::UploadPack);
     let closed_in = rig.fetch(stream);
     assert!(closed_in < ms(500), "close() took {closed_in:?}");

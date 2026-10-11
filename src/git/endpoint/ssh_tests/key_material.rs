@@ -1,5 +1,6 @@
 //! Key files for the SSH suites, on every platform: `ssh-keygen` (beside the fixture's `sshd` on Windows) makes them in
-//! the test's temporary directory. The agent fixture that serves them is `key_fixture`, which only Unix has yet.
+//! the test's temporary directory. The agent fixture that serves them is `key_fixture` on Unix and `key_fixture_pipe` on
+//! Windows.
 use crate::git::endpoint::{fixture_host, ssh_fixture as common};
 use std::{
     fs,
