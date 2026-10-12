@@ -1,4 +1,5 @@
 {
+  "done": true,
   "entries": [
     {"path": "src/git/endpoint/ssh_network/tests.rs", "kind": "gate", "gate": "else", "target": "arm: fn os_errors", "state": "paired", "owner": ["3.7"], "appendix": "new: step 3.7's per-platform socket-error table; the Unix arm sits beside a Windows arm with Winsock numbers"},
     {"path": "src/git/endpoint/ssh_network/tests.rs", "kind": "os", "gate": "libc::EADDRNOTAVAIL", "target": "", "count": 1, "state": "paired", "owner": ["3.7"], "appendix": "new: step 3.7's per-platform socket-error table; the Unix arm sits beside a Windows arm with Winsock numbers"},

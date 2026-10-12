@@ -77,6 +77,25 @@ pub(crate) struct Proxy {
 pub(crate) trait ProxyBypass: Send + Sync {
     fn bypasses(&self, host: &str, port: u16) -> bool;
 }
+/// What the Windows machine proxy setting says about this configuration (design section 6, decision D6). It decides
+/// nothing about a connection by itself: the proxy, the bypass rules and this value are set together from one captured
+/// setting (`transport_host::machine_proxy`).
+// `Direct`, `Named` and `Refused` are made by the Windows machine proxy capture (and by its tests); a Unix build reads
+// no machine setting and only ever holds `Unread`.
+#[allow(dead_code)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) enum MachineSetting {
+    /// No machine setting was read: Unix, or a configuration built without one.
+    #[default]
+    Unread,
+    /// WinHTTP says direct access: a failed connection says so (decision D7, text U2).
+    Direct,
+    /// A proxy is named; `Config::proxy` and `Config::machine_bypass` are its.
+    Named,
+    /// The setting cannot be used and the text says why (T1 and the other refusal texts). The configuration still
+    /// builds, so SSH and local operations run; an https open is refused with this text before any connection.
+    Refused(Arc<str>),
+}
 #[derive(Clone, Default)]
 pub(crate) struct Config {
     /// The CA file's certificates (`super::ca_bundle`), each a root beside the
@@ -92,6 +111,9 @@ pub(crate) struct Config {
     /// The machine proxy's bypass rules, which replace `no_proxy` when set. The proxy is then the machine setting's:
     /// its 407 to a CONNECT is refused as proxy sign-in, which is not supported (`Client::machine_proxy`).
     pub(crate) machine_bypass: Option<Arc<dyn ProxyBypass>>,
+    /// What the machine setting said, when one was captured (Windows). A refused one ends every https open at the
+    /// connector, before name resolution, whatever else this configuration says.
+    pub(crate) machine: MachineSetting,
 }
 impl Config {
     pub(crate) fn validate(&self) -> Result<(), Failure> {
@@ -282,6 +304,11 @@ impl Connector for HttpConnector {
     ) -> Result<HttpResource, Failure> {
         self.config.validate()?;
         if key.scheme != Scheme::Https {
+            return Err(failure(ErrorCode::UnsupportedOperation));
+        }
+        // The driver refuses first, with the setting's text. This is the connector's own gate: a configuration that
+        // holds no proxy because its machine setting was unusable must never be taken for a direct one.
+        if matches!(self.config.machine, MachineSetting::Refused(_)) {
             return Err(failure(ErrorCode::UnsupportedOperation));
         }
         // Its build runs beside the first connection's name resolution.

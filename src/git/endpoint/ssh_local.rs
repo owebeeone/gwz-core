@@ -43,6 +43,8 @@ pub(crate) fn connect_with_helpers(
     helpers: Option<std::sync::Arc<super::ssh_password_helpers::Helpers>>,
 ) -> io::Result<Endpoint> {
     let cleanup = Duration::from_millis(config.cleanup_timeout_ms);
+    // The finding of a refused host key goes to the driver's words through the handoff (decision D12).
+    let trust_log = handoff.clone();
     Endpoint::with_handoff(
         config,
         Registry::with_supervisor(authority.supervisor().clone()),
@@ -83,6 +85,7 @@ pub(crate) fn connect_with_helpers(
                         let written =
                             url.map_or_else(|| key.host.clone(), |url| url.host().to_owned());
                         let known_hosts = known_hosts.clone();
+                        let trust_log = trust_log.clone();
                         let agent = agent.clone();
                         let helpers = helpers.clone();
                         Ok(Box::new(move |control| {
@@ -103,7 +106,10 @@ pub(crate) fn connect_with_helpers(
                                 &written,
                                 &known_hosts,
                                 &control,
-                            )?;
+                            )
+                            .inspect_err(|error| {
+                                trust_log.note_trust(&key.host, key.port, error)
+                            })?;
                             let user =
                                 key.username.as_deref().ok_or(io::ErrorKind::InvalidInput)?;
                             // libgit2 offers a URL's password before any key,

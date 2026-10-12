@@ -1,9 +1,10 @@
 {
+  "done": true,
   "entries": [
     {"path": "src/git/endpoint/ssh_fixture.rs", "kind": "gate", "gate": "unix", "target": "arm: fn special_file", "state": "paired", "owner": ["1.4"], "appendix": "new: step 1.4's non-regular path for the reader rows; the Windows arm names a device path with no server"},
     {"path": "src/git/endpoint/ssh_fixture.rs", "kind": "os", "gate": "libc::mkfifo", "target": "", "state": "paired", "owner": ["1.4"], "appendix": "new: step 1.4's non-regular path for the reader rows"},
     {"path": "src/git/endpoint/ssh_key_auth.rs", "kind": "gate", "gate": "unix", "target": "arm: fn userauth_from_memory", "state": "paired", "owner": ["1.4"], "appendix": "new: ssh2 offers userauth_pubkey_memory only with OpenSSL; the Windows arm calls libssh2's frommemory through libssh2-sys for a traditional-PEM RSA key"},
-    {"path": "src/git/endpoint/ssh_tests/agent_fixture.rs", "kind": "os", "gate": "os::unix::net::{UnixListener, UnixStream}", "target": "", "state": "unported", "owner": ["1.4", "1.7"], "appendix": "G39"},
+    {"path": "src/git/endpoint/ssh_tests/agent_fixture.rs", "kind": "os", "gate": "os::unix::net::{UnixListener, UnixStream}", "target": "", "state": "platform", "owner": ["1.4", "1.7"], "appendix": "G39", "reason": "the Unix agent fixture is a proxy in front of a private ssh-agent over an AF_UNIX socket (UnixListener, UnixStream); it stays for Unix, and the Windows twin is agent_fixture_pipe, an in-process agent on a named pipe, selected beside it in ssh_tests/mod.rs (plan step 1.7; Appendix B G39: the Unix file stays, platform)", "approved_platform": "GwzTransportWindowsParityPlan.md Appendix B, G39 and step 1.7 (the accepted plan: the Unix file stays, platform); the sibling key_fixture.rs rows in 1.7.json carry the same disposition"},
     {"path": "src/git/endpoint/ssh_tests/network.rs", "kind": "gate", "gate": "unix", "target": "arm: fn hash_known_hosts", "state": "paired", "owner": ["1.4"], "appendix": "new: ssh-keygen -H on Unix, the fixture's own HMAC on Windows"},
     {"path": "src/git/endpoint/ssh_tests/selected_key.rs", "kind": "gate", "gate": "unix", "target": "arm: fn native_reads", "state": "paired", "owner": ["1.4"], "appendix": "new: libssh2 on Windows (CNG) reads only the traditional PEM form of an RSA key"}
   ]

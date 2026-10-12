@@ -1,4 +1,5 @@
 {
+  "done": true,
   "entries": [
     {"path": "src/git/endpoint/ssh_close_fixture.rs", "kind": "gate", "gate": "unix", "target": "arm: fn dropped_tail", "state": "paired", "owner": ["1.5"], "appendix": "new: the script that cuts the session; Windows runs the native helper (fixture_helper), which ends the server's session processes by exact id"},
     {"path": "src/git/endpoint/ssh_close_fixture.rs", "kind": "gate", "gate": "unix", "target": "arm: fn authorized_line", "state": "paired", "owner": ["1.5"], "appendix": "new: the server forces the close script itself on Windows"},

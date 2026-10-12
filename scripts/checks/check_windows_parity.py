@@ -7,7 +7,8 @@ entry in windows_parity_inventory.json with an owner step of the plan and a
 state:
 - `unported`: a Unix-only gate that still waits for its owner step;
 - `paired`: the gate, or the Unix-only region that holds the OS call, has a Windows arm beside
-  it (a sibling arm of the same `cfg_if!`, or a sibling item with a Windows-only `cfg`);
+  it (a sibling arm of the same `cfg_if!`, or a sibling item with a Windows-only `cfg`). An OS call that sits in
+  a Windows arm (`"side": "windows"`) is that arm itself: its row is `paired` once it carries its `proof`;
 - `platform`: permanent, with a recorded `reason` (for example `AF_UNIX`, or an
   OpenSSL-only trust branch).
 
@@ -432,7 +433,9 @@ class Scanner:
             end = self.os_path(start)
             text = cfg.render(a.toks[start:end])
             side = 'windows' if self.in_windows_arm(start) else ''
-            self.found.append(Occurrence(self.path, 'os', text, '', side, self.line(start), self.beside_windows_arm(start)))
+            # A use in a Windows arm is its own Windows arm: it can be `paired`, and its `proof` is what closes it.
+            windows_arm = side == 'windows' or self.beside_windows_arm(start)
+            self.found.append(Occurrence(self.path, 'os', text, '', side, self.line(start), windows_arm))
             i = max(end, i + 1)
 
     def beside_windows_arm(self, t):

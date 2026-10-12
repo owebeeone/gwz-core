@@ -72,7 +72,7 @@ where
     let text = match load(known_path, control) {
         // A missing `known_hosts` lists no host: it is the refusal of an unknown one (U8).
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Err(HostKeyRefused.into_error());
+            return Err(HostKeyRefused::NotListed.into_error());
         }
         loaded => loaded?,
     };
@@ -313,14 +313,50 @@ fn handshake(
         .map(|(key, _)| key.to_vec())
         .ok_or(io::ErrorKind::InvalidData)?;
     control.check()?;
-    if !names
-        .iter()
-        .any(|name| matches!(known.check_port(name, port, &host_key), CheckResult::Match))
-    {
-        // Not listed, or listed with a different key: the host words it with the file it read (U8).
-        return Err(HostKeyRefused.into_error());
+    let mut changed = false;
+    for name in names {
+        match known.check_port(name, port, &host_key) {
+            CheckResult::Match => return Ok((connection, host_key)),
+            CheckResult::Mismatch => changed = true,
+            CheckResult::NotFound | CheckResult::Failure => {}
+        }
     }
-    Ok((connection, host_key))
+    // Not listed, or listed with a different key (libssh2 tells them apart): the host words it with the file it read
+    // (U8, decision D12).
+    if !changed {
+        return Err(HostKeyRefused::NotListed.into_error());
+    }
+    let line = changed_line(&mut connection, text, names, port, &host_key, control)?;
+    Err(HostKeyRefused::Changed { line }.into_error())
+}
+
+/// The first line (from 1) of `text` that lists one of `names` with a key other than `host_key`: each line is read
+/// into a set of its own and asked, as the whole file was. `None` when no line is found alone, as a line that only
+/// matches with its neighbours would be.
+fn changed_line(
+    connection: &mut SshConnection,
+    text: &str,
+    names: &[&str],
+    port: u16,
+    host_key: &[u8],
+    control: &Control,
+) -> io::Result<Option<usize>> {
+    for (index, line) in text.split('\n').enumerate() {
+        control.check()?;
+        let mut alone = connection.session().known_hosts().map_err(ssh)?;
+        if !load_known(&mut alone, line, None, control)? {
+            continue;
+        }
+        if names.iter().any(|name| {
+            matches!(
+                alone.check_port(name, port, host_key),
+                CheckResult::Mismatch
+            )
+        }) {
+            return Ok(Some(index + 1));
+        }
+    }
+    Ok(None)
 }
 
 /// Waits within `control`'s bounds for the session's socket to be

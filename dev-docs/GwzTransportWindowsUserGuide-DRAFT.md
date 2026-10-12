@@ -44,9 +44,18 @@ value is refused, not ignored, with a message such as:
 ```
 GWZ_TRANSPORT must be gwz or native, not "bogus"; --transport decides without it
 gwz.transport in <file> must be gwz or native, not "true"; remove it with
-  git config --file '<file>' --unset-all gwz.transport, or fix it;
+  git config --file "<file>" --unset-all gwz.transport, or fix it;
   --transport or GWZ_TRANSPORT decides without it
 ```
+
+On Windows the printed command quotes the path in double quotes, which pastes
+correctly in cmd, PowerShell and Git Bash (on macOS and Linux it is single-quoted).
+For a value that a file included by `~/.gitconfig` holds, the message prints
+`git -C / config --file "<file>" --includes --show-origin --get-all gwz.transport`,
+which names the file that holds it. If the path holds a character that one of those
+shells would expand (`$`, a backtick, `%`, `!`, a curly double quote), starts with
+`\\` (a network path) or is not a drive path, GWZ prints no command and says to
+remove the key from that file, or from the file that holds it.
 
 In PowerShell, `$env:GWZ_TRANSPORT = 'native'` selects native for commands
 started from that shell, and `Remove-Item Env:GWZ_TRANSPORT` removes it. In Git
@@ -186,11 +195,21 @@ an error rather than being skipped. Folder and key names with non-ASCII
 characters work; gwz 1.0.17 fails on them.
 
 Host-key checking is required before any login, and choosing native does not
-repair a mismatched host key. Every `known_hosts` message (a host that is not in the
-file, a mismatched key, or a file with no RSA entry for the host) prints the file GWZ
-read, which home it came from, and what to run. To add an RSA
-entry (see the next section for why RSA), replace `<path>` with the printed path
-and `<host>` with the server's name:
+repair a mismatched host key. GWZ tells two refusals apart and words each its own
+way. Both print the file GWZ read and which home it came from.
+
+**The host is not listed** (the file has no entry for it, or does not exist):
+
+```
+gwz cannot trust the host key of <host>: <path> does not list it, or does not exist
+or cannot be read. gwz read <path>; its home came from <HOME, HOMEDRIVE and HOMEPATH,
+or USERPROFILE>. If <host> is new to you, first check its key fingerprint with its
+administrator or provider, then add the key. <the commands below>  Then compare the
+fingerprint: ssh-keygen -lf "<path>". Then retry.
+```
+
+To add an RSA entry (see the next section for why RSA), replace `<path>` with the
+printed path and `<host>` with the server's name:
 
 ```
 # PowerShell
@@ -202,6 +221,25 @@ ssh-keyscan -t rsa <host> >> "<path>"
 Then compare the fingerprint, `ssh-keygen -lf "<path>"`, with the one the provider
 publishes before you rely on it: a key fetched over the network proves nothing by
 itself.
+
+**The key changed** (the file lists the host with a different key):
+
+```
+gwz refuses to connect to <host>: the host key it presented differs from the one
+recorded in <path> at line <n>. gwz read <path>; its home came from <variable>. This
+may be an attack, with someone between you and the server, or the server may have
+been re-keyed. Verify the server's key fingerprint out of band, with its
+administrator or provider, before you trust it. ssh-keygen -lf "<path>" shows the
+fingerprints on record. Remove the old line only after you have verified the new
+key, then retry.
+```
+
+The line number is the first line of the file that lists the host with another key,
+and is left out when GWZ cannot find one line that does. This message prints no
+command that adds a key or removes an entry: with a changed key, the fingerprint
+check comes first and the edit is yours. When GWZ cannot tell the two refusals apart
+(the endpoint is in another process), it uses one message that names both causes and
+shows the add and remove commands after the fingerprint check.
 
 ## SSH host keys and key files
 
@@ -272,8 +310,11 @@ A connection that drops before login is retried; gwz 1.0.17 made one attempt.
 **What is supported:** one static proxy set in the machine's WinHTTP settings, and
 a proxy that does not ask for a login. Nothing else controls GWZ's proxy use.
 Check the setting with `netsh winhttp show proxy`. If it says "Direct access", GWZ
-connects directly, and when a direct connection fails the error says that WinHTTP
-has no proxy. Your administrator can set it with `netsh winhttp set proxy
+connects directly, and when a direct connection fails before the server answers the
+error adds: "The Windows machine proxy setting (netsh winhttp show proxy) says direct
+access, so GWZ connected to the server directly, and that connection failed." and
+then how an administrator sets a proxy. It says nothing of the kind when a proxy is
+named, or when the server answered. Your administrator can set it with `netsh winhttp set proxy
 proxy-server="host:port" bypass-list="..."` or, to copy your Internet Options
 settings, `netsh winhttp import proxy source=ie`. A proxy that exists only as a PAC
 script (automatic configuration) is not supported; restate it as a static proxy.
@@ -285,8 +326,9 @@ forms) and git's `http.proxy` setting are ignored, whether or not a machine prox
 is set. This is the reverse of macOS and Linux. `NO_PROXY` does not stop a machine
 proxy, and an empty `http.proxy` does not turn it off.
 
-GWZ accepts these machine proxy forms: `host:port`, `host` alone (the default port
-is used; its number was not measured), `http://host:port`, or a list such as
+GWZ accepts these machine proxy forms: `host:port`, `host` alone (port 80, WinHTTP's
+default for a bare entry; accepted by the operator's decision of 2026-10-12 and not
+measured on gwz 1.0.17), `http://host:port`, or a list such as
 `http=host:port;https=host:port`. An `https://` repository goes through the proxy
 by asking it to open a tunnel to the server (a CONNECT request). **That was measured
 with gwz 1.0.17 against one public HTTPS server. GWZ's own transport has not yet
@@ -311,7 +353,11 @@ changing any setting on the computer; use it only where your network allows dire
 connections and your administrator accepts that. If your network blocks direct
 connections, `--transport native` fails too, and only the administrator's fix helps.
 A proxy host that does not resolve fails
-the operation; GWZ does not then go direct. GWZ also refuses, naming the setting,
+the operation; GWZ does not then go direct.
+
+A setting that GWZ refuses (the cases above) refuses **only the https remotes**:
+an SSH remote or a local operation runs as if no proxy were set, because it never
+uses one, and an https remote fails before any connection with the same text. GWZ also refuses, naming the setting,
 any form it cannot interpret: more than one bare entry, a bad port, a user name, a
 path, PAC or automatic settings, or a proxy address that is not `http://`. It
 never goes direct because it could not read a setting. Do not reset an

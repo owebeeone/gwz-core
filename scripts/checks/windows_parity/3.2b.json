@@ -1,4 +1,5 @@
 {
+  "done": true,
   "entries": [
     {"path": "src/git/endpoint/agent_source/select_tests.rs", "kind": "gate", "gate": "unix", "target": "arm: use std::os::unix::ffi::OsStrExt", "state": "paired", "owner": ["3.2b"], "appendix": "new: step 3.2b's rows; the else arm builds the same non-Unicode name from UTF-16 (OsStringExt::from_wide)"},
     {"path": "src/git/endpoint/agent_source/select_tests.rs", "kind": "os", "gate": "os::unix::ffi::OsStrExt", "target": "", "state": "paired", "owner": ["3.2b"], "appendix": "new: step 3.2b's rows; the else arm builds the same non-Unicode name from UTF-16 (OsStringExt::from_wide)"},

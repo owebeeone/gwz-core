@@ -101,7 +101,7 @@ cfg_if::cfg_if! {
                 let (helpers_disabled, windows) = crate::transport_host::policy_words(self.policy);
                 let message = crate::transport_host::HttpsOpenFailure {
                     failure, anonymous: None, attempts: None, service: Some(service),
-                    helpers_disabled, cli_hint: self.context.is_cli(), windows, host: None, redirect: None,
+                    helpers_disabled, cli_hint: self.context.is_cli(), windows, host: None, redirect: None, machine: Default::default(),
                 };
                 if let Some(error) = message.model_error()
                     && let Some(attempt) = &self.attempt {

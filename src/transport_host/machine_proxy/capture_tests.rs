@@ -171,27 +171,31 @@ fn the_machine_setting_wins_over_the_environment_and_git_configuration() {
 }
 
 #[test]
-fn a_refused_setting_refuses_the_endpoint_configuration_naming_the_setting() {
+fn a_refused_setting_still_builds_the_endpoint_configuration_and_carries_its_text() {
+    // Decision D6: the configuration serves SSH and local operations, so a setting that cannot be used for https
+    // refuses only an https open (refusal_tests.rs).
     let snapshot = EnvironmentSnapshot::from_os_pairs([(
         OsString::from("HOME"),
         std::env::temp_dir().into_os_string(),
     )])
     .unwrap();
     let machine = Fixed::named("http=proxy:8080", None).capture();
-    let error = crate::transport_host::endpoint_environment::endpoint_config_native(
+    let (local, https) = crate::transport_host::endpoint_environment::endpoint_config_native(
         &snapshot,
         None,
         Some(machine),
     )
-    .err()
-    .expect("T1 refuses the configuration");
+    .expect("a refused machine setting does not refuse the configuration");
+    assert!(local.ssh.is_some(), "the SSH settings are built");
+    let crate::git::endpoint::https_connection::MachineSetting::Refused(text) = &https.tls.machine
+    else {
+        panic!("the refusal is carried: {:?}", https.tls.machine);
+    };
     assert!(
-        error
-            .message
-            .starts_with("The Windows machine proxy setting has no entry for https"),
-        "{}",
-        error.message
+        text.starts_with("The Windows machine proxy setting has no entry for https"),
+        "{text}"
     );
+    assert!(https.tls.proxy.is_none() && https.tls.machine_bypass.is_none());
 }
 
 #[test]
@@ -245,8 +249,7 @@ fn a_direct_machine_setting_clears_any_proxy_already_in_the_configuration() {
     };
     Fixed::new(Access::Direct, None, None)
         .capture()
-        .apply(&mut config)
-        .unwrap();
+        .apply(&mut config);
     assert!(
         config.proxy.is_none() && config.no_proxy.is_empty() && config.machine_bypass.is_none()
     );
@@ -261,8 +264,7 @@ fn the_selection_sends_this_machines_own_addresses_direct_and_every_other_addres
     let mut config = Config::default();
     Fixed::named("proxy.example:8080", None)
         .capture()
-        .apply(&mut config)
-        .unwrap();
+        .apply(&mut config);
     for own in ["10.1.2.3", "192.168.0.9", "127.0.0.1", "::1", "localhost"] {
         assert!(config.proxy_for(own, 443).is_none(), "{own}");
     }

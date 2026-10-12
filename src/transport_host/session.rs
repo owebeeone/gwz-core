@@ -1,5 +1,6 @@
 use super::*;
 use crate::git::endpoint::{
+    https_connection::MachineSetting,
     placement_endpoint::{EndpointError, PlacementEndpoint},
     setup_retry,
     shared_reservation::Authority,
@@ -162,6 +163,10 @@ struct State {
     /// The SSH home the endpoint in this process reads under, and the variable that named it (plan step 3.1): a driver
     /// prints the `known_hosts` file when it words a host-key failure, and expands `~/` identity paths under it.
     home: Option<Home>,
+    /// What the machine proxy setting said when the runtime's configuration was built (Windows; decisions D6, D7): a
+    /// driver refuses an https open with the setting's text before it asks the endpoint for anything, and words a failed
+    /// direct connection.
+    machine: MachineSetting,
 }
 struct Event {
     wakes: Mutex<BTreeMap<u64, Waker>>,
@@ -301,6 +306,21 @@ impl Session {
             .unwrap_or_else(|error| error.into_inner())
             .home = home;
     }
+    /// Tells this driver what the machine proxy setting said when its runtime's configuration was built.
+    pub(super) fn set_machine(&self, machine: MachineSetting) {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .machine = machine;
+    }
+    /// What the machine proxy setting said when this runtime's configuration was built; `Unread` where none was read.
+    pub(super) fn machine(&self) -> MachineSetting {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .machine
+            .clone()
+    }
     /// The SSH home the endpoint reads under: the one place `known_hosts` and `~/` identities are read from.
     pub(super) fn home(&self) -> Option<Home> {
         self.state
@@ -411,6 +431,7 @@ impl Session {
             ssh_interaction_ms: 120_000,
             handoff: None,
             home: None,
+            machine: MachineSetting::default(),
         }
     }
     /// A driver session. `handoff` is shared with the endpoint session its

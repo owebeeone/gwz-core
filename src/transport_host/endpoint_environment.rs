@@ -10,7 +10,8 @@
 //! Unix uses its captured environment proxy settings. Windows reads the WinHTTP
 //! machine proxy once on the original caller entry (`machine_proxy`, plan step
 //! 4.6) and never the environment's: a direct setting is admitted, an unusable
-//! one refuses the configuration with a text that names it, and a named proxy
+//! one is recorded with a text that names it and refuses an https open (the
+//! configuration still builds, decision D6), and a named proxy
 //! (with its bypass rules) is the HTTPS endpoint's proxy for every https
 //! connection (plan step 4.7). Its SSH home is chosen by the home contract on
 //! every platform (`git::endpoint::ssh_home`, plan step 3.1), and its agent is chosen
@@ -41,7 +42,7 @@ cfg_if::cfg_if! {
         pub(crate) enum MachineProxy {}
 
         impl MachineProxy {
-            pub(crate) fn apply(&self, _: &mut https_connection::Config) -> ModelResult<()> {
+            pub(crate) fn apply(&self, _: &mut https_connection::Config) {
                 match *self {}
             }
         }
@@ -175,15 +176,15 @@ cfg_if::cfg_if! {
 }
 
 /// The HTTPS endpoint's TLS and proxy configuration. The proxy comes from the machine setting whenever one was
-/// captured (and a setting that cannot be used refuses the configuration here, before the CA file is read); the
-/// environment's proxy is read only where no machine setting is (design §6).
+/// captured (a setting that cannot be used is recorded in the configuration and refuses an https open, not the
+/// configuration, decision D6); the environment's proxy is read only where no machine setting is (design §6).
 fn tls_config(
     environment: &EnvironmentSnapshot,
     machine: Option<&MachineProxy>,
 ) -> ModelResult<https_connection::Config> {
     let mut config = https_connection::Config::default();
     if let Some(machine) = machine {
-        machine.apply(&mut config)?;
+        machine.apply(&mut config);
     }
     if let Some(path) = value(environment, CA_FILE_VARIABLES) {
         use std::io::Read;

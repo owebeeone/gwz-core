@@ -125,15 +125,57 @@ fn escaped(text: &str) -> String {
     shown
 }
 
-/// `path` quoted for a POSIX shell, between `'`s with an embedded `'`
-/// written `'\''`, or `None` for a path that no printed command can name: one
-/// that holds a control character (E1), one that is not UTF-8, which the
-/// command's text cannot hold, and one that is not absolute, which the
-/// command, run in `/`, would misname.
-fn shell_quoted(path: &Path) -> Option<String> {
-    let text = path.to_str()?;
-    if !path.is_absolute() || text.contains(char::is_control) {
-        return None;
+cfg_if::cfg_if! {
+    if #[cfg(windows)] {
+        /// `path` quoted for the Windows shells, or `None` for a path that no printed command can name (design §10, E1,
+        /// decision D11): see [`windows_quoted`]. A path that is not UTF-8 (an unpaired surrogate) holds no text the
+        /// command could carry.
+        fn shell_quoted(path: &Path) -> Option<String> {
+            windows_quoted(path.to_str()?)
+        }
+    } else {
+        /// `path` quoted for a POSIX shell, between `'`s with an embedded `'`
+        /// written `'\''`, or `None` for a path that no printed command can name: one
+        /// that holds a control character (E1), one that is not UTF-8, which the
+        /// command's text cannot hold, and one that is not absolute, which the
+        /// command, run in `/`, would misname.
+        fn shell_quoted(path: &Path) -> Option<String> {
+            let text = path.to_str()?;
+            if !path.is_absolute() || text.contains(char::is_control) {
+                return None;
+            }
+            Some(format!("'{}'", text.replace('\'', r"'\''")))
+        }
     }
-    Some(format!("'{}'", text.replace('\'', r"'\''")))
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(any(windows, test))] {
+        /// The characters that one of cmd.exe, PowerShell or Git Bash expands or reads as a quote inside double
+        /// quotes: `$` and the backtick (PowerShell, bash), `%` (cmd), `!` (bash's history, and cmd's delayed
+        /// expansion), `"`, and the curly double quotes that PowerShell reads as `"`.
+        const EXPANDED_IN_DOUBLE_QUOTES: &[char] =
+            &['$', '`', '%', '!', '"', '\u{201c}', '\u{201d}', '\u{201e}'];
+
+        /// A Windows path as text, quoted for the command it is printed in (design §10, E2, decision D11):
+        /// `"C:\Users\x y\.gitconfig"`, which cmd.exe, PowerShell and Git Bash all take as one argument, a Windows
+        /// file name never holding a `"`. `None`, so that the words take over, for a path that is not a drive
+        /// path (relative, or a `\\server` or `\\?\` path, whose leading backslashes Git Bash halves), one with a
+        /// control character, one with a character in [`EXPANDED_IN_DOUBLE_QUOTES`], or one with two backslashes
+        /// running (bash halves them too). The command, run in `/`, would misname a path that is not absolute.
+        pub(super) fn windows_quoted(text: &str) -> Option<String> {
+            let mut characters = text.chars();
+            let drive = characters.next().is_some_and(|c| c.is_ascii_alphabetic())
+                && characters.next() == Some(':')
+                && matches!(characters.next(), Some('\\' | '/'));
+            if !drive
+                || text.contains(char::is_control)
+                || text.contains(EXPANDED_IN_DOUBLE_QUOTES)
+                || text.contains("\\\\")
+            {
+                return None;
+            }
+            Some(format!("\"{text}\""))
+        }
+    }
 }

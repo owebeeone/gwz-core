@@ -3,7 +3,7 @@
 //! On Windows the machine setting is the one proxy source for an https origin: `HTTPS_PROXY`, `ALL_PROXY`,
 //! `NO_PROXY` and git's `http.proxy` are never consulted, whether the machine proxy is named or direct. It is read
 //! once, beside the environment snapshot, into an owned [`MachineProxy`]: direct, a named proxy with its bypass
-//! rules, or a refusal that names the setting. Nothing here decides by resolving a name, and nothing goes direct
+//! rules, or a refusal that names the setting (which refuses an https open and nothing else, decision D6). Nothing here decides by resolving a name, and nothing goes direct
 //! because a form could not be read: a request goes direct only where a stated bypass rule matches it.
 //!
 //! The grammar and the selection are pure and read the machine through two injected sources ([`ProxySource`] and
@@ -22,13 +22,13 @@ cfg_if::cfg_if! {
         mod bypass_tests;
         mod capture_tests;
         mod proxy_string_tests;
+        mod refusal_tests;
         mod testing;
         mod tunnel_tests;
     }
 }
 cfg_if::cfg_if! { if #[cfg(all(windows, test))] { mod host_rows; mod host_tunnel; } }
 
-use super::{ModelResult, unsupported};
 use crate::git::endpoint::https_connection;
 use std::{net::IpAddr, sync::Arc};
 
@@ -78,7 +78,7 @@ pub(crate) enum MachineProxy {
     Direct,
     /// Every https connection goes through this proxy unless a bypass rule matches.
     Named(Arc<Named>),
-    /// The setting cannot be used; the text names it and the next action. Every use of it is refused.
+    /// The setting cannot be used; the text names it and the next action. Every https open is refused with it.
     Refused(Arc<str>),
 }
 
@@ -90,15 +90,17 @@ pub(crate) struct Named {
 }
 
 impl MachineProxy {
-    /// Makes `config` use this machine setting alone: the environment's proxy and bypass list are replaced, and a
-    /// refused setting refuses the configuration.
-    pub(crate) fn apply(&self, config: &mut https_connection::Config) -> ModelResult<()> {
+    /// Makes `config` use this machine setting alone: the environment's proxy and bypass list are replaced, and the
+    /// setting is recorded beside them. A refused setting does not refuse the configuration (decision D6): it leaves
+    /// no proxy at all and is recorded with its text, which refuses every https open before any connection, and
+    /// SSH and local operations are untouched.
+    pub(crate) fn apply(&self, config: &mut https_connection::Config) {
         match self {
             Self::Direct => {
                 config.proxy = None;
                 config.no_proxy.clear();
                 config.machine_bypass = None;
-                Ok(())
+                config.machine = https_connection::MachineSetting::Direct;
             }
             Self::Named(named) => {
                 // No credential accompanies the CONNECT: the proxy has none, and the tunnel carries no origin one.
@@ -110,9 +112,14 @@ impl MachineProxy {
                 });
                 config.no_proxy.clear();
                 config.machine_bypass = Some(named.bypass.clone());
-                Ok(())
+                config.machine = https_connection::MachineSetting::Named;
             }
-            Self::Refused(text) => Err(unsupported(text)),
+            Self::Refused(text) => {
+                config.proxy = None;
+                config.no_proxy.clear();
+                config.machine_bypass = None;
+                config.machine = https_connection::MachineSetting::Refused(text.clone());
+            }
         }
     }
 

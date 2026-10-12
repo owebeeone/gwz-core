@@ -69,6 +69,7 @@ cfg_if::cfg_if! {
         mod cancellable_tests;
         mod cancellable_https_tests;
         mod ca_bundle_tests;
+        mod host_key_tests;
     }
 }
 
@@ -297,6 +298,11 @@ impl TransportRuntime {
         native: Option<NativeCaller>,
     ) -> ModelResult<Self> {
         let enabled = https.is_some();
+        // What the machine proxy setting said (Windows), which the driver words an https failure with (D6, D7).
+        let machine = https
+            .as_ref()
+            .map(|(config, _)| config.tls.machine.clone())
+            .unwrap_or_default();
         let io_timeout_ms = local.io_timeout_ms;
         let connect_timeout_ms = local.pool.connect_timeout_ms;
         let allocation_ms = local.pool.allocation_timeout_ms;
@@ -326,6 +332,7 @@ impl TransportRuntime {
             interaction_ms,
         )?;
         driver.set_home(home);
+        driver.set_machine(machine);
         let link = session::LocalLink::new(core_port, peer_port)?;
         Ok(Self(Arc::new(Mutex::new(RuntimeState {
             local: driver,

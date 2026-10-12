@@ -1,4 +1,5 @@
 {
+  "done": true,
   "entries": [
     {"path": "src/git/endpoint/https_worker/native/tests.rs", "kind": "gate", "gate": "unix", "target": "arm: fn isolate", "state": "paired", "owner": ["0.5"], "appendix": "G24"},
     {"path": "src/git/endpoint/https_worker/native/tests.rs", "kind": "os", "gate": "os::unix::process::CommandExt", "target": "", "state": "paired", "owner": ["0.5"], "appendix": "G24"},
