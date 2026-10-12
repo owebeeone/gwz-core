@@ -113,6 +113,7 @@ cfg_if::cfg_if! {
         mod git_turns_tests;
         mod ssh_destination_tests;
         mod ssh_pump_clock_tests;
+        mod stream_io_tests;
     }
 }
 

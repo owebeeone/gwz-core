@@ -69,6 +69,28 @@ fn the_largest_request_and_reply_go_through() {
     assert_eq!(pageant.seen()[0].request, request);
 }
 
+/// The spellings the system's SDDL writer may give the account `sid`: the string form, and the alias it has for the
+/// machine's built-in administrator (relative id 500, `LA`), which a hosted runner's `runneradmin` is.
+fn sddl_spellings(sid: &str) -> Vec<String> {
+    let mut spellings = vec![sid.to_owned()];
+    if sid.starts_with("S-1-5-21-") && sid.ends_with("-500") {
+        spellings.push("LA".to_owned());
+    }
+    spellings
+}
+
+#[test]
+fn the_built_in_administrator_may_be_written_by_its_alias() {
+    assert_eq!(
+        sddl_spellings("S-1-5-21-1-2-3-500"),
+        ["S-1-5-21-1-2-3-500", "LA"]
+    );
+    assert_eq!(
+        sddl_spellings("S-1-5-21-1-2-3-1001"),
+        ["S-1-5-21-1-2-3-1001"]
+    );
+}
+
 #[test]
 fn the_mapping_is_the_callers_and_system_s_alone() {
     let pageant = Receiver::start(Reply::Message(NO_KEYS.to_vec()));
@@ -77,15 +99,20 @@ fn the_mapping_is_the_callers_and_system_s_alone() {
     let descriptor = &pageant.seen()[0].descriptor;
     // What the mapping holds, as the system reports it: the caller owns it and the DACL is protected, with an entry
     // for SYSTEM and one for the caller and no other (no Everyone, no Authenticated Users, no Administrators).
+    let spellings = sddl_spellings(exchange.sid());
     assert!(
-        descriptor.starts_with(&format!("O:{}", exchange.sid())),
-        "{descriptor}"
+        spellings
+            .iter()
+            .any(|sid| descriptor.starts_with(&format!("O:{sid}"))),
+        "{descriptor} (the caller is {spellings:?})"
     );
     assert!(descriptor.contains("D:P"), "{descriptor}");
     assert_eq!(descriptor.matches("(A;").count(), 2, "{descriptor}");
     assert!(
-        descriptor.contains(&format!(";{})", exchange.sid())),
-        "{descriptor}"
+        spellings
+            .iter()
+            .any(|sid| descriptor.contains(&format!(";{sid})"))),
+        "{descriptor} (the caller is {spellings:?})"
     );
     for other in [";WD)", ";AU)", ";BA)", ";IU)"] {
         assert!(!descriptor.contains(other), "{other}: {descriptor}");

@@ -40,9 +40,12 @@ foreground child of the test, with a configuration, keys and `authorized_keys` o
 temporary directory (no service, no system-wide setting). It is found at `GWZ_TEST_SSHD`, else
 `%SystemRoot%\System32\OpenSSH\sshd.exe`, else on `PATH`; a missing server fails the test, as on
 Unix. The keys are RSA, since libssh2 on Windows CNG has no ed25519 (the files keep their
-`_ed25519` names). The server's exec requests run under the host's OpenSSH default shell, `cmd.exe`
-or a POSIX shell, and Git and a POSIX `sh` (`GWZ_TEST_SH`, or `sh.exe` on `PATH`) must be on the
-test's `PATH`, as Git for Windows provides. Every process the server starts is in a Job Object
+`_ed25519` names). The server's exec requests run under the host's OpenSSH default shell, which must be a POSIX shell
+(`HKLM\SOFTWARE\OpenSSH\DefaultShell` Git for Windows' `bash.exe`, `DefaultShellCommandOption` `-c`; the
+candidate-windows job sets it on its runner): `sshd.exe` replaces its sessions' `PATH` with the registry's, so a
+`cmd.exe` session can neither find a Git service nor quote its repository, and a fixture refuses such a host with
+that said. Git and a POSIX `sh` (`GWZ_TEST_SH`, or `sh.exe` on `PATH`) must be on the test's `PATH`, as Git for
+Windows provides. Every process the server starts is in a Job Object
 that the test owns and closes.
 
 The stuck-close rows (`ssh_tests::background_close`, `ssh_tests::channel`) need a channel whose output ends while the

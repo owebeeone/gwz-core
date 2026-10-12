@@ -552,17 +552,30 @@ fn a_close_slower_than_the_wait_bound_opens_a_new_connection() {
 fn a_test_carrier_is_never_deferred_for_a_closing_connection() {
     // The same close as the test above, which makes an ordinary open wait at
     // least 200 ms for it: the carrier of a test needs a connection of its own
-    // at once, so it neither waits nor takes the closing one.
-    let rig = Rig::new(delayed_close_fixture(ms(600)), 32, 5_000);
+    // at once, so it neither waits nor takes the closing one. The close is held
+    // until the test releases it, and the pool's counts say when the carrier's
+    // connection began: how long the connect itself takes (about 200 ms more
+    // through Windows' `sshd.exe`, and more on a loaded runner) is not what the
+    // test measures, only whether the carrier began it behind the deferral.
+    let (fixture, release) = gated_close_fixture();
+    let rig = Rig::new(fixture, 32, 5_000);
     closing_fetch(&rig);
-    let started = Instant::now();
-    let (stream, push) = rig.open_carrier(GitService::ReceivePack);
-    let waited = started.elapsed();
+    let (stream, push, began) = thread::scope(|scope| {
+        let started = Instant::now();
+        let job = scope.spawn(|| rig.open_carrier(GitService::ReceivePack));
+        while rig.counts().total() != 2 {
+            assert!(started.elapsed() < PATIENCE, "no second connection began");
+            thread::sleep(ms(1));
+        }
+        let began = started.elapsed();
+        fs::write(&release, b"").unwrap();
+        let (stream, push) = job.join().unwrap();
+        (stream, push, began)
+    });
     assert!(!push.reused, "the carrier took the closing connection");
-    assert_eq!(rig.counts().total(), 2);
     assert!(
-        waited < ms(200),
-        "the carrier waited {waited:?} for a closing connection"
+        began < ms(120),
+        "the carrier's connection began {began:?} after its open, behind a closing connection"
     );
     rig.push(stream).1.unwrap();
     rig.wait("both idle", |counts| counts.idle == 2);

@@ -142,8 +142,10 @@ cfg_if::cfg_if! {
             }
         }
 
-        /// A configuration source that is always empty.
-        pub(super) const NULL_CONFIG: &str = "NUL";
+        /// A configuration source that is always empty. Lower case: Git for Windows 2.56.0.windows.1 refused
+        /// `NUL` as a configuration file ("unable to access 'NUL'", git-for-windows/git#6449, fixed in
+        /// 2.56.0.windows.2) and accepts `nul` in every version.
+        pub(super) const NULL_CONFIG: &str = "nul";
 
         /// A configuration view is UTF-8 that Git wrote, and a Windows environment value is UTF-16. A view that is
         /// not UTF-8 is refused; it is never converted with a replacement character.
@@ -247,6 +249,12 @@ cfg_if::cfg_if! {
                     assert_eq!(directory, PathBuf::from("/"));
                     assert_eq!(environment.get("GIT_CEILING_DIRECTORIES"), Some(OsStr::new("caller")));
                 }
+            }
+
+            #[test]
+            fn the_empty_configuration_is_spelled_as_every_git_for_windows_accepts() {
+                // Git for Windows 2.56.0.windows.1 refuses `NUL`; `nul` and `/dev/null` work in it and before.
+                assert!(NULL_CONFIG == "nul" || NULL_CONFIG == "/dev/null", "{NULL_CONFIG}");
             }
 
             #[test]

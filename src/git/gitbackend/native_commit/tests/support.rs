@@ -110,9 +110,35 @@ pub(super) fn write(path: &Path, relative: &str, text: &str) {
 
 cfg_if::cfg_if! {
     if #[cfg(windows)] {
-        /// The path as given: Windows canonical paths carry a `\\?\` prefix.
+        /// The path as Git spells a repository directory when it matches a `gitdir:` pattern: the long name of every
+        /// component (a hosted runner's temporary directory is `C:\Users\RUNNER~1\...`, and Git compares the
+        /// pattern with the real path), without the `\\?\` prefix a canonical Windows path carries.
         pub(super) fn real(path: &Path) -> PathBuf {
-            path.to_path_buf()
+            let canonical = path.canonicalize().unwrap();
+            match canonical.to_str().and_then(|text| text.strip_prefix(r"\\?\")) {
+                Some(plain) if !plain.starts_with("UNC\\") => PathBuf::from(plain),
+                _ => canonical,
+            }
+        }
+
+        #[test]
+        fn a_path_given_by_its_short_names_is_spelled_by_its_long_ones() {
+            use std::os::windows::ffi::{OsStrExt, OsStringExt};
+            use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+            let dir = TempDir::new().unwrap();
+            let long = dir.path().join("a-directory-with-a-long-name");
+            fs::create_dir(&long).unwrap();
+            let wide: Vec<u16> = long.as_os_str().encode_wide().chain([0]).collect();
+            let mut buffer = vec![0u16; 1024];
+            // SAFETY: `wide` is NUL-terminated and `buffer` is owned, with its length passed.
+            let length =
+                unsafe { GetShortPathNameW(wide.as_ptr(), buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+            assert!(length > 0 && length < buffer.len(), "GetShortPathNameW failed");
+            let short = PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length]));
+            // A volume without short names answers with the long path, and the check below is then the plain one.
+            assert_eq!(real(&short), real(&long));
+            assert!(real(&short).ends_with("a-directory-with-a-long-name"), "{short:?}");
+            assert!(!real(&short).to_string_lossy().starts_with(r"\\?\"));
         }
     } else {
         /// The path with symlinks resolved, as Git sees the repository

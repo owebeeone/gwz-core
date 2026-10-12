@@ -115,29 +115,9 @@ pub(crate) fn timeout_origin(cause: Option<SetupFailureCause>) -> Option<&'stati
     }
 }
 
-/// The stall bound, in seconds as `--ssh-timeout` takes it, for a message
-/// that names the flag and its value (T7): `9` for 9000 ms, and `0.3` for the
-/// 300 ms only a test fixture sets. `None` when the bound is 0: `--ssh-timeout
-/// 0` turns the stall clock off, so no stall can be its doing and no message
-/// may name it.
-pub(crate) fn stall_seconds(stall_ms: u64) -> Option<String> {
-    if stall_ms == 0 {
-        return None;
-    }
-    let (whole, rest) = (stall_ms / 1000, stall_ms % 1000);
-    Some(if rest == 0 {
-        whole.to_string()
-    } else {
-        format!("{whole}.{rest:03}")
-            .trim_end_matches('0')
-            .to_owned()
-    })
-}
-/// The unit after a [`stall_seconds`] value: `1 second`, and `seconds` for
-/// every other value, `0.3 seconds` included.
-pub(crate) fn seconds_unit(seconds: &str) -> &'static str {
-    if seconds == "1" { "second" } else { "seconds" }
-}
+// The stall bound's words (T7) are `stream_io`'s, which the consumer proof loads alone; their tests are
+// `classify_tests`'.
+pub(crate) use super::stream_io::{seconds_unit, stall_seconds};
 
 /// The attempt a final failure ended, as `(N, M)` for its display's
 /// `attempt N of M` (the retry plan's §5), when the failure alone says so.

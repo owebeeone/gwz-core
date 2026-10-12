@@ -14,26 +14,22 @@
 //! use 2048-bit RSA keys in PEM form; the files keep their `_ed25519` names, which many tests spell.
 //!
 //! **Commands.** Windows' `sshd.exe` runs an exec request through the host's default shell, which is `cmd.exe`
-//! unless `HKLM\SOFTWARE\OpenSSH\DefaultShell` names another. Under a POSIX default shell (a Git for Windows
-//! `bash.exe`) the client's command runs as it would on Unix, and the fixture adds nothing. `cmd.exe` neither knows
-//! POSIX quoting nor finds `git-upload-pack`, and a forced command cannot fix that: `sshd.exe` gives every channel
-//! of a connection after the first the first channel's `SSH_ORIGINAL_COMMAND` (found on dabeest, step 1.6), so a
-//! connection that carries two commands would run the first twice. The fixture therefore forces nothing under
-//! `cmd.exe`. It puts a directory of **shims** first on the server's `PATH`, which the sessions inherit: a batch
-//! file for each Git service (`git-upload-pack.cmd`) that `cmd.exe` finds by the very name the client sent. The
-//! shim keeps its arguments as the client quoted them, puts Git on `PATH`, changes into the fixture's directory
-//! (the shell-injection marker is relative to it) and has a POSIX `sh` (`GWZ_TEST_SH`, or the `sh.exe` on `PATH`,
-//! as Git for Windows provides) rebuild the client's command and `eval` it, so the client's quoting means what it
-//! means on Unix. Each command is its own channel's, so a reused connection runs the right one. A default shell
-//! of another kind fails the test with that said.
+//! unless `HKLM\SOFTWARE\OpenSSH\DefaultShell` names another. The fixture runs commands under a POSIX default
+//! shell (a Git for Windows `bash.exe`): the client's command runs as it would on Unix, and the fixture adds nothing.
+//! A host whose default shell is `cmd.exe` is refused with the registry value to set (`REAL_CMD_REFUSAL`): `cmd.exe`
+//! neither knows POSIX quoting nor finds `git-upload-pack`, a forced command cannot fix that (`sshd.exe` gives every
+//! channel of a connection after the first the first channel's `SSH_ORIGINAL_COMMAND`, found on dabeest, step 1.6),
+//! and shims on the server's `PATH` cannot either: `sshd.exe` replaces its sessions' `PATH` with the registry's
+//! (`setup_session_user_vars` in Win32-OpenSSH's `w32-doexec.c`: the system value, then the user's), so no session
+//! finds them. A hosted `windows-2022` runner has `cmd.exe` as its default shell and the candidate-windows job sets
+//! the value to Git's `bash.exe` on that ephemeral machine; a developer's host sets it once, as dabeest has it.
 //!
-//! **Testing the `cmd.exe` path on a host that has another shell.** The default shell is a registry value, a host
+//! **Testing the `cmd.exe` quoting on a host that has another shell.** The default shell is a registry value, a host
 //! setting a test must not change, and `sshd_config` has no directive for it. `GWZ_TEST_SSH_SHELL=cmd` makes the
-//! fixture behave as it does under `cmd.exe`: it writes the shims, and forces a session command (the native
-//! helper's `cmd-session` mode, `fixture_helper`) that runs the client's command as `sshd.exe` runs it there,
-//! `cmd.exe /c` and the raw command line, with the shims first on the server's `PATH`. That tests everything but
-//! `sshd.exe`'s own choice of `cmd.exe`, and its reuse of a connection (the simulation forces a command, which
-//! `sshd.exe` repeats for every channel of a connection).
+//! fixture behave as it would under `cmd.exe` if `PATH` were kept: it writes the shims, and forces a session command
+//! (the native helper's `cmd-session` mode, `fixture_helper`) that runs the client's command as `sshd.exe` runs it
+//! there, `cmd.exe /c` and the raw command line, with the shims first on the server's `PATH`. That tests the shims'
+//! own quoting; it does not show that a real `cmd.exe` session would find them (it would not).
 use cfg_if::cfg_if;
 use std::path::{Path, PathBuf};
 
@@ -187,6 +183,10 @@ pub(crate) fn normalized_known_hosts_line(host: &str, public_key: &str) -> Strin
 pub(crate) fn repository_name(marker: &Path) -> String {
     format!("repo'$({})'", injected_command(marker))
 }
+
+/// Why a host whose OpenSSH default shell is `cmd.exe` fails the SSH fixtures at once, instead of with a
+/// Git service's usage message per test.
+pub(crate) const REAL_CMD_REFUSAL: &str = "the host's OpenSSH default shell is cmd.exe, which neither quotes a Git command as the client sent it nor finds git-upload-pack (sshd.exe replaces its sessions' PATH with the registry's, so the fixture cannot put a shim first); set HKLM\\SOFTWARE\\OpenSSH\\DefaultShell to Git for Windows' bash.exe and DefaultShellCommandOption to -c, as the candidate-windows job does";
 
 cfg_if! {
     if #[cfg(unix)] {
@@ -513,9 +513,7 @@ cfg_if! {
                 return String::new();
             }
             write_cmd_shims(temp, &git_directories());
-            if registry_shell() == SessionShell::Cmd {
-                return String::new();
-            }
+            assert!(registry_shell() != SessionShell::Cmd, "{REAL_CMD_REFUSAL}");
             // The host's shell is another, so the sessions are made to start `cmd.exe` as `sshd.exe` would.
             format!("ForceCommand {}\n", super::fixture_helper::script_line(super::fixture_helper::Mode::CmdSession))
         }
@@ -678,6 +676,20 @@ mod tests {
         assert_eq!(session_shell(powershell), None);
         let sh = "    DefaultShell    REG_EXPAND_SZ    %ProgramFiles%\\Git\\usr\\bin\\sh.exe\r\n";
         assert_eq!(session_shell(sh), Some(SessionShell::Posix));
+    }
+
+    #[test]
+    fn a_host_with_cmd_as_its_default_shell_is_told_which_value_to_set() {
+        for word in [
+            "HKLM\\SOFTWARE\\OpenSSH\\DefaultShell",
+            "bash.exe",
+            "DefaultShellCommandOption",
+        ] {
+            assert!(
+                REAL_CMD_REFUSAL.contains(word),
+                "{word}: {REAL_CMD_REFUSAL}"
+            );
+        }
     }
 
     #[test]
