@@ -374,12 +374,39 @@ on what the server offers:
   or Negotiate with Basic, it repeats the attempt and asks your helper each time;
   no helper sign-in was ever seen to succeed that way, so this guide does not
   promise it helps.)
-- If the server offers only Basic and no helper is configured, GWZ says so:
+- If the server offers only Basic and git has no credential helper for the remote,
+  GWZ says so (this text is only for that case; the two below are not it):
 
   ```
   The server asks for a user name and password (Basic) and no git credential helper
   is configured. Configure one (git config --global credential.helper manager;
   manager is Git Credential Manager, which comes with Git for Windows) and retry.
+  ```
+
+- If a helper is configured for the remote and still gave no password (you cancelled
+  it, it holds nothing for this server, or it failed), GWZ names the host and sends
+  nothing. *Text for the Surface look, not yet seen by Surface:*
+
+  ```
+  The credential helper in your git configuration gave no password for <host>: it may
+  have been cancelled, may hold no sign-in for this server, or may have failed. No
+  credential was sent. Check the helper's sign-in: `git ls-remote` with this member's
+  URL runs the helper where it can ask you or show its own error. Then retry.
+  ```
+
+- If GWZ refused to read your git configuration (it is too large, its includes are too
+  deep or too many or cannot be followed, a value is too large for the environment of
+  the git it starts, or `git config` itself fails), it asks no helper and says so.
+  *Text for the Surface look, not yet seen by Surface:*
+
+  ```
+  gwz did not use your git configuration to find a credential helper, because it refused
+  to read it. It asked no helper and sent no credential. It refuses a configuration that
+  is too large, include.path chains that are too deep or too many, an include it cannot
+  follow (unreadable, not a regular file, or written as `~user/` or `%(prefix)/`), a
+  value too large for the environment of the git it starts, and a `git config` that
+  itself fails. `git config --list --show-origin` shows what git reads: reduce it or fix
+  the include it names, then retry.
   ```
 
 - If the server offers only a scheme GWZ does not support at all, the message names

@@ -90,6 +90,45 @@ impl HttpsOpenFailure {
     pub(crate) fn helper_timeout(&self) -> bool {
         helper_failure::timeout_budget(&self.failure).is_some()
     }
+    /// The words for a failure of the configured helpers, by cause. Three are about the helpers as a whole, not about
+    /// what a helper answered: git had none (`NoHelper`; text T4 under a Windows policy), the one it had gave no
+    /// password (`Declined`), and gwz refused to read the configuration that names them (`ConfigurationRefused`).
+    fn helper_cause_words(
+        &self,
+        cause: gwz_transport::protocol::HelperFailureCause,
+        pipe: Option<&str>,
+    ) -> String {
+        use gwz_transport::protocol::HelperFailureCause::*;
+        let unusable = |fault: String| {
+            format!(
+                "gwz could not use `git credential fill`'s answer: {fault}. No credential was sent. `git config --get-urlmatch credential.helper` with this member's URL {MEMBER_URL} can select a different helper through repository settings or conditional includes. Check the helper chain GWZ uses. See Troubleshooting: HTTPS Credential Failure."
+            )
+        };
+        match cause {
+            NoHelper if self.windows => NO_HELPER_WINDOWS.into(),
+            NoHelper => no_credential_given(),
+            Declined => {
+                let host = self.host.as_deref().unwrap_or("this server");
+                format!(
+                    "The credential helper in your git configuration gave no password for {host}: it may have been cancelled, may hold no sign-in for this server, or may have failed. No credential was sent. Check the helper's sign-in: `git ls-remote` with this member's URL {MEMBER_URL} runs the helper where it can ask you or show its own error. Then retry. See Troubleshooting: HTTPS Credential Failure."
+                )
+            }
+            ConfigurationRefused => CONFIGURATION_REFUSED.into(),
+            PipeFailure => unusable(format!(
+                "the pipe to git failed ({})",
+                pipe.unwrap_or("Other")
+            )),
+            OutputLimit => unusable("its answer passed 16 KiB".into()),
+            ControlCharacter => unusable("the credential holds a control character".into()),
+            UsernameColon => unusable("the username holds a colon".into()),
+            NotUtf8 => unusable("its answer is not UTF-8 text".into()),
+            MissingNewline => unusable("its answer has no final newline".into()),
+            MissingField => unusable("a field is missing".into()),
+            MalformedOutput => {
+                unusable("its answer has a malformed or duplicate username/password field".into())
+            }
+        }
+    }
     /// The failure in words: its code, a timeout's origin (stall,
     /// aggregate, interaction or allocation, as on SSH), and the attempt it
     /// ended when that is known.
@@ -109,10 +148,7 @@ impl HttpsOpenFailure {
             && let Some(detail) = self.failure.detail.as_ref()
             && let Some(cause) = detail.helper_cause
         {
-            return format!(
-                "gwz could not use `git credential fill`'s answer: {}. No credential was sent. `git config --get-urlmatch credential.helper` with this member's URL {MEMBER_URL} can select a different helper through repository settings or conditional includes. Check the helper chain GWZ uses. See Troubleshooting: HTTPS Credential Failure.",
-                helper_cause(cause, detail.pipe_kind.as_deref())
-            );
+            return self.helper_cause_words(cause, detail.pipe_kind.as_deref());
         }
         use gwz_transport::protocol::{AuthMethod, GitService};
         let facts = self.failure.facts.as_ref();
@@ -140,12 +176,7 @@ impl HttpsOpenFailure {
                     "The server rejected the credential your credential helper gave (HTTP 401), and gwz does not erase or replace it. Renew it where it is kept. With a sign-in tool, sign in again, for example `gh auth refresh` or `gh auth login`. With a stored password or token, run `git ls-remote` with this member's URL {MEMBER_URL}: its first run fails and erases the old credential, and the next asks for the new one and stores it. Then retry. See Troubleshooting: HTTPS Credential Failure."
                 );
             }
-            if self.windows {
-                return "The server asks for a user name and password (Basic) and no git credential helper is configured. Configure one (git config --global credential.helper manager; manager is Git Credential Manager, which comes with Git for Windows) and retry.".into();
-            }
-            return format!(
-                "The server asked for an HTTPS credential, and no credential helper gave one. gwz asks only the helpers in your global and system git configuration, not those in a repository's own configuration or under any `includeIf`, whether `gitdir:` or `hasconfig:remote.*.url:`, and it does not prompt. With a sign-in tool, sign in with it, for example `gh auth login`. With a storing helper, run `git ls-remote` with this member's URL {MEMBER_URL}: git asks for the credential and stores it, or shows its own error. With no helper, set one up first. Then retry. See Troubleshooting: HTTPS Credential Failure."
-            );
+            return no_credential_given();
         }
         if helper && status == Some(403) {
             return format!(
@@ -220,6 +251,20 @@ impl HttpsOpenFailure {
     }
 }
 
+/// Text T4 (design section 14, item 13): `git credential fill` failed because git has no credential helper to ask.
+const NO_HELPER_WINDOWS: &str = "The server asks for a user name and password (Basic) and no git credential helper is configured. Configure one (git config --global credential.helper manager; manager is Git Credential Manager, which comes with Git for Windows) and retry.";
+
+/// Refusals of the configuration view (`https_auth::view`) all come to the host as one cause; this names the kinds.
+const CONFIGURATION_REFUSED: &str = "gwz did not use your git configuration to find a credential helper, because it refused to read it. It asked no helper and sent no credential. It refuses a configuration that is too large, include.path chains that are too deep or too many, an include it cannot follow (unreadable, not a regular file, or written as `~user/` or `%(prefix)/`), a value too large for the environment of the git it starts, and a `git config` that itself fails. `git config --list --show-origin` shows what git reads: reduce it or fix the include it names, then retry. See Troubleshooting: HTTPS Credential Failure.";
+
+/// The words for a server that wanted a credential when nothing says more than that none came, and for no helper
+/// off Windows.
+fn no_credential_given() -> String {
+    format!(
+        "The server asked for an HTTPS credential, and no credential helper gave one. gwz asks only the helpers in your global and system git configuration, not those in a repository's own configuration or under any `includeIf`, whether `gitdir:` or `hasconfig:remote.*.url:`, and it does not prompt. With a sign-in tool, sign in with it, for example `gh auth login`. With a storing helper, run `git ls-remote` with this member's URL {MEMBER_URL}: git asks for the credential and stores it, or shows its own error. With no helper, set one up first. Then retry. See Troubleshooting: HTTPS Credential Failure."
+    )
+}
+
 /// The scheme a native exchange named, as the server spells it; `None` for a scheme the exchange never answers.
 fn native_scheme_name(scheme: gwz_transport::protocol::NativeScheme) -> Option<&'static str> {
     use gwz_transport::protocol::NativeScheme;
@@ -230,19 +275,6 @@ fn native_scheme_name(scheme: gwz_transport::protocol::NativeScheme) -> Option<&
     }
 }
 
-fn helper_cause(cause: gwz_transport::protocol::HelperFailureCause, pipe: Option<&str>) -> String {
-    use gwz_transport::protocol::HelperFailureCause::*;
-    match cause {
-        PipeFailure => format!("the pipe to git failed ({})", pipe.unwrap_or("Other")),
-        OutputLimit => "its answer passed 16 KiB".into(),
-        ControlCharacter => "the credential holds a control character".into(),
-        UsernameColon => "the username holds a colon".into(),
-        NotUtf8 => "its answer is not UTF-8 text".into(),
-        MissingNewline => "its answer has no final newline".into(),
-        MissingField => "a field is missing".into(),
-        MalformedOutput => "its answer has a malformed or duplicate username/password field".into(),
-    }
-}
 impl std::fmt::Display for HttpsOpenFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(status) = self
@@ -351,21 +383,73 @@ cfg_if::cfg_if! {
                 assert!(windows(rejected_logon(NativeScheme::Ntlm), false, None).reason().starts_with("The server rejected your Windows account (NTLM)."));
             }
 
-            #[test]
-            fn basic_only_with_no_helper_says_how_to_configure_one_t4() {
-                let no_helper = Failure {
+            /// A Basic-only server whose `git credential fill` failed for `cause` (none: the failure says no more).
+            fn helper_failed(cause: Option<HelperFailureCause>, windows_policy: bool, host: Option<&str>) -> HttpsOpenFailure {
+                let failure = Failure {
                     code: ErrorCode::Authentication,
                     facts: Some(Facts { method: AuthMethod::Gh, http_status: Some(401), ..Default::default() }),
+                    detail: cause.map(|helper_cause| Box::new(FailureDetail { helper_cause: Some(helper_cause), ..Default::default() })),
                     ..Default::default()
                 };
-                assert_eq!(
-                    windows(no_helper.clone(), false, Some("git.example.test")).reason(),
-                    "The server asks for a user name and password (Basic) and no git credential helper is configured. Configure one (git config --global credential.helper manager; manager is Git Credential Manager, which comes with Git for Windows) and retry."
-                );
+                let mut failed = windows(failure, false, host);
+                failed.windows = windows_policy;
+                failed
+            }
+            const T4: &str = "The server asks for a user name and password (Basic) and no git credential helper is configured. Configure one (git config --global credential.helper manager; manager is Git Credential Manager, which comes with Git for Windows) and retry.";
+
+            #[test]
+            fn basic_only_with_no_helper_says_how_to_configure_one_t4() {
+                assert_eq!(helper_failed(Some(HelperFailureCause::NoHelper), true, Some("git.example.test")).reason(), T4);
                 // Off Windows the existing message stands.
-                let mut elsewhere = windows(no_helper, false, None);
-                elsewhere.windows = false;
-                assert!(elsewhere.reason().starts_with("The server asked for an HTTPS credential, and no credential helper gave one."));
+                let elsewhere = helper_failed(Some(HelperFailureCause::NoHelper), false, None).reason();
+                assert!(elsewhere.starts_with("The server asked for an HTTPS credential, and no credential helper gave one."), "{elsewhere}");
+            }
+
+            #[test]
+            fn t4_is_said_only_when_no_helper_is_configured() {
+                // A failure that says no more than "no credential came" does not claim that none is configured.
+                let unknown = helper_failed(None, true, None).reason();
+                assert!(unknown.starts_with("The server asked for an HTTPS credential, and no credential helper gave one."), "{unknown}");
+                for cause in [HelperFailureCause::Declined, HelperFailureCause::ConfigurationRefused] {
+                    for windows_policy in [true, false] {
+                        let said = helper_failed(Some(cause), windows_policy, None).reason();
+                        assert!(!said.contains("no git credential helper is configured") && !said.contains("credential.helper manager"), "{cause:?}: {said}");
+                    }
+                }
+            }
+
+            #[test]
+            fn a_helper_that_gave_no_password_says_so_and_names_the_host() {
+                for windows_policy in [true, false] {
+                    let said = helper_failed(Some(HelperFailureCause::Declined), windows_policy, Some("git.example.test")).reason();
+                    assert!(
+                        said.starts_with("The credential helper in your git configuration gave no password for git.example.test: it may have been cancelled, may hold no sign-in for this server, or may have failed. No credential was sent."),
+                        "{said}"
+                    );
+                    assert!(said.contains("Check the helper's sign-in"), "{said}");
+                    assert!(said.contains("`git ls-remote` with this member's URL"), "{said}");
+                    assert!(said.ends_with("See Troubleshooting: HTTPS Credential Failure."), "{said}");
+                }
+                // A host the failure does not know is "this server", never an empty name.
+                assert!(helper_failed(Some(HelperFailureCause::Declined), false, None).reason().contains("gave no password for this server:"));
+            }
+
+            #[test]
+            fn a_refused_configuration_names_the_reasons_gwz_refuses_one() {
+                for windows_policy in [true, false] {
+                    let said = helper_failed(Some(HelperFailureCause::ConfigurationRefused), windows_policy, Some("git.example.test")).reason();
+                    assert!(
+                        said.starts_with("gwz did not use your git configuration to find a credential helper, because it refused to read it. It asked no helper and sent no credential."),
+                        "{said}"
+                    );
+                    for reason in ["too large", "too deep", "an include it cannot follow", "`git config` that itself fails"] {
+                        assert!(said.contains(reason), "{reason} in {said}");
+                    }
+                    assert!(said.contains("`git config --list --show-origin`"), "{said}");
+                    assert!(said.ends_with("See Troubleshooting: HTTPS Credential Failure."), "{said}");
+                    // It is a refusal of the configuration, not a verdict on the helper's answer.
+                    assert!(!said.contains("could not use `git credential fill`'s answer"), "{said}");
+                }
             }
 
             #[test]

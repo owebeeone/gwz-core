@@ -366,7 +366,9 @@ A separate list from the register. Each is a combination or claim that this desi
     | An `http://` remote goes by the native route with warning T2 (register item 10). The warning is emitted at route selection, before the first request, on every operation that reaches such a remote; it is not gated by `--verbose` or by a quiet option, it is visible by default to Python callers, and nothing suppresses it | D2, S1, R2-2 | 4.4; checked at 5.2, 5.3 |
     | The Digest-only message says Digest is unsupported on both transports and suggests SSH or a server-side change; no native pointer | U3 | 4.4 |
     | The rejected-logon message, text T3: it names the host and the scheme, says nothing else is tried (no helper fallback), and gives the next action | U4, S4 | 4.4 |
-    | The `Basic`-only server with no helper configured, text T4: it says so and names how to configure a helper, naming `manager` (Git Credential Manager) as the usual one on Windows | U19, P3-b | 4.4 |
+    | The `Basic`-only server with no helper configured, text T4: it says so and names how to configure a helper, naming `manager` (Git Credential Manager) as the usual one on Windows. **Shown only when git has no credential helper in effect for the remote** (wire cause `no_helper`; operator decision D13, 2026-10-12), never for a helper that is configured and gave nothing, and never when gwz refused the configuration | U19, P3-b, D13 | 4.4; narrowed by the `helpercause` change |
+    | A configured helper that gave no password, text T8: it says the helper gave nothing for the host (cancelled, nothing stored for the server, or failed) and to check its sign-in. Wire cause `declined` | D13 | the `helpercause` change |
+    | A configuration gwz refused to read, text T9: it says gwz asked no helper and sent no credential, names the kinds of refusal (too large, includes too deep or too many, an include it cannot follow, a value too large for the environment, a `git config` that fails) and how to see what git reads. Wire cause `configuration_refused` | D13 | the `helpercause` change |
     | The Pageant-selected message names Pageant as the selected source and says `SSH_AUTH_SOCK` was not consulted | U6 | 3.2b |
     | The Pageant request timeout message, text T6, names the stall limit and `--ssh-timeout` and says the prompt may still be open. **No clock change and no LocalInteraction phase** (D5 (b); the former extension of the clock's admitted routes is withdrawn, item 14) | S4, L20, D5 | 3.6 |
     | The pinned-key message (`--identity`, `--remote-identity`, `gwz auth identity`) names the pin and how to remove it | U7 | 3.4 |
@@ -409,6 +411,22 @@ A separate list from the register. Each is a combination or claim that this desi
       ```
       The server asks for a user name and password (Basic) and no git credential helper is configured. Configure one (git config --global credential.helper manager; manager is Git Credential Manager, which comes with Git for Windows) and retry.
       ```
+
+    - **T8, the `helpercause` change (operator decision D13)** (Basic only; git has a helper for the remote and `git credential fill` still failed; text for the operator's Surface look, not yet seen by Surface; on every platform; the host name is the remote's, or "this server" when the failure does not know it):
+
+      ```
+      The credential helper in your git configuration gave no password for <host>: it may have been cancelled, may hold no sign-in for this server, or may have failed. No credential was sent. Check the helper's sign-in: `git ls-remote` with this member's URL <the member-URL note> runs the helper where it can ask you or show its own error. Then retry. See Troubleshooting: HTTPS Credential Failure.
+      ```
+
+      The helper's name is not shown: it would need a new bounded field on the wire, and a helper's configured value can hold paths or shell text. A helper that was cancelled, one with nothing stored and one that failed end `git credential fill` alike (git's prompts are off and its diagnostics are discarded), so one text covers the three.
+
+    - **T9, the `helpercause` change (operator decision D13)** (gwz refused the configuration view; text for the operator's Surface look, not yet seen by Surface; on every platform):
+
+      ```
+      gwz did not use your git configuration to find a credential helper, because it refused to read it. It asked no helper and sent no credential. It refuses a configuration that is too large, include.path chains that are too deep or too many, an include it cannot follow (unreadable, not a regular file, or written as `~user/` or `%(prefix)/`), a value too large for the environment of the git it starts, and a `git config` that itself fails. `git config --list --show-origin` shows what git reads: reduce it or fix the include it names, then retry. See Troubleshooting: HTTPS Credential Failure.
+      ```
+
+      The refusals reach the host as one cause: they name the kinds, not which one. A finer wire split would touch about forty refusal sites in `https_auth/view`.
 
     - **T5, owed to step 4.9** (a redirect from https to http; round 3: the refusal and its reason, no advice to use the `http://` address, `<new url>` only as quoted untrusted text):
 

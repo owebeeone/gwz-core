@@ -14,6 +14,10 @@ enum Fault {
     MissingGit,
     Interaction,
     ConfigurationSize,
+    /// Git has no credential helper in its configuration: `git credential fill` fails, and the view says why.
+    NoHelper,
+    /// Git has one, and it gives nothing: the same failure of `git credential fill`.
+    Declined,
 }
 impl Fault {
     fn config(self, root: &Path) -> Option<crate::git::endpoint::https_auth::Config> {
@@ -28,6 +32,18 @@ impl Fault {
                 config
                     .environment
                     .push(("HOME".into(), helper_script::script_path(root).into()));
+                Some(config)
+            }
+            Self::NoHelper => Some(helper_script::git_fixture(root, "cat >/dev/null\nexit 1\n")),
+            Self::Declined => {
+                let mut config = helper_script::git_fixture(root, "cat >/dev/null\nexit 1\n");
+                // The helper is named on the command line, which the configuration view reads: it is not run
+                // for what it gives, only counted, since the fake `git` fails `credential fill` itself.
+                config.environment.extend([
+                    ("GIT_CONFIG_COUNT".into(), "1".into()),
+                    ("GIT_CONFIG_KEY_0".into(), "credential.helper".into()),
+                    ("GIT_CONFIG_VALUE_0".into(), "silent".into()),
+                ]);
                 Some(config)
             }
             Self::ConfigurationSize => {
@@ -66,19 +82,28 @@ impl Fault {
         match self {
             Self::MissingGit => crate::GwzErrorCode::ExternalToolMissing,
             Self::Interaction => crate::GwzErrorCode::CredentialHelperTimeout,
-            Self::ConfigurationSize => crate::GwzErrorCode::RemoteRejected,
+            Self::ConfigurationSize | Self::NoHelper | Self::Declined => {
+                crate::GwzErrorCode::RemoteRejected
+            }
         }
     }
     fn message(self) -> &'static str {
         match self {
             Self::MissingGit => "HTTPS authentication needs `git` on PATH",
             Self::Interaction => "No credential helper answered within 0.5 seconds",
-            // A Windows policy words a credential the helper did not give as text T4 (TR1.8 section 14, item 13).
-            Self::ConfigurationSize if cfg!(windows) => {
+            // A Windows policy words a Git with no helper as text T4 (TR1.8 section 14, item 13); the other
+            // platforms keep their own words. Nothing else words as T4.
+            Self::NoHelper if cfg!(windows) => {
                 "The server asks for a user name and password (Basic) and no git credential helper is configured"
             }
-            Self::ConfigurationSize => {
+            Self::NoHelper => {
                 "The server asked for an HTTPS credential, and no credential helper gave one"
+            }
+            Self::Declined => {
+                "The credential helper in your git configuration gave no password for"
+            }
+            Self::ConfigurationSize => {
+                "gwz did not use your git configuration to find a credential helper, because it refused to read it"
             }
         }
     }
@@ -104,6 +129,8 @@ fn real_fetch_push_and_private_clone_project_helper_outcomes_without_suppression
                 Fault::MissingGit,
                 Fault::Interaction,
                 Fault::ConfigurationSize,
+                Fault::NoHelper,
+                Fault::Declined,
             ] {
                 let root = tempfile::tempdir().unwrap();
                 let (repository, _) = repository(root.path());
@@ -260,7 +287,12 @@ fn real_fetch_push_and_private_clone_project_helper_outcomes_without_suppression
                 .await
                 .unwrap();
                 assert!(!workspace.join("member").exists());
-                if matches!(fault, Fault::ConfigurationSize) {
+                // A private member's refused credential is skipped quietly, so materialize says nothing of it.
+                let quiet = matches!(
+                    fault,
+                    Fault::ConfigurationSize | Fault::NoHelper | Fault::Declined
+                );
+                if quiet {
                     let cloned = cloned.unwrap();
                     assert!(cloned.response.members.is_empty(), "{cloned:?}");
                     assert!(
@@ -312,6 +344,23 @@ fn real_fetch_push_and_private_clone_project_helper_outcomes_without_suppression
                         root.path().join("started").exists(),
                         "configuration refusal creates no missing-Git latch"
                     );
+                    assert_eq!(request.finish().await.pending_local_work, 0);
+                } else if quiet {
+                    // The refusal materialize skipped is still said to a caller that clones the repository itself.
+                    let request = runtime
+                        .request(meta("direct-clone"), "clone".into())
+                        .await
+                        .unwrap();
+                    let backend = request.backend().clone();
+                    let target = root.path().join("direct");
+                    let url = server.url.replace("/repo", "/direct/repo");
+                    let refused =
+                        tokio::task::spawn_blocking(move || backend.clone_repo(&url, &target))
+                            .await
+                            .unwrap()
+                            .unwrap_err();
+                    assert_eq!(refused.code, crate::model::ErrorCode::RemoteRejected);
+                    assert!(refused.message.contains(fault.message()), "{refused:?}");
                     assert_eq!(request.finish().await.pending_local_work, 0);
                 }
                 assert_eq!(runtime.shutdown().await.pending_local_work, 0);

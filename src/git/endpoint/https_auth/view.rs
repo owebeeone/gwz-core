@@ -4,6 +4,7 @@ use crate::git::endpoint::ssh_home;
 use std::path::Path;
 
 mod framing;
+mod helpers;
 pub(super) mod paths;
 use framing::{Entry, Root, discovery, entries, parameters};
 
@@ -45,7 +46,17 @@ impl Bounds {
     }
 }
 
-pub(super) async fn prepare(runner: &runner::Runner<'_>) -> Result<SecretBuffer, AuthError> {
+/// What the view hands Git for the lookup, and what it learned on the way.
+pub(super) struct Prepared {
+    pub(super) parameters: SecretBuffer,
+    /// Whether the view holds a credential helper for the URL, read as Git reads it (`helpers::in_effect`).
+    pub(super) helper: bool,
+}
+
+pub(super) async fn prepare(
+    runner: &runner::Runner<'_>,
+    url: &[u8],
+) -> Result<Prepared, AuthError> {
     let raw = runner
         .run(DISCOVERY, &[], None, PREPARATION_LIMIT, true)
         .await?;
@@ -70,6 +81,7 @@ pub(super) async fn prepare(runner: &runner::Runner<'_>) -> Result<SecretBuffer,
             }
         }
     }
+    let helper = helpers::in_effect(&flattened, url);
     let parameters = parameters(&flattened)?;
     bounds.charge(parameters.0.len())?;
     let verification = runner
@@ -87,7 +99,7 @@ pub(super) async fn prepare(runner: &runner::Runner<'_>) -> Result<SecretBuffer,
     if actual != flattened {
         return Err(AuthError::ConfigurationRefused);
     }
-    Ok(parameters)
+    Ok(Prepared { parameters, helper })
 }
 
 fn walk<'a>(

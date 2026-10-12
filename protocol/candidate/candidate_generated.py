@@ -75,10 +75,13 @@ class SetupFailureCause(Enum):
     stall = 1
 
 class HelperFailureCause(Enum):
+    configuration_refused = 11
     control_character = 3
+    declined = 10
     malformed_output = 8
     missing_field = 7
     missing_newline = 6
+    no_helper = 9
     not_utf8 = 5
     output_limit = 2
     pipe_failure = 1
