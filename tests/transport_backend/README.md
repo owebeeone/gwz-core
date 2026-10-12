@@ -20,7 +20,10 @@ The first invocation derives a candidate lock from the production lock, using
 already cached dependencies. Subsequent invocations must add `--locked`. The
 generated manifest and lock identify that local resolution; retain their hashes
 with evidence. This is not clean-install or published-source qualification.
-The prepared directory symlinks source, so source edits require rebuilding.
+The prepared directory symlinks source, so source edits require rebuilding. It also links `.github` and
+`scripts`, which `tests/publish_workflow.rs` reads through `CARGO_MANIFEST_DIR`: a read through `tests/../.github`
+resolves to the core on Linux and to the prepared directory's own `.github` on Windows, where `..` is collapsed
+before the lookup.
 
 The HTTPS tests' TLS servers (`src/git/endpoint/https_fixture.rs`) are rustls over the
 `ring` provider, test-only dev-dependencies that `prepare.py` adds to the candidate

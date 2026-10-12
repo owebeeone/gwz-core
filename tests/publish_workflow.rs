@@ -1,7 +1,17 @@
-const RELEASE_WORKFLOW: &str = include_str!("../.github/workflows/release.yml");
+// The files are read from the manifest directory, not through `../`: a candidate build is prepared
+// (tests/transport_backend/prepare.py) as a directory of symlinks, and from there `tests/../.github` is the
+// directory's own `.github` on Windows, where `..` is collapsed before the lookup, and the core's on Linux. The
+// prepared directory links `.github` and `scripts` beside `tests`, so this resolves the same in both builds.
+macro_rules! core_file {
+    ($path:literal) => {
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $path))
+    };
+}
+
+const RELEASE_WORKFLOW: &str = core_file!(".github/workflows/release.yml");
 const CHECKED_ARTIFACT_WORKFLOW: &str =
-    include_str!("../.github/workflows/checked-artifact-boundary.yml");
-const WINDOWS_MATRIX_WORKFLOW: &str = include_str!("../.github/workflows/windows-matrix.yml");
+    core_file!(".github/workflows/checked-artifact-boundary.yml");
+const WINDOWS_MATRIX_WORKFLOW: &str = core_file!(".github/workflows/windows-matrix.yml");
 
 #[test]
 fn release_workflow_tests_linux_and_windows() {
@@ -176,7 +186,7 @@ fn python_function<'a>(source: &'a str, name: &str) -> &'a str {
 
 #[test]
 fn local_release_runs_checked_artifact_boundary_before_rust_tests() {
-    let release = include_str!("../scripts/release.py");
+    let release = core_file!("scripts/release.py");
     // Each gate is a helper, so what orders them is the call sequence in
     // run_gates and main, not where the helpers are defined: run_test_suite
     // sits near the top of the file. test_release_boundary.py pins that
@@ -214,7 +224,7 @@ fn local_release_runs_checked_artifact_boundary_before_rust_tests() {
 
 #[test]
 fn local_release_cannot_skip_or_tag_a_commit_before_the_boundary_gate() {
-    let release = include_str!("../scripts/release.py");
+    let release = core_file!("scripts/release.py");
     assert!(!release.contains("--no-clippy"));
     assert!(!release.contains("no_clippy"));
     let commit = release

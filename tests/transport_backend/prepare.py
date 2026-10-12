@@ -111,7 +111,8 @@ placement_metadata = {
     # Nothing is beside the destination: tests/protocol.rs reads taut from here.
     "taut_source": str(root / "taut" / "src"),
 }
-for name in ["src", "build.rs", "build_support", "protocol", "tests", "README.md", "LICENSE"]:
+# `.github` and `scripts` are what tests/publish_workflow.rs reads, through CARGO_MANIFEST_DIR (step 5.4).
+for name in ["src", "build.rs", "build_support", "protocol", "tests", ".github", "scripts", "README.md", "LICENSE"]:
     (destination / name).symlink_to(core / name, target_is_directory=(core / name).is_dir())
 manifest = anchor_dependency_paths((core / "Cargo.toml").read_text(), core)
 # The libraries are path dependencies at their own location, not members here.

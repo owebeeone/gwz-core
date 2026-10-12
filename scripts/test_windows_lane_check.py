@@ -212,6 +212,43 @@ class HostedLike(unittest.TestCase):
         self.assertEqual((code, receipt['passed'], entry['passed']), (1, False, False))
         self.assertEqual((entry['gaps'], entry['failures']), (python, ['git::endpoint::ssh_tests::background_close::a']))
 
+    def test_the_protocol_target_rows_that_run_the_taut_generator_are_named_gaps_too(self):
+        """tests/protocol.rs regenerates the checked-in sources with `python -m taut.cli`, which the hosted job installs
+        (taut-proto) and the host does not; the four rows that need it fail there the same way the embedding rows do."""
+        names = ['generated_checked_artifact_protocol_is_current', 'generated_protocol_is_current',
+                 'log_addition_check_refuses_a_schema_that_declares_a_taut_option',
+                 'log_addition_preserves_the_complete_pre_log_wire_projection']
+        output = HOSTED_PASS.replace('failed=0', 'failed=4') + ''.join(f'HOSTED_LIKE_FAILED {n}\n' for n in names)
+        code, receipt = self.go(FakeRun(hosted_exit=101, hosted_output=output), '--hosted-like')
+        entry = receipt['shapes'][-1]
+        self.assertEqual((code, receipt['passed'], entry['gaps'], entry['failures']), (0, True, names, []))
+        # a test that only starts with a gap's name is not one
+        output = output.replace('failed=4', 'failed=5') + 'HOSTED_LIKE_FAILED generated_protocol_is_current_for_x\n'
+        code, receipt = self.go(FakeRun(hosted_exit=101, hosted_output=output), '--hosted-like')
+        self.assertEqual((code, receipt['shapes'][-1]['failures']), (1, ['generated_protocol_is_current_for_x']))
+
+    def test_an_integration_step_that_died_is_a_failure_even_beside_named_gaps(self):
+        """The integration step exits nonzero when a gap row fails, as the suite does; what tells that from a step that
+        never ran its targets (a build error, a binary that could not load) is that every target reported a result."""
+        python = 'transport_host::message_embedding_tests::python_messages_close_while_delivery_is_paused'
+        base = HOSTED_PASS.replace('failed=0', 'failed=1') + f'HOSTED_LIKE_FAILED {python}\n'
+        targets = len(gate.INTEGRATION_TARGETS)
+        for exit_code, results, passes in ((101, 0, False), (101, targets - 1, False), (101, targets, True), (0, targets, True)):
+            output = base + f'HOSTED_LIKE_INTEGRATION_EXIT {exit_code}\nHOSTED_LIKE_INTEGRATION_RESULTS {results}\n'
+            with self.subTest(exit_code=exit_code, results=results):
+                code, receipt = self.go(FakeRun(hosted_exit=101, hosted_output=output), '--hosted-like')
+                entry = receipt['shapes'][-1]
+                self.assertEqual((code, entry['passed']), (0 if passes else 1, passes))
+                self.assertEqual((entry['integration_exit'], entry['integration_results']), (exit_code, results))
+
+    def test_the_script_prints_the_integration_exit_and_fails_when_either_failed(self):
+        script = gate.hosted_like_script('cifix2-20261013-a', gate.DEFAULT_GIT_ROOT, None)
+        self.assertIn('echo "HOSTED_LIKE_INTEGRATION_EXIT $integration_status"', script)
+        # the results of the step alone: the log's lines from where the step began
+        self.assertIn('tail -n +$((before + 1)) /e/gwz-tests/cifix2-20261013-a/logs/hosted-like.log | grep -a -c', script)
+        self.assertIn('echo "HOSTED_LIKE_INTEGRATION_RESULTS $results"', script)
+        self.assertIn('if [ "$status" -eq 0 ]; then status=$integration_status; fi', script)
+
     def test_a_failed_suite_with_no_named_test_is_a_failure(self):
         """A suite that died (exit 101, no test named: the first run's test binary that could not load) never passes."""
         code, receipt = self.go(FakeRun(hosted_exit=101, hosted_output=HOSTED_PASS), '--hosted-like')
@@ -283,6 +320,29 @@ class HostedLike(unittest.TestCase):
         self.assertIn(f'RUSTFLAGS: {gate.CANDIDATE}', suites)
         # the job's command, but for the checkouts the host does not have (gwz-py) and its own paths
         self.assertIn(gate.HOSTED_SUITE.replace(' --skip-cfg-sibling gwz-py', ''), suites)
+
+    def test_the_integration_targets_run_after_the_suite_and_are_the_workflows(self):
+        """Step 5.4: the hosted job's "Integration targets" step is part of the mode, so a target that cannot run on
+        Windows (publish_workflow read its files through `..`) shows in a receipt and not first on a hosted runner."""
+        import re
+        workflow = (gate.CORE / '.github' / 'workflows' / 'transport-candidate.yml').read_text(encoding='utf-8')
+        step = workflow.split('- name: Integration targets', 1)[1].split('\n      - name:', 1)[0]
+        self.assertEqual(list(gate.INTEGRATION_TARGETS), re.findall(r'--test +([\w-]+)', step))
+        self.assertIn('publish_workflow', gate.INTEGRATION_TARGETS)
+        d = '/e/gwz-tests/cifix2-20261013-a'
+        script = gate.hosted_like_script('cifix2-20261013-a', gate.DEFAULT_GIT_ROOT, None)
+        tests = ' '.join(f'--test {name}' for name in gate.INTEGRATION_TARGETS)
+        command = (f'cargo test --locked --no-fail-fast --manifest-path {d}/candidate/Cargo.toml '
+                   f'--target-dir {d}/target-test {tests}')
+        self.assertIn(command, script)
+        self.assertLess(script.index(gate.HOSTED_SUITE), script.index(command))
+        # one log, so the counts and the failed names cover both; the run fails when either failed
+        self.assertIn(f'>> {d}/logs/hosted-like.log 2>&1', script[script.index(command):])
+        self.assertIn('GWZ_TEST_GIT=real', script[:script.index(command)])
+
+    def test_a_filtered_run_leaves_the_integration_targets_out(self):
+        script = gate.hosted_like_script('cifix2-20261013-a', gate.DEFAULT_GIT_ROOT, 'background_close')
+        self.assertNotIn('--test publish_workflow', script)
 
     def test_parse(self):
         parsed = gate.parse_hosted_like(HOSTED_FAIL, None)

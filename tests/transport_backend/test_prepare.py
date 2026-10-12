@@ -205,3 +205,23 @@ def test_prepared_manifest_compiles_guide_as_external_consumer(tmp_path):
     assert "include!" not in wrapper.read_text()
     assert "guide_test.rs" not in (ROOT / "Cargo.toml").read_text()
     assert not [path for path in (ROOT / "src").rglob("*.rs") if "guide_example" in path.read_text()]
+
+
+def test_prepared_directory_provides_the_workflows_and_scripts_publish_workflow_reads(tmp_path):
+    # Step 5.4: tests/publish_workflow.rs reads .github/workflows/*.yml and scripts/release.py. From a prepared
+    # directory the path `tests/../.github` is the directory's own on Windows (`..` is collapsed before the lookup, so
+    # the symlinked tests/ is never followed) and the core's on Linux; the directory provides the root both resolve from.
+    destination = prepare(tmp_path / "backend")
+    for name in (".github", "scripts"):
+        assert (destination / name).resolve() == (ROOT / name).resolve(), name
+    assert (destination / ".github" / "workflows" / "release.yml").is_file()
+    assert (destination / "scripts" / "release.py").is_file()
+
+
+def test_publish_workflow_reads_its_files_from_the_manifest_directory_not_through_dotdot():
+    # `include_str!("../.github/...")` from a symlinked tests/ resolves differently on Windows (step 0.1's reason for
+    # leaving the target to the Linux legs). The manifest directory is the prepared directory's own root.
+    source = (ROOT / "tests" / "publish_workflow.rs").read_text()
+    assert 'include_str!("' not in source
+    assert source.count('env!("CARGO_MANIFEST_DIR")') == 1
+    assert source.count("core_file!(") >= 5

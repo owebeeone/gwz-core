@@ -24,7 +24,8 @@ job's pinned release, SHA-256 checked, unpacked inside the run's directory), `GW
 spell it short). `--git-root DIR` puts another Git for Windows (for example a portable 2.56) first on `PATH` and names
 its `sh.exe`. The run is long (about twenty minutes warm) and belongs under the host booking. Its result is a
 `hosted-like` entry in the receipt: exit status, the suite's passed and failed counts and the names of the failed tests.
-`--hosted-like-filter NAME` narrows the run to the tests whose path contains NAME, for iterating on one failure; the
+After the suite the mode runs the job's integration targets (`INTEGRATION_TARGETS`, step 5.4) into the same log; a
+filtered run leaves them out. `--hosted-like-filter NAME` narrows the run to the tests whose path contains NAME, for iterating on one failure; the
 receipt says it was filtered. `--no-check-shapes` skips the `cargo check` shapes (a run that is only the suite).
 """
 import argparse
@@ -63,7 +64,17 @@ DEFAULT_GIT_ROOT = 'C:\\Program Files\\Git'  # Git for Windows as the hosted ima
 # installs neither (that would change the host), so they fail there; they are named in the receipt as gaps and are the
 # only failures a receipt passes. Anything else that fails fails the receipt.
 HOST_GAPS = ('transport_host::message_embedding_tests::python_messages_',)
+# The same gap in the integration targets (step 5.4): tests/protocol.rs runs `python -m taut.cli` and the log-additive
+# check, which import taut from the interpreter's site-packages (the hosted job installs taut-proto; the mode does not).
+# Whole names, since an integration test has no module path to take a prefix of.
+HOST_GAP_NAMES = ('generated_checked_artifact_protocol_is_current', 'generated_protocol_is_current',
+                  'log_addition_check_refuses_a_schema_that_declares_a_taut_option',
+                  'log_addition_preserves_the_complete_pre_log_wire_projection')
 SUITE_TARGETS = ('target-test', 'target-validator')
+# The hosted job's "Integration targets" step (step 5.4): every tests/*.rs target and the placement guide, which the
+# suite's `--lib` leaves out; a test pins the list to the workflow's.
+INTEGRATION_TARGETS = ('protocol', 'transport_placement_guide', 'native_libgit2', 'rename', 'diff_render_spike',
+                       'publish_workflow')
 HOSTED_SUITE = 'python scripts/run_tests.py --skip-cfg-sibling gwz-cli --skip-cfg-sibling gwz-py --no-fail-fast --lib'
 SHAPES = (('ordinary', ''), ('transport', CANDIDATE))
 # A lane that changes one of these needs the compile gate before it merges (AGENTS.md, "Windows compile gate"): every
@@ -210,6 +221,27 @@ def temp_directory_name(label: str) -> str:
     return 'hl' + hashlib.sha256(label.encode()).hexdigest()[:7]
 
 
+def integration_lines(d: str, test_filter: str | None) -> list[str]:
+    """The hosted job's "Integration targets" step, after the suite, into the suite's log; the script's status is the
+    suite's, or the step's when the suite passed. A filtered run is about one failure and leaves the step out.
+
+    The step exits nonzero when a row fails, a named host gap among them, so its status alone cannot tell that from a
+    step that never ran: it also prints how many `test result:` lines the step added to the log, one per target that
+    ran to a result (`HOSTED_LIKE_INTEGRATION_RESULTS`)."""
+    if test_filter:
+        return []
+    log = f'{d}/logs/hosted-like.log'
+    tests = ' '.join(f'--test {name}' for name in INTEGRATION_TARGETS)
+    return [f'before=$(wc -l < {log})',
+            f'cargo test --locked --no-fail-fast --manifest-path {d}/candidate/Cargo.toml '
+            f'--target-dir {d}/target-test {tests} >> {log} 2>&1',
+            'integration_status=$?',
+            f"results=$(tail -n +$((before + 1)) {log} | grep -a -c '^test result:')",
+            'echo "HOSTED_LIKE_INTEGRATION_EXIT $integration_status"',
+            'echo "HOSTED_LIKE_INTEGRATION_RESULTS $results"',
+            'if [ "$status" -eq 0 ]; then status=$integration_status; fi']
+
+
 def hosted_like_script(label: str, git_root: str, test_filter: str | None) -> str:
     """Host script: the candidate build's library suites run under the hosted job's conditions (see the module doc).
 
@@ -249,6 +281,7 @@ def hosted_like_script(label: str, git_root: str, test_filter: str | None) -> st
         f'{HOSTED_SUITE}{filter_word} --manifest-path={d}/candidate/Cargo.toml --target-dir={d}/target-test '
         f'> {d}/logs/hosted-like.log 2>&1',
         'status=$?',
+        *integration_lines(d, test_filter),
         # One line per fact, for the receipt: the last "test result:" of each test binary run adds up.
         f"passed=$(grep -a -E '^test result:' {d}/logs/hosted-like.log | sed -n -E 's/^test result: [A-Za-z]+\\. ([0-9]+) passed.*/\\1/p' "
         "| awk '{s+=$1} END{print s+0}')",
@@ -270,6 +303,10 @@ def parse_hosted_like(text: str, test_filter: str | None) -> dict:
             facts['git'] = rest
         elif word == 'HOSTED_LIKE_SSHD':
             facts['sshd'] = rest
+        elif word == 'HOSTED_LIKE_INTEGRATION_EXIT':
+            facts['integration_exit'] = int(rest)
+        elif word == 'HOSTED_LIKE_INTEGRATION_RESULTS':
+            facts['integration_results'] = int(rest)
         elif word == 'HOSTED_LIKE_FAILED':
             facts['tests']['failed_names'].append(rest)
         elif word == 'HOSTED_LIKE_RESULT':
@@ -313,10 +350,14 @@ def run_entry(host: Host, receipt: Receipt, name: str, flags: str, script: str, 
     if name == 'hosted-like':
         entry.update(parse_hosted_like(text, test_filter))
         names = entry['tests']['failed_names']
-        entry['gaps'] = [n for n in names if n.startswith(HOST_GAPS)]
-        entry['failures'] = [n for n in names if not n.startswith(HOST_GAPS)]
+        entry['gaps'] = [n for n in names if n.startswith(HOST_GAPS) or n in HOST_GAP_NAMES]
+        entry['failures'] = [n for n in names if n not in entry['gaps']]
+        # A gap-only failure passes. An integration step that died (a build error, a binary that could not load) names
+        # no failed test, so it passes only when it exited 0 or every target reported a result.
+        integration_ran = (entry.get('integration_exit', 0) == 0
+                           or entry.get('integration_results') == len(INTEGRATION_TARGETS))
         entry['passed'] = result.returncode == 0 or bool(
-            entry['gaps'] and not entry['failures'] and entry['tests']['failed'] == len(entry['gaps']))
+            entry['gaps'] and not entry['failures'] and entry['tests']['failed'] == len(entry['gaps']) and integration_ran)
     receipt.shapes.append(entry)
     detail = ''
     if name == 'hosted-like':

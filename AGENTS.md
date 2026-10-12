@@ -25,10 +25,12 @@ Follow the root `AGENTS.md` rules.
   edits test code; `--cache-from LABEL` makes a warm run. A pushed lane is covered by the
   `candidate-windows` job instead. The gate is a compile gate by default; Windows behaviour is judged
   by that job's test run and by the dabeest rows of the step that needs them. `--hosted-like` also
-  RUNS the candidate library suites under the hosted job's conditions (its `run_tests.py` command,
-  the pinned portable `sshd.exe`, `GWZ_TEST_SH`, a TEMP that is an 8.3 short path), takes about ten
-  minutes warm and belongs under the host booking; its receipt entry names the failed tests, and the
-  only failures it passes are the embedded-Python rows that need a gwz-py checkout (named as gaps).
+  RUNS the candidate library suites and the job's integration targets under the hosted job's
+  conditions (its `run_tests.py` command and `--test` list, the pinned portable `sshd.exe`,
+  `GWZ_TEST_SH`, a TEMP that is an 8.3 short path), takes about ten minutes warm and belongs under
+  the host booking; its receipt entry names the failed tests, and the only failures it passes are
+  the embedded-Python rows that need a gwz-py checkout and the four `protocol` rows that need
+  `taut-proto` in the host's interpreter (named as gaps).
   A lane that edits tests or fixtures that run on Windows uses it, because `cargo check` cannot
   see a short TEMP, a slow process start or a shell that is not Git's. The lane gate
   (`scripts/checks/check_lane_commits.sh`) fails a lane that changes a trigger path unless a commit

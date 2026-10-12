@@ -406,9 +406,12 @@ jobs:
             --manifest-path="$RUNNER_TEMP/candidate/Cargo.toml" \
             --target-dir="$GITHUB_WORKSPACE/candidate-target" 2>&1 | tee "$RUNNER_TEMP/candidate.log"
       - name: Integration targets
-        # Not publish_workflow: it reads .github and scripts through `../` from
-        # tests/, which the candidate directory's symlinked tests/ resolves on
-        # Linux and not on Windows, where `..` is collapsed before the lookup.
+        # Every tests/*.rs target, and the placement guide prepare.py adds: the
+        # list is the discovered set (scripts/checks/test_check_candidate_switches.py
+        # holds it to that), so a target nobody names here is a failing test.
+        # publish_workflow reads .github and scripts through CARGO_MANIFEST_DIR,
+        # which prepare.py links into the candidate directory (step 5.4 of
+        # GwzTransportWindowsParityPlan.md).
         if: ${{ !cancelled() }}
         env:
           RUSTFLAGS: --cfg gwz_transport_candidate
@@ -416,7 +419,7 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --no-fail-fast --manifest-path "$RUNNER_TEMP/candidate/Cargo.toml" --target-dir "$GITHUB_WORKSPACE/candidate-target" \
-            --test protocol --test transport_placement_guide --test native_libgit2 --test rename --test diff_render_spike 2>&1 | tee "$RUNNER_TEMP/integration.log"
+            --test protocol --test transport_placement_guide --test native_libgit2 --test rename --test diff_render_spike --test publish_workflow 2>&1 | tee "$RUNNER_TEMP/integration.log"
       - name: Summarize failures
         if: always()
         run: |

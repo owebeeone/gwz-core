@@ -168,5 +168,62 @@ class CandidateWorkflow(unittest.TestCase):
         self.assertIn('fail-fast: false', job)
 
 
+class WindowsCandidateJob(unittest.TestCase):
+    """TR4.6, second part (GwzTransportWindowsParityPlan.md, step 5.4): after step 5.1 retired the Windows-only switch,
+    the Windows job builds the same candidate as the Linux legs and runs every candidate test that needs no fixture, and
+    the SSH rows that run against a portable sshd.exe. These rows read the job's text, so that a change which drops a
+    shape, a target or the sshd fails here, on Linux, before a hosted run can show it."""
+
+    @staticmethod
+    def job():
+        lines = WORKFLOW.read_text(encoding='utf-8').splitlines()
+        start = lines.index('  candidate-windows:')
+        end = next((i for i in range(start + 1, len(lines)) if re.match(r'  [\w-]+:', lines[i])), len(lines))
+        return '\n'.join(lines[start:end])
+
+    @staticmethod
+    def step(job, name):
+        """The text of the step called `name`: from its `- name:` line to the next step."""
+        parts = re.split(r'(?m)^      - ', job)
+        found = [p for p in parts if re.match(rf'(?:id: \w+\n +)?name: {re.escape(name)}\n', p)]
+        assert len(found) == 1, f'expected one step named {name!r}, found {len(found)}'
+        return found[0]
+
+    def test_the_job_is_the_pinned_image_under_bash(self):
+        job = self.job()
+        self.assertIn('name: Candidate build on Windows', job)
+        self.assertIn('runs-on: windows-2022', job)
+        self.assertIn('shell: bash', job)
+        self.assertIn('working-directory: gwz-core', job)
+
+    def test_it_builds_the_ordinary_shape_and_the_candidate_shape_and_no_third(self):
+        # Step 5.1 retired the Windows-only qualification switch; the shapes are what the Linux legs' first leg is.
+        job = self.job()
+        self.assertEqual(sorted(set(re.findall(r'^ +RUSTFLAGS: *(.*)$', job, re.M))), sorted(['""', f'--cfg {T}']))
+        self.assertFalse('gwz_windows' in job, 'the retired Windows-only switch is named in the job')
+
+    def test_it_runs_the_library_suites_through_the_source_checks_and_the_sshd_rows(self):
+        job = self.job()
+        suites = self.step(job, "Run the candidate build's library suites")
+        self.assertIn(f'RUSTFLAGS: --cfg {T}', suites)
+        self.assertRegex(suites, r'python scripts/run_tests\.py [^\n]*--lib')
+        self.assertIn('GWZ_TEST_SSHD', self.step(job, 'Install the OpenSSH server the SSH fixtures run'))
+
+    def test_the_integration_step_names_every_integration_target_and_excludes_none(self):
+        """Cargo discovers one target per tests/*.rs, and prepare.py adds the placement guide. A target that is not
+        named here never runs on Windows, and a hand-kept list is how that happens, so the list is the discovered set."""
+        job = self.job()
+        step = self.step(job, 'Integration targets')
+        named = re.findall(r'--test +([\w-]+)', step)
+        discovered = sorted(path.stem for path in (checker.ROOT / 'tests').glob('*.rs')) + ['transport_placement_guide']
+        self.assertEqual(sorted(named), sorted(discovered))
+        self.assertIn('publish_workflow', named)
+        self.assertIn('GWZ_TEST_GIT: real', step)
+        self.assertIn(f'RUSTFLAGS: --cfg {T}', step)
+        # No exclusion is left to explain: the text that gave publish_workflow's reason is gone.
+        self.assertNotIn('Not publish_workflow', job)
+        self.assertNotIn('collapsed before the lookup', job)
+
+
 if __name__ == '__main__':
     unittest.main()
