@@ -427,14 +427,13 @@ where
     B: GitBackend,
 {
     let before = backend.read_ref(&target.path, upstream)?;
-    backend
-        .fetch(&target.path, remote)
-        .map_err(|error| match error.code {
-            ErrorCode::MissingRemote
-            | ErrorCode::ExternalToolMissing
-            | ErrorCode::CredentialHelperTimeout => error,
-            _ => ModelError::new(ErrorCode::RemoteRejected, error.message),
-        })?;
+    backend.fetch(&target.path, remote).map_err(|error| {
+        if error.code.keeps_its_code_on_a_network_row() {
+            error
+        } else {
+            ModelError::new(ErrorCode::RemoteRejected, error.message)
+        }
+    })?;
     let after = backend.read_ref(&target.path, upstream)?;
     let result = if before == after {
         crate::FetchResult::Unchanged

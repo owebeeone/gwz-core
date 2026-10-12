@@ -144,6 +144,29 @@ pub enum ErrorCode {
     /// A helper lookup exceeded its fixed interaction or retained admission
     /// allowance before offering credentials (TR1.6 OQ5(a), wire 75).
     CredentialHelperTimeout,
+    /// A member gave up on a server's throttle (a 429, or a 503 with
+    /// `Retry-After`), on a `Retry-After` longer than one command holds a host,
+    /// or on gwz's own connection-setup slots staying full (adaptive
+    /// concurrency design 5.3, operator decision 2026-10-13; wire 76). Retry
+    /// later, or lower `--max-per-host`.
+    Capacity,
+}
+
+impl ErrorCode {
+    /// Whether a failure of this code that comes out of the network stays what
+    /// it is on a fetch or push row. Any other code is a refusal by the remote
+    /// and is reported as `RemoteRejected`: a missing remote, a missing tool, a
+    /// credential helper that timed out and a member that gave up on a
+    /// throttle (which a script retries later) are about something else.
+    pub(crate) fn keeps_its_code_on_a_network_row(self) -> bool {
+        matches!(
+            self,
+            Self::MissingRemote
+                | Self::ExternalToolMissing
+                | Self::CredentialHelperTimeout
+                | Self::Capacity
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -207,3 +230,37 @@ impl fmt::Display for ModelError {
 }
 
 impl std::error::Error for ModelError {}
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        mod tests {
+            use super::ErrorCode;
+
+            #[test]
+            fn only_the_codes_about_something_else_than_the_remote_survive_a_network_row() {
+                for code in [
+                    ErrorCode::MissingRemote,
+                    ErrorCode::ExternalToolMissing,
+                    ErrorCode::CredentialHelperTimeout,
+                    ErrorCode::Capacity,
+                ] {
+                    assert!(code.keeps_its_code_on_a_network_row(), "{code:?}");
+                }
+                for code in [
+                    ErrorCode::RemoteRejected,
+                    ErrorCode::GitCommandFailed,
+                    ErrorCode::IoError,
+                    ErrorCode::PermissionDenied,
+                    ErrorCode::UnsupportedOperation,
+                ] {
+                    assert!(!code.keeps_its_code_on_a_network_row(), "{code:?}");
+                }
+            }
+
+            #[test]
+            fn the_capacity_code_is_named_capacity_in_json() {
+                assert_eq!(serde_json::to_string(&ErrorCode::Capacity).unwrap(), "\"capacity\"");
+            }
+        }
+    }
+}

@@ -36,6 +36,23 @@ fn python_transport_terminal_codes_are_stable_and_round_trip() {
     }
 }
 
+#[test]
+fn the_capacity_code_is_76_and_the_model_code_converts_to_it() {
+    // Operator decision 2026-10-13: a member that gave up on a throttle, or on a
+    // local wait for a setup slot, has a user-level code of its own, so a script
+    // can tell "slow down, try later" from a git failure.
+    assert_eq!(GwzErrorCode::Capacity.wire(), 76);
+    assert_eq!(GwzErrorCode::from_wire(76).unwrap(), GwzErrorCode::Capacity);
+    assert_eq!(
+        GwzErrorCode::from(gwz_core::model::ErrorCode::Capacity),
+        GwzErrorCode::Capacity
+    );
+    assert_eq!(
+        serde_json::to_string(&gwz_core::model::ErrorCode::Capacity).unwrap(),
+        "\"capacity\""
+    );
+}
+
 fn round_trip<T>(
     value: &T,
     to_cbor: impl Fn(&T) -> gwz_core::Cbor,

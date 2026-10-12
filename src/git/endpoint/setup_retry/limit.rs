@@ -39,16 +39,17 @@
 //! global, and a command with no reader (machine-readable output) has none.
 //!
 //! Cut 7: [`capacity`], the words of a member's final `Capacity` failure
-//! (§5.3), one text per cause. The `capacity` detail that would carry its
-//! report to the user is a protocol change that has not landed, so nothing
-//! outside its tests builds a report yet.
+//! (§5.3), one text per cause, and the `capacity` detail that carries a report
+//! from the endpoint that ends the member to the code that words the error.
 //!
-//! The module still allows dead code: `Limit::admit` and `Start` (the whole
-//! admission rule driven by hand), and the views `n`, `state` and
-//! `confirmation_open`, are used by the machine's own tests and by no endpoint.
+//! The module still allows dead code, for what only the machine's own tests
+//! drive and no endpoint calls: `Limit::admit` and `admits_ordinary` with
+//! `Start` (the whole admission rule driven by hand), `setup_state`, and the
+//! timer's `fixed`. The capacity report is no longer one of them: the endpoints
+//! build it and the code that words an error reads it.
 #![allow(
     dead_code,
-    reason = "the machine's tests drive admit and the views; no endpoint does; the capacity report waits for its protocol detail"
+    reason = "the machine's tests drive admit, Start, setup_state and the timer's fixed; no endpoint does"
 )]
 
 mod capacity;
@@ -64,6 +65,7 @@ mod states;
 mod timer;
 mod windows;
 
+pub(crate) use capacity::{CapacityReport, LastSignal, ServerCapacity};
 pub(crate) use control::Ruling;
 pub(crate) use filter::Signal;
 pub(crate) use fsm::State;

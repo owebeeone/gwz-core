@@ -72,6 +72,9 @@ struct Entry {
     /// The facts of the open's attempts so far, which its one reply carries:
     /// progress on its diagnostic row (the retry plan's §5).
     facts: Option<Facts>,
+    /// The endpoint's clock when the open arrived: how long the member has
+    /// been in the command, for what its `Capacity` failure says (§5.3).
+    started_ms: u64,
 }
 struct Operation {
     name: String,
@@ -358,6 +361,7 @@ impl HttpsEndpoint {
                 attempts: 0,
                 carries_test: None,
                 facts: None,
+                started_ms: self.now_ms,
             },
         );
         self.admit(&key);
@@ -615,6 +619,7 @@ cfg_if::cfg_if! { if #[cfg(test)] {
     mod cancellation_tests;
     #[path = "https_cancel_mux_tests.rs"]
     mod https_cancel_mux_tests;
+    mod capacity_tests;
     mod carrier_tests;
     mod down_tests;
     mod requeue_tests;

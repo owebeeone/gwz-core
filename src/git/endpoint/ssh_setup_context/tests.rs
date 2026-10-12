@@ -284,3 +284,55 @@ fn foreign_terminal_has_no_witness_and_cannot_replace_first_failure() {
     assert!(refused.detail.is_none());
     assert_eq!(first.failure(own), failed);
 }
+
+#[test]
+fn a_local_wait_that_expired_says_so_in_its_detail_and_carries_no_attempt() {
+    use gwz_transport::protocol::{CapacityCause, CapacityDetail};
+    let (_, context) = fixture();
+    let record = context
+        .clock
+        .terminate(SetupCause::LocalWaitExpired)
+        .deliver();
+    let failed = context.failure(record);
+    assert_eq!(failed.code, ErrorCode::Capacity);
+    let detail = failed.detail.expect("the capacity detail");
+    assert_eq!(
+        detail.capacity,
+        Some(CapacityDetail {
+            cause: CapacityCause::Local,
+            ..Default::default()
+        })
+    );
+    assert_eq!(detail.retry_attempt, None);
+}
+
+#[test]
+fn only_a_pool_local_wait_is_a_local_capacity_and_the_pools_other_refusals_are_not() {
+    use super::super::ssh_worker::EndpointOpenFailure;
+    use gwz_transport::pool::Error as PoolError;
+    let local = |error| {
+        let captured =
+            EndpointOpenFailure::capture(io::Error::other(error), Default::default(), None);
+        captured
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<EndpointOpenFailure>()
+            .unwrap()
+            .failure
+            .clone()
+    };
+    let waited = local(PoolError::LocalWaitExpired);
+    assert_eq!(waited.code, ErrorCode::Capacity);
+    assert!(
+        waited
+            .detail
+            .as_ref()
+            .and_then(|detail| detail.capacity.as_ref())
+            .is_some_and(|capacity| capacity.cause == gwz_transport::protocol::CapacityCause::Local)
+    );
+    for error in [PoolError::Capacity, PoolError::WouldBlock] {
+        let refused = local(error);
+        assert_eq!(refused.code, ErrorCode::Capacity);
+        assert!(refused.detail.is_none());
+    }
+}

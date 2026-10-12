@@ -836,7 +836,14 @@ SCHEMA = schema(
          transport_record_limit=74,
          # Configured credential helper interaction/admission exceeded its
          # accepted bound before a credential was offered (TR1.6 OQ5(a)).
-         credential_helper_timeout=75),
+         credential_helper_timeout=75,
+         # A member gave up because a server throttled it (a 429, or a 503
+         # with Retry-After), asked for a wait longer than one command holds a
+         # host, or because gwz's own connection-setup slots stayed full
+         # (gwz-core dev-docs/GwzTransportAdaptiveConcurrencyDesign.md 5.3;
+         # operator decision 2026-10-13). A script tells it from a git
+         # failure: retry later, or lower --max-per-host.
+         capacity=76),
 
     # Compatibility wave required to execute an allocated durable merge record.
     MergeRecordRequiredWave=Enum(

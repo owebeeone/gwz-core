@@ -28,6 +28,13 @@ pub(super) enum Said {
 pub(crate) struct Rejection {
     pub(crate) throttled: bool,
     pub(crate) ruling: Option<setup_retry::Ruling>,
+    /// The status that was refused: `None` for a connect that failed.
+    pub(crate) status: Option<u16>,
+    /// The `Retry-After` the response carried, in milliseconds.
+    pub(crate) retry_after_ms: Option<u64>,
+    /// The refusal came from a host other than the one the member was
+    /// configured for (a redirect target), which no message names.
+    pub(crate) redirected: bool,
 }
 
 /// The cap a `Retry-After` HTTP-date takes when the response has no `Date` to
@@ -161,6 +168,9 @@ impl Client {
         Some(Rejection {
             throttled: false,
             ruling,
+            status: None,
+            retry_after_ms: None,
+            redirected: false,
         })
     }
     /// A response arrived on `prepared`'s connection: tells the machines.
@@ -169,6 +179,7 @@ impl Client {
         operation: &str,
         prepared: &Prepared,
         key: &Key,
+        redirected: bool,
         status: u16,
         headers: &HeaderMap,
     ) -> Option<Rejection> {
@@ -193,12 +204,18 @@ impl Client {
                     false,
                     now,
                 ),
+                status: Some(status),
+                retry_after_ms,
+                redirected,
             }),
             // A bare 503: no connection is set up, and it may be a limit or
             // may not (§3.2): the machine decides by its window.
             Said::Unanswered => Some(Rejection {
                 throttled: false,
                 ruling: governor.refused(key, connection, Signal::Suspect, None, false, now),
+                status: Some(status),
+                retry_after_ms: None,
+                redirected,
             }),
         }
     }

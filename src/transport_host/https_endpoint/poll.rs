@@ -1,4 +1,25 @@
+use super::retry::SiteLimits;
 use super::*;
+
+/// The limit gwz is using on a member's site and the ceiling over it: the
+/// operation's machine for the site when it has one, else the pool's own cap.
+fn site_limits(client: &Client, operation: Option<&str>, key: &pool::Key) -> SiteLimits {
+    let view =
+        operation.and_then(|name| client.governor().scoped(name).view(key, client.pool_now()));
+    match view {
+        Some(view) => SiteLimits {
+            limit_applied: Some(view.n),
+            max_per_host: view.ceiling,
+        },
+        None => {
+            let capacity = client.pool().capacity();
+            SiteLimits {
+                limit_applied: None,
+                max_per_host: capacity.per_host.min(capacity.per_user_host),
+            }
+        }
+    }
+}
 
 impl HttpsEndpoint {
     pub(in crate::transport_host) fn step(
@@ -61,6 +82,13 @@ impl HttpsEndpoint {
                     // open waits for its next attempt (retry.rs). A cancelled
                     // one told it at its cancellation.
                     if !entry.cancel.is_cancelled() {
+                        let limits = rejection.is_some_and(|r| r.throttled).then(|| {
+                            site_limits(
+                                &self.client,
+                                self.operations.get(request).map(|op| op.name.as_str()),
+                                &entry.pool_key,
+                            )
+                        });
                         let member = (request.clone(), entry.envelope.stream_id);
                         let settled = self.retries.settle(
                             self.now_ms,
@@ -70,6 +98,7 @@ impl HttpsEndpoint {
                                 result,
                                 connect,
                                 rejection,
+                                limits,
                             },
                             &mut retry,
                         );

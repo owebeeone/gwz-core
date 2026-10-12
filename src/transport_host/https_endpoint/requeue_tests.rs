@@ -16,7 +16,7 @@ type Answer = Arc<dyn Fn(usize, usize) -> u16 + Send + Sync>;
 
 /// A server whose answer to a discovery is `answer(connection, request)`,
 /// numbered from 1; and the count of requests it has seen.
-async fn server(answer: Answer) -> (fixture::Server, Arc<AtomicUsize>) {
+pub(super) async fn server(answer: Answer) -> (fixture::Server, Arc<AtomicUsize>) {
     let requests = Arc::new(AtomicUsize::new(0));
     let seen = requests.clone();
     let server = fixture::Server::start(Arc::new(move |request| {
@@ -36,7 +36,7 @@ async fn server(answer: Answer) -> (fixture::Server, Arc<AtomicUsize>) {
 }
 
 /// The open's own replies: `Opened` and `OpenFailed`, not the stream's data.
-fn replies(published: &[Envelope]) -> Vec<&Envelope> {
+pub(super) fn replies(published: &[Envelope]) -> Vec<&Envelope> {
     published
         .iter()
         .filter(|m| matches!(m.kind, MessageKind::Opened | MessageKind::OpenFailed))
@@ -45,7 +45,7 @@ fn replies(published: &[Envelope]) -> Vec<&Envelope> {
 
 /// Steps at `now` until `done` holds of what has been published, for at most
 /// `limit`.
-async fn collect(
+pub(super) async fn collect(
     endpoint: &mut HttpsEndpoint,
     limit: Duration,
     published: &mut Vec<Envelope>,

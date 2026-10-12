@@ -19,6 +19,16 @@ pub(super) struct Settling {
     pub(super) connect: FirstConnect,
     /// A refusal the machine judged on its response (§5.1).
     pub(super) rejection: Option<Rejection>,
+    /// The limit gwz was using on the member's site and the ceiling over it,
+    /// read when the refusal was a throttle, for what the member's `Capacity`
+    /// failure says (§5.3).
+    pub(super) limits: Option<SiteLimits>,
+}
+
+/// What a throttled member's `Capacity` failure says of its site's limit.
+pub(super) struct SiteLimits {
+    pub(super) limit_applied: Option<usize>,
+    pub(super) max_per_host: usize,
 }
 
 /// The endpoint's setup retry state: each operation's machines, by HTTPS
@@ -106,6 +116,7 @@ impl Retries {
             result,
             connect,
             rejection,
+            limits,
         } = settling;
         let allowed = self.machines.max_retries(&member.0).saturating_add(1);
         let machine = self.machines.machine(&member.0, &entry.pool_key);
@@ -156,8 +167,11 @@ impl Retries {
             machine.abandoned(&member);
             if entry.attempts >= allowed {
                 let facts = failure.facts.clone();
-                let spent =
-                    setup_retry::spent(failure, rejection.throttled, entry.attempts, allowed);
+                let throttle = rejection
+                    .throttled
+                    .then(|| server_capacity(entry, &rejection, limits, now))
+                    .flatten();
+                let spent = setup_retry::spent(failure, throttle, entry.attempts, allowed);
                 entry.facts = setup_retry::merged_facts(entry.facts.take(), facts);
                 return Some(Err(Failure {
                     facts: entry.facts.clone(),
@@ -190,7 +204,7 @@ impl Retries {
             // (§5.3): it finishes with its failure, the key left as it is.
             Outcome::Retry if entry.attempts >= allowed => {
                 let facts = failure.facts.clone();
-                let spent = setup_retry::spent(failure, false, entry.attempts, allowed);
+                let spent = setup_retry::spent(failure, None, entry.attempts, allowed);
                 entry.facts = setup_retry::merged_facts(entry.facts.take(), facts);
                 return Some(Err(Failure {
                     facts: entry.facts.clone(),
@@ -229,6 +243,30 @@ impl Retries {
             ..failure
         }))
     }
+}
+
+/// What a member that a server throttled to the end of its attempts tells of
+/// it (§5.3): its configured site, unless the refusal came from a redirect
+/// target, the limit in use and the ceiling, how long it was in the command,
+/// and the signal and `Retry-After` of the refusal. `None` when the failure is
+/// not one a report can describe (no limits were read).
+fn server_capacity(
+    entry: &Entry,
+    rejection: &Rejection,
+    limits: Option<SiteLimits>,
+    now: u64,
+) -> Option<setup_retry::ServerCapacity> {
+    let limits = limits?;
+    Some(setup_retry::ServerCapacity {
+        site: (!rejection.redirected).then(|| entry.pool_key.site()),
+        limit_applied: limits.limit_applied,
+        max_per_host: limits.max_per_host,
+        elapsed_ms: now.saturating_sub(entry.started_ms),
+        last_signal: rejection
+            .status
+            .and_then(setup_retry::LastSignal::of_status),
+        retry_after_ms: rejection.retry_after_ms,
+    })
 }
 
 impl HttpsEndpoint {

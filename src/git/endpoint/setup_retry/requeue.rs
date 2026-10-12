@@ -3,7 +3,10 @@
 //! that looks like a limit is *requeued*, not counted against the key; a
 //! member that has spent its `--max-retries + 1` attempts finishes, and one
 //! whose own final failure is a throttle finishes with `Capacity`.
-use super::{Phase, Signal, limit::Ruling};
+use super::{
+    Phase, Signal,
+    limit::{CapacityReport, Ruling, ServerCapacity},
+};
 use gwz_transport::protocol::{ErrorCode, Failure, FailureDetail, RetryAttempt, SetupFailureCause};
 
 /// The class of a setup failure that may be a concurrency limit (§3.2), if it
@@ -49,12 +52,24 @@ pub(crate) fn requeues(ruling: Option<Ruling>, throttled: bool) -> bool {
 
 /// The failure a member finishes with when its `attempts` allowed attempts
 /// are spent: its own final failure, carrying the attempt count once, and
-/// `Capacity` when that failure is a throttle (§5.3: one rule decides the
-/// code).
-pub(crate) fn spent(mut failure: Failure, throttled: bool, attempt: u32, attempts: u32) -> Failure {
-    if throttled {
+/// `Capacity` with the `capacity` detail of `throttle` when that failure is a
+/// throttle (§5.3: one rule decides the code).
+pub(crate) fn spent(
+    mut failure: Failure,
+    throttle: Option<ServerCapacity>,
+    attempt: u32,
+    attempts: u32,
+) -> Failure {
+    if let Some(server) = throttle {
+        // A throttle is the whole story: whatever else the refusal carried
+        // (the transport admits `capacity` beside nothing but the count) is
+        // not about the throttle.
         failure.code = ErrorCode::Capacity;
         failure.setup_cause = None;
+        failure.detail = Some(Box::new(FailureDetail {
+            capacity: Some(CapacityReport::Server(server).detail()),
+            ..FailureDetail::default()
+        }));
     }
     let detail = failure
         .detail
@@ -141,15 +156,47 @@ cfg_if::cfg_if! {
                 assert!(!requeues(None, false));
             }
 
+            fn throttle() -> ServerCapacity {
+                ServerCapacity {
+                    site: None,
+                    limit_applied: Some(2),
+                    max_per_host: 8,
+                    elapsed_ms: 5_000,
+                    last_signal: Some(crate::git::endpoint::setup_retry::LastSignal::Http429),
+                    retry_after_ms: None,
+                }
+            }
+
             #[test]
             fn a_spent_member_reports_capacity_only_for_a_throttle_and_its_attempts_once() {
-                let reset = spent(failure(ErrorCode::Io, None), false, 4, 4);
+                let reset = spent(failure(ErrorCode::Io, None), None, 4, 4);
                 assert_eq!(reset.code, ErrorCode::Io);
-                let count = reset.detail.unwrap().retry_attempt.unwrap();
+                let detail = reset.detail.unwrap();
+                assert!(detail.capacity.is_none());
+                let count = detail.retry_attempt.unwrap();
                 assert_eq!((count.attempt, count.attempts), (4, 4));
-                let throttled = spent(failure(ErrorCode::Io, None), true, 4, 4);
+                let throttled = spent(failure(ErrorCode::Io, None), Some(throttle()), 4, 4);
                 assert_eq!(throttled.code, ErrorCode::Capacity);
-                assert_eq!(throttled.detail.unwrap().retry_attempt.unwrap().attempt, 4);
+                let detail = throttled.detail.unwrap();
+                assert_eq!(detail.retry_attempt.unwrap().attempt, 4);
+                let capacity = detail.capacity.unwrap();
+                assert_eq!(capacity.cause, gwz_transport::protocol::CapacityCause::ServerThrottle);
+                assert_eq!((capacity.limit_applied, capacity.max_per_host), (Some(2), Some(8)));
+                assert_eq!(capacity.elapsed_ms, Some(5_000));
+            }
+
+            #[test]
+            fn a_throttle_carries_the_capacity_detail_beside_nothing_else_the_refusal_had() {
+                let mut refused = failure(ErrorCode::RepositoryRefused, Some(SetupFailureCause::Stall));
+                refused.detail = Some(Box::new(FailureDetail {
+                    schemes: Some(vec!["Basic".into()]),
+                    ..FailureDetail::default()
+                }));
+                let throttled = spent(refused, Some(throttle()), 2, 4);
+                assert_eq!((throttled.code, throttled.setup_cause), (ErrorCode::Capacity, None));
+                let detail = throttled.detail.unwrap();
+                assert!(detail.schemes.is_none());
+                assert!(detail.capacity.is_some() && detail.retry_attempt.is_some());
             }
         }
     }

@@ -105,7 +105,10 @@ impl SetupContext {
             // The setup's own wait for a local budget (a job place, a shared
             // reservation) ran out the open's allocation: a local failure with
             // no server cause, which the retry classifier returns.
-            SetupCause::LocalWaitExpired => failed.code = ErrorCode::Capacity,
+            SetupCause::LocalWaitExpired => {
+                failed.code = ErrorCode::Capacity;
+                failed.detail = Some(super::setup_retry::CapacityReport::local_failure_detail());
+            }
             SetupCause::Cancelled => failed.code = ErrorCode::Cancelled,
             SetupCause::DriverLost => failed.code = ErrorCode::CarrierLost,
             SetupCause::ResourceFailure {

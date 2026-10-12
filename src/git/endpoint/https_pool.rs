@@ -451,6 +451,10 @@ impl Drop for HttpLease {
 }
 fn pool_failure(error: pool::Error) -> Failure {
     use pool::Error;
+    // A wait on a local budget that outlasted the open's allocation says so
+    // (§5.3's local capacity); the pool's own limit says nothing more.
+    let detail = matches!(error, Error::LocalWaitExpired)
+        .then(setup_retry::CapacityReport::local_failure_detail);
     let (code, setup_cause) = match error {
         // The pool's own limit, or a wait on a local budget that outlasted the
         // open's allocation: this host's failure, with no cause of a server's.
@@ -466,6 +470,7 @@ fn pool_failure(error: pool::Error) -> Failure {
     };
     Failure {
         setup_cause,
+        detail,
         ..https_connection::failure(code)
     }
 }
@@ -499,6 +504,20 @@ cfg_if::cfg_if! {
                 });
                 assert_eq!(failure.code, ErrorCode::Unavailable);
                 assert_eq!(failure.setup_cause, Some(SetupFailureCause::ConnectionRefused));
+            }
+
+            #[test]
+            fn only_a_local_wait_that_expired_says_it_was_local() {
+                let waited = pool_failure(pool::Error::LocalWaitExpired);
+                assert_eq!(waited.code, ErrorCode::Capacity);
+                assert_eq!(
+                    waited.detail.and_then(|detail| detail.capacity).map(|capacity| capacity.cause),
+                    Some(gwz_transport::protocol::CapacityCause::Local)
+                );
+                // The pool's own limit is a Capacity with nothing more to say.
+                let full = pool_failure(pool::Error::Capacity);
+                assert_eq!(full.code, ErrorCode::Capacity);
+                assert!(full.detail.is_none());
             }
         }
     }

@@ -76,7 +76,19 @@ impl SshOpenFailure {
         }
         None
     }
+    /// The report of a final `Capacity` failure that says why (§5.3).
+    fn capacity_report(&self) -> Option<setup_retry::CapacityReport> {
+        setup_retry::CapacityReport::of_failure(&self.0)
+    }
     pub(crate) fn model_error(&self, cli_hint: bool) -> Option<crate::model::ModelError> {
+        // A member that gave up on a local wait has its own code (operator
+        // decision 2026-10-13); a `Capacity` without a detail keeps the code it had.
+        if let Some(report) = self.capacity_report() {
+            return Some(crate::model::ModelError::new(
+                crate::model::ErrorCode::Capacity,
+                report.words(self.1),
+            ));
+        }
         let mut message = self.helper_reason(cli_hint)?;
         if let Some((attempt, attempts)) = self.1 {
             message.push_str(&format!(" (attempt {attempt} of {attempts})"));
@@ -91,6 +103,9 @@ impl SshOpenFailure {
 }
 impl std::fmt::Display for SshOpenFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(report) = self.capacity_report() {
+            return f.write_str(&report.words(self.1));
+        }
         if let Some(reason) = self.helper_reason(false) {
             f.write_str(&reason)?;
         } else if self.0.code == gwz_transport::protocol::ErrorCode::Timeout {
@@ -329,6 +344,41 @@ cfg_if::cfg_if! {
                 effect: Effect::None,
                 facts: Some(Facts::default()),
             }
+        }
+
+        fn capacity_failure(report: &crate::git::endpoint::setup_retry::CapacityReport) -> Failure {
+            Failure {
+                code: ErrorCode::Capacity,
+                detail: Some(Box::new(gwz_transport::protocol::FailureDetail {
+                    capacity: Some(report.detail()),
+                    ..Default::default()
+                })),
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn a_local_setup_wait_is_the_capacity_code_with_the_slot_words_and_no_attempt() {
+            use crate::git::endpoint::setup_retry::CapacityReport;
+            let text = "gwz's 64 connection-setup slots stayed full for 30 s (setups that stopped answering hold them until they time out); retry later";
+            // An attempt count that rode along is not shown: the design omits it.
+            for attempts in [None, Some((2, 4))] {
+                let reported = failure_io(capacity_failure(&CapacityReport::Local), attempts, 9_000);
+                let failed = reported.get_ref().unwrap().downcast_ref::<SshOpenFailure>().unwrap();
+                let model = failed.model_error(false).expect("a typed error");
+                assert_eq!(model.code, crate::model::ErrorCode::Capacity);
+                assert_eq!(model.message, text);
+                assert_eq!(failed.to_string(), text);
+            }
+        }
+
+        #[test]
+        fn a_capacity_failure_without_a_detail_keeps_its_old_words_and_no_typed_error() {
+            let plain = Failure { code: ErrorCode::Capacity, ..Default::default() };
+            let reported = failure_io(plain, None, 9_000);
+            let failed = reported.get_ref().unwrap().downcast_ref::<SshOpenFailure>().unwrap();
+            assert!(failed.model_error(false).is_none());
+            assert_eq!(failed.to_string(), "ssh setup failed: Capacity");
         }
 
         #[test]

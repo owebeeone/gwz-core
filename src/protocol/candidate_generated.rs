@@ -7,6 +7,9 @@ pub use gwz_transport::protocol::Barrier as Barrier;
 pub use gwz_transport::protocol::Bind as Bind;
 pub use gwz_transport::protocol::Bound as Bound;
 pub use gwz_transport::protocol::Cancel as Cancel;
+pub use gwz_transport::protocol::CapacityCause as CapacityCause;
+pub use gwz_transport::protocol::CapacityDetail as CapacityDetail;
+pub use gwz_transport::protocol::CapacitySignal as CapacitySignal;
 pub use gwz_transport::protocol::CheckIdentity as CheckIdentity;
 pub use gwz_transport::protocol::Close as Close;
 pub use gwz_transport::protocol::Closed as Closed;
@@ -1655,6 +1658,7 @@ pub enum GwzErrorCode {
     Cancelled,
     TransportRecordLimit,
     CredentialHelperTimeout,
+    Capacity,
 }
 impl GwzErrorCode {
     pub fn wire(self) -> i64 { match self {
@@ -1734,6 +1738,7 @@ impl GwzErrorCode {
         Self::Cancelled => 73,
         Self::TransportRecordLimit => 74,
         Self::CredentialHelperTimeout => 75,
+        Self::Capacity => 76,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Ok,
@@ -1812,6 +1817,7 @@ impl GwzErrorCode {
         73 => Self::Cancelled,
         74 => Self::TransportRecordLimit,
         75 => Self::CredentialHelperTimeout,
+        76 => Self::Capacity,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "GwzErrorCode", value: v }),
     }) }
 }

@@ -61,6 +61,15 @@ pub(crate) fn host_of(url: &str) -> Option<String> {
 impl HttpsOpenFailure {
     pub(crate) fn model_error(&self) -> Option<crate::model::ModelError> {
         use gwz_transport::protocol::{AuthMethod, ErrorCode};
+        // A member that gave up on a throttle, or on a local wait, has its own code
+        // (operator decision 2026-10-13); the pool's own limit has no detail and
+        // keeps the code it had.
+        if self.capacity_report().is_some() {
+            return Some(crate::model::ModelError::new(
+                crate::model::ErrorCode::Capacity,
+                self.reason(),
+            ));
+        }
         let facts = self.failure.facts.as_ref()?;
         let code = if self.helper_timeout() {
             crate::model::ErrorCode::CredentialHelperTimeout
@@ -89,6 +98,10 @@ impl HttpsOpenFailure {
             return None;
         };
         Some(crate::model::ModelError::new(code, self.reason()))
+    }
+    /// The report of a final `Capacity` failure that says why (§5.3).
+    fn capacity_report(&self) -> Option<setup_retry::CapacityReport> {
+        setup_retry::CapacityReport::of_failure(&self.failure)
     }
     pub(crate) fn is_helper_timeout_message(message: &str) -> bool {
         message.starts_with(HELPER_INTERACTION_PREFIX)
@@ -147,6 +160,9 @@ impl HttpsOpenFailure {
         }
         if let Some(reason) = helper_failure::timeout_reason(&self.failure) {
             return reason;
+        }
+        if let Some(report) = self.capacity_report() {
+            return report.words(self.attempts);
         }
         if let Some(redirect) = &self.redirect {
             // Text T5. The address in quotes is the server's own text: it is shown, not advised.
@@ -666,6 +682,97 @@ cfg_if::cfg_if! {
                 let mut open = windows(connect_failure(ErrorCode::UnsupportedOperation, None), false, None);
                 open.machine = MachineSetting::Refused(text.into());
                 assert_eq!(open.reason(), text);
+            }
+
+            /// A final failure with the `capacity` detail of `report`.
+            fn capacity_failure(report: &crate::git::endpoint::setup_retry::CapacityReport, attempt: Option<(i64, i64)>) -> Failure {
+                Failure {
+                    code: ErrorCode::Capacity,
+                    detail: Some(Box::new(FailureDetail {
+                        capacity: Some(report.detail()),
+                        retry_attempt: attempt.map(|(attempt, attempts)| RetryAttempt { attempt, attempts }),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                }
+            }
+
+            fn throttled(retry_after_ms: Option<u64>) -> crate::git::endpoint::setup_retry::CapacityReport {
+                use crate::git::endpoint::setup_retry::{CapacityReport, LastSignal, ServerCapacity};
+                CapacityReport::Server(ServerCapacity {
+                    site: Some(gwz_transport::pool::Site { scheme: Scheme::Https, host: "github.com".into(), port: 443 }),
+                    limit_applied: Some(8),
+                    max_per_host: 32,
+                    elapsed_ms: 21_000,
+                    last_signal: Some(LastSignal::Http429),
+                    retry_after_ms,
+                })
+            }
+
+            #[test]
+            fn a_throttled_member_is_the_capacity_code_with_the_throttle_words_and_its_attempt() {
+                let failure = capacity_failure(&throttled(None), Some((4, 4)));
+                let open = HttpsOpenFailure {
+                    attempts: crate::git::endpoint::setup_retry::reported_attempt(&failure),
+                    ..windows(failure, false, None)
+                };
+                let error = open.model_error().unwrap();
+                assert_eq!(error.code, crate::model::ErrorCode::Capacity);
+                assert_eq!(
+                    error.message,
+                    "github.com:443 kept refusing connections (using 8 at a time, ceiling 32 from --max-per-host); gave up after 21 s; retry later, or lower --max-per-host (attempt 4 of 4)"
+                );
+                assert_eq!(open.reason(), error.message);
+            }
+
+            #[test]
+            fn a_long_retry_after_is_the_capacity_code_with_its_own_words() {
+                let failure = capacity_failure(&throttled(Some(120_000)), Some((1, 4)));
+                let open = HttpsOpenFailure {
+                    attempts: crate::git::endpoint::setup_retry::reported_attempt(&failure),
+                    ..windows(failure, false, None)
+                };
+                let error = open.model_error().unwrap();
+                assert_eq!(error.code, crate::model::ErrorCode::Capacity);
+                assert_eq!(
+                    error.message,
+                    "github.com:443 asked to wait 120 s, longer than the 30 s one command holds a host; retry in 2 min (attempt 1 of 4)"
+                );
+            }
+
+            #[test]
+            fn a_local_wait_is_the_capacity_code_with_the_slot_words_and_never_an_attempt() {
+                use crate::git::endpoint::setup_retry::CapacityReport;
+                // Even a count that rode along is not shown: the design omits it.
+                let failure = capacity_failure(&CapacityReport::Local, None);
+                let open = HttpsOpenFailure { attempts: Some((2, 4)), ..windows(failure, false, None) };
+                let error = open.model_error().unwrap();
+                assert_eq!(error.code, crate::model::ErrorCode::Capacity);
+                assert_eq!(
+                    error.message,
+                    "gwz's 64 connection-setup slots stayed full for 30 s (setups that stopped answering hold them until they time out); retry later"
+                );
+                assert!(!error.message.contains("attempt"));
+            }
+
+            #[test]
+            fn a_capacity_failure_without_a_detail_keeps_the_words_it_had() {
+                // The pool's own refusal (`Error::Capacity`) is not a throttle and says nothing more.
+                let open = windows(Failure { code: ErrorCode::Capacity, ..Default::default() }, false, None);
+                assert!(open.model_error().is_none());
+                assert_eq!(open.reason(), "HTTPS endpoint request failed: Capacity");
+                // A detail that cannot be worded is no report either.
+                let broken = Failure {
+                    code: ErrorCode::Capacity,
+                    detail: Some(Box::new(FailureDetail {
+                        capacity: Some(CapacityDetail { cause: CapacityCause::ServerThrottle, ..Default::default() }),
+                        ..Default::default()
+                    })),
+                    ..Default::default()
+                };
+                let open = windows(broken, false, None);
+                assert!(open.model_error().is_none());
+                assert_eq!(open.reason(), "HTTPS endpoint request failed: Capacity");
             }
         }
     }

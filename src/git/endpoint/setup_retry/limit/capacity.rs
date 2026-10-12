@@ -1,16 +1,15 @@
 //! The words of a member's final `Capacity` failure (adaptive concurrency
-//! design §5.3), one text per cause, and the rule that picks the cause of a
-//! server's refusal. Pure: it reads a report and writes a message, so the
-//! wording is pinned here once and every endpoint that ends a member with
-//! `Capacity` says the same thing.
-//!
-//! What is not here: carrying the report to the user. The optional `capacity`
-//! detail of §5.3 is a new field of gwz-transport's `FailureDetail`, which
-//! needs a protocol change (see the lane report of `limitdocs`); until it
-//! exists the failure cannot carry a [`CapacityReport`] from the endpoint to
-//! the code that words the error.
+//! design §5.3), one text per cause, the rule that picks the cause of a
+//! server's refusal, and the `capacity` detail of gwz-transport's
+//! `FailureDetail` that carries a [`CapacityReport`] from the endpoint that
+//! ends a member to the code that words the error. Pure: it reads a report and
+//! writes a message or a detail (and back), so the wording is pinned here once
+//! and every endpoint that ends a member with `Capacity` says the same thing.
 use super::{hold::HOLD_CAP_MS, notes::site_name};
-use gwz_transport::pool::Site;
+use gwz_transport::{
+    pool::Site,
+    protocol::{CapacityCause as WireCause, CapacityDetail, CapacitySignal, FailureDetail},
+};
 
 /// The fixed number of connection setups gwz runs at once (`agent_job`'s
 /// job budget), which a local-capacity message names.
@@ -31,11 +30,48 @@ pub(crate) enum CapacityCause {
     Local,
 }
 
+impl CapacityCause {
+    fn wire(self) -> WireCause {
+        match self {
+            Self::ServerThrottle => WireCause::ServerThrottle,
+            Self::ServerRetryAfter => WireCause::ServerRetryAfter,
+            Self::Local => WireCause::Local,
+        }
+    }
+}
+
 /// The status that ended a throttled member.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum LastSignal {
     Http429,
     Http503,
+}
+
+impl LastSignal {
+    /// The signal a response status is, if it is one the detail can name: a
+    /// 403 that carried `Retry-After` is a throttle (OQ4) with no signal of its
+    /// own.
+    pub(crate) fn of_status(status: u16) -> Option<Self> {
+        match status {
+            429 => Some(Self::Http429),
+            503 => Some(Self::Http503),
+            _ => None,
+        }
+    }
+
+    fn wire(self) -> CapacitySignal {
+        match self {
+            Self::Http429 => CapacitySignal::Http429,
+            Self::Http503 => CapacitySignal::Http503,
+        }
+    }
+
+    fn from_wire(signal: CapacitySignal) -> Self {
+        match signal {
+            CapacitySignal::Http429 => Self::Http429,
+            CapacitySignal::Http503 => Self::Http503,
+        }
+    }
 }
 
 /// What a throttled member knows when it gives up.
@@ -52,7 +88,8 @@ pub(crate) struct ServerCapacity {
     pub(crate) max_per_host: usize,
     /// How long the member was in the command, in milliseconds.
     pub(crate) elapsed_ms: u64,
-    pub(crate) last_signal: LastSignal,
+    /// `None` for a 403 that carried `Retry-After`.
+    pub(crate) last_signal: Option<LastSignal>,
     pub(crate) retry_after_ms: Option<u64>,
 }
 
@@ -88,6 +125,29 @@ impl CapacityReport {
         match self {
             Self::Server(server) => server.cause(),
             Self::Local => CapacityCause::Local,
+        }
+    }
+
+    /// The report a failure carries: a final `Capacity` failure whose `capacity`
+    /// detail can be worded. A `Capacity` failure without one (the pool's own
+    /// limit) carries none.
+    pub(crate) fn of_failure(failure: &gwz_transport::protocol::Failure) -> Option<Self> {
+        if failure.code != gwz_transport::protocol::ErrorCode::Capacity {
+            return None;
+        }
+        Self::from_detail(failure.detail.as_ref()?.capacity.as_ref()?)
+    }
+
+    /// The words the user reads: the message, then the `(attempt N of M)` suffix
+    /// of the existing form when the failure reports its attempt. A local wait
+    /// is no attempt of the member's and never shows one (§5.3).
+    pub(crate) fn words(&self, attempt: Option<(u32, u32)>) -> String {
+        let message = self.message();
+        match (self, attempt) {
+            (Self::Server(_), Some((attempt, attempts))) => {
+                format!("{message} (attempt {attempt} of {attempts})")
+            }
+            _ => message,
         }
     }
 
@@ -132,6 +192,85 @@ impl CapacityReport {
     }
 }
 
+impl CapacityReport {
+    /// The detail of a failure that ended on a local wait: only its cause.
+    pub(crate) fn local_failure_detail() -> Box<FailureDetail> {
+        Box::new(FailureDetail {
+            capacity: Some(Self::Local.detail()),
+            ..FailureDetail::default()
+        })
+    }
+
+    /// The `capacity` detail that carries this report on the wire. The numbers
+    /// are made to fit the transport's ranges: a ceiling of at least 1, a
+    /// limit between 1 and the ceiling.
+    pub(crate) fn detail(&self) -> CapacityDetail {
+        let Self::Server(server) = self else {
+            return CapacityDetail {
+                cause: self.cause().wire(),
+                ..CapacityDetail::default()
+            };
+        };
+        let ceiling = i64::from(
+            u32::try_from(server.max_per_host)
+                .unwrap_or(u32::MAX)
+                .max(1),
+        );
+        CapacityDetail {
+            cause: self.cause().wire(),
+            scheme: server.site.as_ref().map(|site| site.scheme),
+            host: server.site.as_ref().map(|site| site.host.clone()),
+            port: server.site.as_ref().map(|site| i64::from(site.port)),
+            limit_applied: server
+                .limit_applied
+                .map(|limit| i64::try_from(limit).unwrap_or(i64::MAX).clamp(1, ceiling)),
+            max_per_host: Some(ceiling),
+            elapsed_ms: Some(saturate(server.elapsed_ms)),
+            last_signal: server.last_signal.map(LastSignal::wire),
+            retry_after_ms: server.retry_after_ms.map(saturate),
+        }
+    }
+
+    /// The report a `capacity` detail carries, or `None` when it carries none
+    /// that can be worded: a server cause without its ceiling or its time, a
+    /// scheme, host and port that are not all there, or a cause that the
+    /// `Retry-After` it carries does not give (the 30 s rule is core's, so the
+    /// cause on the wire must agree with it).
+    pub(crate) fn from_detail(detail: &CapacityDetail) -> Option<Self> {
+        if detail.cause == CapacityCause::Local.wire() {
+            return Some(Self::Local);
+        }
+        let site = match (&detail.scheme, &detail.host, detail.port) {
+            (Some(scheme), Some(host), Some(port)) => Some(Site {
+                scheme: *scheme,
+                host: host.clone(),
+                port: u16::try_from(port).ok()?,
+            }),
+            (None, None, None) => None,
+            _ => return None,
+        };
+        let server = ServerCapacity {
+            site,
+            limit_applied: match detail.limit_applied {
+                Some(limit) => Some(usize::try_from(limit).ok()?),
+                None => None,
+            },
+            max_per_host: usize::try_from(detail.max_per_host?).ok()?,
+            elapsed_ms: u64::try_from(detail.elapsed_ms?).ok()?,
+            last_signal: detail.last_signal.map(LastSignal::from_wire),
+            retry_after_ms: match detail.retry_after_ms {
+                Some(wait) => Some(u64::try_from(wait).ok()?),
+                None => None,
+            },
+        };
+        (detail.cause == server.cause().wire()).then_some(Self::Server(server))
+    }
+}
+
+fn saturate(value: u64) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
 /// How long to wait, in the unit a person reads: whole minutes, then hours,
 /// then days, always rounded up so the wait is never understated.
 fn wait_in_words(wait_ms: u64) -> String {
@@ -162,7 +301,7 @@ cfg_if::cfg_if! {
                     limit_applied: Some(8),
                     max_per_host: 32,
                     elapsed_ms: 21_000,
-                    last_signal: LastSignal::Http429,
+                    last_signal: Some(LastSignal::Http429),
                     retry_after_ms,
                 }
             }
@@ -240,6 +379,147 @@ cfg_if::cfg_if! {
                 assert!(redirected_wait.message().starts_with("the server asked to wait 120 s,"));
                 let v6 = CapacityReport::Server(ServerCapacity { site: site("::1"), ..server(None) });
                 assert!(v6.message().starts_with("[::1]:443 kept refusing connections"));
+            }
+
+            fn round_trip(report: &CapacityReport) -> Option<CapacityReport> {
+                CapacityReport::from_detail(&report.detail())
+            }
+
+            #[test]
+            fn every_report_round_trips_through_its_wire_detail() {
+                for report in [
+                    CapacityReport::Server(server(None)),
+                    CapacityReport::Server(server(Some(2_000))),
+                    CapacityReport::Server(server(Some(120_000))),
+                    CapacityReport::Server(ServerCapacity { site: None, ..server(None) }),
+                    CapacityReport::Server(ServerCapacity { limit_applied: None, ..server(None) }),
+                    CapacityReport::Server(ServerCapacity { last_signal: None, ..server(Some(1_000)) }),
+                    CapacityReport::Server(ServerCapacity { last_signal: Some(LastSignal::Http503), ..server(Some(1_000)) }),
+                    CapacityReport::Server(ServerCapacity { site: site("::1"), ..server(None) }),
+                    CapacityReport::Local,
+                ] {
+                    assert_eq!(round_trip(&report).as_ref(), Some(&report));
+                }
+            }
+
+            #[test]
+            fn the_detail_names_the_cause_and_only_what_the_cause_has() {
+                let throttle = CapacityReport::Server(server(Some(2_000))).detail();
+                assert_eq!(throttle.cause, WireCause::ServerThrottle);
+                assert_eq!(throttle.scheme, Some(Scheme::Https));
+                assert_eq!(throttle.host.as_deref(), Some("github.com"));
+                assert_eq!(throttle.port, Some(443));
+                assert_eq!(throttle.limit_applied, Some(8));
+                assert_eq!(throttle.max_per_host, Some(32));
+                assert_eq!(throttle.elapsed_ms, Some(21_000));
+                assert_eq!(throttle.last_signal, Some(CapacitySignal::Http429));
+                assert_eq!(throttle.retry_after_ms, Some(2_000));
+                let long = CapacityReport::Server(server(Some(120_000))).detail();
+                assert_eq!(long.cause, WireCause::ServerRetryAfter);
+                assert_eq!(long.retry_after_ms, Some(120_000));
+                // A redirect target is never named.
+                let redirected = CapacityReport::Server(ServerCapacity { site: None, ..server(None) }).detail();
+                assert_eq!((redirected.scheme, redirected.host, redirected.port), (None, None, None));
+                // Local says nothing but its cause.
+                assert_eq!(
+                    CapacityReport::Local.detail(),
+                    CapacityDetail { cause: WireCause::Local, ..CapacityDetail::default() }
+                );
+            }
+
+            #[test]
+            fn the_numbers_are_made_to_fit_the_transports_ranges() {
+                let wild = CapacityReport::Server(ServerCapacity {
+                    limit_applied: Some(0),
+                    max_per_host: usize::MAX,
+                    elapsed_ms: u64::MAX,
+                    retry_after_ms: Some(u64::MAX),
+                    ..server(None)
+                })
+                .detail();
+                assert_eq!(wild.max_per_host, Some(i64::from(u32::MAX)));
+                assert_eq!(wild.limit_applied, Some(1));
+                assert_eq!(wild.elapsed_ms, Some(i64::MAX));
+                assert_eq!(wild.retry_after_ms, Some(i64::MAX));
+                let zero = CapacityReport::Server(ServerCapacity { max_per_host: 0, limit_applied: Some(5), ..server(None) }).detail();
+                assert_eq!((zero.max_per_host, zero.limit_applied), (Some(1), Some(1)));
+            }
+
+            #[test]
+            fn every_detail_a_report_makes_is_one_the_transport_admits() {
+                use gwz_transport::protocol::{Effect, Envelope, ErrorCode, Failure, FailureDetail, MessageKind};
+                for report in [
+                    CapacityReport::Server(server(None)),
+                    CapacityReport::Server(server(Some(120_000))),
+                    CapacityReport::Server(ServerCapacity { site: None, last_signal: None, limit_applied: None, ..server(None) }),
+                    CapacityReport::Local,
+                ] {
+                    let message = Envelope {
+                        version: 2,
+                        session_id: "capacity".into(),
+                        stream_id: 1,
+                        kind: MessageKind::OpenFailed,
+                        open_failed: Some(Failure {
+                            code: ErrorCode::Capacity,
+                            effect: Effect::None,
+                            detail: Some(Box::new(FailureDetail {
+                                capacity: Some(report.detail()),
+                                ..FailureDetail::default()
+                            })),
+                            ..Failure::default()
+                        }),
+                        ..Envelope::default()
+                    };
+                    assert_eq!(gwz_transport::codec::admit(&message), Ok(()), "{report:?}");
+                }
+            }
+
+            #[test]
+            fn a_detail_that_cannot_be_worded_is_no_report() {
+                let good = CapacityReport::Server(server(None)).detail();
+                for broken in [
+                    CapacityDetail { max_per_host: None, ..good.clone() },
+                    CapacityDetail { elapsed_ms: None, ..good.clone() },
+                    CapacityDetail { elapsed_ms: Some(-1), ..good.clone() },
+                    CapacityDetail { port: None, ..good.clone() },
+                    CapacityDetail { host: None, ..good.clone() },
+                    CapacityDetail { port: Some(70_000), ..good.clone() },
+                    // The cause must be the one the Retry-After gives.
+                    CapacityDetail { cause: WireCause::ServerRetryAfter, ..good.clone() },
+                    CapacityDetail { retry_after_ms: Some(120_000), ..good.clone() },
+                ] {
+                    assert_eq!(CapacityReport::from_detail(&broken), None, "{broken:?}");
+                }
+            }
+
+            #[test]
+            fn the_words_end_with_the_attempt_for_a_server_cause_and_never_for_a_local_one() {
+                let throttle = CapacityReport::Server(server(None));
+                assert!(throttle.words(Some((4, 4))).ends_with("--max-per-host (attempt 4 of 4)"));
+                assert_eq!(throttle.words(None), throttle.message());
+                assert_eq!(CapacityReport::Local.words(Some((2, 4))), CapacityReport::Local.message());
+            }
+
+            #[test]
+            fn only_a_capacity_failure_with_a_wordable_detail_carries_a_report() {
+                use gwz_transport::protocol::{ErrorCode, Failure};
+                let with = |code, report: &CapacityReport| Failure {
+                    code,
+                    detail: Some(Box::new(FailureDetail { capacity: Some(report.detail()), ..FailureDetail::default() })),
+                    ..Failure::default()
+                };
+                let report = CapacityReport::Server(server(None));
+                assert_eq!(CapacityReport::of_failure(&with(ErrorCode::Capacity, &report)), Some(report.clone()));
+                assert_eq!(CapacityReport::of_failure(&with(ErrorCode::Io, &report)), None);
+                assert_eq!(CapacityReport::of_failure(&Failure { code: ErrorCode::Capacity, ..Failure::default() }), None);
+            }
+
+            #[test]
+            fn only_a_429_and_a_503_are_signals() {
+                assert_eq!(LastSignal::of_status(429), Some(LastSignal::Http429));
+                assert_eq!(LastSignal::of_status(503), Some(LastSignal::Http503));
+                assert_eq!(LastSignal::of_status(403), None);
+                assert_eq!(LastSignal::of_status(200), None);
             }
 
             #[test]

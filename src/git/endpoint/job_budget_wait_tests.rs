@@ -42,6 +42,38 @@ use tokio_util::sync::CancellationToken;
 
 const PATIENCE: Duration = Duration::from_secs(10);
 
+/// A local wait that ran out says so in its detail (§5.3's local capacity): the
+/// cause alone, no attempt count, and the user reads it as the `Capacity` code
+/// with the setup-slot words, never a stall and never an attempt.
+fn assert_says_it_was_local(failed: &Failure) {
+    use gwz_transport::protocol::CapacityCause;
+    let detail = failed.detail.as_ref().expect("a detail");
+    assert_eq!(
+        detail.capacity.as_ref().map(|capacity| capacity.cause),
+        Some(CapacityCause::Local),
+        "{failed:?}"
+    );
+    assert!(detail.retry_attempt.is_none(), "{failed:?}");
+    let report = setup_retry::CapacityReport::of_failure(failed).expect("a report");
+    assert_eq!(report, setup_retry::CapacityReport::Local);
+    let reported = crate::transport_host::SshOpenFailure(failed.clone(), None, 9_000)
+        .model_error(false)
+        .expect("a typed error");
+    assert_eq!(reported.code, crate::model::ErrorCode::Capacity);
+    assert!(
+        reported
+            .message
+            .starts_with("gwz's 64 connection-setup slots stayed full for 30 s"),
+        "{}",
+        reported.message
+    );
+    assert!(
+        !reported.message.contains("attempt"),
+        "{}",
+        reported.message
+    );
+}
+
 /// Every job of `supervisor`, taken until `release`, as other setups take them.
 struct Full {
     gate: Arc<(Mutex<bool>, Condvar)>,
@@ -343,6 +375,7 @@ fn a_wait_on_a_local_budget_that_outlasts_the_allocation_is_a_local_failure() {
             };
             assert_eq!(failed.code, ErrorCode::Capacity, "{budget:?}: {failed:?}");
             assert_eq!(failed.setup_cause, None, "{budget:?}");
+            assert_says_it_was_local(&failed);
             assert_eq!(
                 setup_retry::classify(&failed, phase),
                 Verdict::Return,
@@ -497,6 +530,7 @@ fn an_ssh_open_whose_job_wait_outlasts_its_allocation_fails_locally_not_as_a_sta
     let failed = answer.open_failed.expect("the wait failed");
     assert_eq!(failed.code, ErrorCode::Capacity, "{failed:?}");
     assert_eq!(failed.setup_cause, None, "{failed:?}");
+    assert_says_it_was_local(&failed);
     assert_eq!(
         setup_retry::classify(&failed, Phase::Setup),
         Verdict::Return,

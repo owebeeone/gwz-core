@@ -44,6 +44,9 @@ impl Client {
         refusal: &mut Option<Rejection>,
     ) -> Result<Prepared, Failure> {
         let original = Destination::parse(&input.destination).map_err(failure)?;
+        // The host the member was configured for: a refusal from any other is a
+        // redirect target's, which no message names.
+        let home = Key::https(original.host(), original.port());
         if input.session.is_empty()
             || input.session.len() > 128
             || input.operation.is_empty()
@@ -488,10 +491,13 @@ impl Client {
             }
             let status = response.status().as_u16();
             prepared.opened.facts.http_status = Some(status as i64);
+            let here = Key::https(destination.host(), destination.port());
+            let redirected = here != home;
             *refusal = self.tell_governor(
                 &input.operation,
                 &prepared,
-                &Key::https(destination.host(), destination.port()),
+                &here,
+                redirected,
                 status,
                 response.headers(),
             );

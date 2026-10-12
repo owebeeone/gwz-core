@@ -107,7 +107,10 @@ impl EndpointOpenFailure {
             error.kind(),
             Self {
                 failure: Failure {
-                    detail: None,
+                    // A wait on a local budget that ran out says so (§5.3).
+                    detail: matches!(pool, Some(PoolError::LocalWaitExpired)).then(
+                        crate::git::endpoint::setup_retry::CapacityReport::local_failure_detail,
+                    ),
                     setup_cause,
                     code,
                     effect,

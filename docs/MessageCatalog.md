@@ -749,6 +749,7 @@ has no service method and no handler that executes commands.
 | cancelled | 73 |
 | transport_record_limit | 74 |
 | credential_helper_timeout | 75 |
+| capacity | 76 |
 
 ### MergeRecordRequiredWave
 

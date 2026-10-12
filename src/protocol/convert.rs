@@ -82,6 +82,7 @@ impl From<model::ErrorCode> for generated::GwzErrorCode {
             model::ErrorCode::DisposalIncomplete => Self::DisposalIncomplete,
             model::ErrorCode::UrlSchemeUnavailable => Self::UrlSchemeUnavailable,
             model::ErrorCode::CredentialHelperTimeout => Self::CredentialHelperTimeout,
+            model::ErrorCode::Capacity => Self::Capacity,
             // Native-session bridge errors do not enter an OperationResult.
             model::ErrorCode::TransportCapacityConflict => Self::IoError,
             model::ErrorCode::TransportSessionFull => Self::IoError,
@@ -315,6 +316,9 @@ mod tests {
         let timeout: generated::GwzErrorCode = model::ErrorCode::CredentialHelperTimeout.into();
         assert_eq!(timeout, generated::GwzErrorCode::CredentialHelperTimeout);
         assert_eq!(timeout.wire(), 75);
+        let capacity: generated::GwzErrorCode = model::ErrorCode::Capacity.into();
+        assert_eq!(capacity, generated::GwzErrorCode::Capacity);
+        assert_eq!(capacity.wire(), 76);
     }
 
     #[test]

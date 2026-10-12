@@ -317,7 +317,7 @@ impl PlacementEndpoint {
     ) {
         if attempts >= allowed {
             let facts = failure.facts.clone();
-            let spent = setup_retry::spent(failure, false, attempts, allowed);
+            let spent = setup_retry::spent(failure, None, attempts, allowed);
             self.fail_open(&key, Failure { facts, ..spent });
             return;
         }

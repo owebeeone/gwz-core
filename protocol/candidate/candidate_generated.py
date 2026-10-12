@@ -87,6 +87,15 @@ class HelperFailureCause(Enum):
     pipe_failure = 1
     username_colon = 4
 
+class CapacityCause(Enum):
+    local = 3
+    server_retry_after = 2
+    server_throttle = 1
+
+class CapacitySignal(Enum):
+    http_429 = 1
+    http_503 = 2
+
 class Effect(Enum):
     none = 1
     possible = 2
@@ -614,6 +623,7 @@ class GwzErrorCode(Enum):
     cancelled = 73
     transport_record_limit = 74
     credential_helper_timeout = 75
+    capacity = 76
 
 class MergeRecordRequiredWave(Enum):
     a1 = 0
@@ -791,12 +801,25 @@ class RetryAttempt:
     attempts: int
 
 @dataclass(slots=True)
+class CapacityDetail:
+    cause: CapacityCause
+    scheme: Scheme | None
+    host: str | None
+    port: int | None
+    limit_applied: int | None
+    max_per_host: int | None
+    elapsed_ms: int | None
+    last_signal: CapacitySignal | None
+    retry_after_ms: int | None
+
+@dataclass(slots=True)
 class FailureDetail:
     helper_cause: HelperFailureCause | None
     pipe_kind: str | None
     schemes: list[str] | None
     retry_attempt: RetryAttempt | None
     helper_budget_ms: int | None
+    capacity: CapacityDetail | None
 
 @dataclass(slots=True)
 class Failure:

@@ -353,6 +353,17 @@ does, when output is machine-readable; a command with no sink prints no notes
 and loses none that matters, since a note is information only. The CLI prints
 them on stderr, whether or not stderr is a terminal, above its progress line.
 
+A repository that a host throttled to the end of its attempts (a 429, or a 503
+with `Retry-After`, on its last attempt), that was told to wait longer than the
+30 seconds one command holds a host, or whose wait for gwz's own 64
+connection-setup slots expired, fails with the error code `Capacity` (wire
+`capacity`, 76) and a message that names which. Every other final failure keeps
+its code. The transport's own failure is `ErrorCode::Capacity` with an optional
+`FailureDetail.capacity` (gwz-transport's `CapacityDetail`: the cause, and for a
+server cause the configured host and port, the limit in use, the ceiling, the
+time spent, the last status and the `Retry-After`); a `Capacity` failure
+without it, such as the pool's own limit, keeps the error code it had.
+
 ## Native HTTPS composition draft
 
 The candidate endpoint composes discovery and serial SSPI on one exclusive TLS

@@ -190,8 +190,9 @@ from taut.ir.load import load_schema
 # the new IR reproduced the previous pin below exactly.
 #   was: 4b6cf3fd9fb9d0a9338a7a25aa305435eb01ef9219f4ad80b0dad705d4301ee6
 # Python session v2 (2026-09-24) adds only GwzErrorCode.cancelled (73) and
-# transport_record_limit (74). The projection removes exactly those members
-# before comparing with the existing historical pin.
+# transport_record_limit (74), TR1.6 OQ5(a) credential_helper_timeout (75) and
+# the capacity code (76, operator decision 2026-10-13). The projection removes
+# exactly those members before comparing with the existing historical pin.
 PRE_LOG_WIRE_SHA256 = "4d377a496c8905293b5e9b53392b70867cf6dafccbb623841a623dbd2d555f14"
 LOG_METHODS = {"log", "log.output"}
 
@@ -271,11 +272,12 @@ def pre_log_projection(schema_ir: dict[str, Any]) -> dict[str, Any]:
     if added != [expected]:
         raise ValueError("RequestMeta.invocation must be the optional InvocationContext at tag 9")
     request_meta["fields"].remove(added[0])
-    # Python shared transport v2 and accepted TR1.6 OQ5(a) append only the
-    # named terminal codes. Remove these exact members, retaining the old pin.
+    # Python shared transport v2, accepted TR1.6 OQ5(a) and the capacity code
+    # (operator decision 2026-10-13) append only the named terminal codes.
+    # Remove these exact members, retaining the old pin.
     error_codes = next(enum for enum in projected["enums"] if enum["name"] == "GwzErrorCode")
     for name, value in (("cancelled", 73), ("transport_record_limit", 74),
-                        ("credential_helper_timeout", 75)):
+                        ("credential_helper_timeout", 75), ("capacity", 76)):
         actual = error_codes["members"].pop(name, None)
         if actual != value:
             raise ValueError(f"GwzErrorCode.{name} must occupy additive slot {value}")

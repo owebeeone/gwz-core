@@ -515,14 +515,7 @@ where
             lock_difference_reasons: None,
             url_resolution: None,
         },
-        Err(error)
-            if matches!(
-                error.code,
-                ErrorCode::MissingRemote
-                    | ErrorCode::ExternalToolMissing
-                    | ErrorCode::CredentialHelperTimeout
-            ) =>
-        {
+        Err(error) if error.code.keeps_its_code_on_a_network_row() => {
             push_member_error(member, source_kind, error, crate::MemberStatus::Failed)
         }
         Err(error) => push_member_error(
@@ -616,14 +609,7 @@ where
             lock_difference_reasons: None,
             url_resolution: None,
         },
-        Err(error)
-            if matches!(
-                error.code,
-                ErrorCode::MissingRemote
-                    | ErrorCode::ExternalToolMissing
-                    | ErrorCode::CredentialHelperTimeout
-            ) =>
-        {
+        Err(error) if error.code.keeps_its_code_on_a_network_row() => {
             push_root_error(error, crate::MemberStatus::Failed)
         }
         Err(error) => push_root_error(
@@ -835,12 +821,7 @@ fn finish_prepared_push(
         Ok(_) => response.status = crate::MemberStatus::Ok,
         Err(error) => {
             response.status = crate::MemberStatus::Failed;
-            let error = if matches!(
-                error.code,
-                ErrorCode::MissingRemote
-                    | ErrorCode::ExternalToolMissing
-                    | ErrorCode::CredentialHelperTimeout
-            ) {
+            let error = if error.code.keeps_its_code_on_a_network_row() {
                 error
             } else {
                 ModelError::new(ErrorCode::RemoteRejected, error.message)
