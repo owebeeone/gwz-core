@@ -168,12 +168,22 @@ fn candidate_url_passwords_authenticate_as_libgit2_uses_them() {
         .unwrap();
         assert_eq!(cleanup.pending_local_work, 0);
         let on_transport = attempts();
-        let (native, _) = clone(
-            &Git2Backend::new(),
-            &f,
-            &meta,
-            &url,
-            &format!("native-{index}"),
+        // libgit2's own connection: a key exchange that libssh2 ended on its side says nothing about the password.
+        let (native, _) = kex_failure::retrying_with(
+            |(outcome, _): &(Result<git2::Oid, String>, _)| {
+                outcome
+                    .as_ref()
+                    .is_err_and(|message| kex_failure::is_key_exchange_failure(message))
+            },
+            |attempt| {
+                clone(
+                    &Git2Backend::new(),
+                    &f,
+                    &meta,
+                    &url,
+                    &format!("native-{index}-{attempt}"),
+                )
+            },
         );
         let on_native = attempts();
         let expected = server.map(|_| expected.iter().map(|s| s.to_string()).collect::<Vec<_>>());

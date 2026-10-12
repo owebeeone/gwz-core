@@ -38,15 +38,10 @@ const PATIENCE: Duration = Duration::from_secs(10);
 
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
-        /// What an open that waited out one deferral and then connected may take: the deferral bound and a connect.
-        const DEFERRED_ONCE_AT_MOST: Duration = Duration::from_millis(450);
         /// What an open whose deferral the close's own bound cut short may take: the bound and a connect, well
         /// under the 250 ms wait it would otherwise have made.
         const BOUNDED_WAIT_AT_MOST: Duration = Duration::from_millis(250);
     } else {
-        /// The same bound where a connect through Windows' `sshd.exe` takes about 200 ms more (measured on dabeest,
-        /// step 1.5); an open deferred twice would take the deferral bound again on top.
-        const DEFERRED_ONCE_AT_MOST: Duration = Duration::from_millis(650);
         /// The same with the extra connect time: halfway between the cut-short wait and the full 250 ms one.
         const BOUNDED_WAIT_AT_MOST: Duration = Duration::from_millis(360);
     }
@@ -548,33 +543,49 @@ fn a_close_slower_than_the_wait_bound_opens_a_new_connection() {
     rig.wait("both idle", |counts| counts.idle == 2);
 }
 
+/// How soon after its open an open that is not deferred begins its connection, as the pool's counts show it. A
+/// deferral is the 250 ms wait for the close; the bound is half of it, so a scheduler that is late by up to 120 ms
+/// cannot pass a deferred open, and a connect that takes seconds (it does, through Windows' `sshd.exe` on a loaded
+/// runner) is not in it at all: only the beginning of the connection is timed.
+const BEGINS_AT_ONCE: Duration = Duration::from_millis(125);
+
+/// Runs `open` on a thread while the closes of the rig's closing connections are held, waits until the pool counts
+/// `connections` connections (one more than the closing ones, for an open that makes its own), and then releases them. Returns the open's result and how long after the thread started
+/// the second connection began. The close ends when the test says so and the counts say when a connection began, so
+/// how long a connect takes cannot reorder what the caller compares.
+fn open_while_the_close_is_held<S: Reach, T: Send>(
+    rig: &Rig<S>,
+    release: &std::path::Path,
+    connections: usize,
+    open: impl FnOnce() -> T + Send,
+) -> (T, Duration) {
+    thread::scope(|scope| {
+        let started = Instant::now();
+        let job = scope.spawn(open);
+        while rig.counts().total() != connections {
+            assert!(started.elapsed() < PATIENCE, "no new connection began");
+            thread::sleep(ms(1));
+        }
+        let began = started.elapsed();
+        fs::write(release, b"").unwrap();
+        (job.join().unwrap(), began)
+    })
+}
+
 #[test]
 fn a_test_carrier_is_never_deferred_for_a_closing_connection() {
     // The same close as the test above, which makes an ordinary open wait at
     // least 200 ms for it: the carrier of a test needs a connection of its own
-    // at once, so it neither waits nor takes the closing one. The close is held
-    // until the test releases it, and the pool's counts say when the carrier's
-    // connection began: how long the connect itself takes (about 200 ms more
-    // through Windows' `sshd.exe`, and more on a loaded runner) is not what the
-    // test measures, only whether the carrier began it behind the deferral.
+    // at once, so it neither waits nor takes the closing one.
     let (fixture, release) = gated_close_fixture();
     let rig = Rig::new(fixture, 32, 5_000);
     closing_fetch(&rig);
-    let (stream, push, began) = thread::scope(|scope| {
-        let started = Instant::now();
-        let job = scope.spawn(|| rig.open_carrier(GitService::ReceivePack));
-        while rig.counts().total() != 2 {
-            assert!(started.elapsed() < PATIENCE, "no second connection began");
-            thread::sleep(ms(1));
-        }
-        let began = started.elapsed();
-        fs::write(&release, b"").unwrap();
-        let (stream, push) = job.join().unwrap();
-        (stream, push, began)
+    let ((stream, push), began) = open_while_the_close_is_held(&rig, &release, 2, || {
+        rig.open_carrier(GitService::ReceivePack)
     });
     assert!(!push.reused, "the carrier took the closing connection");
     assert!(
-        began < ms(120),
+        began < BEGINS_AT_ONCE,
         "the carrier's connection began {began:?} after its open, behind a closing connection"
     );
     rig.push(stream).1.unwrap();
@@ -648,11 +659,18 @@ fn one_closing_connection_defers_one_open() {
     assert_eq!(rig.counts().total(), 2);
 }
 
+/// When an open that waited out one deferral begins its connection, at the latest: the 250 ms wait, and the same
+/// again if it were deferred a second time, so that anything under 450 ms is one deferral and 500 ms or more is two.
+const DEFERRED_ONCE_BEGINS_BY: Duration = Duration::from_millis(450);
+
 #[test]
 fn an_open_is_deferred_at_most_once() {
-    let rig = Rig::new(delayed_close_fixture(ms(600)), 32, 5_000);
-    // Three exchanges, none of them waiting on another, then closed one after
-    // another: three connections closing, each for about 600 ms.
+    // Three connections closing, their closes held until the test releases them, so that the deferral's own 250 ms
+    // bound, and not a close, is what lets the open go on. The pool's counts say when its connection began; the
+    // connect itself (330 ms through Windows' `sshd.exe` on a hosted runner, which failed this test when it was
+    // part of the time) is not measured.
+    let (fixture, release) = gated_close_fixture();
+    let rig = Rig::new(fixture, 32, 5_000);
     let streams: Vec<_> = (0..3)
         .map(|_| {
             let (mut stream, opened) = rig.open(GitService::UploadPack);
@@ -666,34 +684,38 @@ fn an_open_is_deferred_at_most_once() {
         let (closed_in, result) = timed_close(&stream);
         result.expect("a clean close");
         assert!(closed_in < ms(300), "close() took {closed_in:?}");
-        thread::sleep(ms(80));
     }
-    let started = Instant::now();
-    let (stream, _) = rig.open(GitService::ReceivePack);
-    let waited = started.elapsed();
+    assert_eq!(rig.counts().total(), 3, "{:?}", rig.counts());
+    let ((stream, _), began) =
+        open_while_the_close_is_held(&rig, &release, 4, || rig.open(GitService::ReceivePack));
     assert!(
-        waited >= ms(200),
-        "the open took {waited:?}, so it did not wait for a closing connection"
+        began >= ms(200),
+        "the open began its connection after {began:?}, so it did not wait for a closing connection"
     );
     assert!(
-        waited < DEFERRED_ONCE_AT_MOST,
-        "the open took {waited:?}: it was deferred more than once"
+        began < DEFERRED_ONCE_BEGINS_BY,
+        "the open began its connection after {began:?}: it was deferred more than once"
     );
     drop(stream);
 }
 
 #[test]
 fn a_different_identity_is_not_deferred() {
-    let rig = Rig::new(delayed_close_fixture(ms(600)), 32, 5_000);
+    // A closing connection defers only an open of its own key and identity. The close is held, so an open that
+    // waited for it would wait out the 250 ms bound before it began a connection; the other identity's open
+    // begins at once. (Timing the whole open instead includes the connect, which takes 330 ms through Windows'
+    // `sshd.exe` on a hosted runner, and failed this test with no deferral at all.)
+    let (fixture, release) = gated_close_fixture();
+    let rig = Rig::new(fixture, 32, 5_000);
     let other = rig.fixture.second_identity();
     closing_fetch(&rig);
-    let started = Instant::now();
-    let (stream, opened) = rig.open_as(GitService::UploadPack, other);
-    let waited = started.elapsed();
+    let ((stream, opened), began) = open_while_the_close_is_held(&rig, &release, 2, || {
+        rig.open_as(GitService::UploadPack, other)
+    });
     assert!(!opened.reused);
     assert!(
-        waited < ms(250),
-        "an open for another identity took {waited:?}, as if it waited for the close"
+        began < BEGINS_AT_ONCE,
+        "an open for another identity began its connection {began:?} after the open, as if it waited for the close"
     );
     drop(stream);
 }

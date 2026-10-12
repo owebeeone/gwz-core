@@ -155,10 +155,15 @@ fn real_fetch_push_and_private_clone_project_helper_outcomes_without_suppression
                 }))
                 .await;
                 let mut local = SshEndpointConfig::fixture(endpoint_home(root.path()), None);
+                // Only the Interaction row is about the bound. For the others it guards against a hang: the lookup
+                // starts several processes (the fake `git` runs through the POSIX shell), and a full suite on
+                // Windows kept one of them past 5 s once in three hosted-like runs, so that the NoHelper row came
+                // back as a timeout instead of the rejection it projects. (Not reproduced alone, or under busy
+                // loops: it takes the suite's own mix of process starts.)
                 local.pool.interaction_timeout_ms = if matches!(fault, Fault::Interaction) {
                     500
                 } else {
-                    5_000
+                    60_000
                 };
                 let runtime = TransportRuntime::with_https(
                     local,

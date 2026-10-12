@@ -12,12 +12,25 @@ spec.loader.exec_module(gate)
 parity = gate.parity
 
 
+HOSTED_PASS = (
+    'HOSTED_LIKE_TEMP C:\\Users\\gianni\\AppData\\Local\\Temp\\WINP0-~1\n'
+    'HOSTED_LIKE_GIT git version 2.55.0.windows.3\n'
+    'HOSTED_LIKE_SSHD OpenSSH_for_Windows_9.8p2\n'
+    'HOSTED_LIKE_RESULT passed=3501 failed=0\n')
+HOSTED_FAIL = (HOSTED_PASS.replace('failed=0', 'failed=2')
+               + 'HOSTED_LIKE_FAILED git::endpoint::ssh_tests::background_close::a\n'
+               + 'HOSTED_LIKE_FAILED transport_host::ssh_helper_projection_tests::b\n')
+
+
 class FakeRun:
     """Stands in for subprocess.run: records every call and answers by the command's first words."""
 
-    def __init__(self, claim_exit=0, shape_exits=(0, 0, 0), warnings=7, blocked_first=False):
+    def __init__(self, claim_exit=0, shape_exits=(0, 0, 0), warnings=7, blocked_first=False, hosted_exit=0,
+                 hosted_output=None):
         self.calls, self.claim_exit, self.shape_exits, self.warnings = [], claim_exit, list(shape_exits), warnings
         self.blocked_first = blocked_first
+        self.hosted_exit = hosted_exit
+        self.hosted_output = HOSTED_PASS if hosted_output is None else hosted_output
 
     def __call__(self, argv, **kwargs):
         self.calls.append((list(argv), kwargs))
@@ -30,6 +43,11 @@ class FakeRun:
             script = kwargs.get('input', '')
             if script.startswith('mkdir'):
                 return subprocess.CompletedProcess(argv, self.claim_exit, 'exists' if self.claim_exit else '', '')
+            if 'run_tests.py' in script:
+                if self.blocked_first:
+                    self.blocked_first = False
+                    return subprocess.CompletedProcess(argv, 101, 'An Application Control policy has blocked this file. (os error 4551)\n', '')
+                return subprocess.CompletedProcess(argv, self.hosted_exit, self.hosted_output, '')
             if 'cargo check' in script:
                 if self.blocked_first:
                     self.blocked_first = False
@@ -106,6 +124,168 @@ class Arguments(unittest.TestCase):
         workflow = (gate.CORE / '.github' / 'workflows' / 'transport-candidate.yml').read_text(encoding='utf-8')
         for _, flags in gate.SHAPES[1:]:
             self.assertIn(f'RUSTFLAGS: {flags}', workflow)
+
+
+class HostedLike(unittest.TestCase):
+    """The mode that RUNS the candidate library suites under the hosted job's conditions (cifix's proposal)."""
+
+    def go(self, runner, *argv):
+        with tempfile.TemporaryDirectory() as tmp:
+            code = run_main(runner, '--label', 'cifix2-20261013-a', *argv, receipts=Path(tmp))
+            path = Path(tmp) / 'cifix2-20261013-a' / 'receipt.json'
+            return code, json.loads(path.read_text(encoding='utf-8')) if path.exists() else None
+
+    def test_the_mode_is_off_by_default_and_its_options_need_it(self):
+        o = options('--label', 'a-20261009')
+        self.assertEqual((o.hosted_like, o.git_root, o.hosted_like_filter, o.no_check_shapes),
+                         (False, gate.DEFAULT_GIT_ROOT, None, False))
+        for extra in (['--git-root', 'E:\\g'], ['--hosted-like-filter', 'x'], ['--no-check-shapes']):
+            runner = FakeRun()
+            with self.subTest(extra), self.assertRaises(SystemExit) as caught:
+                self.go(runner, *extra)
+            self.assertEqual(caught.exception.code, 2)
+            self.assertEqual(runner.ssh_scripts(), [])
+
+    def test_without_the_mode_no_suite_is_run(self):
+        runner = FakeRun()
+        code, receipt = self.go(runner)
+        self.assertEqual(code, 0)
+        self.assertFalse(any('run_tests.py' in s for s in runner.ssh_scripts()))
+        self.assertNotIn('hosted-like', [s['shape'] for s in receipt['shapes']])
+
+    def test_a_passing_run_adds_a_hosted_like_entry_with_the_suite_counts(self):
+        runner = FakeRun()
+        code, receipt = self.go(runner, '--hosted-like')
+        self.assertEqual(code, 0)
+        self.assertEqual([s['shape'] for s in receipt['shapes']], ['ordinary', 'transport', 'qualification', 'hosted-like'])
+        entry = receipt['shapes'][-1]
+        self.assertEqual((entry['exit'], entry['rustflags']), (0, gate.QUALIFICATION))
+        self.assertEqual(entry['tests'], {'passed': 3501, 'failed': 0, 'failed_names': [], 'filter': None})
+        self.assertTrue(entry['temp'].endswith('WINP0-~1') and entry['git'].startswith('git version'))
+        self.assertTrue(receipt['passed'])
+
+    def test_failed_tests_fail_the_receipt_and_are_named_and_never_retried(self):
+        runner = FakeRun(hosted_exit=101, hosted_output=HOSTED_FAIL)
+        code, receipt = self.go(runner, '--hosted-like')
+        self.assertEqual((code, receipt['passed']), (1, False))
+        entry = receipt['shapes'][-1]
+        self.assertEqual((entry['exit'], entry['tests']['failed']), (101, 2))
+        self.assertEqual(entry['tests']['failed_names'][0], 'git::endpoint::ssh_tests::background_close::a')
+        self.assertEqual(len(entry['attempts']), 1)
+        self.assertEqual(len([s for s in runner.ssh_scripts() if 'run_tests.py' in s]), 1)
+
+    def test_a_blocked_build_script_is_run_once_more_as_in_the_shapes(self):
+        # The first attempt of the first call that can hit it (the shapes' cargo check) takes the block.
+        runner = FakeRun(blocked_first=True)
+        code, receipt = self.go(runner, '--hosted-like', '--no-check-shapes')
+        self.assertEqual(code, 0)
+        self.assertEqual([[a['exit'] for a in s['attempts']] for s in receipt['shapes']], [[101, 0]])
+
+    def test_no_check_shapes_runs_only_the_suite(self):
+        runner = FakeRun()
+        code, receipt = self.go(runner, '--hosted-like', '--no-check-shapes')
+        self.assertEqual([s['shape'] for s in receipt['shapes']], ['hosted-like'])
+        self.assertFalse(any('cargo check' in s for s in runner.ssh_scripts()))
+
+    def test_the_filter_is_recorded_and_reaches_cargo_before_the_double_dash(self):
+        runner = FakeRun()
+        code, receipt = self.go(runner, '--hosted-like', '--hosted-like-filter', 'background_close')
+        self.assertEqual(receipt['shapes'][-1]['tests']['filter'], 'background_close')
+        script = [s for s in runner.ssh_scripts() if 'run_tests.py' in s][0]
+        self.assertIn('--lib background_close ', script)
+
+    def test_tests_that_need_what_the_host_lacks_are_named_gaps_and_do_not_fail_the_receipt(self):
+        """The embedded-Python rows need a gwz-py checkout and taut-proto in the interpreter's site-packages; the mode
+        installs neither (a host change). They fail there, are named as gaps, and are the only failures a receipt passes."""
+        python = ['transport_host::message_embedding_tests::python_messages_close_while_delivery_is_paused']
+        output = HOSTED_PASS.replace('failed=0', 'failed=1') + f'HOSTED_LIKE_FAILED {python[0]}\n'
+        code, receipt = self.go(FakeRun(hosted_exit=101, hosted_output=output), '--hosted-like')
+        entry = receipt['shapes'][-1]
+        self.assertEqual((code, receipt['passed'], entry['exit'], entry['passed']), (0, True, 101, True))
+        self.assertEqual((entry['gaps'], entry['failures']), (python, []))
+        output += 'HOSTED_LIKE_FAILED git::endpoint::ssh_tests::background_close::a\n'
+        code, receipt = self.go(FakeRun(hosted_exit=101, hosted_output=output), '--hosted-like')
+        entry = receipt['shapes'][-1]
+        self.assertEqual((code, receipt['passed'], entry['passed']), (1, False, False))
+        self.assertEqual((entry['gaps'], entry['failures']), (python, ['git::endpoint::ssh_tests::background_close::a']))
+
+    def test_a_failed_suite_with_no_named_test_is_a_failure(self):
+        """A suite that died (exit 101, no test named: the first run's test binary that could not load) never passes."""
+        code, receipt = self.go(FakeRun(hosted_exit=101, hosted_output=HOSTED_PASS), '--hosted-like')
+        self.assertEqual((code, receipt['shapes'][-1]['passed']), (1, False))
+
+    def test_the_filter_must_be_a_test_path_fragment(self):
+        for bad in ('a b', 'a;b', '$(x)', '', '"x"', '--exact'):
+            with self.subTest(bad), self.assertRaises(SystemExit) as caught:
+                self.go(FakeRun(), '--hosted-like', '--hosted-like-filter', bad)
+            self.assertEqual(caught.exception.code, 2)
+
+    def test_the_git_root_is_a_windows_directory_and_goes_first_on_path(self):
+        script = gate.hosted_like_script('cifix2-20261013-a', 'E:\\gwz-tests\\git-2.56', None)
+        self.assertIn("GIT_ROOT='E:\\gwz-tests\\git-2.56'", script)
+        self.assertIn('export PATH="$GIT_UNIX/cmd:$PATH"', script)
+        # `cygpath -u` answers "/" for a path with a space on the host (the first run put "\\cmd" first on PATH and
+        # every test binary died at load, exit 0xc00000be): the conversion is spelled out, and read back.
+        self.assertNotIn('cygpath -u "$GIT_ROOT"', script)
+        self.assertIn("sed -E 's#\\\\#/#g; s#^([A-Za-z]):#\\L\\1#'", script)
+        self.assertIn('HOSTED_LIKE_GIT $(command -v git)', script)
+        self.assertIn('GWZ_TEST_SH="$GIT_ROOT\\usr\\bin\\sh.exe"', script)
+        for bad in ('x;y', 'a b"c', '$(x)', 'C:\\a`b'):
+            with self.subTest(bad), self.assertRaises(SystemExit):
+                gate.check_git_root(bad)
+        self.assertEqual(gate.check_git_root('C:\\Program Files\\Git'), 'C:\\Program Files\\Git')
+
+    def test_the_script_makes_the_hosted_conditions(self):
+        script = gate.hosted_like_script('cifix2-20261013-a', gate.DEFAULT_GIT_ROOT, None)
+        d = '/e/gwz-tests/cifix2-20261013-a'
+        # a short TEMP, refused when the host would not spell it short
+        self.assertIn('cygpath -d', script)
+        self.assertIn('HOSTED_LIKE_REFUSED', script)
+        self.assertIn('export TEMP TMP', script)
+        # the portable sshd of the job, checked, inside the run's directory; the real backend; Git's sh
+        self.assertIn(gate.OPENSSH_SHA256, script)
+        self.assertIn(gate.OPENSSH_URL, script)
+        self.assertIn(f'{d}/openssh', script)
+        self.assertIn('GWZ_TEST_SSHD="$(cygpath -w', script)
+        self.assertIn('GWZ_TEST_GIT=real', script)
+        self.assertIn('GWZ_TEST_SH=', script)
+        self.assertIn(f'RUSTFLAGS="{gate.QUALIFICATION}"', script)
+        self.assertIn('RUSTUP_TOOLCHAIN=1.95.0', script)
+        self.assertIn(f'CARGO_TARGET_DIR={d}/target-validator', script)
+        self.assertIn(f'{gate.HOSTED_SUITE} --manifest-path={d}/candidate/Cargo.toml --target-dir={d}/target-test', script)
+        for word in ('rm ', 'rmdir', 'rustup default', 'rustup install', 'setx', 'reg add', 'net ', 'taskkill', 'pkill', 'killall'):
+            self.assertNotIn(word, script)
+
+    def test_the_temp_directory_has_a_short_spelling_and_a_short_long_one(self):
+        """The long name is nine characters (so Windows keeps an 8.3 spelling of it) and no longer: the suite builds paths
+        near MAX_PATH from TEMP, and the first run, with the label in the name, failed 40 tests as "path too long"."""
+        name = gate.temp_directory_name('cifix2-20261013-a')
+        self.assertEqual((len(name), name[:2]), (9, 'hl'))
+        self.assertNotEqual(name, gate.temp_directory_name('cifix2-20261013-b'))
+        self.assertEqual(name, gate.temp_directory_name('cifix2-20261013-a'))
+        script = gate.hosted_like_script('cifix2-20261013-a', gate.DEFAULT_GIT_ROOT, None)
+        self.assertIn(f'/Temp/{name}"', script)
+        self.assertNotIn('hosted-like-temp', script)
+
+    def test_the_warm_cache_also_carries_the_suite_target_directories(self):
+        stage = gate.stage_script('cifix2-20261013-b', 'cifix2-20261013-a')
+        for name in ('target', 'target-test', 'target-validator'):
+            self.assertIn(f'/e/gwz-tests/cifix2-20261013-a/{name} /e/gwz-tests/cifix2-20261013-b/{name}', stage)
+
+    def test_the_job_it_mirrors_is_the_workflows(self):
+        workflow = (gate.CORE / '.github' / 'workflows' / 'transport-candidate.yml').read_text(encoding='utf-8')
+        self.assertIn(f'OPENSSH_RELEASE: {gate.OPENSSH_RELEASE}', workflow)
+        self.assertIn(f'OPENSSH_SHA256: {gate.OPENSSH_SHA256}', workflow)
+        suites = workflow.split('Run the candidate build\'s library suites', 1)[1]
+        self.assertIn(f'RUSTFLAGS: {gate.QUALIFICATION}', suites)
+        # the job's command, but for the checkouts the host does not have (gwz-py) and its own paths
+        self.assertIn(gate.HOSTED_SUITE.replace(' --skip-cfg-sibling gwz-py', ''), suites)
+
+    def test_parse(self):
+        parsed = gate.parse_hosted_like(HOSTED_FAIL, None)
+        self.assertEqual((parsed['tests']['passed'], parsed['tests']['failed']), (3501, 2))
+        self.assertEqual(len(parsed['tests']['failed_names']), 2)
+        self.assertEqual(gate.parse_hosted_like('garbage', None)['tests'], {'passed': 0, 'failed': 0, 'failed_names': [], 'filter': None})
 
 
 class Triggers(unittest.TestCase):

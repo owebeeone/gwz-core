@@ -4,8 +4,14 @@
 //! tests are the same tests on both platforms. A descendant of a helper is a loop that appends to a heartbeat
 //! file: a descendant that is still alive is a file that is still growing. Step 4.3 brings the Windows form of
 //! the older `helper_script` fixtures; these stay the small fixtures of the owner's own tests.
+//!
+//! A Windows descendant that must outlive its helper without the helper's pipes is this test binary, run as a
+//! role (`role.rs`); a helper needs the command shell and nothing else. PowerShell was once used for it, and its
+//! start-up, a loaded hosted runner's, took longer than the bounds of the rows that wait for it.
 use super::*;
 use std::{fs, path::Path};
+
+mod role;
 
 /// What a fake helper does.
 #[derive(Clone, Copy)]
@@ -188,46 +194,37 @@ cfg_if::cfg_if! {
             (path, Vec::new())
         }
     } else if #[cfg(windows)] {
-        /// What the fake helpers' environment needs besides what a test adds: the Windows directory, and the
-        /// system directories, where `cmd` finds `ping` and `powershell`. A helper's environment is the snapshot
-        /// and nothing else, so a test supplies them as a snapshot would.
+        /// What the fake helpers' environment needs besides what a test adds: the Windows directory, and the helper's
+        /// `PATH` (`fixture_path`). A helper's environment is the snapshot and nothing else, so a test supplies them
+        /// as a snapshot would.
         pub(super) fn platform_environment() -> Vec<(OsString, OsString)> {
             let root = std::env::var_os("SystemRoot").expect("Windows sets SystemRoot");
+            vec![("SystemRoot".into(), root), ("PATH".into(), fixture_path())]
+        }
+
+        /// `System32`, where `cmd` finds `ping` and its own commands and where no interpreter is, and the
+        /// directories of the libraries the test binary needs when a helper starts it as a role (`role.rs`).
+        pub(super) fn fixture_path() -> OsString {
+            let root = std::env::var_os("SystemRoot").expect("Windows sets SystemRoot");
             let system = Path::new(&root).join("System32");
-            let path = std::env::join_paths([system.clone(), system.join("WindowsPowerShell").join("v1.0")]).unwrap();
-            vec![("SystemRoot".into(), root.clone()), ("PATH".into(), path)]
+            let directories = std::iter::once(system).chain(role::library_directories());
+            std::env::join_paths(directories).unwrap()
         }
 
         const LOOP_FILE: &str = "loop.cmd";
         const LOOP: &str = "@echo off\r\n:again\r\nif not exist \"%HELPER_HOME%\\alive\" exit /b\r\necho x>>\"%HEARTBEAT%\"\r\nping -n 1 127.0.0.1 >nul\r\ngoto again\r\n";
-        const DETACH_FILE: &str = "detach.ps1";
-        /// Starts the loop in a console of its own, hidden. A batch file cannot close the pipes it inherited, and
-        /// `start /b` shares them, so a descendant with no pipe of the helper's is started by PowerShell, which
-        /// creates it without inheriting handles.
-        const DETACH: &str = "Start-Process -WindowStyle Hidden -FilePath cmd.exe -ArgumentList @('/c', ('\"{0}\"' -f (Join-Path $PSScriptRoot 'loop.cmd')))\r\n";
-        const SURVIVOR_FILE: &str = "survivor.ps1";
-        /// A survivor that closes every pipe handle but its standard error: the helper's stderr pipe stays open in a
-        /// process that outlives the helper, while the answer pipe can reach end of file. (A batch file cannot do
-        /// this, and PowerShell keeps a stray copy of the output pipe, found by closing every pipe handle.)
-        const SURVIVOR: &str = "Add-Type -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern System.IntPtr GetStdHandle(int n); [DllImport(\"kernel32.dll\")] public static extern bool CloseHandle(System.IntPtr h); [DllImport(\"kernel32.dll\")] public static extern uint GetFileType(System.IntPtr h);' -Name K -Namespace W\r\n$err = [W.K]::GetStdHandle(-12).ToInt64()\r\nfor ($h = 4; $h -lt 8192; $h += 4) { if ($h -ne $err -and [W.K]::GetFileType([System.IntPtr]$h) -eq 3) { [void][W.K]::CloseHandle([System.IntPtr]$h) } }\r\nwhile (Test-Path \"$env:HELPER_HOME\\alive\") { Add-Content -Path $env:HEARTBEAT -Value 'x'; Start-Sleep -Milliseconds 20 }\r\n";
         const ANSWER: &str = "echo username=alice\r\necho password=token\r\n";
 
         fn write(home: &Path, behavior: Behavior) -> (PathBuf, Vec<String>) {
             let path = home.join("helper.cmd");
             fs::write(home.join(LOOP_FILE), LOOP).unwrap();
-            fs::write(home.join(DETACH_FILE), DETACH).unwrap();
-            fs::write(home.join(SURVIVOR_FILE), SURVIVOR).unwrap();
             let start = format!("start \"\" /b cmd /d /c call \"%~dp0{LOOP_FILE}\"");
             let body = match behavior {
                 Behavior::Answer => ANSWER.to_string(),
                 Behavior::ExitsLeavingDescendantOnOutput => format!("{start}\r\nexit /b 0\r\n"),
                 Behavior::RunsWithDescendantOnOutput => format!("{start}\r\nping -n 30 127.0.0.1 >nul\r\n"),
-                Behavior::AnswersLeavingDetachedDescendant => {
-                    format!("powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{DETACH_FILE}\" <nul >nul 2>nul\r\n{ANSWER}exit /b 0\r\n")
-                }
-                Behavior::AnswersLeavingSurvivorOnStderr => {
-                    format!("start \"\" /b powershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0{SURVIVOR_FILE}\"\r\n{ANSWER}exit /b 0\r\n")
-                }
+                Behavior::AnswersLeavingDetachedDescendant => format!("{}{ANSWER}exit /b 0\r\n", role::start(role::DETACHED)),
+                Behavior::AnswersLeavingSurvivorOnStderr => format!("{}{ANSWER}exit /b 0\r\n", role::start(role::SURVIVOR)),
                 Behavior::AnswersAndMarks => {
                     format!("{ANSWER}echo x> \"%MARKER%\"\r\nexit /b 0\r\n")
                 }

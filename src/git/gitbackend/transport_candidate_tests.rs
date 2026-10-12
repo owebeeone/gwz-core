@@ -7,6 +7,7 @@ use crate::transport_host::{SshEndpointConfig, TransportRequest, TransportRuntim
 mod drivers;
 mod home_rows;
 mod host_context;
+mod kex_failure;
 mod known_hosts_case;
 mod url_parity;
 mod url_password;
