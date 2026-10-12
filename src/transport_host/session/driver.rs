@@ -158,11 +158,23 @@ impl std::fmt::Display for SshLimitFailure {
     }
 }
 impl std::error::Error for SshLimitFailure {}
-/// An SSH open whose agent step could not start (plan step 3.2b): `SSH_AUTH_SOCK` refused, or the selected agent not
-/// usable. Its display is the whole message, worded from the agent source the runtime chose.
+/// An SSH open whose agent step failed (plan steps 3.2b, 3.3 and 3.6): `SSH_AUTH_SOCK` refused, the selected agent not
+/// usable, or Pageant not answering or holding no key. Its display is the whole message, worded from the agent source
+/// the runtime chose.
 #[derive(Debug)]
 pub(crate) struct AgentFailure {
     reason: String,
+    class: AgentFailureClass,
+}
+/// What the failure is, which decides the class it keeps for the callers that tell failures apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AgentFailureClass {
+    /// The agent cannot be used at all: a refusal of the platform, a source that is not there.
+    Refused,
+    /// The agent did not answer in time.
+    TimedOut,
+    /// The agent answered and has no key to offer: an authentication failure.
+    Authentication,
 }
 impl AgentFailure {
     pub(crate) fn model_error(&self) -> crate::model::ModelError {
@@ -171,13 +183,31 @@ impl AgentFailure {
             self.reason.clone(),
         )
     }
+    /// The typed error to report for the attempt: only a refusal is one. A timeout and an authentication failure keep
+    /// the classification they have without words of their own.
+    pub(crate) fn reported(&self) -> Option<crate::model::ModelError> {
+        (self.class == AgentFailureClass::Refused).then(|| self.model_error())
+    }
+    fn into_io(self) -> io::Error {
+        let kind = match self.class {
+            AgentFailureClass::Refused => io::ErrorKind::Unsupported,
+            AgentFailureClass::TimedOut => io::ErrorKind::TimedOut,
+            AgentFailureClass::Authentication => io::ErrorKind::PermissionDenied,
+        };
+        io::Error::new(kind, self)
+    }
 }
 impl std::fmt::Display for AgentFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.reason)
     }
 }
-impl std::error::Error for AgentFailure {}
+impl std::error::Error for AgentFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        (self.class == AgentFailureClass::Authentication)
+            .then_some(&crate::git::endpoint::ssh_remote::AuthenticationRejected as _)
+    }
+}
 /// The words for an open that ended at its agent step before a key was offered, when `agent` has some. The endpoint
 /// marks that step by the method its facts name (`ssh_local`); the wire carries no text, so the source supplies it.
 fn agent_reason(failure: &Failure, agent: &AgentSource) -> Option<String> {
@@ -225,8 +255,22 @@ fn open_failure_io(
     known_hosts: Option<KnownHostsFile>,
     agent: &AgentSource,
 ) -> io::Error {
+    // Pageant's own failures: a request that outlasts the stall limit (text T6), a Pageant that is gone, and one that
+    // holds no key this transport can use.
+    if let Some(reason) = agent.pageant_reason(&failure, stall_ms, attempts) {
+        let class = match failure.code {
+            gwz_transport::protocol::ErrorCode::Timeout => AgentFailureClass::TimedOut,
+            gwz_transport::protocol::ErrorCode::Authentication => AgentFailureClass::Authentication,
+            _ => AgentFailureClass::Refused,
+        };
+        return AgentFailure { reason, class }.into_io();
+    }
     if let Some(reason) = agent_reason(&failure, agent) {
-        return io::Error::new(io::ErrorKind::Unsupported, AgentFailure { reason });
+        return AgentFailure {
+            reason,
+            class: AgentFailureClass::Refused,
+        }
+        .into_io();
     }
     match crate::git::endpoint::ssh_limits::SshLimit::of_failure(&failure) {
         Some(limit) => io::Error::new(
@@ -475,7 +519,7 @@ cfg_if::cfg_if! {
         fn an_agent_step_failure_is_worded_from_the_source_the_runtime_chose() {
             use crate::git::endpoint::agent_source::{AgentSource, select};
             use gwz_transport::protocol::AuthMethod;
-            let AgentSource::Refused(refusal) = select(Some(std::ffi::OsStr::new("/tmp/agent")), || false) else {
+            let AgentSource::Refused(refusal) = select(Some(std::ffi::OsStr::new("/tmp/agent")), || None) else {
                 panic!("refused");
             };
             let step = |offered: bool, method: AuthMethod| Failure {
@@ -498,6 +542,39 @@ cfg_if::cfg_if! {
             }
             // So does a source with no words of its own.
             let generic = open_failure_io(step(false, AuthMethod::SshAgent), None, 9_000, "git.example.com".into(), 22, None, &AgentSource::None);
+            assert!(generic.get_ref().unwrap().downcast_ref::<SshOpenFailure>().is_some());
+        }
+
+        /// Pageant's own failures keep the class they have without words (plan step 3.6): a timeout stays a timeout, a
+        /// list with no key an authentication failure, and a Pageant that is gone a refusal that is typed.
+        #[test]
+        fn a_pageant_failure_is_worded_from_the_source_and_keeps_its_class() {
+            use crate::git::endpoint::agent_pageant::PageantPin;
+            use gwz_transport::protocol::{AuthMethod, SetupFailureCause};
+            let source = AgentSource::Pageant { sock_ignored: false, pin: PageantPin::numbered(1, 1) };
+            let step = |code, cause, offered| Failure {
+                code,
+                setup_cause: cause,
+                facts: Some(Facts { method: AuthMethod::SshAgent, credential_offered: offered, ..Facts::default() }),
+                ..Failure::default()
+            };
+            let host = || "git.example.com".to_owned();
+            let timed = open_failure_io(step(ErrorCode::Timeout, Some(SetupFailureCause::Stall), true), Some((2, 4)), 9_000, host(), 22, None, &source);
+            assert_eq!(timed.kind(), io::ErrorKind::TimedOut);
+            assert!(timed.to_string().starts_with("Pageant did not answer within 9 seconds (the SSH stall limit, set by --ssh-timeout)."), "{timed}");
+            assert!(timed.to_string().ends_with("(attempt 2 of 4)"), "{timed}");
+            let failed = timed.get_ref().unwrap().downcast_ref::<AgentFailure>().unwrap();
+            assert!(failed.reported().is_none(), "a timeout is not a typed refusal");
+            let empty = open_failure_io(step(ErrorCode::Authentication, None, false), None, 9_000, host(), 22, None, &source);
+            assert_eq!(empty.kind(), io::ErrorKind::PermissionDenied);
+            assert!(empty.to_string().starts_with("Pageant has no key this transport can use"), "{empty}");
+            assert!(empty.get_ref().unwrap().source().is_some_and(|cause| cause.is::<crate::git::endpoint::ssh_remote::AuthenticationRejected>()));
+            let gone = open_failure_io(step(ErrorCode::Unavailable, Some(SetupFailureCause::NotFound), true), None, 9_000, host(), 22, None, &source);
+            assert_eq!(gone.kind(), io::ErrorKind::Unsupported);
+            let failed = gone.get_ref().unwrap().downcast_ref::<AgentFailure>().unwrap();
+            assert_eq!(failed.reported().unwrap().code, crate::model::ErrorCode::UnsupportedOperation);
+            // The same failures of another source keep their generic words.
+            let generic = open_failure_io(step(ErrorCode::Timeout, Some(SetupFailureCause::Stall), true), None, 9_000, host(), 22, None, &AgentSource::None);
             assert!(generic.get_ref().unwrap().downcast_ref::<SshOpenFailure>().is_some());
         }
 

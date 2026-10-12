@@ -165,6 +165,13 @@ pub(crate) fn connect_with_helpers(
                                 facts.authenticated = Some(true);
                                 return Authenticated::new(accepted, requested, facts);
                             }
+                            // Pageant's failures are worded by the host from the step they ended in: the step is marked
+                            // before the first request, so that a request that times out, or a list with no usable key,
+                            // is known as Pageant's (plan step 3.6). No credential is offered by the mark.
+                            if matches!(agent, AgentSource::Pageant { .. }) {
+                                progress.lock().unwrap_or_else(|e| e.into_inner()).method =
+                                    AuthMethod::SshAgent;
+                            }
                             let connection = agent_authenticate(
                                 connection,
                                 user,

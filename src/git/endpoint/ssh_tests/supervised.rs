@@ -1,8 +1,9 @@
 //! Supervised native setup in the worker: shutdown, cleanup overruns, setup
 //! failure and panic, through the attachment path.
 use super::attachment;
+use super::login_fixture as support;
 use crate::git::endpoint::{
-    agent_auth, agent_socket,
+    agent_auth,
     ssh_channel::GitService,
     ssh_key_snapshot::Registry,
     ssh_pool,
@@ -83,31 +84,65 @@ fn healthy_empty_worker_shutdown_reports_complete() {
     endpoint.shutdown();
     assert_eq!(done(&endpoint).failure, None);
 }
-cfg_if::cfg_if! {
-    if #[cfg(unix)] {
-        use super::agent_fixture as support;
-        #[test]
-        fn native_setup_reuses_connection_with_operation_scoped_facts() {
-            let fixture = support::Fixture::new("ssh-ed25519", false);
-            let (connection, host) = fixture.prepared("ssh-ed25519");
-            let user = fixture.ssh.user.clone(); let path = fixture.path.clone();
-            let setup: Setup = Box::new(move |control| {
-                let connection = agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || agent_socket::connect(&path, control), || {}, || {})?;
-                Authenticated::new(connection, Identity::Ambient, Facts { method: AuthMethod::SshAgent, authenticated: Some(true), credential_offered: true, ..Facts::default() })
-            });
-            let mut setup = Some(setup);
-            let endpoint = endpoint(config(), Duration::from_millis(50), move |_: &Key, _: &Identity| setup.take().ok_or_else(|| io::ErrorKind::Other.into()), 1000);
-            let key = Key::ssh(&fixture.ssh.user, "127.0.0.1", fixture.ssh.port);
-            for reuse in [false, true] {
-                let (mut stream, opened) = attachment::open(&endpoint, key.clone(), None, GitService::UploadPack, fixture.ssh.repository.to_str().unwrap(), attachment::deadlines(&config(), 1000)).unwrap();
-                assert_eq!(opened.reused, reuse); assert_eq!(opened.facts.credential_offered, !reuse); assert_eq!(opened.facts.authenticated, Some(true));
-                stream.write_all(b"0000").unwrap(); stream.end_write().unwrap(); let mut bytes = Vec::new(); stream.read_to_end(&mut bytes).unwrap();
-                let close = stream.close().unwrap(); assert_eq!(close.facts, opened.facts);
-            }
-            endpoint.shutdown(); assert_eq!(done(&endpoint).failure, None);
-            fixture.assert_requests("ssh-ed25519", 1); fixture.assert_tcp_closed();
-        }
+#[test]
+fn native_setup_reuses_connection_with_operation_scoped_facts() {
+    let fixture = support::Fixture::new(support::METHOD, false);
+    let (connection, host) = fixture.prepared(support::METHOD);
+    let user = fixture.ssh.user.clone();
+    let path = fixture.path.clone();
+    let setup: Setup = Box::new(move |control| {
+        let connection = agent_auth::authenticate_reporting(
+            connection,
+            &user,
+            &host,
+            control.clone(),
+            || support::connect(&path, control),
+            || {},
+            || {},
+        )?;
+        Authenticated::new(
+            connection,
+            Identity::Ambient,
+            Facts {
+                method: AuthMethod::SshAgent,
+                authenticated: Some(true),
+                credential_offered: true,
+                ..Facts::default()
+            },
+        )
+    });
+    let mut setup = Some(setup);
+    let endpoint = endpoint(
+        config(),
+        Duration::from_millis(50),
+        move |_: &Key, _: &Identity| setup.take().ok_or_else(|| io::ErrorKind::Other.into()),
+        1000,
+    );
+    let key = Key::ssh(&fixture.ssh.user, "127.0.0.1", fixture.ssh.port);
+    for reuse in [false, true] {
+        let (mut stream, opened) = attachment::open(
+            &endpoint,
+            key.clone(),
+            None,
+            GitService::UploadPack,
+            fixture.ssh.repository.to_str().unwrap(),
+            attachment::deadlines(&config(), 1000),
+        )
+        .unwrap();
+        assert_eq!(opened.reused, reuse);
+        assert_eq!(opened.facts.credential_offered, !reuse);
+        assert_eq!(opened.facts.authenticated, Some(true));
+        stream.write_all(b"0000").unwrap();
+        stream.end_write().unwrap();
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).unwrap();
+        let close = stream.close().unwrap();
+        assert_eq!(close.facts, opened.facts);
     }
+    endpoint.shutdown();
+    assert_eq!(done(&endpoint).failure, None);
+    fixture.assert_requests(support::METHOD, 1);
+    fixture.assert_tcp_closed();
 }
 
 #[test]
@@ -200,26 +235,61 @@ fn connector_deadline_keeps_original_origin_and_refuses_expired_effects() {
     ));
 }
 
-cfg_if::cfg_if! {
-    if #[cfg(unix)] {
-        #[test]
-        fn worker_shutdown_interrupts_native_sign_without_network_deadline() {
-            let fixture = support::Fixture::new("ssh-ed25519", true);
-            let (connection, host) = fixture.prepared("ssh-ed25519");
-            let user = fixture.ssh.user.clone(); let path = fixture.path.clone();
-            let setup: Setup = Box::new(move |control| {
-                let connection = agent_auth::authenticate_reporting(connection, &user, &host, control.clone(), || agent_socket::connect(&path, control), || {}, || {})?;
-                Authenticated::new(connection, Identity::Ambient, Facts { method: AuthMethod::SshAgent, authenticated: Some(true), credential_offered: true, ..Facts::default() })
-            });
-            let mut setup = Some(setup); let mut c = config(); c.connect_timeout_ms = 0; c.cleanup_timeout_ms = 1000;
-            let deadlines = attachment::deadlines(&c, 1000);
-            let endpoint = endpoint(c, Duration::from_secs(1), move |_: &Key, _: &Identity| setup.take().ok_or_else(|| io::ErrorKind::Other.into()), 1000);
-            let key = Key::ssh(&fixture.ssh.user, "127.0.0.1", fixture.ssh.port); let repo = fixture.ssh.repository.to_str().unwrap().to_owned();
-            let caller = attachment::start(&endpoint, key, None, GitService::UploadPack, &repo, deadlines).unwrap();
-            fixture.signing.recv_timeout(Duration::from_secs(3)).unwrap(); endpoint.shutdown(); assert!(attachment::finish(&caller).is_err());
-            assert_eq!(done(&endpoint).failure, None); fixture.assert_tcp_closed(); fixture.wait_closed();
-        }
-    }
+#[test]
+fn worker_shutdown_interrupts_native_sign_without_network_deadline() {
+    let fixture = support::Fixture::new(support::METHOD, true);
+    let (connection, host) = fixture.prepared(support::METHOD);
+    let user = fixture.ssh.user.clone();
+    let path = fixture.path.clone();
+    let setup: Setup = Box::new(move |control| {
+        let connection = agent_auth::authenticate_reporting(
+            connection,
+            &user,
+            &host,
+            control.clone(),
+            || support::connect(&path, control),
+            || {},
+            || {},
+        )?;
+        Authenticated::new(
+            connection,
+            Identity::Ambient,
+            Facts {
+                method: AuthMethod::SshAgent,
+                authenticated: Some(true),
+                credential_offered: true,
+                ..Facts::default()
+            },
+        )
+    });
+    let mut setup = Some(setup);
+    let mut c = config();
+    c.connect_timeout_ms = 0;
+    c.cleanup_timeout_ms = 1000;
+    let deadlines = attachment::deadlines(&c, 1000);
+    let endpoint = endpoint(
+        c,
+        Duration::from_secs(1),
+        move |_: &Key, _: &Identity| setup.take().ok_or_else(|| io::ErrorKind::Other.into()),
+        1000,
+    );
+    let key = Key::ssh(&fixture.ssh.user, "127.0.0.1", fixture.ssh.port);
+    let repo = fixture.ssh.repository.to_str().unwrap().to_owned();
+    let caller = attachment::start(
+        &endpoint,
+        key,
+        None,
+        GitService::UploadPack,
+        &repo,
+        deadlines,
+    )
+    .unwrap();
+    fixture.wait_signing(Duration::from_secs(3));
+    endpoint.shutdown();
+    assert!(attachment::finish(&caller).is_err());
+    assert_eq!(done(&endpoint).failure, None);
+    fixture.assert_tcp_closed();
+    fixture.wait_closed();
 }
 
 #[test]

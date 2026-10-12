@@ -88,6 +88,15 @@ impl KeyAgent {
         self.agent.connect()
     }
 
+    /// The agent source a runtime would choose for this agent: the pipe it serves on.
+    pub(crate) fn source(&self) -> crate::git::endpoint::agent_source::AgentSource {
+        use crate::git::endpoint::agent_source::{AgentSource, PipeName};
+        AgentSource::NamedPipe(
+            PipeName::parse(std::ffi::OsStr::new(self.agent.name()))
+                .expect("the fixture's pipe name is a local pipe"),
+        )
+    }
+
     /// The requests the agent has seen, in order: `list`, or `sign:<listed key's index>:<flags>`.
     pub(crate) fn requests(&self) -> Vec<String> {
         self.agent

@@ -14,6 +14,7 @@ use std::{
 };
 use windows_sys::Win32::{
     Foundation::{CloseHandle, HWND, LPARAM, LRESULT, LocalFree, WPARAM},
+    Graphics::Gdi::HBRUSH,
     Security::{
         Authorization::{
             ConvertSecurityDescriptorToStringSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
@@ -29,16 +30,19 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::{
         CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_USERDATA,
         GWLP_WNDPROC, GetMessageW, GetWindowLongPtrW, HWND_MESSAGE, MSG, PostThreadMessageW,
-        SetWindowLongPtrW, WM_COPYDATA, WM_QUIT,
+        RegisterClassW, SetWindowLongPtrW, WM_COPYDATA, WM_QUIT, WNDCLASSW,
     },
 };
 
 /// How the receiver answers a request.
-pub(super) enum Reply {
+pub(crate) enum Reply {
     /// Writes this agent message as the reply and says it served the request.
     Message(Vec<u8>),
     /// Writes these bytes at the head of the mapping as they are, a damaged frame among them.
     Raw(Vec<u8>),
+    /// Writes the agent message that `answer` makes of the request, and says it served the request: a Pageant with a
+    /// key, for the rows that sign.
+    Handler(Box<dyn Fn(&[u8]) -> Vec<u8> + Send + Sync>),
     /// Says it will not serve the request, and writes nothing.
     Refuse,
     /// Keeps its window thread busy for `delay`, as a confirmation prompt does, then writes `message` and serves the
@@ -48,11 +52,11 @@ pub(super) enum Reply {
 
 /// What the receiver was sent by one request.
 #[derive(Clone, Debug)]
-pub(super) struct Seen {
-    pub(super) name: String,
-    pub(super) request: Vec<u8>,
+pub(crate) struct Seen {
+    pub(crate) name: String,
+    pub(crate) request: Vec<u8>,
     /// The mapping's owner and DACL as an SDDL string.
-    pub(super) descriptor: String,
+    pub(crate) descriptor: String,
 }
 
 struct Shared {
@@ -61,8 +65,8 @@ struct Shared {
     late_written: AtomicBool,
 }
 
-pub(super) struct Receiver {
-    pub(super) window: HWND,
+pub(crate) struct Receiver {
+    pub(crate) window: HWND,
     shared: Arc<Shared>,
     thread_id: u32,
     thread: Option<JoinHandle<()>>,
@@ -75,8 +79,28 @@ fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(Some(0)).collect()
 }
 
+/// What kind of window the receiver makes.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    /// A message-only window of the system's `STATIC` class, which nothing finds by class and title.
+    Message,
+    /// A hidden top-level window of the class `Pageant` and the title `Pageant`, as Pageant makes its own, so that the
+    /// probe (`FindWindowW`) finds it.
+    Pageant,
+}
+
 impl Receiver {
-    pub(super) fn start(reply: Reply) -> Self {
+    pub(crate) fn start(reply: Reply) -> Self {
+        Self::start_kind(reply, Kind::Message)
+    }
+
+    /// A receiver that `FindWindowW("Pageant", "Pageant")` finds. Windows of that name are found one at a time, so a
+    /// test that starts one must be the only one in its process to do so.
+    pub(crate) fn start_pageant(reply: Reply) -> Self {
+        Self::start_kind(reply, Kind::Pageant)
+    }
+
+    fn start_kind(reply: Reply, kind: Kind) -> Self {
         let shared = Arc::new(Shared {
             reply,
             seen: Mutex::new(Vec::new()),
@@ -85,25 +109,61 @@ impl Receiver {
         let (ready, started) = std::sync::mpsc::channel();
         let owned = shared.clone();
         let thread = thread::spawn(move || {
-            // SAFETY: a message-only window of the system's `STATIC` class, subclassed with `serve`, on this
-            // thread; its user data is a pointer to `owned`, which this thread holds until the window is destroyed.
+            // SAFETY: a window on this thread, subclassed with `serve`; its user data is a pointer to `owned`, which
+            // this thread holds until the window is destroyed.
             unsafe {
-                let class = wide("STATIC");
-                let title = wide("synthetic Pageant");
-                let window = CreateWindowExW(
-                    0,
-                    class.as_ptr(),
-                    title.as_ptr(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    HWND_MESSAGE,
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                    ptr::null(),
-                );
+                let window = match kind {
+                    Kind::Message => {
+                        let class = wide("STATIC");
+                        let title = wide("synthetic Pageant");
+                        CreateWindowExW(
+                            0,
+                            class.as_ptr(),
+                            title.as_ptr(),
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            HWND_MESSAGE,
+                            ptr::null_mut(),
+                            ptr::null_mut(),
+                            ptr::null(),
+                        )
+                    }
+                    Kind::Pageant => {
+                        let name = wide("Pageant");
+                        let class = WNDCLASSW {
+                            style: 0,
+                            lpfnWndProc: Some(serve),
+                            cbClsExtra: 0,
+                            cbWndExtra: 0,
+                            hInstance: ptr::null_mut(),
+                            hIcon: ptr::null_mut(),
+                            hCursor: ptr::null_mut(),
+                            hbrBackground: ptr::null_mut::<core::ffi::c_void>() as HBRUSH,
+                            lpszMenuName: ptr::null(),
+                            lpszClassName: name.as_ptr(),
+                        };
+                        // A class of the name exists after the first receiver of the process: that registration
+                        // serves this window as well.
+                        RegisterClassW(&class);
+                        CreateWindowExW(
+                            0,
+                            name.as_ptr(),
+                            name.as_ptr(),
+                            0,
+                            0,
+                            0,
+                            0,
+                            0,
+                            ptr::null_mut(),
+                            ptr::null_mut(),
+                            ptr::null_mut(),
+                            ptr::null(),
+                        )
+                    }
+                };
                 assert!(!window.is_null(), "the synthetic Pageant window");
                 SetWindowLongPtrW(window, GWLP_USERDATA, Arc::as_ptr(&owned) as isize);
                 SetWindowLongPtrW(window, GWLP_WNDPROC, serve as *const () as usize as isize);
@@ -128,7 +188,7 @@ impl Receiver {
     }
 
     /// The requests served so far, in order.
-    pub(super) fn seen(&self) -> Vec<Seen> {
+    pub(crate) fn seen(&self) -> Vec<Seen> {
         self.shared
             .seen
             .lock()
@@ -137,7 +197,7 @@ impl Receiver {
     }
 
     /// Whether a `Reply::Late` reply has been written.
-    pub(super) fn late_written(&self) -> bool {
+    pub(crate) fn late_written(&self) -> bool {
         self.shared.late_written.load(Ordering::SeqCst)
     }
 }
@@ -208,7 +268,7 @@ impl Shared {
                 .unwrap_or_else(|e| e.into_inner())
                 .push(Seen {
                     name,
-                    request,
+                    request: request.clone(),
                     descriptor: descriptor_of(mapping),
                 });
             let served = match &self.reply {
@@ -218,6 +278,10 @@ impl Shared {
                 }
                 Reply::Raw(raw) => {
                     bytes[..raw.len()].copy_from_slice(raw);
+                    1
+                }
+                Reply::Handler(answer) => {
+                    write_frame(bytes, &answer(&request));
                     1
                 }
                 Reply::Refuse => 0,

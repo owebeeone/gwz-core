@@ -11,9 +11,16 @@ use std::ffi::OsStr;
 /// The error text of an ambient open that needs an agent, for a runtime whose agent is `source`. The server is the
 /// loopback fixture; the open ends at its agent step, before any key is offered.
 fn open_error(source: AgentSource) -> (String, bool) {
+    open_error_within(source, 3000)
+}
+
+/// [`open_error`] under the stall limit `io_timeout_ms` (`--ssh-timeout`, in milliseconds).
+fn open_error_within(source: AgentSource, io_timeout_ms: u64) -> (String, bool) {
     let fixture = common::SshdFixture::new();
     let home = super::driver_tests::endpoint_home(&fixture);
-    let config = SshEndpointConfig::fixture(home, None).with_agent_source(source);
+    let config = SshEndpointConfig::fixture(home, None)
+        .with_agent_source(source)
+        .with_io_timeout_ms(io_timeout_ms);
     let runtime = TransportRuntime::new(config).unwrap();
     let meta = RequestMeta {
         request_id: "agent-words".into(),
@@ -46,7 +53,7 @@ fn open_error(source: AgentSource) -> (String, bool) {
 
 #[test]
 fn a_refused_ssh_auth_sock_is_told_to_the_user_naming_the_variable() {
-    let AgentSource::Refused(refusal) = select(Some(OsStr::new(r"\\localhost\pipe\x")), || false)
+    let AgentSource::Refused(refusal) = select(Some(OsStr::new(r"\\localhost\pipe\x")), || None)
     else {
         panic!("refused");
     };
@@ -58,17 +65,74 @@ fn a_refused_ssh_auth_sock_is_told_to_the_user_naming_the_variable() {
 
 #[test]
 fn a_selected_pageant_that_cannot_be_used_is_told_naming_pageant() {
-    let (words, worded) = open_error(AgentSource::Pageant { sock_ignored: true });
+    // A pin that no window answers to: where Pageant has a channel (Windows) it is Pageant gone, where it has none the
+    // source says only that Pageant was selected; `words_tests` pins each text. Either way it names Pageant, says
+    // nothing of another agent being tried, and the open ends at the agent step.
+    let pin = crate::git::endpoint::agent_pageant::PageantPin::numbered(1, 1);
+    let (words, worded) = open_error(AgentSource::Pageant {
+        sock_ignored: true,
+        pin,
+    });
     assert!(worded, "{words}");
-    assert!(
-        words.starts_with("Pageant is the SSH agent GWZ selected"),
-        "{words}"
-    );
-    assert!(words.contains("SSH_AUTH_SOCK was not consulted"), "{words}");
+    assert!(words.starts_with("Pageant "), "{words}");
 }
 
 cfg_if::cfg_if! {
     if #[cfg(windows)] {
+        /// Plan step 3.6's texts end to end, from the open the user starts to the words they are given, with a synthetic
+        /// Pageant (a window of this process answering as Pageant does) as the agent.
+        mod pageant_words {
+            use super::*;
+            use crate::git::endpoint::{
+                agent_pageant::pin_of,
+                pageant_exchange::receiver::{Receiver, Reply},
+            };
+            use std::time::Duration;
+
+            const NO_KEYS: [u8; 5] = [12, 0, 0, 0, 0];
+
+            fn source(pageant: &Receiver) -> AgentSource {
+                AgentSource::Pageant {
+                    sock_ignored: false,
+                    pin: pin_of(pageant.window).expect("the synthetic window has an owner"),
+                }
+            }
+
+            /// T6: Pageant's dialog stays open past the stall limit, so the attempt fails at it and the user is told
+            /// what Pageant may be waiting for, and the three ways out. The stall limit is the open's `--ssh-timeout`.
+            #[test]
+            fn a_prompt_that_outlasts_the_stall_limit_is_told_as_text_t6() {
+                let prompting = Receiver::start(Reply::Late { delay: Duration::from_secs(3), message: NO_KEYS.to_vec() });
+                let (words, worded) = open_error_within(source(&prompting), 500);
+                assert!(worded, "{words}");
+                let t6 = "Pageant did not answer within 0.5 seconds (the SSH stall limit, set by --ssh-timeout). Pageant may \
+                          still be waiting for you to confirm the key or to enter its passphrase. Answer it and run the \
+                          command again, raise --ssh-timeout (0 removes the limit), or use --transport native, which waits \
+                          for Pageant as gwz 1.0 did.";
+                assert!(words.starts_with(t6), "{words}");
+                assert!(words[t6.len()..].starts_with(" (attempt "), "each retry asked Pageant again: {words}");
+            }
+
+            #[test]
+            fn a_pageant_with_no_key_is_told_before_any_key_is_offered() {
+                let empty = Receiver::start(Reply::Message(NO_KEYS.to_vec()));
+                let (words, worded) = open_error(source(&empty));
+                assert!(worded, "{words}");
+                assert!(words.starts_with("Pageant has no key this transport can use"), "{words}");
+            }
+
+            #[test]
+            fn a_pageant_that_went_away_is_told_and_no_other_agent_is_named_as_tried() {
+                let gone = Receiver::start(Reply::Message(NO_KEYS.to_vec()));
+                let source = source(&gone);
+                drop(gone);
+                let (words, worded) = open_error(source);
+                assert!(worded, "{words}");
+                assert!(words.starts_with("Pageant was running when GWZ started"), "{words}");
+                assert!(words.contains("does not ask another SSH agent"), "{words}");
+            }
+        }
+
         /// A pipe that is not there is the agent not running (B07): the words for the pipe the variable names. The
         /// default pipe's own words, the stopped service's, are the same path with another name (`words_tests`).
         #[test]

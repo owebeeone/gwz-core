@@ -1,12 +1,17 @@
 //! Plan step 3.2b's rows: the Windows agent source is chosen from an injected "Pageant window visible" probe and the
 //! snapshot's `SSH_AUTH_SOCK` alone. Pure, so every platform runs them.
 use super::{AgentSource, PipeName, select};
+use crate::git::endpoint::agent_pageant::PageantPin;
 use std::{cell::Cell, ffi::OsStr};
 
 const DEFAULT: &str = r"\\.\pipe\openssh-ssh-agent";
 
+fn pin() -> PageantPin {
+    PageantPin::numbered(0x1234, 5678)
+}
+
 fn chosen(sock: Option<&str>, pageant: bool) -> AgentSource {
-    select(sock.map(OsStr::new), || pageant)
+    select(sock.map(OsStr::new), || pageant.then(pin))
 }
 
 fn pipe(name: &str) -> AgentSource {
@@ -17,7 +22,10 @@ fn pipe(name: &str) -> AgentSource {
 fn a_visible_pageant_beats_the_pipe_the_snapshot_names() {
     assert_eq!(
         chosen(Some(r"\\.\pipe\my-agent"), true),
-        AgentSource::Pageant { sock_ignored: true }
+        AgentSource::Pageant {
+            sock_ignored: true,
+            pin: pin()
+        }
     );
 }
 
@@ -26,13 +34,15 @@ fn a_visible_pageant_with_no_snapshot_pipe_does_not_claim_to_have_ignored_one() 
     assert_eq!(
         chosen(None, true),
         AgentSource::Pageant {
-            sock_ignored: false
+            sock_ignored: false,
+            pin: pin()
         }
     );
     assert_eq!(
         chosen(Some(""), true),
         AgentSource::Pageant {
-            sock_ignored: false
+            sock_ignored: false,
+            pin: pin()
         }
     );
 }
@@ -42,7 +52,10 @@ fn pageant_is_chosen_before_the_variable_is_looked_at() {
     // A value that would be refused is not consulted when Pageant wins: the variable is not read (U6).
     assert_eq!(
         chosen(Some("/tmp/ssh-abc/agent.123"), true),
-        AgentSource::Pageant { sock_ignored: true }
+        AgentSource::Pageant {
+            sock_ignored: true,
+            pin: pin()
+        }
     );
 }
 
@@ -168,7 +181,7 @@ fn a_name_that_is_not_unicode_is_refused() {
         }
     }
     assert!(matches!(
-        select(Some(form), || false),
+        select(Some(form), || None),
         AgentSource::Refused(_)
     ));
 }
@@ -193,17 +206,23 @@ fn the_probe_is_asked_once_and_before_anything_else() {
     let asked = Cell::new(0);
     let source = select(Some(OsStr::new(r"\\.\pipe\my-agent")), || {
         asked.set(asked.get() + 1);
-        false
+        None
     });
     assert_eq!(asked.get(), 1);
     assert_eq!(source, pipe(r"\\.\pipe\my-agent"));
     let asked = Cell::new(0);
     let source = select(Some(OsStr::new("/tmp/ssh-abc/agent")), || {
         asked.set(asked.get() + 1);
-        true
+        Some(pin())
     });
     assert_eq!(asked.get(), 1);
-    assert_eq!(source, AgentSource::Pageant { sock_ignored: true });
+    assert_eq!(
+        source,
+        AgentSource::Pageant {
+            sock_ignored: true,
+            pin: pin()
+        }
+    );
 }
 
 #[test]

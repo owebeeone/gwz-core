@@ -82,7 +82,10 @@ fn an_ambient_open_with_no_agent_source_is_refused_before_any_credential_is_offe
 fn a_refused_or_unusable_agent_source_fails_the_agent_step_before_any_credential() {
     for source in [
         AgentSource::Refused(refusal("/tmp/ssh-abc/agent.1")),
-        AgentSource::Pageant { sock_ignored: true },
+        AgentSource::Pageant {
+            sock_ignored: true,
+            pin: crate::git::endpoint::agent_pageant::PageantPin::numbered(1, 1),
+        },
     ] {
         let (facts, ended) = ambient_open_refused(source.clone());
         assert_eq!(ended.code, ErrorCode::Unavailable, "{source:?}: {ended:?}");
@@ -91,7 +94,7 @@ fn a_refused_or_unusable_agent_source_fails_the_agent_step_before_any_credential
 }
 
 fn refusal(value: &str) -> crate::git::endpoint::agent_source::AgentRefusal {
-    match crate::git::endpoint::agent_source::select(Some(std::ffi::OsStr::new(value)), || false) {
+    match crate::git::endpoint::agent_source::select(Some(std::ffi::OsStr::new(value)), || None) {
         AgentSource::Refused(refusal) => refusal,
         other => panic!("{value}: {other:?}"),
     }

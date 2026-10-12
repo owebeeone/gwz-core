@@ -2,7 +2,10 @@
 //! a private `ssh-agent` holding two fixture keys, one authorized and one not.
 //! It records each list and sign request, can stall or damage a signature,
 //! and never contacts the user's agent.
-use crate::git::endpoint::ssh_fixture::{self as common, SshConnection, SshdFixture};
+use crate::git::endpoint::{
+    agent_source::AgentSource,
+    ssh_fixture::{self as common, SshConnection, SshdFixture},
+};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::{
     fs,
@@ -17,6 +20,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+/// The key type and sign algorithm the endpoint rows use by default: Ed25519.
+pub const METHOD: &str = "ssh-ed25519";
 /// An agent client over the socket at `path`, for `agent_auth`'s `open` argument.
 pub fn connect(
     path: &std::path::Path,
@@ -221,6 +226,14 @@ impl Fixture {
             .method_pref(ssh2::MethodType::SignAlgo, method)
             .unwrap();
         (connection, key)
+    }
+    /// The agent source a runtime would choose for this agent: the socket it serves on.
+    pub fn source(&self) -> AgentSource {
+        AgentSource::from_path(Some(self.path.clone()))
+    }
+    /// Whether the agent has been asked to sign (and the signal is consumed).
+    pub fn signed(&self) -> bool {
+        self.signing.try_recv().is_ok()
     }
     /// Waits for the agent to have been asked to sign.
     pub fn wait_signing(&self, within: Duration) {

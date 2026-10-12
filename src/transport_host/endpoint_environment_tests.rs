@@ -122,7 +122,9 @@ cfg_if::cfg_if! {
         }
 
         /// Windows takes the pipe the snapshot's `SSH_AUTH_SOCK` names (step 3.2b), when no Pageant window is
-        /// visible, which the capture here never finds until step 3.6 supplies the probe.
+        /// visible. The capture's probe is the real one (step 3.6), so these rows hold on a desktop with no Pageant
+        /// (an SSH session's, or a machine where none runs); a Pageant on the desktop that runs them is selected
+        /// instead, as it should be, and the rows say so by failing.
         fn expected_agent(pipe: &PathBuf) -> AgentSource {
             AgentSource::NamedPipe(
                 crate::git::endpoint::agent_source::PipeName::parse(pipe.as_os_str()).unwrap(),
