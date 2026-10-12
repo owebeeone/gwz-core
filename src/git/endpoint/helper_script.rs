@@ -171,7 +171,7 @@ cfg_if::cfg_if! {
             fs::write(
                 &script,
                 format!(
-                    "if [ \"$1\" = config ]; then\n GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=NUL '{}' \"$@\"\n exit \"$?\"\nfi\n{body}\n",
+                    "if [ \"$1\" = config ]; then\n GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=nul '{}' \"$@\"\n exit \"$?\"\nfi\n{body}\n",
                     posix_path(&git.display().to_string())
                 ),
             )

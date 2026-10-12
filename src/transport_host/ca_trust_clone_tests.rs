@@ -5,9 +5,9 @@
 //! gwz 1.0.17, which the same variables narrow alike, is measured against
 //! GitHub in the parity run's evidence.
 
-use super::ca_bundle_tests::{Served, unrelated_ca};
+use super::ca_bundle_tests::Served;
 use super::ca_trust_tests::snapshot;
-use super::https_tests;
+use super::https_tests::{self, unrelated_ca};
 use super::*;
 use crate::git::GitBackend;
 use std::{

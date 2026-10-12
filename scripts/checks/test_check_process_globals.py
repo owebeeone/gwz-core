@@ -739,9 +739,15 @@ class Dispositions(unittest.TestCase):
         # 19 -> 15 (2026-10-07): agent_job's COUNT, CLEANUPS, HUB and INIT left;
         # the 64-job budget, its waiters and the reaper are the host's
         # `Supervisor` now (adaptive concurrency design §7.5, OQ9).
+        # 15 -> 16 (2026-10-12): the native commit and tag route decision reads
+        # the process environment once, in GitEnvironment::process().
+        # 16 -> 18 (2026-10-12): the relative-home work (design TR1.8 section 3,
+        # OQ7 (a)) reads the process directory beside the environment, in
+        # with_local_transport and in SshEndpointConfig::from_environment. All
+        # three are env debt for the driver to capture and pass in (RemPlan B5).
         for name in ('COUNT', 'CLEANUPS', 'HUB', 'INIT'):
             self.assertNotIn(('src/git/endpoint/agent_job.rs', 'static', name), core)
-        self.assertEqual(len(core), 15)
+        self.assertEqual(len(core), 18)
 
     def test_the_dead_https_helper_state_is_gone(self):
         # Transport release plan amendment 2's TR2.15: nothing read the orphaned

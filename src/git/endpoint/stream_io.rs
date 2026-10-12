@@ -73,6 +73,32 @@ impl Write for BlockingStream {
     }
 }
 
+/// The stall bound, in seconds as `--ssh-timeout` takes it, for a message
+/// that names the flag and its value (T7): `9` for 9000 ms, and `0.3` for the
+/// 300 ms only a test fixture sets. `None` when the bound is 0: `--ssh-timeout
+/// 0` turns the stall clock off, so no stall can be its doing and no message
+/// may name it. It lives here, not in `setup_retry`, because the consumer
+/// proof loads this file alone (tests/transport_consumer/README.md).
+pub(crate) fn stall_seconds(stall_ms: u64) -> Option<String> {
+    if stall_ms == 0 {
+        return None;
+    }
+    let (whole, rest) = (stall_ms / 1000, stall_ms % 1000);
+    Some(if rest == 0 {
+        whole.to_string()
+    } else {
+        format!("{whole}.{rest:03}")
+            .trim_end_matches('0')
+            .to_owned()
+    })
+}
+
+/// The unit after a [`stall_seconds`] value: `1 second`, and `seconds` for
+/// every other value, `0.3 seconds` included.
+pub(crate) fn seconds_unit(seconds: &str) -> &'static str {
+    if seconds == "1" { "second" } else { "seconds" }
+}
+
 /// A stalled read or write, worded for the flag that sets the bound it ran
 /// out of (T7). The stream's own error stays as its source.
 #[derive(Debug)]
@@ -83,7 +109,7 @@ pub(crate) struct StreamStall {
 impl std::fmt::Display for StreamStall {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let seconds = &self.seconds;
-        let unit = super::setup_retry::seconds_unit(seconds);
+        let unit = seconds_unit(seconds);
         write!(
             f,
             "no progress for {seconds} {unit} (--ssh-timeout {seconds})"
@@ -107,7 +133,7 @@ pub(crate) fn io_error(error: Error, stall_ms: u64) -> io::Error {
     );
     // With the stall clock off (`--ssh-timeout 0`, or an opener that did not
     // say) there is no bound to name, and the message stays the stream's own.
-    if stalled && let Some(seconds) = super::setup_retry::stall_seconds(stall_ms) {
+    if stalled && let Some(seconds) = stall_seconds(stall_ms) {
         return io::Error::new(io::ErrorKind::TimedOut, StreamStall { error, seconds });
     }
     let kind = match error {
@@ -168,84 +194,5 @@ fn wait<F: Future>(future: F) -> F::Output {
                 .unwrap_or_else(|error| error.into_inner());
         }
         *ready = false;
-    }
-}
-
-cfg_if::cfg_if! {
-    if #[cfg(test)] {
-        mod tests {
-            use super::*;
-            use gwz_transport::protocol::{Effect, ErrorCode};
-
-            fn peer_timeout() -> Error {
-                Error::PeerFailed {
-                    code: ErrorCode::Timeout,
-                    effect: Effect::Possible,
-                }
-            }
-
-            #[test]
-            fn a_stalled_read_names_the_flag_and_its_value() {
-                for error in [Error::Timeout, peer_timeout()] {
-                    let reported = io_error(error, 9_000);
-                    assert_eq!(reported.kind(), io::ErrorKind::TimedOut);
-                    assert_eq!(
-                        reported.to_string(),
-                        "no progress for 9 seconds (--ssh-timeout 9)"
-                    );
-                    // The stream's own error stays reachable as the source.
-                    let stall = reported.get_ref().unwrap();
-                    assert!(
-                        stall
-                            .source()
-                            .is_some_and(|source| source.downcast_ref::<Error>() == Some(&error))
-                    );
-                }
-            }
-
-            #[test]
-            fn a_stalled_read_names_a_value_other_than_the_default() {
-                let reported = io_error(Error::Timeout, 45_000);
-                assert_eq!(
-                    reported.to_string(),
-                    "no progress for 45 seconds (--ssh-timeout 45)"
-                );
-            }
-
-            #[test]
-            fn no_stall_message_names_a_zero_bound() {
-                // `--ssh-timeout 0` turns the stall clock off, so a timeout that reaches
-                // a stream opened under it, or opened with no bound recorded, is not
-                // worded as a stall.
-                for error in [Error::Timeout, peer_timeout()] {
-                    let reported = io_error(error, 0);
-                    assert_eq!(reported.kind(), io::ErrorKind::TimedOut);
-                    assert!(!reported.to_string().contains("--ssh-timeout"));
-                    assert!(!reported.to_string().contains("no progress"));
-                }
-            }
-
-            #[test]
-            fn only_a_timeout_is_worded_as_a_stall() {
-                for (error, kind) in [
-                    (Error::Cancelled, io::ErrorKind::ConnectionAborted),
-                    (Error::CarrierLost, io::ErrorKind::BrokenPipe),
-                    (Error::Protocol, io::ErrorKind::InvalidData),
-                ] {
-                    let reported = io_error(error, 9_000);
-                    assert_eq!(reported.kind(), kind);
-                    assert!(!reported.to_string().contains("--ssh-timeout"));
-                }
-                let other = Error::PeerFailed {
-                    code: ErrorCode::Protocol,
-                    effect: Effect::None,
-                };
-                assert!(
-                    !io_error(other, 9_000)
-                        .to_string()
-                        .contains("--ssh-timeout")
-                );
-            }
-        }
     }
 }

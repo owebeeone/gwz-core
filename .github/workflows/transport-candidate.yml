@@ -304,11 +304,19 @@ jobs:
         # (src/git/endpoint/fixture_host.rs) run a foreground sshd.exe per test.
         # Windows' optional-feature install is slow and depends on Windows
         # Update, so this downloads Win32-OpenSSH's portable zip at a pinned
-        # release and checks its SHA-256. Nothing is installed as a service and
-        # no registry value is set: GWZ_TEST_SSHD names the sshd.exe (the
-        # fixture finds ssh-keygen.exe beside it), GWZ_TEST_SH Git for Windows'
-        # POSIX sh, which the fixture's cmd.exe shims run, since this image's
-        # default shell for sshd is cmd.exe.
+        # release and checks its SHA-256. No service is installed:
+        # GWZ_TEST_SSHD names the sshd.exe (the fixture finds ssh-keygen.exe
+        # beside it), GWZ_TEST_SH Git for Windows' POSIX sh, which the helper
+        # tests' fixture scripts run.
+        #
+        # The default shell is set to Git's bash.exe, as the host the fixtures
+        # were developed on has it. The image's default is cmd.exe, which cannot
+        # run a Git service as the client quotes it, and sshd.exe replaces its
+        # sessions' PATH with the registry's, so no shim of the fixture's can
+        # stand between cmd.exe and the service (the first run on this image
+        # had every SSH session end in git-upload-pack's usage message). The
+        # runner is an ephemeral machine; the value is read from HKLM by the
+        # sshd.exe of every test.
         env:
           OPENSSH_RELEASE: v9.8.3.0p2-Preview
           OPENSSH_SHA256: 0ca131f3a78f404dc819a6336606caec0db1663a692ccc3af1e90232706ada54
@@ -324,8 +332,14 @@ jobs:
           sshd="$dir/OpenSSH-Win64/sshd.exe"
           test -f "$sshd" && test -f "$dir/OpenSSH-Win64/ssh-keygen.exe"
           "$sshd" -V 2>&1 || true
+          bash_exe='C:\Program Files\Git\bin\bash.exe'
           sh_exe='C:\Program Files\Git\usr\bin\sh.exe'
-          test -f "$(cygpath -u "$sh_exe")"
+          test -f "$(cygpath -u "$bash_exe")" && test -f "$(cygpath -u "$sh_exe")"
+          # MSYS_NO_PATHCONV: bash would otherwise rewrite reg's /v and /d switches as paths.
+          export MSYS_NO_PATHCONV=1
+          reg add 'HKLM\SOFTWARE\OpenSSH' /v DefaultShell /t REG_SZ /d "$bash_exe" /f
+          reg add 'HKLM\SOFTWARE\OpenSSH' /v DefaultShellCommandOption /t REG_SZ /d '-c' /f
+          reg query 'HKLM\SOFTWARE\OpenSSH'
           echo "GWZ_TEST_SSHD=$(cygpath -w "$sshd")" >> "$GITHUB_ENV"
           echo "GWZ_TEST_SH=$sh_exe" >> "$GITHUB_ENV"
       - name: Install taut-proto
