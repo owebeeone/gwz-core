@@ -17,7 +17,6 @@ import itertools
 import unittest
 
 CORE = Path(__file__).resolve().parents[2]
-ROOT = CORE.parent
 SPEC = importlib.util.spec_from_file_location("cfg_guard", CORE / "scripts/checks/check_cfg_boundaries.py")
 guard = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(guard)
@@ -120,55 +119,6 @@ class CoreBoundary(unittest.TestCase):
         self.assertIn("Git2Backend::new().with_host_context(guard.context.clone())", body)
         self.assertNotIn("without_credential_helpers", body)
         self.assertNotIn("cfg!", body)
-
-
-def _consumer(name):
-    path = ROOT / name
-    return path.read_text() if path.exists() else ""
-
-
-@unittest.skipUnless(
-    SWITCH in _consumer("gwz-cli/src/lib.rs") or SWITCH in _consumer("gwz-py/native/src/lib.rs"),
-    "no sibling gwz-cli or gwz-py names the retired switch",
-)
-class ConsumerRepositories(unittest.TestCase):
-    """Until steps 5.2 (gwz-cli) and 5.3 (gwz-py) retire the switch there."""
-
-    def test_selected_host_and_invalid_build_predicates_cover_all_configurations(self):
-        for name in ["gwz-cli/src/lib.rs", "gwz-py/native/src/lib.rs"]:
-            source = _consumer(name)
-            if SWITCH not in source:
-                continue
-            for windows, unix, candidate, qualification in itertools.product([False, True], repeat=4):
-                if windows and unix:
-                    continue
-                enabled = {n for n, value in [("windows", windows), ("unix", unix), ("gwz_transport_candidate", candidate), (SWITCH, qualification)] if value}
-                refusal = enclosing_predicate(source, "compile_error !")
-                self.assertEqual(evaluate(refusal, enabled), qualification and not (windows and candidate), name)
-
-    def test_actual_routes_use_only_valid_union_and_reject_illegal_qualification(self):
-        for name in ["gwz-cli/src/lib.rs", "gwz-py/native/src/lib.rs"]:
-            source = _consumer(name)
-            if SWITCH in source:
-                self.assertIn("compile_error!", source, name)
-        for name in ["gwz-cli/src/globalargs/dispatch.rs", "gwz-py/native/src/route.rs"]:
-            source = _consumer(name)
-            if SWITCH in source:
-                self.assertIn(UNION, source, name)
-
-    def test_actual_original_entry_capture_precedes_detach(self):
-        source = _consumer("gwz-py/native/src/client_host.rs")
-        if SWITCH in source:
-            self.assertIn(UNION, source)
-            network = source[source.index("fn network("):]
-            self.assertLess(network.index("NativeCaller::capture"), network.index("route::capture"))
-            for method in ["fn call(", "fn submit("]:
-                body = source[source.index(method):]
-                self.assertLess(body.index("self.network("), body.index("py.detach("))
-        source = _consumer("gwz-cli/src/globalargs/dispatch.rs")
-        if SWITCH in source:
-            self.assertIn(UNION, source)
-            self.assertLess(source.index("NativeCaller::capture"), source.index("with_local_transport_native"))
 
 
 if __name__ == "__main__":
