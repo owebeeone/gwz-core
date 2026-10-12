@@ -8,15 +8,34 @@ use std::sync::Arc;
 /// A reader of the `note: ` lines, which the CLI prints on stderr in human
 /// mode. Cloned to every endpoint of a command; there is no global.
 #[derive(Clone)]
-pub struct NoteSink(Arc<dyn Fn(&str) + Send + Sync>);
+pub struct NoteSink {
+    read: Arc<dyn Fn(&str) + Send + Sync>,
+    /// Whether the reader also wants the detail lines, which the CLI prints for `--verbose` (U9: a followed
+    /// discovery redirect). Off unless the reader asks.
+    detail: bool,
+}
 
 impl NoteSink {
     pub fn new(read: impl Fn(&str) + Send + Sync + 'static) -> Self {
-        Self(Arc::new(read))
+        Self {
+            read: Arc::new(read),
+            detail: false,
+        }
+    }
+    /// The same reader, with the detail lines on or off.
+    pub fn with_detail(mut self, detail: bool) -> Self {
+        self.detail = detail;
+        self
     }
     /// Gives the reader one line, as the endpoints do.
     pub fn tell(&self, line: &str) {
-        (self.0)(line);
+        (self.read)(line);
+    }
+    /// Gives the reader one detail line, if it asked for detail.
+    pub fn tell_detail(&self, line: &str) {
+        if self.detail {
+            (self.read)(line);
+        }
     }
     /// Gives the reader every note `governor` has made since the last call,
     /// rendered, in the order made.

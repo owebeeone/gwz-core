@@ -50,6 +50,9 @@ cfg_if::cfg_if! { if #[cfg(test)] { mod agent_source_tests; } }
 // the Windows qualification admits only SSH and HTTPS; retiring the switch ungates it.
 cfg_if::cfg_if! { if #[cfg(all(test, unix))] { mod https_compat_tests; } }
 
+// Step 4.9: the words around a discovery redirect (T5, U9) and the WH3 matrix at the host.
+cfg_if::cfg_if! { if #[cfg(test)] { mod https_redirect_tests; mod https_native_tests; } }
+
 // Step 4.11: the helper-dependent modules. They run on every platform: a test's fake `git` is a script on Unix and
 // the test executable running it under Git for Windows' shell on Windows (`helper_script::git_fixture`).
 cfg_if::cfg_if! {
@@ -466,6 +469,8 @@ impl TransportRuntime {
                 )
             }
         };
+        // The in-process endpoint's session, which the request asks for the words its failures cannot carry (T5).
+        let endpoint_session = local_endpoint.clone();
         // Endpoint registration precedes the driver Bind even for the in-process route.
         let client_guard = if let Some(endpoint) = local_endpoint {
             let max_retries = request::max_retries(&meta);
@@ -490,7 +495,8 @@ impl TransportRuntime {
         } else {
             None
         };
-        let context = RequestContext::new(session, meta, operation_id, notes)?;
+        let context = RequestContext::new(session, meta, operation_id, notes)?
+            .with_endpoint(endpoint_session);
         let mut guard = TransportRequest::pending(context, client_guard);
         if let Some(token) = token {
             guard.attach(token)?;

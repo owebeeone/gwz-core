@@ -10,7 +10,7 @@ cfg_if::cfg_if! { if #[cfg(test)] {
                 while gate.load(Ordering::Acquire) == 0 { tokio::time::sleep(Duration::from_millis(1)).await; }
                 assert!(cancel.is_cancelled());
                 if !registered { return Err(BridgeError { code: ErrorCode::Cancelled, pending: None }); }
-                Ok(Box::new(FakeSession { complete: true, steps, finishes: Arc::new(AtomicUsize::new(0)), cleanup }) as Box<dyn Session>)
+                Ok(Box::new(FakeSession { complete: true, steps, finishes: Arc::new(AtomicUsize::new(0)), cleanup, own: 0 }) as Box<dyn Session>)
             })
         }
     }

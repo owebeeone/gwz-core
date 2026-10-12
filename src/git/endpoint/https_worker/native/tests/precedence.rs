@@ -160,6 +160,7 @@ fn words(failure: &Failure, policy: AuthPolicy) -> String {
         cli_hint: true,
         windows,
         host: Some("git.example.test".into()),
+        redirect: None,
     }
     .reason()
 }

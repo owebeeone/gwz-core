@@ -539,9 +539,21 @@ impl Client {
                             &prepared.opened.facts,
                         ));
                     }
-                    destination = destination
-                        .redirect(input.service, location)
-                        .map_err(|code| with_facts(code, Effect::None, &prepared.opened.facts))?;
+                    let next = match destination.redirect(input.service, location) {
+                        Ok(next) => next,
+                        Err(code) => {
+                            // A redirect from https to http is told to the host with the address the server sent,
+                            // which the failure has no place for (text T5).
+                            if let Some(to) = destination.downgrade_target(input.service, location)
+                            {
+                                self.redirects
+                                    .refused(&input.operation, &destination.shown(), &to);
+                            }
+                            return Err(with_facts(code, Effect::None, &prepared.opened.facts));
+                        }
+                    };
+                    self.redirects.followed(&destination.shown(), &next.shown());
+                    destination = next;
                     drop(response);
                     // Keep admission across hops, but release physical capacity before acquiring again.
                     let Prepared {

@@ -27,6 +27,8 @@ pub(crate) struct HttpsOpenFailure {
     pub(crate) windows: bool,
     /// The remote's host, which a message may name; absent when the failure does not know it.
     pub(crate) host: Option<String>,
+    /// The redirect from https to http that ended the open, with the address the server sent (text T5).
+    pub(crate) redirect: Option<crate::git::endpoint::https_worker::redirect_log::Refused>,
 }
 /// What the policy an open ran under says about its words: whether credential helpers were off, and whether
 /// it was a Windows policy.
@@ -95,6 +97,13 @@ impl HttpsOpenFailure {
         use gwz_transport::protocol::{ErrorCode, SetupFailureCause};
         if let Some(reason) = helper_failure::timeout_reason(&self.failure) {
             return reason;
+        }
+        if let Some(redirect) = &self.redirect {
+            // Text T5. The address in quotes is the server's own text: it is shown, not advised.
+            return format!(
+                "{} redirected to \"{}\", which is not https. GWZ does not follow a redirect from https to http, because the request would then travel unencrypted. The address in quotes was sent by the server: treat it as untrusted text, and do not use it. Ask the server's administrator to fix the redirect.",
+                redirect.from, redirect.to
+            );
         }
         if self.failure.code == ErrorCode::Authentication
             && let Some(detail) = self.failure.detail.as_ref()
@@ -263,7 +272,7 @@ cfg_if::cfg_if! {
                         setup_cause: Some(cause),
                         detail: Some(Box::new(FailureDetail { helper_budget_ms: Some(budget), ..Default::default() })),
                         ..Default::default()
-                    }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true, windows: false, host: None,
+                    }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true, windows: false, host: None, redirect: None,
                 }.reason();
                 let interaction = message(SetupFailureCause::Interaction, 1_250);
                 assert!(interaction.starts_with("No credential helper answered within 1.25 seconds, a fixed bound"));
@@ -281,7 +290,7 @@ cfg_if::cfg_if! {
                     code: ErrorCode::Authentication,
                     facts: Some(Facts { http_status: Some(407), ..Default::default() }),
                     ..Default::default()
-                }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true, windows: true, host: None };
+                }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true, windows: true, host: None, redirect: None };
                 let reason = failure.reason();
                 assert!(reason.contains("Windows machine proxy setting"), "{reason}");
                 assert!(reason.contains("does not support proxy sign-in"), "{reason}");
@@ -298,13 +307,13 @@ cfg_if::cfg_if! {
                 let failure = HttpsOpenFailure { failure: Failure {
                     code: ErrorCode::Timeout, setup_cause: Some(SetupFailureCause::Allocation),
                     ..Default::default()
-                }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true, windows: false, host: None };
+                }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true, windows: false, host: None, redirect: None };
                 assert_eq!(failure.reason(), "HTTPS endpoint request failed: Timeout: allocation");
                 let malformed = HttpsOpenFailure { failure: Failure {
                     code: ErrorCode::Authentication,
                     detail: Some(Box::new(FailureDetail { helper_cause: Some(HelperFailureCause::MalformedOutput), ..Default::default() })),
                     ..Default::default()
-                }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true, windows: false, host: None }.reason();
+                }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true, windows: false, host: None, redirect: None }.reason();
                 assert!(malformed.starts_with("gwz could not use `git credential fill`'s answer: its answer has a malformed or duplicate username/password field. No credential was sent."));
                 assert!(malformed.contains("repository settings or conditional includes"));
                 assert!(malformed.ends_with("See Troubleshooting: HTTPS Credential Failure."));
@@ -314,7 +323,7 @@ cfg_if::cfg_if! {
             fn windows(failure: Failure, helpers_disabled: bool, host: Option<&str>) -> HttpsOpenFailure {
                 HttpsOpenFailure {
                     failure, anonymous: None, attempts: None, service: Some(GitService::UploadPackAdvertisement),
-                    helpers_disabled, cli_hint: false, windows: true, host: host.map(str::to_owned),
+                    helpers_disabled, cli_hint: false, windows: true, host: host.map(str::to_owned), redirect: None,
                 }
             }
             fn rejected_logon(scheme: NativeScheme) -> Failure {
@@ -411,6 +420,36 @@ cfg_if::cfg_if! {
                 assert!(reason.contains("credential helpers are off for this operation"), "{reason}");
                 assert!(!reason.contains("qualification"), "{reason}");
                 assert!(reason.contains("without_credential_helpers"), "{reason}");
+            }
+
+            #[test]
+            fn a_redirect_from_https_to_http_is_refused_with_text_t5_verbatim() {
+                use crate::git::endpoint::https_worker::redirect_log::Refused;
+                let mut refused = windows(
+                    Failure { code: ErrorCode::InvalidRequest, ..Default::default() },
+                    false,
+                    Some("git.example.test"),
+                );
+                refused.redirect = Some(Refused {
+                    from: "https://git.example.test/team/repo".into(),
+                    to: "http://elsewhere.example:8080/team/repo/info/refs?service=git-upload-pack".into(),
+                });
+                for windows_policy in [true, false] {
+                    refused.windows = windows_policy;
+                    assert_eq!(
+                        refused.reason(),
+                        "https://git.example.test/team/repo redirected to \"http://elsewhere.example:8080/team/repo/info/refs?service=git-upload-pack\", which is not https. GWZ does not follow a redirect from https to http, because the request would then travel unencrypted. The address in quotes was sent by the server: treat it as untrusted text, and do not use it. Ask the server's administrator to fix the redirect."
+                    );
+                }
+                // Neither the server's address nor advice about it appears outside the quotes.
+                let reason = refused.reason();
+                let outside = reason.replace("http://elsewhere.example:8080/team/repo/info/refs?service=git-upload-pack", "");
+                for advice in ["set the remote", "use the http", "http://"] {
+                    assert!(!outside.contains(advice), "{advice} in {outside}");
+                }
+                // Without a refusal on record the failure is worded as it always was.
+                refused.redirect = None;
+                assert_eq!(refused.reason(), "HTTPS endpoint request failed: InvalidRequest");
             }
 
             #[test]

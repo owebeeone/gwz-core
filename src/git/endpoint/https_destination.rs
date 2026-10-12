@@ -85,6 +85,34 @@ impl Destination {
         self.url.as_str().to_owned()
     }
 
+    /// The base as a message may show it: with no userinfo, which can hold an account selector.
+    pub(crate) fn shown(&self) -> String {
+        let mut shown = self.url.clone();
+        let _ = shown.set_username("");
+        let _ = shown.set_password(None);
+        shown.into()
+    }
+
+    /// The address a discovery `location` names when it is a plain `http://` one, for the message that refuses
+    /// it (a redirect from https to http, text T5). It is the resolved address with no userinfo and no fragment,
+    /// which is what the server asked for and not what the client would have used. `None` for every other location,
+    /// which is refused as it always was, and for an exchange, which is never redirected.
+    pub(crate) fn downgrade_target(&self, service: GitService, location: &str) -> Option<String> {
+        service_query(service)?;
+        if location.is_empty() || location.len() > 18_000 || location.chars().any(char::is_control)
+        {
+            return None;
+        }
+        let mut target = self.selected_request(service).join(location).ok()?;
+        if !target.scheme().eq_ignore_ascii_case("http") || target.host_str().is_none() {
+            return None;
+        }
+        let _ = target.set_username("");
+        let _ = target.set_password(None);
+        target.set_fragment(None);
+        Some(target.into())
+    }
+
     pub(crate) fn request(&self, service: GitService) -> Url {
         let mut request = self.selected_request(service);
         request
@@ -348,6 +376,45 @@ cfg_if::cfg_if! {
                     redirected.request(upload_advertisement()).as_str(),
                     "https://example.com/moved/info/refs?service=git-upload-pack"
                 );
+            }
+
+            #[test]
+            fn a_downgrade_target_is_the_http_address_a_discovery_location_names() {
+                let source = Destination::parse("https://example.com/old/repo").unwrap();
+                let named = |location: &str| source.downgrade_target(upload_advertisement(), location);
+                assert_eq!(
+                    named("http://other.example:8080/new/info/refs?service=git-upload-pack").as_deref(),
+                    Some("http://other.example:8080/new/info/refs?service=git-upload-pack")
+                );
+                // The server's credentials are not repeated back.
+                assert_eq!(
+                    named("http://user:secret@other.example/new/info/refs").as_deref(),
+                    Some("http://other.example/new/info/refs")
+                );
+                // Only an http address is a downgrade; every other refusal stays as it was.
+                for location in [
+                    "https://other.example/new/info/refs",
+                    "/new/info/refs",
+                    "ftp://other.example/new/info/refs",
+                    "javascript:alert(1)",
+                    "",
+                    "http://other.example/new\n/info/refs",
+                ] {
+                    assert_eq!(named(location), None, "{location:?}");
+                }
+                // An exchange is never redirected, so no exchange has a downgrade to name.
+                assert_eq!(
+                    source.downgrade_target(GitService::UploadPackExchange, "http://other.example/"),
+                    None
+                );
+            }
+
+            #[test]
+            fn the_shown_address_leaves_out_the_account_selector() {
+                let destination = Destination::parse("https://account%2Bselector%40team@example.com/owner/repo").unwrap();
+                assert_eq!(destination.shown(), "https://example.com/owner/repo");
+                let plain = Destination::parse("https://example.com:8443/owner/repo").unwrap();
+                assert_eq!(plain.shown(), "https://example.com:8443/owner/repo");
             }
 
             #[test]

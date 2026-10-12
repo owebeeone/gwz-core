@@ -39,6 +39,7 @@ mod challenges;
 pub(crate) mod credentials;
 pub(crate) mod native;
 mod prepare;
+pub(crate) mod redirect_log;
 mod serve;
 mod throttle;
 pub(crate) use throttle::Rejection;
@@ -71,8 +72,14 @@ pub(crate) struct Client {
     /// Names each attempt's connection request, which is how its failure is
     /// judged on its own window (adaptive concurrency design §4.8).
     attempts: Arc<AtomicUsize>,
+    /// The discovery redirects this endpoint followed or refused, for the words around a request.
+    redirects: Arc<redirect_log::RedirectLog>,
 }
 impl Client {
+    /// The discovery redirects this endpoint followed or refused (U9 and text T5).
+    pub(crate) fn redirects(&self) -> &redirect_log::RedirectLog {
+        &self.redirects
+    }
     /// Has the endpoint's TLS configuration built on `runtime` now, for the
     /// connection an open that has just arrived will need.
     pub(crate) fn prebuild_tls(&self, runtime: &tokio::runtime::Handle) {
@@ -113,6 +120,7 @@ impl Endpoint {
             operations,
             ids: Arc::new(crate::operation_context::new_id_source()),
             attempts: Arc::new(AtomicUsize::new(0)),
+            redirects: Arc::new(redirect_log::RedirectLog::default()),
             auth_owner: https_auth::AuthOwner::new(helper_slots),
             native: None,
             native_cleanup: Arc::new(Mutex::new(native::CleanupState::default())),
@@ -439,7 +447,7 @@ cfg_if::cfg_if! { if #[cfg(test)] { #[path="https_worker_tests.rs"] mod tests; }
 cfg_if::cfg_if! { if #[cfg(test)] { #[path="https_budget_tests.rs"] mod budget_tests; } }
 cfg_if::cfg_if! { if #[cfg(test)] { mod retry_tests; mod helper_budget_tests; mod credential_tests; } }
 cfg_if::cfg_if! { if #[cfg(test)] { mod setup_slot_tests; mod tls_share_tests; mod supervisor_tests; } }
-cfg_if::cfg_if! { if #[cfg(test)] { mod close_tests; } }
+cfg_if::cfg_if! { if #[cfg(test)] { mod close_tests; mod redirect_tests; } }
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {

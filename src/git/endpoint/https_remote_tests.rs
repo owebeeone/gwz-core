@@ -262,6 +262,7 @@ fn open_failure(
         cli_hint: true,
         windows: false,
         host: None,
+        redirect: None,
         failure: gwz_transport::protocol::Failure {
             detail: None,
             setup_cause: None,
@@ -290,6 +291,7 @@ fn a_failed_open_names_a_timeouts_origin_and_the_attempt_it_ended() {
             cli_hint: true,
             windows: false,
             host: None,
+            redirect: None,
             failure: gwz_transport::protocol::Failure {
                 detail: None,
                 setup_cause,
@@ -370,6 +372,7 @@ fn helper_timeout_keeps_public_code_75_without_reclassifying_general_timeouts() 
             cli_hint: true,
             windows: false,
             host: None,
+            redirect: None,
             failure: Failure {
                 code: ErrorCode::Timeout,
                 effect: Effect::None,

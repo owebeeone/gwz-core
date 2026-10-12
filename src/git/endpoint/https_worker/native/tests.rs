@@ -1,7 +1,9 @@
 //! Native authentication tests: the fake Port/Session seam and the real SSPI request validator.
+mod adversity;
 mod exchange;
 mod precedence;
 mod protocol;
+mod redirect;
 mod rejection;
 mod retention;
 
@@ -65,6 +67,8 @@ cfg_if::cfg_if! { if #[cfg(test)] {
     }
     use hyper::header::WWW_AUTHENTICATE;
     struct FakePort {
+        /// The host name the SSPI target must name: `HTTP/<host>`.
+        host: &'static str,
         complete: bool,
         starts: Arc<AtomicUsize>,
         steps: Arc<AtomicUsize>,
@@ -72,7 +76,7 @@ cfg_if::cfg_if! { if #[cfg(test)] {
         cleanup: Arc<AtomicUsize>,
         deadlines: Arc<Mutex<Vec<Instant>>>,
     }
-    struct FakeSession { complete: bool, steps: Arc<AtomicUsize>, finishes: Arc<AtomicUsize>, cleanup: Arc<AtomicUsize> }
+    struct FakeSession { complete: bool, steps: Arc<AtomicUsize>, finishes: Arc<AtomicUsize>, cleanup: Arc<AtomicUsize>, own: usize }
     struct FakeProbe(Arc<AtomicUsize>);
     impl Probe for FakeProbe { fn confirmed(&self) -> bool { self.0.load(Ordering::Acquire) == 2 } }
     impl Port for FakePort {
@@ -80,16 +84,19 @@ cfg_if::cfg_if! { if #[cfg(test)] {
             assert!(!request.channel_binding.as_bytes().is_empty());
             // Only the logon session answers: a helper's identity is never an SSPI identity in 1.1.0 (design 8).
             assert!(matches!(request.identity, gwz_sspi::Identity::CurrentLogon));
-            assert_eq!(request.target.as_str(), "HTTP/localhost");
+            assert_eq!(request.target.as_str(), format!("HTTP/{}", self.host));
             self.starts.fetch_add(1, Ordering::Relaxed);
             self.deadlines.lock().unwrap().push(deadline);
-            let session = FakeSession { complete: self.complete, steps: self.steps.clone(), finishes: self.finishes.clone(), cleanup: self.cleanup.clone() };
+            let session = FakeSession { complete: self.complete, steps: self.steps.clone(), finishes: self.finishes.clone(), cleanup: self.cleanup.clone(), own: 0 };
             Box::pin(async move { Ok(Box::new(session) as Box<dyn Session>) })
         }
     }
     impl Session for FakeSession {
         fn step(&mut self, challenge: Option<gwz_sspi::SecretBytes>) -> Work<'_, Result<gwz_sspi::TokenStep, BridgeError>> {
-            let n = self.steps.fetch_add(1, Ordering::Relaxed);
+            // `steps` counts every session of the port; `own` is this exchange's round, which a challenge follows.
+            self.steps.fetch_add(1, Ordering::Relaxed);
+            let n = self.own;
+            self.own += 1;
             assert_eq!(challenge.is_some(), n > 0);
             let final_token = self.cleanup.load(Ordering::Acquire) == 4 && n > 0;
             if final_token { self.cleanup.store(2, Ordering::Release); }
@@ -113,7 +120,11 @@ cfg_if::cfg_if! { if #[cfg(test)] {
         fn cancel(self: Box<Self>) -> Option<Box<dyn Probe>> { Some(Box::new(FakeProbe(self.cleanup))) }
     }
     fn fake(complete: bool, cleanup: usize) -> (NativeCaller, Arc<FakePort>) {
-        let port = Arc::new(FakePort { complete, starts: Arc::new(AtomicUsize::new(0)), steps: Arc::new(AtomicUsize::new(0)), finishes: Arc::new(AtomicUsize::new(0)),
+        fake_for("localhost", complete, cleanup)
+    }
+    /// The fake port for a server reached by `host`: its SSPI target is `HTTP/<host>`.
+    fn fake_for(host: &'static str, complete: bool, cleanup: usize) -> (NativeCaller, Arc<FakePort>) {
+        let port = Arc::new(FakePort { host, complete, starts: Arc::new(AtomicUsize::new(0)), steps: Arc::new(AtomicUsize::new(0)), finishes: Arc::new(AtomicUsize::new(0)),
             cleanup: Arc::new(AtomicUsize::new(cleanup)), deadlines: Arc::new(Mutex::new(Vec::new())) });
         (NativeCaller { port: Ok(port.clone()), machine_proxy: None }, port)
     }

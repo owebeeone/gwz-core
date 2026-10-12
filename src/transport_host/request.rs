@@ -21,8 +21,16 @@ pub(crate) struct RequestContext {
     notes: Option<NoteSink>,
     /// The warnings this operation has already given, by key: each is given once per operation.
     warned: Arc<Mutex<std::collections::BTreeSet<String>>>,
+    /// The session of the endpoint in this process, which holds what the endpoint remembers of this request: the
+    /// redirect it refused, whose address a failure has no place for (text T5). Absent for the Cli placement.
+    endpoint: Option<Arc<Session>>,
 }
 impl RequestContext {
+    /// The same context, asking `endpoint` for what the endpoint in this process remembers of the request.
+    pub(super) fn with_endpoint(mut self, endpoint: Option<Arc<Session>>) -> Self {
+        self.endpoint = endpoint;
+        self
+    }
     pub(super) fn new(
         session: Arc<Session>,
         meta: RequestMeta,
@@ -39,6 +47,7 @@ impl RequestContext {
             https_routes: Arc::new(Mutex::new(std::collections::BTreeMap::new())),
             notes,
             warned: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
+            endpoint: None,
         })
     }
     /// Gives `line` as a warning, once per `key` for this operation. A warning is not a note: it is not gated by
@@ -124,6 +133,7 @@ impl RequestContext {
                 cli_hint: self.is_cli(),
                 windows,
                 host: host.clone(),
+                redirect: None,
                 failure: Failure {
                     detail: None,
                     setup_cause: None,
@@ -164,6 +174,7 @@ impl RequestContext {
                     cli_hint: self.is_cli(),
                     windows,
                     host: host.clone(),
+                    redirect: None,
                     failure: setup_retry::allocation_timeout(),
                     anonymous: None,
                     attempts: None,
@@ -262,12 +273,22 @@ impl RequestContext {
                     facts(value);
                 }
                 let attempts = setup_retry::reported_attempt(&failure);
+                // A redirect from https to http ends in a fixed failure that cannot carry the address the server
+                // named; the endpoint kept it for this operation (text T5).
+                let redirect = (failure.code == ErrorCode::InvalidRequest)
+                    .then(|| {
+                        self.endpoint
+                            .as_ref()
+                            .and_then(|endpoint| endpoint.redirect_refusal(&self.meta.request_id))
+                    })
+                    .flatten();
                 Err(io::Error::other(HttpsOpenFailure {
                     service: Some(service),
                     helpers_disabled,
                     cli_hint: self.is_cli(),
                     windows,
                     host: host.clone(),
+                    redirect,
                     failure,
                     anonymous,
                     attempts,

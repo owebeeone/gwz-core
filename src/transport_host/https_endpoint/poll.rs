@@ -193,8 +193,16 @@ impl HttpsEndpoint {
         }
         self.apply_retry_effects();
         self.client.governor().tick(self.client.pool_now());
+        // Said once, and not kept for a reader that never comes: the log is drained either way.
+        let followed = self.client.redirects().drain_followed();
         if let Some(notes) = &self.notes {
             notes.deliver(self.client.governor());
+            for redirect in followed {
+                notes.tell_detail(&format!(
+                    "note: {} redirected to {}; following it",
+                    redirect.from, redirect.to
+                ));
+            }
         }
         self.start_held();
         self.entries.retain(|_, entry| {

@@ -59,6 +59,7 @@ fn report_the_tunnel_through_the_real_machine_proxy() {
                         cli_hint: true,
                         windows: true,
                         host: None,
+                        redirect: None,
                     }
                     .reason();
                     serde_json::json!({ "result": "failed", "code": code, "http_status": http_status, "reason": reason })
