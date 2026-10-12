@@ -378,6 +378,6 @@ impl Cleanup {
 }
 
 mod control;
-pub(crate) use control::Control;
 use control::Fail;
+pub(crate) use control::{Control, Mark};
 cfg_if::cfg_if! { if #[cfg(test)] { mod tests; pub(crate) use tests::ManualClock; } }

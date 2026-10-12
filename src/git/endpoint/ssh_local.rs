@@ -106,6 +106,13 @@ pub(crate) fn connect_with_helpers(
                                 &written,
                                 &known_hosts,
                                 &control,
+                                // The key exchange is retried only while the open's facts show no credential offered.
+                                &|| {
+                                    progress
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .credential_offered
+                                },
                             )
                             .inspect_err(|error| {
                                 trust_log.note_trust(&key.host, key.port, error)
