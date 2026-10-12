@@ -1,7 +1,10 @@
 use super::*;
 mod https_failure;
 mod ssh_opening;
-use crate::git::endpoint::{setup_retry, ssh_channel::GitService, stream_io::BlockingStream};
+use crate::git::endpoint::{
+    https_connection::MachineSetting, setup_retry, ssh_channel::GitService,
+    stream_io::BlockingStream,
+};
 use gwz_session_host::{CancelRegistration, CancellationToken};
 use gwz_transport::protocol::{Facts, Opened};
 pub(crate) use https_failure::{HttpsAttemptReceipt, HttpsOpenFailure, policy_words};
@@ -134,6 +137,7 @@ impl RequestContext {
                 windows,
                 host: host.clone(),
                 redirect: None,
+                machine: self.session.machine(),
                 failure: Failure {
                     detail: None,
                     setup_cause: None,
@@ -151,6 +155,11 @@ impl RequestContext {
             + std::time::Duration::from_millis(allocation_ms.max(0) as u64);
         self.validate(&self.meta, &self.operation)
             .map_err(|_| early(ErrorCode::Cancelled))?;
+        // A machine proxy setting that cannot be used refuses an https open, with its text, before any connection
+        // (decision D6): the configuration built, so SSH and local operations are not touched.
+        if matches!(self.session.machine(), MachineSetting::Refused(_)) {
+            return Err(early(ErrorCode::UnsupportedOperation));
+        }
         let canonical = crate::git::endpoint::https_destination::Destination::parse(url)
             .map_err(early)?
             .base();
@@ -175,6 +184,7 @@ impl RequestContext {
                     windows,
                     host: host.clone(),
                     redirect: None,
+                    machine: self.session.machine(),
                     failure: setup_retry::allocation_timeout(),
                     anonymous: None,
                     attempts: None,
@@ -289,6 +299,7 @@ impl RequestContext {
                     windows,
                     host: host.clone(),
                     redirect,
+                    machine: self.session.machine(),
                     failure,
                     anonymous,
                     attempts,

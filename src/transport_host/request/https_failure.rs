@@ -1,4 +1,4 @@
-use crate::git::endpoint::setup_retry;
+use crate::git::endpoint::{https_connection::MachineSetting, setup_retry};
 use crate::transport_host::helper_failure::{
     self, HELPER_ALLOCATION_PREFIX, HELPER_INTERACTION_PREFIX, MEMBER_URL,
 };
@@ -7,6 +7,10 @@ use crate::transport_host::helper_failure::{
 /// failure, so the text names it; it points to no native option, because the native route refuses a 407 the same way
 /// (design §6, "407").
 const PROXY_SIGN_IN_UNSUPPORTED: &str = "The proxy in the Windows machine proxy setting (netsh winhttp show proxy) asked for a sign-in before it would connect to the server (HTTP 407), and GWZ does not support proxy sign-in. No credential was sent to the proxy. Ask your administrator for access through the proxy that does not need a sign-in for this server.";
+
+/// Text U2 (design §14 item 13, decision D7): a direct https connection failed while the Windows machine proxy setting
+/// names no proxy. The design gave no wording; this is the lane's.
+const NO_PROXY_HINT: &str = "The Windows machine proxy setting (netsh winhttp show proxy) says direct access, so GWZ connected to the server directly, and that connection failed. If your network reaches this server only through a proxy, ask your administrator to set one with netsh winhttp set proxy proxy-server=\"host:port\" or, to copy your Internet Options settings, netsh winhttp import proxy source=ie. GWZ reads only that machine setting, not your browser's settings and not HTTPS_PROXY.";
 
 #[derive(Clone, Debug)]
 pub(crate) struct HttpsAttemptReceipt {
@@ -29,6 +33,9 @@ pub(crate) struct HttpsOpenFailure {
     pub(crate) host: Option<String>,
     /// The redirect from https to http that ended the open, with the address the server sent (text T5).
     pub(crate) redirect: Option<crate::git::endpoint::https_worker::redirect_log::Refused>,
+    /// What the machine proxy setting said (Windows): a refused one is the whole reason for the open's failure
+    /// (decision D6), and a direct one is named when a direct connection fails (decision D7, text U2).
+    pub(crate) machine: crate::git::endpoint::https_connection::MachineSetting,
 }
 /// What the policy an open ran under says about its words: whether credential helpers were off, and whether
 /// it was a Windows policy.
@@ -134,6 +141,10 @@ impl HttpsOpenFailure {
     /// ended when that is known.
     pub(crate) fn reason(&self) -> String {
         use gwz_transport::protocol::{ErrorCode, SetupFailureCause};
+        if let MachineSetting::Refused(text) = &self.machine {
+            // T1 and the other machine-proxy refusals, verbatim: the setting is the whole reason (decision D6).
+            return text.to_string();
+        }
         if let Some(reason) = helper_failure::timeout_reason(&self.failure) {
             return reason;
         }
@@ -247,7 +258,29 @@ impl HttpsOpenFailure {
         if let Some((attempt, attempts)) = self.attempts {
             reason.push_str(&format!(" (attempt {attempt} of {attempts})"));
         }
+        if self.failed_direct_connection() {
+            reason.push(' ');
+            reason.push_str(NO_PROXY_HINT);
+        }
         reason
+    }
+    /// Whether this is a direct https connection that failed before any server answered, under a machine setting that
+    /// says direct (text U2, decision D7). A server's answer (a status or a method in the facts), a trust failure, a sign-in or a helper's failure
+    /// is not one, and neither is a failure under a named proxy or where no machine setting was read.
+    fn failed_direct_connection(&self) -> bool {
+        use gwz_transport::protocol::{AuthMethod, ErrorCode};
+        // An open's facts are present but empty when nothing was exchanged: no status, no method, no verdict.
+        let nothing_answered = self.failure.facts.as_ref().is_none_or(|facts| {
+            facts.http_status.is_none()
+                && facts.method == AuthMethod::None
+                && facts.authenticated.is_none()
+        });
+        self.machine == MachineSetting::Direct
+            && nothing_answered
+            && matches!(
+                self.failure.code,
+                ErrorCode::Unavailable | ErrorCode::Io | ErrorCode::Timeout
+            )
     }
 }
 
@@ -304,7 +337,7 @@ cfg_if::cfg_if! {
                         setup_cause: Some(cause),
                         detail: Some(Box::new(FailureDetail { helper_budget_ms: Some(budget), ..Default::default() })),
                         ..Default::default()
-                    }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true, windows: false, host: None, redirect: None,
+                    }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true, windows: false, host: None, redirect: None, machine: Default::default(),
                 }.reason();
                 let interaction = message(SetupFailureCause::Interaction, 1_250);
                 assert!(interaction.starts_with("No credential helper answered within 1.25 seconds, a fixed bound"));
@@ -322,7 +355,7 @@ cfg_if::cfg_if! {
                     code: ErrorCode::Authentication,
                     facts: Some(Facts { http_status: Some(407), ..Default::default() }),
                     ..Default::default()
-                }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true, windows: true, host: None, redirect: None };
+                }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true, windows: true, host: None, redirect: None, machine: Default::default() };
                 let reason = failure.reason();
                 assert!(reason.contains("Windows machine proxy setting"), "{reason}");
                 assert!(reason.contains("does not support proxy sign-in"), "{reason}");
@@ -339,13 +372,13 @@ cfg_if::cfg_if! {
                 let failure = HttpsOpenFailure { failure: Failure {
                     code: ErrorCode::Timeout, setup_cause: Some(SetupFailureCause::Allocation),
                     ..Default::default()
-                }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true, windows: false, host: None, redirect: None };
+                }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true, windows: false, host: None, redirect: None, machine: Default::default() };
                 assert_eq!(failure.reason(), "HTTPS endpoint request failed: Timeout: allocation");
                 let malformed = HttpsOpenFailure { failure: Failure {
                     code: ErrorCode::Authentication,
                     detail: Some(Box::new(FailureDetail { helper_cause: Some(HelperFailureCause::MalformedOutput), ..Default::default() })),
                     ..Default::default()
-                }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true, windows: false, host: None, redirect: None }.reason();
+                }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true, windows: false, host: None, redirect: None, machine: Default::default() }.reason();
                 assert!(malformed.starts_with("gwz could not use `git credential fill`'s answer: its answer has a malformed or duplicate username/password field. No credential was sent."));
                 assert!(malformed.contains("repository settings or conditional includes"));
                 assert!(malformed.ends_with("See Troubleshooting: HTTPS Credential Failure."));
@@ -355,7 +388,7 @@ cfg_if::cfg_if! {
             fn windows(failure: Failure, helpers_disabled: bool, host: Option<&str>) -> HttpsOpenFailure {
                 HttpsOpenFailure {
                     failure, anonymous: None, attempts: None, service: Some(GitService::UploadPackAdvertisement),
-                    helpers_disabled, cli_hint: false, windows: true, host: host.map(str::to_owned), redirect: None,
+                    helpers_disabled, cli_hint: false, windows: true, host: host.map(str::to_owned), redirect: None, machine: Default::default(),
                 }
             }
             fn rejected_logon(scheme: NativeScheme) -> Failure {
@@ -550,6 +583,89 @@ cfg_if::cfg_if! {
                 let mut elsewhere = windows(missing, false, None);
                 elsewhere.windows = false;
                 assert!(!elsewhere.reason().contains("$env:"), "{}", elsewhere.reason());
+            }
+
+            const DIRECT_WORDS: &str = "says direct access, so GWZ connected to the server directly";
+
+            fn connect_failure(code: ErrorCode, cause: Option<SetupFailureCause>) -> Failure {
+                Failure { code, setup_cause: cause, ..Default::default() }
+            }
+
+            #[test]
+            fn a_failed_direct_connection_says_winhttp_has_no_proxy_u2() {
+                use crate::git::endpoint::https_connection::MachineSetting;
+                for failure in [
+                    connect_failure(ErrorCode::Unavailable, Some(SetupFailureCause::ConnectionRefused)),
+                    connect_failure(ErrorCode::Unavailable, Some(SetupFailureCause::NotFound)),
+                    connect_failure(ErrorCode::Unavailable, Some(SetupFailureCause::AddressNotAvailable)),
+                    connect_failure(ErrorCode::Io, None),
+                    connect_failure(ErrorCode::Timeout, Some(SetupFailureCause::Aggregate)),
+                ] {
+                    let mut open = windows(failure.clone(), false, None);
+                    open.machine = MachineSetting::Direct;
+                    let reason = open.reason();
+                    assert!(reason.starts_with("HTTPS endpoint request failed: "), "{reason}");
+                    assert!(reason.contains(DIRECT_WORDS), "{reason}");
+                    assert!(reason.contains("netsh winhttp show proxy"), "{reason}");
+                    assert!(reason.contains("netsh winhttp import proxy source=ie"), "{reason}");
+                    // Only a direct machine setting says so: a named proxy, a refusal's own text and no machine
+                    // setting at all (every Unix build) never do.
+                    for other in [MachineSetting::Unread, MachineSetting::Named] {
+                        open.machine = other;
+                        assert!(!open.reason().contains(DIRECT_WORDS), "{}", open.reason());
+                    }
+                }
+            }
+
+            #[test]
+            fn the_no_proxy_hint_is_for_a_connection_that_failed_and_for_nothing_else() {
+                use crate::git::endpoint::https_connection::MachineSetting;
+                let mut cases = vec![
+                    ("a trust failure", connect_failure(ErrorCode::Trust, None)),
+                    ("a protocol failure", connect_failure(ErrorCode::Protocol, None)),
+                    ("a cancellation", connect_failure(ErrorCode::Cancelled, None)),
+                    ("a 401", Failure {
+                        code: ErrorCode::Authentication,
+                        facts: Some(Facts { http_status: Some(401), ..Default::default() }),
+                        ..Default::default()
+                    }),
+                    ("a proxy's 407", Failure {
+                        code: ErrorCode::Authentication,
+                        facts: Some(Facts { http_status: Some(407), ..Default::default() }),
+                        ..Default::default()
+                    }),
+                    ("a server's answer", Failure {
+                        code: ErrorCode::Io,
+                        facts: Some(Facts { http_status: Some(502), ..Default::default() }),
+                        ..Default::default()
+                    }),
+                    ("missing git", Failure {
+                        code: ErrorCode::Unavailable,
+                        setup_cause: Some(SetupFailureCause::NotFound),
+                        facts: Some(Facts { method: AuthMethod::Gh, ..Default::default() }),
+                        ..Default::default()
+                    }),
+                ];
+                cases.push(("a helper's timeout", Failure {
+                    code: ErrorCode::Timeout,
+                    setup_cause: Some(SetupFailureCause::Interaction),
+                    detail: Some(Box::new(FailureDetail { helper_budget_ms: Some(1_000), ..Default::default() })),
+                    ..Default::default()
+                }));
+                for (name, failure) in cases {
+                    let mut open = windows(failure, false, None);
+                    open.machine = MachineSetting::Direct;
+                    assert!(!open.reason().contains(DIRECT_WORDS), "{name}: {}", open.reason());
+                }
+            }
+
+            #[test]
+            fn a_refused_machine_setting_is_the_whole_reason_with_its_text_verbatim() {
+                use crate::git::endpoint::https_connection::MachineSetting;
+                let text = "The Windows machine proxy setting has no entry for https: \"http=proxy:8080\". T1";
+                let mut open = windows(connect_failure(ErrorCode::UnsupportedOperation, None), false, None);
+                open.machine = MachineSetting::Refused(text.into());
+                assert_eq!(open.reason(), text);
             }
         }
     }

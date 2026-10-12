@@ -161,6 +161,7 @@ fn words(failure: &Failure, policy: AuthPolicy) -> String {
         windows,
         host: Some("git.example.test".into()),
         redirect: None,
+        machine: Default::default(),
     }
     .reason()
 }

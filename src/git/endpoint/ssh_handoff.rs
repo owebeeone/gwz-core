@@ -15,6 +15,7 @@
 //! takes them as it starts that open. Nothing here crosses a carrier, so an
 //! endpoint in another process gets none.
 use super::agent_source::AgentSource;
+use super::ssh_host_key::HostKeyRefused;
 use std::{
     collections::BTreeMap,
     fmt,
@@ -97,7 +98,14 @@ impl UrlExtras {
 pub(crate) struct Handoff {
     extras: Arc<Mutex<BTreeMap<(String, i64), UrlExtras>>>,
     agent: AgentSource,
+    /// What the trust check last found for each destination it refused (decision D12). The wire carries a refused host
+    /// key as `Trust` and nothing more, so the endpoint leaves the finding here and the driver words the failure from
+    /// it. The driver never takes it: several opens to one host fail on one finding. Bounded by `TRUST_LIMIT`.
+    trust: Arc<Mutex<BTreeMap<(String, u16), HostKeyRefused>>>,
 }
+
+/// The destinations whose trust findings a handoff keeps.
+const TRUST_LIMIT: usize = 256;
 
 impl Handoff {
     /// A handoff for a runtime whose endpoint uses `agent`: the driver words the agent step's failures from it, since
@@ -106,7 +114,29 @@ impl Handoff {
         Self {
             extras: Arc::default(),
             agent,
+            trust: Arc::default(),
         }
+    }
+
+    /// Records what `error` says the trust check found for `host` and `port`, if it was a refused host key.
+    pub(crate) fn note_trust(&self, host: &str, port: u16, error: &std::io::Error) {
+        let Some(found) = HostKeyRefused::found_in(error) else {
+            return;
+        };
+        let mut trust = self.trust.lock().unwrap_or_else(|e| e.into_inner());
+        trust.insert((host.to_ascii_lowercase(), port), found);
+        while trust.len() > TRUST_LIMIT {
+            trust.pop_first();
+        }
+    }
+
+    /// What the trust check last found for `host` and `port`, if it refused the key in this runtime.
+    pub(crate) fn trust_found(&self, host: &str, port: u16) -> Option<HostKeyRefused> {
+        self.trust
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&(host.to_ascii_lowercase(), port))
+            .copied()
     }
 
     pub(crate) fn agent(&self) -> &AgentSource {

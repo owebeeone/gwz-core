@@ -15,8 +15,7 @@ fn machine_config(server: &Server, proxy_port: u16, bypass: Option<&str>) -> Con
     let mut config = server.config();
     Fixed::named(&format!("127.0.0.1:{proxy_port}"), bypass)
         .capture()
-        .apply(&mut config)
-        .expect("a usable machine setting");
+        .apply(&mut config);
     config
 }
 
@@ -163,8 +162,7 @@ fn a_proxy_that_cannot_be_reached_ends_the_operation_and_never_goes_direct() {
         let mut config = server.config();
         Fixed::named("gwz-no-such-proxy.invalid:3128", None)
             .capture()
-            .apply(&mut config)
-            .unwrap();
+            .apply(&mut config);
         let outcome = discover(
             &server,
             config,

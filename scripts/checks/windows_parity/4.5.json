@@ -1,4 +1,5 @@
 {
+  "done": true,
   "entries": [
     {"path": "src/git/endpoint/ssh_tests/password_helpers.rs", "kind": "os", "gate": "libc::kill", "target": "", "state": "paired", "owner": ["4.5"], "appendix": "G50"},
     {"path": "src/git/endpoint/ssh_tests/password_helpers.rs", "kind": "gate", "gate": "unix", "target": "arm: const HOME", "state": "paired", "owner": ["4.5"], "appendix": "new: step 4.5's password-helper rows, one dialect per platform; the Unix arm sits beside the Windows arm"},

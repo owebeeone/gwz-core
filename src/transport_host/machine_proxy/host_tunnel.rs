@@ -7,6 +7,7 @@
 
 use super::tunnel_tests::{discover, plain_server, port_of, run};
 use super::{MachineProxy, capture_machine};
+use crate::git::endpoint::https_connection::MachineSetting;
 use crate::git::endpoint::https_fixture::Tunnel;
 use crate::transport_host::HttpsOpenFailure;
 use gwz_transport::protocol::GitService;
@@ -37,15 +38,16 @@ fn report_the_tunnel_through_the_real_machine_proxy() {
             MachineProxy::Refused(_) => "refused",
         };
         let mut config = server.config();
-        let configured = machine.apply(&mut config);
+        machine.apply(&mut config);
         let destination = if origin == "loopback" {
             server.url.clone()
         } else {
             format!("https://proxied.test:{port}/repo")
         };
-        let outcome = match &configured {
-            Err(refusal) => serde_json::json!({ "configuration_refused": refusal.message }),
-            Ok(()) => match discover(&server, config, &destination).await {
+        let outcome = match &config.machine {
+            // The configuration builds; the https open is what a refused setting refuses (decision D6).
+            MachineSetting::Refused(text) => serde_json::json!({ "open_refused": text.as_ref() }),
+            _ => match discover(&server, config.clone(), &destination).await {
                 Ok(()) => serde_json::json!({ "result": "ok" }),
                 Err(failure) => {
                     let code = format!("{:?}", failure.code);
@@ -60,6 +62,7 @@ fn report_the_tunnel_through_the_real_machine_proxy() {
                         windows: true,
                         host: None,
                         redirect: None,
+                        machine: config.machine.clone(),
                     }
                     .reason();
                     serde_json::json!({ "result": "failed", "code": code, "http_status": http_status, "reason": reason })

@@ -1,4 +1,5 @@
 {
+  "done": true,
   "entries": [
     {"path": "src/git/endpoint/agent_socket.rs", "kind": "gate", "gate": "unix", "target": "arm: mod unix", "state": "platform", "owner": ["3.3", "3.6"], "appendix": "G3", "reason": "AF_UNIX connect and poll on the Unix agent socket; the Windows channels are agent_pipe.rs (3.3) and agent_pageant.rs (3.6), siblings of this file"},
     {"path": "src/git/endpoint/agent_socket.rs", "kind": "os", "gate": "libc::EALREADY", "target": "", "state": "platform", "owner": ["3.3", "3.6"], "appendix": "G3", "reason": "AF_UNIX connect and poll on the Unix agent socket; the Windows channels are agent_pipe.rs (3.3) and agent_pageant.rs (3.6), siblings of this file"},

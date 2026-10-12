@@ -172,6 +172,26 @@ class Ratchet(unittest.TestCase):
             tree.save([dict(listed, proof='2026-10-09-crt-heap-proof')])
             self.assertEqual(tree.errors(), [])
 
+    def test_a_proven_windows_side_use_can_be_closed_as_paired(self):
+        # The call is in the Windows arm itself, so the Windows arm is there by construction; the proof is what closes it.
+        source = ('cfg_if::cfg_if! { if #[cfg(unix)] { fn f() { libc::malloc(8); } } else if #[cfg(windows)] '
+                  '{ fn f() { libc::malloc(8); } } }\n')
+        unix = entry('libc::malloc', '', kind='os', state='paired', owner=['3.4'])
+        windows = entry('libc::malloc', '', kind='os', side='windows', state='paired', owner=['3.4'])
+        arms = [entry('unix', 'arm: fn f', state='paired', owner=['3.4'])]
+        with Tree(source, arms + [unix, windows]) as tree:
+            self.assertEqual([error.split()[0] for error in tree.errors()], ['PROOF'])
+            tree.save(arms + [unix, dict(windows, proof='2026-10-12-crt-proof')], done=['0.1', '3.4'])
+            self.assertEqual(tree.errors(), [])
+
+    def test_a_windows_side_use_that_is_still_unported_blocks_its_done_step(self):
+        source = 'cfg_if::cfg_if! { if #[cfg(windows)] { fn f() { libc::malloc(8); } } }\n'
+        listed = entry('libc::malloc', '', kind='os', side='windows', owner=['3.4'], proof='2026-10-12-crt-proof')
+        with Tree(source, [listed], done=['0.1', '3.4']) as tree:
+            self.assertEqual([error.split()[0] for error in tree.errors()], ['DONE'])
+            tree.save([dict(listed, state='paired')], done=['0.1', '3.4'])
+            self.assertEqual(tree.errors(), [])
+
     def test_a_windows_use_with_no_entry_fails_as_new(self):
         with Tree('#[cfg(windows)]\nfn f() { unsafe { libc::malloc(8) }; }\n') as tree:
             self.assertEqual([error.split()[0] for error in tree.errors()], ['NEW'])

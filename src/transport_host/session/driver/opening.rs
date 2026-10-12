@@ -33,11 +33,13 @@ impl Session {
             });
         let shown = (destination.key.host.clone(), destination.key.port);
         // The agent this runtime's endpoint uses, which words a failure of the agent step.
-        let agent = self
+        let handoff = self
             .state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .handoff
+            .clone();
+        let agent = handoff
             .as_ref()
             .map(|handoff| handoff.agent().clone())
             .unwrap_or_default();
@@ -83,6 +85,10 @@ impl Session {
         )
         .map_err(|failure| {
             let attempts = setup_retry::reported_attempt(&failure);
+            // What the endpoint in this process found when it refused the host key, if it did (decision D12).
+            let trust = handoff
+                .as_ref()
+                .and_then(|handoff| handoff.trust_found(&shown.0, shown.1));
             open_failure_io(
                 failure,
                 attempts,
@@ -91,6 +97,7 @@ impl Session {
                 shown.1,
                 known_hosts,
                 &agent,
+                trust,
             )
         })
     }

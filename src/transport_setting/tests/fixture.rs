@@ -41,13 +41,12 @@ pub(super) fn write(path: &Path, contents: impl AsRef<[u8]>) {
     fs::write(path, contents).unwrap();
 }
 
-// The helpers of the rows that are Unix's: a FIFO is a file in a directory only there (a Windows named pipe lives in its
-// own namespace), the printed commands of design section 10 are POSIX shell, and libgit2's home is walked to from the
-// root by components that Windows' drives do not share.
+// The helpers of the rows that are Unix's by nature (operator decision D9, 2026-10-12): a FIFO is a file in a directory
+// only there (a Windows named pipe lives in its own namespace), and libgit2's home is walked to from the root by
+// components that Windows' drives do not share.
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
         use std::os::unix::ffi::{OsStrExt, OsStringExt};
-        use std::process::{Command, Output};
         use std::sync::mpsc::{self, RecvTimeoutError};
         use std::time::Duration;
 
@@ -76,34 +75,6 @@ cfg_if::cfg_if! {
             }
         }
 
-        /// Runs `command` through `sh -c` in `cwd`, with `HOME` at `home` and git's
-        /// system file off, as a user would paste it.
-        pub(super) fn sh(command: &str, cwd: &Path, home: &Path) -> Output {
-            Command::new("sh")
-                .arg("-c")
-                .arg(command)
-                .current_dir(cwd)
-                .env("HOME", home)
-                .env("GIT_CONFIG_NOSYSTEM", "1")
-                .output()
-                .unwrap()
-        }
-
-        /// Asserts that `output` succeeded and returns its standard output's lines.
-        pub(super) fn lines(output: &Output) -> Vec<String> {
-            assert!(
-                output.status.success(),
-                "{:?}: {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr)
-            );
-            String::from_utf8(output.stdout.clone())
-                .unwrap()
-                .lines()
-                .map(str::to_owned)
-                .collect()
-        }
-
         /// libgit2's process-wide home, which it fixed when it first initialised in
         /// this process and against which it resolves a `~/` include.
         pub(super) fn libgit2_home() -> PathBuf {
@@ -130,6 +101,117 @@ cfg_if::cfg_if! {
             PathBuf::from(OsString::from_vec(bytes))
         }
     }
+}
+
+// The shells the printed commands of design section 10 are pasted into (decision D11): `sh` on Unix, and cmd.exe and
+// PowerShell on Windows. The rows that run a command run it as given in each of the platform's shells.
+use std::process::{Command, Output};
+
+cfg_if::cfg_if! {
+    if #[cfg(unix)] {
+        /// A shell that a printed command is pasted into.
+        #[derive(Clone, Copy, Debug)]
+        pub(super) enum Shell {
+            Sh,
+        }
+
+        /// The shells of this platform.
+        pub(super) const SHELLS: &[Shell] = &[Shell::Sh];
+
+        impl Shell {
+            /// Runs `command` as given in `cwd`, with `HOME` at `home` and git's system file off, as a user would
+            /// paste it.
+            pub(super) fn run(self, command: &str, cwd: &Path, home: &Path) -> Output {
+                let Self::Sh = self;
+                Command::new("sh")
+                    .arg("-c")
+                    .arg(command)
+                    .current_dir(cwd)
+                    .env("HOME", home)
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .output()
+                    .unwrap()
+            }
+        }
+    } else {
+        /// A shell that a printed command is pasted into.
+        #[derive(Clone, Copy, Debug)]
+        pub(super) enum Shell {
+            Cmd,
+            PowerShell,
+        }
+
+        /// The shells of this platform.
+        pub(super) const SHELLS: &[Shell] = &[Shell::Cmd, Shell::PowerShell];
+
+        impl Shell {
+            /// Runs `command` as given in `cwd`, with `HOME` and `USERPROFILE` at `home` and git's system file off, as
+            /// a user would paste it: through `cmd /S /C` (the command's own quotes are the shell's, passed raw) or
+            /// through `powershell -EncodedCommand`.
+            pub(super) fn run(self, command: &str, cwd: &Path, home: &Path) -> Output {
+                use std::os::windows::process::CommandExt;
+                let mut shell = match self {
+                    Self::Cmd => {
+                        let mut shell = Command::new("cmd");
+                        shell.args(["/D", "/S", "/C"]).raw_arg(format!("\"{command}\""));
+                        shell
+                    }
+                    Self::PowerShell => {
+                        // The command is PowerShell text, handed over encoded so that no layer of quoting reads it.
+                        let units: Vec<u8> = command.encode_utf16().flat_map(u16::to_le_bytes).collect();
+                        let mut shell = Command::new("powershell");
+                        shell.args(["-NoProfile", "-NonInteractive", "-EncodedCommand"]);
+                        shell.arg(base64(&units));
+                        shell
+                    }
+                };
+                shell
+                    .current_dir(cwd)
+                    .env("HOME", home)
+                    .env("USERPROFILE", home)
+                    .env("GIT_CONFIG_NOSYSTEM", "1")
+                    .output()
+                    .unwrap()
+            }
+        }
+    }
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(windows)] {
+        /// `bytes` in standard base64, which PowerShell's `-EncodedCommand` takes (UTF-16LE text).
+        fn base64(bytes: &[u8]) -> String {
+            const ALPHABET: &[u8; 64] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            let mut text = String::new();
+            for chunk in bytes.chunks(3) {
+                let word = chunk.iter().enumerate().fold(0u32, |word, (index, byte)| word | u32::from(*byte) << (16 - 8 * index));
+                for index in 0..4 {
+                    if index <= chunk.len() {
+                        text.push(char::from(ALPHABET[(word >> (18 - 6 * index) & 63) as usize]));
+                    } else {
+                        text.push('=');
+                    }
+                }
+            }
+            text
+        }
+    }
+}
+
+/// Asserts that `output` succeeded and returns its standard output's lines.
+pub(super) fn lines(output: &Output) -> Vec<String> {
+    assert!(
+        output.status.success(),
+        "{:?}: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout.clone())
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect()
 }
 
 cfg_if::cfg_if! {

@@ -79,7 +79,7 @@ fn a_refused_host_key_is_an_ssh_class_failure_carrying_the_hosts_words() {
     }
     impl std::error::Error for Worded {
         fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-            Some(&crate::git::endpoint::ssh_host_key::HostKeyRefused)
+            Some(&crate::git::endpoint::ssh_host_key::HostKeyRefused::NotListed)
         }
     }
     struct Refuse;

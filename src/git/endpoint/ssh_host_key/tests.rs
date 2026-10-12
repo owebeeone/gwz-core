@@ -16,7 +16,7 @@ const PATH: &str = "C:\\Users\\Ana Lee\\.ssh\\known_hosts";
 
 #[test]
 fn a_refused_host_key_is_a_permission_error_that_a_setup_never_retries() {
-    let error = HostKeyRefused.into_error();
+    let error = HostKeyRefused::NotListed.into_error();
     assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
     assert!(HostKeyRefused::of_error(&error));
     // A plain permission error is not it.
@@ -103,4 +103,109 @@ fn without_a_file_the_words_still_name_the_cause_and_the_check() {
     );
     assert!(words.contains("fingerprint"), "{words}");
     assert!(!words.contains("home came from"), "{words}");
+}
+
+#[test]
+fn the_error_carries_what_the_trust_check_found() {
+    for found in [
+        HostKeyRefused::NotListed,
+        HostKeyRefused::Changed { line: None },
+        HostKeyRefused::Changed { line: Some(7) },
+    ] {
+        let error = found.into_error();
+        assert_eq!(HostKeyRefused::found_in(&error), Some(found));
+        // Whatever it found, the wire says only `Trust`.
+        assert_eq!(failure_from_io(&error).code, ErrorCode::Trust);
+    }
+    assert_eq!(
+        HostKeyRefused::found_in(&io::Error::from(io::ErrorKind::PermissionDenied)),
+        None
+    );
+}
+
+#[test]
+fn a_host_that_is_not_listed_keeps_the_guidance_and_does_not_claim_a_changed_key() {
+    for windows in [false, true] {
+        let words = HostKeyRefused::NotListed.words(
+            "git.example.com",
+            2222,
+            Some(&file(HomeSource::UserProfile)),
+            windows,
+        );
+        for needle in [
+            "git.example.com",
+            PATH,
+            "home came from USERPROFILE",
+            "does not list it",
+            "ssh-keyscan",
+            "-p 2222 git.example.com",
+            "ssh-keygen -lf \"C:\\Users\\Ana Lee\\.ssh\\known_hosts\"",
+            "fingerprint",
+        ] {
+            assert!(words.contains(needle), "{needle}: {words}");
+        }
+        for claim in [
+            "different key",
+            "differs",
+            "attack",
+            "re-keyed",
+            "ssh-keygen -R",
+        ] {
+            assert!(!words.contains(claim), "{claim}: {words}");
+        }
+        assert_eq!(words.contains("In PowerShell"), windows, "{words}");
+    }
+    // With no file known, the words still say what to do.
+    let bare = HostKeyRefused::NotListed.words("h.example", 22, None, false);
+    assert!(
+        bare.contains("does not list it") && bare.contains("ssh-keyscan"),
+        "{bare}"
+    );
+}
+
+#[test]
+fn a_changed_key_says_it_differs_from_the_recorded_one_and_what_to_do_before_removing_anything() {
+    for windows in [false, true] {
+        let words = HostKeyRefused::Changed { line: Some(12) }.words(
+            "git.example.com",
+            22,
+            Some(&file(HomeSource::Home)),
+            windows,
+        );
+        for needle in [
+            "git.example.com",
+            "differs from the one recorded in",
+            PATH,
+            "line 12",
+            "home came from HOME",
+            "may be an attack",
+            "re-keyed",
+            "fingerprint",
+            "out of band",
+            "only after you have verified",
+        ] {
+            assert!(words.contains(needle), "{needle}: {words}");
+        }
+        // No automatic fix, whichever shell: nothing that adds a key, and nothing that removes an entry.
+        for fix in ["ssh-keyscan", "ssh-keygen -R", "Add-Content", ">>"] {
+            assert!(!words.contains(fix), "{fix}: {words}");
+        }
+        assert!(!words.contains("does not list"), "{words}");
+    }
+    // The line is named only when it is known, and the file only when it is.
+    let no_line = HostKeyRefused::Changed { line: None }.words(
+        "h.example",
+        22,
+        Some(&file(HomeSource::Home)),
+        false,
+    );
+    assert!(
+        no_line.contains("differs from the one recorded in") && !no_line.contains(" at line"),
+        "{no_line}"
+    );
+    let no_file = HostKeyRefused::Changed { line: None }.words("h.example", 22, None, false);
+    assert!(
+        no_file.contains("differs from the one recorded in your known_hosts file"),
+        "{no_file}"
+    );
 }

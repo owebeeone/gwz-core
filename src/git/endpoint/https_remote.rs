@@ -97,6 +97,7 @@ impl<S: HalfClose> RpcIo<S> {
             windows: false,
             host: None,
             redirect: None,
+            machine: Default::default(),
         };
         // A body stall says what ran out and which flag sets it (T7); the
         // generic failure line would say less. A helper's timeout keeps its

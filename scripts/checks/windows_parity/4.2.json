@@ -1,4 +1,5 @@
 {
+  "done": true,
   "entries": [
     {"path": "src/git/endpoint/https_auth/helper_fixture.rs", "kind": "gate", "gate": "unix", "target": "arm: use crate::git::endpoint::helper_script::write_helper_script", "state": "paired", "owner": ["4.2"], "appendix": "new: step 4.2's fake helpers, one script dialect per platform; the Unix arm sits beside the Windows arm"},
     {"path": "src/git/endpoint/https_auth/process_tree.rs", "kind": "gate", "gate": "unix", "target": "arm: use std::io", "state": "paired", "owner": ["4.2"], "appendix": "new: step 4.2's process tree owner (replaces G8, G9, G11); the process group arm sits beside the Job Object arm"},
