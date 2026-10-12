@@ -11,7 +11,11 @@ impl AgentSource {
         match self {
             Self::None | Self::Path(_) => None,
             Self::Refused(refusal) => Some(refusal.to_string()),
-            Self::Pageant { sock_ignored } => Some(pageant_selected(*sock_ignored)),
+            // A Pageant that is gone is told apart from one that is merely selected by the same cause as the pipe's.
+            Self::Pageant { .. } if cause == Some(SetupFailureCause::NotFound) => {
+                Some(super::pageant_words::GONE_WORDS.to_owned())
+            }
+            Self::Pageant { sock_ignored, .. } => Some(pageant_selected(*sock_ignored)),
             Self::NamedPipe(pipe) => Some(match cause {
                 // The pipe is not there. The default pipe is the OpenSSH Authentication Agent service's, which is
                 // disabled on many machines (U19); a pipe the variable names is told by its name.

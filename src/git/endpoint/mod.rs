@@ -90,6 +90,11 @@ pub(crate) mod ssh_host_key;
 // Step 3.5: Pageant's exchange primitive. Its pure rules compile everywhere; the OS calls are Windows'.
 pub(crate) mod pageant_exchange;
 
+// Step 3.6: Pageant as the session's agent source. The channel and its identity rules compile everywhere (the tests of
+// every platform run them); the window probe and the process pin are Windows'.
+#[allow(dead_code)]
+pub(crate) mod agent_pageant;
+
 // Step 1.5: option A's sshd close fixture (ungated; it has a Windows form of its forced script).
 cfg_if::cfg_if! {
     if #[cfg(test)] {

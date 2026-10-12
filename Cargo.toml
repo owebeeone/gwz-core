@@ -112,7 +112,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globali
 [target.'cfg(windows)'.dev-dependencies]
 # src/git/regular_file.rs creates a named pipe in a test, to show that a pipe handle is not a regular file. (The
 # candidate manifest names these features itself; see tests/transport_backend/prepare.py.)
-windows-sys = { version = "0.61", features = ["Win32_Security", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials", "Win32_System_Pipes"] }
+windows-sys = { version = "0.61", features = ["Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials", "Win32_System_Pipes"] }
 
 [dev-dependencies]
 libgit2-sys = { package = "gwz-libgit2-sys", path = "../git2-rs/libgit2-sys", version = "=0.18.8" }

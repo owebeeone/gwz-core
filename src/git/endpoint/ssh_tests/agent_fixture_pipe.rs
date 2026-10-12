@@ -189,6 +189,17 @@ impl PipeAgent {
         self.shared.requests.lock().unwrap().clone()
     }
 
+    /// The agent's answers as a function of the request, for a test that serves its keys through another channel than
+    /// the pipe (a synthetic Pageant window, step 3.6): the whole answer message to a request, recorded as one the
+    /// agent served; the agent's failure message to a request it does not understand or would stall on.
+    pub(crate) fn responder(&self) -> impl Fn(&[u8]) -> Vec<u8> + Send + Sync + 'static {
+        let shared = self.shared.clone();
+        move |body| match answer(body, &shared) {
+            Some(Reply::Whole(reply) | Reply::Chunked(reply)) => reply,
+            _ => vec![5],
+        }
+    }
+
     /// Arranges for the next sign request (or, for [`Fault::Chunked`], the next request) to meet `fault`.
     pub(crate) fn script(&self, fault: Fault) {
         *self.shared.fault.lock().unwrap() = Some(fault);

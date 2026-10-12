@@ -22,7 +22,9 @@ import shutil
 #     and Win32_UI_WindowsAndMessaging, and step 3.3's agent pipe (`agent_pipe.rs`) needs Win32_System_IO
 #     (overlapped I/O: `CancelIoEx`, `GetOverlappedResult`) beside the Pipes, Threading and FileSystem ones above.
 #     The candidate-to-production switch must carry every one of them into Cargo.toml's `windows-sys` list.
-#   test only: Win32_System_Diagnostics_ToolHelp and Win32_System_Ioctl, for the Job Object,
+#   test only: Win32_Graphics_Gdi, for `RegisterClassW` (step 3.6's synthetic Pageant makes a window of the class
+#     `Pageant`, as the real one does, so that the probe's `FindWindowW` finds it); Win32_System_Diagnostics_ToolHelp
+#     and Win32_System_Ioctl, for the Job Object,
 #     thread suspension and process lists of the SSH test servers and their native helper (`fixture_job.rs`), a
 #     named pipe in the regular-file test, pipe reads and writes in the agent fixture, and the directory junction of
 #     the URL tests; Win32_Security_Authentication_Identity and Win32_Security_Credentials, for the SSPI acceptor of
@@ -30,6 +32,7 @@ import shutil
 #     dev-dependencies, because `cargo check --lib --profile test`, which scripts/windows_lane_check.py runs, does
 #     not enable dev-dependency features.
 CANDIDATE_WINDOWS_FEATURES = (
+    "Win32_Graphics_Gdi",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinHttp",

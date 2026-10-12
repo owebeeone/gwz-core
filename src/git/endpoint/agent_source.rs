@@ -12,12 +12,14 @@
 use super::{
     agent_client::{Agent, Channel},
     agent_job::Control,
+    agent_pageant::PageantPin,
 };
 use std::{ffi::OsStr, io, path::PathBuf, sync::Arc};
 
 // Unix builds none of the Windows forms, and Windows none of the Unix one; both are tested everywhere.
 #[allow(dead_code)]
 mod fault;
+mod pageant_words;
 #[allow(dead_code)]
 mod pipe_name;
 #[allow(dead_code)]
@@ -42,9 +44,10 @@ pub(crate) enum AgentSource {
     Path(PathBuf),
     /// A pipe on this computer (Windows): the one `SSH_AUTH_SOCK` names, or the OpenSSH agent's default.
     NamedPipe(PipeName),
-    /// The Pageant window found when the runtime was built (Windows). `sock_ignored` is true when `SSH_AUTH_SOCK`
-    /// was set and so was not consulted.
-    Pageant { sock_ignored: bool },
+    /// The Pageant window found when the runtime was built (Windows), with the process that owned it: a request goes
+    /// to that window only while that process still owns it, and a Pageant that is gone or replaced is a refusal, never
+    /// another agent. `sock_ignored` is true when `SSH_AUTH_SOCK` was set and so was not consulted.
+    Pageant { sock_ignored: bool, pin: PageantPin },
     /// `SSH_AUTH_SOCK` holds something Windows will not connect to. The runtime is built; a setup that needs an
     /// agent is refused with the text that names the variable.
     Refused(AgentRefusal),
@@ -69,7 +72,7 @@ impl AgentSource {
             Self::None => Err(io::ErrorKind::NotFound.into()),
             Self::Path(path) => open_path(path, control),
             Self::NamedPipe(name) => open_pipe(name, control),
-            Self::Pageant { .. } => Err(AgentFault::NoChannel.into_error()),
+            Self::Pageant { pin, .. } => open_pageant(pin, control),
             Self::Refused(_) => Err(AgentFault::Refused.into_error()),
         }
     }
@@ -97,11 +100,16 @@ cfg_if::cfg_if! {
         fn open_pipe(_name: &PipeName, _control: Arc<Control>) -> io::Result<Agent<Box<dyn Channel>>> {
             Err(AgentFault::NoChannel.into_error())
         }
+
+        /// Unix has no Pageant: the source is never chosen there.
+        fn open_pageant(_pin: &PageantPin, _control: Arc<Control>) -> io::Result<Agent<Box<dyn Channel>>> {
+            Err(AgentFault::NoChannel.into_error())
+        }
     } else {
-        /// Windows chooses between Pageant and the pipes (TR1.8 §4). Step 3.6 supplies the probe that looks for a
-        /// Pageant window (`FindWindowW`); until then none is found.
+        /// Windows chooses between Pageant and the pipes (TR1.8 §4); the probe looks for Pageant's window as Pageant's
+        /// own protocol does (`FindWindowW`), once.
         fn capture_platform(sock: Option<&OsStr>) -> AgentSource {
-            select(sock, || false)
+            select(sock, super::agent_pageant::find)
         }
 
         /// Windows takes no socket path: its agents are a pipe and Pageant (steps 3.3 and 3.6).
@@ -114,7 +122,19 @@ cfg_if::cfg_if! {
             let pipe = super::agent_pipe::connect(name, &control)?;
             Ok(Agent::new(pipe, control).boxed())
         }
+
+        /// The agent in the Pageant window `pin` names. A Pageant that is already gone, or whose window another
+        /// program now owns, is the agent not running (words from the source and the cause), and no other agent is
+        /// tried in its place.
+        fn open_pageant(pin: &PageantPin, control: Arc<Control>) -> io::Result<Agent<Box<dyn Channel>>> {
+            use super::agent_pageant::{PageantChannel, PageantWindow};
+            let window = super::agent_pageant::open(pin)?;
+            if !window.owner_pinned() {
+                return Err(AgentFault::NotRunning.into_error());
+            }
+            Ok(Agent::new(PageantChannel::new(Arc::new(window)), control).boxed())
+        }
     }
 }
 
-cfg_if::cfg_if! { if #[cfg(test)] { mod select_tests; mod tests; mod words_tests; } }
+cfg_if::cfg_if! { if #[cfg(test)] { mod pageant_words_tests; mod select_tests; mod tests; mod words_tests; } }

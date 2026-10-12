@@ -340,12 +340,16 @@ fn a_refused_source_and_a_pageant_source_never_reach_a_working_pipe() {
     let fixture = Fixture::new();
     let refused = match crate::git::endpoint::agent_source::select(
         Some(OsStr::new(r"\\localhost\pipe\x")),
-        || false,
+        || None,
     ) {
         AgentSource::Refused(refusal) => AgentSource::Refused(refusal),
         other => panic!("{other:?}"),
     };
-    for source in [refused, AgentSource::Pageant { sock_ignored: true }] {
+    let pageant = AgentSource::Pageant {
+        sock_ignored: true,
+        pin: crate::git::endpoint::agent_pageant::PageantPin::numbered(1, 1),
+    };
+    for source in [refused, pageant] {
         let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| {
             source.open(control).map(|_| ())
         })

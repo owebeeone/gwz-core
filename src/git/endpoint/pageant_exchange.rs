@@ -48,6 +48,9 @@ pub(crate) enum PageantError {
     SameQueue,
     /// The window is gone. Nothing was sent.
     NoWindow,
+    /// The window no longer belongs to the Pageant process the runtime found: it was replaced, or the process ended.
+    /// Either nothing was sent, or what came back was dropped unread (step 3.6's identity pin).
+    Replaced,
     /// A mapping of that name exists already. It was neither written nor read.
     NameInUse,
     /// The mapping, its security descriptor or the caller's identity could not be made; the Windows error.
@@ -69,6 +72,7 @@ impl std::fmt::Display for PageantError {
             Self::BadName => f.write_str("Pageant mapping name is not valid"),
             Self::SameQueue => f.write_str("Pageant window belongs to the calling thread"),
             Self::NoWindow => f.write_str("Pageant window is gone"),
+            Self::Replaced => f.write_str("Pageant window is no longer the Pageant GWZ found"),
             Self::NameInUse => f.write_str("Pageant mapping name is already in use"),
             Self::Os(code) => write!(f, "Pageant mapping failed (Windows error {code})"),
             Self::Timeout => f.write_str("Pageant did not answer in time"),
@@ -89,7 +93,9 @@ impl From<PageantError> for io::Error {
             PageantError::BadRequest | PageantError::BadName | PageantError::SameQueue => {
                 io::ErrorKind::InvalidInput
             }
-            PageantError::NoWindow | PageantError::Rejected => io::ErrorKind::ConnectionAborted,
+            PageantError::NoWindow | PageantError::Replaced | PageantError::Rejected => {
+                io::ErrorKind::ConnectionAborted
+            }
             PageantError::NameInUse => io::ErrorKind::AlreadyExists,
             PageantError::BadReplyLength(_) | PageantError::BadReplyType(_) => {
                 io::ErrorKind::InvalidData
@@ -175,4 +181,4 @@ fn timeout_ms(bound: Duration) -> u32 {
 }
 
 cfg_if::cfg_if! { if #[cfg(test)] { mod tests; } }
-cfg_if::cfg_if! { if #[cfg(all(test, windows))] { mod pageant_083; mod receiver; mod windows_tests; } }
+cfg_if::cfg_if! { if #[cfg(all(test, windows))] { mod pageant_083; pub(crate) mod receiver; mod windows_tests; } }

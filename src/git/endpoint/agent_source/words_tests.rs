@@ -1,13 +1,21 @@
 //! What the user is told when the agent step cannot start (plan steps 3.2b and 3.3; the design's section 14, item 13).
 use super::{AgentFault, AgentSource, PipeName};
+use crate::git::endpoint::agent_pageant::PageantPin;
 use gwz_transport::protocol::SetupFailureCause;
 use std::{ffi::OsStr, path::PathBuf};
 
+fn pin() -> PageantPin {
+    PageantPin::numbered(1, 1)
+}
+
 #[test]
 fn the_pageant_message_names_pageant_and_says_the_variable_was_not_consulted() {
-    let said = AgentSource::Pageant { sock_ignored: true }
-        .unavailable_reason(None)
-        .expect("a Pageant that cannot be used is worded");
+    let said = AgentSource::Pageant {
+        sock_ignored: true,
+        pin: pin(),
+    }
+    .unavailable_reason(None)
+    .expect("a Pageant that cannot be used is worded");
     assert!(
         said.contains("Pageant is the SSH agent GWZ selected"),
         "{said}"
@@ -23,6 +31,7 @@ fn the_pageant_message_names_pageant_and_says_the_variable_was_not_consulted() {
 fn the_pageant_message_leaves_the_variable_out_when_none_was_set() {
     let said = AgentSource::Pageant {
         sock_ignored: false,
+        pin: pin(),
     }
     .unavailable_reason(None)
     .unwrap();
@@ -39,7 +48,7 @@ fn the_pageant_message_leaves_the_variable_out_when_none_was_set() {
 
 #[test]
 fn a_refused_variable_is_worded_by_its_refusal_whatever_the_cause() {
-    let AgentSource::Refused(refusal) = super::select(Some(OsStr::new("/tmp/agent")), || false)
+    let AgentSource::Refused(refusal) = super::select(Some(OsStr::new("/tmp/agent")), || None)
     else {
         panic!("refused");
     };

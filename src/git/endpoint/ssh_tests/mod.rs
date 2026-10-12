@@ -54,6 +54,8 @@ cfg_if::cfg_if! {
 mod key_material;
 mod key_types;
 mod local_endpoint;
+// Step 3.6: Pageant as the endpoint's agent, over a synthetic Pageant and over PuTTY's own (Windows only: so is Pageant).
+cfg_if::cfg_if! { if #[cfg(windows)] { mod pageant_endpoint; mod real_pageant; } }
 mod max_startups;
 mod network;
 mod network_agent;

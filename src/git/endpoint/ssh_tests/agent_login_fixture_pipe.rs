@@ -11,6 +11,7 @@ use super::agent_fixture_pipe::{
 use crate::git::endpoint::{
     agent_client::Agent,
     agent_job::Control,
+    agent_source::{AgentSource, PipeName},
     fixture_host,
     ssh_fixture::{self as common, SshConnection, SshdFixture},
 };
@@ -23,6 +24,11 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+/// The key type and sign algorithm the endpoint rows use by default. libssh2 on Windows reads only RSA PEM key files
+/// (step 3.8), and the rows that pass the fixture's key as a selected key need one, so the agent holds RSA keys and
+/// signs at SHA-512, the one flag libssh2 on Windows offers.
+pub const METHOD: &str = "rsa-sha2-512";
 
 pub struct Fixture {
     pub ssh: SshdFixture,
@@ -71,6 +77,27 @@ impl Fixture {
             agent,
             monitor: Mutex::new(None),
         }
+    }
+
+    /// The agent source a runtime would choose for this agent: the pipe it serves on.
+    pub fn source(&self) -> AgentSource {
+        AgentSource::NamedPipe(
+            PipeName::parse(std::ffi::OsStr::new(&self.path))
+                .expect("the fixture's pipe name is a local pipe"),
+        )
+    }
+
+    /// The agent's answers as a function of the request, for a Pageant that holds these keys (plan step 3.6).
+    pub fn responder(&self) -> impl Fn(&[u8]) -> Vec<u8> + Send + Sync + 'static {
+        self.agent.responder()
+    }
+
+    /// Whether the agent has been asked to sign.
+    pub fn signed(&self) -> bool {
+        self.agent
+            .requests()
+            .iter()
+            .any(|request| matches!(request, Request::Sign { .. }))
     }
 
     /// A handshaken connection to the server and the host key it presented, trusted through the fixture's
