@@ -54,7 +54,7 @@ pub mod model;
 pub mod operation;
 pub mod protocol;
 cfg_if::cfg_if! {
-    if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
+    if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
         pub mod transport_host;
     }
 }
@@ -75,10 +75,10 @@ pub mod transport_scope;
 // dev-docs/GwzTransportOffSwitchDesign.md §7 (TR1.5, TR2.5): the transport
 // setting, gwz or native, which the same two drivers resolve beside the
 // transport scope, and the repository values it ignores. Candidate code under
-// rule (a), on Linux and macOS until 1.1.0 S4.5 opens the transport's Windows
-// sites.
+// rule (a), on Linux, macOS and Windows (1.1.0 S4.5 opened the transport's
+// Windows sites).
 cfg_if::cfg_if! {
-    if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
+    if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
         pub mod transport_setting;
     }
 }
@@ -126,8 +126,3 @@ mod tests {
         assert_eq!(version(), env!("CARGO_PKG_VERSION"));
     }
 }
-
-// Qualification artifacts must never silently select another platform/route.
-cfg_if::cfg_if! { if #[cfg(all(gwz_windows_https_qualification, not(all(windows, gwz_transport_candidate))))] {
-    compile_error!("gwz_windows_https_qualification requires Windows and gwz_transport_candidate");
-} }

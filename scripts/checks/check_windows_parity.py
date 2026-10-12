@@ -37,8 +37,7 @@ check_cfg_boundaries.py's lexer). Three kinds of occurrence are found:
 - `split`: a runtime platform split that one build carries both sides of: `cfg!(..)` or `cfg_attr(.., ..)` whose
   predicate names `unix`, `windows`, `target_os`, `target_family` or `target_vendor`, keyed by its predicate text
   (and, for `cfg_attr`, the item it sits on). It always has a Windows arm beside it, so `paired` is the natural state;
-  `unported` records a split whose Windows side is a stub or a skip, and counts in the ratchet. A predicate that names
-  `gwz_windows_https_qualification` is left out: those sites are counted by check_candidate_switches.py and step 5.1.
+  `unported` records a split whose Windows side is a stub or a skip, and counts in the ratchet.
 
 The check fails on: NEW (an occurrence with no entry), COUNT (more occurrences
 than the entry lists), STALE (an entry with no occurrence), PAIRED (a `paired`
@@ -97,11 +96,9 @@ STATES = ('unported', 'paired', 'platform')
 # kinds both sides scan, so a kind added later never reads as a rise against a base that could not see it.
 SCANS = ('gate', 'os', 'split')
 LEGACY_SCANS = ('gate', 'os')
-# A runtime split `cfg!(..)` or `cfg_attr(..)` is seen when its predicate names the platform. The Windows
-# qualification switch is counted elsewhere (check_candidate_switches.py, plan step 5.1) and is left out here.
+# A runtime split `cfg!(..)` or `cfg_attr(..)` is seen when its predicate names the platform.
 PLATFORM_ATOMS = {'unix', 'windows', 'target_os', 'target_family', 'target_vendor'}
 OS_MODULES = ('unix', 'fd', 'linux', 'macos')
-QUALIFICATION_SWITCH = 'gwz_windows_https_qualification'
 NAMED_ITEMS = {'fn', 'mod', 'struct', 'enum', 'trait', 'type', 'const', 'static', 'union'}
 Occurrence = namedtuple('Occurrence', 'path kind gate target side line windows_arm')
 Region = namedtuple('Region', 'lo hi on_windows on_unix paired')  # token range [lo, hi); the values are True, False or None
@@ -162,12 +159,6 @@ def names_platform(tree) -> bool:
     return tree[1] in PLATFORM_ATOMS
 
 
-def mentions(tree, name: str) -> bool:
-    if tree[0] == 'call':
-        return any(mentions(child, name) for child in tree[2])
-    return tree[1] == name
-
-
 def both(tree):
     return evaluate(tree, WINDOWS), evaluate(tree, UNIX)
 
@@ -220,14 +211,14 @@ class Scanner:
         self.found.append(Occurrence(self.path, 'split', gate, target, '', line, True))
 
     def cfg_macro(self, i):
-        """`cfg!(pred)` with a platform predicate (not the qualification switch) is a runtime split."""
+        """`cfg!(pred)` with a platform predicate is a runtime split."""
         tree, text = self.predicate_at(i + 2)
-        if tree is not None and names_platform(tree) and not mentions(tree, QUALIFICATION_SWITCH):
+        if tree is not None and names_platform(tree):
             self.split(f'cfg!({text})', '', self.line(i))
 
     def cfg_attr_split(self, i, open_paren, target):
         tree, text = self.first_predicate_at(open_paren)
-        if tree is not None and names_platform(tree) and not mentions(tree, QUALIFICATION_SWITCH):
+        if tree is not None and names_platform(tree):
             self.split(f'cfg_attr({text})', target, self.line(i))
 
     def label(self, i):

@@ -25,6 +25,10 @@ reports a receiver-only member only when it is selected, and
 
 ## Windows HTTPS qualification boundary (accepted contract, 2026-10-04)
 
+> **Retired (Windows parity plan step 5.1, 2026-10-13).** The qualification switch named below no longer
+> exists in gwz-core: every site is the plain unix or windows arm under `gwz_transport_candidate`, and Windows admits
+> SSH and HTTPS as the other platforms do. The paragraph is kept as the record of the WH1 boundary.
+
 [WH1 design](../../dev-docs/GwzWindowsHttpsIntegrationDesign-DRAFT.md) and its
 [acceptance](../../dev-docs/GwzWindowsHttpsIntegrationAcceptance.md) permit the
 existing endpoint and original CLI/Python caller route only under

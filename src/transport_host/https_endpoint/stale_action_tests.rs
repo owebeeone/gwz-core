@@ -1,7 +1,7 @@
 //! State-2 P2-4: on an endpoint Session without an SSH engine, a stale admitted
 //! action for a retired HTTPS stream is no work, as the SSH engine makes it,
 //! never a reason to close the Session. Each case runs an HTTPS-only endpoint
-//! Session (`ssh: None`, the Windows qualification route) through its own pump
+//! Session (`ssh: None`, an HTTPS-only runtime) through its own pump
 //! and mux. The test plays the driver with an initiator mux bound with small
 //! queues, so it can fill the endpoint's outbound queue, and it reads every
 //! message the endpoint sends.

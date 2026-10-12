@@ -25,7 +25,7 @@ HOSTED_FAIL = (HOSTED_PASS.replace('failed=0', 'failed=2')
 class FakeRun:
     """Stands in for subprocess.run: records every call and answers by the command's first words."""
 
-    def __init__(self, claim_exit=0, shape_exits=(0, 0, 0), warnings=7, blocked_first=False, hosted_exit=0,
+    def __init__(self, claim_exit=0, shape_exits=(0, 0), warnings=7, blocked_first=False, hosted_exit=0,
                  hosted_output=None):
         self.calls, self.claim_exit, self.shape_exits, self.warnings = [], claim_exit, list(shape_exits), warnings
         self.blocked_first = blocked_first
@@ -119,11 +119,14 @@ class Arguments(unittest.TestCase):
         self.assertEqual(gate.SSH, ['ssh', '-o', 'ClearAllForwardings=yes', '-o', 'ForwardAgent=no', '-o', 'ForwardX11=no',
                                     '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', 'gianni@dabeest'])
 
-    def test_the_three_shapes_are_the_ci_jobs(self):
-        self.assertEqual([n for n, _ in gate.SHAPES], ['ordinary', 'transport', 'qualification'])
+    def test_the_two_shapes_are_the_ci_jobs(self):
+        # Step 5.1 retired the qualification shape: the candidate on Windows is the transport switch alone.
+        self.assertEqual([n for n, _ in gate.SHAPES], ['ordinary', 'transport'])
         workflow = (gate.CORE / '.github' / 'workflows' / 'transport-candidate.yml').read_text(encoding='utf-8')
         for _, flags in gate.SHAPES[1:]:
             self.assertIn(f'RUSTFLAGS: {flags}', workflow)
+        self.assertEqual(gate.CANDIDATE, '--cfg gwz_transport_candidate')
+        self.assertFalse(hasattr(gate, 'QUALIFICATION'))
 
 
 class HostedLike(unittest.TestCase):
@@ -157,9 +160,9 @@ class HostedLike(unittest.TestCase):
         runner = FakeRun()
         code, receipt = self.go(runner, '--hosted-like')
         self.assertEqual(code, 0)
-        self.assertEqual([s['shape'] for s in receipt['shapes']], ['ordinary', 'transport', 'qualification', 'hosted-like'])
+        self.assertEqual([s['shape'] for s in receipt['shapes']], ['ordinary', 'transport', 'hosted-like'])
         entry = receipt['shapes'][-1]
-        self.assertEqual((entry['exit'], entry['rustflags']), (0, gate.QUALIFICATION))
+        self.assertEqual((entry['exit'], entry['rustflags']), (0, gate.CANDIDATE))
         self.assertEqual(entry['tests'], {'passed': 3501, 'failed': 0, 'failed_names': [], 'filter': None})
         self.assertTrue(entry['temp'].endswith('WINP0-~1') and entry['git'].startswith('git version'))
         self.assertTrue(receipt['passed'])
@@ -249,7 +252,7 @@ class HostedLike(unittest.TestCase):
         self.assertIn('GWZ_TEST_SSHD="$(cygpath -w', script)
         self.assertIn('GWZ_TEST_GIT=real', script)
         self.assertIn('GWZ_TEST_SH=', script)
-        self.assertIn(f'RUSTFLAGS="{gate.QUALIFICATION}"', script)
+        self.assertIn(f'RUSTFLAGS="{gate.CANDIDATE}"', script)
         self.assertIn('RUSTUP_TOOLCHAIN=1.95.0', script)
         self.assertIn(f'CARGO_TARGET_DIR={d}/target-validator', script)
         self.assertIn(f'{gate.HOSTED_SUITE} --manifest-path={d}/candidate/Cargo.toml --target-dir={d}/target-test', script)
@@ -277,7 +280,7 @@ class HostedLike(unittest.TestCase):
         self.assertIn(f'OPENSSH_RELEASE: {gate.OPENSSH_RELEASE}', workflow)
         self.assertIn(f'OPENSSH_SHA256: {gate.OPENSSH_SHA256}', workflow)
         suites = workflow.split('Run the candidate build\'s library suites', 1)[1]
-        self.assertIn(f'RUSTFLAGS: {gate.QUALIFICATION}', suites)
+        self.assertIn(f'RUSTFLAGS: {gate.CANDIDATE}', suites)
         # the job's command, but for the checkouts the host does not have (gwz-py) and its own paths
         self.assertIn(gate.HOSTED_SUITE.replace(' --skip-cfg-sibling gwz-py', ''), suites)
 
@@ -343,7 +346,7 @@ class Run(unittest.TestCase):
         code, receipt = self.go(runner)
         self.assertEqual(code, 0)
         self.assertEqual([(s['shape'], s['exit'], s['warnings']) for s in receipt['shapes']],
-                         [('ordinary', 0, 7), ('transport', 0, 7), ('qualification', 0, 7)])
+                         [('ordinary', 0, 7), ('transport', 0, 7)])
         self.assertTrue(receipt['passed'] and receipt['total_seconds'] > 0 and receipt['stage_seconds'] > 0)
         self.assertEqual((receipt['label'], receipt['source'], receipt['toolchain']),
                          ('winp0-20261009-a', 'ref HEAD', 'rustc 1.95.0 (abc 2026-01-01)'))
@@ -352,17 +355,17 @@ class Run(unittest.TestCase):
     def test_a_build_script_blocked_by_the_host_is_run_once_more_and_both_attempts_are_recorded(self):
         code, receipt = self.go(FakeRun(blocked_first=True))
         self.assertEqual(code, 0)
-        self.assertEqual([[a['exit'] for a in s['attempts']] for s in receipt['shapes']], [[101, 0], [0], [0]])
+        self.assertEqual([[a['exit'] for a in s['attempts']] for s in receipt['shapes']], [[101, 0], [0]])
 
     def test_a_genuine_failure_is_not_retried(self):
-        runner = FakeRun(shape_exits=(101, 0, 0))
+        runner = FakeRun(shape_exits=(101, 0))
         code, receipt = self.go(runner)
-        self.assertEqual((code, [len(s['attempts']) for s in receipt['shapes']]), (1, [1, 1, 1]))
+        self.assertEqual((code, [len(s['attempts']) for s in receipt['shapes']]), (1, [1, 1]))
 
     def test_a_failing_shape_fails_the_run_and_the_receipt(self):
-        code, receipt = self.go(FakeRun(shape_exits=(0, 101, 0)))
+        code, receipt = self.go(FakeRun(shape_exits=(0, 101)))
         self.assertEqual((code, receipt['passed']), (1, False))
-        self.assertEqual([s['exit'] for s in receipt['shapes']], [0, 101, 0])
+        self.assertEqual([s['exit'] for s in receipt['shapes']], [0, 101])
 
     def test_the_host_directory_is_claimed_first_and_a_taken_label_is_refused(self):
         runner = FakeRun(claim_exit=1)

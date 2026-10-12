@@ -376,12 +376,19 @@ class RuntimeSplits(unittest.TestCase):
         self.assertEqual(found('#![cfg_attr(not(unix), allow(dead_code))]\nfn f() {}\n'),
                          [('split', 'cfg_attr(not(unix))', 'file', '', True)])
 
-    def test_cfg_macros_without_a_platform_predicate_or_with_the_qualification_switch_are_not_splits(self):
+    def test_cfg_macros_without_a_platform_predicate_are_not_splits(self):
         for source in ('fn f() -> bool { cfg!(test) }\n', 'fn f() -> bool { cfg!(feature = "x") }\n',
                        'fn f() -> bool { cfg!(debug_assertions) }\n',
-                       'fn f() -> bool { cfg!(all(windows, gwz_transport_candidate, gwz_windows_https_qualification)) }\n',
                        '#[cfg_attr(test, derive(Debug))]\nstruct S;\n'):
             self.assertEqual(found(source), [], source)
+
+    def test_the_retired_qualification_switch_earns_no_exemption(self):
+        # Step 5.1 retired the switch: a predicate that still names it is an ordinary platform predicate, so a
+        # stray survivor cannot hide from the ratchet.
+        switch = 'gwz_windows_https_' + 'qualification'
+        self.assertEqual(found(f'fn f() -> bool {{ cfg!(all(windows, gwz_transport_candidate, {switch})) }}\n'),
+                         [('split', f'cfg!(all(windows, gwz_transport_candidate, {switch}))', '', '', True)])
+        self.assertFalse(hasattr(checker, 'QUALIFICATION_SWITCH'))
 
     def test_the_named_os_extension_modules_are_os_uses(self):
         self.assertEqual(sorted(g for k, g, *_ in found('use std::os::linux::fs::MetadataExt;\nuse std::os::macos::fs::MetadataExt as M;\n')),

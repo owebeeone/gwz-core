@@ -6,7 +6,7 @@ use super::{
 };
 
 cfg_if::cfg_if! {
-    if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
+    if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
         use crate::git::endpoint::{
             https_remote, https_remote::OpenRpc, ssh_channel::GitService as SshGitService,
             ssh_destination::Destination, ssh_remote::OpenStream, ssh_remote::RemoteTransport,
@@ -271,12 +271,8 @@ cfg_if::cfg_if! {
                     context.warn_once(&http_warning_key(url), &http_warning(url));
                     return;
                 }
-                // Neither SSH nor HTTPS (a file): the Windows qualification serves no other remote.
-                cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
-                    callbacks.smart_transport(false, |_| -> Result<RemoteTransport, git2::Error> {
-                        Err(git2::Error::new(git2::ErrorCode::Invalid, git2::ErrorClass::Net, "Windows qualification supports only SSH and HTTPS remotes"))
-                    });
-                } }
+                // Neither SSH nor HTTPS (a file or the git protocol): libgit2's native route, installed by leaving the
+                // callbacks alone, on every platform.
                 return;
             }
             let selected = identity.map(|i| i.path.to_string_lossy().into_owned());
@@ -352,7 +348,7 @@ cfg_if::cfg_if! {
 }
 
 cfg_if::cfg_if! {
-    if #[cfg(all(test, any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification))))] {
+    if #[cfg(all(test, gwz_transport_candidate, any(unix, windows)))] {
         #[path = "https_transport_binding_tests.rs"]
         mod https_transport_binding_tests;
     }

@@ -46,9 +46,9 @@ cfg_if::cfg_if! {
 // Step 3.2b: the agent step's refusals, worded from the runtime's agent source.
 cfg_if::cfg_if! { if #[cfg(test)] { mod agent_source_tests; } }
 
-// Step 5.1: the qualification refuses the remotes this module's one test clones (plain HTTP and the git protocol), as
-// the Windows qualification admits only SSH and HTTPS; retiring the switch ungates it.
-cfg_if::cfg_if! { if #[cfg(all(test, unix))] { mod https_compat_tests; } }
+// Step 5.1: the plain HTTP and git protocol clones this module's one test makes. The Windows qualification refused
+// those remotes; retiring the switch removed the refusal, so the module runs on every platform.
+cfg_if::cfg_if! { if #[cfg(test)] { mod https_compat_tests; } }
 
 // Step 4.9: the words around a discovery redirect (T5, U9) and the WH3 matrix at the host.
 cfg_if::cfg_if! { if #[cfg(test)] { mod https_redirect_tests; mod https_native_tests; } }
@@ -388,16 +388,10 @@ impl TransportRuntime {
             placements.push(TransportPlacement::Cli);
         }
         Ok(TransportCapabilitiesResponse {
-            file_identity: !cfg!(all(
-                windows,
-                gwz_transport_candidate,
-                gwz_windows_https_qualification
-            )),
-            exact_agent_identity: !cfg!(all(
-                windows,
-                gwz_transport_candidate,
-                gwz_windows_https_qualification
-            )),
+            // Windows advertises neither a selected file identity nor an exact agent identity until a named fixture
+            // GO (GwzV110Plan.md S4.3 and S7.2).
+            file_identity: !cfg!(windows),
+            exact_agent_identity: !cfg!(windows),
             message_versions: Some(vec![2]),
             placements: Some(placements),
             schemes: Some(if state.https {

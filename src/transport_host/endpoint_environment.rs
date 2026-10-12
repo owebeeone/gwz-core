@@ -83,14 +83,11 @@ pub(super) fn endpoint_config_native(
     cwd: Option<&std::path::Path>,
     machine: Option<MachineProxy>,
 ) -> ModelResult<(EndpointSettings, HttpsEndpointConfig)> {
-    if cfg!(all(
-        windows,
-        gwz_transport_candidate,
-        gwz_windows_https_qualification
-    )) && machine.is_none()
-    {
+    // Windows reads its proxy from the machine and never the environment, so an entry that did not capture the machine
+    // setting has nothing to configure the endpoint's HTTPS connections from.
+    if cfg!(windows) && machine.is_none() {
         return Err(unsupported(
-            "Windows HTTPS qualification requires the WinHTTP machine proxy setting, captured on the original entry",
+            "the Windows machine proxy setting was not captured on the original entry",
         ));
     }
     let tls = tls_config(environment, machine.as_ref())?;
@@ -281,11 +278,11 @@ cfg_if::cfg_if! {
             Ok(())
         }
         }
-    } else if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
+    } else if #[cfg(windows)] {
         mod platform {
             use super::{EnvironmentSnapshot, ModelResult, https_connection};
             /// Windows reads no proxy from the environment: the machine setting is the proxy source (design §6), and
-            /// the qualification refuses to build a configuration without one.
+            /// the endpoint refuses to build a configuration without one.
             pub(super) fn proxy(
                 _: &EnvironmentSnapshot,
                 _: &mut https_connection::Config,
@@ -296,8 +293,8 @@ cfg_if::cfg_if! {
     } else { compile_error!("unsupported transport endpoint platform"); }
 }
 
-/// Read once at original entry beside the environment; never on HTTP worker poll. Only the Windows qualification
-/// reads the machine setting; Unix has none, and other builds have no HTTPS transport on Windows to configure.
+/// Read once at original entry beside the environment; never on HTTP worker poll. Only Windows reads the
+/// machine setting; Unix has none.
 pub(crate) fn capture_machine_proxy() -> Option<MachineProxy> {
-    cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] { Some(super::machine_proxy::capture_machine()) } else { None } }
+    cfg_if::cfg_if! { if #[cfg(windows)] { Some(super::machine_proxy::capture_machine()) } else { None } }
 }

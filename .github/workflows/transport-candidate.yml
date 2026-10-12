@@ -18,8 +18,8 @@ on:
 # gwz-transport, gwz-py and gwz-sspi commits .github/gwz-transport.commit,
 # .github/gwz-py.commit and .github/gwz-sspi.commit pin, and the taut-proto
 # release the candidate generator pins (installed, and checked out at its tag).
-# The second job, candidate-windows, builds and tests the Windows HTTPS
-# qualification shape of the same candidate (TR4.6).
+# The second job, candidate-windows, builds and tests the same candidate on
+# Windows (TR4.6).
 jobs:
   candidate:
     name: Candidate build suites
@@ -207,13 +207,14 @@ jobs:
             --source-revision "$(git -C ../gwz-transport rev-parse HEAD)"
 
   # TR4.6 (dev-docs/GwzTransportReleasePlanAmendment-2.md §3.5): the candidate on
-  # Windows, on every push to main and every pull request. On Windows the
-  # candidate is HTTPS only and exists only under the qualification switch
-  # (`--cfg gwz_windows_https_qualification`, src/lib.rs), so that is the one
-  # candidate shape this job builds. Every step runs under bash: a multi-line
-  # PowerShell step fails only on its last command's exit status.
+  # Windows, on every push to main and every pull request. Windows takes the
+  # same candidate switch as Linux and macOS (`--cfg gwz_transport_candidate`;
+  # step 5.1 of GwzTransportWindowsParityPlan.md retired the Windows-only
+  # qualification switch), so the shapes this job builds are the ordinary build
+  # and that one. Every step runs under bash: a multi-line PowerShell step
+  # fails only on its last command's exit status.
   candidate-windows:
-    name: Candidate build on Windows (HTTPS qualification)
+    name: Candidate build on Windows
     runs-on: windows-2022
     timeout-minutes: 90
     env:
@@ -359,44 +360,32 @@ jobs:
         with:
           workspaces: gwz-core -> ../candidate-target
           cache-on-failure: true
-          key: windows-qualification
+          key: windows-candidate
       - name: Library check, ordinary build
         # WH1's library checks (GwzWindowsHttpsIntegrationImplementationAcceptance.md):
-        # the source tree still builds on Windows without the candidate
-        # switches and with the transport switch alone, which keep their earlier
-        # Windows route.
+        # the source tree still builds on Windows without the candidate switch,
+        # which keeps the earlier Windows route.
         env:
           RUSTFLAGS: ""
         run: |
           cargo check --locked --lib --manifest-path "$RUNNER_TEMP/candidate/Cargo.toml" --target-dir "$GITHUB_WORKSPACE/candidate-target"
-      - name: Library check, transport switch without the qualification switch
+      - name: Library check, candidate build
         env:
           RUSTFLAGS: --cfg gwz_transport_candidate
         run: |
           cargo check --locked --lib --manifest-path "$RUNNER_TEMP/candidate/Cargo.toml" --target-dir "$GITHUB_WORKSPACE/candidate-target"
-      - name: The qualification switch alone is refused
-        # src/lib.rs: the switch requires Windows and the transport switch.
-        env:
-          RUSTFLAGS: --cfg gwz_windows_https_qualification
-        run: |
-          status=0
-          cargo check --locked --lib --manifest-path "$RUNNER_TEMP/candidate/Cargo.toml" --target-dir "$GITHUB_WORKSPACE/candidate-target" 2> "$RUNNER_TEMP/illegal.log" || status=$?
-          if [ "$status" -eq 0 ] || ! grep -q 'gwz_windows_https_qualification requires Windows and gwz_transport_candidate' "$RUNNER_TEMP/illegal.log"; then
-            echo "::error::the qualification switch alone must fail to compile with its own message (cargo exit $status)"
-            tail -n 30 "$RUNNER_TEMP/illegal.log"
-            exit 1
-          fi
-      - name: Qualification tests
-        # WH1's five (src/transport_host/qualification_tests.rs). A filter that
+      - name: Host-level transport rows
+        # The rows of src/transport_host/qualification_tests.rs (the module keeps
+        # the name WH1 gave it): seven on Windows, six elsewhere. A filter that
         # matches nothing passes, so the count is checked.
         env:
-          RUSTFLAGS: --cfg gwz_transport_candidate --cfg gwz_windows_https_qualification
+          RUSTFLAGS: --cfg gwz_transport_candidate
         run: |
           set -o pipefail
           cargo test --locked --lib --manifest-path "$RUNNER_TEMP/candidate/Cargo.toml" --target-dir "$GITHUB_WORKSPACE/candidate-target" qualification_tests:: -- --nocapture 2>&1 | tee "$RUNNER_TEMP/qualification.log"
           passed="$(sed -n -E 's/^test result: ok\. ([0-9]+) passed.*/\1/p' "$RUNNER_TEMP/qualification.log" | tr -d '\r')"
-          if [ "${passed:-0}" -lt 5 ]; then
-            echo "::error::expected WH1's 5 qualification tests, ran ${passed:-0}"
+          if [ "${passed:-0}" -lt 7 ]; then
+            echo "::error::expected the 7 host-level transport rows of qualification_tests, ran ${passed:-0}"
             exit 1
           fi
       - id: suites
@@ -407,7 +396,7 @@ jobs:
         # next step. gwz-cli is not checked out, so the conditional-compilation
         # check covers gwz-core and gwz-py and prints SKIPPED GATE for gwz-cli.
         env:
-          RUSTFLAGS: --cfg gwz_transport_candidate --cfg gwz_windows_https_qualification
+          RUSTFLAGS: --cfg gwz_transport_candidate
           # Step 0.5 runs native/tests.rs on Windows: its real SSPI request
           # validator needs an external CARGO_TARGET_DIR, as on the Linux legs.
           CARGO_TARGET_DIR: ${{ runner.temp }}/candidate-tests/target
@@ -422,7 +411,7 @@ jobs:
         # Linux and not on Windows, where `..` is collapsed before the lookup.
         if: ${{ !cancelled() }}
         env:
-          RUSTFLAGS: --cfg gwz_transport_candidate --cfg gwz_windows_https_qualification
+          RUSTFLAGS: --cfg gwz_transport_candidate
           GWZ_TEST_GIT: real
         run: |
           set -o pipefail

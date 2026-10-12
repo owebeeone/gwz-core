@@ -295,18 +295,16 @@ fn candidate_push_rejection_pushurl_and_native_local_route_are_preserved() {
                 .any(|r| r.target == first.to_string())
         );
     }
-    // A stopped transport host must have no effect on native local transport. The Windows qualification refuses a
-    // local path as a remote ("supports only SSH and HTTPS remotes") until step 5.1 retires it.
+    // A stopped transport host must have no effect on native local transport, on every platform (step 5.1 retired the
+    // Windows qualification that refused a local path as a remote).
     host.shutdown();
-    if cfg!(unix) {
-        let local = f.temp.path().join("local");
-        b.clone_repo(f.repository.to_str().unwrap(), &local)
-            .unwrap();
-        assert_eq!(b.head(&local).unwrap().commit, Some(first.to_string()));
-        let rows = b.transport_observations().unwrap().snapshot();
-        assert_eq!(rows.iter().filter(|r| r.credential_offered).count(), 1);
-        assert_eq!(rows.last().unwrap().authenticated, None);
-    }
+    let local = f.temp.path().join("local");
+    b.clone_repo(f.repository.to_str().unwrap(), &local)
+        .unwrap();
+    assert_eq!(b.head(&local).unwrap().commit, Some(first.to_string()));
+    let rows = b.transport_observations().unwrap().snapshot();
+    assert_eq!(rows.iter().filter(|r| r.credential_offered).count(), 1);
+    assert_eq!(rows.last().unwrap().authenticated, None);
     drop(request);
 }
 

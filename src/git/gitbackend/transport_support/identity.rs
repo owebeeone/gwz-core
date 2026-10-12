@@ -83,7 +83,7 @@ impl Selection {
     // Candidate CLI placement keeps identity paths opaque to core. The
     // endpoint owns path parsing, expansion and file checks.
     cfg_if::cfg_if! {
-        if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
+        if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
             pub(crate) fn from_options_cli(options: &crate::TransportOptions) -> ModelResult<Self> {
         let default = options
             .default_identity
@@ -133,7 +133,7 @@ impl Selection {
     // driver starts. This includes an overridden default, so a malformed or
     // unavailable path cannot be hidden by remote selection.
     cfg_if::cfg_if! {
-        if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
+        if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
             pub(crate) fn validate_endpoint_files(
                 &self,
                 backend: &super::super::Git2Backend,
@@ -211,17 +211,6 @@ pub(crate) fn for_remote(
     remote: Option<&str>,
     url: &str,
 ) -> ModelResult<Option<SelectedIdentity>> {
-    cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
-        // Neither SSH nor HTTPS (a file): the Windows qualification serves no other remote. A plain `http://` remote
-        // is not refused: it goes by the native route, with a warning (design 7, decision D2).
-        if backend.ssh.host_context().is_some()
-            && !super::super::transport_binding::is_https_remote(url)
-            && !super::super::transport_binding::is_http_remote(url)
-            && matches!(crate::git::endpoint::ssh_destination::Destination::parse(url), Ok(None))
-        {
-            return Err(ModelError::new(ErrorCode::UnsupportedOperation, "Windows qualification supports only SSH and HTTPS remotes"));
-        }
-    } }
     let key = (
         repo.map(|repo| repo.path().to_path_buf()),
         remote.map(str::to_owned),

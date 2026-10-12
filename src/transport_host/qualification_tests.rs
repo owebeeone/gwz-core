@@ -47,11 +47,7 @@ fn https_only_request_retains_context_and_selects_the_builds_actual_backend() {
         let mapped = backend
             .ssh
             .https_policy_for_test(backend.credential_helpers);
-        let expected_policy = if cfg!(all(
-            windows,
-            gwz_transport_candidate,
-            gwz_windows_https_qualification
-        )) {
+        let expected_policy = if cfg!(windows) {
             Some(AuthPolicy::WindowsConfigured)
         } else {
             None
@@ -92,7 +88,7 @@ fn https_only_request_retains_context_and_selects_the_builds_actual_backend() {
     });
 }
 
-cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_https_qualification))] {
+cfg_if::cfg_if! { if #[cfg(windows)] {
     #[test]
     fn qualification_capabilities_and_forged_opens_agree_before_effects() {
         let executor = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -119,20 +115,13 @@ cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_htt
             use crate::git::GitBackend;
             let fixture = tempfile::tempdir().unwrap();
             let target = fixture.path().join("no-clone");
-            // SSH is no longer refused by the qualification boundary (plan step 1.6); remotes that are neither SSH nor HTTPS still are.
+            // Neither SSH nor HTTPS is refused by the build any more (plan steps 1.6 and 5.1): the same remotes as on Unix.
             request.backend().validate_url_identity(None, "origin", "ssh://git@example.invalid/repo").unwrap();
             request.backend().validate_url_identity(None, "origin", "git@example.invalid:repo").unwrap();
             // A plain `http://` remote is no longer refused: it goes by the native route, with a warning (decision D2).
             request.backend().validate_url_identity(None, "origin", "http://example.invalid/repo").unwrap();
-            for url in ["file:///unavailable/repo"] {
-                let refused = request.backend().validate_url_identity(None, "origin", url).unwrap_err();
-                assert_eq!(refused.code, ErrorCode::UnsupportedOperation);
-                let refused = request.backend().clone_repo(url, &target).unwrap_err();
-                assert_eq!(refused.code, ErrorCode::UnsupportedOperation);
-                assert!(!target.exists());
-            }
             let options = crate::TransportOptions { default_identity: Some("/must-not-read-key".into()), ..Default::default() };
-            // The identity may be refused as a path that is not absolute, but no longer as unavailable in qualification.
+            // The identity may be refused as a path that is not absolute, but not as unsupported by the build.
             if let Err(error) = request.backend().with_transport(&target, Some(&options)) {
                 assert_ne!(error.code, ErrorCode::UnsupportedOperation, "{error:?}");
             }
@@ -141,6 +130,41 @@ cfg_if::cfg_if! { if #[cfg(all(windows, gwz_transport_candidate, gwz_windows_htt
         });
     }
 } }
+
+/// Step 5.1: the Windows build served only SSH and HTTPS remotes and refused every other with "supports only SSH
+/// and HTTPS remotes". It is gone: a remote that is neither (here a `file://` one) is the native route's, on every
+/// platform, and whatever it fails with is not the build's refusal.
+#[test]
+fn a_remote_that_is_neither_ssh_nor_https_is_not_refused_by_the_build() {
+    let executor = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    executor.block_on(async {
+        let runtime = https_only_runtime();
+        let request = runtime
+            .request(meta("native-remote"), "operation".into())
+            .await
+            .unwrap();
+        use crate::git::GitBackend;
+        let fixture = tempfile::tempdir().unwrap();
+        let target = fixture.path().join("no-clone");
+        let url = "file:///unavailable/repo";
+        request
+            .backend()
+            .validate_url_identity(None, "origin", url)
+            .unwrap();
+        let failed = request.backend().clone_repo(url, &target).unwrap_err();
+        assert_ne!(failed.code, ErrorCode::UnsupportedOperation, "{failed:?}");
+        assert!(
+            !failed.message.contains("supports only SSH and HTTPS"),
+            "{failed:?}"
+        );
+        assert!(!target.exists());
+        request.finish().await;
+        assert_eq!(runtime.shutdown().await.pending_local_work, 0);
+    });
+}
 
 fn https_only_runtime() -> TransportRuntime {
     TransportRuntime::build_native(

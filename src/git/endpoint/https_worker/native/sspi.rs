@@ -6,7 +6,7 @@ use super::*;
 #[derive(Clone)]
 pub struct NativeCaller {
     pub(super) port: Result<Arc<dyn Port>, gwz_sspi::ErrorKind>,
-    /// The WinHTTP machine proxy, read with the caller (Windows qualification only; plan step 4.6).
+    /// The WinHTTP machine proxy, read with the caller (Windows only; plan step 4.6).
     pub(super) machine_proxy: Option<crate::transport_host::endpoint_environment::MachineProxy>,
 }
 impl NativeCaller {

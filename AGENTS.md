@@ -16,7 +16,7 @@ Follow the root `AGENTS.md` rules.
   of immutable data, and state a named dependency imposes.
 - Windows compile gate (`GwzTransportWindowsParityPlan.md`, step 0.4). A lane that changes a
   trigger path runs `scripts/windows_lane_check.py` before it merges: the lane head is compiled on
-  the Windows host (`cargo check` of the ordinary, transport and qualification shapes, as
+  the Windows host (`cargo check` of the ordinary and transport shapes, as
   `candidate-windows` does) and the receipt is archived under a new immutable label. The trigger
   paths are every scope root of `scripts/checks/windows_parity/meta.json` (`roots`; the script
   derives them, so this list cannot drift from it), `Cargo.toml`, `Cargo.lock`,

@@ -104,13 +104,13 @@ impl TransportAttempt {
     pub(crate) fn error(&self) -> Option<crate::model::ModelError> {
         self.2.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
-    cfg_if::cfg_if! { if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
+    cfg_if::cfg_if! { if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
         pub(crate) fn failed(&self, error: crate::model::ModelError) {
             self.2.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(error);
         }
     } }
     cfg_if::cfg_if! {
-        if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
+        if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
             pub(crate) fn opened(&self, stream_id: i64, opened: &gwz_transport::protocol::Opened) {
                 let mut row = self.0.lock().unwrap_or_else(|e| e.into_inner());
                 row.endpoint_id = Some(opened.endpoint_id.clone());
@@ -194,7 +194,7 @@ cfg_if::cfg_if! {
 }
 
 cfg_if::cfg_if! {
-    if #[cfg(all(test, any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification))))] {
+    if #[cfg(all(test, gwz_transport_candidate, any(unix, windows)))] {
         mod https_tests {
             use super::*;
 

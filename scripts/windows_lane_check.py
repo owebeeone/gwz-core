@@ -3,8 +3,8 @@
 
 Archives the lane's gwz-core (a ref, or with --worktree the working tree), puts it in a NEW labelled
 directory on the Windows host, checks out the siblings the candidate build needs at gwz-core's pins, runs
-`cargo check` of the three shapes the candidate-windows CI job checks (ordinary; `--cfg gwz_transport_candidate`;
-and that plus `--cfg gwz_windows_https_qualification`) and archives a receipt. Nothing is cross-compiled: the
+`cargo check` of the two shapes the candidate-windows CI job checks (ordinary, and `--cfg gwz_transport_candidate`; step
+5.1 retired the third, qualification, shape) and archives a receipt. Nothing is cross-compiled: the
 Windows build is only ever made on Windows (V110 S4.1).
 
     python3 scripts/windows_lane_check.py --label winp0-20261009-a --receipt-dir DIR
@@ -50,7 +50,7 @@ HOST_ROOT = '/e/gwz-tests'  # E:/gwz-tests in MinGW bash
 SSH = ['ssh', '-o', 'ClearAllForwardings=yes', '-o', 'ForwardAgent=no', '-o', 'ForwardX11=no',
        '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', HOST]
 TOOLCHAIN = '1.95.0'
-QUALIFICATION = '--cfg gwz_transport_candidate --cfg gwz_windows_https_qualification'
+CANDIDATE = '--cfg gwz_transport_candidate'
 # The portable OpenSSH server of the hosted job (.github/workflows/transport-candidate.yml, "Install the OpenSSH
 # server the SSH fixtures run"); a test pins both values to the workflow's.
 OPENSSH_RELEASE = 'v9.8.3.0p2-Preview'
@@ -65,7 +65,7 @@ DEFAULT_GIT_ROOT = 'C:\\Program Files\\Git'  # Git for Windows as the hosted ima
 HOST_GAPS = ('transport_host::message_embedding_tests::python_messages_',)
 SUITE_TARGETS = ('target-test', 'target-validator')
 HOSTED_SUITE = 'python scripts/run_tests.py --skip-cfg-sibling gwz-cli --skip-cfg-sibling gwz-py --no-fail-fast --lib'
-SHAPES = (('ordinary', ''), ('transport', '--cfg gwz_transport_candidate'), ('qualification', QUALIFICATION))
+SHAPES = (('ordinary', ''), ('transport', CANDIDATE))
 # A lane that changes one of these needs the compile gate before it merges (AGENTS.md, "Windows compile gate"): every
 # scope root of the Windows-parity inventory (so the two lists cannot drift apart) and the build inputs below.
 TRIGGER_EXTRA = ('Cargo.toml', 'Cargo.lock', 'tests/transport_backend/prepare.py', '.github/*.commit')
@@ -214,7 +214,7 @@ def hosted_like_script(label: str, git_root: str, test_filter: str | None) -> st
     """Host script: the candidate build's library suites run under the hosted job's conditions (see the module doc).
 
     The suite command is the job's, the environment is the job's (the portable sshd, `GWZ_TEST_SH`, the real Git
-    backend, the qualification switches) except where the host differs: the TEMP is made short here, because the
+    backend, the candidate switch) except where the host differs: the TEMP is made short here, because the
     hosted runner's user directory is. Nothing outside the run's directory and the user's TEMP is written.
     """
     d = f'{HOST_ROOT}/{label}'
@@ -244,7 +244,7 @@ def hosted_like_script(label: str, git_root: str, test_filter: str | None) -> st
         "GIT_UNIX=\"/$(echo \"$GIT_ROOT\" | sed -E 's#\\\\#/#g; s#^([A-Za-z]):#\\L\\1#')\"",
         'export PATH="$GIT_UNIX/cmd:$PATH"', 'export GWZ_TEST_SH="$GIT_ROOT\\usr\\bin\\sh.exe"',
         'echo "HOSTED_LIKE_GIT $(command -v git): $(git --version)"',
-        f'export RUSTUP_TOOLCHAIN={TOOLCHAIN} CARGO_INCREMENTAL=0 RUSTFLAGS="{QUALIFICATION}" GWZ_TEST_GIT=real',
+        f'export RUSTUP_TOOLCHAIN={TOOLCHAIN} CARGO_INCREMENTAL=0 RUSTFLAGS="{CANDIDATE}" GWZ_TEST_GIT=real',
         f'export CARGO_TARGET_DIR={d}/target-validator', f'cd {d}/ws/gwz-core',
         f'{HOSTED_SUITE}{filter_word} --manifest-path={d}/candidate/Cargo.toml --target-dir={d}/target-test '
         f'> {d}/logs/hosted-like.log 2>&1',
@@ -382,7 +382,7 @@ def execute(options, host: Host, core: Path = CORE, now=datetime.datetime.now) -
         run_entry(host, receipt, name, flags, shape_script(label, flags, options.tests, name),
                   f'{HOST_ROOT}/{label}/logs/{name}.log')
     if options.hosted_like:
-        run_entry(host, receipt, 'hosted-like', QUALIFICATION,
+        run_entry(host, receipt, 'hosted-like', CANDIDATE,
                   hosted_like_script(label, options.git_root, options.hosted_like_filter),
                   f'{HOST_ROOT}/{label}/logs/hosted-like.log', test_filter=options.hosted_like_filter)
     receipt_dir.mkdir(parents=True)

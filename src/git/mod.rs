@@ -2,7 +2,7 @@ mod git_host;
 mod git_transfer_progress;
 mod gitbackend;
 cfg_if::cfg_if! {
-    if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
+    if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
         pub(crate) mod endpoint;
     }
 }

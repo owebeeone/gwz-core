@@ -43,7 +43,7 @@ pub(crate) fn credential_helper_timeout(error: &git2::Error) -> bool {
 mod transport_observations;
 mod transport_support;
 cfg_if::cfg_if! {
-    if #[cfg(all(test, gwz_transport_candidate, any(unix, gwz_windows_https_qualification)))] {
+    if #[cfg(all(test, gwz_transport_candidate, any(unix, windows)))] {
         mod transport_candidate_tests;
     }
 }
@@ -63,7 +63,7 @@ pub(crate) use transport_support::identity::{
 };
 pub use transport_support::{configure_server_timeout_ms, set_server_timeout_ms};
 cfg_if::cfg_if! {
-    if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
+    if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
         pub(crate) use transport_support::server_timeout_ms as transport_timeout_ms;
     }
 }
@@ -222,7 +222,7 @@ impl GitBackend for Git2Backend {
     ) -> ModelResult<Option<Self>> {
         let empty = crate::TransportOptions::default();
         cfg_if::cfg_if! {
-            if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
+            if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
                 if options.is_some_and(|value| {
                     value.placement == Some(crate::TransportPlacement::Cli)
                         && !self.ssh.is_cli_context()
@@ -237,7 +237,7 @@ impl GitBackend for Git2Backend {
         let identities;
         if self.ssh.is_cli_context() {
             cfg_if::cfg_if! {
-                if #[cfg(any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, gwz_windows_https_qualification)))] {
+                if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
                     identities = transport_support::identity::Selection::from_options_cli(
                         options.unwrap_or(&empty),
                     )?;
