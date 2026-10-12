@@ -183,7 +183,10 @@ async fn native_view_keeps_null_empty_escapes_bytes_and_repeated_scope_occurrenc
     let parts = Parts::new().await;
     let executable = git();
     let runner = parts.runner(&config, &executable, 5);
-    let params = prepare(&runner).await.unwrap();
+    let params = prepare(&runner, b"https://example.test/repo")
+        .await
+        .unwrap()
+        .parameters;
     let raw = runner
         .run(DISCOVERY, &[], Some(&params.0), PREPARATION_LIMIT, true)
         .await
@@ -295,6 +298,54 @@ fn a_relative_include_from_the_command_line_is_anchored_at_the_root_on_unix_and_
         } else if #[cfg(windows)] {
             assert_eq!(anchored.err(), Some(AuthError::ConfigurationRefused));
         }
+    }
+}
+
+/// A helper that is configured and answers with nothing at all, as one the user cancelled does.
+fn silent_helper(home: &Path) -> (String, String) {
+    let helper = home.join("silent");
+    crate::git::endpoint::helper_script::write_helper_script(&helper, "cat >/dev/null\nexit 0\n");
+    helper_value(&helper)
+}
+
+#[tokio::test]
+async fn a_failed_fill_with_no_helper_in_the_view_is_no_helper() {
+    let home = tempfile::tempdir().unwrap();
+    let global = home.path().join("global");
+    fs::write(&global, "[spike]\n unrelated = 1\n").unwrap();
+    assert_eq!(
+        lookup(&config(home.path(), &global)).await.err(),
+        Some(AuthError::NoHelper)
+    );
+    // A helper written for another server is no helper for this one.
+    let (written, _) = silent_helper(home.path());
+    fs::write(
+        &global,
+        format!("[credential \"https://elsewhere.test\"]\n helper = {written}\n"),
+    )
+    .unwrap();
+    assert_eq!(
+        lookup(&config(home.path(), &global)).await.err(),
+        Some(AuthError::NoHelper)
+    );
+}
+
+#[tokio::test]
+async fn a_failed_fill_with_a_helper_in_the_view_is_declined() {
+    let home = tempfile::tempdir().unwrap();
+    let global = home.path().join("global");
+    let (written, _) = silent_helper(home.path());
+    for section in [
+        "[credential]".to_owned(),
+        "[credential \"https://example.test\"]".to_owned(),
+    ] {
+        fs::write(&global, format!("{section}\n helper = {written}\n")).unwrap();
+        let error = lookup(&config(home.path(), &global)).await.err();
+        assert_eq!(error, Some(AuthError::HelperDeclined), "{section}");
+        assert_eq!(
+            error.unwrap().code(),
+            gwz_transport::protocol::ErrorCode::Authentication
+        );
     }
 }
 

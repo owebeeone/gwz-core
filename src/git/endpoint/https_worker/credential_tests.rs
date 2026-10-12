@@ -271,3 +271,39 @@ async fn a_seventh_destination_on_one_route_is_unsupported_and_never_capacity() 
     assert_eq!(fs::read_to_string(counter).unwrap().lines().count(), 6);
     assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
 }
+
+#[test]
+fn the_lookups_three_configured_helper_outcomes_reach_the_wire_as_their_own_causes() {
+    use gwz_transport::protocol::HelperFailureCause as Cause;
+    let facts = Facts {
+        method: AuthMethod::Gh,
+        ..Default::default()
+    };
+    for (error, cause) in [
+        (https_auth::AuthError::NoHelper, Cause::NoHelper),
+        (https_auth::AuthError::HelperDeclined, Cause::Declined),
+        (
+            https_auth::AuthError::ConfigurationRefused,
+            Cause::ConfigurationRefused,
+        ),
+    ] {
+        let failed = helper_failure(error, &facts);
+        assert_eq!(failed.code, ErrorCode::Authentication, "{error}");
+        assert_eq!(failed.setup_cause, None, "{error}");
+        let detail = failed.detail.as_ref().unwrap();
+        assert_eq!(detail.helper_cause, Some(cause), "{error}");
+        assert_eq!(detail.pipe_kind, None, "{error}");
+        assert_eq!(
+            gwz_transport::codec::admit(&Envelope {
+                version: 2,
+                session_id: "helper-cause".into(),
+                stream_id: 1,
+                kind: MessageKind::OpenFailed,
+                open_failed: Some(failed.clone()),
+                ..Default::default()
+            }),
+            Ok(()),
+            "{error}"
+        );
+    }
+}

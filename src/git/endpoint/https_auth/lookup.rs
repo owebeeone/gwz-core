@@ -122,9 +122,18 @@ async fn lookup_url_until(
         deadline,
         setup,
     };
-    let parameters = super::view::prepare(&runner).await?;
+    let prepared = super::view::prepare(&runner, url.as_bytes()).await?;
     let request = SecretBuffer(format!("url={url}\n\n").into_bytes());
-    runner.run_secret(&request.0, &parameters.0).await
+    // A failed `credential fill` ends alike whether git had no helper to ask or the helper gave nothing (prompts
+    // are off); the view, which is what git reads, says which.
+    runner
+        .run_secret(&request.0, &prepared.parameters.0)
+        .await
+        .map_err(|error| match error {
+            AuthError::HelperRejected if prepared.helper => AuthError::HelperDeclined,
+            AuthError::HelperRejected => AuthError::NoHelper,
+            other => other,
+        })
 }
 
 cfg_if::cfg_if! {

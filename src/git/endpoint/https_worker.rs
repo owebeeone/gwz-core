@@ -363,6 +363,11 @@ fn helper_failure(error: https_auth::AuthError, facts: &Facts) -> Failure {
         https_auth::AuthError::MissingCredential => Some(HelperFailureCause::MissingField),
         https_auth::AuthError::MalformedOutput => Some(HelperFailureCause::MalformedOutput),
         https_auth::AuthError::OutputTooLarge => Some(HelperFailureCause::OutputLimit),
+        https_auth::AuthError::NoHelper => Some(HelperFailureCause::NoHelper),
+        https_auth::AuthError::HelperDeclined => Some(HelperFailureCause::Declined),
+        https_auth::AuthError::ConfigurationRefused => {
+            Some(HelperFailureCause::ConfigurationRefused)
+        }
         _ => None,
     };
     if let Some(cause) = cause {

@@ -49,7 +49,14 @@ pub(crate) enum AuthError {
     MissingCredential,
     MalformedOutput,
     OutputTooLarge,
+    /// `git credential fill` exited with failure. Only the runner sees this: the lookup says which of
+    /// [`Self::NoHelper`] and [`Self::HelperDeclined`] it was, from the configuration view.
     HelperRejected,
+    /// `git credential fill` failed and the configuration view holds no credential helper for the URL.
+    NoHelper,
+    /// `git credential fill` failed and the view holds a helper for the URL: it gave no password (cancelled,
+    /// nothing stored for the server, or it failed; Git's prompts are off, so the three end alike).
+    HelperDeclined,
     ConfigurationRefused,
     Timeout,
     AllocationTimeout,
@@ -75,6 +82,8 @@ impl fmt::Display for AuthError {
             Self::OutputTooLarge => "HTTPS credential helper output exceeded its limit",
             Self::ConfigurationRefused => "HTTPS credential configuration was refused",
             Self::HelperRejected => "HTTPS credential helper rejected the request",
+            Self::NoHelper => "no credential helper is configured for the HTTPS remote",
+            Self::HelperDeclined => "the configured HTTPS credential helper gave no password",
             Self::Timeout => "HTTPS credential helper timed out",
             Self::AllocationTimeout => "HTTPS credential helper admission timed out",
             Self::Cancelled => "HTTPS credential helper was cancelled",
@@ -100,6 +109,8 @@ impl AuthError {
             | Self::MalformedOutput
             | Self::OutputTooLarge
             | Self::HelperRejected
+            | Self::NoHelper
+            | Self::HelperDeclined
             | Self::ConfigurationRefused => ErrorCode::Authentication,
             Self::Timeout | Self::AllocationTimeout => ErrorCode::Timeout,
             Self::Cancelled => ErrorCode::Cancelled,
