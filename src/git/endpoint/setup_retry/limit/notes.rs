@@ -6,6 +6,16 @@ use gwz_transport::pool::Site;
 /// The coalescing window of a changed-limit note.
 pub(crate) const CHANGE_NOTE_MS: u64 = 2_000;
 
+/// A site's host and port as a message names it: `github.com:443`, and
+/// `[::1]:443` for an IPv6 host.
+pub(crate) fn site_name(site: &Site) -> String {
+    if site.host.contains(':') {
+        format!("[{}]:{}", site.host, site.port)
+    } else {
+        format!("{}:{}", site.host, site.port)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Note {
     /// The host refused extra connections; using `n` (ceiling `ceiling`).
@@ -28,11 +38,7 @@ impl Note {
     /// the site's host and port, since SSH and HTTPS to one host are separate
     /// limits.
     pub(crate) fn render(&self, site: &Site) -> String {
-        let host = if site.host.contains(':') {
-            format!("[{}]:{}", site.host, site.port)
-        } else {
-            format!("{}:{}", site.host, site.port)
-        };
+        let host = site_name(site);
         match self {
             Self::Overload { n, ceiling } => format!(
                 "note: {host} refused extra connections; using {n} at a time (ceiling {ceiling} from --max-per-host); continuing, no action needed"

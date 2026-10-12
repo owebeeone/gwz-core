@@ -332,6 +332,27 @@ The explicit finish/shutdown path above is how callers obtain cleanup reports.
 To execute locally afterward, create/use a local scope with placement omitted;
 no client endpoint needs to be reinstalled.
 
+## Per-host limits and notes
+
+`RequestMeta.policy.max_retries` is the operation's `--max-retries`: the extra
+attempts after a failed setup or a refusal (absent: 3, so 4 attempts in all).
+It also decides whether the per-host limit adapts. With any value above 0,
+the transport lowers the number of connections it uses to a host (per scheme and
+port, never above the operation's per-host ceiling) when the host refuses
+extra ones, tests that number again as the command goes, and raises it when the
+host recovers. With 0 it never lowers it, and a refusal fails its repository at
+once. The number belongs to one operation and is not kept afterwards.
+
+The transport says what it is doing as `note: ` lines: a host refusing extra
+connections, a `Retry-After` wait longer than one second, a host that stopped
+answering. `with_local_transport_native_noted` takes a `NoteSink`, a reader the
+caller supplies and the transport clones to its endpoints; a note is data until
+the sink turns it into a line, and there is no global or channel in the
+protocol. Pass the entry point without a sink, as `with_local_transport_native`
+does, when output is machine-readable; a command with no sink prints no notes
+and loses none that matters, since a note is information only. The CLI prints
+them on stderr, whether or not stderr is a terminal, above its progress line.
+
 ## Native HTTPS composition draft
 
 The candidate endpoint composes discovery and serial SSPI on one exclusive TLS

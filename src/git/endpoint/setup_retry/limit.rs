@@ -38,14 +38,20 @@
 //! endpoint gives its governor's notes to the sink once per pass; there is no
 //! global, and a command with no reader (machine-readable output) has none.
 //!
+//! Cut 7: [`capacity`], the words of a member's final `Capacity` failure
+//! (§5.3), one text per cause. The `capacity` detail that would carry its
+//! report to the user is a protocol change that has not landed, so nothing
+//! outside its tests builds a report yet.
+//!
 //! The module still allows dead code: `Limit::admit` and `Start` (the whole
 //! admission rule driven by hand), and the views `n`, `state` and
 //! `confirmation_open`, are used by the machine's own tests and by no endpoint.
 #![allow(
     dead_code,
-    reason = "the machine's tests drive admit and the views; no endpoint does"
+    reason = "the machine's tests drive admit and the views; no endpoint does; the capacity report waits for its protocol detail"
 )]
 
+mod capacity;
 mod control;
 mod filter;
 mod fsm;
