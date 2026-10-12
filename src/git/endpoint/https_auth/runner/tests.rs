@@ -161,15 +161,6 @@ async fn completed_leader_boundary(boundary: Boundary) {
         _endpoint_slot: Some(endpoint.clone().acquire_owned().await.unwrap()),
     });
     let cancelled = CancellationToken::new();
-    let runner = Runner {
-        owner: &owner,
-        config: &config,
-        executable: &config.executable,
-        permits: permits.clone(),
-        cancelled: &cancelled,
-        deadline: Instant::now() + Duration::from_secs(10),
-        setup: None,
-    };
     let command = process_tree::HelperCommand {
         program: config.executable.clone(),
         args: fixture.argv().iter().map(OsString::from).collect(),
@@ -198,6 +189,18 @@ async fn completed_leader_boundary(boundary: Boundary) {
         assert!(Instant::now() < until, "independent descendant must write");
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
+    // The lookup's deadline starts here, at the boundary under test: how long the fixture took to start its
+    // descendant (up to the wait above) is not part of what this row measures, and a deadline that began before it
+    // would have been spent by a slow start.
+    let runner = Runner {
+        owner: &owner,
+        config: &config,
+        executable: &config.executable,
+        permits: permits.clone(),
+        cancelled: &cancelled,
+        deadline: Instant::now() + Duration::from_secs(10),
+        setup: None,
+    };
     let answer = runner.parse_answer(&output.0, parse_secret).unwrap();
     let mut owned_at_boundary = false;
     let result = runner

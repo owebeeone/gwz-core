@@ -381,3 +381,35 @@ fn a_survivor_holding_stderr_keeps_neither_the_lookup_nor_its_runtime_alive() {
     );
     dropper.join().unwrap();
 }
+
+#[tokio::test]
+async fn the_survivors_need_no_interpreter_beyond_the_command_shell() {
+    // The Windows survivors were once started by PowerShell, whose start-up (a runtime, and a compiler for the
+    // handle calls) outlasted the 10, 20 and 30 second bounds of the rows above on a hosted runner. A helper now
+    // needs the command shell and this test binary only, and the fixtures' `PATH` holds nothing else.
+    for behavior in [
+        Behavior::AnswersLeavingDetachedDescendant,
+        Behavior::AnswersLeavingSurvivorOnStderr,
+    ] {
+        let fixture = Fixture::new(behavior);
+        let owner = AuthOwner::new(HelperSlots::new());
+        let cancelled = CancellationToken::new();
+        let runner = runner(
+            &owner,
+            &fixture.config,
+            &cancelled,
+            permits(&owner).await,
+            Instant::now() + Duration::from_secs(60),
+        );
+        let output = runner
+            .run(&fixture.argv(), b"", None, OUTPUT_LIMIT, false)
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&output.0).contains("password=token"));
+        drop(runner);
+        assert_eq!(owner.inner.helper_slots.available(), 8);
+        fixture
+            .assert_alive("the survivor must be running without PowerShell")
+            .await;
+    }
+}

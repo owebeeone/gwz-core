@@ -400,9 +400,11 @@ fn wrong_host_and_rejected_selected_key_do_not_fall_back() {
             },
         )
         .unwrap();
+        let error = finish(&mut job).err().unwrap();
         assert_eq!(
-            finish(&mut job).err().unwrap().kind(),
-            io::ErrorKind::PermissionDenied
+            error.kind(),
+            io::ErrorKind::PermissionDenied,
+            "wrong_host={wrong_host}: {error:?}"
         );
         drop(entry);
         assert_eq!(r.usage(), (0, 0));

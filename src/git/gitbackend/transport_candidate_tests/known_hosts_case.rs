@@ -83,7 +83,10 @@ fn candidate_known_hosts_names_match_as_written_or_ignoring_case() {
         )
         .unwrap();
         assert_eq!(cleanup.pending_local_work, 0);
-        let on_native = clone(&Git2Backend::new(), "native");
+        // libgit2's own connection: a key exchange that libssh2 ended on its side says nothing about trust.
+        let on_native = kex_failure::retrying(|attempt| {
+            clone(&Git2Backend::new(), &format!("native{attempt}"))
+        });
         let hashing = if hashed { "hashed " } else { "" };
         for (route, outcome, trusted) in [
             ("native", &on_native, native),

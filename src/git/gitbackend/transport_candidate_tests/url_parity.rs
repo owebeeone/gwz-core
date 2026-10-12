@@ -196,8 +196,8 @@ fn clone_each(
         .with_transport(f.temp.path(), meta.transport.as_ref())
         .unwrap()
         .unwrap();
-    let clone = |(index, url): (usize, &&str)| -> Result<git2::Oid, String> {
-        let target = f.temp.path().join(format!("{route}-{index}"));
+    let clone_once = |index: usize, url: &str, attempt: usize| -> Result<git2::Oid, String> {
+        let target = f.temp.path().join(format!("{route}-{index}-{attempt}"));
         let result = scoped
             .clone_repo(url, &target)
             .map_err(|error| error.to_string())?;
@@ -207,6 +207,15 @@ fn clone_each(
             .unwrap()
             .target()
             .unwrap())
+    };
+    // libgit2's own connection (the native route) is retried after a key exchange that libssh2 ended on its side;
+    // the transport's is the product's, and its failures are its own.
+    let clone = |(index, url): (usize, &&str)| -> Result<git2::Oid, String> {
+        if route == "native" {
+            kex_failure::retrying(|attempt| clone_once(index, url, attempt))
+        } else {
+            clone_once(index, url, 0)
+        }
     };
     urls.iter().enumerate().map(clone).collect()
 }

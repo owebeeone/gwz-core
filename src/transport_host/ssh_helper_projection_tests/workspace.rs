@@ -106,13 +106,22 @@ pub(super) async fn check(
         .unwrap();
         let message = if operation == "materialize" {
             let error = result.unwrap_err();
-            assert_eq!(crate::GwzErrorCode::from(error.code), expected);
+            assert_eq!(
+                crate::GwzErrorCode::from(error.code),
+                expected,
+                "{fault:?}/{operation}: {}",
+                error.message
+            );
             error.message
         } else {
             let result = result.unwrap();
             assert_eq!(result.members.len(), 1);
             let error = result.members[0].error.as_ref().unwrap();
-            assert_eq!(error.code, expected);
+            assert_eq!(
+                error.code, expected,
+                "{fault:?}/{operation}: {}",
+                error.message
+            );
             error.message.clone()
         };
         assert!(!message.contains("(attempt "));

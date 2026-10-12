@@ -23,8 +23,14 @@ Follow the root `AGENTS.md` rules.
   `tests/transport_backend/prepare.py` and `.github/*.commit`. `--if-triggered BASE` skips the run
   when none of those paths changed; `--tests` also checks the library in test mode, for a lane that
   edits test code; `--cache-from LABEL` makes a warm run. A pushed lane is covered by the
-  `candidate-windows` job instead. The gate is a compile gate only; Windows behaviour is judged by
-  that job's test run and by the dabeest rows of the step that needs them. The lane gate
+  `candidate-windows` job instead. The gate is a compile gate by default; Windows behaviour is judged
+  by that job's test run and by the dabeest rows of the step that needs them. `--hosted-like` also
+  RUNS the candidate library suites under the hosted job's conditions (its `run_tests.py` command,
+  the pinned portable `sshd.exe`, `GWZ_TEST_SH`, a TEMP that is an 8.3 short path), takes about ten
+  minutes warm and belongs under the host booking; its receipt entry names the failed tests, and the
+  only failures it passes are the embedded-Python rows that need a gwz-py checkout (named as gaps).
+  A lane that edits tests or fixtures that run on Windows uses it, because `cargo check` cannot
+  see a short TEMP, a slow process start or a shell that is not Git's. The lane gate
   (`scripts/checks/check_lane_commits.sh`) fails a lane that changes a trigger path unless a commit
   message at or after the change carries `Windows-receipt: <label>` (the label the run used), or the
   changing commit itself carries `Windows-receipt: ci-only <reason>` for a change that cannot alter

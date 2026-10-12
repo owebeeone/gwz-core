@@ -4,7 +4,7 @@
     {"path": "src/git/endpoint/ssh_close_fixture.rs", "kind": "gate", "gate": "unix", "target": "arm: fn dropped_tail", "state": "paired", "owner": ["1.5"], "appendix": "new: the script that cuts the session; Windows runs the native helper (fixture_helper), which ends the server's session processes by exact id"},
     {"path": "src/git/endpoint/ssh_close_fixture.rs", "kind": "gate", "gate": "unix", "target": "arm: fn authorized_line", "state": "paired", "owner": ["1.5"], "appendix": "new: the server forces the close script itself on Windows"},
     {"path": "src/git/endpoint/ssh_close_fixture.rs", "kind": "gate", "gate": "unix", "target": "arm: fn install", "state": "paired", "owner": ["1.5"], "appendix": "new: the close script is written where the Windows session sources it"},
-    {"path": "src/git/endpoint/ssh_tests/background_close.rs", "kind": "gate", "gate": "unix", "target": "arm: const DEFERRED_ONCE_AT_MOST", "state": "paired", "owner": ["1.5"], "appendix": "new: a connect through Windows' sshd.exe takes about 200 ms more"},
+    {"path": "src/git/endpoint/ssh_tests/background_close.rs", "kind": "gate", "gate": "unix", "target": "arm: const BOUNDED_WAIT_AT_MOST", "state": "paired", "owner": ["1.5"], "appendix": "new: a connect through Windows' sshd.exe takes about 200 ms more"},
     {"path": "src/git/endpoint/ssh_close_fixture.rs", "kind": "gate", "gate": "unix", "target": "arm: const FIXTURE_DIRECTORY", "state": "paired", "owner": ["1.5"], "appendix": "the fixture directory as a close script names it: beside the script on Unix, the working directory on Windows (used for the close-release file and, since step 4.11, the stalling fixture's files)"}
   ]
 }
