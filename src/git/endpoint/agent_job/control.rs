@@ -253,4 +253,6 @@ impl Control {
     }
 }
 
+mod room;
 mod shared;
+pub(crate) use room::Mark;

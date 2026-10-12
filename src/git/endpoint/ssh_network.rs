@@ -9,6 +9,8 @@ use super::{
 use crate::git::regular_file;
 use cfg_if::cfg_if;
 use gwz_transport::pool::Key;
+pub(crate) use kex_retry::Network;
+use kex_retry::{KEX_FAILURE, Steps};
 use socket2::{Domain, SockAddr, Socket, Type};
 use ssh2::{BlockDirections, CheckResult, KnownHostFileKind, MethodType};
 use std::{
@@ -18,6 +20,8 @@ use std::{
     path::Path,
     time::Instant,
 };
+
+mod kex_retry;
 
 const FILE_CAP: usize = 4 * 1024 * 1024;
 const LINE_CAP: usize = 16 * 1024;
@@ -32,25 +36,38 @@ const HOSTKEYS: &[(&str, &str)] = &[
 
 /// Connects to `key`'s server and establishes trust in it, for
 /// an open whose URL wrote the host as `written`, one of the key's
-/// host's ASCII case variants (TR2.18).
+/// host's ASCII case variants (TR2.18). `credential_offered` says whether the
+/// open's facts show a credential could already have been offered, which
+/// forbids the one retry of a failed key exchange (D14).
 pub(crate) fn establish_written(
     key: &Key,
     written: &str,
     known_hosts: &Path,
     control: &Control,
+    credential_offered: &dyn Fn() -> bool,
 ) -> io::Result<(SshConnection, Vec<u8>)> {
-    establish_inner(key, written, known_hosts, control, read_regular, resolve)
+    establish_inner(
+        key,
+        written,
+        known_hosts,
+        control,
+        read_regular,
+        resolve,
+        &mut Network::production(credential_offered),
+    )
 }
 
-pub(crate) fn establish_inner<L, R>(
+pub(crate) fn establish_inner<L, R, S>(
     key: &Key,
     written: &str,
     known_path: &Path,
     control: &Control,
     load: L,
     resolve_addresses: R,
+    network: &mut Network<'_, S>,
 ) -> io::Result<(SshConnection, Vec<u8>)>
 where
+    S: Steps,
     L: FnOnce(&Path, &Control) -> io::Result<String>,
     R: FnOnce(&str, u16, &Control) -> io::Result<Vec<SocketAddr>>,
 {
@@ -88,8 +105,34 @@ where
     if addresses.is_empty() {
         return Err(io::ErrorKind::NotFound.into());
     }
-    let socket = connect_addresses(addresses, control, connect)?;
-    handshake(socket, names, key.port, &text, &prefs, control)
+    // What the setup has spent when a try began: a retry needs more budget left than a try took (D14).
+    let started = control.mark();
+    let mut retried = false;
+    loop {
+        let socket = connect_addresses(addresses.clone(), control, |address, control| {
+            network.steps.connect(address, control)
+        })?;
+        match handshake(
+            socket,
+            names,
+            key.port,
+            &text,
+            &prefs,
+            control,
+            &mut network.steps,
+        ) {
+            Ok(established) => return Ok(established),
+            Err(Ended::KexFailure(error)) => {
+                // A new TCP connection and a new session: the failed one was dropped with the handshake. The
+                // handshake comes before every authentication step, so none has begun.
+                if !network.may_retry(retried, control, started) {
+                    return Err(error);
+                }
+                retried = true;
+            }
+            Err(Ended::Other(error)) => return Err(error),
+        }
+    }
 }
 
 pub(crate) fn connect_addresses<C>(
@@ -145,7 +188,7 @@ cfg_if::cfg_if! {
             known_hosts: &Path,
             control: &Control,
         ) -> io::Result<(SshConnection, Vec<u8>)> {
-            establish_written(key, &key.host, known_hosts, control)
+            establish_written(key, &key.host, known_hosts, control, &|| false)
         }
     }
 }
@@ -268,6 +311,20 @@ pub(crate) fn wait_step(
     control.wait_step(poll)
 }
 
+/// How a handshake ended without a trusted connection.
+enum Ended {
+    /// libssh2's key exchange failure (-8), the one failure that D14 retries.
+    KexFailure(io::Error),
+    /// Any other end.
+    Other(io::Error),
+}
+
+impl From<io::Error> for Ended {
+    fn from(error: io::Error) -> Self {
+        Self::Other(error)
+    }
+}
+
 fn handshake(
     socket: TcpStream,
     names: &[&str],
@@ -275,7 +332,8 @@ fn handshake(
     text: &str,
     prefs: &str,
     control: &Control,
-) -> io::Result<(SshConnection, Vec<u8>)> {
+    steps: &mut impl Steps,
+) -> Result<(SshConnection, Vec<u8>), Ended> {
     let mut connection = SshConnection::new(socket).map_err(clean)?;
     control.check()?;
     connection.set_nonblocking().map_err(clean)?;
@@ -292,7 +350,7 @@ fn handshake(
     }
     loop {
         control.begin_wait()?;
-        let result = connection.session().handshake();
+        let result = steps.handshake(connection.session());
         control.check()?;
         match result {
             Ok(()) => {
@@ -303,7 +361,8 @@ fn handshake(
             Err(error) if error.code() == ssh2::ErrorCode::Session(-37) => {
                 wait_session(&mut connection, control)?;
             }
-            Err(error) => return Err(ssh(error)),
+            Err(error) if error.code() == KEX_FAILURE => return Err(Ended::KexFailure(ssh(error))),
+            Err(error) => return Err(ssh(error).into()),
         }
     }
     control.check()?;
@@ -311,7 +370,7 @@ fn handshake(
         .session()
         .host_key()
         .map(|(key, _)| key.to_vec())
-        .ok_or(io::ErrorKind::InvalidData)?;
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
     control.check()?;
     let mut changed = false;
     for name in names {
@@ -324,10 +383,10 @@ fn handshake(
     // Not listed, or listed with a different key (libssh2 tells them apart): the host words it with the file it read
     // (U8, decision D12).
     if !changed {
-        return Err(HostKeyRefused::NotListed.into_error());
+        return Err(HostKeyRefused::NotListed.into_error().into());
     }
     let line = changed_line(&mut connection, text, names, port, &host_key, control)?;
-    Err(HostKeyRefused::Changed { line }.into_error())
+    Err(HostKeyRefused::Changed { line }.into_error().into())
 }
 
 /// The first line (from 1) of `text` that lists one of `names` with a key other than `host_key`: each line is read
@@ -507,6 +566,7 @@ fn ssh(error: ssh2::Error) -> io::Error {
 cfg_if! {
     if #[cfg(test)] {
         mod tests;
+        mod kex_retry_tests;
 
         /// `establish_inner` for a URL that wrote the host as the key has it.
         pub(crate) fn establish_with<L, R>(
@@ -520,7 +580,15 @@ cfg_if! {
             L: FnOnce(&Path, &Control) -> io::Result<String>,
             R: FnOnce(&str, u16, &Control) -> io::Result<Vec<SocketAddr>>,
         {
-            establish_inner(key, &key.host, known_path, control, load, resolve_addresses)
+            establish_inner(
+                key,
+                &key.host,
+                known_path,
+                control,
+                load,
+                resolve_addresses,
+                &mut Network::production(&|| false),
+            )
         }
     }
 }
