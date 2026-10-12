@@ -83,7 +83,15 @@ impl Session {
         )
         .map_err(|failure| {
             let attempts = setup_retry::reported_attempt(&failure);
-            open_failure_io(failure, attempts, stall_ms, shown.0, shown.1, known_hosts, &agent)
+            open_failure_io(
+                failure,
+                attempts,
+                stall_ms,
+                shown.0,
+                shown.1,
+                known_hosts,
+                &agent,
+            )
         })
     }
     pub(in crate::transport_host) fn open_https(

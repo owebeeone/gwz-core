@@ -516,7 +516,7 @@ impl Client {
                     return Ok(prepared);
                 }
                 ResponseAction::Redirect => {
-                    if prepared.opened.facts.native.is_some() || budget.redirect_hops == 5 {
+                    if budget.redirect_hops == 5 {
                         return Err(with_facts(
                             ErrorCode::UnsupportedOperation,
                             Effect::None,
