@@ -302,12 +302,12 @@ impl RequestContext {
                 }
                 let attempts = setup_retry::reported_attempt(&failure);
                 // A redirect from https to http ends in a fixed failure that cannot carry the address the server
-                // named; the endpoint kept it for this operation (text T5).
+                // named; the endpoint kept it for this open (text T5).
                 let redirect = (failure.code == ErrorCode::InvalidRequest)
                     .then(|| {
-                        self.endpoint
-                            .as_ref()
-                            .and_then(|endpoint| endpoint.redirect_refusal(&self.meta.request_id))
+                        self.endpoint.as_ref().and_then(|endpoint| {
+                            endpoint.redirect_refusal(&self.meta.request_id, &canonical)
+                        })
                     })
                     .flatten();
                 Err(io::Error::other(HttpsOpenFailure {

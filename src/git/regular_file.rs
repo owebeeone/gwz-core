@@ -15,29 +15,49 @@ pub(crate) fn open(path: &Path) -> io::Result<File> {
     sys::open(path)
 }
 
+/// Whether byte `at` of `bytes` is a path separator. Windows reads `/` as `\` before it looks at a prefix, so every
+/// separator position of a namespace prefix is either kind.
+fn separator_at(bytes: &[u8], at: usize) -> bool {
+    matches!(bytes.get(at), Some(b'\\' | b'/'))
+}
+
+/// The text after the Win32 namespace prefix `\\<marker>\`, in any of its eight separator spellings.
+fn after_namespace(text: &str, marker: u8) -> Option<&str> {
+    let bytes = text.as_bytes();
+    (separator_at(bytes, 0)
+        && separator_at(bytes, 1)
+        && bytes.get(2) == Some(&marker)
+        && separator_at(bytes, 3))
+    .then(|| &text[4..])
+}
+
+/// Whether `text` starts with the NT namespace prefix `\??\`, in either separator.
+fn in_nt_namespace(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    separator_at(bytes, 0) && bytes.get(1..3) == Some(b"??") && separator_at(bytes, 3)
+}
+
 /// Whether `text`, a path, names a device or a pipe by its spelling: Windows opens `CON` and `\\.\pipe\x` as
 /// devices, and some of them block. Compiled everywhere so that every platform's test run covers the table that
 /// only the Windows arm of [`open`] consults.
 #[allow(dead_code)]
 fn refuses_device_path(text: &str) -> bool {
     let is_separator = |c: char| c == '\\' || c == '/';
-    let starts = |prefixes: &[&str]| prefixes.iter().find_map(|prefix| text.strip_prefix(prefix));
     // The NT namespace is never a path a user writes, and the Win32 device namespace holds `\\.\NUL`,
     // `\\.\pipe\x` and `\\.\C:`.
-    if text.starts_with("\\??\\") || starts(&["\\\\.\\", "//./", "\\\\./", "//.\\"]).is_some() {
+    if in_nt_namespace(text) || after_namespace(text, b'.').is_some() {
         return true;
     }
     let mut rest = text;
     // The extended-length namespace names files as well as devices: only a drive or a UNC path is a file.
-    if let Some(after) = starts(&["\\\\?\\", "//?/", "\\\\?/", "//?\\"]) {
+    if let Some(after) = after_namespace(text, b'?') {
         let bytes = after.as_bytes();
         let drive = bytes.len() >= 3
             && bytes[0].is_ascii_alphabetic()
             && bytes[1] == b':'
-            && is_separator(bytes[2] as char);
-        let unc = after
-            .get(..4)
-            .is_some_and(|head| head.eq_ignore_ascii_case("UNC\\"));
+            && separator_at(bytes, 2);
+        let unc =
+            bytes.len() >= 4 && bytes[..3].eq_ignore_ascii_case(b"UNC") && separator_at(bytes, 3);
         if !drive && !unc {
             return true;
         }
@@ -301,6 +321,15 @@ mod tests {
             }
 
             #[test]
+            fn a_pipe_path_in_any_mixed_separator_spelling_is_refused_without_blocking() {
+                for prefix in namespace_spellings(".") {
+                    let path = format!("{prefix}pipe\\gwz-regular-file-absent");
+                    let error = without_blocking(move || open(Path::new(&path))).unwrap_err();
+                    assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{prefix}");
+                }
+            }
+
+            #[test]
             fn a_pipe_handle_is_not_a_regular_file() {
                 use std::{os::windows::io::{FromRawHandle, RawHandle}, time::{SystemTime, UNIX_EPOCH}};
                 use windows_sys::Win32::{
@@ -322,6 +351,58 @@ mod tests {
                 let error = without_blocking(move || ensure_regular(&pipe)).unwrap_err();
                 assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
             }
+        }
+    }
+
+    /// The eight spellings of a four-character namespace prefix, `\\.\` and `\\?\` with each separator position either
+    /// kind: the first two characters and the last.
+    fn namespace_spellings(marker: &str) -> Vec<String> {
+        let mut spellings = Vec::new();
+        for first in ["\\", "/"] {
+            for second in ["\\", "/"] {
+                for last in ["\\", "/"] {
+                    spellings.push(format!("{first}{second}{marker}{last}"));
+                }
+            }
+        }
+        spellings
+    }
+
+    #[test]
+    fn every_mixed_separator_spelling_of_the_device_namespaces_is_recognised() {
+        assert_eq!(namespace_spellings(".").len(), 8);
+        for prefix in namespace_spellings(".") {
+            for tail in ["NUL", "pipe\\x", "pipe/x", "C:\\dir\\file"] {
+                let path = format!("{prefix}{tail}");
+                assert!(refuses_device_path(&path), "{path:?} must be refused");
+            }
+        }
+        for prefix in namespace_spellings("?") {
+            for tail in [
+                "GLOBALROOT\\Device\\Null",
+                "pipe\\x",
+                "pipe/x",
+                "Volume{1}\\file",
+                "C:\\dir\\CON",
+            ] {
+                let path = format!("{prefix}{tail}");
+                assert!(refuses_device_path(&path), "{path:?} must be refused");
+            }
+            // The extended-length namespace still names files: a drive or a UNC path, in either separator.
+            for tail in [
+                "C:\\dir\\known_hosts",
+                "C:/dir/known_hosts",
+                "UNC\\server\\share\\known_hosts",
+                "UNC/server/share/known_hosts",
+                "unc/server/share/known_hosts",
+            ] {
+                let path = format!("{prefix}{tail}");
+                assert!(!refuses_device_path(&path), "{path:?} must be accepted");
+            }
+        }
+        // The NT namespace prefix, in either separator.
+        for path in ["\\??\\C:\\x", "/??/C:/x", "\\??/C:/x", "/??\\C:\\x"] {
+            assert!(refuses_device_path(path), "{path:?} must be refused");
         }
     }
 

@@ -135,3 +135,31 @@ fn every_error_has_a_reason_and_a_kind() {
         assert_eq!(converted.to_string(), text);
     }
 }
+
+#[test]
+fn a_failed_send_is_a_timeout_a_refusal_or_a_window_that_is_gone() {
+    const ACCESS_DENIED: u32 = 5;
+    const INVALID_WINDOW_HANDLE: u32 = 1400;
+    const GEN_FAILURE: u32 = 31;
+    // (the Windows error `SendMessageTimeoutW` left, whether `IsWindow` still holds, what it stands for)
+    for (error, window_there, expected) in [
+        // The bound passing is a timeout, whether or not the window has gone since.
+        (ERROR_TIMEOUT, true, PageantError::Timeout),
+        (ERROR_TIMEOUT, false, PageantError::Timeout),
+        // UIPI blocks `WM_COPYDATA` from a lower integrity level, and the window is there: a refusal, not "gone"
+        // (state review P3-1).
+        (ACCESS_DENIED, true, PageantError::Rejected),
+        (GEN_FAILURE, true, PageantError::Rejected),
+        (INVALID_WINDOW_HANDLE, true, PageantError::Rejected),
+        // The same codes with no window left are the window gone.
+        (ACCESS_DENIED, false, PageantError::NoWindow),
+        (INVALID_WINDOW_HANDLE, false, PageantError::NoWindow),
+        (GEN_FAILURE, false, PageantError::NoWindow),
+    ] {
+        assert_eq!(
+            send_failure(error, window_there),
+            expected,
+            "error {error}, window there {window_there}"
+        );
+    }
+}

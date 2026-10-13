@@ -1,8 +1,8 @@
 //! The exchange's Windows calls: the caller's identity, the mapping with its descriptor, and the one
 //! `SendMessageTimeoutW`.
 use super::{
-    COPYDATA_ID, MAPPING_SIZE, PageantError, descriptor, frame, mapping_name, reply, timeout_ms,
-    valid_name,
+    COPYDATA_ID, MAPPING_SIZE, PageantError, descriptor, frame, mapping_name, reply, send_failure,
+    timeout_ms, valid_name,
 };
 use gwz_ids::IdSource;
 use std::{ptr, slice, time::Duration};
@@ -30,9 +30,6 @@ use windows_sys::Win32::{
         WM_COPYDATA,
     },
 };
-
-/// `ERROR_TIMEOUT`, the error `SendMessageTimeoutW` leaves when its bound passes.
-const ERROR_TIMEOUT: u32 = 1460;
 
 /// A handle that closes when dropped.
 struct Handle(HANDLE);
@@ -192,11 +189,11 @@ impl Exchange {
             )
         };
         if sent == 0 {
-            // SAFETY: reads the calling thread's last error.
-            return Err(match unsafe { GetLastError() } {
-                ERROR_TIMEOUT => PageantError::Timeout,
-                _ => PageantError::NoWindow,
-            });
+            // SAFETY: reads the calling thread's last error, before any other call can change it.
+            let error = unsafe { GetLastError() };
+            // SAFETY: only asks whether the window handle still names a window.
+            let window_there = unsafe { IsWindow(window) } != 0;
+            return Err(send_failure(error, window_there));
         }
         // Pageant has returned: it is done with the mapping, which may now be read and wiped.
         let result = if served == 0 {

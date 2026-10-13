@@ -5,6 +5,11 @@
 //! libgit2 when nothing needs the Git CLI, and the CLI otherwise. [`route`]
 //! holds the rule; this file picks the route and runs it. Removing the CLI
 //! route altogether (hooks, signing, filters) is lane 3's later work.
+//!
+//! Operator decision 2026-10-13: `commit -a` always runs the Git CLI, as in
+//! 1.0.17. The native `-a` staging ([`staging`] and the `Staging` steps of
+//! [`exec`]) is kept in the tree for later; only a [`RoutePolicy`] with
+//! `native_all` reaches it, and no production path sets that.
 
 use super::*;
 
@@ -14,11 +19,13 @@ mod exec;
 mod hooks;
 mod ident;
 mod message;
+mod notes;
 mod route;
 mod staging;
 mod system_config;
 
 pub use environment::GitEnvironment;
+pub use notes::RouteNotes;
 use route::CliReason;
 
 cfg_if::cfg_if! {
@@ -32,6 +39,7 @@ cfg_if::cfg_if! {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RoutePolicy {
     cli_only: bool,
+    native_all: bool,
 }
 
 impl Git2Backend {
@@ -43,7 +51,13 @@ impl Git2Backend {
     ) -> Result<(git2::Repository, route::CommitPlan), CliReason> {
         self.require_auto()?;
         let repo = route::open(path)?;
-        let plan = route::plan_commit(&self.environment, &repo, message, all)?;
+        let plan = route::plan_commit(
+            &self.environment,
+            &repo,
+            message,
+            all,
+            self.route_policy.native_all,
+        )?;
         Ok((repo, plan))
     }
 
@@ -67,6 +81,13 @@ impl Git2Backend {
         Ok(repo)
     }
 
+    /// Tell the caller's reader, if it gave one, why `operation` ran Git.
+    fn tell_cli(&self, operation: &str, path: &Path, reason: &CliReason) {
+        if let Some(notes) = &self.route_notes {
+            notes.cli_used(operation, path, reason);
+        }
+    }
+
     fn require_auto(&self) -> Result<(), CliReason> {
         if self.route_policy.cli_only {
             Err(CliReason::Forced)
@@ -80,9 +101,11 @@ cfg_if::cfg_if! {
     if #[cfg(test)] {
         impl RoutePolicy {
             /// The route rule decides.
-            pub(crate) const AUTO: Self = Self { cli_only: false };
+            pub(crate) const AUTO: Self = Self { cli_only: false, native_all: false };
             /// Always the Git CLI.
-            pub(crate) const CLI_ONLY: Self = Self { cli_only: true };
+            pub(crate) const CLI_ONLY: Self = Self { cli_only: true, native_all: false };
+            /// The route rule, with the kept native `commit -a`.
+            pub(crate) const NATIVE_ALL: Self = Self { cli_only: false, native_all: true };
         }
 
         /// The route one operation takes.
@@ -146,8 +169,12 @@ pub(super) fn commit(
     message: &str,
     all: bool,
 ) -> ModelResult<GitCommitResult> {
-    let Ok((repo, plan)) = backend.plan_commit(path, message, all) else {
-        return repository::commit_cli(backend, path, message, all);
+    let (repo, plan) = match backend.plan_commit(path, message, all) {
+        Ok(planned) => planned,
+        Err(reason) => {
+            backend.tell_cli("commit", path, &reason);
+            return repository::commit_cli(backend, path, message, all);
+        }
     };
     let oid = exec::commit(&repo, plan)?;
     // AD1 self-verify: HEAD is the new commit (read fresh).
@@ -170,16 +197,24 @@ pub(super) fn tag_create(
     message: Option<&str>,
     signed: bool,
 ) -> ModelResult<GitTagResult> {
-    let Ok((repo, plan)) = backend.plan_tag_create(path, name, message, signed) else {
-        return refs::tag_create_cli(backend, path, name, message, signed);
+    let (repo, plan) = match backend.plan_tag_create(path, name, message, signed) {
+        Ok(planned) => planned,
+        Err(reason) => {
+            backend.tell_cli("tag", path, &reason);
+            return refs::tag_create_cli(backend, path, name, message, signed);
+        }
     };
     exec::tag_create(&repo, name, plan)?;
     refs::verify_tag_created(backend, path, name)
 }
 
 pub(super) fn tag_delete(backend: &Git2Backend, path: &Path, name: &str) -> ModelResult<()> {
-    let Ok(repo) = backend.plan_tag_delete(path, name) else {
-        return refs::tag_delete_cli(backend, path, name);
+    let repo = match backend.plan_tag_delete(path, name) {
+        Ok(repo) => repo,
+        Err(reason) => {
+            backend.tell_cli("tag delete", path, &reason);
+            return refs::tag_delete_cli(backend, path, name);
+        }
     };
     exec::tag_delete(&repo, name)?;
     refs::verify_tag_deleted(backend, path, name)

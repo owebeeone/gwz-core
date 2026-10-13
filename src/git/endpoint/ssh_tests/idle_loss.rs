@@ -229,3 +229,35 @@ fn an_open_cancelled_before_its_channel_opens_is_cancelled() {
         .expect("a typed open failure");
     assert_eq!(failure.failure.code, ErrorCode::Cancelled);
 }
+
+/// State review P2-5: a connection that the peer resets in the middle of an exchange is disposed of, and its slot is
+/// free for the next open. The review's trigger is a `shutdown` that fails on the reset socket, which a forced
+/// disposal once returned, to be retried at once for ever with the slot held. Microsoft documents such errors, but
+/// the Windows host used to qualify the transport does not give one here, so this row passes with and without the
+/// fix there; the injected failures in `regression` and in `ssh_connection` are what tell them apart.
+#[test]
+fn a_connection_reset_in_the_middle_of_an_exchange_frees_its_slot_for_the_next_open() {
+    let case = Case::with_config(false, sessions(1));
+    let (mut stream, opened) = attachment::open(
+        &case.endpoint,
+        case.key(),
+        None,
+        GitService::UploadPack,
+        case.fixture.repository.to_str().unwrap(),
+        attachment::deadlines(&sessions(1), 5_000),
+    )
+    .unwrap();
+    assert!(!opened.reused);
+    assert_eq!(case.endpoint.pool().counts().total(), 1);
+    case.proxy.reset_all();
+    // The exchange is over: what the stream reports is a failure or an early end, and either way it closes.
+    let mut advertisement = Vec::new();
+    let _ = stream.read_to_end(&mut advertisement);
+    let _ = stream.close();
+    case.wait_for("the reset connection's slot is freed", |case| {
+        case.endpoint.pool().counts().total() == 0
+    });
+    // The one slot serves the next open, on a new connection.
+    assert!(!case.exchange().unwrap().reused);
+    assert_eq!(case.proxy.connections(), 2);
+}

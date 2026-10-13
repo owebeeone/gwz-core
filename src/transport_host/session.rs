@@ -287,17 +287,18 @@ impl Session {
             https.set_notes(notes.clone());
         }
     }
-    /// The redirect from https to http that ended `request`'s open, if one did (text T5). Told once.
+    /// The redirect from https to http that ended `request`'s open of `open`, if one did (text T5). Told once.
     pub(super) fn redirect_refusal(
         &self,
         request: &str,
+        open: &str,
     ) -> Option<crate::git::endpoint::https_worker::redirect_log::Refused> {
         self.state
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .https
             .as_ref()
-            .and_then(|https| https.redirect_refusal(request))
+            .and_then(|https| https.redirect_refusal(request, open))
     }
     /// Tells this driver which SSH home its runtime's endpoint reads under, and where that home came from.
     pub(super) fn set_home(&self, home: Option<Home>) {

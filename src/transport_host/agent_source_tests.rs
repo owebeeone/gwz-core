@@ -107,8 +107,8 @@ cfg_if::cfg_if! {
                 assert!(worded, "{words}");
                 let t6 = "Pageant did not answer within 0.5 seconds (the SSH stall limit, set by --ssh-timeout). Pageant may \
                           still be waiting for you to confirm the key or to enter its passphrase. Answer it and run the \
-                          command again, raise --ssh-timeout (0 removes the limit), or use --transport native, which waits \
-                          for Pageant as gwz 1.0 did.";
+                          command again, raise --ssh-timeout (up to 30 seconds; 0 removes the limit), or use --transport \
+                          native, which waits for Pageant as gwz 1.0 did.";
                 assert!(words.starts_with(t6), "{words}");
                 assert!(words[t6.len()..].starts_with(" (attempt "), "each retry asked Pageant again: {words}");
             }
@@ -119,6 +119,17 @@ cfg_if::cfg_if! {
                 let (words, worded) = open_error(source(&empty));
                 assert!(worded, "{words}");
                 assert!(words.starts_with("Pageant has no key this transport can use"), "{words}");
+            }
+
+            /// A Pageant that will not serve the request (one of another user, or at a higher privilege level) is told as
+            /// a refusal, not as the selected agent or as gone (code review P3-2).
+            #[test]
+            fn a_pageant_that_refuses_the_request_is_told_as_a_refusal() {
+                let refusing = Receiver::start(Reply::Refuse);
+                let (words, worded) = open_error(source(&refusing));
+                assert!(worded, "{words}");
+                assert!(words.starts_with("Pageant refused the request."), "{words}");
+                assert!(!words.contains("window is gone"), "{words}");
             }
 
             #[test]

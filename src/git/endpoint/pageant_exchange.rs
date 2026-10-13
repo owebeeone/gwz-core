@@ -57,7 +57,8 @@ pub(crate) enum PageantError {
     Os(u32),
     /// Pageant did not answer within the bound. The mapping is not read, and Pageant may still be working.
     Timeout,
-    /// Pageant answered that it would not serve the request.
+    /// Pageant would not serve the request: it answered that it would not, or the send was refused while its window was
+    /// still there (Windows blocks the message across integrity levels). Not a window that is gone.
     Rejected,
     /// The reply's length is not 1 to [`MAX_PAYLOAD`].
     BadReplyLength(u32),
@@ -103,6 +104,23 @@ impl From<PageantError> for io::Error {
             PageantError::Os(_) => io::ErrorKind::Other,
         };
         io::Error::new(kind, error)
+    }
+}
+
+/// `ERROR_TIMEOUT`, the error `SendMessageTimeoutW` leaves when its bound passes.
+const ERROR_TIMEOUT: u32 = 1460;
+
+/// What a failed `SendMessageTimeoutW` stands for, given the Windows `error` it left and whether `IsWindow` still holds
+/// for the window afterwards. Only the bound passing is a timeout. Any other failure of a window that is still there is
+/// the send being refused, as User Interface Privilege Isolation does (`ERROR_ACCESS_DENIED`) when Pageant runs at a
+/// higher integrity level than the caller: nothing was delivered, but Pageant is not gone, and the words must not say it
+/// is. A window that is gone is gone.
+#[allow(dead_code)]
+pub(crate) fn send_failure(error: u32, window_there: bool) -> PageantError {
+    match error {
+        ERROR_TIMEOUT => PageantError::Timeout,
+        _ if window_there => PageantError::Rejected,
+        _ => PageantError::NoWindow,
     }
 }
 

@@ -8,7 +8,9 @@ use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 
 /// Git variables whose value cannot change what a native commit or tag
-/// writes. Any other `GIT_*` variable sends the operation to the Git CLI.
+/// writes. Any other `GIT_*` variable sends the operation to the Git CLI
+/// (so do `GIT_ATTR_*`, which change how `commit -a` stores content, and
+/// `GIT_TEST_*`, which Git defines to change its behaviour).
 const IRRELEVANT_PREFIXES: &[&str] = &[
     "GIT_TRACE",
     "GIT_CURL_",
@@ -31,18 +33,12 @@ const IRRELEVANT_PREFIXES: &[&str] = &[
     "GIT_EXTERNAL_DIFF",
     "GIT_CEILING_DIRECTORIES",
     "GIT_DISCOVERY_ACROSS_FILESYSTEM",
-    "GIT_ATTR_",
     "GIT_NO_LAZY_FETCH",
-    "GIT_TEST_",
 ];
 
-/// Other variables kept: where Windows keeps Git's system configuration.
-const SYSTEM_PATHS: &[&str] = &[
-    "PROGRAMFILES",
-    "PROGRAMW6432",
-    "PROGRAMFILES(X86)",
-    "PROGRAMDATA",
-];
+/// Other variables kept: the search path the CLI route finds `git` on, and
+/// where Windows keeps Git's machine-wide configuration.
+const SYSTEM_PATHS: &[&str] = &["PATH", "PROGRAMDATA"];
 
 /// Variables the native route reads itself.
 const READ_NAMES: &[&str] = &[
@@ -57,8 +53,7 @@ const READ_NAMES: &[&str] = &[
     "GIT_CONFIG_NOSYSTEM",
 ];
 
-/// A snapshot of the `GIT_*` variables, `EMAIL` and the Windows program
-/// directories.
+/// A snapshot of the `GIT_*` variables, `EMAIL`, `PATH` and `PROGRAMDATA`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct GitEnvironment {
     vars: BTreeMap<String, OsString>,
@@ -135,11 +130,14 @@ mod tests {
     fn only_git_variables_and_email_are_kept_in_upper_case() {
         let env = GitEnvironment::from_vars([
             ("git_author_name", "A"),
-            ("PATH", "/bin"),
+            ("HOME", "/home/x"),
             ("EMAIL", "e@x"),
+            ("PATH", "/bin"),
         ]);
         assert_eq!(env.get("GIT_AUTHOR_NAME"), Some(OsStr::new("A")));
-        assert_eq!(env.get("PATH"), None);
+        assert_eq!(env.get("HOME"), None);
+        assert_eq!(env.get("PATH"), Some(OsStr::new("/bin")));
+        assert_eq!(env.unsupported(), None, "PATH is read, not refused");
         assert!(env.contains("EMAIL"));
     }
 
@@ -165,6 +163,8 @@ mod tests {
             "GIT_CONFIG_PARAMETERS",
             "GIT_CONFIG",
             "GIT_NO_REPLACE_OBJECTS",
+            "GIT_ATTR_SOURCE",
+            "GIT_TEST_ASSUME_DIFFERENT_OWNER",
         ] {
             let env = GitEnvironment::from_vars([(name, "x")]);
             assert_eq!(env.unsupported(), Some(name));

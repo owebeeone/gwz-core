@@ -205,14 +205,16 @@ impl HttpsEndpoint {
     pub(super) fn set_notes(&mut self, notes: crate::git::endpoint::setup_retry::NoteSink) {
         self.notes = Some(notes);
     }
-    /// The redirect from https to http that ended `request`'s open, told once (text T5). The endpoint names a
-    /// request's operation itself, so the log is asked by that name.
+    /// The redirect from https to http that ended the open of `open` (the canonical address the member was asked to
+    /// open) in `request`, told once (text T5). The endpoint names a request's operation itself, so the log is asked by
+    /// that name and the open.
     pub(super) fn redirect_refusal(
         &self,
         request: &str,
+        open: &str,
     ) -> Option<crate::git::endpoint::https_worker::redirect_log::Refused> {
         let operation = self.operations.get(request)?;
-        self.client.redirects().take_refused(&operation.name)
+        self.client.redirects().take_refused(&operation.name, open)
     }
     /// The operation's `--max-retries`, which its admission installs before
     /// its first open. An operation never given one retries three times.

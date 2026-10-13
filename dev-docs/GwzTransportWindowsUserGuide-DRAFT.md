@@ -1,20 +1,24 @@
 # Windows: authentication, proxy and SSH settings
 
-Proposed 1.1.0 user documentation, 2026-10-03; revised 2026-10-11. **DRAFT: these
-capabilities are not enabled in the current candidate build.** Texts in quotation
-marks or in indented blocks are the messages GWZ is meant to print; they are
-proposals until the release.
+Proposed 1.1.0 user documentation, 2026-10-03; revised 2026-10-13. **DRAFT until the
+release.** The capabilities described here are built into the Windows build of GWZ's
+transport (the qualification switch is retired); this page is not yet a published
+guide. Texts in quotation marks or in indented blocks are the messages GWZ prints;
+they stay proposals until the release.
 
 GWZ's own transport is the default. On Windows it uses Pageant, the OpenSSH
 agent, the machine's WinHTTP proxy (Windows' own HTTP proxy setting) and Windows
 authentication. If you need the behavior of gwz 1.0, choose the native transport
 (libgit2's, as gwz 1.0 used) before an operation. GWZ reports a failed operation;
-it never changes transports while it runs. (A plain `http://` remote is the one case
-that always uses the native transport, as described next.)
+it never changes transports while it runs. (A plain `http://` remote, a file or
+local-path remote and a `git://` remote always use the native transport, as described
+next.)
 
-GWZ's transport carries `https://` and SSH remotes. A plain `http://` remote is
-carried by the native transport instead, under every setting (see "One exception"
-below), and GWZ prints this warning before it sends the first request:
+GWZ's transport carries `https://` and SSH remotes. A file or local-path remote and
+a `git://` remote are carried by the native transport, which is how they have always
+gone. A plain `http://` remote is carried by the native transport instead, under every
+setting (see "One exception" below), and GWZ prints this warning before it sends the
+first request:
 
 ```
 warning: <url> is an http:// remote. GWZ carries it on the native transport: a Basic
@@ -161,8 +165,19 @@ that, the attempt fails**, with:
 ```
 Pageant did not answer within <n> seconds (the SSH stall limit, set by --ssh-timeout).
 Pageant may still be waiting for you to confirm the key or to enter its passphrase.
-Answer it and run the command again, raise --ssh-timeout (0 removes the limit), or
-use --transport native, which waits for Pageant as gwz 1.0 did.
+Answer it and run the command again, raise --ssh-timeout (up to 30 seconds; 0 removes
+the limit), or use --transport native, which waits for Pageant as gwz 1.0 did.
+```
+
+Raising `--ssh-timeout` helps only up to the 30-second setup budget. If the prompt
+outlasts that budget, the attempt ends with:
+
+```
+Pageant did not answer within 30 seconds, the longest GWZ spends setting up one
+connection, and raising --ssh-timeout does not lengthen that. Pageant may still be
+waiting for you to confirm the key or to enter its passphrase. Answer it sooner and
+run the command again, use --ssh-timeout 0 (which removes the limit), or use
+--transport native, which waits for Pageant as gwz 1.0 did.
 ```
 
 GWZ retries a failed setup attempt, and each retry asks Pageant again, so with
@@ -171,6 +186,19 @@ the first time it uses a key, enter it: the key then stays loaded and the next
 attempt succeeds. An ssh-agent that confirms every use (`ssh-add -c`) behaves the
 same way on macOS and Linux today. gwz 1.0.17 waits for the prompt (see the
 changes table).
+
+**If Pageant refuses the request.** A Pageant that runs at a higher privilege level
+than the command (for example as administrator), or as another account, may not
+serve the request at all; Windows blocks the message between privilege levels. GWZ
+then reports a refusal, not a missing Pageant, and asks no other agent:
+
+```
+Pageant refused the request. Pageant is the SSH agent GWZ selected, because a Pageant
+window is running. It may be running as another user, or at a higher privilege level
+than this command (for example as administrator), so it does not serve this account.
+GWZ does not ask another SSH agent in its place. Run Pageant as the same user and at
+the same privilege level as this command, or close Pageant to use the OpenSSH agent.
+```
 
 **What GWZ does not check about the agent.** GWZ does not refuse a Pageant that
 belongs to another user on the same desktop, and it does not check who created
@@ -331,9 +359,9 @@ default for a bare entry; accepted by the operator's decision of 2026-10-12 and 
 measured on gwz 1.0.17), `http://host:port`, or a list such as
 `http=host:port;https=host:port`. An `https://` repository goes through the proxy
 by asking it to open a tunnel to the server (a CONNECT request). **That was measured
-with gwz 1.0.17 against one public HTTPS server. GWZ's own transport has not yet
-been tested through a proxy**; plan step 4.7 does it, and this section is checked
-again then. In a list, the entry for the connection's scheme is used (a bare entry
+with gwz 1.0.17 against one public HTTPS server, and GWZ's own transport was then
+run through the same kind of tunnel on a Windows test host (sixteen rows, plan step
+4.7), with the results below.** In a list, the entry for the connection's scheme is used (a bare entry
 beside a list applies to https, and an explicit `https=` entry beats it). **If the
 setting is a list with no entry for `https` (for example `http=proxy:8080` or
 `socks=proxy:1080` only), GWZ refuses**, with:
@@ -580,8 +608,7 @@ checked.
 or in the OpenSSH agent; Pageant and the OpenSSH agent together; SSH host keys
 other than RSA; key files other than unencrypted RSA PEM; proxy sign-in; PAC
 scripts (and whether the native transport follows them); GWZ's own transport through
-a proxy (so far measured only with gwz 1.0.17, against one public HTTPS server);
-through a proxy, an HTTPS server written as an IP address, a redirect from one HTTPS
+a proxy beyond the forms the step 4.7 rows ran; through a proxy, an HTTPS server written as an IP address, a redirect from one HTTPS
 server to another, this computer's own address as an HTTPS server, and a proxy entry
 with no port (the request goes to the proxy, goes direct only where a bypass rule
 above matches (this computer's own address included), or GWZ refuses; it does not go

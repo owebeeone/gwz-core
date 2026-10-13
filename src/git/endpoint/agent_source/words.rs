@@ -15,6 +15,9 @@ impl AgentSource {
             Self::Pageant { .. } if cause == Some(SetupFailureCause::NotFound) => {
                 Some(super::pageant_words::GONE_WORDS.to_owned())
             }
+            // A Pageant that refused the request (`AgentFault::Denied`, which carries no cause) says so; the selected
+            // message below stands for a cause that has no words of its own.
+            Self::Pageant { .. } if cause.is_none() => self.denied_reason(),
             Self::Pageant { sock_ignored, .. } => Some(pageant_selected(*sock_ignored)),
             Self::NamedPipe(pipe) => Some(match cause {
                 // The pipe is not there. The default pipe is the OpenSSH Authentication Agent service's, which is

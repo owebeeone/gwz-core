@@ -108,6 +108,9 @@ fn other_date_forms_go_to_git() {
         "2001-02-03",
         "2001-02-03 04:05:06 +0530",
         "@1015243567",
+        // A leading zero is not a canonical epoch to Git.
+        "012345678 +0000",
+        "@0123 +0000",
     ] {
         run_child(
             &format!("{PREFIX}other_date_forms_child"),

@@ -198,6 +198,34 @@ cfg_if::cfg_if! {
             authenticate(&pem, &public).unwrap();
         }
 
+        /// State review P2-6: text that libssh2's WinCNG PEM reader never finishes reading is refused before the
+        /// call, as a limit, and promptly. Were it passed on, the setup thread would spin at full speed beyond any
+        /// clock (and `authenticate` would not return within its fifteen seconds).
+        #[test]
+        fn key_files_that_the_cng_pem_reader_never_finishes_are_refused_before_the_library_is_called() {
+            let dir = tempfile::tempdir().unwrap();
+            let rsa = keys::keygen(dir.path(), "rsa", "rsa", Some(2048));
+            let public = keys::public(dir.path(), "rsa");
+            let openssh = fs::read_to_string(&rsa).unwrap();
+            let pem = fs::read_to_string(container(dir.path(), &rsa, "rsa-pem", "PEM")).unwrap();
+            let (header, rest) = pem.split_once('\n').unwrap();
+            assert_eq!(header, "-----BEGIN RSA PRIVATE KEY-----");
+            let (body, footer) = rest.rsplit_once("-----END").unwrap();
+            let one_line = format!("{header}\n{}\n-----END{footer}", body.lines().collect::<String>());
+            for (name, text) in [
+                // A header that is not exactly the RSA header, above an OpenSSH key the container check admits.
+                ("trailing-space-header", format!("{header} \n{openssh}")),
+                // The traditional PEM with its base64 on one line, for libssh2 a line of over 1500 characters.
+                ("single-line-body", one_line),
+            ] {
+                let path = dir.path().join(name);
+                fs::write(&path, text).unwrap();
+                let started = Instant::now();
+                refused_as_a_limit(&path, &public);
+                assert!(started.elapsed() < Duration::from_secs(5), "{name}: {:?}", started.elapsed());
+            }
+        }
+
         #[test]
         fn every_other_key_file_form_is_refused_as_a_limit_whatever_its_type() {
             let dir = tempfile::tempdir().unwrap();

@@ -388,7 +388,9 @@ any of these holds.
    `reference-transaction`, and also `post-index-change`. For a tag create or delete:
    `reference-transaction` only. On Unix a hook counts only when it has an executable bit; on
    Windows any file with the hook's exact name counts, and so does `<name>.exe`. `*.sample`
-   files never count.
+   files never count. A hook declared in configuration counts too: Git 2.54 and later run
+   `hook.<name>.event` and `hook.<name>.command`, native knows none of them, so **any `hook.*`
+   key** in any configuration level sends a commit, a tag create and a tag delete to Git.
 2. **Signing is configured.** Commit: `commit.gpgSign` true (or a value native cannot read as
    false). Tag create: `-s`, `tag.gpgSign`, or `tag.forceSignAnnotated` for an annotated tag.
 3. **State or configuration native cannot reproduce exactly.**
@@ -396,7 +398,10 @@ any of these holds.
      (`MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `rebase-merge`, `rebase-apply`,
      `sequencer`, `BISECT_LOG`), a leftover `MERGE_MSG` or `SQUASH_MSG`, unmerged index entries,
      an intent-to-add entry, and an `index.lock` (Git reports the lock; so does the CLI route).
-   * `commit -a`: any `filter.*` key; `core.autocrlf` other than an explicit `false` (on
+   * `commit -a`: **always Git** (operator decision 2026-10-13, below), whatever the repository
+     holds. The conditions that follow are those of the native `-a` code, which is kept in the
+     tree for later and exercised by the tests (an explicit route policy), but no production
+     path reaches it: any `filter.*` key; `core.autocrlf` other than an explicit `false` (on
      Windows an unset value also goes to Git, since Git for Windows ships `true` in a system
      file libgit2 may not find); `core.eol` other than `lf`; `core.fsmonitor`; a changed path with
      a `text`, `eol`, `crlf`, `filter`, `ident` or `working-tree-encoding` attribute; a
@@ -408,23 +413,39 @@ any of these holds.
      `gitdir/i:` (libgit2 has no `hasconfig:`; Windows `gitdir:` goes to Git), a `GIT_*` variable
      native does not honour (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`,
      `GIT_OBJECT_DIRECTORY`, `GIT_NAMESPACE`, `GIT_REFLOG_ACTION`, `GIT_CONFIG_COUNT`,
-     `GIT_CONFIG_PARAMETERS`, any other not known to be harmless), and `GIT_CONFIG_GLOBAL` while an XDG
-     configuration file exists (Git ignores that file then; libgit2 does not).
-   * System configuration: libgit2 reads one system file, while a Git on the machine may read
-     others. Unless `GIT_CONFIG_NOSYSTEM` is true, any of `/etc/gitconfig`,
-     `/opt/homebrew/etc/gitconfig`, `/usr/local/etc/gitconfig`, Apple's command-line-tools
-     `gitconfig` (Windows: the Git for Windows `etc/gitconfig` under `%PROGRAMFILES%`, and
-     `%PROGRAMDATA%/Git/config`) that exists and is not the file libgit2 reads, or that exists
-     and cannot be opened, sends the operation to Git; so does an unparsable
-     `GIT_CONFIG_NOSYSTEM`. With `GIT_CONFIG_SYSTEM` set, that one file is read by both Git and
-     libgit2 and is checked only for readability.
+     `GIT_CONFIG_PARAMETERS`, `GIT_ATTR_*`, `GIT_TEST_*`, any other not known to be harmless),
+     and `GIT_CONFIG_GLOBAL` while an XDG configuration file exists (Git ignores that file then;
+     libgit2 does not). An `include.path` (or `includeIf.<condition>.path`) that is empty, has no
+     value, or is not absolute, relative or `~/`-led goes to Git too: libgit2 silently ignores
+     `~user/…` and `%(prefix)/…`, and the file they name can set hooks or signing. `core.fsync`
+     or `core.fsyncMethod` set to any value goes to Git: libgit2 honours only
+     `core.fsyncObjectFiles`, so a ref could outlive an unsynced object.
+   * System configuration: libgit2 reads one system file while the `git` the CLI route would run
+     may read others, so the decision starts from that `git`: the first `git` (`git.exe`) on the
+     `PATH` the backend captured when it was built, with no relative entry before it. Its system
+     file is derived from where it sits: `<prefix>/etc/gitconfig` (a build for `/usr`, and
+     `/bin/git`, read `/etc/gitconfig`), the `<prefix>/share/git-core/gitconfig` form, the same
+     for the prefix a link resolves to (a Homebrew `Cellar`); Apple's `/usr/bin/git` stub reads
+     the command-line-tools and Xcode files; Git for Windows keeps `etc/gitconfig` at the root
+     of the install above `cmd`, `bin` and `mingw64/bin`, and reads `%PROGRAMDATA%/Git/config`.
+     Unless `GIT_CONFIG_NOSYSTEM` is true, the operation goes to Git when (a) no `git` resolves
+     on `PATH` or no prefix can be derived from it; (b) a file that `git` may read exists and is
+     not a file libgit2 reads; (c) a file libgit2 reads exists and is not one that `git`
+     certainly reads (libgit2 reads `/etc/gitconfig` where a Homebrew `git` does not); or (d)
+     any of these exists and cannot be opened. An unparsable `GIT_CONFIG_NOSYSTEM` goes to Git.
+     With `GIT_CONFIG_SYSTEM` set, that one file is read by both and is checked only for
+     readability. With `GIT_CONFIG_NOSYSTEM` true, Git reads no system file and neither does
+     libgit2, except on Windows: libgit2 always reads `%PROGRAMDATA%/Git/config`, so while that
+     file exists `NOSYSTEM` is no proof and the operation goes to Git.
    * Identity: name or email not given by `GIT_AUTHOR_*` / `GIT_COMMITTER_*`, `author.*` /
      `committer.*` or `user.*` (so Git guesses from the account or fails, and the CLI does
      either); `EMAIL` alone; a name or email Git would strip or reject; a date other than Git's raw
-     `[@]<seconds> <+-hhmm>` or ISO 8601 `<date>T<time> <offset>`.
+     `[@]<seconds> <+-hhmm>` (the seconds with no leading zero) or ISO 8601 `<date>T<time> <offset>`.
+     The author and the committer take one "now" between them when neither has a date of its
+     own, as Git reads its clock once.
    * Message: empty after cleanup (the CLI leaves the same index and `COMMIT_EDITMSG` effects
      Git does), a NUL byte, `commit.cleanup` other than `default`, `whitespace`, `strip`,
-     `scissors` or `verbatim`, `core.commentChar` / `core.commentString` under `strip` or for a tag,
+     `scissors` or `verbatim` in exactly that case (`Strip` is an error to Git), `core.commentChar` / `core.commentString` under `strip` or for a tag,
      `i18n.commitEncoding` other than UTF-8.
    * Tag: a name outside `[A-Za-z0-9._+/-]` or of a shape Git and libgit2 judge differently
      (`HEAD`, `..`, `@{`, a leading `-`, `.` or `/`, a trailing `.` or `/`, `.lock`), and an unborn
@@ -432,6 +453,28 @@ any of these holds.
 4. **Pre-existing behaviour.** Nothing that already refused or checked configuration changes:
    a tag with `tag.gpgSign` or a commit with `commit.gpgSign` still fails or succeeds exactly as
    Git does, because it runs Git.
+
+A native tag create takes the reference lock, checks under it that the tag does not exist, then
+writes it, so a tag another process makes after the early check is refused, not overwritten.
+
+### Operator decision 2026-10-13 — `commit -a` is always Git
+
+Step 5.6 of the Windows parity plan found the native `-a` staging unsafe in two ways (a directory it
+cannot read stages the deletion of every tracked file under it; it does not hold `index.lock`
+across read, modify and write). `commit -a` therefore always goes to the Git CLI, as in 1.0.17:
+`CliReason::AllCommit`, whatever the input. Plain `commit` and `tag` stay native. The native `-a`
+code (`staging.rs`, the staging steps of `exec.rs`) is not removed: it is kept for later, reached
+only by a route policy the tests set, and its differential rows keep running against Git. Bringing
+it back needs those two defects fixed first.
+
+### Operator decision 2026-10-14 — native commit and tag stay a module of gwz-core
+
+The native commit and tag route stays a module inside gwz-core (`src/git/gitbackend/native_commit`);
+it is not split into a separate crate. No code change follows from this decision.
+
+Every refusal also reaches a person: with `--verbose` in human output the CLI prints one line,
+`note: commit in <repository>: ran the Git CLI (<reason>)` (`tag` and `tag delete` the same), and
+no other output mode prints it.
 
 Known differences on the native route, none visible in a commit, a tag or a reference: it does
 not write `.git/COMMIT_EDITMSG`, does not run `git gc --auto`, and does not refresh the index's

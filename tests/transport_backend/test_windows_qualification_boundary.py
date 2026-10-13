@@ -5,9 +5,8 @@ gwz_windows_https_qualification)`. S4.5 turns every such site into the plain uni
 `gwz_transport_candidate`, so this file asserts the inverse of what it once did: the cfg name is gone from gwz-core, and
 the sites that carried it select the build by platform and the candidate switch alone.
 
-gwz-cli and gwz-py still carry the switch until steps 5.2 and 5.3. `ConsumerRepositories` keeps their assertions while
-they do, and skips itself in a checkout that has no such sibling or whose sibling no longer names the switch; those steps
-delete it.
+gwz-cli (step 5.2) and gwz-py (step 5.3) no longer name the switch either; the class that checked their sites is gone.
+Only this repository's assertions remain.
 
 Inspects inactive branches with the source lexer; reads source only, so it runs without a Windows host or a build.
 """
@@ -22,7 +21,7 @@ guard = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(guard)
 # Spelled in two halves so that this file does not name the switch it asserts the absence of.
 SWITCH = "gwz_windows_https_" + "qualification"
-# The shape the switch's sites had in gwz-cli and gwz-py, which 5.2 and 5.3 retire.
+# The shape the switch's sites had before S4.5 gave them the plain arm below; no file may carry it again.
 UNION = f"any(all(unix, gwz_transport_candidate), all(windows, gwz_transport_candidate, {SWITCH}))"
 # The shape S4.5 gives a site whose unix and windows arms are one.
 PLATFORMS = "all(gwz_transport_candidate, any(unix, windows))"

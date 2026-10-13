@@ -156,12 +156,14 @@ impl Offers {
             if total > 65536 {
                 return Err(ErrorCode::Protocol);
             }
-            // Commas inside quoted Basic/Digest parameters are not offer boundaries.
-            let text = value.to_str().map_err(|_| ErrorCode::Protocol)?;
+            // Commas inside quoted Basic/Digest parameters are not offer boundaries. The challenge is parsed on bytes:
+            // a realm may hold obs-text or UTF-8, which `HeaderValue::to_str` refuses, and only a scheme token has to
+            // be ASCII (a name that is not one is no scheme this transport answers).
+            let text = value.as_bytes();
             let mut quoted = false;
             let mut escaped = false;
             let mut start = 0;
-            for (i, byte) in text.bytes().enumerate() {
+            for (i, byte) in text.iter().copied().enumerate() {
                 if escaped {
                     escaped = false;
                     continue;
@@ -185,25 +187,27 @@ impl Offers {
         }
         Ok(result)
     }
-    fn part(&mut self, text: &str, probe: audit::Probe) -> Result<(), ErrorCode> {
-        let text = text.trim();
-        let (name, token) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
-        let scheme = if name.eq_ignore_ascii_case("Negotiate") {
+    fn part(&mut self, text: &[u8], probe: audit::Probe) -> Result<(), ErrorCode> {
+        let text = text.trim_ascii();
+        let (name, token) = match text.iter().position(u8::is_ascii_whitespace) {
+            Some(at) => (&text[..at], &text[at + 1..]),
+            None => (text, &[][..]),
+        };
+        let scheme = if name.eq_ignore_ascii_case(b"Negotiate") {
             Some(NativeScheme::Negotiate)
-        } else if name.eq_ignore_ascii_case("NTLM") {
+        } else if name.eq_ignore_ascii_case(b"NTLM") {
             Some(NativeScheme::Ntlm)
         } else {
-            self.basic |= name.eq_ignore_ascii_case("Basic");
+            self.basic |= name.eq_ignore_ascii_case(b"Basic");
             None
         };
         if let Some(scheme) = scheme {
             if self.native.iter().any(|offer| offer.scheme == scheme) {
                 return Err(ErrorCode::Protocol);
             }
-            let token = token.trim();
             self.native.push(Offer {
                 scheme,
-                token: Header::copy(token.as_bytes(), probe),
+                token: Header::copy(token.trim_ascii(), probe),
             });
         }
         Ok(())
