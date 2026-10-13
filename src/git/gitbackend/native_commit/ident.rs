@@ -141,6 +141,15 @@ fn digits(text: &str, min: usize, max: usize) -> Option<i64> {
     text.parse().ok()
 }
 
+/// A count of seconds as Git writes it: no leading zero (a nine-digit date
+/// with one is not a date to Git).
+fn epoch(text: &str, min: usize, max: usize) -> Option<i64> {
+    if text.len() > 1 && text.starts_with('0') {
+        return None;
+    }
+    digits(text, min, max)
+}
+
 /// Days from 1970-01-01 to the given civil date (proleptic Gregorian).
 fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     let year = if month <= 2 { year - 1 } else { year };
@@ -196,8 +205,8 @@ pub(super) fn parse_date(raw: &OsStr) -> Option<(i64, i32)> {
     let text = raw.to_str()?;
     let (stamp, zone) = text.split_once(' ')?;
     let numeric = match stamp.strip_prefix('@') {
-        Some(seconds) => digits(seconds, 1, 12),
-        None => digits(stamp, 9, 12),
+        Some(seconds) => epoch(seconds, 1, 12),
+        None => epoch(stamp, 9, 12),
     };
     if let Some(seconds) = numeric {
         if zone == "Z" {
@@ -312,6 +321,7 @@ mod tests {
             parse_date(OsStr::new("@1015243567 +0000")),
             Some((1_015_243_567, 0))
         );
+        assert_eq!(parse_date(OsStr::new("@0 +0000")), Some((0, 0)));
     }
 
     #[test]
@@ -325,6 +335,11 @@ mod tests {
             "Sat, 03 Feb 2001 04:05:06 +0530",
             "2001-02-03 04:05:06 +0530",
             "1015243567",
+            // A leading zero is not canonical to Git.
+            "012345678 +0000",
+            "0123456789 +0000",
+            "@0123 +0000",
+            "@00 +0000",
             "",
         ] {
             assert_eq!(parse_date(OsStr::new(odd)), None, "{odd:?}");

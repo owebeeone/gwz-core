@@ -56,6 +56,7 @@ pub use contract::*;
 pub use factory::make_repository;
 #[cfg(test)]
 pub(crate) use factory::make_repository;
+pub use native_commit::RouteNotes;
 pub use transport_observations::TransportObservations;
 pub(crate) use transport_support::identity::has_options as has_transport_options;
 pub(crate) use transport_support::identity::{
@@ -267,6 +268,7 @@ impl GitBackend for Git2Backend {
             observations: Default::default(),
             environment: self.environment.clone(),
             route_policy: self.route_policy,
+            route_notes: self.route_notes.clone(),
         }))
     }
     fn validate_transport_scope(
