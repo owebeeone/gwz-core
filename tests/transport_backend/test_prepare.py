@@ -161,6 +161,7 @@ def test_tls_stack_is_native_tls_on_apple_and_windows_and_openssl_directly_elsew
     assert "native-tls" not in openssl["dependencies"]
     assert "tokio-native-tls" not in openssl["dependencies"]
     assert openssl["dev-dependencies"]["native-tls"] == "=0.2.18"
+    assert openssl["dev-dependencies"]["tokio-native-tls"] == "=0.3.1"
     assert "native-tls" not in manifest["dependencies"]
     assert "openssl" not in (ROOT / "Cargo.toml").read_text()
 

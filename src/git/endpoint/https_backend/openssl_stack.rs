@@ -10,15 +10,26 @@
 //!
 //! Nothing else differs from what `native-tls` made: the context starts
 //! from the options, mode, cipher list and verify mode of the `openssl` crate's
-//! `SslConnector` (which `native-tls` builds on), no protocol bounds are
-//! set, a session verifies the peer's chain against the store and its host
-//! name or address as `SslConnector` does, and sends the server name unless
-//! the host is an address. `tests` checks that against a context made by
-//! `SslConnector` itself, and the bytes of a ClientHello against `native-tls`.
+//! `SslConnector` (which `native-tls` builds on), the protocol floor is TLS
+//! 1.2 and there is no ceiling (`native-tls`'s `TlsConnectorBuilder` defaults,
+//! applied over whatever a host's `openssl.cnf` says), a session verifies the
+//! peer's chain against the store and its host name or address as
+//! `SslConnector` does, and sends the server name unless the host is an
+//! address. `tests` checks that against a context made by `SslConnector`
+//! itself, a server capped at TLS 1.1 against the floor, and the bytes of a
+//! ClientHello and the channel binding against `native-tls`.
+//!
+//! There is no fallback to OpenSSL's default verify paths: a connector with no
+//! roots loader trusts only the endpoint's own roots. The endpoint always
+//! supplies the loader on this stack (`endpoint_environment`), which reads the
+//! paths from the command's environment snapshot and not the process's.
 use super::{Refused, RootsLoader};
 use openssl::{
     error::ErrorStack,
-    ssl::{Ssl, SslContext, SslContextBuilder, SslMethod, SslMode, SslOptions, SslVerifyMode},
+    ssl::{
+        Ssl, SslContext, SslContextBuilder, SslMethod, SslMode, SslOptions, SslVerifyMode,
+        SslVersion,
+    },
     x509::{X509, store::X509StoreBuilder, verify::X509CheckFlags},
 };
 use std::{io, net::IpAddr};
@@ -55,8 +66,9 @@ pub(crate) struct Connector {
 }
 
 impl Connector {
-    /// The configuration that trusts OpenSSL's default verify paths (`platform`
-    /// is `None`) or only `platform`'s roots, and `roots` besides.
+    /// The configuration that trusts `platform`'s roots and `roots` besides.
+    /// With no loader (`platform` is `None`) it trusts `roots` alone: the
+    /// store is empty, never OpenSSL's default verify paths.
     pub(crate) fn build(
         platform: Option<&RootsLoader>,
         roots: &[Certificate],
@@ -72,7 +84,7 @@ impl Connector {
     ) -> Result<SslContext, ErrorStack> {
         let mut context = base()?;
         let mut store = X509StoreBuilder::new()?;
-        fill(&mut store, platform, roots)?;
+        fill(&mut store, platform, roots);
         context.set_cert_store(store.build());
         Ok(context.build())
     }
@@ -108,7 +120,11 @@ impl Connector {
 /// A context as the `openssl` crate's `SslConnector` makes it, bar its trust
 /// roots: its private `ctx`, and the rest of `SslConnector::builder`, without
 /// the `set_default_verify_paths` that builder ends its roots with, and with
-/// the protocol bounds `native-tls` clears (to the library's defaults).
+/// the protocol bounds `native-tls` 0.2.18 applies by default: a floor of TLS
+/// 1.2 (`TlsConnectorBuilder`'s `min_protocol`) and no ceiling. The floor is
+/// set, not left to the host: an explicit minimum overrides a distribution's
+/// `MinProtocol`, so leaving it unset would let a policy lower than 1.2 apply,
+/// and clearing it would lower it to the library's.
 fn base() -> Result<SslContextBuilder, ErrorStack> {
     let mut context = SslContextBuilder::new(SslMethod::tls())?;
     let mut options = SslOptions::ALL
@@ -127,7 +143,7 @@ fn base() -> Result<SslContextBuilder, ErrorStack> {
     );
     context.set_cipher_list(CIPHERS)?;
     context.set_verify(SslVerifyMode::PEER);
-    context.set_min_proto_version(None)?;
+    context.set_min_proto_version(Some(SslVersion::TLS1_2))?;
     context.set_max_proto_version(None)?;
     Ok(context)
 }
@@ -137,38 +153,23 @@ fn base() -> Result<SslContextBuilder, ErrorStack> {
 trait Store {
     /// Adds `root`. A root the store already holds is not an error.
     fn add(&mut self, root: Certificate);
-    /// Reads OpenSSL's default verify paths: a parse of the system bundle.
-    fn add_defaults(&mut self) -> Result<(), ErrorStack>;
 }
 impl Store for X509StoreBuilder {
     fn add(&mut self, root: Certificate) {
         let _ = self.add_cert(root.0);
     }
-    fn add_defaults(&mut self) -> Result<(), ErrorStack> {
-        self.set_default_paths()
-    }
 }
 
-/// Puts into `store` the trust of a connector: `platform`'s roots, once, or
-/// OpenSSL's default verify paths if there is no loader, and `roots` besides.
-/// With a loader the default paths are not read at all.
-fn fill(
-    store: &mut impl Store,
-    platform: Option<&RootsLoader>,
-    roots: &[Certificate],
-) -> Result<(), ErrorStack> {
-    match platform {
-        Some(platform) => {
-            for root in platform() {
-                store.add(root);
-            }
-        }
-        None => store.add_defaults()?,
+/// Puts into `store` the trust of a connector: `platform`'s roots, loaded once
+/// (none without a loader), and `roots` besides. OpenSSL's default verify paths
+/// are never read.
+fn fill(store: &mut impl Store, platform: Option<&RootsLoader>, roots: &[Certificate]) {
+    for root in platform.map(|platform| platform()).unwrap_or_default() {
+        store.add(root);
     }
     for root in roots {
         store.add(root.clone());
     }
-    Ok(())
 }
 
 cfg_if::cfg_if! { if #[cfg(test)] { mod tests; } }

@@ -154,7 +154,7 @@ manifest = replace_once(manifest, '[dev-dependencies]\n', '[dev-dependencies]\n'
 # default verify paths with it (src/git/endpoint/verify_paths.rs).
 manifest += '\n[target.\'cfg(any(windows, target_vendor = "apple"))\'.dependencies]\nnative-tls = "=0.2.18"\ntokio-native-tls = "=0.3.1"\n'
 manifest += '\n[target.\'cfg(not(any(windows, target_vendor = "apple")))\'.dependencies]\nopenssl = "=0.10.81"\nopenssl-probe = "=0.1.6"\n'
-manifest += '\n[target.\'cfg(not(any(windows, target_vendor = "apple")))\'.dev-dependencies]\nnative-tls = "=0.2.18"\n'
+manifest += '\n[target.\'cfg(not(any(windows, target_vendor = "apple")))\'.dev-dependencies]\nnative-tls = "=0.2.18"\ntokio-native-tls = "=0.3.1"\n'
 # gwz-core names the git2-rs fork (gwz-git2) directly, with its vendored
 # libgit2, so the candidate needs no [patch] and no feature of its own.
 # The placement guide's example (docs/TransportPlacement.md), compiled with
