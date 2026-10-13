@@ -31,6 +31,7 @@ pub(crate) mod stream_io;
 
 pub(crate) mod ca_bundle;
 pub(crate) mod https_auth;
+pub(crate) mod https_backend;
 pub(crate) mod https_connection;
 pub(crate) mod https_destination;
 pub(crate) mod https_handshake;

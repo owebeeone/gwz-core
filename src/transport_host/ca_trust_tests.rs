@@ -11,7 +11,7 @@
 
 use super::endpoint_environment::endpoint_config;
 use super::https_tests::unrelated_ca;
-use crate::git::endpoint::verify_paths::Paths;
+use crate::git::endpoint::{https_backend::Certificate, verify_paths::Paths};
 use crate::session_host::EnvironmentSnapshot;
 use std::{
     cell::Cell,
@@ -34,7 +34,7 @@ pub(super) fn snapshot(pairs: &[(&str, &OsStr)]) -> EnvironmentSnapshot {
     .unwrap()
 }
 
-fn der(roots: &[native_tls::Certificate]) -> Vec<Vec<u8>> {
+fn der(roots: &[Certificate]) -> Vec<Vec<u8>> {
     roots.iter().map(|root| root.to_der().unwrap()).collect()
 }
 

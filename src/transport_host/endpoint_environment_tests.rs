@@ -48,7 +48,7 @@ fn the_endpoint_configuration_comes_from_the_snapshot() {
     let (ssh, https) = endpoint_config(&environment).unwrap();
     assert_eq!(ssh.ssh.as_ref().unwrap().home, home);
     assert_eq!(ssh.ssh.as_ref().unwrap().agent, expected_agent(&agent));
-    let der = |roots: &[native_tls::Certificate]| -> Vec<Vec<u8>> {
+    let der = |roots: &[crate::git::endpoint::https_backend::Certificate]| -> Vec<Vec<u8>> {
         roots.iter().map(|root| root.to_der().unwrap()).collect()
     };
     let expected = crate::git::endpoint::ca_bundle::certificates(&pem).unwrap();

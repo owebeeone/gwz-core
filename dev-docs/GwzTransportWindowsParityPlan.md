@@ -606,6 +606,7 @@ They are designed in by being OS-free above the closure, then proved on the Wind
 - **Files.** reports beside the plan.
 - **dabeest.** None; the tree is already proved.
 - **Review.** **Dual** (TR4.7 by name).
+- **State (2026-10-14).** **Accepted.** Round 1 (tuple root `42feaa9d`, gwz-core `37705303`) was NO-GO on both axes with no architectural root cause (`GwzTransportWindows-5.6-ReviewCode.md`, `-ReviewState.md`). One merged remediation of lanes A to D (`GwzTransportWindows-5.6-RemPlan.md`) was re-verdicted by the same two reviewers: GO on the Code axis (`-ReviewCode-2.md`) and GO on the State axis (`-ReviewState-2.md`), at root `8fc5acb1`, gwz-core `45fe6e6a`, gwz-transport `a27817b9`, gwz-cli `cd72b954`, gwz-py `ea94500a`. Every round-1 finding is closed; one remediation round of the two-round cap was used. The new P3-level observations (local-wait attribution by site and recency, the POST re-checkout's allocation, the D7 clause narrower than the RemPlan's wording) are follow-ups, not findings.
 
 ### Phase 6: Windows qualification and release gating
 

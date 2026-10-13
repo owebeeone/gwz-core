@@ -1,6 +1,9 @@
 {
   "done": true,
   "entries": [
+    {"path": "src/git/endpoint/https_backend.rs", "kind": "gate", "gate": "else", "target": "arm: use openssl_stack::{Certificate, Connector, Stream, tls_server_end_point}", "state": "paired", "owner": ["0.5"], "appendix": "new"},
+    {"path": "src/git/endpoint/https_backend.rs", "kind": "gate", "gate": "else", "target": "mod openssl_stack", "state": "paired", "owner": ["0.5"], "appendix": "new"},
+    {"path": "src/git/endpoint/https_fixture/tests.rs", "kind": "gate", "gate": "else", "target": "arm: fn platform_roots", "state": "paired", "owner": ["0.5"], "appendix": "new"},
     {"path": "src/git/endpoint/https_worker/native/tests.rs", "kind": "gate", "gate": "unix", "target": "arm: fn isolate", "state": "paired", "owner": ["0.5"], "appendix": "G24"},
     {"path": "src/git/endpoint/https_worker/native/tests.rs", "kind": "os", "gate": "os::unix::process::CommandExt", "target": "", "state": "paired", "owner": ["0.5"], "appendix": "G24"},
     {"path": "src/git/endpoint/mod.rs", "kind": "gate", "gate": "any(all(test, unix), not(any(windows, target_vendor = \"apple\")))", "target": "mod verify_paths", "state": "platform", "owner": ["0.5"], "appendix": "new", "reason": "OpenSSL-only trust branch (Linux and other non-Apple Unix): a real platform difference, not a fixture convenience: verify_paths reads OpenSSL's default verify paths"},

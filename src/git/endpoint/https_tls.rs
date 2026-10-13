@@ -1,9 +1,10 @@
 //! One endpoint's TLS configuration, built once for all of its connections.
 //!
-//! Building a connector parses the CA bundle twice (the platform's default
-//! paths, then the bundle `openssl-probe` finds), about 23 ms of CPU for the
-//! 150 certificates of a Linux system bundle, and every connection built its
-//! own: 17 builds at 16 members, most of a command's CPU. A connection's trust
+//! Building a connector costs CPU, and every connection built its own: 17
+//! builds at 16 members, most of a command's CPU. On the OpenSSL build the cost
+//! is the decode of the platform's roots, about 10 ms for the 150 certificates
+//! of a Linux system bundle (`verify_paths`); the other builds decode only the
+//! endpoint's CA file. A connection's trust
 //! is its endpoint's configuration and nothing else (the endpoint's CA file's
 //! certificates beside the platform's roots), so the configuration an
 //! endpoint's connector holds is the same for every connection it makes.
@@ -11,8 +12,14 @@
 //! The platform's roots are the TLS backend's own, unless the endpoint names
 //! a loader for them (`RootsLoader`), which replaces them: the backend's are
 //! left out and the loader's are the only built-in roots. Only OpenSSL builds
-//! have one (`verify_paths`).
+//! have one (`verify_paths`), and there the backend (`https_backend`) is built
+//! with an empty store, so the loader's roots are the only ones read, and the
+//! OpenSSL stack has no fallback: with no loader it trusts only the CA file's.
 //! Another endpoint, with another CA file, has a configuration of its own.
+use super::https_backend::{Certificate, Connector};
+
+/// The platform's roots, where they are not the TLS backend's own.
+pub(crate) use super::https_backend::RootsLoader;
 use std::{
     io,
     sync::{
@@ -21,23 +28,20 @@ use std::{
     },
 };
 
-/// The platform's roots, where they are not the TLS backend's own.
-pub(crate) type RootsLoader = Arc<dyn Fn() -> Vec<native_tls::Certificate> + Send + Sync>;
-
 #[derive(Clone)]
 pub(crate) struct SharedTls(Arc<Inner>);
 struct Inner {
     /// The CA file's certificates, each a root beside the platform's own.
-    roots: Vec<native_tls::Certificate>,
+    roots: Vec<Certificate>,
     /// The platform's roots, in place of the backend's, if the endpoint says.
     platform: Option<RootsLoader>,
     /// The first build's outcome. A failed build is the failure of every
     /// connection, as a build per connection would have failed each alike.
-    built: OnceLock<Result<native_tls::TlsConnector, io::ErrorKind>>,
+    built: OnceLock<Result<Connector, io::ErrorKind>>,
     builds: AtomicUsize,
 }
 impl SharedTls {
-    pub(crate) fn new(roots: Vec<native_tls::Certificate>, platform: Option<RootsLoader>) -> Self {
+    pub(crate) fn new(roots: Vec<Certificate>, platform: Option<RootsLoader>) -> Self {
         Self(Arc::new(Inner {
             roots,
             platform,
@@ -48,23 +52,13 @@ impl SharedTls {
     /// The configuration, built by whoever asks first while the others wait for
     /// that one build. A blocking call: the connection's setup job is the one
     /// that makes it, on its own thread.
-    pub(crate) fn connector(&self) -> io::Result<native_tls::TlsConnector> {
+    pub(crate) fn connector(&self) -> io::Result<Connector> {
         let inner = &self.0;
         inner
             .built
             .get_or_init(|| {
                 inner.builds.fetch_add(1, Ordering::SeqCst);
-                let mut builder = native_tls::TlsConnector::builder();
-                if let Some(platform) = &inner.platform {
-                    builder.disable_built_in_roots(true);
-                    for root in platform() {
-                        builder.add_root_certificate(root);
-                    }
-                }
-                for root in &inner.roots {
-                    builder.add_root_certificate(root.clone());
-                }
-                builder.build().map_err(|_| io::ErrorKind::InvalidInput)
+                Connector::build(inner.platform.as_ref(), &inner.roots)
             })
             .clone()
             .map_err(io::Error::from)

@@ -146,8 +146,24 @@ def test_tls_test_servers_are_rustls_dev_dependencies_and_product_tls_stays_nati
         assert crate not in manifest["dependencies"]
     assert manifest["dev-dependencies"]["rustls"]["default-features"] is False
     assert "ring" in manifest["dev-dependencies"]["rustls"]["features"]
-    assert "native-tls" in manifest["dependencies"]
     assert "rustls" not in (ROOT / "Cargo.toml").read_text()
+
+
+def test_tls_stack_is_native_tls_on_apple_and_windows_and_openssl_directly_elsewhere(tmp_path):
+    # src/git/endpoint/https_backend.rs: native-tls would parse the system bundle twice for a store it replaces, so the
+    # OpenSSL build does not depend on it (only its tests do, as the oracle for what the stack puts on the wire).
+    manifest = _manifest(prepare(tmp_path / "backend"))
+    targets = manifest["target"]
+    platform = targets['cfg(any(windows, target_vendor = "apple"))']["dependencies"]
+    openssl = targets['cfg(not(any(windows, target_vendor = "apple")))']
+    assert set(platform) == {"native-tls", "tokio-native-tls"}
+    assert openssl["dependencies"]["openssl"] == "=0.10.81"
+    assert "native-tls" not in openssl["dependencies"]
+    assert "tokio-native-tls" not in openssl["dependencies"]
+    assert openssl["dev-dependencies"]["native-tls"] == "=0.2.18"
+    assert openssl["dev-dependencies"]["tokio-native-tls"] == "=0.3.1"
+    assert "native-tls" not in manifest["dependencies"]
+    assert "openssl" not in (ROOT / "Cargo.toml").read_text()
 
 
 def test_ssh_test_server_is_a_russh_dev_dependency_over_ring_and_the_product_has_none(tmp_path):
