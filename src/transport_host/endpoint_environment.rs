@@ -15,9 +15,13 @@
 //! (with its bypass rules) is the HTTPS endpoint's proxy for every https
 //! connection (plan step 4.7). Its SSH home is chosen by the home contract on
 //! every platform (`git::endpoint::ssh_home`, plan step 3.1), and its agent is chosen
-//! by `git::endpoint::agent_source` (plan step 3.2b). It never derives a HOME or agent for HTTPS. On both platforms
-//! the credential helper is `git` with the snapshot as its environment (plan
-//! step 4.3).
+//! by `git::endpoint::agent_source` (plan step 3.2b). Both are chosen for every
+//! runtime, HTTPS-only ones included, because the one configuration serves SSH and
+//! HTTPS: a home that cannot be resolved (on Windows, for example, an explicitly empty
+//! `HOME` with no usable `USERPROFILE`) refuses the command even when it uses only
+//! HTTPS remotes, and the agent probe (Pageant's window on Windows) runs once. On
+//! both platforms the credential helper is `git` with the snapshot as its environment
+//! (plan step 4.3).
 
 use super::{EndpointSettings, HttpsEndpointConfig, apply_native_timeout, invalid, unsupported};
 use crate::git::endpoint::{ca_bundle, https_connection, ssh_home};

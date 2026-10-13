@@ -76,7 +76,7 @@ fn a_followed_discovery_redirect_is_remembered_with_where_it_went() {
             endpoint
                 .client
                 .redirects()
-                .take_refused("operation")
+                .take_refused("operation", &server.url)
                 .is_none()
         );
         assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
@@ -104,7 +104,7 @@ fn a_redirect_from_https_to_http_is_refused_and_remembered_with_the_address_the_
         let refused = endpoint
             .client
             .redirects()
-            .take_refused("operation")
+            .take_refused("operation", &server.url)
             .expect("the refusal is remembered for the operation");
         assert_eq!(refused.from, server.url);
         assert_eq!(
@@ -116,7 +116,7 @@ fn a_redirect_from_https_to_http_is_refused_and_remembered_with_the_address_the_
             endpoint
                 .client
                 .redirects()
-                .take_refused("operation")
+                .take_refused("operation", &server.url)
                 .is_none()
         );
         assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
@@ -132,7 +132,7 @@ fn a_downgrade_names_no_credential_the_server_put_in_the_address() {
         let refused = endpoint
             .client
             .redirects()
-            .take_refused("operation")
+            .take_refused("operation", &server.url)
             .unwrap();
         assert!(
             !refused.to.contains("secret") && !refused.to.contains("user"),
@@ -166,7 +166,7 @@ fn a_location_that_is_not_a_downgrade_is_refused_as_before_and_remembers_nothing
                 endpoint
                     .client
                     .redirects()
-                    .take_refused("operation")
+                    .take_refused("operation", &server.url)
                     .is_none(),
                 "{location}"
             );
@@ -187,7 +187,7 @@ fn a_long_address_is_cut_before_it_is_remembered() {
         let refused = endpoint
             .client
             .redirects()
-            .take_refused("operation")
+            .take_refused("operation", &server.url)
             .unwrap();
         assert!(refused.to.len() <= 259, "{}", refused.to.len());
         assert!(refused.to.ends_with("..."));

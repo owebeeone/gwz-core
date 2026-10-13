@@ -57,6 +57,31 @@ cfg_if::cfg_if! { if #[cfg(test)] {
         assert_eq!(parse("Bearer, NTLM, Basic").select().unwrap().scheme, NativeScheme::Ntlm);
     }
     #[test]
+    fn a_challenge_is_parsed_on_bytes_and_only_a_scheme_token_must_be_ascii() {
+        let parse = |bytes: &[u8]| {
+            let mut headers = HeaderMap::new();
+            headers.insert(WWW_AUTHENTICATE, hyper::header::HeaderValue::from_bytes(bytes).unwrap());
+            Offers::parse(&headers)
+        };
+        // A realm with UTF-8 (or any other obs-text) is the server's text, not a scheme token.
+        let basic = parse("Basic realm=\"Z\u{fc}rich\"".as_bytes()).unwrap();
+        assert!(basic.basic && basic.native.is_empty());
+        let latin1 = parse(b"Basic realm=\"Z\xfcrich\"").unwrap();
+        assert!(latin1.basic);
+        // Beside a scheme the logon session answers, and across a comma that a quoted parameter holds.
+        let both = parse("Basic realm=\"Z\u{fc}rich, x\", NTLM".as_bytes()).unwrap();
+        assert!(both.basic);
+        assert_eq!(both.select().unwrap().scheme, NativeScheme::Ntlm);
+        // A scheme name that is not ASCII is no scheme we answer, and no failure either.
+        let other = parse("Z\u{fc}rich realm=x".as_bytes()).unwrap();
+        assert!(!other.basic && other.native.is_empty());
+        // The framing rules stand: an unterminated quote is still refused.
+        assert_eq!(
+            parse("Basic realm=\"Z\u{fc}rich".as_bytes()).err(),
+            Some(ErrorCode::Protocol)
+        );
+    }
+    #[test]
     fn authority_continue_is_preserved_but_does_not_authorize_remote_success() {
         let mut history = History::new(NativeScheme::Ntlm);
         let step = gwz_sspi::TokenStep {

@@ -223,6 +223,9 @@ impl HttpsOpenFailure {
                 "{host} rejected your Windows account ({scheme}). GWZ tries nothing else. Ask the server's administrator for access for this account, or use an SSH remote."
             );
         }
+        if let Some(words) = self.sign_in_words() {
+            return words;
+        }
         if self.failure.code == ErrorCode::Authentication && status == Some(401) {
             if self.service.is_some_and(|s| {
                 matches!(
@@ -280,19 +283,63 @@ impl HttpsOpenFailure {
         }
         reason
     }
+    /// The words for a Windows sign-in (SSPI) that ended without a verdict on the logon identity, or `None`: the
+    /// sign-in worker that gwz installs was missing, from another build, or not the program gwz installed (it never
+    /// began, so no token was made and no status came), and a redirect that answered the exchange.
+    fn sign_in_words(&self) -> Option<String> {
+        use gwz_transport::protocol::{AuthMethod, ErrorCode, NativeObservation};
+        let facts = self.failure.facts.as_ref()?;
+        if facts.method != AuthMethod::Sspi {
+            return None;
+        }
+        if self.failure.code == ErrorCode::Authentication
+            && let Some(status @ 300..=399) = facts.http_status
+        {
+            // The exchange ends at a redirect: nothing follows it, and the server's address is not quoted (it is the
+            // server's text, and T5 is the place that shows one).
+            return Some(format!(
+                "The server answered GWZ's Windows sign-in with a redirect (HTTP {status}). GWZ does not follow a redirect once a Windows sign-in has started, so your credential is not carried to another address, and nothing was sent to the new location. Ask the server's administrator to fix the redirect, or for the address that serves the repository directly."
+            ));
+        }
+        let began = facts.credential_offered
+            || facts.http_status.is_some()
+            || facts
+                .native
+                .as_ref()
+                .is_none_or(|native| native.observation != NativeObservation::NotStarted);
+        if began {
+            return None;
+        }
+        let hint = crate::transport_host::session::native_switch_hint(self.cli_hint, self.windows);
+        match self.failure.code {
+            ErrorCode::Unavailable => Some(format!(
+                "GWZ could not use its Windows sign-in worker, the program installed with gwz that answers Negotiate and NTLM: it is missing, or it is from a different build of gwz. No credential was sent. Reinstall gwz so that its parts match, or {hint}."
+            )),
+            ErrorCode::Protocol => Some(format!(
+                "GWZ's Windows sign-in worker did not answer as the one installed with gwz does: the file may have been replaced by another program, or Windows refused to start the sign-in. No credential was sent. Reinstall gwz, or {hint}."
+            )),
+            _ => None,
+        }
+    }
     /// Whether this is a direct https connection that failed before any server answered, under a machine setting that
-    /// says direct (text U2, decision D7). A server's answer (a status or a method in the facts), a trust failure, a sign-in or a helper's failure
-    /// is not one, and neither is a failure under a named proxy or where no machine setting was read.
+    /// says direct (text U2, decision D7). A server's answer (a status or a method in the facts), a trust failure, a sign-in, a helper's failure
+    /// or a local wait for a place or for the user is not one, and neither is a failure under a named proxy or where no machine setting was read.
     fn failed_direct_connection(&self) -> bool {
-        use gwz_transport::protocol::{AuthMethod, ErrorCode};
+        use gwz_transport::protocol::{AuthMethod, ErrorCode, SetupFailureCause};
         // An open's facts are present but empty when nothing was exchanged: no status, no method, no verdict.
         let nothing_answered = self.failure.facts.as_ref().is_none_or(|facts| {
             facts.http_status.is_none()
                 && facts.method == AuthMethod::None
                 && facts.authenticated.is_none()
         });
+        // A wait for a place (the route gate, a setup slot) or for the user ended before any connection was made.
+        let waited_locally = matches!(
+            self.failure.setup_cause,
+            Some(SetupFailureCause::Allocation | SetupFailureCause::Interaction)
+        );
         self.machine == MachineSetting::Direct
             && nothing_answered
+            && !waited_locally
             && matches!(
                 self.failure.code,
                 ErrorCode::Unavailable | ErrorCode::Io | ErrorCode::Timeout
@@ -673,6 +720,88 @@ cfg_if::cfg_if! {
                     open.machine = MachineSetting::Direct;
                     assert!(!open.reason().contains(DIRECT_WORDS), "{name}: {}", open.reason());
                 }
+            }
+
+            /// A failure of a Windows sign-in that never began: the SSPI facts a native open leaves before its first step.
+            fn sign_in_not_started(code: ErrorCode) -> Failure {
+                Failure {
+                    code,
+                    facts: Some(Facts {
+                        method: AuthMethod::Sspi,
+                        native: Some(NativeFacts { scheme: NativeScheme::Negotiate, ..Default::default() }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }
+            }
+
+            #[test]
+            fn a_missing_or_mismatched_sign_in_worker_is_named_with_the_remedy() {
+                // Code review P3-11: both gave "HTTPS endpoint request failed: Unavailable" or "Protocol".
+                let missing = windows(sign_in_not_started(ErrorCode::Unavailable), false, None).reason();
+                assert!(missing.starts_with("GWZ could not use its Windows sign-in worker"), "{missing}");
+                assert!(missing.contains("missing"), "{missing}");
+                assert!(missing.contains("different build of gwz"), "{missing}");
+                assert!(missing.contains("No credential was sent."), "{missing}");
+                assert!(missing.contains("Reinstall gwz"), "{missing}");
+                assert!(missing.contains("--transport native") || missing.contains("GWZ_TRANSPORT=native"), "{missing}");
+                // The flag where the caller has one, the environment switch in both Windows shells where it has not.
+                let mut env = windows(sign_in_not_started(ErrorCode::Unavailable), false, None);
+                env.cli_hint = false;
+                let env = env.reason();
+                assert!(env.contains("set GWZ_TRANSPORT=native (cmd)") && env.contains("$env:GWZ_TRANSPORT"), "{env}");
+                let replaced = windows(sign_in_not_started(ErrorCode::Protocol), false, None).reason();
+                assert!(replaced.starts_with("GWZ's Windows sign-in worker did not answer as the one installed with gwz does"), "{replaced}");
+                assert!(replaced.contains("replaced by another program"), "{replaced}");
+                assert!(replaced.contains("Reinstall gwz"), "{replaced}");
+                assert_ne!(missing, replaced);
+                // Once a token has gone, or a status came, the failure is not a worker's: the exchange's own words stand.
+                let mut begun = sign_in_not_started(ErrorCode::Protocol);
+                begun.facts.as_mut().unwrap().credential_offered = true;
+                assert_eq!(windows(begun, false, None).reason(), "HTTPS endpoint request failed: Protocol");
+                let mut answered = sign_in_not_started(ErrorCode::Unavailable);
+                answered.facts.as_mut().unwrap().http_status = Some(401);
+                assert_eq!(windows(answered, false, None).reason(), "HTTPS endpoint request failed: Unavailable");
+            }
+
+            #[test]
+            fn a_redirect_during_the_sign_in_exchange_has_its_own_words() {
+                // Code review P3-11: it was "HTTPS endpoint request failed: Authentication".
+                let mut redirected = rejected_logon(NativeScheme::Ntlm);
+                {
+                    let facts = redirected.facts.as_mut().unwrap();
+                    facts.authenticated = None;
+                    facts.http_status = Some(302);
+                }
+                let said = windows(redirected, false, Some("git.example.test")).reason();
+                assert!(said.starts_with("The server answered GWZ's Windows sign-in with a redirect (HTTP 302)."), "{said}");
+                assert!(said.contains("does not follow a redirect once a Windows sign-in has started"), "{said}");
+                assert!(said.contains("nothing was sent to the new location"), "{said}");
+                assert!(said.contains("Ask the server's administrator"), "{said}");
+                // The server's address is untrusted text and is not quoted; the logon identity was not refused either.
+                assert!(!said.contains("rejected your Windows account"), "{said}");
+            }
+
+            #[test]
+            fn a_local_wait_that_ended_an_open_is_not_a_failed_direct_connection() {
+                use crate::git::endpoint::https_connection::MachineSetting;
+                // Code review P3-3: no connection was made, so the words must not say one failed. The allocation
+                // timeout is what an open that waited for its route gate or a setup place ends with.
+                let local = [
+                    ("an allocation timeout", crate::git::endpoint::setup_retry::allocation_timeout()),
+                    ("an interaction timeout", connect_failure(ErrorCode::Timeout, Some(SetupFailureCause::Interaction))),
+                ];
+                for (name, failure) in local {
+                    let mut open = windows(failure, false, None);
+                    open.machine = MachineSetting::Direct;
+                    let reason = open.reason();
+                    assert!(!reason.contains(DIRECT_WORDS), "{name}: {reason}");
+                    assert!(!reason.contains("netsh winhttp"), "{name}: {reason}");
+                }
+                // A timeout that ended a connection's setup still carries the hint.
+                let mut open = windows(connect_failure(ErrorCode::Timeout, Some(SetupFailureCause::Stall)), false, None);
+                open.machine = MachineSetting::Direct;
+                assert!(open.reason().contains(DIRECT_WORDS), "{}", open.reason());
             }
 
             #[test]

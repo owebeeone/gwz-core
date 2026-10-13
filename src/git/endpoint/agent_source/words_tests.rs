@@ -10,11 +10,13 @@ fn pin() -> PageantPin {
 
 #[test]
 fn the_pageant_message_names_pageant_and_says_the_variable_was_not_consulted() {
+    // The words for a Pageant that cannot be used for a cause of no words of its own. A refusal (no cause) and a Pageant
+    // that is gone have theirs (`pageant_words_tests`).
     let said = AgentSource::Pageant {
         sock_ignored: true,
         pin: pin(),
     }
-    .unavailable_reason(None)
+    .unavailable_reason(Some(SetupFailureCause::ConnectionRefused))
     .expect("a Pageant that cannot be used is worded");
     assert!(
         said.contains("Pageant is the SSH agent GWZ selected"),
@@ -33,7 +35,7 @@ fn the_pageant_message_leaves_the_variable_out_when_none_was_set() {
         sock_ignored: false,
         pin: pin(),
     }
-    .unavailable_reason(None)
+    .unavailable_reason(Some(SetupFailureCause::ConnectionRefused))
     .unwrap();
     assert!(
         said.starts_with("Pageant is the SSH agent GWZ selected"),
