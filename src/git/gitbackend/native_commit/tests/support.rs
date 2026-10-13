@@ -49,6 +49,14 @@ pub(super) fn run_child(name: &str, extra: &[(&str, &str)]) {
             command.env(keep, value);
         }
     }
+    cfg_if::cfg_if! {
+        if #[cfg(windows)] {
+            // libgit2 reads %PROGRAMDATA%/Git/config whatever GIT_CONFIG_NOSYSTEM says, so the child
+            // gets an empty machine-wide directory of its own.
+            let program_data = TempDir::new().unwrap();
+            command.env("PROGRAMDATA", program_data.path());
+        }
+    }
     command
         .env("HOME", home.path())
         .env("USERPROFILE", home.path())
@@ -157,6 +165,8 @@ pub(super) struct Twin {
     pub(super) cli: PathBuf,
     pub(super) auto: Git2Backend,
     pub(super) cli_only: Git2Backend,
+    /// The kept native `commit -a`, which the default route never reaches.
+    pub(super) native_all: Git2Backend,
 }
 
 /// A repository born the way gwz births one, with a local identity and one
@@ -202,12 +212,14 @@ pub(super) fn twin(setup: impl Fn(&Path)) -> Twin {
     }
     let auto = Git2Backend::new();
     let cli_only = auto.with_route_policy(RoutePolicy::CLI_ONLY);
+    let native_all = auto.with_route_policy(RoutePolicy::NATIVE_ALL);
     let twin = Twin {
         _dir: dir,
         native,
         cli,
         auto,
         cli_only,
+        native_all,
     };
     twin.assert_same("after setup");
     twin
@@ -320,13 +332,29 @@ impl Twin {
     }
 
     /// Commit on both and require the native one to be on the native route.
+    /// A `commit -a` is Git's on the default route; this requires that, and
+    /// then runs the kept native `-a` code against Git so it does not rot.
     pub(super) fn commit(&self, message: &str, all: bool) -> Outcome {
+        let native_backend = if all {
+            assert!(
+                matches!(
+                    self.auto.commit_route(&self.native, message, all),
+                    Route::Cli(
+                        crate::git::gitbackend::native_commit::route::CliReason::AllCommit(_)
+                    )
+                ),
+                "commit -a {message:?} should be Git's"
+            );
+            &self.native_all
+        } else {
+            &self.auto
+        };
         assert_eq!(
-            self.auto.commit_route(&self.native, message, all),
+            native_backend.commit_route(&self.native, message, all),
             Route::Native,
             "commit {message:?} (all={all}) should be native"
         );
-        let native = self.auto.commit(&self.native, message, all);
+        let native = native_backend.commit(&self.native, message, all);
         let cli = self.cli_only.commit(&self.cli, message, all);
         let outcome = |result: crate::model::ModelResult<GitCommitResult>| match result {
             Ok(done) => Outcome::Done(done.commit),
@@ -418,6 +446,13 @@ impl Lab {
 
     pub(super) fn commit_route(&self, all: bool) -> Route {
         self.backend.commit_route(&self.path, "message", all)
+    }
+
+    /// The route of `commit -a` under the policy that reaches the kept native code.
+    pub(super) fn native_all_route(&self) -> Route {
+        self.backend
+            .with_route_policy(RoutePolicy::NATIVE_ALL)
+            .commit_route(&self.path, "message", true)
     }
 
     pub(super) fn head(&self) -> String {

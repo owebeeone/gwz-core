@@ -18,6 +18,8 @@ pub struct Git2Repository {
     /// when the backend is built.
     pub(crate) environment: super::native_commit::GitEnvironment,
     pub(crate) route_policy: super::native_commit::RoutePolicy,
+    /// Where a commit or tag says why it ran the Git CLI, if the caller gave a reader.
+    pub(crate) route_notes: Option<super::native_commit::RouteNotes>,
 }
 
 /// Compatibility name for existing callers.
@@ -52,7 +54,16 @@ impl Git2Backend {
             ssh: Default::default(),
             environment: super::native_commit::GitEnvironment::process(),
             route_policy: Default::default(),
+            route_notes: None,
         }
+    }
+
+    /// A copy of this backend that tells `notes` why a commit or tag ran the Git CLI
+    /// (the CLI gives a reader for `--verbose` in human output).
+    pub fn with_route_notes(&self, notes: super::native_commit::RouteNotes) -> Self {
+        let mut backend = self.clone();
+        backend.route_notes = Some(notes);
+        backend
     }
 
     pub fn without_credential_helpers() -> Self {
@@ -65,6 +76,7 @@ impl Git2Backend {
             ssh: Default::default(),
             environment: super::native_commit::GitEnvironment::process(),
             route_policy: Default::default(),
+            route_notes: None,
         }
     }
 

@@ -31,6 +31,12 @@ pub(super) enum CliReason {
     Config(&'static str),
     /// A system configuration file native does not read, or cannot read.
     SystemConfig(&'static str),
+    /// A system configuration file of the `git` the CLI route would run, or
+    /// one libgit2 reads, that the other side does not read.
+    SystemFile {
+        why: &'static str,
+        path: std::path::PathBuf,
+    },
     /// A hook that would fire, by name.
     Hook(String),
     Signing(&'static str),
@@ -109,11 +115,7 @@ fn common(env: &GitEnvironment, repo: &git2::Repository) -> Result<ConfigView, C
             "GIT_CONFIG_GLOBAL beside an XDG configuration".to_owned(),
         ));
     }
-    system_config::check(
-        env,
-        &system_config::candidates(env),
-        &system_config::covered(env),
-    )?;
+    system_config::check(env, &system_config::SystemView::read(env))?;
     if repo.is_bare() || repo.workdir().is_none() {
         return Err(CliReason::Bare);
     }
@@ -133,6 +135,11 @@ fn common(env: &GitEnvironment, repo: &git2::Repository) -> Result<ConfigView, C
     }
     if config.is_set("core.sharedRepository") {
         return Err(CliReason::Config("core.sharedRepository"));
+    }
+    // libgit2 honours `core.fsyncObjectFiles` only; with `core.fsync` or
+    // `core.fsyncMethod` set, a ref could outlive an unsynced object.
+    if config.is_set("core.fsync") || config.is_set("core.fsyncMethod") {
+        return Err(CliReason::Config("core.fsync or core.fsyncMethod"));
     }
     if matches!(
         config.flag("core.logAllRefUpdates"),
@@ -156,7 +163,32 @@ fn common(env: &GitEnvironment, repo: &git2::Repository) -> Result<ConfigView, C
             ));
         }
     }
+    include_paths(&config)?;
     Ok(config)
+}
+
+/// libgit2 expands an `include.path` that is absolute, relative (to the
+/// including file) or begins with `~/`, and silently ignores the other forms
+/// Git reads (`~user/`, `%(prefix)/`). A file it ignores can set hooks or
+/// signing, so such a path is Git's to read.
+fn include_paths(config: &ConfigView) -> Result<(), CliReason> {
+    let paths = config
+        .values_matching("^include(if\\..*)?\\.path$")
+        .map_err(|_| CliReason::Config("include.path unreadable"))?;
+    for (_, value) in paths {
+        let expanded = match value.as_deref() {
+            None | Some("") => false,
+            Some(path) => {
+                !path.starts_with("%(") && (!path.starts_with('~') || path.starts_with("~/"))
+            }
+        };
+        if !expanded {
+            return Err(CliReason::Config(
+                "include.path form native does not expand",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn hook_check(
@@ -164,6 +196,14 @@ fn hook_check(
     config: &ConfigView,
     names: &[&str],
 ) -> Result<(), CliReason> {
+    // Git 2.54 and later run hooks declared as `hook.<name>.event` and
+    // `hook.<name>.command`; native knows none of them, so any such key is Git's.
+    let declared = config
+        .names_matching("^hook\\.")
+        .map_err(|_| CliReason::Config("hook configuration unreadable"))?;
+    if let Some(name) = declared.into_iter().next() {
+        return Err(CliReason::Hook(name));
+    }
     let worktree = repo.workdir().ok_or(CliReason::Bare)?;
     let configured = config
         .text("core.hooksPath")
@@ -262,12 +302,21 @@ fn comment_style_check(config: &ConfigView) -> Result<(), CliReason> {
 }
 
 /// Decide a commit. `Ok` carries everything the native run needs.
+///
+/// `commit -a` is always Git's (operator decision 2026-10-13, step 5.6
+/// remediation): `native_all` is false on every production path. The native
+/// `-a` staging below is kept for later and exercised by the tests, which set
+/// it, but nothing routes to it.
 pub(super) fn plan_commit(
     env: &GitEnvironment,
     repo: &git2::Repository,
     raw_message: &str,
     all: bool,
+    native_all: bool,
 ) -> Result<CommitPlan, CliReason> {
+    if all && !native_all {
+        return Err(CliReason::AllCommit("Git always runs it"));
+    }
     let config = common(env, repo)?;
     if config.flag("commit.gpgSign").may_be_true() {
         return Err(CliReason::Signing("commit.gpgSign"));
