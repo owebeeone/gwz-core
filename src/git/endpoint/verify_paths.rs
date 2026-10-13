@@ -35,6 +35,7 @@
 //! Not consulted: OpenSSL's compiled-in locations, where neither the
 //! variables nor the probe's locations name an existing path.
 use super::ca_bundle::{Block, scan_spans};
+use super::https_backend::Certificate;
 use std::{
     collections::HashSet,
     ffi::OsStr,
@@ -78,12 +79,12 @@ impl Paths {
     }
 
     /// The certificates the paths hold, the file's first, each once.
-    pub(crate) fn roots(&self) -> Vec<native_tls::Certificate> {
+    pub(crate) fn roots(&self) -> Vec<Certificate> {
         self.read().0
     }
 
     /// `roots`, with what reading them took.
-    pub(crate) fn read(&self) -> (Vec<native_tls::Certificate>, Reads) {
+    pub(crate) fn read(&self) -> (Vec<Certificate>, Reads) {
         let mut seen = Seen::default();
         let mut roots = Vec::new();
         if let Some(file) = &self.file {
@@ -142,7 +143,7 @@ fn is_hashed_name(path: &Path) -> bool {
 
 /// Adds the certificates of the file at `path` that are not in `seen`, up to
 /// the first block that is not one. A file that cannot be read adds none.
-fn read_file(path: &Path, seen: &mut Seen, roots: &mut Vec<native_tls::Certificate>) {
+fn read_file(path: &Path, seen: &mut Seen, roots: &mut Vec<Certificate>) {
     let mut bytes = Vec::new();
     let read = fs::File::open(path).and_then(|file| file.take(MAX_FILE).read_to_end(&mut bytes));
     if read.is_err() {
@@ -163,7 +164,7 @@ fn read_file(path: &Path, seen: &mut Seen, roots: &mut Vec<native_tls::Certifica
             seen.blocks.insert(bytes[span].to_vec());
             continue;
         }
-        match native_tls::Certificate::from_der(&der) {
+        match Certificate::from_der(&der) {
             Ok(certificate) => {
                 seen.certificates.insert(der);
                 seen.blocks.insert(bytes[span].to_vec());

@@ -10,6 +10,7 @@
 //! files of the endpoint but OpenSSL's default verify paths, which are the
 //! platform's roots there and are read as OpenSSL reads them, leniently
 //! (`super::verify_paths`).
+use super::https_backend::Certificate;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 
 /// Why a CA file is refused.
@@ -88,13 +89,14 @@ pub(super) fn scan_spans(pem: &[u8], labels: &[&str]) -> (Scan, Vec<std::ops::Ra
 }
 
 /// Every certificate in `pem`, the CA file's content, in the file's order.
-pub(crate) fn certificates(pem: &[u8]) -> Result<Vec<native_tls::Certificate>, Refusal> {
+pub(crate) fn certificates(pem: &[u8]) -> Result<Vec<Certificate>, Refusal> {
     let scan = scan(pem, &["CERTIFICATE"]);
     let mut certificates = Vec::new();
     for block in scan.blocks {
         match block {
-            Block::Der(der) => certificates
-                .push(native_tls::Certificate::from_der(&der).map_err(|_| Refusal::Malformed)?),
+            Block::Der(der) => {
+                certificates.push(Certificate::from_der(&der).map_err(|_| Refusal::Malformed)?);
+            }
             Block::NotBase64 => return Err(Refusal::Malformed),
         }
     }

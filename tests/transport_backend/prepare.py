@@ -127,8 +127,6 @@ extra = '\n'.join([
     'hyper = { version = "=1.11.1", features = ["client", "server", "http1"] }',
     'hyper-util = { version = "=0.1.20", features = ["tokio"] }',
     'http-body-util = "=0.1.5"', 'bytes = "=1.11.1"',
-    'native-tls = "=0.2.18"', 'tokio-native-tls = "=0.3.1"',
-
 ])
 manifest = replace_once(
     manifest,
@@ -138,7 +136,7 @@ manifest = replace_once(
 manifest = replace_once(manifest, '[dependencies]\n', '[dependencies]\n' + extra + '\n')
 # The HTTPS test fixture's TLS servers are rustls over the ring provider (pure Rust apart from ring's
 # own assembly): a native-tls server loads its identity from the platform key store, which Windows
-# denies under a key-based OpenSSH logon (step 0.5b). Test-only; the product's TLS stays native-tls.
+# denies under a key-based OpenSSH logon (step 0.5b). Test-only; the product's TLS stays the platform's (below).
 dev_extra = '\n'.join([
     'pyo3 = { version = "=0.28.3", features = ["auto-initialize"] }',
     'rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }',
@@ -147,9 +145,16 @@ dev_extra = '\n'.join([
     'russh = { version = "=0.63.3", default-features = false, features = ["ring", "rsa"] }',
 ])
 manifest = replace_once(manifest, '[dev-dependencies]\n', '[dev-dependencies]\n' + dev_extra + '\n')
-# openssl-probe 0.1 is the crate git2 runs at its start; the transport resolves
-# OpenSSL's default verify paths with it (src/git/endpoint/verify_paths.rs).
-manifest += '\n[target.\'cfg(not(any(windows, target_vendor = "apple")))\'.dependencies]\nopenssl-probe = "=0.1.6"\n'
+# The HTTPS client's TLS stack is per platform (src/git/endpoint/https_backend.rs): the platform's own through
+# native-tls on macOS and Windows, and OpenSSL through the `openssl` crate directly everywhere else. native-tls would
+# parse the system bundle twice to fill a store it then replaces (gwz-core-evidence 2026-10-13-https-fixed-cost-pi), so
+# it is not a dependency of the OpenSSL build; its dev-dependency there is the oracle the tests compare the stack's
+# ClientHello and channel binding against. `openssl` is the version native-tls and libgit2's openssl-sys already
+# resolve to in the lock. openssl-probe 0.1 is the crate git2 runs at its start; the transport resolves OpenSSL's
+# default verify paths with it (src/git/endpoint/verify_paths.rs).
+manifest += '\n[target.\'cfg(any(windows, target_vendor = "apple"))\'.dependencies]\nnative-tls = "=0.2.18"\ntokio-native-tls = "=0.3.1"\n'
+manifest += '\n[target.\'cfg(not(any(windows, target_vendor = "apple")))\'.dependencies]\nopenssl = "=0.10.81"\nopenssl-probe = "=0.1.6"\n'
+manifest += '\n[target.\'cfg(not(any(windows, target_vendor = "apple")))\'.dev-dependencies]\nnative-tls = "=0.2.18"\n'
 # gwz-core names the git2-rs fork (gwz-git2) directly, with its vendored
 # libgit2, so the candidate needs no [patch] and no feature of its own.
 # The placement guide's example (docs/TransportPlacement.md), compiled with

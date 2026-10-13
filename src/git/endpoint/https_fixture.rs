@@ -58,7 +58,7 @@ impl Drop for Server {
 /// The servers are rustls, not the platform's TLS: schannel loads a server identity through
 /// the user's key store, which Windows denies under a key-based OpenSSH logon (DPAPI and
 /// persisted CAPI and CNG keys: access denied), so a native-tls server cannot run there. The
-/// clients under test stay native-tls, the product's stack, and verify against this CA.
+/// clients under test stay the product's stack (`https_backend`) and verify against this CA.
 fn identity() -> (Vec<u8>, TlsAcceptor) {
     let (ca, config, _) = identity_parts();
     (ca.clone(), TlsAcceptor::from(config.clone()))

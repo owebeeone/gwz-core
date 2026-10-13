@@ -101,7 +101,7 @@ pub(crate) struct Config {
     /// The CA file's certificates (`super::ca_bundle`), each a root beside the
     /// platform's built-in roots. A connector takes them into its shared TLS
     /// configuration (`super::https_tls`) when it is made.
-    pub(crate) ca_roots: Vec<native_tls::Certificate>,
+    pub(crate) ca_roots: Vec<super::https_backend::Certificate>,
     /// The platform's roots in place of the TLS backend's own, where the
     /// backend's are not the trust the endpoint needs (`super::verify_paths`).
     pub(crate) platform_roots: Option<super::https_tls::RootsLoader>,
@@ -245,7 +245,7 @@ pub(crate) struct HttpResource {
 }
 struct Setup {
     addresses: Vec<SocketAddr>,
-    tls: native_tls::TlsConnector,
+    tls: super::https_backend::Connector,
     proxy: Option<Proxy>,
 }
 pub(crate) struct HttpConnector {
@@ -605,7 +605,7 @@ async fn connect(setup: Setup, key: Key, tcp: Arc<AtomicU64>) -> Result<Connecti
     socket
         .set_nodelay(true)
         .map_err(|_| failure(ErrorCode::Io))?;
-    let tls = tokio_native_tls::TlsConnector::from(setup.tls);
+    let tls = setup.tls;
     let mut io: Socket = Box::new(socket);
     if let Some(proxy) = setup.proxy {
         if proxy.tls {
@@ -668,11 +668,7 @@ async fn connect(setup: Setup, key: Key, tcp: Arc<AtomicU64>) -> Result<Connecti
     }
     let io = super::https_handshake::handshake(&tls, &key.host, io).await?;
     // Only the verified final origin TLS stream supplies CBT, after any proxy TLS.
-    let binding = io
-        .get_ref()
-        .tls_server_end_point()
-        .ok()
-        .flatten()
+    let binding = super::https_backend::tls_server_end_point(&io)
         .and_then(|mut bytes| super::https_auth::SecretHeader::channel_binding_digest(&mut bytes));
     let progress = Arc::new(AtomicU64::new(0));
     let io = super::https_progress::Tracked {

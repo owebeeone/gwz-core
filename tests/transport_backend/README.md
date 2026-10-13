@@ -27,7 +27,8 @@ before the lookup.
 
 The HTTPS tests' TLS servers (`src/git/endpoint/https_fixture.rs`) are rustls over the
 `ring` provider, test-only dev-dependencies that `prepare.py` adds to the candidate
-manifest; the clients under test stay native-tls and verify against the fixture's CA, which
+manifest; the clients under test stay the product's TLS stack (`src/git/endpoint/https_backend.rs`: native-tls
+on macOS and Windows, the `openssl` crate directly elsewhere) and verify against the fixture's CA, which
 `openssl` generates per run. The servers are not native-tls because schannel loads a server
 identity through the user's key store, which Windows denies under a key-based OpenSSH logon.
 

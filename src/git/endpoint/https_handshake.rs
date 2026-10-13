@@ -3,7 +3,10 @@
 //! (gwz-core dev-docs/GwzRemoteTransportRetryPlan.md §4), as a server that
 //! drops a handshake it has no room for does; every other failure, a
 //! certificate or the protocol, is `Trust`, which closes the key.
-use super::https_connection::failure;
+use super::{
+    https_backend::{Connector, Stream},
+    https_connection::failure,
+};
 use gwz_transport::protocol::{ErrorCode, Failure};
 use std::{
     io,
@@ -15,14 +18,13 @@ use std::{
     task::{Context, Poll},
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio_native_tls::{TlsConnector, TlsStream};
 
 /// Runs the handshake for `host` over `io`.
 pub(crate) async fn handshake<S: AsyncRead + AsyncWrite + Unpin>(
-    connector: &TlsConnector,
+    connector: &Connector,
     host: &str,
     io: S,
-) -> Result<TlsStream<Watched<S>>, Failure> {
+) -> Result<Stream<Watched<S>>, Failure> {
     let broken = Arc::new(AtomicBool::new(false));
     let watched = Watched {
         io,
