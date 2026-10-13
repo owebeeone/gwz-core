@@ -3,6 +3,7 @@ import importlib.util
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -96,6 +97,20 @@ class Labels(unittest.TestCase):
             with self.subTest(label), self.assertRaises(SystemExit) as caught:
                 run_main(FakeRun(), '--label', label, receipts=Path('unused'))
             self.assertEqual(caught.exception.code, 2, label)
+
+
+class Refusals(unittest.TestCase):
+    def test_a_refusal_prints_its_message_on_stderr_and_exits_2(self):
+        # The script as run: a bad label is refused before any host call, and the reason reaches the person.
+        done = subprocess.run([sys.executable, str(Path(gate.__file__)), '--label', 'Fix-20261014-a',
+                               '--receipt-dir', 'unused'], capture_output=True, text=True, check=False)
+        self.assertEqual(done.returncode, 2)
+        self.assertIn("windows_lane_check: label 'Fix-20261014-a' must be lowercase letters", done.stderr)
+
+    def test_run_returns_the_status_and_prints_for_a_refusal_and_returns_main_otherwise(self):
+        self.assertEqual(gate.run(['--label', 'x', '--receipt-dir', 'unused']), 2)
+        refused = gate.Refused('nope')
+        self.assertEqual((refused.code, refused.message), (2, 'windows_lane_check: nope'))
 
 
 class Arguments(unittest.TestCase):
