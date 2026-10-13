@@ -197,7 +197,49 @@ pub(crate) fn attach(prepared: Prepared) -> (Stream, JoinHandle<()>) {
     });
     (stream, task)
 }
+/// What a scripted server does with each connection once its TLS handshake is done.
+pub(crate) type Script = Arc<
+    dyn Fn(
+            tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send>>
+        + Send
+        + Sync,
+>;
 impl Server {
+    /// A TLS peer that hands every connection, after the handshake, to `script`: for peers that
+    /// write before they read, or answer and stop reading, which no HTTP handler can be.
+    pub async fn scripted(script: Script) -> Self {
+        let (ca, acceptor) = identity();
+        let listener = Loopback::bind();
+        let url = format!("https://localhost:{}/repo", listener.port);
+        let connections = Arc::new(AtomicUsize::new(0));
+        let count = connections.clone();
+        let task = tokio::spawn(async move {
+            let mut children = JoinSet::new();
+            loop {
+                tokio::select! {
+                    result = listener.accept() => {
+                        let socket = result.unwrap();
+                        let acceptor = acceptor.clone();
+                        let script = script.clone();
+                        count.fetch_add(1, Ordering::SeqCst);
+                        children.spawn(async move {
+                            if let Ok(tls) = acceptor.accept(socket).await {
+                                script(tls).await;
+                            }
+                        });
+                    },
+                    _ = children.join_next(), if !children.is_empty() => {},
+                }
+            }
+        });
+        Self {
+            url,
+            ca,
+            connections,
+            task,
+        }
+    }
     /// A deliberately malformed/partial HTTP peer, while retaining valid TLS.
     pub async fn raw(bytes: Vec<u8>) -> Self {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

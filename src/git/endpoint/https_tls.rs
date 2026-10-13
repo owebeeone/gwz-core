@@ -1,8 +1,10 @@
 //! One endpoint's TLS configuration, built once for all of its connections.
 //!
-//! Building a connector decodes the CA bundle (about 10 ms of CPU for the 150
-//! certificates of a Linux system bundle), and every connection built its
-//! own: 17 builds at 16 members, most of a command's CPU. A connection's trust
+//! Building a connector costs CPU, and every connection built its own: 17
+//! builds at 16 members, most of a command's CPU. On the OpenSSL build the cost
+//! is the decode of the platform's roots, about 10 ms for the 150 certificates
+//! of a Linux system bundle (`verify_paths`); the other builds decode only the
+//! endpoint's CA file. A connection's trust
 //! is its endpoint's configuration and nothing else (the endpoint's CA file's
 //! certificates beside the platform's roots), so the configuration an
 //! endpoint's connector holds is the same for every connection it makes.
@@ -11,7 +13,8 @@
 //! a loader for them (`RootsLoader`), which replaces them: the backend's are
 //! left out and the loader's are the only built-in roots. Only OpenSSL builds
 //! have one (`verify_paths`), and there the backend (`https_backend`) is built
-//! with an empty store, so the loader's roots are the only ones read.
+//! with an empty store, so the loader's roots are the only ones read, and the
+//! OpenSSL stack has no fallback: with no loader it trusts only the CA file's.
 //! Another endpoint, with another CA file, has a configuration of its own.
 use super::https_backend::{Certificate, Connector};
 

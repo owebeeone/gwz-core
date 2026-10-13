@@ -6,7 +6,7 @@
 use super::*;
 use crate::git::endpoint::{
     ca_bundle,
-    https_backend::{Connector, Refused},
+    https_backend::{Connector, Refused, RootsLoader},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -23,8 +23,27 @@ fn port(url: &str) -> u16 {
         .unwrap()
 }
 
+cfg_if::cfg_if! {
+    if #[cfg(any(windows, target_vendor = "apple"))] {
+        /// The platform's own roots, which do not include the fixture CA.
+        fn platform_roots() -> Option<RootsLoader> {
+            None
+        }
+    } else {
+        /// The roots the endpoint's loader gives on the OpenSSL stack, which has no roots of
+        /// its own: none, so only what a connector is given beside them is trusted.
+        fn platform_roots() -> Option<RootsLoader> {
+            Some(std::sync::Arc::new(Vec::new))
+        }
+    }
+}
+
 fn trusting(ca: &[u8]) -> Connector {
-    Connector::build(None, &ca_bundle::certificates(ca).unwrap()).unwrap()
+    Connector::build(
+        platform_roots().as_ref(),
+        &ca_bundle::certificates(ca).unwrap(),
+    )
+    .unwrap()
 }
 
 /// Why an exchange failed: before the handshake or after it (`Io`), or in it (`Handshake`).
@@ -87,7 +106,7 @@ fn a_client_that_does_not_trust_the_fixture_ca_is_refused() {
         });
         let server = Server::start(handler).await;
         let port = port(&server.url);
-        let default_roots = Connector::build(None, &[]).unwrap();
+        let default_roots = Connector::build(platform_roots().as_ref(), &[]).unwrap();
         let refused = exchange(&default_roots, port, REQUEST).await;
         // The connection was made and the handshake is what failed: not a refused or reset
         // connection, nor a read error. The platform names the cause in its own words, so the
@@ -99,6 +118,30 @@ fn a_client_that_does_not_trust_the_fixture_ca_is_refused() {
         let connector = trusting(&server.ca);
         let reply = exchange(&connector, port, REQUEST).await.unwrap();
         assert!(reply.starts_with(b"HTTP/1.1 200"));
+    });
+}
+
+#[test]
+fn a_scripted_server_hands_each_connection_to_its_script_after_the_handshake() {
+    runtime().block_on(async {
+        let script: Script = Arc::new(|mut tls| {
+            Box::pin(async move {
+                let mut head = Vec::new();
+                while !head.ends_with(b"\r\n\r\n") {
+                    let Ok(byte) = tls.read_u8().await else {
+                        return;
+                    };
+                    head.push(byte);
+                }
+                let _ = tls.write_all(b"scripted").await;
+                let _ = tls.shutdown().await;
+            })
+        });
+        let server = Server::scripted(script).await;
+        let (connector, port) = (trusting(&server.ca), port(&server.url));
+        let reply = exchange(&connector, port, REQUEST).await.unwrap();
+        assert_eq!(reply, b"scripted");
+        assert_eq!(server.connections.load(Ordering::SeqCst), 1);
     });
 }
 

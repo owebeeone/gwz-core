@@ -6,6 +6,12 @@
 //! and the socket, when OpenSSL asks to read (`WouldBlock` from an empty
 //! `Wire`) and before it is asked for more to write. Nothing of the task's
 //! context is stored, and nothing is unsafe.
+//!
+//! A stream is polled from one task, as hyper's connection task does (or the
+//! halves of `tokio::io::split` from one task): a read that finds unsent
+//! ciphertext tries to send it, and tokio keeps one waker per direction of a
+//! socket, so two tasks polling the two halves would replace each other's
+//! write-readiness waker.
 use super::*;
 use openssl::ssl::{ErrorCode, SslStream};
 use std::{
@@ -139,7 +145,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> AsyncRead for Stream<S> {
                     return Poll::Ready(Ok(()));
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    ready!(self.poll_send(cx))?;
+                    // What OpenSSL has written goes out if the socket takes it, but a read
+                    // never waits for that: a peer that writes before it reads, or answers
+                    // and stops reading, needs this side's reads to go on while its writes
+                    // are blocked, as they did under `tokio-native-tls`.
+                    if let Poll::Ready(Err(error)) = self.poll_send(cx) {
+                        return Poll::Ready(Err(error));
+                    }
                     ready!(self.poll_fill(cx))?;
                 }
                 Err(error) => return Poll::Ready(Err(error)),

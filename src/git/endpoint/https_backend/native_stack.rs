@@ -14,7 +14,7 @@ pub(crate) type Stream<S> = tokio_native_tls::TlsStream<S>;
 pub(crate) struct Connector(tokio_native_tls::TlsConnector);
 
 impl Connector {
-    /// The configuration that trusts the backend's roots (`platform` is
+    /// The configuration that trusts the platform's own roots (`platform` is
     /// `None`) or only `platform`'s, and `roots` besides.
     pub(crate) fn build(
         platform: Option<&RootsLoader>,

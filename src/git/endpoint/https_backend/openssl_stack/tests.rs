@@ -12,12 +12,13 @@ use openssl::{
     hash::MessageDigest,
     nid::Nid,
     pkey::PKey,
-    ssl::SslConnector,
+    ssl::{SslConnector, SslVersion},
     x509::{
         X509NameBuilder,
         extension::{BasicConstraints, KeyUsage},
     },
 };
+use std::time::Duration;
 use std::{
     io::Read,
     net::{TcpListener, TcpStream},
@@ -27,7 +28,7 @@ use std::{
     },
     thread,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 /// A self-signed CA certificate named `name`.
 fn authority(name: &str) -> Certificate {
@@ -73,23 +74,14 @@ fn stored(connector: &Connector) -> usize {
 
 /// What was put into a store, in order.
 #[derive(Debug, Default, PartialEq)]
-struct Recorder(Vec<Event>);
-#[derive(Debug, PartialEq)]
-enum Event {
-    Root(Vec<u8>),
-    DefaultPaths,
-}
+struct Recorder(Vec<Vec<u8>>);
 impl Store for Recorder {
     fn add(&mut self, root: Certificate) {
-        self.0.push(Event::Root(root.to_der().unwrap()));
-    }
-    fn add_defaults(&mut self) -> Result<(), ErrorStack> {
-        self.0.push(Event::DefaultPaths);
-        Ok(())
+        self.0.push(root.to_der().unwrap());
     }
 }
-fn der(root: &Certificate) -> Event {
-    Event::Root(root.to_der().unwrap())
+fn der(root: &Certificate) -> Vec<u8> {
+    root.to_der().unwrap()
 }
 
 #[test]
@@ -104,21 +96,13 @@ fn a_loader_gives_the_only_roots_it_is_asked_once_and_the_default_paths_are_neve
         })
     };
     let mut store = Recorder::default();
-    fill(&mut store, Some(&loader), std::slice::from_ref(&c)).unwrap();
+    fill(&mut store, Some(&loader), std::slice::from_ref(&c));
     assert_eq!(
         loads.load(Ordering::SeqCst),
         1,
         "the bundle is decoded once"
     );
     assert_eq!(store.0, [der(&a), der(&b), der(&c)], "and no default paths");
-}
-
-#[test]
-fn without_a_loader_the_default_paths_are_read_once_before_the_endpoints_roots() {
-    let c = authority("c");
-    let mut store = Recorder::default();
-    fill(&mut store, None, std::slice::from_ref(&c)).unwrap();
-    assert_eq!(store.0, [Event::DefaultPaths, der(&c)]);
 }
 
 #[test]
@@ -130,16 +114,6 @@ fn a_connectors_store_holds_the_loaders_roots_and_the_endpoints_and_nothing_else
     };
     let connector = Connector::build(Some(&loader), &[c]).unwrap();
     assert_eq!(stored(&connector), 3);
-}
-
-#[test]
-fn without_a_loader_the_roots_are_the_default_verify_paths() {
-    let defaults = SslConnector::builder(SslMethod::tls()).unwrap().build();
-    let connector = Connector::build(None, &[]).unwrap();
-    assert_eq!(
-        stored(&connector),
-        defaults.context().cert_store().all_certificates().len()
-    );
 }
 
 #[test]
@@ -164,13 +138,26 @@ fn a_host_that_has_default_verify_paths_shows_the_loader_leaves_them_out() {
 #[test]
 fn the_context_is_the_one_sslconnector_makes_bar_its_trust_roots() {
     let mut reference = SslConnector::builder(SslMethod::tls()).unwrap();
-    // `native-tls` sets no protocol bounds, which clears them to the library's.
-    reference.set_min_proto_version(None).unwrap();
+    // `native-tls` 0.2.18 builds on `SslConnector::builder` and then applies its builder's protocol
+    // bounds, whose default is `min_protocol: Some(Protocol::Tlsv12)` and no maximum
+    // (`TlsConnectorBuilder`, `supported_protocols` in `imp/openssl.rs`). The reference is not
+    // normalized to anything else: the floor is TLS 1.2 whatever the host's `openssl.cnf` says.
+    reference
+        .set_min_proto_version(Some(SslVersion::TLS1_2))
+        .unwrap();
     reference.set_max_proto_version(None).unwrap();
     let mut ours = base().unwrap();
+    assert_eq!(ours.min_proto_version(), Some(SslVersion::TLS1_2));
+    assert_eq!(ours.max_proto_version(), None);
     assert_eq!(ours.options(), reference.options());
     assert_eq!(ours.min_proto_version(), reference.min_proto_version());
     assert_eq!(ours.max_proto_version(), reference.max_proto_version());
+    // `set_mode` returns the mode after adding what it is given, so adding nothing reads it.
+    assert_eq!(
+        ours.set_mode(SslMode::empty()),
+        reference.set_mode(SslMode::empty()),
+        "the SSL mode mask is SslConnector's"
+    );
     assert_eq!(
         ours.build().verify_mode(),
         reference.build().context().verify_mode()
@@ -251,6 +238,12 @@ fn first_record(client: impl FnOnce(TcpStream) + Send + 'static) -> Vec<u8> {
     [header.to_vec(), body].concat()
 }
 
+/// The first record of `native-tls`'s client and of ours are the same. This host-dependent oracle
+/// sees the cipher suites, the extensions and the offered versions, but it cannot see a difference
+/// in the protocol range on OpenSSL 3 at security level 1 or above, which refuses to offer TLS 1.1
+/// and below whatever the context's minimum says: the floor itself is asserted in
+/// `the_context_is_the_one_sslconnector_makes_bar_its_trust_roots` and refused on the wire in
+/// `a_server_capped_at_tls_1_1_is_refused`.
 #[test]
 fn the_client_hello_is_what_native_tls_sends() {
     let native = first_record(|tcp| {
@@ -395,4 +388,310 @@ async fn a_megabyte_comes_in_many_records_and_the_close_is_sent() {
     assert!(reply.starts_with(b"HTTP/1.1 200"));
     assert!(reply.ends_with(&body), "{} bytes", reply.len());
     tls.shutdown().await.unwrap();
+}
+
+/// A row with no loader: the store is empty. The OpenSSL stack has no fallback to the process's
+/// default verify paths; the endpoint always supplies the loader (`endpoint_environment`).
+#[test]
+fn without_a_loader_the_store_is_empty() {
+    let connector = Connector::build(None, &[]).unwrap();
+    assert_eq!(stored(&connector), 0);
+    let with_ca = Connector::build(None, &[authority("a")]).unwrap();
+    assert_eq!(stored(&with_ca), 1, "only the endpoint's own roots");
+}
+
+/// Set in the child of the protocol-floor test.
+const FLOOR_CHILD: &str = "GWZ_TLS_FLOOR_CHILD";
+
+/// An `openssl.cnf` for the child that enables TLS 1.0 and 1.1 the way a host with a laxer policy
+/// has them: security level 0, and a system floor of TLS 1.0.
+const LAX_POLICY: &str = "openssl_conf = gwz_test\n[gwz_test]\nssl_conf = gwz_ssl\n[gwz_ssl]\nsystem_default = gwz_system\n[gwz_system]\nCipherString = DEFAULT:@SECLEVEL=0\nMinProtocol = TLSv1\n";
+
+/// A self-signed server certificate for `localhost`, its key, and the certificate as a root.
+fn server_identity() -> (
+    openssl::x509::X509,
+    openssl::pkey::PKey<openssl::pkey::Private>,
+) {
+    use openssl::x509::extension::SubjectAlternativeName;
+    let group = EcGroup::from_curve_name(Nid::X9_62_PRIME256V1).unwrap();
+    let key = PKey::from_ec_key(EcKey::generate(&group).unwrap()).unwrap();
+    let mut name = X509NameBuilder::new().unwrap();
+    name.append_entry_by_text("CN", "localhost").unwrap();
+    let name = name.build();
+    let mut builder = X509::builder().unwrap();
+    builder.set_version(2).unwrap();
+    let serial = BigNum::from_u32(7).unwrap().to_asn1_integer().unwrap();
+    builder.set_serial_number(&serial).unwrap();
+    builder.set_subject_name(&name).unwrap();
+    builder.set_issuer_name(&name).unwrap();
+    builder.set_pubkey(&key).unwrap();
+    builder
+        .set_not_before(&Asn1Time::days_from_now(0).unwrap())
+        .unwrap();
+    builder
+        .set_not_after(&Asn1Time::days_from_now(1).unwrap())
+        .unwrap();
+    builder
+        .append_extension(BasicConstraints::new().critical().ca().build().unwrap())
+        .unwrap();
+    let names = SubjectAlternativeName::new()
+        .dns("localhost")
+        .build(&builder.x509v3_context(None, None))
+        .unwrap();
+    builder.append_extension(names).unwrap();
+    builder.sign(&key, MessageDigest::sha256()).unwrap();
+    (builder.build(), key)
+}
+
+/// One TLS server on a loopback port that speaks TLS 1.0 and 1.1 only; the handshake's outcome
+/// comes back from `join`.
+fn tls_1_1_server() -> (u16, thread::JoinHandle<bool>, Certificate) {
+    use openssl::ssl::Ssl;
+    let (certificate, key) = server_identity();
+    let mut context = SslContextBuilder::new(SslMethod::tls()).unwrap();
+    context.set_cipher_list("DEFAULT:@SECLEVEL=0").unwrap();
+    context
+        .set_min_proto_version(Some(SslVersion::TLS1))
+        .unwrap();
+    context
+        .set_max_proto_version(Some(SslVersion::TLS1_1))
+        .unwrap();
+    context.set_certificate(&certificate).unwrap();
+    context.set_private_key(&key).unwrap();
+    let context = context.build();
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = thread::spawn(move || {
+        let (socket, _) = listener.accept().unwrap();
+        let ssl = Ssl::new(&context).unwrap();
+        ssl.accept(socket).is_ok()
+    });
+    (port, server, Certificate(certificate))
+}
+
+async fn handshake(connector: &Connector, port: u16) -> bool {
+    let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .unwrap();
+    connector.connect("localhost", tcp).await.is_ok()
+}
+
+/// The client refuses a server capped at TLS 1.1, which `native-tls` refused (its floor is TLS
+/// 1.2) and a context with the library's lowest minimum would complete. Run in a child process
+/// with an `OPENSSL_CONF` that enables TLS 1.0 and 1.1 (security level 0, system floor TLS 1.0),
+/// so that the refusal is the context's own floor and not the host's policy. In the child a
+/// control context with a TLS 1.0 floor must complete the handshake with the same server; where it
+/// cannot (this OpenSSL has no TLS 1.1 at all), the row prints why and has nothing to show.
+#[test]
+fn a_server_capped_at_tls_1_1_is_refused() {
+    if std::env::var_os(FLOOR_CHILD).is_some() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (port, server, certificate) = tls_1_1_server();
+            let mut lax = base().unwrap();
+            lax.set_min_proto_version(Some(SslVersion::TLS1)).unwrap();
+            let mut store = X509StoreBuilder::new().unwrap();
+            store.add(certificate.clone());
+            lax.set_cert_store(store.build());
+            let control = Connector {
+                context: lax.build(),
+            };
+            let completed = handshake(&control, port).await;
+            let _ = server.join();
+            if !completed {
+                println!(
+                    "tls-floor: host-conditional: this OpenSSL does not complete TLS 1.1 even at \
+                     SECLEVEL=0, so the refusal below shows nothing here"
+                );
+                return;
+            }
+            println!("tls-floor: the control (a TLS 1.0 floor) completes TLS 1.1 here");
+            let (port, server, certificate) = tls_1_1_server();
+            let roots: RootsLoader = Arc::new(move || vec![certificate.clone()]);
+            let connector = Connector::build(Some(&roots), &[]).unwrap();
+            let refused = !handshake(&connector, port).await;
+            let _ = server.join();
+            assert!(refused, "the context completed a TLS 1.1 handshake");
+            println!("tls-floor: the product's connector refuses TLS 1.1");
+        });
+        return;
+    }
+    let dir = tempfile::TempDir::new().unwrap();
+    let conf = dir.path().join("openssl.cnf");
+    std::fs::write(&conf, LAX_POLICY).unwrap();
+    let name = format!(
+        "{}::a_server_capped_at_tls_1_1_is_refused",
+        module_path!().split_once("::").unwrap().1
+    );
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", &name, "--nocapture", "--test-threads", "1"])
+        .env(FLOOR_CHILD, "1")
+        .env("OPENSSL_CONF", &conf)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines().filter(|line| line.starts_with("tls-floor:")) {
+        println!("{line}");
+    }
+    assert!(
+        output.status.success(),
+        "the floor test's child failed:\n{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("test result: ok. 1 passed"),
+        "the child ran no single passing test:\n{stdout}"
+    );
+}
+
+/// What the 8 MiB rows move each way.
+const EIGHT_MIB: usize = 8 << 20;
+
+/// A server that writes 8 MiB before it reads anything, then reads 8 MiB.
+fn writes_first() -> crate::git::endpoint::https_fixture::Script {
+    Arc::new(|mut tls| {
+        Box::pin(async move {
+            let chunk = vec![0xAAu8; 64 * 1024];
+            for _ in 0..EIGHT_MIB / chunk.len() {
+                if tls.write_all(&chunk).await.is_err() {
+                    return;
+                }
+            }
+            let _ = tls.flush().await;
+            let mut sink = vec![0u8; 64 * 1024];
+            let mut total = 0;
+            while total < EIGHT_MIB {
+                match tls.read(&mut sink).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(count) => total += count,
+                }
+            }
+            let _ = tls.write_all(b"done").await;
+            let _ = tls.shutdown().await;
+        })
+    })
+}
+
+/// The client writes 8 MiB and reads 8 MiB concurrently on one stream, from one task as hyper's
+/// connection task does. Neither side can finish unless reads progress while writes are blocked.
+async fn full_duplex<S: AsyncRead + AsyncWrite + Unpin>(tls: S) {
+    let (mut reader, mut writer) = tokio::io::split(tls);
+    let write = async {
+        let chunk = vec![0x55u8; 64 * 1024];
+        for _ in 0..EIGHT_MIB / chunk.len() {
+            writer.write_all(&chunk).await?;
+        }
+        writer.flush().await
+    };
+    let read = async {
+        let mut got = vec![0u8; EIGHT_MIB];
+        reader.read_exact(&mut got).await.map(|_| ())
+    };
+    let both = async { tokio::try_join!(write, read).map(|_| ()) };
+    tokio::time::timeout(Duration::from_secs(30), both)
+        .await
+        .expect("the 8 MiB exchange stalled")
+        .expect("the 8 MiB exchange failed");
+}
+
+/// The oracle: `native-tls` through `tokio-native-tls`, trusting the fixture's CA.
+async fn native_client(server: &Server) -> tokio_native_tls::TlsStream<tokio::net::TcpStream> {
+    let mut builder = native_tls::TlsConnector::builder();
+    builder.disable_built_in_roots(true);
+    builder.add_root_certificate(native_tls::Certificate::from_pem(&server.ca).unwrap());
+    let connector = tokio_native_tls::TlsConnector::from(builder.build().unwrap());
+    let tcp = tokio::net::TcpStream::connect(("127.0.0.1", server_port(server)))
+        .await
+        .unwrap();
+    connector.connect("localhost", tcp).await.unwrap()
+}
+
+fn server_port(server: &Server) -> u16 {
+    server
+        .url
+        .rsplit(':')
+        .next()
+        .unwrap()
+        .split('/')
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn native_tls_writes_and_reads_8_mib_at_once_against_a_peer_that_writes_first() {
+    let server = Server::scripted(writes_first()).await;
+    full_duplex(native_client(&server).await).await;
+}
+
+#[tokio::test]
+async fn our_stream_writes_and_reads_8_mib_at_once_against_a_peer_that_writes_first() {
+    let server = Server::scripted(writes_first()).await;
+    full_duplex(connect(&server, "localhost").await.unwrap()).await;
+}
+
+/// A server that reads the request head, answers `413` and stops reading, keeping the connection.
+fn answers_early() -> crate::git::endpoint::https_fixture::Script {
+    Arc::new(|mut tls| {
+        Box::pin(async move {
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") && head.len() < 65536 {
+                let Ok(byte) = tls.read_u8().await else {
+                    return;
+                };
+                head.push(byte);
+            }
+            let reply = b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n";
+            if tls.write_all(reply).await.is_err() || tls.flush().await.is_err() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        })
+    })
+}
+
+/// The client streams a 16 MiB body to a server that has answered and stopped reading. The
+/// response head must arrive within 2 s, while the body is still blocked.
+async fn early_response<S: AsyncRead + AsyncWrite + Unpin>(tls: S) {
+    let (mut reader, mut writer) = tokio::io::split(tls);
+    let write = async {
+        let head = b"POST /repo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 16777216\r\n\r\n";
+        let _ = writer.write_all(head).await;
+        let chunk = vec![0x55u8; 64 * 1024];
+        for _ in 0..(16 << 20) / chunk.len() {
+            if writer.write_all(&chunk).await.is_err() {
+                break;
+            }
+        }
+        std::future::pending::<()>().await;
+    };
+    let read = async {
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            head.push(reader.read_u8().await.expect("the connection ended first"));
+        }
+        head
+    };
+    let head = tokio::select! {
+        head = tokio::time::timeout(Duration::from_secs(2), read) => head,
+        _ = write => unreachable!(),
+    };
+    let head = head.expect("the response head did not arrive within 2 s");
+    assert!(head.starts_with(b"HTTP/1.1 413"), "{head:?}");
+}
+
+#[tokio::test]
+async fn native_tls_reads_an_early_answer_while_a_16_mib_body_is_blocked() {
+    let server = Server::scripted(answers_early()).await;
+    early_response(native_client(&server).await).await;
+}
+
+#[tokio::test]
+async fn our_stream_reads_an_early_answer_while_a_16_mib_body_is_blocked() {
+    let server = Server::scripted(answers_early()).await;
+    early_response(connect(&server, "localhost").await.unwrap()).await;
 }
