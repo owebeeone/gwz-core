@@ -65,13 +65,45 @@ impl<T> Cell<T> {
 trait Reap: Send {
     fn reap(&mut self) -> bool;
 }
-struct Entry<T> {
-    cell: Arc<Cell<T>>,
-    join: Option<JoinHandle<()>>,
+/// The thread of a job as its reaper sees it: whether it has exited, and the
+/// wait for its exit. A job's own thread is a `JoinHandle`; the reaper's tests
+/// stand in for one that is still exiting.
+trait Exit: Send {
+    fn exited(&self) -> bool;
+    /// Waits for the exit; true if the thread panicked.
+    fn join(self) -> bool;
 }
-impl<T: Send + 'static> Reap for Entry<T> {
+impl Exit for JoinHandle<()> {
+    fn exited(&self) -> bool {
+        self.is_finished()
+    }
+    fn join(self) -> bool {
+        JoinHandle::join(self).is_err()
+    }
+}
+struct Entry<T, J: Exit = JoinHandle<()>> {
+    cell: Arc<Cell<T>>,
+    join: Option<J>,
+}
+impl<T, J: Exit> Entry<T, J> {
+    /// Whether the job's thread is still running its work. A thread whose
+    /// result is stored has only its exit left, which a wait for it covers at
+    /// once: the thread stores the result and wakes the reaper as its last
+    /// acts, so the reaper can look at it before that exit is done, and
+    /// leaving it for the next tick would cost a whole one (20 ms).
+    fn working(&self) -> bool {
+        self.join.as_ref().is_some_and(|join| !join.exited())
+            && self
+                .cell
+                .result
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_none()
+    }
+}
+impl<T: Send + 'static, J: Exit> Reap for Entry<T, J> {
     fn reap(&mut self) -> bool {
-        if self.join.as_ref().is_some_and(|join| !join.is_finished()) {
+        if self.working() {
             let control = &self.cell.control;
             control.sync_shared();
             let mut state = control.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -87,7 +119,7 @@ impl<T: Send + 'static> Reap for Entry<T> {
             }
             return false;
         }
-        let panic = self.join.take().is_some_and(|join| join.join().is_err());
+        let panic = self.join.take().is_some_and(Exit::join);
         let control = &self.cell.control;
         control.sync_shared();
         let mut state = control.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -380,4 +412,4 @@ impl Cleanup {
 mod control;
 use control::Fail;
 pub(crate) use control::{Control, Mark};
-cfg_if::cfg_if! { if #[cfg(test)] { mod tests; pub(crate) use tests::ManualClock; } }
+cfg_if::cfg_if! { if #[cfg(test)] { mod reap_tests; mod tests; pub(crate) use tests::ManualClock; } }
