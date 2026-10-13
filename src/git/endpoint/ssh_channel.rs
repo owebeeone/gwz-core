@@ -236,11 +236,14 @@ impl SshChannel {
         self.force_dispose()
     }
 
-    /// Bounded local termination; no peer acknowledgement or message replay.
+    /// Bounded local termination; no peer acknowledgement or message replay. The channel and the session are
+    /// dropped and the phase is `Disposed` whatever the socket's shutdown reports: a failure to end a socket that
+    /// is being destroyed has nothing to retry, and returning it would hold the pool's capacity for ever. It is
+    /// always `Ok`.
     pub fn force_dispose(&mut self) -> io::Result<()> {
         self.abort();
         if let Some(connection) = &self.session {
-            connection.terminate()?;
+            let _ = connection.terminate();
         }
         self.channel.take();
         self.session.take();

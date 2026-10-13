@@ -317,17 +317,27 @@ async fn a_failed_fill_with_no_helper_in_the_view_is_no_helper() {
         lookup(&config(home.path(), &global)).await.err(),
         Some(AuthError::NoHelper)
     );
-    // A helper written for another server is no helper for this one.
+    // A helper written for another server, port, user or path is no helper for this one.
     let (written, _) = silent_helper(home.path());
-    fs::write(
-        &global,
-        format!("[credential \"https://elsewhere.test\"]\n helper = {written}\n"),
-    )
-    .unwrap();
-    assert_eq!(
-        lookup(&config(home.path(), &global)).await.err(),
-        Some(AuthError::NoHelper)
-    );
+    for pattern in [
+        "https://elsewhere.test",
+        "https://example.test:8443",
+        "https://me@example.test",
+        "https://example.test/rep",
+        "https://*.example.test",
+        "http://example.test",
+    ] {
+        fs::write(
+            &global,
+            format!("[credential \"{pattern}\"]\n helper = {written}\n"),
+        )
+        .unwrap();
+        assert_eq!(
+            lookup(&config(home.path(), &global)).await.err(),
+            Some(AuthError::NoHelper),
+            "{pattern}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -335,9 +345,16 @@ async fn a_failed_fill_with_a_helper_in_the_view_is_declined() {
     let home = tempfile::tempdir().unwrap();
     let global = home.path().join("global");
     let (written, _) = silent_helper(home.path());
+    // State review P2-1: Git selects `credential.<url>` sections by `urlmatch`, so a wildcard, another case, the
+    // default port and a path prefix are all this helper; the view must say so, and not that none is configured.
     for section in [
         "[credential]".to_owned(),
         "[credential \"https://example.test\"]".to_owned(),
+        "[credential \"https://*.test\"]".to_owned(),
+        "[credential \"https://Example.TEST\"]".to_owned(),
+        "[credential \"https://example.test:443\"]".to_owned(),
+        "[credential \"https://example.test/repo\"]".to_owned(),
+        "[credential \"example.test\"]".to_owned(),
     ] {
         fs::write(&global, format!("{section}\n helper = {written}\n")).unwrap();
         let error = lookup(&config(home.path(), &global)).await.err();

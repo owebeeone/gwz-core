@@ -118,8 +118,34 @@ cfg_if::cfg_if! {
         /// Whether libssh2's WinCNG backend reads a private key held in memory: the traditional PEM form of an RSA
         /// key. Given any other form it does not return (found on dabeest, step 1.4), so a key is checked before the
         /// call. (A key with a passphrase never gets this far: the key snapshot admits unencrypted keys only.)
+        ///
+        /// The library's PEM reader (`_libssh2_pem_parse_memory`) searches for a line equal to the header, then for
+        /// one equal to the footer, and repeats the search over empty lines past the end of the text until it finds
+        /// one; it also drops the last character of a line of 127 or more. So the text is admitted only when its
+        /// first non-blank line is exactly the RSA header, the first armor line after that is exactly the matching
+        /// footer (the block is one RSA block, and the key that the container check admitted), and every line is
+        /// shorter than 127 characters. Text after the footer is never read.
         pub(crate) fn cng_reads(text: &str) -> bool {
-            text.trim_start().starts_with("-----BEGIN RSA PRIVATE KEY-----")
+            const BEGIN: &str = "-----BEGIN RSA PRIVATE KEY-----";
+            const END: &str = "-----END RSA PRIVATE KEY-----";
+            const LONGEST_LINE: usize = 126;
+            // Carriage return and line feed each end a line, as the library's reader takes them.
+            let mut lines = text.split(['\r', '\n']);
+            if lines.clone().any(|line| line.len() > LONGEST_LINE) {
+                return false;
+            }
+            if lines.find(|line| !line.trim().is_empty()) != Some(BEGIN) {
+                return false;
+            }
+            for line in lines {
+                if line.starts_with("-----BEGIN ") {
+                    return false;
+                }
+                if line.starts_with("-----END ") {
+                    return line == END;
+                }
+            }
+            false
         }
 
         /// A file's bytes as libssh2 sees a `known_hosts` file on Windows, where it reads with `fopen(.., "r")`: the
