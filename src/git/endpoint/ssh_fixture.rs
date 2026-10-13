@@ -11,11 +11,12 @@ use super::{
     fixture_host::{self, Programs},
     fixture_job::ProcessJob,
 };
+use crate::test_support::fixture_port;
 
 use ssh2::{CheckResult, KnownHostFileKind};
 use std::fs;
 use std::io::{self, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
@@ -29,6 +30,12 @@ pub(crate) use ssh_connection::SshConnection;
 /// operation allows, 32 by default. OpenSSH's default `MaxStartups` drops
 /// unauthenticated connections beyond 10, so the fixture's server takes more.
 const OPEN_STARTUPS: &str = "MaxStartups 64\n";
+
+/// What a session says when the server answering is not the fixture's own.
+const HOST_KEY_MISMATCH: &str = "temporary host key did not match";
+
+/// How many ports a fixture's server is tried on before the fixture gives up.
+const START_ATTEMPTS: usize = 5;
 
 /// How long a server has to start accepting: a Windows `sshd.exe` is slower to start than a Unix one.
 const READY_WITHIN: Duration = Duration::from_secs(if cfg!(windows) { 20 } else { 5 });
@@ -88,8 +95,57 @@ impl SshdFixture {
     }
 
     fn build_with(debug: bool, startups: &str, extra: &str, forced: bool) -> Self {
+        Self::build_on(debug, startups, extra, forced, fixture_port)
+    }
+
+    /// A server on the port `next_port` names; a seam for a test that makes two fixtures meet on one port.
+    pub(crate) fn new_on_ports(next_port: impl FnMut() -> u16) -> Self {
+        Self::build_on(false, OPEN_STARTUPS, "", false, next_port)
+    }
+
+    /// [`Self::new_on_ports`] for a server that logs its debugging output and serves one connection.
+    pub(crate) fn new_debug_on_ports(next_port: impl FnMut() -> u16) -> Self {
+        Self::build_on(true, OPEN_STARTUPS, "", false, next_port)
+    }
+
+    /// A running server of the fixture's own on a port `next_port` names. A port is picked by binding and releasing
+    /// one, so another test's server can take it before this one binds it: the server then exits, or never was the
+    /// one that answers. That attempt ends (its server is stopped with its fixture) and the next starts on the next
+    /// port, up to [`START_ATTEMPTS`] times.
+    fn build_on(
+        debug: bool,
+        startups: &str,
+        extra: &str,
+        forced: bool,
+        mut next_port: impl FnMut() -> u16,
+    ) -> Self {
+        let mut refused = Vec::new();
+        for _ in 0..START_ATTEMPTS {
+            let port = next_port();
+            match Self::start_on(port, debug, startups, extra, forced) {
+                Ok(fixture) => return fixture,
+                Err(reason) => {
+                    eprintln!(
+                        "ssh fixture: no server of its own on port {port} ({reason}); trying another port"
+                    );
+                    refused.push(format!("port {port}: {reason}"));
+                }
+            }
+        }
+        panic!(
+            "temporary sshd did not start in {START_ATTEMPTS} attempts: {}",
+            refused.join("; ")
+        );
+    }
+
+    fn start_on(
+        port: u16,
+        debug: bool,
+        startups: &str,
+        extra: &str,
+        forced: bool,
+    ) -> Result<Self, String> {
         let programs = fixture_host::programs();
-        let port = free_port();
         let Layout {
             temp,
             host_key,
@@ -143,26 +199,37 @@ impl SshdFixture {
             authenticated_sessions: 0,
         };
         if !debug {
-            fixture.wait_ready();
+            // Not ready: the fixture is dropped here, which stops exactly this attempt's server. (A debugging
+            // server serves one connection, which a probe must not use; see `debug_session`.)
+            fixture.wait_ready()?;
         }
-        fixture
+        Ok(fixture)
     }
 
-    fn wait_ready(&mut self) {
+    /// Ready once this fixture's own server answers, and not before: a server that exited (it could not bind its
+    /// port) or a foreign one that answers on that port is not it.
+    fn wait_ready(&mut self) -> Result<(), String> {
         let deadline = Instant::now() + READY_WITHIN;
         while Instant::now() < deadline {
-            if TcpStream::connect(("127.0.0.1", self.port)).is_ok() {
-                return;
-            }
             if let Some(status) = self.child.try_wait().unwrap() {
-                panic!(
-                    "temporary sshd exited with {status} before it was ready: {}",
+                return Err(format!(
+                    "it exited with {status} before it was ready: {}",
                     self.log()
-                );
+                ));
+            }
+            match answering(self.port, &self.known_hosts) {
+                Answer::Own => return Ok(()),
+                Answer::Foreign => {
+                    return Err("another server answers on the port".to_owned());
+                }
+                Answer::Nothing => {}
             }
             thread::sleep(Duration::from_millis(20));
         }
-        panic!("temporary sshd did not become ready: {}", self.log());
+        Err(format!(
+            "it was not ready in {READY_WITHIN:?}: {}",
+            self.log()
+        ))
     }
 
     /// This server's host key as a `known_hosts` line for `name` at `port`:
@@ -196,24 +263,49 @@ impl SshdFixture {
     }
 
     pub(crate) fn session(&mut self) -> SshConnection {
-        self.session_with_retry(false)
-    }
-
-    pub(crate) fn debug_session(&mut self) -> SshConnection {
-        self.session_with_retry(true)
-    }
-
-    pub(crate) fn session_with_retry(&mut self, retry: bool) -> SshConnection {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            match self.try_session() {
-                Ok(connection) => return connection,
-                Err(_error) if retry && Instant::now() < deadline => {
-                    thread::sleep(Duration::from_millis(20));
-                }
-                Err(error) => panic!("temporary SSH session setup failed: {error}"),
-            }
+        match self.try_session() {
+            Ok(connection) => connection,
+            Err(error) => panic!("temporary SSH session setup failed: {error}"),
         }
+    }
+
+    /// A session on a debugging server, which serves one connection and so cannot be probed for being the fixture's
+    /// own: the session's own handshake is the proof, as the host key it checks is this fixture's. The connection
+    /// is retried while the server has yet to listen. A server that is not the fixture's own (another test's server
+    /// answers on the port, or this one could not bind it and exited) is replaced by a new one on a new port, up to
+    /// [`START_ATTEMPTS`] times, and the fixture's port and files are then the new server's.
+    pub(crate) fn debug_session(&mut self) -> SshConnection {
+        let mut refused = Vec::new();
+        for _ in 0..START_ATTEMPTS {
+            let deadline = Instant::now() + READY_WITHIN;
+            let reason = loop {
+                match self.try_session() {
+                    Ok(connection) => return connection,
+                    Err(error) if error.to_string() == HOST_KEY_MISMATCH => {
+                        break error.to_string();
+                    }
+                    Err(error) => {
+                        if self.child.try_wait().unwrap().is_some() {
+                            break format!("the server exited ({error})");
+                        }
+                        if Instant::now() >= deadline {
+                            break format!("no session in {READY_WITHIN:?} ({error})");
+                        }
+                        thread::sleep(Duration::from_millis(20));
+                    }
+                }
+            };
+            eprintln!(
+                "ssh fixture: no debugging server of its own on port {} ({reason}); trying another port",
+                self.port
+            );
+            refused.push(format!("port {}: {reason}", self.port));
+            *self = Self::build_on(true, OPEN_STARTUPS, "", false, fixture_port);
+        }
+        panic!(
+            "temporary debugging sshd did not start in {START_ATTEMPTS} attempts: {}",
+            refused.join("; ")
+        );
     }
 
     pub(crate) fn try_session(&mut self) -> io::Result<SshConnection> {
@@ -263,7 +355,7 @@ pub(crate) fn dialer(
                 known.check_port("127.0.0.1", server_port, &host_key),
                 CheckResult::Match
             ) {
-                return Err(io::Error::other("temporary host key did not match"));
+                return Err(io::Error::other(HOST_KEY_MISMATCH));
             }
             session.userauth_pubkey_file(&user, None, &key, None)?;
             if !session.authenticated() {
@@ -275,13 +367,48 @@ pub(crate) fn dialer(
     }
 }
 
-/// A port nothing listens on at the moment: bound and released, so a server can take it.
-fn free_port() -> u16 {
-    TcpListener::bind(("127.0.0.1", 0))
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+/// How long a probe's handshake may take before the probe tries again.
+const PROBE_MS: u32 = 1_000;
+
+/// Whose server answers on a port.
+enum Answer {
+    /// The server whose host key the fixture's `known_hosts` trusts.
+    Own,
+    /// A server that answers with another host key.
+    Foreign,
+    /// Nothing that completes an SSH handshake yet: the port refuses, or what holds it says nothing, or the server
+    /// dropped the probe (`MaxStartups`).
+    Nothing,
+}
+
+/// Connects to `port` and completes the handshake, which is as far as a host key is known, and judges the key
+/// against the fixture's own `known_hosts`.
+fn answering(port: u16, known_hosts: &Path) -> Answer {
+    let Ok((mut connection, _watch)) = handshaken(port, PROBE_MS) else {
+        return Answer::Nothing;
+    };
+    let session = connection.session();
+    let Some((host_key, _)) = session.host_key() else {
+        return Answer::Nothing;
+    };
+    let host_key = host_key.to_owned();
+    let Ok(mut known) = session.known_hosts() else {
+        return Answer::Nothing;
+    };
+    if known
+        .read_file(known_hosts, KnownHostFileKind::OpenSSH)
+        .is_err()
+    {
+        return Answer::Nothing;
+    }
+    if matches!(
+        known.check_port("127.0.0.1", port, &host_key),
+        CheckResult::Match
+    ) {
+        Answer::Own
+    } else {
+        Answer::Foreign
+    }
 }
 
 /// The directory every fixture server stands in, whichever server it is (the system's `sshd`, or the test-controlled
@@ -729,3 +856,6 @@ mod tests {
         }
     }
 }
+
+mod port_stress;
+mod port_tests;

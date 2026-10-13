@@ -7,18 +7,25 @@
 //! program itself, so the process it kills is the one that listens.
 //!
 //! The daemon cannot take a listener that is already bound, so the port is
-//! chosen by binding and releasing one, and in the gap between that release
-//! and the daemon's own bind another test can take the port. The daemon then
-//! exits, and a bare "something accepts connections" check would have gone on
-//! to talk to whatever took the port. [`GitDaemon::start`] therefore counts the
-//! daemon as ready only when it is still running and the listener answers as
-//! `git-daemon` does, and otherwise tries again on a new port.
+//! chosen by binding and releasing one (from the range `fixture_port` draws
+//! from, which the system gives to nothing else), and in the gap between that
+//! release and the daemon's own bind another test's daemon can still take the
+//! port. The daemon binds exclusively, which is why it is not given
+//! `--reuseaddr`: on Windows that option lets a second daemon bind a port that
+//! a first one listens on, and both go on running. The daemon then exits, and a check that something accepts
+//! connections, or that it answers as a `git-daemon` does, would have gone on
+//! to talk to whatever took the port while the daemon was still starting.
+//! [`GitDaemon::start`] therefore counts the daemon as ready only when it is
+//! still running and its own log says it listens (`Ready to rumble`, which
+//! the daemon writes after it has bound its sockets, and so only its own
+//! process can), and otherwise tries again on a new port.
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
+
+use super::{TempDir, fixture_port};
 
 const ATTEMPTS: usize = 5;
 const READY_WITHIN: Duration = Duration::from_secs(5);
@@ -27,17 +34,29 @@ const READY_WITHIN: Duration = Duration::from_secs(5);
 pub(crate) struct GitDaemon {
     child: Child,
     port: u16,
+    /// Where the daemon's log is, and the directory that holds it until the guard is dropped.
+    log: PathBuf,
+    _logs: TempDir,
 }
 
 impl GitDaemon {
     /// Serve every repository under `base_path`, with `receive-pack` enabled
     /// so a test can push to it, and return once it is ready.
     pub(crate) fn start(base_path: &Path) -> Self {
+        Self::start_on_ports(base_path, fixture_port)
+    }
+
+    /// [`Self::start`] on the ports `next_port` names, one for each attempt; a seam for a test that makes two
+    /// daemons meet on one port.
+    pub(crate) fn start_on_ports(base_path: &Path, mut next_port: impl FnMut() -> u16) -> Self {
         let program = git_daemon_program();
         for _ in 0..ATTEMPTS {
-            let port = free_port();
+            let port = next_port();
+            let logs = TempDir::new("git-daemon-log");
+            let log = logs.path().join("daemon.log");
             let child = Command::new(&program)
-                .arg("--reuseaddr")
+                // The daemon logs `Ready to rumble` only when it is told to log at all.
+                .arg("--verbose")
                 .arg("--export-all")
                 .arg("--enable=receive-pack")
                 .arg("--listen=127.0.0.1")
@@ -45,11 +64,16 @@ impl GitDaemon {
                 .arg(format!("--base-path={}", base_path.display()))
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stderr(File::create(&log).expect("the daemon's log is created"))
                 .spawn()
                 .expect("git-daemon starts");
             // From here the guard owns the child, whatever happens next.
-            let mut daemon = Self { child, port };
+            let mut daemon = Self {
+                child,
+                port,
+                log,
+                _logs: logs,
+            };
             if daemon.wait_until_ready() {
                 return daemon;
             }
@@ -61,23 +85,27 @@ impl GitDaemon {
         self.port
     }
 
+    /// Whether the daemon's process is still running.
+    pub(crate) fn running(&mut self) -> bool {
+        self.child.try_wait().unwrap().is_none()
+    }
+
     /// Kill the daemon and wait for it; the port is closed on return.
     pub(crate) fn stop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
 
-    /// Ready: our child is still running, and the listener on the port answers
-    /// a request for a repository that does not exist with `git-daemon`'s
-    /// refusal. False if the child exited (it could not bind) or the listener
-    /// is not a git daemon; nothing listens for us then.
+    /// Ready: our child is still running and its log says it listens. False
+    /// if the child exited (it could not bind), whatever else answers on the
+    /// port; nothing listens for us then.
     fn wait_until_ready(&mut self) -> bool {
         let deadline = Instant::now() + READY_WITHIN;
         while Instant::now() < deadline {
             if self.child.try_wait().unwrap().is_some() {
                 return false;
             }
-            if answers_as_git_daemon(self.port) && self.child.try_wait().unwrap().is_none() {
+            if fs::read_to_string(&self.log).is_ok_and(|log| log.contains("Ready to rumble")) {
                 return true;
             }
             std::thread::sleep(Duration::from_millis(5));
@@ -90,31 +118,6 @@ impl Drop for GitDaemon {
     fn drop(&mut self) {
         self.stop();
     }
-}
-
-/// Ask for a repository that is not there. `git-daemon` answers with a
-/// pkt-line `ERR ...`; a connection that is refused, closed, silent or
-/// answered otherwise is not it.
-pub(super) fn answers_as_git_daemon(port: u16) -> bool {
-    let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
-        return false;
-    };
-    let timeout = Some(Duration::from_secs(2));
-    if stream.set_read_timeout(timeout).is_err() || stream.set_write_timeout(timeout).is_err() {
-        return false;
-    }
-    let request = b"git-upload-pack /gwz-readiness-probe\0host=localhost\0";
-    let line = format!("{:04x}", request.len() + 4);
-    if stream.write_all(line.as_bytes()).is_err() || stream.write_all(request).is_err() {
-        return false;
-    }
-    let mut reply = [0u8; 8];
-    stream.read_exact(&mut reply).is_ok() && &reply[4..7] == b"ERR"
-}
-
-fn free_port() -> u16 {
-    let probe = TcpListener::bind("127.0.0.1:0").unwrap();
-    probe.local_addr().unwrap().port()
 }
 
 /// The `git-daemon` program in Git's exec path, which is where `git daemon`

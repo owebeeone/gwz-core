@@ -8,6 +8,18 @@ use std::net::TcpStream;
 
 use super::{GitDaemon, TempDir};
 
+/// The ports to try: `taken` for `times` attempts, as when another daemon won the race for it, then fresh ones.
+fn after(taken: u16, times: usize) -> impl FnMut() -> u16 {
+    let mut left = times;
+    move || {
+        if left > 0 {
+            left -= 1;
+            return taken;
+        }
+        super::fixture_port()
+    }
+}
+
 #[test]
 fn dropping_the_guard_leaves_nothing_listening_on_its_port() {
     let temp = TempDir::new("git-daemon-guard");
@@ -34,21 +46,21 @@ fn stopping_the_guard_closes_the_port_and_dropping_it_after_is_harmless() {
     drop(daemon);
 }
 
-/// The port the guard picks can be taken before the daemon binds it. The daemon
-/// exits then, and a listener that merely accepts connections would pass for
-/// it: the readiness check must see that no git daemon is answering.
+/// A daemon on a port that another daemon already serves exits at once, and a readiness check that went by what
+/// answers would take the other daemon's answer for its own.
 #[test]
-fn a_listener_that_is_not_a_git_daemon_is_not_ready() {
-    use std::net::TcpListener;
+fn a_daemon_whose_port_another_daemon_took_moves_to_a_port_of_its_own() {
+    let temp = TempDir::new("git-daemon-collision");
+    let first = GitDaemon::start(temp.path());
+    let mut second = GitDaemon::start_on_ports(temp.path(), after(first.port(), 1));
+    assert_ne!(second.port(), first.port(), "both daemons claim one port");
+    assert!(second.running(), "the second daemon is not running");
+}
 
-    let foreign = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = foreign.local_addr().unwrap().port();
-    let accepting = std::thread::spawn(move || {
-        // Accepts, reads, never answers: what another test's server does.
-        let (stream, _) = foreign.accept().unwrap();
-        std::thread::sleep(std::time::Duration::from_secs(3));
-        drop(stream);
-    });
-    assert!(!super::git_daemon::answers_as_git_daemon(port));
-    accepting.join().unwrap();
+#[test]
+#[should_panic(expected = "git-daemon did not become ready")]
+fn a_daemon_that_finds_no_port_to_serve_on_says_so() {
+    let temp = TempDir::new("git-daemon-no-port");
+    let first = GitDaemon::start(temp.path());
+    let _second = GitDaemon::start_on_ports(temp.path(), after(first.port(), usize::MAX));
 }
