@@ -257,6 +257,7 @@ fn open_failure(
     authenticated: Option<bool>,
 ) -> git2::Error {
     let failure = crate::transport_host::HttpsOpenFailure {
+        ended: None,
         service: None,
         helpers_disabled: false,
         cli_hint: true,
@@ -287,6 +288,7 @@ fn a_failed_open_names_a_timeouts_origin_and_the_attempt_it_ended() {
     use gwz_transport::protocol::SetupFailureCause;
     let message = |setup_cause, attempts| {
         let failure = crate::transport_host::HttpsOpenFailure {
+            ended: None,
             service: None,
             helpers_disabled: false,
             cli_hint: true,
@@ -369,6 +371,7 @@ fn helper_timeout_keeps_public_code_75_without_reclassifying_general_timeouts() 
     use gwz_transport::protocol::*;
     for budget in [None, Some(1_250)] {
         let failure = crate::transport_host::HttpsOpenFailure {
+            ended: None,
             service: None,
             helpers_disabled: false,
             cli_hint: true,

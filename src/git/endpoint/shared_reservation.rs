@@ -279,6 +279,14 @@ impl<C: Connector> Resource for ReservedResource<C> {
         }
     }
 
+    fn local_budget(&self) -> Option<super::setup_retry::LocalBudget> {
+        match &self.state {
+            Slot::Waiting(_) => Some(super::setup_retry::LocalBudget::Reservation),
+            Slot::Started { inner, .. } => inner.local_budget(),
+            Slot::Ended => None,
+        }
+    }
+
     fn tcp_connect_ms(&self) -> Option<u64> {
         match &self.state {
             Slot::Started { inner, .. } => inner.tcp_connect_ms(),

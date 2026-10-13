@@ -131,6 +131,7 @@ impl RequestContext {
         let host = https_failure::host_of(url);
         let early = |code| {
             io::Error::other(HttpsOpenFailure {
+                ended: None,
                 service: Some(service),
                 helpers_disabled,
                 cli_hint: self.is_cli(),
@@ -160,9 +161,11 @@ impl RequestContext {
         if matches!(self.session.machine(), MachineSetting::Refused(_)) {
             return Err(early(ErrorCode::UnsupportedOperation));
         }
-        let canonical = crate::git::endpoint::https_destination::Destination::parse(url)
-            .map_err(early)?
-            .base();
+        let parsed =
+            crate::git::endpoint::https_destination::Destination::parse(url).map_err(early)?;
+        // The site a Down key's words name (§5.3), as the pool key has it.
+        let site = (parsed.host().to_owned(), parsed.port());
+        let canonical = parsed.base();
         let route = {
             // One entry per canonical URL, kept until the request ends: it is a
             // key and two enums, and `mode` guards "policy is fixed for this
@@ -178,6 +181,7 @@ impl RequestContext {
                 .map_err(|_| early(ErrorCode::Cancelled))?;
             if std::time::Instant::now() >= until {
                 return Err(io::Error::other(HttpsOpenFailure {
+                    ended: None,
                     service: Some(service),
                     helpers_disabled,
                     cli_hint: self.is_cli(),
@@ -212,17 +216,25 @@ impl RequestContext {
             *first_receipt.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
         let mut selected = first;
-        let mut result = self.session.open_https(
-            &self.meta.request_id,
-            &self.operation,
-            &canonical,
-            service,
-            first,
-            Some(until),
-            allocation_observer.clone(),
-            opened.clone(),
-            facts.clone(),
-        );
+        // How the open ended beyond its failure, which the endpoint left in the handoff (`EndNote`).
+        let mut ended = None;
+        let mut result = self
+            .session
+            .open_https(
+                &self.meta.request_id,
+                &self.operation,
+                &canonical,
+                service,
+                first,
+                Some(until),
+                allocation_observer.clone(),
+                opened.clone(),
+                facts.clone(),
+            )
+            .map_err(|refusal| {
+                ended = refusal.note;
+                refusal.failure
+            });
         let mut anonymous = first_receipt
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -255,20 +267,26 @@ impl RequestContext {
                             facts: None,
                         })
                     } else {
-                        self.session.open_https(
-                            &self.meta.request_id,
-                            &self.operation,
-                            &canonical,
-                            service,
-                            selected,
-                            // The endpoint retains the allocation remainder of
-                            // the first attempt; do not charge its independent
-                            // helper/connect/network work to allocation here.
-                            None,
-                            allocation_observer.clone(),
-                            opened,
-                            facts.clone(),
-                        )
+                        ended = None;
+                        self.session
+                            .open_https(
+                                &self.meta.request_id,
+                                &self.operation,
+                                &canonical,
+                                service,
+                                selected,
+                                // The endpoint retains the allocation remainder of
+                                // the first attempt; do not charge its independent
+                                // helper/connect/network work to allocation here.
+                                None,
+                                allocation_observer.clone(),
+                                opened,
+                                facts.clone(),
+                            )
+                            .map_err(|refusal| {
+                                ended = refusal.note;
+                                refusal.failure
+                            })
                     };
                 }
             }
@@ -293,6 +311,7 @@ impl RequestContext {
                     })
                     .flatten();
                 Err(io::Error::other(HttpsOpenFailure {
+                    ended: ended.map(|note| setup_retry::Ended::new(note, &site.0, site.1)),
                     service: Some(service),
                     helpers_disabled,
                     cli_hint: self.is_cli(),

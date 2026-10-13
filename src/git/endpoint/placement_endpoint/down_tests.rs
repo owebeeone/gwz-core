@@ -6,6 +6,7 @@ use super::{
     retry_tests::{OPERATION, endpoint, key, open, stall, step},
     *,
 };
+use crate::git::endpoint::setup_retry::EndNote;
 
 fn retry_attempt(terminal: &Envelope) -> Option<i64> {
     terminal
@@ -82,11 +83,17 @@ fn queued_members_finish_when_the_budget_is_spent_and_later_ones_park_for_the_re
     }
     assert_eq!(*starts.lock().unwrap(), 2, "no handshake before the retest");
     assert_eq!(terminals.len(), 4, "the parked member has not failed");
-    // It carries the retest, and shares its failure: no attempt count.
+    // It carries the retest, and shares its failure: no attempt count, and a
+    // note beside the failure says it is still failing (§5.3).
     now = retest_at;
     until_terminals(&mut endpoint, now, &mut terminals, 5);
     assert_eq!(*starts.lock().unwrap(), 3);
     assert_eq!(retry_attempt(terminals.last().unwrap()), None);
+    let handoff = endpoint.endpoint.handoff().clone();
+    assert_eq!(handoff.take_end("session", 5), Some(EndNote::StillFailing));
+    // The members finished when the budget was spent made attempts of their
+    // own: nothing is said of them.
+    assert_eq!(handoff.take_end("session", 1), None);
     // The second retest, 30 s on.
     endpoint.accept(OPERATION.into(), open(6, 30_000)).unwrap();
     now = endpoint
@@ -96,12 +103,31 @@ fn queued_members_finish_when_the_budget_is_spent_and_later_ones_park_for_the_re
         .unwrap();
     until_terminals(&mut endpoint, now, &mut terminals, 6);
     assert_eq!(*starts.lock().unwrap(), 4);
+    assert_eq!(handoff.take_end("session", 6), Some(EndNote::StillFailing));
     // Two in a row have failed: an arrival before the third is due finishes
-    // at once, with no handshake.
+    // at once, with no handshake, and says it made no attempt (Code P2-1).
     endpoint.accept(OPERATION.into(), open(7, 30_000)).unwrap();
     until_terminals(&mut endpoint, now, &mut terminals, 7);
     assert_eq!(*starts.lock().unwrap(), 4);
     assert_eq!(retry_attempt(terminals.last().unwrap()), None);
+    assert_eq!(handoff.take_end("session", 7), Some(EndNote::NotAttempted));
+    // The words the user reads for that arrival, as the driver words them.
+    let arrival = terminals.last().unwrap().open_failed.clone().unwrap();
+    let mut error = std::io::Error::other(crate::transport_host::SshOpenFailure(
+        arrival, None, 9_000, None,
+    ));
+    let text = {
+        let failed = error
+            .get_mut()
+            .and_then(|inner| inner.downcast_mut::<crate::transport_host::SshOpenFailure>())
+            .unwrap();
+        failed.3 = Some(setup_retry::Ended::new(EndNote::NotAttempted, "host", 22));
+        failed.to_string()
+    };
+    assert_eq!(
+        text,
+        "not attempted: host:22 failed earlier in this run (ssh setup timeout: no progress for 9 seconds (--ssh-timeout 9))"
+    );
     endpoint.shutdown();
 }
 

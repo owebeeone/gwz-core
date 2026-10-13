@@ -484,6 +484,8 @@ impl Session {
     ) -> ModelResult<(Arc<Self>, TransportPort)> {
         let mut state = Self::empty();
         let id = unique()?;
+        // Where the HTTPS endpoint leaves how a failed open ended beyond its failure, for the driver that shares it.
+        let ends = handoff.clone();
         let authority = crate::git::endpoint::shared_reservation::Authority::new(
             config.pool.total,
             config.pool.per_host,
@@ -516,7 +518,7 @@ impl Session {
             );
         }
         if let Some((https, helper_slots)) = https {
-            state.https = Some(super::https_endpoint::HttpsEndpoint::new_native(
+            let mut endpoint = super::https_endpoint::HttpsEndpoint::new_native(
                 https,
                 config.pool.clone(),
                 config.io_timeout_ms,
@@ -524,7 +526,9 @@ impl Session {
                 id.clone(),
                 helper_slots,
                 native,
-            )?);
+            )?;
+            endpoint.set_handoff(ends);
+            state.https = Some(endpoint);
         }
         let https_enabled = state.https.is_some();
         state.endpoint_config = Some(binding::EndpointConfig {

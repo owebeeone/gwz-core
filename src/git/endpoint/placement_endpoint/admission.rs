@@ -194,6 +194,11 @@ impl PlacementEndpoint {
             // The key's recorded failure, without the facts of the setup
             // that recorded it: this member set nothing up in this pass.
             Decision::Finish(last) => {
+                // A Down key's recorded failure, shared by a member that made
+                // no attempt (§5.3): the driver says so from the note.
+                if last.attempt == 0 {
+                    self.note_end(&queued.key, setup_retry::EndNote::NotAttempted);
+                }
                 let failure = Failure {
                     facts: None,
                     ..last.wire_failure()
@@ -367,6 +372,17 @@ impl PlacementEndpoint {
 
     /// Ends a member's open with `failure`, unless it has ended already. The
     /// failure carries every fact of the member's attempts.
+    /// Leaves how `key`'s open ended beyond its failure for the driver that
+    /// words it: the wire has no field for it, so it rides in the handoff the
+    /// driver shares with this endpoint.
+    pub(super) fn note_end(&self, key: &RequestKey, note: setup_retry::EndNote) {
+        if let Some(state) = self.requests.get(key) {
+            self.endpoint
+                .handoff()
+                .note_end(&state.session_id, state.stream_id, note);
+        }
+    }
+
     pub(super) fn fail_open(&mut self, key: &RequestKey, failure: Failure) {
         let facts = self.keep_facts(key, failure.facts.clone());
         if let Some(state) = self.requests.get_mut(key) {

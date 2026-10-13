@@ -44,8 +44,14 @@ const PATIENCE: Duration = Duration::from_secs(10);
 
 /// A local wait that ran out says so in its detail (§5.3's local capacity): the
 /// cause alone, no attempt count, and the user reads it as the `Capacity` code
-/// with the setup-slot words, never a stall and never an attempt.
-fn assert_says_it_was_local(failed: &Failure) {
+/// with the words of the budget that was full (Code P3-6), never a stall and
+/// never an attempt. The wire says only that the wait was local: which budget,
+/// and how long, is what the pool host saw (`wait`).
+fn assert_says_it_was_local(
+    failed: &Failure,
+    wait: Option<setup_retry::LocalWait>,
+    budget: setup_retry::LocalBudget,
+) {
     use gwz_transport::protocol::CapacityCause;
     let detail = failed.detail.as_ref().expect("a detail");
     assert_eq!(
@@ -56,22 +62,36 @@ fn assert_says_it_was_local(failed: &Failure) {
     assert!(detail.retry_attempt.is_none(), "{failed:?}");
     let report = setup_retry::CapacityReport::of_failure(failed).expect("a report");
     assert_eq!(report, setup_retry::CapacityReport::Local);
-    let reported = crate::transport_host::SshOpenFailure(failed.clone(), None, 9_000)
+    let wait = wait.unwrap_or_else(|| panic!("{budget:?}: the pool host reported no wait"));
+    assert_eq!(wait.budget, budget);
+    // The wait lasted the allocation these tests give: 300 ms, or a part of it.
+    assert!(wait.waited_ms <= 5_000, "{wait:?}");
+    let ended = setup_retry::Ended::new(setup_retry::EndNote::LocalWait(wait), "host", 22);
+    let reported = crate::transport_host::SshOpenFailure(failed.clone(), None, 9_000, Some(ended))
         .model_error(false)
         .expect("a typed error");
     assert_eq!(reported.code, crate::model::ErrorCode::Capacity);
-    assert!(
-        reported
-            .message
-            .starts_with("gwz's 64 connection-setup slots stayed full for 30 s"),
-        "{}",
-        reported.message
-    );
-    assert!(
-        !reported.message.contains("attempt"),
-        "{}",
-        reported.message
-    );
+    let message = &reported.message;
+    // Each budget says its own words, and none says another's number.
+    let (names, others): (&str, &[&str]) = match budget {
+        setup_retry::LocalBudget::JobBudget => (
+            "gwz's 64 connection-setup slots stayed full for ",
+            &["8 slots", "--max-per-host"],
+        ),
+        setup_retry::LocalBudget::SetupSlots => (
+            "gwz's 8 slots for resolving a host and setting up TLS stayed full for ",
+            &["64", "stopped answering", "--max-per-host"],
+        ),
+        setup_retry::LocalBudget::Reservation => (
+            "every connection gwz may open at once was in use for ",
+            &["64", "stopped answering", "8 slots"],
+        ),
+    };
+    assert!(message.starts_with(names), "{budget:?}: {message}");
+    for other in others {
+        assert!(!message.contains(other), "{budget:?}: {message}");
+    }
+    assert!(!message.contains("attempt"), "{message}");
 }
 
 /// Every job of `supervisor`, taken until `release`, as other setups take them.
@@ -375,7 +395,20 @@ fn a_wait_on_a_local_budget_that_outlasts_the_allocation_is_a_local_failure() {
             };
             assert_eq!(failed.code, ErrorCode::Capacity, "{budget:?}: {failed:?}");
             assert_eq!(failed.setup_cause, None, "{budget:?}");
-            assert_says_it_was_local(&failed);
+            // The pool host saw which budget the connection waited on.
+            let wait = pool
+                .client
+                .governor()
+                .take_local_wait(&https_key(&server).site(), pool.client.now());
+            assert_says_it_was_local(
+                &failed,
+                wait,
+                match budget {
+                    Budget::Jobs => setup_retry::LocalBudget::JobBudget,
+                    Budget::SetupSlot => setup_retry::LocalBudget::SetupSlots,
+                    Budget::Reservation => setup_retry::LocalBudget::Reservation,
+                },
+            );
             assert_eq!(
                 setup_retry::classify(&failed, phase),
                 Verdict::Return,
@@ -530,7 +563,12 @@ fn an_ssh_open_whose_job_wait_outlasts_its_allocation_fails_locally_not_as_a_sta
     let failed = answer.open_failed.expect("the wait failed");
     assert_eq!(failed.code, ErrorCode::Capacity, "{failed:?}");
     assert_eq!(failed.setup_cause, None, "{failed:?}");
-    assert_says_it_was_local(&failed);
+    // The endpoint left which wait expired beside the failure (`EndNote`).
+    let wait = match endpoint.handoff_for_test().take_end("session", 1) {
+        Some(setup_retry::EndNote::LocalWait(wait)) => Some(wait),
+        other => panic!("no local wait was left: {other:?}"),
+    };
+    assert_says_it_was_local(&failed, wait, setup_retry::LocalBudget::JobBudget);
     assert_eq!(
         setup_retry::classify(&failed, Phase::Setup),
         Verdict::Return,

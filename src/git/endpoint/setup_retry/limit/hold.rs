@@ -15,8 +15,12 @@ pub(crate) enum Origin {
 
 #[derive(Clone)]
 struct Active {
+    /// When the whole hold ends: the longest of every `Retry-After` it took.
+    /// New starts and first exchanges wait for it.
     until: u64,
-    origin: Origin,
+    /// When the holds that POST responses set end: a continuing member's next
+    /// POST waits for these alone (§4.5), not for a discovery's longer one.
+    post_until: Option<u64>,
     /// Longer than 1 s: its end discards the key's idle connections.
     long: bool,
     discard_asked: bool,
@@ -29,41 +33,48 @@ pub(crate) struct Hold {
 
 impl Hold {
     /// Sets or extends the hold to `now + min(retry_after_ms, 30 s)`. Returns
-    /// the wait in ms when a hold longer than 1 s began, for the note.
+    /// the server's `Retry-After` in ms, uncapped, when a hold longer than 1 s
+    /// began, for the note: it says what was asked, and the note's words say
+    /// what is waited (Code P3-7). A hold set by a POST response also keeps its
+    /// own end, so that a longer discovery hold does not stretch the POSTs'
+    /// wait (Code P3-8).
     pub(crate) fn set(&mut self, retry_after_ms: u64, origin: Origin, now: u64) -> Option<u64> {
         let wait = retry_after_ms.min(HOLD_CAP_MS);
         let until = now.saturating_add(wait);
+        let post_until = (origin == Origin::Post).then_some(until);
         if self.in_force(now)
             && let Some(active) = &mut self.active
         {
             active.until = active.until.max(until);
             active.long |= wait > DISCARD_AFTER_MS;
-            if origin == Origin::Post {
-                active.origin = Origin::Post;
-            }
+            active.post_until = active.post_until.max(post_until);
             return None;
         }
         let long = wait > DISCARD_AFTER_MS;
         self.active = Some(Active {
             until,
-            origin,
+            post_until,
             long,
             discard_asked: false,
         });
-        long.then_some(wait)
+        long.then_some(retry_after_ms)
     }
     pub(crate) fn in_force(&self, now: u64) -> bool {
         self.active
             .as_ref()
             .is_some_and(|active| now < active.until || active.long)
     }
-    /// Whether a member past its discovery may not send its next exchange.
+    /// Whether a member past its discovery may not send its next exchange: a
+    /// POST response set a hold that has not run its own `Retry-After`, or the
+    /// hold has run its time and the idle connections are not yet discarded
+    /// (the one wait that covers a POST taking a connection, §4.5).
     pub(crate) fn blocks_continuing(&self, now: u64) -> bool {
         self.in_force(now)
-            && self
-                .active
-                .as_ref()
-                .is_some_and(|a| a.origin == Origin::Post)
+            && self.active.as_ref().is_some_and(|active| {
+                active
+                    .post_until
+                    .is_some_and(|post| now < post || now >= active.until)
+            })
     }
     /// True once, when a long hold has run its time: the caller discards the
     /// key's idle connections and then calls [`Hold::idle_discarded`]. The

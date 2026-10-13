@@ -75,6 +75,9 @@ struct Entry {
     /// The endpoint's clock when the open arrived: how long the member has
     /// been in the command, for what its `Capacity` failure says (§5.3).
     started_ms: u64,
+    /// The attempts the server refused with a throttle (a 429, or a 503 or
+    /// 403 with `Retry-After`), for what its `Capacity` failure says.
+    refusals: u32,
 }
 struct Operation {
     name: String,
@@ -190,6 +193,12 @@ impl HttpsEndpoint {
             clock: Clock::monotonic(),
             notes: None,
         })
+    }
+    /// Has the endpoint leave how its failed opens ended beyond their
+    /// failures (`EndNote`) in `handoff`, where the driver in this process
+    /// takes them to word the failures.
+    pub(super) fn set_handoff(&mut self, handoff: crate::git::endpoint::ssh_handoff::Handoff) {
+        self.retries.set_handoff(handoff);
     }
     /// Has the endpoint give its limit machines' notes to `notes` once per
     /// pass (§9).
@@ -362,6 +371,7 @@ impl HttpsEndpoint {
                 carries_test: None,
                 facts: None,
                 started_ms: self.now_ms,
+                refusals: 0,
             },
         );
         self.admit(&key);

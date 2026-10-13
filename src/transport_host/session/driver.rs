@@ -44,12 +44,31 @@ fn network_deadlines(io_timeout_ms: u64, connect_timeout_ms: u64, allocation_ms:
 /// `--ssh-timeout` it was given; 0 when the stall clock is off). A stall's
 /// display names that bound, and the attempt ends the display
 /// `(attempt N of M)` (the retry plan's §5; T7).
+///
+/// The fourth field is how the open ended beyond its failure, which the wire has no field for and the endpoint left in
+/// the handoff (`EndNote`): a Down key's members, the local wait that expired.
 #[derive(Debug)]
 pub(crate) struct SshOpenFailure(
     pub(crate) Failure,
     pub(crate) Option<(u32, u32)>,
     pub(crate) u64,
+    pub(crate) Option<setup_retry::Ended>,
 );
+/// An open the endpoint refused: its failure, and how it ended beyond that when the endpoint left a note for the
+/// driver (`EndNote`).
+#[derive(Debug)]
+pub(crate) struct Refusal {
+    pub(crate) failure: Failure,
+    pub(crate) note: Option<setup_retry::EndNote>,
+}
+impl From<Failure> for Refusal {
+    fn from(failure: Failure) -> Self {
+        Self {
+            failure,
+            note: None,
+        }
+    }
+}
 impl SshOpenFailure {
     fn helper_reason(&self, cli_hint: bool) -> Option<String> {
         use gwz_transport::protocol::{AuthMethod, Effect, ErrorCode, SetupFailureCause};
@@ -76,9 +95,11 @@ impl SshOpenFailure {
         }
         None
     }
-    /// The report of a final `Capacity` failure that says why (§5.3).
+    /// The report of a final `Capacity` failure that says why (§5.3), with
+    /// what the endpoint knew beyond the wire.
     fn capacity_report(&self) -> Option<setup_retry::CapacityReport> {
         setup_retry::CapacityReport::of_failure(&self.0)
+            .map(|report| report.noted(self.3.as_ref().map(|ended| ended.note)))
     }
     pub(crate) fn model_error(&self, cli_hint: bool) -> Option<crate::model::ModelError> {
         // A member that gave up on a local wait has its own code (operator
@@ -103,6 +124,12 @@ impl SshOpenFailure {
 }
 impl std::fmt::Display for SshOpenFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A Down key's member says so around the words of the failure it
+        // shares (§5.3).
+        if let Some(ended) = self.3.as_ref().filter(|ended| ended.is_down()) {
+            let plain = Self(self.0.clone(), self.1, self.2, None);
+            return f.write_str(&ended.down_words(plain.to_string()));
+        }
         if let Some(report) = self.capacity_report() {
             return f.write_str(&report.words(self.1));
         }
@@ -327,7 +354,18 @@ fn failure_io(failure: Failure, attempts: Option<(u32, u32)>, stall_ms: u64) -> 
         gwz_transport::protocol::ErrorCode::Timeout => io::ErrorKind::TimedOut,
         _ => io::ErrorKind::Other,
     };
-    io::Error::new(kind, SshOpenFailure(failure, attempts, stall_ms))
+    io::Error::new(kind, SshOpenFailure(failure, attempts, stall_ms, None))
+}
+/// Leaves `note`, how the open ended beyond its failure, with the SSH failure `error` holds, if it holds one: the
+/// words of a Down key's member and of a local wait read it (§5.3).
+fn note_ssh_end(error: &mut io::Error, note: Option<setup_retry::EndNote>, host: &str, port: u16) {
+    if let Some(note) = note
+        && let Some(failed) = error
+            .get_mut()
+            .and_then(|inner| inner.downcast_mut::<SshOpenFailure>())
+    {
+        failed.3 = Some(setup_retry::Ended::new(note, host, port));
+    }
 }
 cfg_if::cfg_if! {
     if #[cfg(test)] {
@@ -360,16 +398,50 @@ cfg_if::cfg_if! {
         #[test]
         fn a_local_setup_wait_is_the_capacity_code_with_the_slot_words_and_no_attempt() {
             use crate::git::endpoint::setup_retry::CapacityReport;
+            use crate::git::endpoint::setup_retry::{EndNote, LocalBudget, LocalWait};
             let text = "gwz's 64 connection-setup slots stayed full for 30 s (setups that stopped answering hold them until they time out); retry later";
             // An attempt count that rode along is not shown: the design omits it.
             for attempts in [None, Some((2, 4))] {
-                let reported = failure_io(capacity_failure(&CapacityReport::Local), attempts, 9_000);
+                let mut reported = failure_io(capacity_failure(&CapacityReport::Local), attempts, 9_000);
+                note_ssh_end(&mut reported, Some(EndNote::LocalWait(LocalWait { budget: LocalBudget::JobBudget, waited_ms: 30_000 })), "git.example.com", 22);
                 let failed = reported.get_ref().unwrap().downcast_ref::<SshOpenFailure>().unwrap();
                 let model = failed.model_error(false).expect("a typed error");
                 assert_eq!(model.code, crate::model::ErrorCode::Capacity);
                 assert_eq!(model.message, text);
                 assert_eq!(failed.to_string(), text);
             }
+            // The wait that expired is the one named (Code P3-6): the shared reservation is no setup-slot wait.
+            let mut reported = failure_io(capacity_failure(&CapacityReport::Local), None, 9_000);
+            note_ssh_end(&mut reported, Some(EndNote::LocalWait(LocalWait { budget: LocalBudget::Reservation, waited_ms: 4_000 })), "git.example.com", 22);
+            let words = reported.get_ref().unwrap().downcast_ref::<SshOpenFailure>().unwrap().to_string();
+            assert!(words.contains("in use for 4 s") && !words.contains("64") && !words.contains("stopped answering"), "{words}");
+        }
+
+        #[test]
+        fn an_ssh_member_of_a_down_key_says_it_made_no_attempt_and_a_retests_failure_says_it_still_fails() {
+            // Code P2-1, SSH: the recorded failure is a stall under `--ssh-timeout 9`.
+            use crate::git::endpoint::setup_retry::EndNote;
+            let stall = || Failure {
+                code: ErrorCode::Timeout,
+                setup_cause: Some(gwz_transport::protocol::SetupFailureCause::Stall),
+                ..Default::default()
+            };
+            let said = |note: Option<EndNote>| {
+                let mut reported = open_failure_io(stall(), None, 9_000, "github.com".into(), 22, None, &AgentSource::None, None);
+                note_ssh_end(&mut reported, note, "github.com", 22);
+                reported.get_ref().unwrap().downcast_ref::<SshOpenFailure>().unwrap().to_string()
+            };
+            let plain = "ssh setup timeout: no progress for 9 seconds (--ssh-timeout 9)";
+            assert_eq!(said(None), plain);
+            assert_eq!(
+                said(Some(EndNote::NotAttempted)),
+                format!("not attempted: github.com:22 failed earlier in this run ({plain})")
+            );
+            assert_eq!(
+                said(Some(EndNote::StillFailing)),
+                format!("{plain}; still failing after a retry about 30 s later")
+            );
+            assert!(!said(Some(EndNote::NotAttempted)).contains("(attempt"));
         }
 
         #[test]

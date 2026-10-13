@@ -88,6 +88,7 @@ impl<S: HalfClose> RpcIo<S> {
             report(failure.clone(), service);
         }
         let message = crate::transport_host::HttpsOpenFailure {
+            ended: None,
             failure,
             anonymous: None,
             attempts: None,

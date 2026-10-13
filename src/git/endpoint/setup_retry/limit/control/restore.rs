@@ -12,6 +12,10 @@ pub(super) struct Restore {
     pub(super) step: BTreeSet<AttemptId>,
     pub(super) started: bool,
     pub(super) refused: bool,
+    /// The new connections the step may still start: its target less what the
+    /// key holds when it begins. Later starts belong to the next step, so the
+    /// step can close under steady demand (State P3-2).
+    pub(super) quota: usize,
 }
 
 impl Limit {
@@ -36,18 +40,25 @@ impl Limit {
         // The probe timer needs no stopping: no probe is due while RESTORING,
         // and its exit arms the timer afresh.
         self.fsm.begin_restore();
+        let target = self.step_target(good);
         self.restore = Some(Restore {
             good,
-            target: self.step_target(good),
+            target,
             step: BTreeSet::new(),
             started: false,
             refused: false,
+            quota: self.step_quota(target),
         });
     }
     /// `S := max(N, min(N_good, 2 x max(1, Connected)))`.
     fn step_target(&self, good: usize) -> usize {
         let doubled = 2 * self.table.connected().max(1);
         self.fsm.n().max(good.min(doubled))
+    }
+    /// The starts a step with target `target` takes: the room it has below
+    /// the target now, and at least one.
+    fn step_quota(&self, target: usize) -> usize {
+        target.saturating_sub(self.table.possible()).max(1)
     }
     /// Whether the key's retry machine has left Cold or Healthy and not come
     /// back (§5.5): `N_good` is frozen.
@@ -105,9 +116,11 @@ impl Limit {
         }
         let good = restore.good;
         let target = self.step_target(good);
+        let quota = self.step_quota(target);
         if let Some(restore) = &mut self.restore {
             restore.target = target;
             restore.started = false;
+            restore.quota = quota;
         }
     }
 }

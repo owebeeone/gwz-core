@@ -59,6 +59,33 @@ pub fn with_cancellable_local_transport_native<T>(
     run_native(meta, operation, environment, token, native, action, &|_| {})
 }
 
+/// `with_cancellable_local_transport_native`, also giving `notes` the `note: `
+/// lines of the adaptive concurrency design's §9 as the command's endpoints
+/// make them (a host refusing extra connections, a long `Retry-After`, a host
+/// that stops answering), and its detail lines when `notes` asks for them. The
+/// caller decides what they become: gwz-py turns them into `logging` records
+/// on `gwz`.
+pub fn with_cancellable_local_transport_native_noted<T>(
+    meta: RequestMeta,
+    operation: String,
+    environment: &EnvironmentSnapshot,
+    token: &CancellationToken,
+    native: Option<super::NativeCaller>,
+    notes: super::NoteSink,
+    action: impl FnOnce(&Git2Backend) -> T,
+) -> (ModelResult<T>, CleanupReport) {
+    run_noted(
+        meta,
+        operation,
+        environment,
+        token,
+        native,
+        Some(notes),
+        action,
+        &|_| {},
+    )
+}
+
 /// The points at which `run` calls its observer. The public entry observes
 /// nothing; a test cancels the token or injects a panic at one of them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -93,10 +120,34 @@ fn run_native<T>(
     action: impl FnOnce(&Git2Backend) -> T,
     observe: &dyn Fn(Step),
 ) -> (ModelResult<T>, CleanupReport) {
+    run_noted(
+        meta,
+        operation,
+        environment,
+        token,
+        native,
+        None,
+        action,
+        observe,
+    )
+}
+#[allow(clippy::too_many_arguments)] // The entry's own parameters, and the observer a test injects.
+fn run_noted<T>(
+    meta: RequestMeta,
+    operation: String,
+    environment: &EnvironmentSnapshot,
+    token: &CancellationToken,
+    native: Option<super::NativeCaller>,
+    notes: Option<super::NoteSink>,
+    action: impl FnOnce(&Git2Backend) -> T,
+    observe: &dyn Fn(Step),
+) -> (ModelResult<T>, CleanupReport) {
     if token.is_cancelled() {
         return (Err(Refused::Cancelled.into()), CleanupReport::default());
     }
-    let owned = match catch_unwind(AssertUnwindSafe(|| Owned::build(environment, native))) {
+    let owned = match catch_unwind(AssertUnwindSafe(|| {
+        Owned::build(environment, native, notes.as_ref())
+    })) {
         Ok(Ok(owned)) => owned,
         Ok(Err(error)) => return (Err(error), CleanupReport::default()),
         Err(_) => return (Err(panicked("setup")), unknown_cleanup()),
@@ -163,6 +214,7 @@ impl Owned {
     fn build(
         environment: &EnvironmentSnapshot,
         native: Option<super::NativeCaller>,
+        notes: Option<&super::NoteSink>,
     ) -> ModelResult<Self> {
         let machine = native
             .as_ref()
@@ -184,6 +236,9 @@ impl Owned {
             }
             None => TransportRuntime::with_https(ssh, https, HelperSlots::new())?,
         };
+        if let Some(notes) = notes {
+            runtime.set_notes(notes);
+        }
         Ok(Self { executor, runtime })
     }
 

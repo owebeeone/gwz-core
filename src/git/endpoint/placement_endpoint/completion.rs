@@ -206,6 +206,19 @@ impl PlacementEndpoint {
             return;
         }
         let (failure, phase) = open_failure(error);
+        // A member that ran out of its allocation waiting on a local budget:
+        // the pool host saw which, and for how long, and the wire carries only
+        // that it was local (Code P3-6).
+        let local_wait = matches!(
+            setup_retry::CapacityReport::of_failure(&failure),
+            Some(setup_retry::CapacityReport::Local)
+        )
+        .then(|| {
+            self.endpoint
+                .governor()
+                .take_local_wait(&pool_key.site(), self.endpoint.pool_now())
+        })
+        .flatten();
         let verdict = setup_retry::classify(&failure, phase);
         let jitter = self.jitter.draw();
         let machine = retry_key(&pool_key, &envelope);
@@ -223,7 +236,11 @@ impl PlacementEndpoint {
                 self.endpoint.pool_now(),
             );
             if setup_retry::requeues(ruling, false) {
-                self.retries.machine(&key.0, &machine).abandoned(&key);
+                // No verdict for the key, but a Down key's retest that ends
+                // so is a failed one: its next is paced 30 s on (§5.5).
+                self.retries
+                    .machine(&key.0, &machine)
+                    .retest_refused(&key, now);
                 self.requeue(key, pool_key, envelope, failure, attempts, allowed, now);
                 return;
             }
@@ -252,6 +269,11 @@ impl PlacementEndpoint {
             // The budget is spent, or a retest failed: the members queued on
             // the key share its failure, and later arrivals park (§5.5).
             Outcome::Sweep(last) => {
+                // A failed retest has no attempt count: its member and the
+                // members parked on it say it is still failing (§5.3).
+                if last.attempt == 0 {
+                    self.note_end(&key, setup_retry::EndNote::StillFailing);
+                }
                 self.sweep(&key.0, &machine, &last);
                 self.fail_open(
                     &key,
@@ -261,7 +283,12 @@ impl PlacementEndpoint {
                     },
                 );
             }
-            Outcome::Return => self.fail_open(&key, failure),
+            Outcome::Return => {
+                if let Some(wait) = local_wait {
+                    self.note_end(&key, setup_retry::EndNote::LocalWait(wait));
+                }
+                self.fail_open(&key, failure)
+            }
         }
     }
 
@@ -294,6 +321,9 @@ impl PlacementEndpoint {
             });
         self.queued_opens = kept;
         for queued in swept {
+            if last.attempt == 0 {
+                self.note_end(&queued.key, setup_retry::EndNote::StillFailing);
+            }
             let failure = Failure {
                 facts: None,
                 ..last.clone().wire_failure()

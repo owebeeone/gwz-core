@@ -46,6 +46,7 @@
 //! count.
 
 use super::{
+    capacity::LocalWait,
     control::{Action, Limit, Outcome},
     fsm::State,
     hold::Hold,
@@ -66,6 +67,10 @@ use std::{
 
 /// Notes kept for the reader that drains them (§9); the oldest are dropped.
 const NOTES_KEPT: usize = 64;
+/// How long after it expired a local wait can still be told of its member.
+const LOCAL_WAIT_FRESH_MS: u64 = 10_000;
+/// The expired local waits a governor keeps.
+const LOCAL_WAITS_KEPT: usize = 64;
 
 /// How long a setup the host saw end waits for its endpoint's word before it
 /// counts as an attempt that ended with no verdict.
@@ -194,6 +199,10 @@ pub(super) struct Book {
     held_over: Vec<(Site, Hold)>,
     /// Notes of operations that have ended, kept for the reader (§9).
     ended_notes: Vec<(Site, Note)>,
+    /// The local waits that expired lately, by site and the time they did: the
+    /// pool host sees which budget a connection waited on, and the endpoint
+    /// that ends the member with `Capacity` asks for it (Code P3-6).
+    local_waits: Vec<(Site, LocalWait, u64)>,
 }
 
 /// A cloneable handle on one pool's limit machines.
@@ -360,6 +369,7 @@ impl Governor {
                 applied: Vec::new(),
                 held_over: Vec::new(),
                 ended_notes: Vec::new(),
+                local_waits: Vec::new(),
             })),
         }
     }
@@ -367,6 +377,18 @@ impl Governor {
     /// random source.
     pub(crate) fn random(control: PoolControl, ceiling: usize) -> Self {
         Self::new(control, ceiling, Spread::random)
+    }
+    /// The local wait that expired for a connection of `site` at most
+    /// `LOCAL_WAIT_FRESH_MS` before `now`, once: which budget, and how long
+    /// the connection waited (Code P3-6). The most recent one is the expired
+    /// member's own, since the wait is reported as its connection is
+    /// cancelled.
+    pub(crate) fn take_local_wait(&self, site: &Site, now: u64) -> Option<LocalWait> {
+        let mut book = self.book();
+        let index = book.local_waits.iter().rposition(|(waited, _, at)| {
+            waited == site && now.saturating_sub(*at) <= LOCAL_WAIT_FRESH_MS
+        })?;
+        Some(book.local_waits.remove(index).1)
     }
     pub(super) fn book(&self) -> MutexGuard<'_, Book> {
         self.book.lock().unwrap_or_else(|e| e.into_inner())
@@ -636,6 +658,13 @@ impl Observer for Governor {
             }
             self.sync(&mut book, &operation, index, now);
         }
+    }
+
+    fn local_wait_ended(&self, key: &Key, wait: LocalWait, now: u64) {
+        let mut book = self.book();
+        book.local_waits.push((key.site(), wait, now));
+        let excess = book.local_waits.len().saturating_sub(LOCAL_WAITS_KEPT);
+        book.local_waits.drain(..excess);
     }
 
     fn seen(&self, key: &Key, connection: ConnectionId, seen: Seen, now: u64) {

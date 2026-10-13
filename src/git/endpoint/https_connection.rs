@@ -484,6 +484,18 @@ impl Resource for HttpResource {
     fn waiting_locally(&self) -> bool {
         self.queued.is_some()
     }
+    /// A connection past the connector's setup slots waits for one; once it
+    /// holds a slot and the host's job budget is full, it waits for that.
+    fn local_budget(&self) -> Option<super::setup_retry::LocalBudget> {
+        use super::setup_retry::LocalBudget;
+        self.queued.as_ref().map(|queued| {
+            if queued.taken.is_some() {
+                LocalBudget::JobBudget
+            } else {
+                LocalBudget::SetupSlots
+            }
+        })
+    }
     fn tcp_connect_ms(&self) -> Option<u64> {
         self.tcp_connect.load(Ordering::Acquire).checked_sub(1)
     }

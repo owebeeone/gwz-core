@@ -83,22 +83,24 @@ impl Session {
             facts,
             extras,
         )
-        .map_err(|failure| {
+        .map_err(|Refusal { failure, note }| {
             let attempts = setup_retry::reported_attempt(&failure);
             // What the endpoint in this process found when it refused the host key, if it did (decision D12).
             let trust = handoff
                 .as_ref()
                 .and_then(|handoff| handoff.trust_found(&shown.0, shown.1));
-            open_failure_io(
+            let mut error = open_failure_io(
                 failure,
                 attempts,
                 stall_ms,
-                shown.0,
+                shown.0.clone(),
                 shown.1,
                 known_hosts,
                 &agent,
                 trust,
-            )
+            );
+            note_ssh_end(&mut error, note, &shown.0, shown.1);
+            error
         })
     }
     pub(in crate::transport_host) fn open_https(
@@ -112,7 +114,7 @@ impl Session {
         allocation_observer: Option<Arc<dyn Fn(i64) + Send + Sync>>,
         observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
         facts: Arc<dyn Fn(&Facts) + Send + Sync>,
-    ) -> Result<BlockingStream, Failure> {
+    ) -> Result<BlockingStream, Refusal> {
         let destination = crate::git::endpoint::https_destination::Destination::parse(url)
             .map_err(protocol_failure)?;
         self.open_stream(
@@ -163,11 +165,13 @@ impl Session {
         observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
         facts: Arc<dyn Fn(&Facts) + Send + Sync>,
         mut extras: Option<UrlExtras>,
-    ) -> Result<BlockingStream, Failure> {
+    ) -> Result<BlockingStream, Refusal> {
         let reply = Wait::new();
         // Held until the open has its answer: dropping it drops whatever
         // extras the endpoint never took.
         let deposit;
+        // Where this open's end note, if the endpoint leaves one, is taken from.
+        let ended;
         // A mux with no stream to spare is backpressure, not a failure: the
         // open waits for a stream to end, within its allocation deadline.
         let ssh = destination.scheme == Scheme::Ssh;
@@ -185,9 +189,9 @@ impl Session {
         loop {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.closed {
-                return Err(protocol_failure(
-                    gwz_transport::protocol::ErrorCode::CarrierLost,
-                ));
+                return Err(
+                    protocol_failure(gwz_transport::protocol::ErrorCode::CarrierLost).into(),
+                );
             }
             // A URL's password goes to an endpoint in this process only. One
             // in another process could not be given it, so its open refuses.
@@ -196,9 +200,9 @@ impl Session {
                     .as_ref()
                     .is_some_and(|e| e.password().is_some() || !e.helpers_allowed())
             {
-                return Err(protocol_failure(
-                    gwz_transport::protocol::ErrorCode::InvalidRequest,
-                ));
+                return Err(
+                    protocol_failure(gwz_transport::protocol::ErrorCode::InvalidRequest).into(),
+                );
             }
             let owner = state
                 .owner
@@ -215,7 +219,7 @@ impl Session {
                 Some(until) => {
                     let remaining = until.saturating_duration_since(Instant::now()).as_millis();
                     if remaining == 0 {
-                        return Err(setup_retry::allocation_timeout());
+                        return Err(setup_retry::allocation_timeout().into());
                     }
                     remaining.min(i64::MAX as u128) as i64
                 }
@@ -248,12 +252,16 @@ impl Session {
             let id = match opened {
                 Ok((id, queued)) => {
                     deposit = queued;
+                    ended = state
+                        .handoff
+                        .clone()
+                        .map(|handoff| (handoff, binding.session_id().to_owned(), id));
                     id
                 }
                 Err(mux::Error::Capacity | mux::Error::WouldBlock) => {
                     drop(state);
                     if Instant::now() >= admit_until {
-                        return Err(setup_retry::allocation_timeout());
+                        return Err(setup_retry::allocation_timeout().into());
                     }
                     self.wait_for_change(admit_until.saturating_duration_since(Instant::now()));
                     continue;
@@ -261,7 +269,8 @@ impl Session {
                 Err(_) => {
                     return Err(protocol_failure(
                         gwz_transport::protocol::ErrorCode::UnsupportedOperation,
-                    ));
+                    )
+                    .into());
                 }
             };
             if let Some(observer) = &allocation_observer {
@@ -315,7 +324,10 @@ impl Session {
         drop(deposit);
         match answer {
             Ok((stream, _)) => Ok(stream),
-            Err(failure) => Err(failure),
+            Err(failure) => Err(Refusal {
+                note: ended.and_then(|(handoff, session, id)| handoff.take_end(&session, id)),
+                failure,
+            }),
         }
     }
     /// Parks the calling thread until this session's state next changes, at

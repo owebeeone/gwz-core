@@ -36,6 +36,9 @@ pub(crate) struct HttpsOpenFailure {
     /// What the machine proxy setting said (Windows): a refused one is the whole reason for the open's failure
     /// (decision D6), and a direct one is named when a direct connection fails (decision D7, text U2).
     pub(crate) machine: crate::git::endpoint::https_connection::MachineSetting,
+    /// How the open ended beyond its failure, which the wire has no field for and the endpoint left in the handoff
+    /// (`EndNote`): a Down key's members, a throttled member's refusals, the local wait that expired.
+    pub(crate) ended: Option<setup_retry::Ended>,
 }
 /// What the policy an open ran under says about its words: whether credential helpers were off, and whether
 /// it was a Windows policy.
@@ -99,9 +102,11 @@ impl HttpsOpenFailure {
         };
         Some(crate::model::ModelError::new(code, self.reason()))
     }
-    /// The report of a final `Capacity` failure that says why (§5.3).
+    /// The report of a final `Capacity` failure that says why (§5.3), with
+    /// what the endpoint knew beyond the wire.
     fn capacity_report(&self) -> Option<setup_retry::CapacityReport> {
         setup_retry::CapacityReport::of_failure(&self.failure)
+            .map(|report| report.noted(self.ended.as_ref().map(|ended| ended.note)))
     }
     pub(crate) fn is_helper_timeout_message(message: &str) -> bool {
         message.starts_with(HELPER_INTERACTION_PREFIX)
@@ -149,10 +154,21 @@ impl HttpsOpenFailure {
             }
         }
     }
+    /// The failure in words (`plain_reason`), put as §5.3 says when it is a
+    /// Down key's: `not attempted: <host:port> failed earlier in this run
+    /// (<reason>)` for a member that made no attempt, and the reason then
+    /// `; still failing after a retry about 30 s later` for a failed retest.
+    pub(crate) fn reason(&self) -> String {
+        let plain = self.plain_reason();
+        match &self.ended {
+            Some(ended) if ended.is_down() => ended.down_words(plain),
+            _ => plain,
+        }
+    }
     /// The failure in words: its code, a timeout's origin (stall,
     /// aggregate, interaction or allocation, as on SSH), and the attempt it
     /// ended when that is known.
-    pub(crate) fn reason(&self) -> String {
+    fn plain_reason(&self) -> String {
         use gwz_transport::protocol::{ErrorCode, SetupFailureCause};
         if let MachineSetting::Refused(text) = &self.machine {
             // T1 and the other machine-proxy refusals, verbatim: the setting is the whole reason (decision D6).
@@ -347,7 +363,7 @@ cfg_if::cfg_if! {
 
             #[test]
             fn helper_specific_timeouts_render_exact_captured_seconds_only() {
-                let message = |cause, budget| HttpsOpenFailure {
+                let message = |cause, budget| HttpsOpenFailure { ended: None,
                     failure: Failure {
                         code: ErrorCode::Timeout, effect: Effect::None,
                         setup_cause: Some(cause),
@@ -367,7 +383,7 @@ cfg_if::cfg_if! {
 
             #[test]
             fn a_proxy_407_names_the_machine_proxy_setting_and_points_to_no_native_option() {
-                let failure = HttpsOpenFailure { failure: Failure {
+                let failure = HttpsOpenFailure { ended: None, failure: Failure {
                     code: ErrorCode::Authentication,
                     facts: Some(Facts { http_status: Some(407), ..Default::default() }),
                     ..Default::default()
@@ -385,12 +401,12 @@ cfg_if::cfg_if! {
 
             #[test]
             fn missing_provenance_keeps_general_timeout_and_fixed_cause_hides_input() {
-                let failure = HttpsOpenFailure { failure: Failure {
+                let failure = HttpsOpenFailure { ended: None, failure: Failure {
                     code: ErrorCode::Timeout, setup_cause: Some(SetupFailureCause::Allocation),
                     ..Default::default()
                 }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true, windows: false, host: None, redirect: None, machine: Default::default() };
                 assert_eq!(failure.reason(), "HTTPS endpoint request failed: Timeout: allocation");
-                let malformed = HttpsOpenFailure { failure: Failure {
+                let malformed = HttpsOpenFailure { ended: None, failure: Failure {
                     code: ErrorCode::Authentication,
                     detail: Some(Box::new(FailureDetail { helper_cause: Some(HelperFailureCause::MalformedOutput), ..Default::default() })),
                     ..Default::default()
@@ -402,7 +418,7 @@ cfg_if::cfg_if! {
 
             /// A failed open as the Windows policies end it.
             fn windows(failure: Failure, helpers_disabled: bool, host: Option<&str>) -> HttpsOpenFailure {
-                HttpsOpenFailure {
+                HttpsOpenFailure { ended: None,
                     failure, anonymous: None, attempts: None, service: Some(GitService::UploadPackAdvertisement),
                     helpers_disabled, cli_hint: false, windows: true, host: host.map(str::to_owned), redirect: None, machine: Default::default(),
                 }
@@ -706,13 +722,20 @@ cfg_if::cfg_if! {
                     elapsed_ms: 21_000,
                     last_signal: Some(LastSignal::Http429),
                     retry_after_ms,
+                    refusals: None,
                 })
+            }
+
+            /// What the endpoint leaves beside a failure it ends (`EndNote`), as the open's failure holds it.
+            fn ended(note: crate::git::endpoint::setup_retry::EndNote) -> Option<crate::git::endpoint::setup_retry::Ended> {
+                Some(crate::git::endpoint::setup_retry::Ended::new(note, "github.com", 443))
             }
 
             #[test]
             fn a_throttled_member_is_the_capacity_code_with_the_throttle_words_and_its_attempt() {
+                use crate::git::endpoint::setup_retry::EndNote;
                 let failure = capacity_failure(&throttled(None), Some((4, 4)));
-                let open = HttpsOpenFailure {
+                let open = HttpsOpenFailure { ended: ended(EndNote::Refused { count: 4 }),
                     attempts: crate::git::endpoint::setup_retry::reported_attempt(&failure),
                     ..windows(failure, false, None)
                 };
@@ -726,9 +749,53 @@ cfg_if::cfg_if! {
             }
 
             #[test]
+            fn one_refusal_among_resets_says_the_last_attempt_was_refused_and_not_that_the_host_kept_refusing() {
+                // The 5.6 decision: reset, reset, reset, 429. The wire carries no refusal count; the endpoint's note does.
+                use crate::git::endpoint::setup_retry::EndNote;
+                let say = |note: Option<EndNote>| {
+                    let failure = capacity_failure(&throttled(None), Some((4, 4)));
+                    HttpsOpenFailure { ended: note.and_then(|note| ended(note)),
+                        attempts: crate::git::endpoint::setup_retry::reported_attempt(&failure),
+                        ..windows(failure, false, None)
+                    }
+                    .reason()
+                };
+                let last = "github.com:443 refused the last attempt (using 8 at a time, ceiling 32 from --max-per-host); gave up after 21 s; retry later, or lower --max-per-host (attempt 4 of 4)";
+                assert_eq!(say(Some(EndNote::Refused { count: 1 })), last);
+                assert_eq!(say(None), last, "a count nobody left says only what is certain");
+                let kept = say(Some(EndNote::Refused { count: 2 }));
+                assert!(kept.starts_with("github.com:443 kept refusing connections ("), "{kept}");
+            }
+
+            #[test]
+            fn a_member_of_a_down_key_that_made_no_attempt_says_so_and_names_the_failure_and_the_site() {
+                // Code P2-1: the recorded failure is a stall; the member shares it with no attempt count.
+                use crate::git::endpoint::setup_retry::EndNote;
+                let stall = Failure {
+                    code: ErrorCode::Timeout,
+                    setup_cause: Some(SetupFailureCause::Stall),
+                    ..Default::default()
+                };
+                let plain = HttpsOpenFailure { ended: None, ..windows(stall.clone(), false, None) };
+                let down = HttpsOpenFailure { ended: ended(EndNote::NotAttempted), ..windows(stall.clone(), false, None) };
+                assert_eq!(plain.reason(), "HTTPS endpoint request failed: Timeout: stall");
+                assert_eq!(
+                    down.reason(),
+                    "not attempted: github.com:443 failed earlier in this run (HTTPS endpoint request failed: Timeout: stall)"
+                );
+                assert!(!down.reason().contains("(attempt"));
+                // The retest's own failure, and the members parked on it.
+                let retest = HttpsOpenFailure { ended: ended(EndNote::StillFailing), ..windows(stall, false, None) };
+                assert_eq!(
+                    retest.reason(),
+                    "HTTPS endpoint request failed: Timeout: stall; still failing after a retry about 30 s later"
+                );
+            }
+
+            #[test]
             fn a_long_retry_after_is_the_capacity_code_with_its_own_words() {
                 let failure = capacity_failure(&throttled(Some(120_000)), Some((1, 4)));
-                let open = HttpsOpenFailure {
+                let open = HttpsOpenFailure { ended: None,
                     attempts: crate::git::endpoint::setup_retry::reported_attempt(&failure),
                     ..windows(failure, false, None)
                 };
@@ -744,8 +811,10 @@ cfg_if::cfg_if! {
             fn a_local_wait_is_the_capacity_code_with_the_slot_words_and_never_an_attempt() {
                 use crate::git::endpoint::setup_retry::CapacityReport;
                 // Even a count that rode along is not shown: the design omits it.
+                use crate::git::endpoint::setup_retry::{EndNote, LocalBudget, LocalWait};
                 let failure = capacity_failure(&CapacityReport::Local, None);
-                let open = HttpsOpenFailure { attempts: Some((2, 4)), ..windows(failure, false, None) };
+                let waited = |budget, waited_ms| ended(EndNote::LocalWait(LocalWait { budget, waited_ms }));
+                let open = HttpsOpenFailure { ended: waited(LocalBudget::JobBudget, 30_000), attempts: Some((2, 4)), ..windows(failure.clone(), false, None) };
                 let error = open.model_error().unwrap();
                 assert_eq!(error.code, crate::model::ErrorCode::Capacity);
                 assert_eq!(
@@ -753,6 +822,13 @@ cfg_if::cfg_if! {
                     "gwz's 64 connection-setup slots stayed full for 30 s (setups that stopped answering hold them until they time out); retry later"
                 );
                 assert!(!error.message.contains("attempt"));
+                // The wait that expired is the one named (Code P3-6): a reservation wait is no setup-slot wait.
+                let reservation = HttpsOpenFailure { ended: waited(LocalBudget::Reservation, 7_000), ..windows(failure.clone(), false, None) };
+                let text = reservation.model_error().unwrap().message;
+                assert!(text.contains("in use for 7 s") && !text.contains("64") && !text.contains("stopped answering"), "{text}");
+                let slots = HttpsOpenFailure { ended: waited(LocalBudget::SetupSlots, 30_000), ..windows(failure, false, None) };
+                let text = slots.model_error().unwrap().message;
+                assert!(text.contains("8 slots") && !text.contains("64") && !text.contains("stopped answering"), "{text}");
             }
 
             #[test]

@@ -9,9 +9,10 @@
 //! its key waits.
 use super::*;
 use crate::git::endpoint::setup_retry::{
-    self, Admission, AllocationClock, Change, Decision, Final, Jitter, Operations, Outcome, Phase,
-    TestToken,
+    self, Admission, AllocationClock, Change, Decision, EndNote, Final, Jitter, Operations,
+    Outcome, Phase, TestToken,
 };
+use crate::git::endpoint::ssh_handoff::Handoff;
 
 /// How an attempt ended, and what the limit machine can say of it.
 pub(super) struct Settling {
@@ -43,6 +44,9 @@ pub(super) struct Retries {
     /// Keys that went Down or failed a retest, whose queued opens share the
     /// failure until the endpoint's pass finishes them (§5.5).
     sweeps: Vec<(String, pool::Key, Final)>,
+    /// Where an open's end notes are left for the driver (`EndNote`), when a
+    /// driver in this process shares one.
+    ends: Option<Handoff>,
 }
 
 /// An open the endpoint holds until an attempt may start.
@@ -82,6 +86,17 @@ impl Retries {
             jitter: Jitter::random(),
             health: Vec::new(),
             sweeps: Vec::new(),
+            ends: None,
+        }
+    }
+    pub(super) fn set_handoff(&mut self, handoff: Handoff) {
+        self.ends = Some(handoff);
+    }
+    /// Leaves how `envelope`'s open ended beyond its failure for the driver
+    /// that words it: the wire has no field for it.
+    pub(super) fn note_end(&self, envelope: &Envelope, note: EndNote) {
+        if let Some(ends) = &self.ends {
+            ends.note_end(&envelope.session_id, envelope.stream_id, note);
         }
     }
     pub(super) fn set_max_retries(&mut self, request: &str, max_retries: u32) {
@@ -164,13 +179,24 @@ impl Retries {
         if let Some(rejection) = rejection
             && setup_retry::requeues(rejection.ruling, rejection.throttled)
         {
-            machine.abandoned(&member);
+            entry.refusals += u32::from(rejection.throttled);
+            // No verdict for the key, but a Down key's retest that ends so is
+            // a failed one: its next is paced 30 s on (§5.5).
+            machine.retest_refused(&member, now);
             if entry.attempts >= allowed {
                 let facts = failure.facts.clone();
                 let throttle = rejection
                     .throttled
                     .then(|| server_capacity(entry, &rejection, limits, now))
                     .flatten();
+                if throttle.is_some() {
+                    self.note_end(
+                        &entry.envelope,
+                        EndNote::Refused {
+                            count: entry.refusals,
+                        },
+                    );
+                }
                 let spent = setup_retry::spent(failure, throttle, entry.attempts, allowed);
                 entry.facts = setup_retry::merged_facts(entry.facts.take(), facts);
                 return Some(Err(Failure {
@@ -228,6 +254,11 @@ impl Retries {
                 ..last.wire_failure()
             },
             Outcome::Sweep(last) => {
+                // A failed retest has no attempt count: its open and the
+                // opens parked on it say it is still failing (§5.3).
+                if last.attempt == 0 {
+                    self.note_end(&entry.envelope, EndNote::StillFailing);
+                }
                 self.sweeps
                     .push((member.0.clone(), entry.pool_key.clone(), last.clone()));
                 Failure {
@@ -266,6 +297,7 @@ fn server_capacity(
             .status
             .and_then(setup_retry::LastSignal::of_status),
         retry_after_ms: rejection.retry_after_ms,
+        refusals: Some(entry.refusals),
     })
 }
 
@@ -286,6 +318,10 @@ impl HttpsEndpoint {
             for ((owner, _), entry) in self.entries.iter_mut() {
                 if *owner == request && entry.pool_key == pool_key && entry.held.is_some() {
                     entry.held = None;
+                    if last.attempt == 0 {
+                        self.retries
+                            .note_end(&entry.envelope, EndNote::StillFailing);
+                    }
                     fail(
                         entry,
                         Failure {
@@ -430,6 +466,12 @@ impl HttpsEndpoint {
             // that recorded it: this open set nothing up in this pass.
             Decision::Finish(last) => {
                 entry.held = None;
+                // A Down key's recorded failure, shared by an open that made
+                // no attempt (§5.3): the driver says so from the note.
+                if last.attempt == 0 {
+                    self.retries
+                        .note_end(&entry.envelope, EndNote::NotAttempted);
+                }
                 fail(
                     entry,
                     Failure {

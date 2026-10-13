@@ -318,6 +318,11 @@ impl Client {
                 facts: facts.clone(),
                 receive_limits: gwz_transport::binding::default_limits(),
             };
+            let relet = throttle::Relet {
+                scope: credential.as_ref().map(|c| c.scope.clone()),
+                allocation_ms: duration_ms(budget.allocation).max(1_000),
+                connect_ms: budget.connect.map_or(0, duration_ms),
+            };
             let mut prepared = Prepared {
                 opened,
                 lease: Some(lease),
@@ -338,6 +343,7 @@ impl Client {
                     &input.operation,
                     Key::https(destination.host(), destination.port()),
                 ),
+                relet,
             };
             if !https_policy::advertisement(input.service) {
                 return Ok(prepared);

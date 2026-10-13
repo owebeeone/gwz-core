@@ -237,6 +237,15 @@ async fn pause_until(pool: &HttpsPool, admitted: impl Fn(u64) -> bool) {
     }
 }
 
+/// What a POST needs to take its connection again after a hold (§4.5): the
+/// credential scope its connection carries and the budgets of its checkout.
+#[derive(Clone)]
+pub(super) struct Relet {
+    pub(super) scope: Option<String>,
+    pub(super) allocation_ms: u64,
+    pub(super) connect_ms: u64,
+}
+
 /// What a POST needs of its key's limit machine (§4.5): the member past its
 /// discovery is not held by a hold a discovery set, but the server has
 /// throttled exactly the POSTs when a POST response set it, so the next POST
@@ -256,6 +265,38 @@ impl Gate {
             operation: operation.to_owned(),
             key,
         }
+    }
+    /// Whether no POST-set hold is in force on the key now.
+    pub(super) fn continuing_may_begin_now(&self) -> bool {
+        self.pool
+            .governor()
+            .scoped(&self.operation)
+            .continuing_may_begin(&self.key, self.pool.now())
+    }
+    /// Takes a connection again, for a POST that met a hold with its first
+    /// connection already leased and gave it back (§4.5). It asks for no new
+    /// connection beyond what the pool grants: after a long hold the idle
+    /// ones were discarded, so it is a fresh one.
+    pub(super) async fn recheckout(
+        &self,
+        session: &str,
+        relet: &Relet,
+        cancel: &CancellationToken,
+    ) -> Result<HttpLease, Failure> {
+        self.pool
+            .checkout_scoped(
+                self.key.clone(),
+                Owner::new(session, &self.operation),
+                relet.allocation_ms,
+                relet.connect_ms,
+                cancel,
+                relet.scope.as_deref(),
+                false,
+                true,
+                None,
+            )
+            .await
+            .map_err(|(failed, _)| failed)
     }
     /// Waits until no POST-set hold is in force on the key. Cancelled by
     /// dropping the future.

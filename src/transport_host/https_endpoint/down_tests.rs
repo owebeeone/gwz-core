@@ -2,11 +2,15 @@
 //! cases 29 and 44): the opens held when the budget is spent finish with its
 //! failure, a later open parks for the next retest, and after two retests in
 //! a row have failed an arrival finishes at once.
+use super::requeue_tests::replies;
 use super::{
     retry_tests::{closing, code, endpoint, open, port, runtime, settle, shut},
     *,
 };
-use crate::git::endpoint::{https_connection, https_fixture as fixture};
+use crate::git::endpoint::{
+    https_connection, https_fixture as fixture,
+    setup_retry::{self, EndNote},
+};
 use std::{
     net::{Shutdown, TcpListener, TcpStream},
     sync::atomic::{AtomicUsize, Ordering},
@@ -16,13 +20,18 @@ use std::{
 /// rest to the fixture server on `target`, as a host that comes back; it
 /// counts what it accepts.
 fn returning(target: u16, refuse: usize) -> (u16, Arc<AtomicUsize>) {
+    scripted(target, (0..refuse).collect())
+}
+
+/// `returning`, refusing the connections numbered in `refuse` (from 0).
+pub(super) fn scripted(target: u16, refuse: Vec<usize>) -> (u16, Arc<AtomicUsize>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let accepted = Arc::new(AtomicUsize::new(0));
     let counter = accepted.clone();
     std::thread::spawn(move || {
         while let Ok((client, _)) = listener.accept() {
-            if counter.fetch_add(1, Ordering::AcqRel) < refuse {
+            if refuse.contains(&counter.fetch_add(1, Ordering::AcqRel)) {
                 continue;
             }
             let Ok(server) = TcpStream::connect(("127.0.0.1", target)) else {
@@ -59,6 +68,8 @@ fn held_opens_finish_when_the_budget_is_spent_and_later_ones_park_for_the_retest
         // One connection at a time, one retry: attempts 1 and 2 spend the
         // budget, which finishes the opens held behind them.
         let mut endpoint = endpoint(https_connection::Config::default(), 1, 1);
+        let handoff = crate::git::endpoint::ssh_handoff::Handoff::default();
+        endpoint.set_handoff(handoff.clone());
         for stream in 1..=4 {
             endpoint
                 .accept("request".into(), open(stream, port, 30_000))
@@ -90,6 +101,10 @@ fn held_opens_finish_when_the_budget_is_spent_and_later_ones_park_for_the_retest
         assert_eq!(accepted.load(Ordering::Acquire), 3);
         assert_eq!(retest.len(), 1);
         assert!(!counted(&retest[0]));
+        // A note beside the failure says it is still failing (§5.3); the opens
+        // finished when the budget was spent made attempts of their own.
+        assert_eq!(handoff.take_end("session", 5), Some(EndNote::StillFailing));
+        assert_eq!(handoff.take_end("session", 1), None);
         // The second retest, 30 s on, also fails.
         endpoint
             .accept("request".into(), open(6, port, 30_000))
@@ -98,6 +113,7 @@ fn held_opens_finish_when_the_budget_is_spent_and_later_ones_park_for_the_retest
         let second = settle(&mut endpoint, 61_000).await;
         assert_eq!(accepted.load(Ordering::Acquire), 4);
         assert_eq!(second.len(), 1);
+        assert_eq!(handoff.take_end("session", 6), Some(EndNote::StillFailing));
         // Two in a row: an arrival before the next is due finishes at once.
         endpoint
             .accept("request".into(), open(7, port, 30_000))
@@ -107,6 +123,32 @@ fn held_opens_finish_when_the_budget_is_spent_and_later_ones_park_for_the_retest
         assert_eq!(at_once.len(), 1);
         assert_eq!(code(&at_once[0]), ErrorCode::Io);
         assert!(!counted(&at_once[0]));
+        // It made no attempt, and says so with the recorded failure (Code
+        // P2-1): the prefix, the site, no attempt count.
+        let note = handoff.take_end("session", 7);
+        assert_eq!(note, Some(EndNote::NotAttempted));
+        let failure = at_once[0].open_failed.clone().unwrap();
+        let text = crate::transport_host::HttpsOpenFailure {
+            ended: note.map(|note| setup_retry::Ended::new(note, "127.0.0.1", port)),
+            attempts: setup_retry::reported_attempt(&failure),
+            failure,
+            anonymous: None,
+            service: Some(GitService::UploadPackAdvertisement),
+            helpers_disabled: false,
+            cli_hint: true,
+            windows: false,
+            host: None,
+            redirect: None,
+            machine: Default::default(),
+        }
+        .reason();
+        assert!(
+            text.starts_with(&format!(
+                "not attempted: 127.0.0.1:{port} failed earlier in this run ("
+            )),
+            "{text}"
+        );
+        assert!(!text.contains("(attempt"), "{text}");
         shut(&mut endpoint).await;
     });
 }
@@ -187,6 +229,84 @@ fn a_key_going_down_gives_the_notes_reader_one_line_for_the_episode() {
             .unwrap();
         assert_eq!(settle(&mut endpoint, 31_000).await.len(), 1);
         assert_eq!(lines.lock().unwrap().len(), 1);
+        shut(&mut endpoint).await;
+    });
+}
+
+#[test]
+fn a_retest_the_limit_machine_takes_as_evidence_is_a_failed_retest_and_the_next_waits_30_seconds() {
+    // State P2-7: the host refuses the retest's connect while another
+    // connection of the site counts in its window, so the site's machine
+    // takes the refusal as evidence and the open is requeued, with no verdict
+    // for the key. The retest was a handshake the key made all the same: the
+    // next is 30 s on, not at once.
+    runtime().block_on(async {
+        let server = fixture::Server::start(Arc::new(|_| {
+            Box::pin(async { fixture::response(200, GitService::UploadPackAdvertisement, "ok") })
+        }))
+        .await;
+        // Connections 0 and 1 spend the budget, 2 is another operation's, which
+        // stays open, and 3 is the retest's.
+        let (front, accepted) = scripted(port(&server), vec![0, 1, 3]);
+        let mut endpoint = endpoint(server.config(), 2, 1);
+        endpoint
+            .accept("request".into(), open(1, front, 30_000))
+            .unwrap();
+        assert!(settle(&mut endpoint, 0).await.is_empty());
+        assert_eq!(
+            settle(&mut endpoint, 1_000).await.len(),
+            1,
+            "the budget is spent"
+        );
+        assert_eq!(accepted.load(Ordering::Acquire), 2);
+        // Another operation reaches the host: a connection of the site that
+        // stays Connected while its stream is open.
+        endpoint
+            .accept("other".into(), open(10, front, 30_000))
+            .unwrap();
+        let served = settle(&mut endpoint, 1_001).await;
+        assert!(
+            served.iter().any(|m| m.kind == MessageKind::Opened),
+            "{served:?}"
+        );
+        assert_eq!(accepted.load(Ordering::Acquire), 3);
+        // An open of the Down key parks until the retest is due, and carries it.
+        endpoint
+            .accept("request".into(), open(2, front, 30_000))
+            .unwrap();
+        let early = settle(&mut endpoint, 30_999).await;
+        assert!(replies(&early).is_empty(), "{early:?}");
+        assert_eq!(
+            accepted.load(Ordering::Acquire),
+            3,
+            "no handshake before the retest"
+        );
+        let published = settle(&mut endpoint, 31_000).await;
+        assert!(
+            replies(&published).is_empty(),
+            "the refused retest requeued its open: {published:?}"
+        );
+        assert_eq!(accepted.load(Ordering::Acquire), 4, "the retest");
+        // Whatever the site's own holds and tests do meanwhile, the key makes
+        // no handshake until 30 s after the retest.
+        for _ in 0..4 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let published = settle(&mut endpoint, 31_100).await;
+            assert!(replies(&published).is_empty(), "{published:?}");
+        }
+        assert_eq!(
+            accepted.load(Ordering::Acquire),
+            4,
+            "a refused retest was run again at once"
+        );
+        assert!(replies(&settle(&mut endpoint, 60_999).await).is_empty());
+        assert_eq!(accepted.load(Ordering::Acquire), 4);
+        // Due again 30 s after the refused retest.
+        let _ = settle(&mut endpoint, 61_000).await;
+        assert!(
+            accepted.load(Ordering::Acquire) >= 5,
+            "the next retest never ran"
+        );
         shut(&mut endpoint).await;
     });
 }

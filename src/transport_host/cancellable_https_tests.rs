@@ -117,3 +117,90 @@ impl Drop for HeldPosts {
         }
     }
 }
+
+/// A host that asks for a wait is noted to the reader the caller of the noted
+/// cancellable entry gave (adaptive concurrency design §9; Code P3-9): the
+/// notes are what gwz-py turns into `logging` records on `gwz`. The detail
+/// lines have a reader of their own, at a level of their own, when one is set.
+#[test]
+fn the_noted_cancellable_entry_gives_its_reader_the_notes_of_its_transport() {
+    let root = tempfile::TempDir::new().unwrap();
+    let (repository, commit) = https_tests::repository(root.path());
+    let repository = Arc::new(repository);
+    let (started, receiver) = mpsc::channel();
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let served = thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let first = Arc::new(AtomicBool::new(true));
+            let server = https_tests::fixture::Server::start(Arc::new(move |request| {
+                let repository = repository.clone();
+                let first = first.swap(false, Ordering::SeqCst);
+                Box::pin(async move {
+                    if first {
+                        let mut reply = https_tests::fixture::response(
+                            429,
+                            gwz_transport::protocol::GitService::UploadPackAdvertisement,
+                            "",
+                        );
+                        reply
+                            .headers_mut()
+                            .insert("Retry-After", hyper::header::HeaderValue::from_static("2"));
+                        return reply;
+                    }
+                    https_tests::git_http_backend(repository, request).await
+                })
+            }))
+            .await;
+            started
+                .send((server.url.clone(), server.ca.clone()))
+                .unwrap();
+            let _ = stopped.await;
+        });
+    });
+    let (url, ca_pem) = receiver.recv().unwrap();
+    let ca = root.path().join("ca.pem");
+    std::fs::write(&ca, ca_pem).unwrap();
+    let environment = EnvironmentSnapshot::from_os_pairs([
+        (
+            "HOME".into(),
+            https_tests::endpoint_home(root.path()).into_os_string(),
+        ),
+        ("GIT_SSL_CAINFO".into(), ca.into_os_string()),
+    ])
+    .unwrap();
+    let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+    let kept = lines.clone();
+    let notes = crate::transport_host::NoteSink::new(move |line| {
+        kept.lock().unwrap().push(line.to_owned())
+    });
+    let (_controls, gate) = CallControls::new(&Arc::new(()));
+    let token = gate.token().clone();
+    let local = git2::Repository::init(root.path().join("local")).unwrap();
+    let local = local.path().to_path_buf();
+    let (result, cleanup) = super::cancellable::with_cancellable_local_transport_native_noted(
+        https_tests::meta("noted-cancellable"),
+        "ls-remote".into(),
+        &environment,
+        &token,
+        None,
+        notes,
+        |backend| backend.ls_remote_url(&local, &url, "origin", None),
+    );
+    let refs = result
+        .expect("the entry ran")
+        .expect("the listing succeeded");
+    assert!(refs.iter().any(|r| r.target == commit.to_string()));
+    assert_eq!(cleanup.pending_local_work, 0);
+    let lines = lines.lock().unwrap().clone();
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].starts_with("note: ") && lines[0].ends_with(" asked gwz to wait 2 s; waiting"),
+        "{lines:?}"
+    );
+    let _ = stop.send(());
+    served.join().unwrap();
+}

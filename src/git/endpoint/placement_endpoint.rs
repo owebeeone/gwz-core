@@ -315,6 +315,10 @@ cfg_if::cfg_if! {
             pub(crate) fn set_jitter(&mut self, jitter: Jitter) {
                 self.jitter = jitter;
             }
+            /// The handoff the endpoint leaves how its failed opens ended in.
+            pub(crate) fn handoff_for_test(&self) -> &super::ssh_handoff::Handoff {
+                self.endpoint.handoff()
+            }
             /// The attempts that have started and not yet ended.
             pub(crate) fn attempts_in_flight_for_test(&self) -> usize {
                 self.opens.len()

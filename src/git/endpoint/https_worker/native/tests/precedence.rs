@@ -152,6 +152,7 @@ async fn finish(mut endpoint: Endpoint, result: Result<Prepared, Failure>) {
 fn words(failure: &Failure, policy: AuthPolicy) -> String {
     let (helpers_disabled, windows) = crate::transport_host::policy_words(Some(policy));
     crate::transport_host::HttpsOpenFailure {
+        ended: None,
         failure: failure.clone(),
         anonymous: None,
         attempts: None,
