@@ -149,7 +149,7 @@ async fn finish(mut endpoint: Endpoint, result: Result<Prepared, Failure>) {
 }
 
 /// The words the host gives a failed open under `policy`, with the host named `git.example.test`.
-fn words(failure: &Failure, policy: AuthPolicy) -> String {
+pub(super) fn words(failure: &Failure, policy: AuthPolicy) -> String {
     let (helpers_disabled, windows) = crate::transport_host::policy_words(Some(policy));
     crate::transport_host::HttpsOpenFailure {
         failure: failure.clone(),
@@ -237,6 +237,32 @@ fn basic_only_asks_the_helper_once_and_it_answers_over_basic() {
         let sent = challenger.authorized.lock().unwrap().clone();
         assert_eq!(sent.len(), 1);
         assert!(sent[0].starts_with("Basic "), "{sent:?}");
+        finish(endpoint, result).await;
+    });
+}
+
+#[test]
+fn a_basic_challenge_with_a_utf8_realm_still_asks_the_helper_once() {
+    run(async {
+        let helper = Helper::new(true);
+        let challenger = Challenger::new("Basic realm=\"Z\u{fc}rich\"").await;
+        let (endpoint, result) = open(
+            &challenger,
+            Some(&helper),
+            AuthPolicy::WindowsConfigured,
+            None,
+        )
+        .await;
+        let prepared = result
+            .as_ref()
+            .unwrap_or_else(|failure| panic!("{failure:?}"));
+        assert_eq!(prepared.opened.facts.method, AuthMethod::Gh);
+        assert_eq!(helper.asked(), 1);
+        let sent = challenger.authorized.lock().unwrap().clone();
+        assert!(
+            sent.iter().all(|value| value.starts_with("Basic ")),
+            "{sent:?}"
+        );
         finish(endpoint, result).await;
     });
 }
@@ -343,6 +369,50 @@ fn digest_only_is_refused_at_once_naming_digest_and_asks_nobody() {
                 "{policy:?}"
             );
             assert_eq!(challenger.requests.load(Ordering::Acquire), 1, "{policy:?}");
+            finish(endpoint, result).await;
+        }
+    });
+}
+
+#[test]
+fn a_worker_that_provenance_refuses_is_worded_by_what_is_wrong_with_it_and_the_remedy() {
+    run(async {
+        // The refusals of step 4.10's installed-path rows, as the host words them (code review P3-11): a missing or
+        // mismatched worker is `Unavailable`, a file that is not the worker `Protocol`. No token was made.
+        for (kind, start) in [
+            (
+                gwz_sspi::ErrorKind::WorkerUnavailable,
+                "GWZ could not use its Windows sign-in worker",
+            ),
+            (
+                gwz_sspi::ErrorKind::WorkerMismatch,
+                "GWZ could not use its Windows sign-in worker",
+            ),
+            (
+                gwz_sspi::ErrorKind::Protocol,
+                "GWZ's Windows sign-in worker did not answer as the one installed with gwz does",
+            ),
+        ] {
+            let challenger = Challenger::new("NTLM").await;
+            let (endpoint, result) = open(
+                &challenger,
+                None,
+                AuthPolicy::WindowsDefault,
+                Some(NativeCaller::refused_for_test(kind)),
+            )
+            .await;
+            let failure = result
+                .as_ref()
+                .err()
+                .expect("a refused worker ends the open");
+            let said = words(failure, AuthPolicy::WindowsDefault);
+            assert!(said.starts_with(start), "{kind:?}: {said}");
+            assert!(said.contains("No credential was sent."), "{kind:?}: {said}");
+            assert!(said.contains("Reinstall gwz"), "{kind:?}: {said}");
+            assert!(said.contains("--transport native"), "{kind:?}: {said}");
+            // The server saw the anonymous request that drew the challenge, and nothing after it.
+            assert_eq!(challenger.requests.load(Ordering::Acquire), 1, "{kind:?}");
+            assert!(challenger.authorized.lock().unwrap().is_empty(), "{kind:?}");
             finish(endpoint, result).await;
         }
     });

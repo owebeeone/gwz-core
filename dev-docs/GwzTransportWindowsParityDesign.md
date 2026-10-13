@@ -441,10 +441,48 @@ A separate list from the register. Each is a combination or claim that this desi
     - **T6, owed to step 3.6** (a Pageant request that outlasts the stall):
 
       ```
-      Pageant did not answer within <n> seconds (the SSH stall limit, set by --ssh-timeout). Pageant may still be waiting for you to confirm the key or to enter its passphrase. Answer it and run the command again, raise --ssh-timeout (0 removes the limit), or use --transport native, which waits for Pageant as gwz 1.0 did.
+      Pageant did not answer within <n> seconds (the SSH stall limit, set by --ssh-timeout). Pageant may still be waiting for you to confirm the key or to enter its passphrase. Answer it and run the command again, raise --ssh-timeout (up to 30 seconds; 0 removes the limit), or use --transport native, which waits for Pageant as gwz 1.0 did.
       ```
 
+      *Round 1 of step 5.6's remediation (2026-10-13, Code P3-1) added "up to 30 seconds;" to the text above and to the Windows sentence of the `--ssh-timeout` help, because the 30-second setup budget ends the attempt whatever the option is raised to.*
+
     - **T7, the message owed by operator decision (cross-platform, `transport_host/session/driver.rs`; the help text is step 5.2's)** (a stall): the current `ssh setup timeout: stall (attempt 4 of 4)` becomes `ssh setup timeout: no progress for <n> seconds (--ssh-timeout <n>; attempt 4 of 4)`, and the body-read stall error names `--ssh-timeout` and its value the same way.
+
+    - **Texts added by step 5.6's remediation, round 1 (2026-10-13), for the next Surface look.** They are built and pinned in code, and none has been seen by Surface. Each is shown as printed; `<n>` and `<status>` are filled in.
+
+      **T6b** (Code P3-1; a Pageant request that outlasts the 30-second setup budget; `agent_source/pageant_words.rs`):
+
+      ```
+      Pageant did not answer within 30 seconds, the longest GWZ spends setting up one connection, and raising --ssh-timeout does not lengthen that. Pageant may still be waiting for you to confirm the key or to enter its passphrase. Answer it sooner and run the command again, use --ssh-timeout 0 (which removes the limit), or use --transport native, which waits for Pageant as gwz 1.0 did.
+      ```
+
+      **T10** (Code P3-2, State P3-1; Pageant refused the request, which is a Pageant of another user or at a higher privilege level, or a send that Windows refused while the window was still there; `agent_source/pageant_words.rs`; when `SSH_AUTH_SOCK` was set, " SSH_AUTH_SOCK was not consulted." follows the first line of the second sentence):
+
+      ```
+      Pageant refused the request. Pageant is the SSH agent GWZ selected, because a Pageant window is running. It may be running as another user, or at a higher privilege level than this command (for example as administrator), so it does not serve this account. GWZ does not ask another SSH agent in its place. Run Pageant as the same user and at the same privilege level as this command, or close Pageant to use the OpenSSH agent.
+      ```
+
+      **T11** (Code P3-11; the Windows sign-in worker that is installed with gwz is missing or from another build; `transport_host/request/https_failure.rs`; the last clause is the usual switch hint: the flag where the caller has one, otherwise the environment variable in both Windows shells):
+
+      ```
+      GWZ could not use its Windows sign-in worker, the program installed with gwz that answers Negotiate and NTLM: it is missing, or it is from a different build of gwz. No credential was sent. Reinstall gwz so that its parts match, or run with --transport native to use libgit2's native transport, as gwz 1.0 did.
+      ```
+
+      **T12** (Code P3-11; the worker answered as no worker of this build does, or Windows refused to start the sign-in; the same hint):
+
+      ```
+      GWZ's Windows sign-in worker did not answer as the one installed with gwz does: the file may have been replaced by another program, or Windows refused to start the sign-in. No credential was sent. Reinstall gwz, or run with --transport native to use libgit2's native transport, as gwz 1.0 did.
+      ```
+
+      T11 and T12 cannot tell a missing worker from a mismatched one: both reach the host as the same failure code and the wire has no place for the difference (no wire change in this round).
+
+      **T13** (Code P3-11; a redirect answered the Windows sign-in exchange; the server's address is not quoted):
+
+      ```
+      The server answered GWZ's Windows sign-in with a redirect (HTTP <status>). GWZ does not follow a redirect once a Windows sign-in has started, so your credential is not carried to another address, and nothing was sent to the new location. Ask the server's administrator to fix the redirect, or for the address that serves the repository directly.
+      ```
+
+      Also changed in this round, with no new text: the D7 hint (U2) is no longer added to a failure that never made a connection (an allocation or interaction timeout), and T5 is kept per open (the member's canonical address), so that members redirected in one operation each get their own.
 
 14. Section 5 (round 1 of this step's remediation): the classification of the Pageant confirmation wait as the SSH clock's LocalInteraction phase, with a finite deadline at the amendment's interaction allowance, and the extension of the clock's admitted routes owed to step 3.6 (limitation L20 as first written). **Withdrawn (operator decision D5 (b), 2026-10-11).** The wait stays in the Network phase and its cost is stated (section 5, L20, register item 14). The accepted SSH clock amendment is unchanged; step 3.6 owes no clock change, only the message T6.
 

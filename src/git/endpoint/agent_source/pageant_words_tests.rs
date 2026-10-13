@@ -33,8 +33,8 @@ fn stall() -> Failure {
 /// Text T6 of the design's section 14 item 13, for a stall limit of 9 seconds, as the design writes it.
 const T6: &str = "Pageant did not answer within 9 seconds (the SSH stall limit, set by --ssh-timeout). Pageant may still \
                   be waiting for you to confirm the key or to enter its passphrase. Answer it and run the command \
-                  again, raise --ssh-timeout (0 removes the limit), or use --transport native, which waits for Pageant \
-                  as gwz 1.0 did.";
+                  again, raise --ssh-timeout (up to 30 seconds; 0 removes the limit), or use --transport native, which \
+                  waits for Pageant as gwz 1.0 did.";
 
 #[test]
 fn a_request_that_outlasts_the_stall_limit_is_text_t6_with_the_limit_filled_in() {
@@ -68,12 +68,12 @@ fn a_request_that_outlasts_the_stall_limit_is_text_t6_with_the_limit_filled_in()
 fn the_setup_budget_and_the_send_cap_are_worded_as_what_ended_the_wait() {
     let budget = failed(ErrorCode::Timeout, Some(SetupFailureCause::Aggregate), true);
     let said = pageant().pageant_reason(&budget, 9_000, None).unwrap();
-    assert!(said.contains("setup time ran out"), "{said}");
+    assert!(said.contains("setting up one connection"), "{said}");
     assert!(!said.contains("stall limit"), "{said}");
-    assert!(
-        said.contains("--ssh-timeout (0 removes the limit)"),
-        "{said}"
-    );
+    // Raising the option cannot help here: the 30-second budget stays whatever it is raised to (code review P3-1).
+    assert!(said.contains("30 seconds"), "{said}");
+    assert!(said.contains("--ssh-timeout 0"), "{said}");
+    assert!(!said.contains("raise"), "{said}");
     assert!(said.contains("--transport native"), "{said}");
     // The send's own cap is what is left under `--ssh-timeout 0`: raising the option cannot help, and the text does
     // not suggest it.
@@ -150,4 +150,42 @@ fn only_pageants_agent_step_has_these_words() {
     // Another failure of the step keeps the generic words.
     let io = failed(ErrorCode::Io, None, true);
     assert_eq!(pageant().pageant_reason(&io, 9_000, None), None);
+}
+
+/// A Pageant that refused the request: the setup reports `Unavailable` with no cause and no key offered.
+fn refused() -> Failure {
+    failed(ErrorCode::Unavailable, None, false)
+}
+
+#[test]
+fn a_pageant_that_refuses_the_request_says_what_failed_and_what_to_do() {
+    // Code review P3-2: the words said only that Pageant was selected, not that it refused.
+    let said = pageant().pageant_reason(&refused(), 9_000, None).unwrap();
+    assert!(said.starts_with("Pageant refused the request."), "{said}");
+    assert!(said.contains("another user"), "{said}");
+    assert!(said.contains("privilege level"), "{said}");
+    assert!(
+        said.contains("close Pageant to use the OpenSSH agent"),
+        "{said}"
+    );
+    // None was tried in its place, and the retry plan's count rides on it as on the other Pageant texts.
+    assert!(said.contains("does not ask another SSH agent"), "{said}");
+    let counted = pageant()
+        .pageant_reason(&refused(), 9_000, Some((2, 4)))
+        .unwrap();
+    assert_eq!(counted, format!("{said} (attempt 2 of 4)"));
+    // Before any key the source's own words are the same words, with the variable noted when it was ignored.
+    assert_eq!(
+        pageant().unavailable_reason(None),
+        pageant().pageant_reason(&refused(), 9_000, None)
+    );
+    let ignored = AgentSource::Pageant {
+        sock_ignored: true,
+        pin: PageantPin::numbered(1, 2),
+    };
+    let said = ignored.unavailable_reason(None).unwrap();
+    assert!(said.starts_with("Pageant refused the request."), "{said}");
+    assert!(said.contains("SSH_AUTH_SOCK was not consulted"), "{said}");
+    // It is not the text of a Pageant that is gone.
+    assert!(!said.contains("window is gone"), "{said}");
 }
