@@ -1,6 +1,6 @@
 # HTTPS fixed-cost fix — remediation plan, round 1
 
-Status: **DRAFT, 2026-10-14.** The object reviewed is gwz-core `d6446749` (reaper join) and `5cea51dc` (the Linux TLS client on the `openssl` crate), as merged into `1d038c6e` (tuple in both reports; review workspace the `perf` lane). The reports are filed verbatim:
+Status: **accepted at gwz-core `85d7d910` (with `d6446749` and `5cea51dc`) after `GwzTransportHttpsFixedCostFix-ReviewCode-2.md` and `GwzTransportHttpsFixedCostFix-ReviewState-2.md` reported GO (2026-10-14); this accepts the HTTPS fixed-cost fix only.** Drafted 2026-10-14. The object reviewed is gwz-core `d6446749` (reaper join) and `5cea51dc` (the Linux TLS client on the `openssl` crate), as merged into `1d038c6e` (tuple in both reports; review workspace the `perf` lane). The reports are filed verbatim:
 - [Code](GwzTransportHttpsFixedCostFix-ReviewCode.md): GO, 2 P3.
 - [State](GwzTransportHttpsFixedCostFix-ReviewState.md): NO-GO, 1 P2 and 1 P3, with a pre-commitment to GO on P2-1 as specified. The reaper commit is GO on its own.
 
@@ -32,3 +32,10 @@ All in one patch, in the `perf` lane, then one re-verdict by the same two review
 ## Re-verdict
 
 One revision goes back to the same two reviewers with this plan and the diff since `1d038c6e`. Each reviewer re-checks its own counterexamples and fills a prior-finding closure table. This is round 1 of the two-round cap.
+
+## Outcome (2026-10-14)
+
+Both reviewers re-verdicted GO on `85d7d910`; every finding above is closed, one remediation round of the two-round cap used. The Code reviewer corrected its own round-1 §2, which had read native-tls's protocol bounds as `None`. New observations below the bar:
+- Both axes, blind: the TLS-floor row's host-conditional pass is silent in captured logs (State P3-2, Code §3). Small follow-up: print the branch on stderr, and archive a captured run showing the live branch.
+- Code §3: a `poll_send` error still preempts reading ciphertext already buffered (a peer that answers then resets).
+- State §3: the explicit TLS 1.2 floor also lowers a stricter distribution floor (`MinProtocol = TLSv1.3`) to 1.2, as native-tls did; gwz 1.0.17 (libgit2) left the bounds to the system policy. "max(1.2, policy)" would be an operator trust decision.
