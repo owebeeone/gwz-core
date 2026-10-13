@@ -106,6 +106,27 @@ impl HttpsEndpoint {
                             continue;
                         };
                         result = settled;
+                        // A member that ran out of its allocation waiting on a
+                        // local budget: the pool host saw which, and for how
+                        // long, and the wire carries only that it was local
+                        // (Code P3-6).
+                        if let Err(failed) = &result
+                            && matches!(
+                                crate::git::endpoint::setup_retry::CapacityReport::of_failure(
+                                    failed
+                                ),
+                                Some(crate::git::endpoint::setup_retry::CapacityReport::Local)
+                            )
+                            && let Some(wait) = self
+                                .client
+                                .governor()
+                                .take_local_wait(&entry.pool_key.site(), self.client.pool_now())
+                        {
+                            self.retries.note_end(
+                                &entry.envelope,
+                                crate::git::endpoint::setup_retry::EndNote::LocalWait(wait),
+                            );
+                        }
                     }
                     let mut receipt = Envelope {
                         version: entry.envelope.version,

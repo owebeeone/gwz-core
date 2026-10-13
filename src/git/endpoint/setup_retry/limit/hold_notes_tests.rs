@@ -4,7 +4,9 @@ use super::{hold::*, notes::*};
 #[test]
 fn a_hold_runs_for_retry_after_capped_at_thirty_seconds() {
     let mut hold = Hold::default();
-    assert_eq!(hold.set(3_600_000, Origin::Discovery, 100), Some(30_000));
+    // The hold is capped; the note's value is the server's, uncapped (the
+    // note says what was asked and what is waited, Code P3-7).
+    assert_eq!(hold.set(3_600_000, Origin::Discovery, 100), Some(3_600_000));
     assert!(hold.in_force(30_099));
     assert_eq!(hold.deadline(100), Some(30_100));
 }
@@ -65,6 +67,32 @@ fn only_a_post_hold_blocks_a_continuing_member() {
     assert!(hold.blocks_continuing(5_000), "until the discard has run");
     hold.idle_discarded();
     assert!(!hold.blocks_continuing(5_000));
+}
+
+#[test]
+fn a_posts_own_hold_ends_with_its_own_retry_after_whatever_a_discovery_set() {
+    // Code P3-8: a discovery 429 with `Retry-After: 30` at t=0, then a POST 429
+    // with `Retry-After: 2` at t=1 s. The continuing members' POSTs are held
+    // until t=3 s, not t=30 s; every new start and first exchange waits for
+    // the longer.
+    let mut hold = Hold::default();
+    hold.set(30_000, Origin::Discovery, 0);
+    hold.set(2_000, Origin::Post, 1_000);
+    assert!(hold.blocks_continuing(2_999));
+    assert!(!hold.blocks_continuing(3_000), "released at t=3");
+    assert!(!hold.blocks_continuing(29_999));
+    assert!(hold.in_force(29_999), "new starts still wait for the 30 s");
+    assert_eq!(hold.deadline(3_000), Some(30_000));
+    // The same hold the other way round: a POST's 20 s is not shortened by a
+    // later discovery's 5 s, and the discovery does not extend the POSTs.
+    let mut hold = Hold::default();
+    hold.set(20_000, Origin::Post, 0);
+    hold.set(5_000, Origin::Discovery, 1_000);
+    assert!(hold.blocks_continuing(19_999));
+    assert!(hold.in_force(19_999));
+    // A second POST extends the POSTs' own end.
+    hold.set(30_000, Origin::Post, 10_000);
+    assert!(hold.blocks_continuing(39_999));
 }
 
 #[test]
@@ -167,6 +195,17 @@ fn each_note_reads_as_section_9_words_it_with_the_host_and_port() {
     assert_eq!(
         line(Note::Hold { wait_ms: 20_000 }),
         "note: github.com:443 asked gwz to wait 20 s; waiting"
+    );
+    // A `Retry-After` beyond the 30 s one command waits is said as asked, with
+    // what will be waited (Code P3-7).
+    assert_eq!(
+        line(Note::Hold { wait_ms: 120_000 }),
+        "note: github.com:443 asked gwz to wait 120 s; one command waits at most 30 s"
+    );
+    assert_eq!(
+        line(Note::Hold { wait_ms: 30_000 }),
+        "note: github.com:443 asked gwz to wait 30 s; waiting",
+        "30 s exactly is still waited out"
     );
     assert_eq!(
         line(Note::Hold { wait_ms: 1_500 }),

@@ -130,7 +130,7 @@ fn ssh_helper_projection_requires_typed_provenance_and_preserves_non_helper_fail
     ] {
         let failed = timeout(cause, budget);
         let common = super::helper_failure::timeout_reason(&failed).unwrap();
-        let error = SshOpenFailure(failed, Some((2, 4)), 9_000);
+        let error = SshOpenFailure(failed, Some((2, 4)), 9_000, None);
         let model = error.model_error(false).unwrap();
         assert_eq!(model.code, crate::model::ErrorCode::CredentialHelperTimeout);
         assert_eq!(model.message, format!("{common} (attempt 2 of 4)"));
@@ -152,7 +152,7 @@ fn ssh_helper_projection_requires_typed_provenance_and_preserves_non_helper_fail
             }),
             ..Default::default()
         };
-        let error = SshOpenFailure(failed, Some((1, 2)), 9_000);
+        let error = SshOpenFailure(failed, Some((1, 2)), 9_000, None);
         assert!(error.model_error(false).is_none());
         assert!(error.to_string().starts_with("ssh setup timeout:"));
         // A stall names the flag and its bound, and the attempt goes inside
@@ -172,7 +172,7 @@ fn ssh_helper_projection_requires_typed_provenance_and_preserves_non_helper_fail
         (SetupFailureCause::Aggregate, 1),
     ] {
         assert!(
-            SshOpenFailure(timeout(cause, budget), None, 9_000)
+            SshOpenFailure(timeout(cause, budget), None, 9_000, None)
                 .model_error(false)
                 .is_none()
         );
@@ -189,6 +189,7 @@ fn ssh_helper_projection_requires_typed_provenance_and_preserves_non_helper_fail
         },
         None,
         9_000,
+        None,
     );
     assert!(ordinary.model_error(false).is_none());
     assert_eq!(ordinary.to_string(), "ssh setup failed: Unavailable");
@@ -199,6 +200,7 @@ fn ssh_helper_projection_requires_typed_provenance_and_preserves_non_helper_fail
         },
         None,
         9_000,
+        None,
     );
     assert!(auth.model_error(false).is_none());
     assert!(

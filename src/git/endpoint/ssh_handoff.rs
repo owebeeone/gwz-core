@@ -15,6 +15,7 @@
 //! takes them as it starts that open. Nothing here crosses a carrier, so an
 //! endpoint in another process gets none.
 use super::agent_source::AgentSource;
+use super::setup_retry::EndNote;
 use super::ssh_host_key::HostKeyRefused;
 use std::{
     collections::BTreeMap,
@@ -102,10 +103,17 @@ pub(crate) struct Handoff {
     /// key as `Trust` and nothing more, so the endpoint leaves the finding here and the driver words the failure from
     /// it. The driver never takes it: several opens to one host fail on one finding. Bounded by `TRUST_LIMIT`.
     trust: Arc<Mutex<BTreeMap<(String, u16), HostKeyRefused>>>,
+    /// How each failed open ended beyond its failure, which the wire has no field for (a Down key's members, a
+    /// throttled member's refusals, the local wait that expired): the endpoint leaves it under the open's carrier
+    /// session and stream, and the driver takes it once to word the failure. Bounded by `END_LIMIT`; an open the
+    /// driver never takes it for (cancelled) is pushed out by later ones.
+    ends: Arc<Mutex<BTreeMap<(String, i64), EndNote>>>,
 }
 
 /// The destinations whose trust findings a handoff keeps.
 const TRUST_LIMIT: usize = 256;
+/// The failed opens whose end notes a handoff keeps.
+const END_LIMIT: usize = 256;
 
 impl Handoff {
     /// A handoff for a runtime whose endpoint uses `agent`: the driver words the agent step's failures from it, since
@@ -115,7 +123,25 @@ impl Handoff {
             extras: Arc::default(),
             agent,
             trust: Arc::default(),
+            ends: Arc::default(),
         }
+    }
+
+    /// Leaves `note` for the driver of `session`'s `stream`, which words that open's failure with it.
+    pub(crate) fn note_end(&self, session: &str, stream: i64, note: EndNote) {
+        let mut ends = self.ends.lock().unwrap_or_else(|e| e.into_inner());
+        ends.insert((session.to_owned(), stream), note);
+        while ends.len() > END_LIMIT {
+            ends.pop_first();
+        }
+    }
+
+    /// The note left for `session`'s `stream`, once: the driver's, as its open fails.
+    pub(crate) fn take_end(&self, session: &str, stream: i64) -> Option<EndNote> {
+        self.ends
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&(session.to_owned(), stream))
     }
 
     /// Records what `error` says the trust check found for `host` and `port`, if it was a refused host key.

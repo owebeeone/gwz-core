@@ -181,6 +181,8 @@ pub(crate) struct Prepared {
     discard: bool,
     /// The key's limit machine as a POST needs it (§4.5).
     gate: throttle::Gate,
+    /// How a POST takes its connection again after a hold (§4.5).
+    relet: throttle::Relet,
 }
 impl Prepared {
     pub(crate) fn native_publication_route(&self) -> Option<Arc<native::Authenticated>> {

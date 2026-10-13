@@ -30,9 +30,13 @@ async fn throttling(status: u16, retry_after: Option<&'static str>) -> fixture::
 }
 
 /// What the user is told of an open that failed with `failure`, as the host
-/// words it for the HTTPS route.
-pub(super) fn user_error(failure: &Failure) -> crate::model::ModelError {
+/// words it for the HTTPS route, with the `note` the endpoint left beside it.
+pub(super) fn user_error(
+    failure: &Failure,
+    note: Option<setup_retry::EndNote>,
+) -> crate::model::ModelError {
     crate::transport_host::HttpsOpenFailure {
+        ended: note.map(|note| setup_retry::Ended::new(note, "127.0.0.1", 443)),
         attempts: setup_retry::reported_attempt(failure),
         failure: failure.clone(),
         anonymous: None,
@@ -53,8 +57,21 @@ async fn failed_open(
     max_retries: u32,
     until: Duration,
 ) -> (u16, Failure) {
+    let (port, failure, _) = failed_open_noted(server, max_retries, until).await;
+    (port, failure)
+}
+
+/// `failed_open`, and the note the endpoint left in its handoff for the open
+/// (`EndNote`), which the driver of a real command takes.
+async fn failed_open_noted(
+    server: &fixture::Server,
+    max_retries: u32,
+    until: Duration,
+) -> (u16, Failure, Option<setup_retry::EndNote>) {
     let port = port(server);
     let mut endpoint = endpoint(server.config(), 8, max_retries);
+    let handoff = crate::git::endpoint::ssh_handoff::Handoff::default();
+    endpoint.set_handoff(handoff.clone());
     endpoint
         .accept("request".into(), open(1, port, 30_000))
         .unwrap();
@@ -68,15 +85,17 @@ async fn failed_open(
         .clone()
         .expect("the open failed");
     shut(&mut endpoint).await;
-    (port, failure)
+    (port, failure, handoff.take_end("session", 1))
 }
 
 #[test]
 fn a_429_storm_with_a_short_retry_after_reaches_the_user_as_a_server_throttle() {
     runtime().block_on(async {
         let server = throttling(429, Some("1")).await;
-        let (port, failure) = failed_open(&server, 1, Duration::from_secs(20)).await;
+        let (port, failure, note) = failed_open_noted(&server, 1, Duration::from_secs(20)).await;
         assert_eq!(failure.code, ErrorCode::Capacity);
+        // Both attempts were refused: the endpoint says so beside the failure.
+        assert_eq!(note, Some(setup_retry::EndNote::Refused { count: 2 }));
         let detail = failure.detail.as_ref().expect("a detail");
         let capacity = detail.capacity.as_ref().expect("the capacity detail");
         assert_eq!(capacity.cause, CapacityCause::ServerThrottle);
@@ -89,7 +108,7 @@ fn a_429_storm_with_a_short_retry_after_reaches_the_user_as_a_server_throttle() 
         let count = detail.retry_attempt.as_ref().expect("the attempt count");
         assert_eq!((count.attempt, count.attempts), (2, 2));
         // The words the user reads.
-        let error = user_error(&failure);
+        let error = user_error(&failure, note);
         assert_eq!(error.code, crate::model::ErrorCode::Capacity);
         let text = error.message;
         assert!(
@@ -101,6 +120,72 @@ fn a_429_storm_with_a_short_retry_after_reaches_the_user_as_a_server_throttle() 
             "{text}"
         );
         assert!(text.contains("; gave up after "), "{text}");
+    });
+}
+
+#[test]
+fn one_refusal_alone_says_the_last_attempt_was_refused_and_not_that_the_host_kept_refusing() {
+    runtime().block_on(async {
+        // `--max-retries 0`: the first refusal is the member's only attempt.
+        let (server, _) = server(Arc::new(|_, _| 429)).await;
+        let (port, failure, note) = failed_open_noted(&server, 0, Duration::from_secs(10)).await;
+        assert_eq!(note, Some(setup_retry::EndNote::Refused { count: 1 }));
+        let text = user_error(&failure, note).message;
+        assert!(
+            text.starts_with(&format!("127.0.0.1:{port} refused the last attempt")),
+            "{text}"
+        );
+        assert!(!text.contains("kept"), "{text}");
+    });
+}
+
+#[test]
+fn reset_reset_reset_then_a_429_says_the_last_attempt_was_refused_not_that_the_host_kept_refusing()
+{
+    runtime().block_on(async {
+        // The first three connections are reset; the fourth reaches a server
+        // that throttles. The member's last attempt is the only one refused.
+        let (server, _) = server(Arc::new(|_, _| 429)).await;
+        let (front, accepted) = super::down_tests::scripted(port(&server), vec![0, 1, 2]);
+        let mut endpoint = endpoint(server.config(), 8, 3);
+        let handoff = crate::git::endpoint::ssh_handoff::Handoff::default();
+        endpoint.set_handoff(handoff.clone());
+        endpoint
+            .accept("request".into(), open(1, front, 30_000))
+            .unwrap();
+        let mut published = Vec::new();
+        let mut now = 0;
+        while replies(&published).is_empty() {
+            assert!(
+                now < 120_000,
+                "never failed: {} connections",
+                accepted.load(std::sync::atomic::Ordering::SeqCst)
+            );
+            published.extend(super::retry_tests::settle(&mut endpoint, now).await);
+            now += 500;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let failure = replies(&published)[0]
+            .open_failed
+            .clone()
+            .expect("the open failed");
+        shut(&mut endpoint).await;
+        assert_eq!(failure.code, ErrorCode::Capacity);
+        let count = failure
+            .detail
+            .as_ref()
+            .and_then(|d| d.retry_attempt.as_ref())
+            .expect("the attempt count");
+        assert_eq!((count.attempt, count.attempts), (4, 4));
+        let note = handoff.take_end("session", 1);
+        assert_eq!(note, Some(setup_retry::EndNote::Refused { count: 1 }));
+        let text = user_error(&failure, note).message;
+        assert!(
+            text.starts_with(&format!("127.0.0.1:{front} refused the last attempt")),
+            "{text}"
+        );
+        assert!(!text.contains("kept refusing"), "{text}");
+        assert!(text.ends_with("(attempt 4 of 4)"), "{text}");
     });
 }
 
@@ -135,7 +220,7 @@ fn a_retry_after_beyond_what_a_command_holds_reaches_the_user_as_its_own_cause()
             .expect("the capacity detail");
         assert_eq!(capacity.cause, CapacityCause::ServerRetryAfter);
         assert_eq!(capacity.retry_after_ms, Some(120_000));
-        let error = user_error(&failure);
+        let error = user_error(&failure, None);
         assert_eq!(error.code, crate::model::ErrorCode::Capacity);
         assert_eq!(
             error.message,

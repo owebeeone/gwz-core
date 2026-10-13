@@ -1,6 +1,6 @@
 # Windows parity 5.6 — remediation plan, round 1
 
-Status: **DRAFT, 2026-10-13.** The object reviewed is the tuple in both reports:
+Status: **accepted at root `8fc5acb1`, gwz-core `45fe6e6a`, gwz-transport `a27817b9`, gwz-cli `cd72b954`, gwz-py `ea94500a` after `GwzTransportWindows-5.6-ReviewCode-2.md` and `GwzTransportWindows-5.6-ReviewState-2.md` reported GO (2026-10-14); this accepts step 5.6 only.** Drafted 2026-10-13. The object reviewed is the tuple in both reports:
 root `42feaa9d`, gwz-core `37705303`, gwz-transport `a27817b9`, gwz-cli `220501a5`, gwz-py `28aff11d`.
 The reports are filed verbatim:
 - [Code (with the Surface section)](GwzTransportWindows-5.6-ReviewCode.md): NO-GO, 2 P2 and 12 P3, with a pre-commitment to GO on P2-1 and P2-2.
@@ -78,3 +78,7 @@ Lanes: **A** native commit and tag; **B** adaptive limit machine, Capacity, Down
 ## Re-verdict
 
 One merged revision of lanes A to D goes back to the same two reviewers, with this plan and the diff since `37705303`. Each reviewer re-checks its own counterexamples and fills a prior-finding closure table. This is round 1 of the two-round cap.
+
+## Outcome (2026-10-14)
+
+Both reviewers re-verdicted GO on the merged revision; every finding above is closed, the -a findings as moot under the narrowing. New observations below the finding bar, recorded as follow-ups: local-wait attribution is matched by site and recency (both axes); a POST re-checkout reuses the allocation taken at prepare time (State); the D7 exclusion is narrower than this plan's "any failure without network facts" (Code). CI on the accepted tuple failed two test rows outside product code, the SSH fixture's bind-and-release port race (gwz-core, Linux) and the gwz-py close timing row (Windows 3.13); both reviewers judged the fixture race a test defect. Lane `ciflake` fixes both after acceptance.

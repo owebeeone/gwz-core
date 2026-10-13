@@ -287,17 +287,18 @@ impl Session {
             https.set_notes(notes.clone());
         }
     }
-    /// The redirect from https to http that ended `request`'s open, if one did (text T5). Told once.
+    /// The redirect from https to http that ended `request`'s open of `open`, if one did (text T5). Told once.
     pub(super) fn redirect_refusal(
         &self,
         request: &str,
+        open: &str,
     ) -> Option<crate::git::endpoint::https_worker::redirect_log::Refused> {
         self.state
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .https
             .as_ref()
-            .and_then(|https| https.redirect_refusal(request))
+            .and_then(|https| https.redirect_refusal(request, open))
     }
     /// Tells this driver which SSH home its runtime's endpoint reads under, and where that home came from.
     pub(super) fn set_home(&self, home: Option<Home>) {
@@ -484,6 +485,8 @@ impl Session {
     ) -> ModelResult<(Arc<Self>, TransportPort)> {
         let mut state = Self::empty();
         let id = unique()?;
+        // Where the HTTPS endpoint leaves how a failed open ended beyond its failure, for the driver that shares it.
+        let ends = handoff.clone();
         let authority = crate::git::endpoint::shared_reservation::Authority::new(
             config.pool.total,
             config.pool.per_host,
@@ -516,7 +519,7 @@ impl Session {
             );
         }
         if let Some((https, helper_slots)) = https {
-            state.https = Some(super::https_endpoint::HttpsEndpoint::new_native(
+            let mut endpoint = super::https_endpoint::HttpsEndpoint::new_native(
                 https,
                 config.pool.clone(),
                 config.io_timeout_ms,
@@ -524,7 +527,9 @@ impl Session {
                 id.clone(),
                 helper_slots,
                 native,
-            )?);
+            )?;
+            endpoint.set_handoff(ends);
+            state.https = Some(endpoint);
         }
         let https_enabled = state.https.is_some();
         state.endpoint_config = Some(binding::EndpointConfig {

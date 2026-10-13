@@ -1,6 +1,7 @@
 //! The user notes of §9: data from the machine, and the words they are
 //! printed in, with the host and port of the site they are about. The reader
 //! (the CLI) decides whether to print them at all.
+use super::hold::HOLD_CAP_MS;
 use gwz_transport::pool::Site;
 
 /// The coalescing window of a changed-limit note.
@@ -24,7 +25,8 @@ pub(crate) enum Note {
     Changed { n: usize },
     /// Back at the ceiling.
     BackAtCeiling { ceiling: usize },
-    /// A `Retry-After` hold longer than 1 s began.
+    /// A `Retry-After` hold longer than 1 s began. `wait_ms` is what the
+    /// server asked, uncapped; one command waits at most `HOLD_CAP_MS`.
     Hold { wait_ms: u64 },
     /// The host stopped answering and its members are parked (§5.5).
     Down,
@@ -51,6 +53,12 @@ impl Note {
                 format!("note: {host}: back at the ceiling of {ceiling} connections")
             }
             // A part of a second is a whole one: the wait is never understated.
+            // A request beyond the cap is said as asked, with what is waited.
+            Self::Hold { wait_ms } if *wait_ms > HOLD_CAP_MS => format!(
+                "note: {host} asked gwz to wait {} s; one command waits at most {} s",
+                wait_ms.div_ceil(1_000),
+                HOLD_CAP_MS / 1_000
+            ),
             Self::Hold { wait_ms } => format!(
                 "note: {host} asked gwz to wait {} s; waiting",
                 wait_ms.div_ceil(1_000)

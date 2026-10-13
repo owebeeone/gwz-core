@@ -5,18 +5,43 @@
 //! ends a member to the code that words the error. Pure: it reads a report and
 //! writes a message or a detail (and back), so the wording is pinned here once
 //! and every endpoint that ends a member with `Capacity` says the same thing.
-use super::{hold::HOLD_CAP_MS, notes::site_name};
+use super::{end_note::EndNote, hold::HOLD_CAP_MS, notes::site_name};
 use gwz_transport::{
     pool::Site,
     protocol::{CapacityCause as WireCause, CapacityDetail, CapacitySignal, FailureDetail},
 };
 
 /// The fixed number of connection setups gwz runs at once (`agent_job`'s
-/// job budget), which a local-capacity message names.
+/// job budget), which a job-budget message names.
 const SETUP_SLOTS: usize = 64;
-/// The seconds a local permit wait lasts before it expires: the allocation
-/// clock of a member's open.
-const LOCAL_WAIT_SECONDS: u64 = 30;
+/// The slots of the HTTPS connector that resolve a host and build its TLS
+/// configuration, which a slot message names (`https_pool`).
+pub(crate) const HTTPS_SETUP_SLOTS: usize = 8;
+
+/// The local budget a member waited on until its allocation ran out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum LocalBudget {
+    /// The 64-job budget of connection setups.
+    JobBudget,
+    /// The HTTPS connector's slots that resolve a host and set up TLS.
+    SetupSlots,
+    /// The endpoint-wide reservation that `--max-per-host` and the total
+    /// connection limit make, shared by SSH and HTTPS.
+    Reservation,
+}
+
+/// A local wait that expired: which budget, and how long the member waited.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LocalWait {
+    pub(crate) budget: LocalBudget,
+    pub(crate) waited_ms: u64,
+}
+
+/// Whole seconds for a message: rounded to the nearest, and at least one, as
+/// the server cause's `gave up after` is.
+fn seconds(ms: u64) -> u64 {
+    ms.saturating_add(500).saturating_div(1_000).max(1)
+}
 
 /// Which of the three things happened when a member finished with `Capacity`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,13 +116,22 @@ pub(crate) struct ServerCapacity {
     /// `None` for a 403 that carried `Retry-After`.
     pub(crate) last_signal: Option<LastSignal>,
     pub(crate) retry_after_ms: Option<u64>,
+    /// How many of the member's attempts the server refused (a 429, or a 503
+    /// or 403 with `Retry-After`), when it is known. The wire does not carry
+    /// it: the endpoint leaves it beside the failure (`EndNote::Refused`).
+    /// Unknown says only what is certain, that the last attempt was refused.
+    pub(crate) refusals: Option<u32>,
 }
 
 /// The report of a member that finished with `Capacity`.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum CapacityReport {
     Server(ServerCapacity),
+    /// A local permit wait expired. The wire says only that; the endpoint
+    /// leaves which wait beside the failure (`EndNote::LocalWait`).
     Local,
+    /// A local permit wait that expired, and which.
+    LocalWait(LocalWait),
 }
 
 impl ServerCapacity {
@@ -124,7 +158,23 @@ impl CapacityReport {
     pub(crate) fn cause(&self) -> CapacityCause {
         match self {
             Self::Server(server) => server.cause(),
-            Self::Local => CapacityCause::Local,
+            Self::Local | Self::LocalWait(_) => CapacityCause::Local,
+        }
+    }
+
+    /// The report with what the endpoint knows beyond the wire: how many
+    /// attempts the server refused, or which local wait expired. A note that
+    /// does not fit the report leaves it as it is.
+    pub(crate) fn noted(self, note: Option<EndNote>) -> Self {
+        match (self, note) {
+            (Self::Server(server), Some(EndNote::Refused { count })) => {
+                Self::Server(ServerCapacity {
+                    refusals: Some(count),
+                    ..server
+                })
+            }
+            (Self::Local, Some(EndNote::LocalWait(wait))) => Self::LocalWait(wait),
+            (report, _) => report,
         }
     }
 
@@ -154,10 +204,12 @@ impl CapacityReport {
     /// The message, after the `member '<id>' at '<path>': ` prefix and before
     /// the `(attempt N of M)` suffix the attempt count adds.
     pub(crate) fn message(&self) -> String {
-        let Self::Server(server) = self else {
-            return format!(
-                "gwz's {SETUP_SLOTS} connection-setup slots stayed full for {LOCAL_WAIT_SECONDS} s (setups that stopped answering hold them until they time out); retry later"
-            );
+        let server = match self {
+            Self::Server(server) => server,
+            Self::Local => {
+                return "a limit on gwz's own connections stayed full until the wait ran out; retry later".into();
+            }
+            Self::LocalWait(wait) => return wait.message(),
         };
         let host = server.host();
         match (server.cause(), server.retry_after_ms) {
@@ -179,15 +231,38 @@ impl CapacityReport {
                             server.max_per_host
                         )
                     });
+                // The rule decides Capacity on the last attempt only, so the words
+                // say that attempt was refused; they say the host kept refusing
+                // only when more than one attempt was (the 5.6 decision).
+                let said = if server.refusals.is_some_and(|count| count > 1) {
+                    "kept refusing connections"
+                } else {
+                    "refused the last attempt"
+                };
                 format!(
-                    "{host} kept refusing connections{using}; gave up after {} s; retry later, or lower --max-per-host",
-                    server
-                        .elapsed_ms
-                        .saturating_add(500)
-                        .saturating_div(1_000)
-                        .max(1)
+                    "{host} {said}{using}; gave up after {} s; retry later, or lower --max-per-host",
+                    seconds(server.elapsed_ms)
                 )
             }
+        }
+    }
+}
+
+impl LocalWait {
+    /// The words for the wait that expired, one text per budget, none naming a
+    /// number the budget does not have.
+    fn message(&self) -> String {
+        let waited = seconds(self.waited_ms);
+        match self.budget {
+            LocalBudget::JobBudget => format!(
+                "gwz's {SETUP_SLOTS} connection-setup slots stayed full for {waited} s (setups that stopped answering hold them until they time out); retry later"
+            ),
+            LocalBudget::SetupSlots => format!(
+                "gwz's {HTTPS_SETUP_SLOTS} slots for resolving a host and setting up TLS stayed full for {waited} s; retry later"
+            ),
+            LocalBudget::Reservation => format!(
+                "every connection gwz may open at once was in use for {waited} s (--max-per-host limits them per host, and a total limit applies across hosts); retry later, or raise --max-per-host"
+            ),
         }
     }
 }
@@ -262,6 +337,7 @@ impl CapacityReport {
                 Some(wait) => Some(u64::try_from(wait).ok()?),
                 None => None,
             },
+            refusals: None,
         };
         (detail.cause == server.cause().wire()).then_some(Self::Server(server))
     }
@@ -303,12 +379,18 @@ cfg_if::cfg_if! {
                     elapsed_ms: 21_000,
                     last_signal: Some(LastSignal::Http429),
                     retry_after_ms,
+                    refusals: None,
                 }
+            }
+
+            /// The report of a member whose attempts the server refused `count` times.
+            fn refused(count: u32, server: ServerCapacity) -> CapacityReport {
+                CapacityReport::Server(server).noted(Some(EndNote::Refused { count }))
             }
 
             #[test]
             fn a_throttled_member_says_the_host_kept_refusing_and_the_lowered_limit() {
-                let report = CapacityReport::Server(server(None));
+                let report = refused(4, server(None));
                 assert_eq!(report.cause(), CapacityCause::ServerThrottle);
                 assert_eq!(
                     report.message(),
@@ -317,9 +399,25 @@ cfg_if::cfg_if! {
             }
 
             #[test]
+            fn the_words_say_the_last_attempt_was_refused_unless_more_than_one_was() {
+                // The 5.6 decision: Capacity is decided on the last attempt, so
+                // "kept refusing" is said only for more than one refusal. One
+                // refusal after resets, one alone, and a count nobody knows
+                // all say the last attempt was refused.
+                let last = "github.com:443 refused the last attempt (using 8 at a time, ceiling 32 from --max-per-host); gave up after 21 s; retry later, or lower --max-per-host";
+                assert_eq!(refused(1, server(None)).message(), last);
+                assert_eq!(CapacityReport::Server(server(None)).message(), last);
+                let kept = refused(2, server(None)).message();
+                assert!(kept.starts_with("github.com:443 kept refusing connections ("), "{kept}");
+                // A retry-after wait names the wait, whatever the count.
+                let long = refused(1, server(Some(120_000))).message();
+                assert!(long.starts_with("github.com:443 asked to wait 120 s,"), "{long}");
+            }
+
+            #[test]
             fn the_parenthesis_is_left_out_when_the_limit_was_never_lowered() {
                 for limit_applied in [None, Some(32)] {
-                    let report = CapacityReport::Server(ServerCapacity { limit_applied, ..server(None) });
+                    let report = refused(3, ServerCapacity { limit_applied, ..server(None) });
                     assert_eq!(
                         report.message(),
                         "github.com:443 kept refusing connections; gave up after 21 s; retry later, or lower --max-per-host",
@@ -373,11 +471,11 @@ cfg_if::cfg_if! {
 
             #[test]
             fn a_host_that_is_not_shown_is_the_server_and_an_ipv6_host_is_bracketed() {
-                let redirected = CapacityReport::Server(ServerCapacity { site: None, ..server(None) });
+                let redirected = refused(3, ServerCapacity { site: None, ..server(None) });
                 assert!(redirected.message().starts_with("the server kept refusing connections"));
                 let redirected_wait = CapacityReport::Server(ServerCapacity { site: None, ..server(Some(120_000)) });
                 assert!(redirected_wait.message().starts_with("the server asked to wait 120 s,"));
-                let v6 = CapacityReport::Server(ServerCapacity { site: site("::1"), ..server(None) });
+                let v6 = refused(3, ServerCapacity { site: site("::1"), ..server(None) });
                 assert!(v6.message().starts_with("[::1]:443 kept refusing connections"));
             }
 
@@ -522,15 +620,49 @@ cfg_if::cfg_if! {
                 assert_eq!(LastSignal::of_status(200), None);
             }
 
+            fn waited(budget: LocalBudget, waited_ms: u64) -> CapacityReport {
+                CapacityReport::Local.noted(Some(EndNote::LocalWait(LocalWait { budget, waited_ms })))
+            }
+
             #[test]
-            fn a_local_wait_names_the_setup_slots_and_has_no_host() {
-                let report = CapacityReport::Local;
-                assert_eq!(report.cause(), CapacityCause::Local);
+            fn each_local_wait_names_its_own_budget_and_the_wait_it_lasted() {
+                // Code P3-6: three different waits were all "64 setup slots for 30 s".
+                let jobs = waited(LocalBudget::JobBudget, 30_000);
+                assert_eq!(jobs.cause(), CapacityCause::Local);
                 assert_eq!(
-                    report.message(),
+                    jobs.message(),
                     "gwz's 64 connection-setup slots stayed full for 30 s (setups that stopped answering hold them until they time out); retry later"
                 );
+                let slots = waited(LocalBudget::SetupSlots, 12_400).message();
+                assert_eq!(
+                    slots,
+                    "gwz's 8 slots for resolving a host and setting up TLS stayed full for 12 s; retry later"
+                );
+                let reservation = waited(LocalBudget::Reservation, 2_600).message();
+                assert_eq!(
+                    reservation,
+                    "every connection gwz may open at once was in use for 3 s (--max-per-host limits them per host, and a total limit applies across hosts); retry later, or raise --max-per-host"
+                );
+                for text in [&slots, &reservation] {
+                    assert!(!text.contains("64") && !text.contains("stopped answering"), "{text}");
+                }
+                // The 64 and the 8 are the budgets' own.
                 assert_eq!(SETUP_SLOTS, crate::git::endpoint::agent_job::LIMIT);
+                // Whichever it was, the report says nothing on the wire but its cause.
+                assert_eq!(jobs.detail(), CapacityReport::Local.detail());
+            }
+
+            #[test]
+            fn a_local_wait_nobody_named_says_only_that_a_limit_stayed_full() {
+                let report = CapacityReport::Local;
+                assert_eq!(report.cause(), CapacityCause::Local);
+                let text = report.message();
+                assert!(!text.contains("64") && !text.contains("stopped answering"), "{text}");
+                // A note that does not fit the report leaves it as it is.
+                assert_eq!(
+                    CapacityReport::Local.noted(Some(EndNote::Refused { count: 3 })),
+                    CapacityReport::Local
+                );
             }
         }
     }

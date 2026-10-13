@@ -248,7 +248,8 @@ fn carrier_drop_wakes_blocking_open() {
                 ..
             },
             _,
-            _
+            _,
+            ..
         ))
     ));
 }
@@ -382,7 +383,8 @@ fn cancellation_wakes_open_and_late_terminals_cannot_close_sibling_binding() {
                 ..
             },
             _,
-            _
+            _,
+            ..
         ))
     ));
 

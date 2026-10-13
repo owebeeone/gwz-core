@@ -108,7 +108,7 @@ cfg_if::cfg_if! { if #[cfg(windows)] {
             assert_eq!(Some(bound.policies.clone()), caps.auth_policies);
             // A forged Open with an SSH policy over HTTPS is refused before any effect.
             for policy in [AuthPolicy::SshAmbient, AuthPolicy::SshExplicit] {
-                let failure = endpoint.open_https("qualification-refusal", "operation", "https://example.invalid/repo", gwz_transport::protocol::GitService::UploadPackAdvertisement, policy, None, None, Arc::new(|_, _| {}), Arc::new(|_| {})).err().unwrap();
+                let failure = endpoint.open_https("qualification-refusal", "operation", "https://example.invalid/repo", gwz_transport::protocol::GitService::UploadPackAdvertisement, policy, None, None, Arc::new(|_, _| {}), Arc::new(|_| {})).err().unwrap().failure;
                 assert_eq!(failure.effect, gwz_transport::protocol::Effect::None);
             }
             assert_eq!(endpoint.https_counts_for_test().unwrap().total(), 0);

@@ -75,6 +75,9 @@ struct Entry {
     /// The endpoint's clock when the open arrived: how long the member has
     /// been in the command, for what its `Capacity` failure says (§5.3).
     started_ms: u64,
+    /// The attempts the server refused with a throttle (a 429, or a 503 or
+    /// 403 with `Retry-After`), for what its `Capacity` failure says.
+    refusals: u32,
 }
 struct Operation {
     name: String,
@@ -191,19 +194,27 @@ impl HttpsEndpoint {
             notes: None,
         })
     }
+    /// Has the endpoint leave how its failed opens ended beyond their
+    /// failures (`EndNote`) in `handoff`, where the driver in this process
+    /// takes them to word the failures.
+    pub(super) fn set_handoff(&mut self, handoff: crate::git::endpoint::ssh_handoff::Handoff) {
+        self.retries.set_handoff(handoff);
+    }
     /// Has the endpoint give its limit machines' notes to `notes` once per
     /// pass (§9).
     pub(super) fn set_notes(&mut self, notes: crate::git::endpoint::setup_retry::NoteSink) {
         self.notes = Some(notes);
     }
-    /// The redirect from https to http that ended `request`'s open, told once (text T5). The endpoint names a
-    /// request's operation itself, so the log is asked by that name.
+    /// The redirect from https to http that ended the open of `open` (the canonical address the member was asked to
+    /// open) in `request`, told once (text T5). The endpoint names a request's operation itself, so the log is asked by
+    /// that name and the open.
     pub(super) fn redirect_refusal(
         &self,
         request: &str,
+        open: &str,
     ) -> Option<crate::git::endpoint::https_worker::redirect_log::Refused> {
         let operation = self.operations.get(request)?;
-        self.client.redirects().take_refused(&operation.name)
+        self.client.redirects().take_refused(&operation.name, open)
     }
     /// The operation's `--max-retries`, which its admission installs before
     /// its first open. An operation never given one retries three times.
@@ -362,6 +373,7 @@ impl HttpsEndpoint {
                 carries_test: None,
                 facts: None,
                 started_ms: self.now_ms,
+                refusals: 0,
             },
         );
         self.admit(&key);

@@ -99,7 +99,7 @@ cfg_if::cfg_if! {
         impl OpenRpc for HostHttpsRoute {
             fn report_failure(&self, failure: gwz_transport::protocol::Failure, service: GitService) {
                 let (helpers_disabled, windows) = crate::transport_host::policy_words(self.policy);
-                let message = crate::transport_host::HttpsOpenFailure {
+                let message = crate::transport_host::HttpsOpenFailure { ended: None,
                     failure, anonymous: None, attempts: None, service: Some(service),
                     helpers_disabled, cli_hint: self.context.is_cli(), windows, host: None, redirect: None, machine: Default::default(),
                 };

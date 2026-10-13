@@ -22,8 +22,8 @@ pub(crate) use allocation::AllocationClock;
 pub(crate) use backoff::{Jitter, wait_bound_ms};
 pub use limit::NoteSink;
 pub(crate) use limit::{
-    Admission, CapacityReport, Conn, Governor, LastSignal, Ruling, Scoped, ServerCapacity, Signal,
-    State, TestToken, View,
+    Admission, CapacityReport, Conn, EndNote, Ended, Governor, LastSignal, LocalBudget, LocalWait,
+    Ruling, Scoped, ServerCapacity, Signal, State, TestToken, View,
 };
 pub(crate) use machine::{Change, Decision, Final, Machine, Outcome};
 pub(crate) use operations::{DEFAULT_MAX_RETRIES, Operations};

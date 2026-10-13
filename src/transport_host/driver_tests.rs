@@ -471,7 +471,8 @@ fn cli_open_rechecks_a_selected_file_after_successful_preflight() {
                 ..
             },
             _,
-            _
+            _,
+            ..
         ))
     ));
     assert!(!harness.fixture.marker.exists());

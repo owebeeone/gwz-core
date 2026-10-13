@@ -258,3 +258,40 @@ fn a_key_spent_by_its_first_failure_is_down_and_has_left_healthy_in_one_call() {
     assert_eq!(key.take_change(), Some(Change::Left));
     assert!(key.take_down());
 }
+
+#[test]
+fn a_retest_requeued_as_evidence_counts_as_a_failed_retest_and_paces_the_next() {
+    // State P2-7: the retest's connect is refused while another connection
+    // counts in its window, so the site's machine takes it as evidence and the
+    // member is requeued. The key must not run the next handshake at once.
+    let mut key = down(10_000);
+    let first = key.wake_at().unwrap();
+    start(&mut key, "carrier", first);
+    key.retest_refused(&"carrier", first + 5);
+    // A failed retest: the next is 30 s on, and arrivals park until then.
+    let second = first + 5 + 30_000;
+    assert_eq!(key.wake_at(), Some(second));
+    assert_eq!(key.decide(first + 6), Decision::Wait);
+    assert_eq!(key.decide(second - 1), Decision::Wait);
+    assert_eq!(key.decide(second), Decision::Start);
+    // Two such retests in a row give up, as two failed ones do.
+    start(&mut key, "again", second);
+    key.retest_refused(&"again", second);
+    let third = second + 30_000;
+    assert_eq!(key.decide(third - 1), Decision::Finish(last(0)));
+    assert_eq!(key.decide(third), Decision::Start);
+}
+
+#[test]
+fn a_probe_ended_as_evidence_outside_down_is_released_as_abandoned_is() {
+    // Only a Down key's retest is paced; a Degraded probe that is requeued
+    // frees the key for the next, as before.
+    let mut key = Machine::new(3);
+    start(&mut key, "a", 0);
+    key.failed(&"a", Verdict::Retry, stall(), 1, JITTER);
+    let wake = key.wake_at().unwrap();
+    start(&mut key, "probe", wake);
+    assert_eq!(key.decide(wake), Decision::Wait);
+    key.retest_refused(&"probe", wake + 1);
+    assert_eq!(key.decide(wake + 1), Decision::Start);
+}

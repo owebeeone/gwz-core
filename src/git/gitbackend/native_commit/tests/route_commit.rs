@@ -19,7 +19,15 @@ fn a_plain_repository_commits_natively() {
     lab.stage_change();
     assert_eq!(lab.commit_route(false), Route::Native);
     lab.dirty_change();
-    assert_eq!(lab.commit_route(true), Route::Native);
+    assert!(
+        matches!(lab.commit_route(true), Route::Cli(CliReason::AllCommit(_))),
+        "commit -a is Git's whatever the repository holds"
+    );
+    assert_eq!(
+        lab.native_all_route(),
+        Route::Native,
+        "the kept native code reads it"
+    );
 }
 
 #[test]
@@ -355,7 +363,7 @@ fn staging_for_all_picks_the_cli_when_content_could_change() {
         setup(&lab);
         lab.dirty_change();
         assert!(
-            matches!(lab.commit_route(true), Route::Cli(CliReason::AllCommit(_))),
+            matches!(lab.native_all_route(), Route::Cli(CliReason::AllCommit(_))),
             "{what}: -a"
         );
         lab.stage_change();
@@ -399,7 +407,7 @@ fn indexed_state_native_cannot_stage_picks_the_cli_for_all() {
         setup(&lab);
         lab.dirty_change();
         assert!(
-            matches!(lab.commit_route(true), Route::Cli(CliReason::AllCommit(_))),
+            matches!(lab.native_all_route(), Route::Cli(CliReason::AllCommit(_))),
             "{what}"
         );
     }
@@ -413,7 +421,7 @@ cfg_if::cfg_if! {
             let lab = lab();
             fs::remove_file(lab.path.join("tracked.txt")).unwrap();
             std::os::unix::fs::symlink("other.txt", lab.path.join("tracked.txt")).unwrap();
-            assert!(matches!(lab.commit_route(true), Route::Cli(CliReason::AllCommit(_))));
+            assert!(matches!(lab.native_all_route(), Route::Cli(CliReason::AllCommit(_))));
         }
     }
 }

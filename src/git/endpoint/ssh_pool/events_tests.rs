@@ -30,6 +30,8 @@ struct Script {
     lost: bool,
     /// The socket connect completed after this many milliseconds.
     tcp_ms: Option<u64>,
+    /// The resources wait for a local place (the job budget) while this is set.
+    waiting: bool,
 }
 struct Fake(Arc<Mutex<Script>>);
 struct Factory(Arc<Mutex<Script>>);
@@ -70,6 +72,9 @@ impl Resource for Fake {
     }
     fn tcp_connect_ms(&self) -> Option<u64> {
         self.0.lock().unwrap().tcp_ms
+    }
+    fn waiting_locally(&self) -> bool {
+        self.0.lock().unwrap().waiting
     }
     fn poll_idle_lost(&mut self, _: &mut Context<'_>) -> Poll<()> {
         if self.0.lock().unwrap().lost {
@@ -276,5 +281,50 @@ fn a_resource_that_completes_in_one_turn_reports_its_socket_connect_first() {
             (Seen::TcpConnected { ms: 25 }, 10),
             (Seen::Connected, 10),
         ]
+    );
+}
+
+#[test]
+fn a_setup_waiting_for_its_job_place_is_not_started_until_it_holds_one() {
+    // State P3-3: with the job budget full a setup is not at the server. The
+    // setup limit counts setups in progress at the server, so the start is
+    // reported when the setup has its place, not at the connect.
+    let (pool, mut host, script, log) = rig(Script {
+        waiting: true,
+        ..Script::default()
+    });
+    let mut checkout = pool.checkout(request()).unwrap();
+    tick(&mut host, 10);
+    tick(&mut host, 20);
+    assert_eq!(seen(&log), [], "still waiting for a job place");
+    script.lock().unwrap().waiting = false;
+    tick(&mut host, 30);
+    assert_eq!(seen(&log), [(Seen::Started { clocked: true }, 30)]);
+    script.lock().unwrap().ready = true;
+    tick(&mut host, 40);
+    let _lease = lease(&mut checkout);
+    assert_eq!(
+        seen(&log),
+        [(Seen::Started { clocked: true }, 30), (Seen::Connected, 40)]
+    );
+}
+
+#[test]
+fn a_setup_cancelled_while_waiting_for_its_job_place_was_never_started() {
+    let (pool, mut host, _, log) = rig(Script {
+        waiting: true,
+        ..Script::default()
+    });
+    let checkout = pool.checkout(request()).unwrap();
+    tick(&mut host, 10);
+    drop(checkout);
+    tick(&mut host, 20);
+    tick(&mut host, 21);
+    assert!(
+        !seen(&log)
+            .iter()
+            .any(|(seen, _)| matches!(seen, Seen::Started { .. })),
+        "{:?}",
+        seen(&log)
     );
 }

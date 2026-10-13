@@ -152,6 +152,92 @@ fn a_refusal_is_worded_once_and_another_failure_of_the_operation_keeps_its_own_w
     });
 }
 
+/// Code review P3-4: the refusal belongs to the open that met it. Three members of one operation are opened at once and
+/// the server answers all three together: two are redirected to http (each to a different address), and the third is
+/// refused for another reason. Each of the first two is worded with its own two addresses, and the third with neither.
+#[test]
+fn concurrent_members_each_get_their_own_redirect_refusal_and_an_unrelated_failure_gets_none() {
+    runtime().block_on(async {
+        let root = tempfile::tempdir().unwrap();
+        let arrived = Arc::new(AtomicUsize::new(0));
+        let seen = arrived.clone();
+        let server = fixture::Server::start(Arc::new(move |request| {
+            let seen = seen.clone();
+            Box::pin(async move {
+                // Answer only when all three members' discoveries are in, so that the three refusals are on record
+                // together before any member words its failure.
+                seen.fetch_add(1, Ordering::SeqCst);
+                let begun = std::time::Instant::now();
+                while seen.load(Ordering::SeqCst) < 3 && begun.elapsed() < Duration::from_secs(5) {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                let target = match request.uri().path().split('/').nth(1) {
+                    Some("one") => "http://one.example/moved/info/refs",
+                    Some("two") => "http://two.example:8080/moved/info/refs",
+                    _ => "ftp://three.example/moved/info/refs",
+                };
+                let mut moved = fixture::response(302, GitService::UploadPackAdvertisement, "");
+                moved
+                    .headers_mut()
+                    .insert("Location", target.parse().unwrap());
+                moved
+            })
+        }))
+        .await;
+        let runtime = transport(root.path(), &server);
+        let request = runtime
+            .request(meta("members"), "fetch".into())
+            .await
+            .unwrap();
+        let urls: Vec<String> = ["one", "two", "three"]
+            .iter()
+            .map(|member| server.url.replace("/repo", &format!("/{member}/repo")))
+            .collect();
+        let mut opens = Vec::new();
+        for url in &urls {
+            let (context, url) = (request.context.clone(), url.clone());
+            opens.push(tokio::task::spawn_blocking(move || {
+                let error = context
+                    .open_https_recording(
+                        &url,
+                        GitService::UploadPackAdvertisement,
+                        Some(AuthPolicy::Anonymous),
+                        Arc::new(|_, _| {}),
+                        Arc::new(|_| {}),
+                        Arc::new(Mutex::new(None)),
+                    )
+                    .err()
+                    .expect("every member is refused");
+                error
+                    .get_ref()
+                    .and_then(|inner| inner.downcast_ref::<HttpsOpenFailure>())
+                    .expect("the failure is the HTTPS open's")
+                    .reason()
+            }));
+        }
+        let mut words = Vec::new();
+        for open in opens {
+            words.push(open.await.unwrap());
+        }
+        assert_eq!(
+            words[0],
+            t5(&urls[0], "http://one.example/moved/info/refs"),
+            "{words:?}"
+        );
+        assert_eq!(
+            words[1],
+            t5(&urls[1], "http://two.example:8080/moved/info/refs"),
+            "{words:?}"
+        );
+        assert_eq!(
+            words[2], "HTTPS endpoint request failed: InvalidRequest",
+            "{words:?}"
+        );
+        assert_eq!(request.finish().await.pending_local_work, 0);
+        assert_eq!(runtime.shutdown().await.pending_local_work, 0);
+    });
+}
+
 #[test]
 fn a_followed_redirect_is_told_to_the_reader_as_detail_and_only_to_a_reader_that_asked_for_detail()
 {

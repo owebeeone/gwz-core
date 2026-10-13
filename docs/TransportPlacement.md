@@ -355,14 +355,24 @@ them on stderr, whether or not stderr is a terminal, above its progress line.
 
 A repository that a host throttled to the end of its attempts (a 429, or a 503
 with `Retry-After`, on its last attempt), that was told to wait longer than the
-30 seconds one command holds a host, or whose wait for gwz's own 64
-connection-setup slots expired, fails with the error code `Capacity` (wire
+30 seconds one command holds a host, or whose wait for one of gwz's own
+connection limits expired (its 64 connection setups, its 8 HTTPS slots that
+resolve a host and set up TLS, or the connections `--max-per-host` and the total
+allow), fails with the error code `Capacity` (wire
 `capacity`, 76) and a message that names which. Every other final failure keeps
 its code. The transport's own failure is `ErrorCode::Capacity` with an optional
 `FailureDetail.capacity` (gwz-transport's `CapacityDetail`: the cause, and for a
 server cause the configured host and port, the limit in use, the ceiling, the
 time spent, the last status and the `Retry-After`); a `Capacity` failure
-without it, such as the pool's own limit, keeps the error code it had.
+without it, such as the pool's own limit, keeps the error code it had. What the
+wire has no field for crosses beside the failure as an in-process note, in the
+`Handoff` the driver and the endpoint of one runtime share, and an endpoint in
+another process leaves none: how many of a member's attempts the server refused
+(the message says the host kept refusing only for more than one), which local
+wait expired and for how long, and that a member of a Down key made no attempt
+or shares a failed retest (`not attempted: <host:port> failed earlier in this
+run (<reason>)`, and `<reason>; still failing after a retry about 30 s later`).
+Without the note the message says only what the wire carries.
 
 ## Native HTTPS composition draft
 

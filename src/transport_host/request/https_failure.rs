@@ -36,6 +36,9 @@ pub(crate) struct HttpsOpenFailure {
     /// What the machine proxy setting said (Windows): a refused one is the whole reason for the open's failure
     /// (decision D6), and a direct one is named when a direct connection fails (decision D7, text U2).
     pub(crate) machine: crate::git::endpoint::https_connection::MachineSetting,
+    /// How the open ended beyond its failure, which the wire has no field for and the endpoint left in the handoff
+    /// (`EndNote`): a Down key's members, a throttled member's refusals, the local wait that expired.
+    pub(crate) ended: Option<setup_retry::Ended>,
 }
 /// What the policy an open ran under says about its words: whether credential helpers were off, and whether
 /// it was a Windows policy.
@@ -99,9 +102,11 @@ impl HttpsOpenFailure {
         };
         Some(crate::model::ModelError::new(code, self.reason()))
     }
-    /// The report of a final `Capacity` failure that says why (§5.3).
+    /// The report of a final `Capacity` failure that says why (§5.3), with
+    /// what the endpoint knew beyond the wire.
     fn capacity_report(&self) -> Option<setup_retry::CapacityReport> {
         setup_retry::CapacityReport::of_failure(&self.failure)
+            .map(|report| report.noted(self.ended.as_ref().map(|ended| ended.note)))
     }
     pub(crate) fn is_helper_timeout_message(message: &str) -> bool {
         message.starts_with(HELPER_INTERACTION_PREFIX)
@@ -149,10 +154,21 @@ impl HttpsOpenFailure {
             }
         }
     }
+    /// The failure in words (`plain_reason`), put as §5.3 says when it is a
+    /// Down key's: `not attempted: <host:port> failed earlier in this run
+    /// (<reason>)` for a member that made no attempt, and the reason then
+    /// `; still failing after a retry about 30 s later` for a failed retest.
+    pub(crate) fn reason(&self) -> String {
+        let plain = self.plain_reason();
+        match &self.ended {
+            Some(ended) if ended.is_down() => ended.down_words(plain),
+            _ => plain,
+        }
+    }
     /// The failure in words: its code, a timeout's origin (stall,
     /// aggregate, interaction or allocation, as on SSH), and the attempt it
     /// ended when that is known.
-    pub(crate) fn reason(&self) -> String {
+    fn plain_reason(&self) -> String {
         use gwz_transport::protocol::{ErrorCode, SetupFailureCause};
         if let MachineSetting::Refused(text) = &self.machine {
             // T1 and the other machine-proxy refusals, verbatim: the setting is the whole reason (decision D6).
@@ -223,6 +239,9 @@ impl HttpsOpenFailure {
                 "{host} rejected your Windows account ({scheme}). GWZ tries nothing else. Ask the server's administrator for access for this account, or use an SSH remote."
             );
         }
+        if let Some(words) = self.sign_in_words() {
+            return words;
+        }
         if self.failure.code == ErrorCode::Authentication && status == Some(401) {
             if self.service.is_some_and(|s| {
                 matches!(
@@ -280,19 +299,63 @@ impl HttpsOpenFailure {
         }
         reason
     }
+    /// The words for a Windows sign-in (SSPI) that ended without a verdict on the logon identity, or `None`: the
+    /// sign-in worker that gwz installs was missing, from another build, or not the program gwz installed (it never
+    /// began, so no token was made and no status came), and a redirect that answered the exchange.
+    fn sign_in_words(&self) -> Option<String> {
+        use gwz_transport::protocol::{AuthMethod, ErrorCode, NativeObservation};
+        let facts = self.failure.facts.as_ref()?;
+        if facts.method != AuthMethod::Sspi {
+            return None;
+        }
+        if self.failure.code == ErrorCode::Authentication
+            && let Some(status @ 300..=399) = facts.http_status
+        {
+            // The exchange ends at a redirect: nothing follows it, and the server's address is not quoted (it is the
+            // server's text, and T5 is the place that shows one).
+            return Some(format!(
+                "The server answered GWZ's Windows sign-in with a redirect (HTTP {status}). GWZ does not follow a redirect once a Windows sign-in has started, so your credential is not carried to another address, and nothing was sent to the new location. Ask the server's administrator to fix the redirect, or for the address that serves the repository directly."
+            ));
+        }
+        let began = facts.credential_offered
+            || facts.http_status.is_some()
+            || facts
+                .native
+                .as_ref()
+                .is_none_or(|native| native.observation != NativeObservation::NotStarted);
+        if began {
+            return None;
+        }
+        let hint = crate::transport_host::session::native_switch_hint(self.cli_hint, self.windows);
+        match self.failure.code {
+            ErrorCode::Unavailable => Some(format!(
+                "GWZ could not use its Windows sign-in worker, the program installed with gwz that answers Negotiate and NTLM: it is missing, or it is from a different build of gwz. No credential was sent. Reinstall gwz so that its parts match, or {hint}."
+            )),
+            ErrorCode::Protocol => Some(format!(
+                "GWZ's Windows sign-in worker did not answer as the one installed with gwz does: the file may have been replaced by another program, or Windows refused to start the sign-in. No credential was sent. Reinstall gwz, or {hint}."
+            )),
+            _ => None,
+        }
+    }
     /// Whether this is a direct https connection that failed before any server answered, under a machine setting that
-    /// says direct (text U2, decision D7). A server's answer (a status or a method in the facts), a trust failure, a sign-in or a helper's failure
-    /// is not one, and neither is a failure under a named proxy or where no machine setting was read.
+    /// says direct (text U2, decision D7). A server's answer (a status or a method in the facts), a trust failure, a sign-in, a helper's failure
+    /// or a local wait for a place or for the user is not one, and neither is a failure under a named proxy or where no machine setting was read.
     fn failed_direct_connection(&self) -> bool {
-        use gwz_transport::protocol::{AuthMethod, ErrorCode};
+        use gwz_transport::protocol::{AuthMethod, ErrorCode, SetupFailureCause};
         // An open's facts are present but empty when nothing was exchanged: no status, no method, no verdict.
         let nothing_answered = self.failure.facts.as_ref().is_none_or(|facts| {
             facts.http_status.is_none()
                 && facts.method == AuthMethod::None
                 && facts.authenticated.is_none()
         });
+        // A wait for a place (the route gate, a setup slot) or for the user ended before any connection was made.
+        let waited_locally = matches!(
+            self.failure.setup_cause,
+            Some(SetupFailureCause::Allocation | SetupFailureCause::Interaction)
+        );
         self.machine == MachineSetting::Direct
             && nothing_answered
+            && !waited_locally
             && matches!(
                 self.failure.code,
                 ErrorCode::Unavailable | ErrorCode::Io | ErrorCode::Timeout
@@ -347,7 +410,7 @@ cfg_if::cfg_if! {
 
             #[test]
             fn helper_specific_timeouts_render_exact_captured_seconds_only() {
-                let message = |cause, budget| HttpsOpenFailure {
+                let message = |cause, budget| HttpsOpenFailure { ended: None,
                     failure: Failure {
                         code: ErrorCode::Timeout, effect: Effect::None,
                         setup_cause: Some(cause),
@@ -367,7 +430,7 @@ cfg_if::cfg_if! {
 
             #[test]
             fn a_proxy_407_names_the_machine_proxy_setting_and_points_to_no_native_option() {
-                let failure = HttpsOpenFailure { failure: Failure {
+                let failure = HttpsOpenFailure { ended: None, failure: Failure {
                     code: ErrorCode::Authentication,
                     facts: Some(Facts { http_status: Some(407), ..Default::default() }),
                     ..Default::default()
@@ -385,12 +448,12 @@ cfg_if::cfg_if! {
 
             #[test]
             fn missing_provenance_keeps_general_timeout_and_fixed_cause_hides_input() {
-                let failure = HttpsOpenFailure { failure: Failure {
+                let failure = HttpsOpenFailure { ended: None, failure: Failure {
                     code: ErrorCode::Timeout, setup_cause: Some(SetupFailureCause::Allocation),
                     ..Default::default()
                 }, anonymous: None, attempts: None, service: None, helpers_disabled: false, cli_hint: true, windows: false, host: None, redirect: None, machine: Default::default() };
                 assert_eq!(failure.reason(), "HTTPS endpoint request failed: Timeout: allocation");
-                let malformed = HttpsOpenFailure { failure: Failure {
+                let malformed = HttpsOpenFailure { ended: None, failure: Failure {
                     code: ErrorCode::Authentication,
                     detail: Some(Box::new(FailureDetail { helper_cause: Some(HelperFailureCause::MalformedOutput), ..Default::default() })),
                     ..Default::default()
@@ -402,7 +465,7 @@ cfg_if::cfg_if! {
 
             /// A failed open as the Windows policies end it.
             fn windows(failure: Failure, helpers_disabled: bool, host: Option<&str>) -> HttpsOpenFailure {
-                HttpsOpenFailure {
+                HttpsOpenFailure { ended: None,
                     failure, anonymous: None, attempts: None, service: Some(GitService::UploadPackAdvertisement),
                     helpers_disabled, cli_hint: false, windows: true, host: host.map(str::to_owned), redirect: None, machine: Default::default(),
                 }
@@ -675,6 +738,88 @@ cfg_if::cfg_if! {
                 }
             }
 
+            /// A failure of a Windows sign-in that never began: the SSPI facts a native open leaves before its first step.
+            fn sign_in_not_started(code: ErrorCode) -> Failure {
+                Failure {
+                    code,
+                    facts: Some(Facts {
+                        method: AuthMethod::Sspi,
+                        native: Some(NativeFacts { scheme: NativeScheme::Negotiate, ..Default::default() }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }
+            }
+
+            #[test]
+            fn a_missing_or_mismatched_sign_in_worker_is_named_with_the_remedy() {
+                // Code review P3-11: both gave "HTTPS endpoint request failed: Unavailable" or "Protocol".
+                let missing = windows(sign_in_not_started(ErrorCode::Unavailable), false, None).reason();
+                assert!(missing.starts_with("GWZ could not use its Windows sign-in worker"), "{missing}");
+                assert!(missing.contains("missing"), "{missing}");
+                assert!(missing.contains("different build of gwz"), "{missing}");
+                assert!(missing.contains("No credential was sent."), "{missing}");
+                assert!(missing.contains("Reinstall gwz"), "{missing}");
+                assert!(missing.contains("--transport native") || missing.contains("GWZ_TRANSPORT=native"), "{missing}");
+                // The flag where the caller has one, the environment switch in both Windows shells where it has not.
+                let mut env = windows(sign_in_not_started(ErrorCode::Unavailable), false, None);
+                env.cli_hint = false;
+                let env = env.reason();
+                assert!(env.contains("set GWZ_TRANSPORT=native (cmd)") && env.contains("$env:GWZ_TRANSPORT"), "{env}");
+                let replaced = windows(sign_in_not_started(ErrorCode::Protocol), false, None).reason();
+                assert!(replaced.starts_with("GWZ's Windows sign-in worker did not answer as the one installed with gwz does"), "{replaced}");
+                assert!(replaced.contains("replaced by another program"), "{replaced}");
+                assert!(replaced.contains("Reinstall gwz"), "{replaced}");
+                assert_ne!(missing, replaced);
+                // Once a token has gone, or a status came, the failure is not a worker's: the exchange's own words stand.
+                let mut begun = sign_in_not_started(ErrorCode::Protocol);
+                begun.facts.as_mut().unwrap().credential_offered = true;
+                assert_eq!(windows(begun, false, None).reason(), "HTTPS endpoint request failed: Protocol");
+                let mut answered = sign_in_not_started(ErrorCode::Unavailable);
+                answered.facts.as_mut().unwrap().http_status = Some(401);
+                assert_eq!(windows(answered, false, None).reason(), "HTTPS endpoint request failed: Unavailable");
+            }
+
+            #[test]
+            fn a_redirect_during_the_sign_in_exchange_has_its_own_words() {
+                // Code review P3-11: it was "HTTPS endpoint request failed: Authentication".
+                let mut redirected = rejected_logon(NativeScheme::Ntlm);
+                {
+                    let facts = redirected.facts.as_mut().unwrap();
+                    facts.authenticated = None;
+                    facts.http_status = Some(302);
+                }
+                let said = windows(redirected, false, Some("git.example.test")).reason();
+                assert!(said.starts_with("The server answered GWZ's Windows sign-in with a redirect (HTTP 302)."), "{said}");
+                assert!(said.contains("does not follow a redirect once a Windows sign-in has started"), "{said}");
+                assert!(said.contains("nothing was sent to the new location"), "{said}");
+                assert!(said.contains("Ask the server's administrator"), "{said}");
+                // The server's address is untrusted text and is not quoted; the logon identity was not refused either.
+                assert!(!said.contains("rejected your Windows account"), "{said}");
+            }
+
+            #[test]
+            fn a_local_wait_that_ended_an_open_is_not_a_failed_direct_connection() {
+                use crate::git::endpoint::https_connection::MachineSetting;
+                // Code review P3-3: no connection was made, so the words must not say one failed. The allocation
+                // timeout is what an open that waited for its route gate or a setup place ends with.
+                let local = [
+                    ("an allocation timeout", crate::git::endpoint::setup_retry::allocation_timeout()),
+                    ("an interaction timeout", connect_failure(ErrorCode::Timeout, Some(SetupFailureCause::Interaction))),
+                ];
+                for (name, failure) in local {
+                    let mut open = windows(failure, false, None);
+                    open.machine = MachineSetting::Direct;
+                    let reason = open.reason();
+                    assert!(!reason.contains(DIRECT_WORDS), "{name}: {reason}");
+                    assert!(!reason.contains("netsh winhttp"), "{name}: {reason}");
+                }
+                // A timeout that ended a connection's setup still carries the hint.
+                let mut open = windows(connect_failure(ErrorCode::Timeout, Some(SetupFailureCause::Stall)), false, None);
+                open.machine = MachineSetting::Direct;
+                assert!(open.reason().contains(DIRECT_WORDS), "{}", open.reason());
+            }
+
             #[test]
             fn a_refused_machine_setting_is_the_whole_reason_with_its_text_verbatim() {
                 use crate::git::endpoint::https_connection::MachineSetting;
@@ -706,13 +851,20 @@ cfg_if::cfg_if! {
                     elapsed_ms: 21_000,
                     last_signal: Some(LastSignal::Http429),
                     retry_after_ms,
+                    refusals: None,
                 })
+            }
+
+            /// What the endpoint leaves beside a failure it ends (`EndNote`), as the open's failure holds it.
+            fn ended(note: crate::git::endpoint::setup_retry::EndNote) -> Option<crate::git::endpoint::setup_retry::Ended> {
+                Some(crate::git::endpoint::setup_retry::Ended::new(note, "github.com", 443))
             }
 
             #[test]
             fn a_throttled_member_is_the_capacity_code_with_the_throttle_words_and_its_attempt() {
+                use crate::git::endpoint::setup_retry::EndNote;
                 let failure = capacity_failure(&throttled(None), Some((4, 4)));
-                let open = HttpsOpenFailure {
+                let open = HttpsOpenFailure { ended: ended(EndNote::Refused { count: 4 }),
                     attempts: crate::git::endpoint::setup_retry::reported_attempt(&failure),
                     ..windows(failure, false, None)
                 };
@@ -726,9 +878,53 @@ cfg_if::cfg_if! {
             }
 
             #[test]
+            fn one_refusal_among_resets_says_the_last_attempt_was_refused_and_not_that_the_host_kept_refusing() {
+                // The 5.6 decision: reset, reset, reset, 429. The wire carries no refusal count; the endpoint's note does.
+                use crate::git::endpoint::setup_retry::EndNote;
+                let say = |note: Option<EndNote>| {
+                    let failure = capacity_failure(&throttled(None), Some((4, 4)));
+                    HttpsOpenFailure { ended: note.and_then(|note| ended(note)),
+                        attempts: crate::git::endpoint::setup_retry::reported_attempt(&failure),
+                        ..windows(failure, false, None)
+                    }
+                    .reason()
+                };
+                let last = "github.com:443 refused the last attempt (using 8 at a time, ceiling 32 from --max-per-host); gave up after 21 s; retry later, or lower --max-per-host (attempt 4 of 4)";
+                assert_eq!(say(Some(EndNote::Refused { count: 1 })), last);
+                assert_eq!(say(None), last, "a count nobody left says only what is certain");
+                let kept = say(Some(EndNote::Refused { count: 2 }));
+                assert!(kept.starts_with("github.com:443 kept refusing connections ("), "{kept}");
+            }
+
+            #[test]
+            fn a_member_of_a_down_key_that_made_no_attempt_says_so_and_names_the_failure_and_the_site() {
+                // Code P2-1: the recorded failure is a stall; the member shares it with no attempt count.
+                use crate::git::endpoint::setup_retry::EndNote;
+                let stall = Failure {
+                    code: ErrorCode::Timeout,
+                    setup_cause: Some(SetupFailureCause::Stall),
+                    ..Default::default()
+                };
+                let plain = HttpsOpenFailure { ended: None, ..windows(stall.clone(), false, None) };
+                let down = HttpsOpenFailure { ended: ended(EndNote::NotAttempted), ..windows(stall.clone(), false, None) };
+                assert_eq!(plain.reason(), "HTTPS endpoint request failed: Timeout: stall");
+                assert_eq!(
+                    down.reason(),
+                    "not attempted: github.com:443 failed earlier in this run (HTTPS endpoint request failed: Timeout: stall)"
+                );
+                assert!(!down.reason().contains("(attempt"));
+                // The retest's own failure, and the members parked on it.
+                let retest = HttpsOpenFailure { ended: ended(EndNote::StillFailing), ..windows(stall, false, None) };
+                assert_eq!(
+                    retest.reason(),
+                    "HTTPS endpoint request failed: Timeout: stall; still failing after a retry about 30 s later"
+                );
+            }
+
+            #[test]
             fn a_long_retry_after_is_the_capacity_code_with_its_own_words() {
                 let failure = capacity_failure(&throttled(Some(120_000)), Some((1, 4)));
-                let open = HttpsOpenFailure {
+                let open = HttpsOpenFailure { ended: None,
                     attempts: crate::git::endpoint::setup_retry::reported_attempt(&failure),
                     ..windows(failure, false, None)
                 };
@@ -744,8 +940,10 @@ cfg_if::cfg_if! {
             fn a_local_wait_is_the_capacity_code_with_the_slot_words_and_never_an_attempt() {
                 use crate::git::endpoint::setup_retry::CapacityReport;
                 // Even a count that rode along is not shown: the design omits it.
+                use crate::git::endpoint::setup_retry::{EndNote, LocalBudget, LocalWait};
                 let failure = capacity_failure(&CapacityReport::Local, None);
-                let open = HttpsOpenFailure { attempts: Some((2, 4)), ..windows(failure, false, None) };
+                let waited = |budget, waited_ms| ended(EndNote::LocalWait(LocalWait { budget, waited_ms }));
+                let open = HttpsOpenFailure { ended: waited(LocalBudget::JobBudget, 30_000), attempts: Some((2, 4)), ..windows(failure.clone(), false, None) };
                 let error = open.model_error().unwrap();
                 assert_eq!(error.code, crate::model::ErrorCode::Capacity);
                 assert_eq!(
@@ -753,6 +951,13 @@ cfg_if::cfg_if! {
                     "gwz's 64 connection-setup slots stayed full for 30 s (setups that stopped answering hold them until they time out); retry later"
                 );
                 assert!(!error.message.contains("attempt"));
+                // The wait that expired is the one named (Code P3-6): a reservation wait is no setup-slot wait.
+                let reservation = HttpsOpenFailure { ended: waited(LocalBudget::Reservation, 7_000), ..windows(failure.clone(), false, None) };
+                let text = reservation.model_error().unwrap().message;
+                assert!(text.contains("in use for 7 s") && !text.contains("64") && !text.contains("stopped answering"), "{text}");
+                let slots = HttpsOpenFailure { ended: waited(LocalBudget::SetupSlots, 30_000), ..windows(failure, false, None) };
+                let text = slots.model_error().unwrap().message;
+                assert!(text.contains("8 slots") && !text.contains("64") && !text.contains("stopped answering"), "{text}");
             }
 
             #[test]

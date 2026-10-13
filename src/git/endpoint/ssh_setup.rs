@@ -350,6 +350,10 @@ impl Resource for NativeResource {
     fn waiting_locally(&self) -> bool {
         matches!(self.state, State::Waiting(_))
     }
+    fn local_budget(&self) -> Option<super::setup_retry::LocalBudget> {
+        self.waiting_locally()
+            .then_some(super::setup_retry::LocalBudget::JobBudget)
+    }
     fn tcp_connect_ms(&self) -> Option<u64> {
         match &self.state {
             State::Connecting(job) => job.tcp_connect_ms(),

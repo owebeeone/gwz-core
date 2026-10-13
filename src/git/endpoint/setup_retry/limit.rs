@@ -54,6 +54,7 @@
 
 mod capacity;
 mod control;
+mod end_note;
 mod filter;
 mod fsm;
 mod governor;
@@ -65,8 +66,9 @@ mod states;
 mod timer;
 mod windows;
 
-pub(crate) use capacity::{CapacityReport, LastSignal, ServerCapacity};
+pub(crate) use capacity::{CapacityReport, LastSignal, LocalBudget, LocalWait, ServerCapacity};
 pub(crate) use control::Ruling;
+pub(crate) use end_note::{EndNote, Ended};
 pub(crate) use filter::Signal;
 pub(crate) use fsm::State;
 pub(crate) use governor::{Admission, Conn, Governor, Scoped, TestToken, View, label};

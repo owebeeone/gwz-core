@@ -327,6 +327,27 @@ impl<M: PartialEq> Machine<M> {
         }
     }
 
+    /// `member`'s attempt was refused as evidence for the site's limit machine
+    /// and is requeued (§4.8): the site judged it, so this machine has no
+    /// verdict for it. A Down key's retest that ends so is still a handshake
+    /// the key made, and counts as a failed retest: the next is 30 s on, and
+    /// two in a row give up (§5.5; State P2-7). Any other attempt is released
+    /// as [`Machine::abandoned`] releases it.
+    pub(crate) fn retest_refused(&mut self, member: &M, now: u64) {
+        let Some(flight) = self.take(member) else {
+            return;
+        };
+        if flight.retest
+            && flight.generation == self.generation
+            && let State::Down(down) = &mut self.state
+        {
+            down.failed_retests += 1;
+            down.retest_at = now.saturating_add(RETEST_MS);
+            return;
+        }
+        self.release(&flight);
+    }
+
     fn take(&mut self, member: &M) -> Option<Flight<M>> {
         let index = self.flights.iter().position(|f| f.member == *member)?;
         Some(self.flights.swap_remove(index))

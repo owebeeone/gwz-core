@@ -13,9 +13,11 @@ pub(super) enum Cleanup {
 }
 
 impl Cleanup {
-    /// Parse a `commit.cleanup` value; `default` is whitespace for `-m`.
+    /// Parse a `commit.cleanup` value; `default` is whitespace for `-m`. Git
+    /// compares the value in its own case: `Strip` is an error there, so it is
+    /// Git's to report.
     pub(super) fn from_commit_config(value: Option<&str>) -> Option<Self> {
-        match value.map(str::to_ascii_lowercase).as_deref() {
+        match value {
             None | Some("default") | Some("whitespace") | Some("scissors") => {
                 Some(Self::Whitespace)
             }
@@ -141,9 +143,12 @@ mod tests {
     fn cleanup_modes_parse() {
         assert_eq!(Cleanup::from_commit_config(None), Some(Cleanup::Whitespace));
         assert_eq!(
-            Cleanup::from_commit_config(Some("Strip")),
+            Cleanup::from_commit_config(Some("strip")),
             Some(Cleanup::Strip)
         );
+        for odd in ["Strip", "STRIP", "Default", "Whitespace", "Verbatim", ""] {
+            assert_eq!(Cleanup::from_commit_config(Some(odd)), None, "{odd:?}");
+        }
         assert_eq!(
             Cleanup::from_commit_config(Some("scissors")),
             Some(Cleanup::Whitespace)

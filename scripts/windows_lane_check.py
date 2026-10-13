@@ -91,10 +91,14 @@ WARNINGS = re.compile(r'`gwz-core` \(lib[^)]*\) generated (\d+) warnings?')
 
 
 class Refused(SystemExit):
-    """A usage refusal; the message is printed and the exit status is 2."""
+    """A usage refusal; the message is printed (by `run`) and the exit status is 2.
+
+    The status is an integer, and Python prints nothing for a `SystemExit` with an integer code, so the message is
+    kept in `message` and `run` prints it."""
 
     def __init__(self, message):
-        super().__init__(f'windows_lane_check: {message}')
+        self.message = f'windows_lane_check: {message}'
+        super().__init__(self.message)
         self.code = 2
 
 
@@ -467,5 +471,14 @@ def main(argv=None, host: Host | None = None, core: Path = CORE) -> int:
     return execute(options, host, core)
 
 
+def run(argv=None) -> int:
+    """`main`, printing a refusal's message on stderr before returning its status."""
+    try:
+        return main(argv)
+    except Refused as refused:
+        print(refused.message, file=sys.stderr)
+        return refused.code
+
+
 if __name__ == '__main__':
-    raise SystemExit(main())
+    raise SystemExit(run())

@@ -10,6 +10,7 @@ pub use crate::git::endpoint::https_worker::native::NativeCaller;
 pub use crate::git::endpoint::setup_retry::NoteSink;
 pub use cancellable::with_cancellable_local_transport;
 pub use cancellable::with_cancellable_local_transport_native;
+pub use cancellable::with_cancellable_local_transport_native_noted;
 pub use local_command::{
     with_local_transport, with_local_transport_native, with_local_transport_native_noted,
 };

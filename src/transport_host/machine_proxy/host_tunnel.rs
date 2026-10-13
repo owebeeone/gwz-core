@@ -53,6 +53,7 @@ fn report_the_tunnel_through_the_real_machine_proxy() {
                     let code = format!("{:?}", failure.code);
                     let http_status = failure.facts.as_ref().and_then(|f| f.http_status);
                     let reason = HttpsOpenFailure {
+                        ended: None,
                         failure,
                         anonymous: None,
                         attempts: None,

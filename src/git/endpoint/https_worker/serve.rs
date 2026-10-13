@@ -63,6 +63,40 @@ impl Prepared {
         });
         Ok(request)
     }
+    /// A POST that met a POST-set hold with its connection already leased
+    /// gives the lease back, since nothing was sent, and takes a connection
+    /// again once the hold has ended (§4.5): the server's keep-alive may have
+    /// closed the leased one meanwhile, and a POST is not retried. A route
+    /// bound to its connection (a native exchange) keeps the lease and waits.
+    async fn renew_after_hold(&mut self, cancel: &CancellationToken) -> Result<(), ErrorCode> {
+        if self.response.is_some()
+            || self.native_route.is_some()
+            || self.gate.continuing_may_begin_now()
+        {
+            return Ok(());
+        }
+        let Some(lease) = self.lease.take() else {
+            return Ok(());
+        };
+        lease.finish(Disposition::Reusable).map_err(|e| e.code)?;
+        tokio::select! {
+            () = self.gate.wait_for_continuing() => {}
+            () = cancel.cancelled() => return Err(ErrorCode::Cancelled),
+        }
+        let lease = tokio::select! {
+            lease = self.gate.recheckout(&self.input.session, &self.relet, cancel) => {
+                lease.map_err(|failed| failed.code)?
+            }
+            () = cancel.cancelled() => return Err(ErrorCode::Cancelled),
+        };
+        if let Some(credential) = &self.credential {
+            lease.scope(&credential.scope).map_err(|e| e.code)?;
+        }
+        self.opened.connection_id = lease.id.clone();
+        self.opened.reused = lease.reused;
+        self.lease = Some(lease);
+        Ok(())
+    }
     pub(crate) async fn serve(
         mut self,
         stream: Stream,
@@ -70,6 +104,11 @@ impl Prepared {
         cancel: CancellationToken,
         ready: CloseWake,
     ) {
+        if let Err(code) = self.renew_after_hold(&cancel).await {
+            let facts = self.opened.facts.clone();
+            let _ = peer.fail_terminal(with_facts(code, Effect::None, &facts));
+            return;
+        }
         let resource_cancel = self.lease.as_ref().unwrap().cancel.clone();
         let facts = Arc::new(Mutex::new(self.opened.facts.clone()));
         let possible = Arc::new(AtomicBool::new(false));

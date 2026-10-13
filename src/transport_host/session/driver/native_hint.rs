@@ -52,7 +52,7 @@ cfg_if::cfg_if! {
                 effect: Effect::None,
                 facts: Some(Facts { method: AuthMethod::Gh, ..Facts::default() }),
             };
-            let failed = SshOpenFailure(missing, None, 9_000);
+            let failed = SshOpenFailure(missing, None, 9_000, None);
             let environment = failed.model_error(false).unwrap().message;
             assert!(environment.contains("found no `git`"), "{environment}");
             assert!(

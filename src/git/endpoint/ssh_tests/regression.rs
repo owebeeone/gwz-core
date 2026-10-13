@@ -151,3 +151,35 @@ fn poll_dispose_completes_or_waits_without_releasing_session() {
     channel.force_dispose().unwrap();
     assert!(channel.is_disposed());
 }
+
+/// What Microsoft documents `shutdown` reporting for a connection the peer reset (WSAECONNRESET, WSAECONNABORTED), and
+/// an error that nothing accepts.
+fn reset_by_peer(_: &std::net::TcpStream) -> io::Result<()> {
+    Err(io::ErrorKind::ConnectionReset.into())
+}
+fn aborted_by_peer(_: &std::net::TcpStream) -> io::Result<()> {
+    Err(io::ErrorKind::ConnectionAborted.into())
+}
+fn refused_outright(_: &std::net::TcpStream) -> io::Result<()> {
+    Err(io::ErrorKind::PermissionDenied.into())
+}
+
+/// State review P2-5: a forced disposal is bounded local termination. It drops the channel and the session and ends
+/// `Disposed` whatever the socket's shutdown reports, so that the pool acknowledges the capacity: an error here was
+/// retried at once, for ever, with the slot held.
+#[test]
+fn a_forced_disposal_reaches_disposed_whatever_the_socket_reports() {
+    let shutdowns: [fn(&std::net::TcpStream) -> io::Result<()>; 3] =
+        [reset_by_peer, aborted_by_peer, refused_outright];
+    for shutdown in shutdowns {
+        let mut fixture = SshdFixture::new();
+        let session = fixture.session().with_shutdown(shutdown);
+        let repository = fixture.repository.to_str().unwrap().to_owned();
+        let mut channel = SshChannel::new(session, GitService::ReceivePack, &repository).unwrap();
+        open(&mut channel);
+        channel.force_dispose().unwrap();
+        assert!(channel.is_disposed());
+        // A second force finds nothing left to end.
+        channel.force_dispose().unwrap();
+    }
+}

@@ -63,6 +63,27 @@ impl ConfigView {
         self.config.get_path(key).ok()
     }
 
+    /// Every entry whose key matches the regular expression, with its value
+    /// (`None` for a key written without one).
+    pub(super) fn values_matching(
+        &self,
+        pattern: &str,
+    ) -> Result<Vec<(String, Option<String>)>, Unreadable> {
+        let mut entries = self.config.entries(Some(pattern)).map_err(|_| Unreadable)?;
+        let mut values = Vec::new();
+        while let Some(entry) = entries.next() {
+            let entry = entry.map_err(|_| Unreadable)?;
+            let name = entry.name().map_err(|_| Unreadable)?.to_owned();
+            let value = if entry.has_value() {
+                Some(entry.value().map_err(|_| Unreadable)?.to_owned())
+            } else {
+                None
+            };
+            values.push((name, value));
+        }
+        Ok(values)
+    }
+
     /// Every key matching the regular expression, lower-cased by the reader.
     pub(super) fn names_matching(&self, pattern: &str) -> Result<Vec<String>, Unreadable> {
         let mut entries = self.config.entries(Some(pattern)).map_err(|_| Unreadable)?;

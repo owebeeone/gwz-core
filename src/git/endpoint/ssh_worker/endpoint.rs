@@ -160,6 +160,11 @@ impl Endpoint {
     pub(crate) fn pool(&self) -> &Pool {
         &self.shared.pool
     }
+    /// The handoff this endpoint shares with the driver in its process, where
+    /// it leaves how a failed open ended beyond the failure (`EndNote`).
+    pub(crate) fn handoff(&self) -> &Handoff {
+        &self.shared.handoff
+    }
     /// The limit machines of this endpoint's pool.
     pub(crate) fn governor(&self) -> &Governor {
         &self.shared.governor

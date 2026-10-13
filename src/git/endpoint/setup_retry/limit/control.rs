@@ -220,8 +220,15 @@ impl Limit {
     pub(super) fn n_room(&self) -> bool {
         match self.fsm.state() {
             State::Saturated => self.table.held() < self.ceiling,
-            _ => self.table.possible() < self.room_target(),
+            _ => self.table.possible() < self.room_target() && self.step_has_starts(),
         }
+    }
+    /// Whether the RESTORING step in progress may still start a connection
+    /// (State P3-2); always true outside RESTORING.
+    fn step_has_starts(&self) -> bool {
+        self.restore
+            .as_ref()
+            .is_none_or(|restore| restore.quota > 0)
     }
     /// How many connections may be Possible before ordinary starts stop: `N`,
     /// or the restore step's target.
@@ -231,7 +238,8 @@ impl Limit {
     /// Whether the site has room for one more connection of this operation
     /// below `N` (§4.5). At the ceiling the pool's own limit says so.
     pub(crate) fn has_room(&self) -> bool {
-        (self.fsm.state() == State::Saturated || self.table.possible() < self.room_target())
+        (self.fsm.state() == State::Saturated
+            || (self.table.possible() < self.room_target() && self.step_has_starts()))
             && self.setup_room()
     }
     /// Whether new connections may start at all: no hold, no confirmation,
@@ -357,6 +365,9 @@ impl Limit {
         {
             restore.step.insert(attempt);
             restore.started = true;
+            if matches!(own, Own::New(_)) {
+                restore.quota = restore.quota.saturating_sub(1);
+            }
         }
         if let Own::New(conn) = own {
             self.conn(conn, ConnEvent::Started { clocked }, now);

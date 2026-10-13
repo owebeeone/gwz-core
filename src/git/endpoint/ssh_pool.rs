@@ -1,5 +1,6 @@
 //! Physical ownership behind the transport pool's exclusive lease ledger.
 //! One endpoint worker drives this host and its timer independently of Git calls.
+use super::setup_retry::{LocalBudget, LocalWait};
 use super::ssh_setup_context::SetupContext;
 use super::{ssh_handoff::UrlExtras, ssh_key_snapshot::Entry as Selected};
 use gwz_transport::{
@@ -53,6 +54,10 @@ pub(crate) enum Seen {
 /// back into the host.
 pub(crate) trait Observer: Send + Sync {
     fn seen(&self, key: &Key, connection: ConnectionId, seen: Seen, now: u64);
+    /// A connection that was waiting on a local budget was cancelled (its
+    /// request's allocation ran out, or its caller gave up), after `wait`.
+    /// An observer that does not word the failure ignores it.
+    fn local_wait_ended(&self, _key: &Key, _wait: LocalWait, _now: u64) {}
     /// The connect began. `tag` is the tag of the request that opened the
     /// connection, which names the member it serves. An observer that reads
     /// no tags takes it as `Seen::Started`.
@@ -143,6 +148,11 @@ pub(crate) trait Resource {
     fn waiting_locally(&self) -> bool {
         false
     }
+    /// Which local budget the resource waits on while `waiting_locally`, for
+    /// the words of a wait that expires (Code P3-6).
+    fn local_budget(&self) -> Option<LocalBudget> {
+        None
+    }
     /// How long the socket connect took, once it has completed: the host
     /// reports it once, so the limit machines' settle time follows the
     /// network's round trip and not the setup that follows it.
@@ -197,9 +207,20 @@ struct Entry<R> {
     used: bool,
     /// Whether the pool has been told that the resource waits locally.
     waiting: bool,
+    /// The local budget the resource waits on and when it first waited, kept
+    /// for the report of a wait that expires.
+    local: Option<(LocalBudget, u64)>,
     /// Whether its socket connect has been reported.
     tcp_reported: bool,
+    /// The start the observer has not yet been told: the setup is waiting for
+    /// a local place.
+    start: Option<PendingStart>,
     _setup: Option<Arc<SetupContext>>,
+}
+/// What the observer is told when a setup starts.
+struct PendingStart {
+    tag: Option<String>,
+    clocked: bool,
 }
 pub(crate) struct PoolHost<C: Connector> {
     // Physical owners are destroyed before driver loss invalidates clients.
@@ -375,6 +396,10 @@ impl<C: Connector> PoolHost<C> {
                     // allocation and is not the network's time. A refusal
                     // means the request has already ended.
                     let waiting = polled.is_pending() && entry.resource.waiting_locally();
+                    if waiting && let Some(budget) = entry.resource.local_budget() {
+                        let since = entry.local.map_or(self.now, |(_, since)| since);
+                        entry.local = Some((budget, since));
+                    }
                     if waiting != entry.waiting {
                         entry.waiting = waiting;
                         let _ = if waiting {
@@ -382,6 +407,18 @@ impl<C: Connector> PoolHost<C> {
                         } else {
                             self.driver.end_local_wait(id)
                         };
+                    }
+                    if !waiting
+                        && let Some(start) = entry.start.take()
+                        && let Some(observer) = &self.observer
+                    {
+                        observer.started(
+                            &entry.key,
+                            id,
+                            start.tag.as_deref(),
+                            start.clocked,
+                            self.now,
+                        );
                     }
                     if !entry.tcp_reported
                         && let Some(ms) = entry.resource.tcp_connect_ms()
@@ -541,15 +578,10 @@ impl<C: Connector> PoolHost<C> {
                     }
                     Ok(result) => match result {
                         Ok((resource, setup)) => {
-                            if let Some(observer) = &self.observer {
-                                observer.started(
-                                    &key,
-                                    connection,
-                                    tag.as_deref(),
-                                    network_deadline.is_some(),
-                                    self.now,
-                                );
-                            }
+                            // The setup is reported as started once it holds
+                            // its local place (the job budget): a setup that
+                            // waits for one is not at the server, and must not
+                            // count in the setup limit's windows (State P3-3).
                             self.entries.insert(
                                 connection,
                                 Entry {
@@ -558,7 +590,12 @@ impl<C: Connector> PoolHost<C> {
                                     phase: Phase::Connecting,
                                     used: false,
                                     waiting: false,
+                                    local: None,
                                     tcp_reported: false,
+                                    start: Some(PendingStart {
+                                        tag,
+                                        clocked: network_deadline.is_some(),
+                                    }),
                                     _setup: setup,
                                 },
                             );
@@ -569,6 +606,21 @@ impl<C: Connector> PoolHost<C> {
                 Action::CancelConnect { connection, .. } | Action::AbortConnect { connection } => {
                     let force = matches!(action, Action::AbortConnect { .. });
                     let entry = self.entries.get_mut(&connection).ok_or(Error::Stale)?;
+                    // A connection cancelled while it waited on a local budget:
+                    // say which, and for how long (Code P3-6).
+                    if entry.waiting
+                        && let Some((budget, since)) = entry.local
+                        && let Some(observer) = &self.observer
+                    {
+                        observer.local_wait_ended(
+                            &entry.key,
+                            LocalWait {
+                                budget,
+                                waited_ms: self.now.saturating_sub(since),
+                            },
+                            self.now,
+                        );
+                    }
                     match &mut entry.phase {
                         Phase::Disposing { force: prior, .. } => *prior |= force,
                         _ => {

@@ -171,6 +171,43 @@ fn a_post_prepared_before_the_hold_waits_for_it_before_its_first_byte() {
 }
 
 #[test]
+fn a_hold_set_between_checkout_and_serve_returns_the_lease_and_resumes_on_a_fresh_connection() {
+    // State P3-4 and Code P3-8: member B holds a leased idle connection when
+    // member A's POST is throttled. B must not wait the hold out on that
+    // connection (the server's keep-alive may close it meanwhile, and a POST
+    // is not retried): it returns the lease, nothing having been sent, and
+    // checks out again after the hold, when the idle connections have been
+    // discarded.
+    runtime().block_on(async {
+        let (server, posts) = throttling_server().await;
+        let mut endpoint = Endpoint::new(server.config(), None, pool::Config::default()).unwrap();
+        endpoint
+            .client
+            .governor()
+            .begin_operation("operation", 32, true, 0);
+        four_idle(&endpoint, &server).await;
+        let b = prepare(&endpoint, &server, GitService::UploadPackExchange).await;
+        assert!(b.opened.reused, "B leased an idle connection");
+        let a = prepare(&endpoint, &server, GitService::UploadPackExchange).await;
+        run_to_end(a, b"want").await;
+        let held_at = StdInstant::now();
+        assert_eq!(run_to_end(b, b"want").await, b"done");
+        assert!(
+            held_at.elapsed() >= Duration::from_millis(1_900),
+            "sent {:?} into a 2 s hold",
+            held_at.elapsed()
+        );
+        assert_eq!(
+            server.connections.load(Ordering::SeqCst),
+            5,
+            "B's POST went out on a connection made after the hold, not on its old lease"
+        );
+        assert_eq!(posts.lock().unwrap().len(), 2);
+        assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
+    });
+}
+
+#[test]
 fn a_hold_set_by_a_discovery_does_not_hold_the_posts_of_members_past_it() {
     runtime().block_on(async {
         let (server, posts) = throttling_server().await;

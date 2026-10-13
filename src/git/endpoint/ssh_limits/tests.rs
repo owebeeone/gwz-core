@@ -11,7 +11,9 @@ const PEM: &str = "-----BEGIN RSA PRIVATE KEY-----\nMIIB\n-----END RSA PRIVATE K
 #[test]
 fn only_an_rsa_pem_key_is_read_by_cng() {
     assert!(cng_reads(PEM));
-    assert!(cng_reads(&format!("\n  {PEM}")));
+    // Blank lines before the header are skipped, as libssh2 skips them; anything else on the header's line is not.
+    assert!(cng_reads(&format!("\n \n\t\n{PEM}")));
+    assert!(!cng_reads(&format!("\n  {PEM}")));
     // A new-format RSA key (what `ssh-keygen -t rsa` writes), the other key types and other containers.
     for text in [
         "-----BEGIN OPENSSH PRIVATE KEY-----\nb3Bl\n-----END OPENSSH PRIVATE KEY-----\n",
@@ -23,6 +25,90 @@ fn only_an_rsa_pem_key_is_read_by_cng() {
     ] {
         assert!(!cng_reads(text), "{text:?}");
     }
+}
+
+/// `body` as lines of `width` characters, the way `ssh-keygen -m PEM` and OpenSSL write one.
+fn wrapped(body: &str, width: usize) -> String {
+    body.as_bytes()
+        .chunks(width)
+        .map(|line| String::from_utf8(line.to_vec()).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+const RSA_BEGIN: &str = "-----BEGIN RSA PRIVATE KEY-----";
+const RSA_END: &str = "-----END RSA PRIVATE KEY-----";
+const OPENSSH: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAA\n-----END OPENSSH PRIVATE KEY-----\n";
+
+/// A base64 body of `length` characters (the shape matters here, not the key).
+fn body(length: usize) -> String {
+    "MIIEowIBAAKCAQEA".chars().cycle().take(length).collect()
+}
+
+/// State review P2-6: libssh2's in-memory PEM reader never returns for text its header and footer searches cannot
+/// match exactly, so the guard before it admits nothing but a block that they match.
+#[test]
+fn cng_refuses_what_libssh2_would_never_finish_reading() {
+    // The header with a trailing space does not match, however well formed the OpenSSH key below it is.
+    let spaced = format!("{RSA_BEGIN} \n{OPENSSH}");
+    assert!(!cng_reads(&spaced));
+    // A traditional PEM whose base64 is on one line: libssh2 drops the 128th character of any line that long.
+    let single = format!("{RSA_BEGIN}\n{}\n{RSA_END}\n", body(2400));
+    assert!(!cng_reads(&single));
+    // A line of 127 characters is already past what the reader keeps; one of 126 is not.
+    assert!(!cng_reads(&format!(
+        "{RSA_BEGIN}\n{}\n{RSA_END}\n",
+        body(127)
+    )));
+    assert!(cng_reads(&format!(
+        "{RSA_BEGIN}\n{}\n{RSA_END}\n",
+        body(126)
+    )));
+    // The header must come first; text before it is not a PEM file.
+    assert!(!cng_reads(&format!(
+        "# my key\n{RSA_BEGIN}\nMIIB\n{RSA_END}\n"
+    )));
+    // The block must end: no footer, another label's footer, and a footer that is not exactly the line.
+    for footer in [
+        "",
+        "-----END PRIVATE KEY-----",
+        "-----END RSA PRIVATE KEY----- ",
+        "-----END RSA PRIVATE KEY",
+    ] {
+        assert!(
+            !cng_reads(&format!("{RSA_BEGIN}\nMIIB\n{footer}\n")),
+            "{footer:?}"
+        );
+    }
+    // The RSA block is the key: another armor line inside it means it is not one block.
+    assert!(!cng_reads(&format!(
+        "{RSA_BEGIN}\nMIIB\n{OPENSSH}{RSA_END}\n"
+    )));
+    assert!(!cng_reads(&format!(
+        "{RSA_BEGIN}\n{RSA_BEGIN}\nMIIB\n{RSA_END}\n"
+    )));
+}
+
+#[test]
+fn cng_reads_the_pem_ssh_keygen_and_openssl_write() {
+    // 64 columns (OpenSSL's width, and `ssh-keygen -m PEM`'s), a real key's length, and the ends they write.
+    for ending in ["\n", "\r\n"] {
+        let text =
+            format!("{RSA_BEGIN}\n{}\n{RSA_END}\n", wrapped(&body(1596), 64)).replace('\n', ending);
+        assert!(cng_reads(&text), "{ending:?}");
+        assert!(
+            cng_reads(text.trim_end()),
+            "{ending:?} with no final line ending"
+        );
+    }
+    // Lines that old tools wrote at 76 columns.
+    assert!(cng_reads(&format!(
+        "{RSA_BEGIN}\n{}\n{RSA_END}\n",
+        wrapped(&body(1596), 76)
+    )));
+    // Text after the block is ignored by the reader, and may hold other blocks.
+    assert!(cng_reads(&format!(
+        "{RSA_BEGIN}\nMIIB\n{RSA_END}\n-----BEGIN EC PARAMETERS-----\nBggq\n-----END EC PARAMETERS-----\n"
+    )));
 }
 
 cfg_if::cfg_if! {

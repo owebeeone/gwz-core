@@ -12,16 +12,38 @@ fn failed(message: impl Into<String>) -> ModelError {
     ModelError::new(ErrorCode::GitCommandFailed, message)
 }
 
-fn signature(ident: &Ident) -> ModelResult<git2::Signature<'static>> {
-    match ident.seconds {
-        Some(seconds) => git2::Signature::new(
-            &ident.name,
-            &ident.email,
-            &git2::Time::new(seconds, ident.offset_minutes),
-        ),
-        None => git2::Signature::now(&ident.name, &ident.email),
+/// What time it is "now", for an identity given no date. Git reads the clock
+/// once per process and uses that date for the author and the committer, so a
+/// run takes it from here at most once.
+pub(super) type Clock<'a> = &'a mut dyn FnMut() -> ModelResult<git2::Time>;
+
+/// The system clock, with the local offset libgit2 gives a signature.
+pub(super) fn system_clock() -> ModelResult<git2::Time> {
+    git2::Signature::now("gwz", "gwz@localhost")
+        .map(|signature| signature.when())
+        .map_err(git_error)
+}
+
+/// The signatures for `idents`, all dated by the one `now` the clock gives
+/// when any of them has no date of its own.
+fn signatures<const N: usize>(
+    idents: [&Ident; N],
+    clock: Clock<'_>,
+) -> ModelResult<[git2::Signature<'static>; N]> {
+    let mut now = None;
+    let mut made = Vec::with_capacity(N);
+    for ident in idents {
+        let when = match ident.seconds {
+            Some(seconds) => git2::Time::new(seconds, ident.offset_minutes),
+            None => match now {
+                Some(time) => time,
+                None => *now.insert(clock()?),
+            },
+        };
+        made.push(git2::Signature::new(&ident.name, &ident.email, &when).map_err(git_error)?);
     }
-    .map_err(git_error)
+    made.try_into()
+        .map_err(|_| failed("signatures do not match identities"))
 }
 
 /// Lock `reference`, check it still holds `expected`, and move it to `target`
@@ -54,6 +76,15 @@ fn move_reference(
 
 /// Make the commit `plan` describes. Returns the new commit id.
 pub(super) fn commit(repo: &git2::Repository, plan: CommitPlan) -> ModelResult<git2::Oid> {
+    commit_at(repo, plan, &mut system_clock)
+}
+
+/// `commit`, with the clock the dates of an identity without one come from.
+pub(super) fn commit_at(
+    repo: &git2::Repository,
+    plan: CommitPlan,
+    clock: Clock<'_>,
+) -> ModelResult<git2::Oid> {
     let mut index = repo.index().map_err(git_error)?;
     let lock = index.path().map(|path| {
         let mut name = path.as_os_str().to_owned();
@@ -91,8 +122,7 @@ pub(super) fn commit(repo: &git2::Repository, plan: CommitPlan) -> ModelResult<g
         return Err(failed("nothing to commit"));
     }
 
-    let author = signature(&plan.author)?;
-    let committer = signature(&plan.committer)?;
+    let [author, committer] = signatures([&plan.author, &plan.committer], clock)?;
     let parents: Vec<&git2::Commit<'_>> = parent.iter().collect();
     let oid = repo
         .commit(None, &author, &committer, &plan.message, &tree, &parents)
@@ -114,21 +144,56 @@ fn reference_name(name: &str) -> String {
     format!("refs/tags/{name}")
 }
 
+/// The steps of a tag creation a test may act between.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TagStage {
+    /// Native has seen there is no such tag, and has taken no lock.
+    Checked,
+    /// The tag's reference is locked and no tag has been seen under the lock.
+    Locked,
+}
+
 /// Create the tag `plan` describes.
 pub(super) fn tag_create(repo: &git2::Repository, name: &str, plan: TagPlan) -> ModelResult<()> {
-    if repo.find_reference(&reference_name(name)).is_ok() {
+    tag_create_observed(repo, name, plan, &mut |_| {})
+}
+
+/// `tag_create`, telling `observe` where it is. The reference is created in a
+/// transaction that locks it, checks under the lock that it does not exist,
+/// then writes it; a tag made by another process after the early check is
+/// refused rather than overwritten.
+pub(super) fn tag_create_observed(
+    repo: &git2::Repository,
+    name: &str,
+    plan: TagPlan,
+    observe: &mut dyn FnMut(TagStage),
+) -> ModelResult<()> {
+    let reference = reference_name(name);
+    if repo.find_reference(&reference).is_ok() {
         return Err(failed(format!("tag '{name}' already exists")));
     }
+    observe(TagStage::Checked);
     let target = repo.find_object(plan.target, None).map_err(git_error)?;
-    match &plan.annotation {
-        None => repo.tag_lightweight(name, &target, false),
+    let id = match &plan.annotation {
+        None => target.id(),
         Some((text, tagger)) => {
-            let tagger = signature(tagger)?;
-            repo.tag(name, &target, &tagger, text, false)
+            let [tagger] = signatures([tagger], &mut system_clock)?;
+            repo.tag_annotation_create(name, &target, &tagger, text)
+                .map_err(git_error)?
         }
+    };
+    let mut transaction = repo.transaction().map_err(git_error)?;
+    transaction.lock_ref(&reference).map_err(git_error)?;
+    observe(TagStage::Locked);
+    match repo.find_reference(&reference) {
+        Ok(_) => return Err(failed(format!("tag '{name}' already exists"))),
+        Err(error) if error.code() == git2::ErrorCode::NotFound => {}
+        Err(error) => return Err(git_error(error)),
     }
-    .map(|_| ())
-    .map_err(git_error)
+    transaction
+        .set_target(&reference, id, None, "")
+        .map_err(git_error)?;
+    transaction.commit().map_err(git_error)
 }
 
 /// Delete the tag `name`.

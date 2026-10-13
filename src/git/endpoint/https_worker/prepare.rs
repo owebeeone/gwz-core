@@ -94,7 +94,9 @@ impl Client {
                 .await?,
         );
         budget.allocation = budget.allocation.saturating_sub(started.elapsed());
-        let key = RouteKey::new(&input.operation, &original.base(), input.service);
+        // The open a refused redirect is told for: the address the member was asked to open, whatever route it takes.
+        let open = original.base();
+        let key = RouteKey::new(&input.operation, &open, input.service);
         let mut destination = {
             let mut routes = self.routes.lock().unwrap_or_else(|e| e.into_inner());
             if https_policy::advertisement(input.service) {
@@ -318,6 +320,11 @@ impl Client {
                 facts: facts.clone(),
                 receive_limits: gwz_transport::binding::default_limits(),
             };
+            let relet = throttle::Relet {
+                scope: credential.as_ref().map(|c| c.scope.clone()),
+                allocation_ms: duration_ms(budget.allocation).max(1_000),
+                connect_ms: budget.connect.map_or(0, duration_ms),
+            };
             let mut prepared = Prepared {
                 opened,
                 lease: Some(lease),
@@ -338,6 +345,7 @@ impl Client {
                     &input.operation,
                     Key::https(destination.host(), destination.port()),
                 ),
+                relet,
             };
             if !https_policy::advertisement(input.service) {
                 return Ok(prepared);
@@ -552,8 +560,12 @@ impl Client {
                             // which the failure has no place for (text T5).
                             if let Some(to) = destination.downgrade_target(input.service, location)
                             {
-                                self.redirects
-                                    .refused(&input.operation, &destination.shown(), &to);
+                                self.redirects.refused(
+                                    &input.operation,
+                                    &open,
+                                    &destination.shown(),
+                                    &to,
+                                );
                             }
                             return Err(with_facts(code, Effect::None, &prepared.opened.facts));
                         }

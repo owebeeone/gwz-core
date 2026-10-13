@@ -156,6 +156,14 @@ fn a_redirect_after_a_native_exchange_has_started_ends_the_operation_and_sends_n
                 .expect("the redirect ends the exchange");
             assert_eq!(failure.code, ErrorCode::Authentication);
             assert_eq!(failure.facts.as_ref().unwrap().http_status, Some(302));
+            // The user is told what happened, not "Authentication" (code review P3-11).
+            let said = super::precedence::words(failure, AuthPolicy::WindowsDefault);
+            assert!(
+                said.starts_with(
+                    "The server answered GWZ's Windows sign-in with a redirect (HTTP 302)."
+                ),
+                "{said}"
+            );
             assert_eq!(port.starts.load(Ordering::Acquire), 1);
             assert_eq!(
                 origin.credentialled.load(Ordering::Acquire),

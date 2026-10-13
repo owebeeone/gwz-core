@@ -103,6 +103,38 @@ fn a_retry_after_holds_new_starts_and_first_exchanges_and_a_discovery_hold_lets_
 }
 
 #[test]
+fn a_discovery_hold_does_not_hold_a_posts_beyond_the_posts_own_retry_after() {
+    // Code P3-8, the interleaving: a discovery 30 s at t=0, a POST 2 s at t=1 s.
+    let mut rig = Rig::new(32);
+    rig.connect(8);
+    let a = rig.go(Start::Ordinary);
+    rig.refuse_with(a, Throttle, Some(30_000), false);
+    rig.at(1_000);
+    rig.limit.set_hold(2_000, true, 1_000);
+    assert!(!rig.limit.admits_continuing(2_999));
+    assert!(rig.limit.admits_continuing(3_000), "POSTs go at t=3 s");
+    assert!(
+        !rig.limit.admits_first_exchange(3_000) && !rig.limit.admits_ordinary(3_000),
+        "new exchanges and starts wait for the discovery's 30 s"
+    );
+}
+
+#[test]
+fn a_hold_over_thirty_seconds_notes_what_was_asked() {
+    // Code P3-7: the note carries the server's value, not the capped wait.
+    let mut rig = Rig::new(32);
+    rig.connect(8);
+    let a = rig.go(Start::Ordinary);
+    rig.refuse_with(a, Throttle, Some(120_000), false);
+    assert!(
+        rig.limit
+            .drain_notes()
+            .contains(&Note::Hold { wait_ms: 120_000 })
+    );
+    assert!(!rig.limit.admits_first_exchange(29_999));
+}
+
+#[test]
 fn a_long_hold_ends_with_a_discard_and_lifts_only_after_it() {
     let mut rig = Rig::new(32);
     rig.connect(8);

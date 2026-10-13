@@ -164,6 +164,7 @@ cfg_if::cfg_if! {
                     elapsed_ms: 5_000,
                     last_signal: Some(crate::git::endpoint::setup_retry::LastSignal::Http429),
                     retry_after_ms: None,
+                    refusals: None,
                 }
             }
 

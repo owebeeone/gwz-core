@@ -52,6 +52,42 @@ fn an_outage_that_lowered_n_is_restored_by_doubling_steps_up_to_the_ceiling() {
 }
 
 #[test]
+fn a_restore_step_closes_after_its_starts_and_later_ones_belong_to_the_next_step() {
+    // State P3-2: with poor connection reuse a connection leaves while the
+    // step's starts are still in flight. The room that opens must not take
+    // another start into the same step: under steady demand the step would
+    // never empty, `N` would stay at the first `S`, and final-attempt members
+    // would wait with their clocks stopped until the queue drained.
+    let mut rig = Rig::stable(8, 2);
+    outage_ends(&mut rig);
+    // S = max(2, min(8, 2 x 2)) = 4: two starts.
+    assert_eq!(rig.limit.pool_limit(), 4);
+    let first = [step_start(&mut rig), step_start(&mut rig)];
+    rig.conn(1, super::states::ConnEvent::ServerClosed);
+    assert!(
+        !rig.limit.admits_ordinary(rig.now) && !rig.limit.has_room(),
+        "Possible is 3 < S = 4, but the step has had its starts"
+    );
+    // The step's results come in; with every start answered the step is done
+    // and the next doubles from what is Connected now.
+    assert_eq!(rig.ok(first[0]), Ruling::Succeeded);
+    assert!(
+        !rig.limit.admits_ordinary(rig.now),
+        "still the first step: one start has no result"
+    );
+    assert_eq!(rig.ok(first[1]), Ruling::Succeeded);
+    assert_eq!((rig.limit.n(), rig.limit.state()), (3, State::Restoring));
+    assert_eq!(rig.limit.pool_limit(), 6, "S = min(8, 2 x 3)");
+    // The next step admits its own starts: three, to reach S = 6.
+    let second: Vec<_> = (0..3).map(|_| step_start(&mut rig)).collect();
+    assert!(!rig.limit.admits_ordinary(rig.now), "the step is full");
+    for flight in second {
+        rig.ok(flight);
+    }
+    assert_eq!((rig.limit.n(), rig.limit.state()), (6, State::Restoring));
+}
+
+#[test]
 fn reaching_n_good_below_the_ceiling_is_stable_with_the_timer_at_t0() {
     // N_good = 6 (the N at the last success), then an Overload to 3.
     let mut rig = Rig::stable(32, 6);
