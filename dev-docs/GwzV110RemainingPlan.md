@@ -35,9 +35,15 @@ Status: **DRAFT, 2026-10-15.** It decides nothing; the choices that need the ope
 | S7.4 observation recheck | not started | the whole step, on the activated tree |
 | S7.5 activation and release review | not started | dual review plus Surface |
 | Phase 8 tags and publish | not started | gwz-transport and gwz-git still `publish = false`; tags; publish jobs; WPP 6.5 |
-| S3.x, TR2.6 | **unconfirmed**: no closing record found | to be checked before S7.1 starts |
+| S3.1 (timeout plan S5.1 review) | open: implementation `1ac248ca` (2026-09-23) never reviewed; the SetupClock and retry work changed it since | one Code and State review on the settled tree |
+| S3.2 (Q6 aggregate review) | open: closing fix `a2a7878d` (2026-09-22) never reviewed | the retained Code and State aggregate gate |
+| S3.3 (timeout plan S5.2) | partly: the regression rows exist; the cold live fetches at the default timeout were never run | after S3.1's GO: the live fetches and the five-fetch check on 16 members |
+| TR2.6 (review of TR2.1 to TR2.22, S6.1, S6.2) | open: no report; every per-step review disclaims it | one dual review of the settled Phase 2 tree; gates S7.1 |
+| WPP 4.8 / TR4.10 review (SSPI) | open: required before TR4.7; neither 5.6 axis read the SSPI internals or gwz-sspi | a dual review of 4.8 and the SSPI secret ownership |
+| WPP 4.2/4.3 dual (WH2) | open: the checkpoint says untaken; 5.6 excluded 4.1/4.2 as accepted | the WH2 re-review and the 4.2/4.3 dual, or a recorded ruling |
+| Phase 1, 3, 4, 4.4 and 3.5 reviews | partly covered by 5.6 (Phase 1 read on the State axis only; 3.5 read fully by State, sampled by Code); no document declares 5.6 closes them | an operator ruling, or the reviews |
 
-Also open: the real Pageant 0.83 console rows (operator session); the checkpoint's owed Phase 1, 3 and 4 reviews, which step 5.6's review was made the single review point for (whether that closes them is to be recorded).
+Also open: the real Pageant 0.83 console rows (operator session). **Correction (2026-10-15):** an earlier draft of this paragraph said step 5.6's review was made the single review point for the owed reviews. No document records that; it was the lane owner's reading of the operator's "wait for a more substantial review point". The rows above list what 5.6 did and did not cover (audit A1, 2026-10-15). 5.6 does cover the adaptive extensions (Down, RESTORING, Ns, POST holds, the notes drain).
 
 ## 3. Phases
 
@@ -45,7 +51,8 @@ Foundational first; steps within a phase are independent unless a dependency is 
 
 ### Phase A: settle the record (documents; no product code)
 
-- **A1.** Confirm S3.1–S3.3 and TR2.6: closing commits and reviews, or the work left. Record whether 5.6's review closes the owed Phase 1, 3 and 4 reviews.
+- **A1.** Done 2026-10-15 (read-only audit): S3.1, S3.2, TR2.6, 4.8/SSPI and the 4.2/4.3 dual are open; S3.3 is partly done; the Phase 1, 3, 4, 4.4 and 3.5 reviews are partly covered by 5.6 (rows above).
+- **A5.** The owed reviews (OQ-E): one review point before S7.1 or separate reviews.
 - **A2.** OQ-A answered: the Linux x86-64 evidence host.
 - **A3.** Amendment 2's revisions 3–8: one review, or folded into S7.5 (OQ-D).
 - **A4.** The checkpoint carries this plan's list.
@@ -88,6 +95,7 @@ C1 and C2 can run in parallel with Phase B; C3 and C4 wait on S7.1's gates (S5.5
 - **OQ-B. S5.2 and S5.3.** Run as written (about a day each), or amend scope. Recommendation: run them; S5.4's defaults rest on them.
 - **OQ-C. A refused signature on Windows** (`PUBLICKEY_UNVERIFIED`, about 1 in 6,000 dials against `sshd.exe`, run `2026-10-14-idleloss`): D14 retries only a failed key exchange. Recommendation: leave it for 1.1.0 and record it; measure 1.0.17 on the same rows to confirm parity.
 - **OQ-D. Amendment 2's revisions 3–8.** One dual review before S7.5, or folded into S7.5. Recommendation: folded into S7.5.
+- **OQ-E. The owed reviews.** (a) One combined Code and State review point before S7.1 whose object lists TR2.6, S3.1, S3.2, 4.8/SSPI and 4.2/4.3 by exact range, with 4.8/SSPI as its own fully-read section in both prompts, plus a recorded ruling that 5.6 counts as the Phase 1, 3, 4, 4.4 and 3.5 reviews; (b) the same without the ruling, so those phase reviews are run too; (c) separate reviews as the plans wrote them (about six). Recommendation: (a).
 - **Open from before:** UNC `PATH` entries for the helper `git.exe` lookup; yank gwz-sspi `0.0.0-bootstrap.1`; the required CI checks; optionally "max(TLS 1.2, policy)" for the Linux TLS floor.
 
 ## 5. Contradictions found by the audit (to be fixed in the documents they live in)
