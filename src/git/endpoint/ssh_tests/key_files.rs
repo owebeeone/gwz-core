@@ -244,7 +244,7 @@ cfg_if::cfg_if! {
                     .arg(&encrypted),
             );
             let error = authenticate(&encrypted, &rsa_public).expect_err("an encrypted key is not admitted");
-            assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{error}");
+            assert_eq!(SshLimit::of_error(&error), Some(SshLimit::EncryptedKeyFile), "{error}");
             // ECDSA and Ed25519, in each container.
             for (kind, bits) in [("ecdsa", Some(256)), ("ecdsa", Some(384)), ("ecdsa", Some(521)), ("ed25519", None)] {
                 let name = format!("{kind}{}", bits.unwrap_or(0));

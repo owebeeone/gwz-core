@@ -55,6 +55,7 @@ impl Session {
                     .map(|home| KnownHostsFile::under(&home.path, home.source)),
             )
         };
+        let key_file = key_file_name(&identity);
         let policy = if identity.mode == IdentityMode::ExplicitKey {
             AuthPolicy::SshExplicit
         } else {
@@ -96,6 +97,7 @@ impl Session {
                 shown.0.clone(),
                 shown.1,
                 known_hosts,
+                key_file,
                 &agent,
                 trust,
             );

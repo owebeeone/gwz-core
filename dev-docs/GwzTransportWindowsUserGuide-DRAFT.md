@@ -281,7 +281,10 @@ otherwise GWZ uses the agent (or a password, for a server that accepts nothing
 else). Of the key files you can name, only an **unencrypted RSA key file in PEM
 format** is offered. A new-format RSA key (what `ssh-keygen -t rsa` writes today),
 an ECDSA or ed25519 key file, and a passphrase-protected key file are not used when
-you name one, and the message says so. Your options:
+you name one, and the message says so. A passphrase-protected key file is refused on
+every platform, not only on Windows, because GWZ cannot ask for a passphrase: the
+message starts `The SSH key file <path> is protected by a passphrase, and gwz cannot ask
+for a passphrase`, and the path is the file you named. Your options:
 
 - **Load the key into an agent** (best; it works for RSA, ECDSA and ed25519 keys,
   protected or not).
@@ -297,7 +300,9 @@ you name one, and the message says so. Your options:
   ```
 
   Press Enter for the new passphrase. That **removes the passphrase**, so the copy
-  is unprotected: store it with care and delete it when you no longer need it.
+  is unprotected: store it with care and delete it when you no longer need it. For a
+  key that has a passphrase, the same command asks for the old passphrase first, and
+  the converted copy then has none.
   Your original is unchanged. To turn a file back into the new format, run
   `ssh-keygen -p -o -f <file>` (tested with OpenSSH 10.3 on macOS, not with
   Windows' OpenSSH).

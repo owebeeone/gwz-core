@@ -1,5 +1,5 @@
 use super::*;
-use crate::git::endpoint::ssh_setup_context;
+use crate::git::endpoint::{ssh_limits::SshLimit, ssh_setup_context};
 pub(in crate::git::endpoint) struct OpenRequest {
     pub(in crate::git::endpoint) key: Key,
     pub(in crate::git::endpoint) identity: Identity,
@@ -86,6 +86,10 @@ impl EndpointOpenFailure {
             Some(PoolError::IdentityMismatch) => (ErrorCode::Authentication, Effect::None, None),
             Some(PoolError::DriverLost | PoolError::Shutdown) => {
                 (ErrorCode::CarrierLost, Effect::None, None)
+            }
+            // A limit, met when the selected key file was admitted (`ssh_admission`).
+            _ if SshLimit::of_error(&error).is_some() => {
+                (ErrorCode::UnsupportedOperation, Effect::None, None)
             }
             _ => (
                 match error.kind() {

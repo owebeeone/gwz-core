@@ -2,9 +2,10 @@
 use super::{
     agent_job::Job,
     ssh_key_snapshot::{Loaded, Registry},
+    ssh_limits::SshLimit,
     ssh_worker::OpenRequest,
 };
-use gwz_transport::pool::Key;
+use gwz_transport::{pool::Key, protocol::AuthMethod};
 use std::{
     collections::VecDeque,
     io,
@@ -78,7 +79,10 @@ impl Admissions {
                     self.waiting.push_front(request);
                     break;
                 }
-                Err(error) => request.complete(Err(error.kind().into())),
+                Err(error) => {
+                    let error = sanitized(&request, error);
+                    request.complete(Err(error));
+                }
             }
         }
     }
@@ -159,12 +163,32 @@ impl Admissions {
                         item.request.authority = Some(entry);
                         ready.push(item.request);
                     }
-                    Err(error) => item.request.complete(Err(error.kind().into())),
+                    Err(error) => {
+                        let error = sanitized(&item.request, error);
+                        item.request.complete(Err(error));
+                    }
                 }
                 continue;
             }
             self.cursor += 1;
         }
         ready
+    }
+}
+
+/// The error an admission failure reports: its kind alone, as native diagnostics and credential paths stay local, and
+/// a limit with it. A key file that is protected by a passphrase is marked as the selected method's, so that the
+/// open's facts tell the host which limit it met (`SshLimit::of_failure`); no credential was offered by the mark.
+fn sanitized(request: &OpenRequest, error: io::Error) -> io::Error {
+    match SshLimit::of_error(&error) {
+        Some(limit) => {
+            request
+                .progress
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .method = AuthMethod::SshKey;
+            limit.into_error()
+        }
+        None => error.kind().into(),
     }
 }

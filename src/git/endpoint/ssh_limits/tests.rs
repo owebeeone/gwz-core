@@ -138,7 +138,11 @@ fn a_key_form_is_a_limit_only_where_the_library_cannot_read_it() {
 
 #[test]
 fn a_limit_is_an_unsupported_operation_that_a_setup_never_retries() {
-    for limit in [SshLimit::HostKeys, SshLimit::KeyFile] {
+    for limit in [
+        SshLimit::HostKeys,
+        SshLimit::KeyFile,
+        SshLimit::EncryptedKeyFile,
+    ] {
         let error = limit.into_error();
         assert_eq!(error.kind(), io::ErrorKind::Unsupported, "{limit:?}");
         assert_eq!(SshLimit::of_error(&error), Some(limit));
@@ -158,7 +162,7 @@ fn a_limit_is_an_unsupported_operation_that_a_setup_never_retries() {
 }
 
 #[test]
-fn the_host_tells_the_two_limits_apart_by_what_the_open_had_offered() {
+fn the_host_tells_the_limits_apart_by_what_the_open_had_offered() {
     let facts = |method| {
         Some(Facts {
             method,
@@ -177,6 +181,25 @@ fn the_host_tells_the_two_limits_apart_by_what_the_open_had_offered() {
     );
     assert_eq!(
         SshLimit::of_failure(&with(SshLimit::KeyFile, AuthMethod::SshKey)),
+        Some(SshLimit::KeyFile)
+    );
+    // A key file refused when it was admitted, before any credential was offered, is the passphrase's; one refused
+    // after the key was offered is the form's.
+    let admitted = |offered| {
+        let mut failure = SshLimit::EncryptedKeyFile.failure();
+        failure.facts = Some(Facts {
+            method: AuthMethod::SshKey,
+            credential_offered: offered,
+            ..Facts::default()
+        });
+        failure
+    };
+    assert_eq!(
+        SshLimit::of_failure(&admitted(false)),
+        Some(SshLimit::EncryptedKeyFile)
+    );
+    assert_eq!(
+        SshLimit::of_failure(&admitted(true)),
         Some(SshLimit::KeyFile)
     );
     // The driver's own refusals carry no facts and are not limits; nor are other codes.
@@ -199,7 +222,7 @@ fn trust_file(source: HomeSource) -> KnownHostsFile {
 
 #[test]
 fn the_words_name_the_cause_and_the_fix_and_nothing_secret() {
-    let keys = SshLimit::HostKeys.reason("git.example.com", 22, None);
+    let keys = SshLimit::HostKeys.reason("git.example.com", 22, None, None);
     assert!(keys.contains("git.example.com"), "{keys}");
     assert!(keys.contains("RSA"), "{keys}");
     assert!(
@@ -207,13 +230,13 @@ fn the_words_name_the_cause_and_the_fix_and_nothing_secret() {
         "{keys}"
     );
     assert!(!keys.contains("-p 22"), "{keys}");
-    let keys = SshLimit::HostKeys.reason("git.example.com", 2222, None);
+    let keys = SshLimit::HostKeys.reason("git.example.com", 2222, None, None);
     assert!(
         keys.contains("ssh-keyscan -t rsa -p 2222 git.example.com"),
         "{keys}"
     );
     assert!(!keys.contains("failed to set hostkey preference"), "{keys}");
-    let file = SshLimit::KeyFile.reason("git.example.com", 22, None);
+    let file = SshLimit::KeyFile.reason("git.example.com", 22, None, None);
     for needle in [
         "RSA",
         "PEM",
@@ -229,6 +252,47 @@ fn the_words_name_the_cause_and_the_fix_and_nothing_secret() {
 }
 
 #[test]
+fn the_passphrase_words_name_the_file_the_cause_and_the_ways_out() {
+    let path = "C:\\Users\\Ana Lee\\.ssh\\id_work";
+    let words = SshLimit::EncryptedKeyFile.reason("git.example.com", 22, None, Some(path));
+    for needle in [
+        // The file, by path, and what is wrong with it.
+        path,
+        "protected by a passphrase",
+        "cannot ask for a passphrase",
+        // Way one: an agent holding the key, on each platform's, with the file no longer selected.
+        "ssh-add \"C:\\Users\\Ana Lee\\.ssh\\id_work\"",
+        "OpenSSH Authentication Agent",
+        "Pageant",
+        "do not select a key file",
+        "--remote-identity",
+        "gwzSshIdentity",
+        // Way two: a copy without the passphrase; `-m PEM` only where the Windows limit's text says so.
+        "ssh-keygen -p -f <copy of the key>",
+        "On Windows",
+        "-m PEM",
+        "RSA",
+    ] {
+        assert!(words.contains(needle), "{needle}: {words}");
+    }
+    // The host and the known_hosts file are not this limit's business.
+    assert!(!words.contains("git.example.com"), "{words}");
+    assert!(!words.contains("known_hosts"), "{words}");
+    // Where the open names no file, the words say "the selected key file" and the commands name a placeholder.
+    let anonymous = SshLimit::EncryptedKeyFile.reason("git.example.com", 22, None, None);
+    assert!(
+        anonymous.contains("The selected SSH key file"),
+        "{anonymous}"
+    );
+    assert!(anonymous.contains("ssh-add <the key file>"), "{anonymous}");
+    // The Windows RSA-PEM limit's own text prescribes the same `-m PEM` form.
+    let limit = SshLimit::KeyFile.reason("git.example.com", 22, None, None);
+    assert!(limit.contains("ssh-keygen -p -m PEM"), "{limit}");
+    // Neither the file's name nor a passphrase is invented where the open had none.
+    assert!(!anonymous.contains("C:\\"), "{anonymous}");
+}
+
+#[test]
 fn the_known_hosts_words_print_the_file_the_home_source_and_the_commands_to_run() {
     // The user guide's promise (design section 14, item 13, U8): the file gwz read, which home it came from, and what
     // to run, in both shells, with the fingerprint check.
@@ -236,6 +300,7 @@ fn the_known_hosts_words_print_the_file_the_home_source_and_the_commands_to_run(
         "git.example.com",
         2222,
         Some(&trust_file(HomeSource::UserProfile)),
+        None,
     );
     let path = "C:\\Users\\Ana Lee\\.ssh\\known_hosts";
     for needle in [
@@ -255,7 +320,7 @@ fn the_known_hosts_words_print_the_file_the_home_source_and_the_commands_to_run(
         (HomeSource::HomeDrivePath, "HOMEDRIVE and HOMEPATH"),
         (HomeSource::UserProfile, "USERPROFILE"),
     ] {
-        let words = SshLimit::HostKeys.reason("h.example", 22, Some(&trust_file(source)));
+        let words = SshLimit::HostKeys.reason("h.example", 22, Some(&trust_file(source)), None);
         assert!(
             words.contains(&format!("home came from {named}")),
             "{named}: {words}"
@@ -264,7 +329,7 @@ fn the_known_hosts_words_print_the_file_the_home_source_and_the_commands_to_run(
     // The key-file limit has no known_hosts file to name.
     assert!(
         !SshLimit::KeyFile
-            .reason("h.example", 22, Some(&trust_file(HomeSource::Home)))
+            .reason("h.example", 22, Some(&trust_file(HomeSource::Home)), None)
             .contains("known_hosts")
     );
 }

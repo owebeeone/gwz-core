@@ -1,24 +1,29 @@
-//! The two limits of libssh2 on Windows that TD5 keeps (gwz-core/dev-docs/GwzTransportTR18-OperatorDecisions.md), and
-//! the plain words for them.
+//! The limits of the SSH library that TD5 keeps (gwz-core/dev-docs/GwzTransportTR18-OperatorDecisions.md), and the plain
+//! words for them: two of libssh2 on Windows, and one on every platform, the key file with a passphrase (D17).
 //!
 //! libssh2 built on WinCNG verifies RSA host keys only and reads one private-key form from memory: an RSA key in the
 //! traditional PEM form. 1.0.17 has the same limits and says so badly (`failed to set hostkey preference`, and an empty
 //! `failed to authenticate SSH session:`); the transport keeps the limits and replaces both texts (the migration
 //! register's item 8). The wire's failure vocabulary is closed and carries no text, so a limit travels as
-//! `UnsupportedOperation` and the host words it from what the open had offered ([`SshLimit::of_failure`]).
+//! `UnsupportedOperation` and the host words it from what the open had offered ([`SshLimit::of_failure`]). A key file
+//! with a passphrase is refused as it is admitted (`ssh_key_container`), on every platform, because libssh2 is never
+//! given a passphrase and gwz cannot ask for one.
 use super::ssh_home::KnownHostsFile;
 use gwz_transport::protocol::{AuthMethod, ErrorCode, Failure};
 use std::io;
 
 cfg_if::cfg_if! { if #[cfg(any(windows, test))] { use std::borrow::Cow; } }
 
-/// A limit of the SSH library on this platform, which no retry can lift.
+/// A limit of the SSH library, or of what gwz gives it, which no retry can lift.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SshLimit {
     /// `known_hosts` holds host keys of kinds the library cannot verify, and none it can.
     HostKeys,
     /// The selected key file is not in a form the library reads.
     KeyFile,
+    /// The selected key file is protected by a passphrase, which gwz cannot ask for and the library is never given.
+    /// Met on every platform, when the key file is admitted.
+    EncryptedKeyFile,
 }
 
 impl std::fmt::Display for SshLimit {
@@ -26,6 +31,7 @@ impl std::fmt::Display for SshLimit {
         f.write_str(match self {
             Self::HostKeys => "no host key in known_hosts is of a kind this SSH library can verify",
             Self::KeyFile => "the key file is not in a form this SSH library reads",
+            Self::EncryptedKeyFile => "the key file is protected by a passphrase",
         })
     }
 }
@@ -53,26 +59,32 @@ impl SshLimit {
 
     /// The limit an endpoint failure reports, told by what the open had offered when it ended: the endpoint always
     /// attaches the open's facts, which the driver's own refusals (`UnsupportedOperation` with none) do not carry.
-    /// A key file's limit is met after the key is offered, a host key's before any credential.
+    /// A key file's form is met after the key is offered, a host key's before any credential, and a key file's
+    /// passphrase when the file is admitted, which is after the key file was selected (its method) and before it
+    /// is offered, as the agent step is marked before its first request (`agent_reason`).
     pub(crate) fn of_failure(failure: &Failure) -> Option<Self> {
         if failure.code != ErrorCode::UnsupportedOperation {
             return None;
         }
-        match failure.facts.as_ref()?.method {
+        let facts = failure.facts.as_ref()?;
+        match facts.method {
             AuthMethod::None => Some(Self::HostKeys),
-            AuthMethod::SshKey => Some(Self::KeyFile),
+            AuthMethod::SshKey if facts.credential_offered => Some(Self::KeyFile),
+            AuthMethod::SshKey => Some(Self::EncryptedKeyFile),
             _ => None,
         }
     }
 
     /// The message: the cause, then the fix. `host` and `port` are the open's destination, and `known_hosts` is the
     /// file the endpoint read with the variable that named its home (design section 14, item 13, U8): a host-key limit
-    /// prints both, so the user edits the file gwz actually read.
+    /// prints both, so the user edits the file gwz actually read. `key_file` is the key file the open selected, as the
+    /// user can name it to a command, which a passphrase's words print.
     pub(crate) fn reason(
         self,
         host: &str,
         port: u16,
         known_hosts: Option<&KnownHostsFile>,
+        key_file: Option<&str>,
     ) -> String {
         match self {
             Self::HostKeys => {
@@ -109,8 +121,35 @@ impl SshLimit {
                               form. ECDSA and Ed25519 keys cannot be used from a file on Windows: load the key into an SSH \
                               agent (Pageant or the OpenSSH agent) instead."
                 .to_owned(),
+            Self::EncryptedKeyFile => encrypted_key_words(key_file),
         }
     }
+}
+
+/// The words for a key file with a passphrase (D17): the cause, then the two ways out. They are the same on every
+/// platform, with the Windows differences said where they apply, because the refusal is made on all of them. The
+/// `-m PEM` form is the Windows RSA-PEM limit's own ([`SshLimit::KeyFile`]).
+fn encrypted_key_words(key_file: Option<&str>) -> String {
+    let (named, add) = match key_file {
+        Some(path) => (
+            format!("The SSH key file {path}"),
+            format!("ssh-add \"{path}\""),
+        ),
+        None => (
+            "The selected SSH key file".to_owned(),
+            "ssh-add <the key file>".to_owned(),
+        ),
+    };
+    format!(
+        "{named} is protected by a passphrase, and gwz cannot ask for a passphrase, so it cannot use the file. Either \
+         load the key into an SSH agent with {add} (on Windows the agent is the OpenSSH Authentication Agent service, \
+         which must be running, or Pageant) and do not select a key file, so that gwz uses the agent: drop --identity, \
+         --remote-identity and the remote's gwzSshIdentity setting. Or remove the passphrase from a copy of the key \
+         with ssh-keygen -p -f <copy of the key>, which asks for the old passphrase and then for a new one (press \
+         Enter at the new one), and select the copy. On Windows gwz reads a key file only if it is an RSA key in PEM \
+         form, so for an RSA key use ssh-keygen -p -m PEM -f <copy of the key>; an ECDSA or Ed25519 key can only come \
+         from an agent there."
+    )
 }
 
 cfg_if::cfg_if! {

@@ -27,6 +27,14 @@ fn finish<T: Send + 'static>(job: &mut Job<T>) -> io::Result<T> {
         std::thread::sleep(Duration::from_millis(1));
     }
 }
+/// `error` is the refusal of a key file protected by a passphrase (D17): an unsupported key, named by its limit.
+fn assert_encrypted(error: io::Error) {
+    assert_eq!(error.kind(), io::ErrorKind::Unsupported, "{error}");
+    assert_eq!(
+        crate::git::endpoint::ssh_limits::SshLimit::of_error(&error),
+        Some(crate::git::endpoint::ssh_limits::SshLimit::EncryptedKeyFile)
+    );
+}
 fn load(r: &Registry, key: Key, path: &Path) -> io::Result<Arc<ssh_key_snapshot::Entry>> {
     let loaded = finish(&mut r.start(key, path.into(), None, Duration::from_secs(1))?)?;
     r.intern(loaded, || Ok(()))
@@ -52,10 +60,8 @@ fn candidates_share_exact_material_and_key_but_never_recycle_tokens() {
         "-----BEGIN ENCRYPTED PRIVATE KEY-----\nAQID\n-----END ENCRYPTED PRIVATE KEY-----",
     )
     .unwrap();
-    assert_eq!(
-        load(&r, key.clone(), &path).err().unwrap().kind(),
-        io::ErrorKind::InvalidInput
-    );
+    // A key with a passphrase is refused as such (D17), not as an invalid file.
+    assert_encrypted(load(&r, key.clone(), &path).err().unwrap());
     fs::remove_file(&path).unwrap();
     assert!(load(&r, key.clone(), &path).is_err());
     let id = a.identity();
@@ -685,7 +691,7 @@ fn valid_extreme_encrypted_containers_never_dispatch_native_auth() {
             )?)
         });
         if veto {
-            assert_eq!(result.err().unwrap().kind(), io::ErrorKind::InvalidInput);
+            assert_encrypted(result.err().unwrap());
             assert_eq!(calls.load(Ordering::SeqCst), 0);
         } else {
             let verified = result.unwrap();

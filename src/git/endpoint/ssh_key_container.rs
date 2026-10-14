@@ -1,4 +1,4 @@
-use super::agent_job;
+use super::{agent_job, ssh_limits::SshLimit};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::io;
 
@@ -19,6 +19,12 @@ enum Label {
 
 fn invalid() -> io::Error {
     io::ErrorKind::InvalidInput.into()
+}
+
+/// The refusal of a key protected by a passphrase, which libssh2 is never given (D17): a limit of its own, so that the
+/// host can say so. Every other refusal stays [`invalid`].
+fn encrypted() -> io::Error {
+    SshLimit::EncryptedKeyFile.into_error()
 }
 
 fn whitespace(byte: u8) -> bool {
@@ -76,9 +82,8 @@ fn armor<'a>(line: &'a [u8], edge: &[u8]) -> Option<&'a [u8]> {
         .filter(|label| !label.is_empty())
 }
 
-/// The private key a block's label names, if any. Any other label ending in
-/// `PRIVATE KEY`, `ENCRYPTED PRIVATE KEY` among them, is refused: libssh2
-/// reads the file without a passphrase.
+/// The private key a block's label names, if any. `ENCRYPTED PRIVATE KEY` is refused as a key with a passphrase and any
+/// other label ending in `PRIVATE KEY` as invalid: libssh2 reads the file without a passphrase.
 fn key_label(label: &[u8]) -> io::Result<Option<Label>> {
     Ok(Some(match label {
         b"RSA PRIVATE KEY" => Label::Rsa,
@@ -86,9 +91,16 @@ fn key_label(label: &[u8]) -> io::Result<Option<Label>> {
         b"EC PRIVATE KEY" => Label::Ec,
         b"PRIVATE KEY" => Label::Private,
         b"OPENSSH PRIVATE KEY" => Label::OpenSsh,
+        b"ENCRYPTED PRIVATE KEY" => return Err(encrypted()),
         _ if label.ends_with(b"PRIVATE KEY") => return Err(invalid()),
         _ => return Ok(None),
     }))
+}
+
+/// Whether a line of a key block is a PEM header that says the key has a passphrase.
+fn protects(line: &[u8]) -> bool {
+    line.starts_with(b"DEK-Info:")
+        || (line.starts_with(b"Proc-Type:") && line.windows(9).any(|word| word == b"ENCRYPTED"))
 }
 
 fn decode(
@@ -210,7 +222,11 @@ fn openssh(prefix: &[u8; PREFIX], total: usize) -> io::Result<()> {
     let cipher = ssh_string(prefix, &mut offset, total)?;
     let kdf = ssh_string(prefix, &mut offset, total)?;
     let options = ssh_string(prefix, &mut offset, total)?;
-    if cipher != b"none" || kdf != b"none" || !options.is_empty() {
+    // The cipher says whether the key has a passphrase; what else is wrong with the framing is the framing's.
+    if cipher != b"none" {
+        return Err(encrypted());
+    }
+    if kdf != b"none" || !options.is_empty() {
         return Err(invalid());
     }
     Ok(())
@@ -221,7 +237,9 @@ fn openssh(prefix: &[u8; PREFIX], total: usize) -> io::Result<()> {
 /// and other blocks around the key's, such as `openssl ecparam -genkey`'s
 /// `EC PARAMETERS`, are skipped, as OpenSSL's PEM reader and libssh2's
 /// OpenSSH reader skip them (TR2.8). No block may carry a PEM header, which
-/// OpenSSL decrypts whatever the block's label.
+/// OpenSSL decrypts whatever the block's label. A key with a passphrase, in
+/// any of its three forms, is refused as [`SshLimit::EncryptedKeyFile`]; every
+/// other refusal is `InvalidInput`.
 pub(crate) fn check(text: &str, control: &agent_job::Control) -> io::Result<()> {
     if text.is_empty() || text.len() > MAX_TEXT {
         return Err(invalid());
@@ -251,7 +269,11 @@ pub(crate) fn check(text: &str, control: &agent_job::Control) -> io::Result<()> 
                 }
                 block = None;
             }
-            Some(_) => {
+            Some((label, _)) => {
+                // The headers OpenSSL writes before the body of a traditional PEM key that has a passphrase.
+                if key_label(label)?.is_some() && protects(current) {
+                    return Err(encrypted());
+                }
                 let base64 = |byte: u8| byte.is_ascii_alphanumeric() || b"+/=".contains(&byte);
                 if checked_scan(current, control, |byte| !base64(byte) && !whitespace(byte))?
                     .is_some()

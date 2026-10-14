@@ -1,10 +1,15 @@
+use super::key_material as keys;
 use crate::git::endpoint::agent_job;
 use crate::git::endpoint::ssh_key_container;
+use crate::git::endpoint::ssh_limits::SshLimit;
+use crate::git::endpoint::{fixture_host, ssh_fixture as common};
 
 use agent_job::Job;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::{
-    io,
+    fs, io,
+    path::Path,
+    process::Command,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
@@ -34,6 +39,13 @@ fn check(text: String) -> io::Result<()> {
     finish(&mut job)
 }
 
+/// Whether `result` is the refusal of a key file protected by a passphrase.
+fn encrypted_limit(result: io::Result<()>) -> bool {
+    result
+        .err()
+        .is_some_and(|error| SshLimit::of_error(&error) == Some(SshLimit::EncryptedKeyFile))
+}
+
 fn armor(label: &str, bytes: &[u8]) -> String {
     format!(
         "-----BEGIN {label}-----\n{}\n-----END {label}-----\n",
@@ -59,10 +71,11 @@ fn openssh(cipher: &[u8], kdf: &[u8], options: &[u8]) -> Vec<u8> {
 fn carriage_return_boundaries_cannot_hide_a_second_or_encrypted_key() {
     let plain = armor("OPENSSH PRIVATE KEY", &openssh(b"none", b"none", b""));
     let encrypted = armor("ENCRYPTED PRIVATE KEY", &[1, 2, 3]);
-    for hidden in [&plain, &encrypted] {
-        let text = format!("ignored\r{}ignored\n{plain}", hidden.replace('\n', "\r"));
-        assert_eq!(check(text).unwrap_err().kind(), io::ErrorKind::InvalidInput);
-    }
+    let text = format!("ignored\r{}ignored\n{plain}", plain.replace('\n', "\r"));
+    assert_eq!(check(text).unwrap_err().kind(), io::ErrorKind::InvalidInput);
+    // A passphrase hidden behind carriage returns is still seen, and named.
+    let text = format!("ignored\r{}ignored\n{plain}", encrypted.replace('\n', "\r"));
+    assert!(encrypted_limit(check(text)));
     for ending in ["\r", "\n", "\r\n"] {
         check(format!("ignored{ending}{}", plain.replace('\n', ending))).unwrap();
     }
@@ -246,4 +259,148 @@ fn checked_scan_observes_cancellation_after_first_chunk() {
         Err(io::ErrorKind::ConnectionAborted)
     );
     assert_eq!(observed.load(Ordering::Acquire), 128);
+}
+
+/// A PEM block of `label` with `headers`, the lines OpenSSL writes before the body of a key that has a passphrase.
+fn pem_with_headers(label: &str, headers: &str) -> String {
+    format!(
+        "-----BEGIN {label}-----\n{headers}\n{}\n-----END {label}-----\n",
+        STANDARD.encode([1, 2, 3, 4])
+    )
+}
+
+#[test]
+fn a_key_protected_by_a_passphrase_is_refused_as_such_in_each_form() {
+    // PEM with `Proc-Type` and `DEK-Info` headers, whatever the key's type; either header alone says so too.
+    for label in ["RSA PRIVATE KEY", "DSA PRIVATE KEY", "EC PRIVATE KEY"] {
+        for headers in [
+            "Proc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,CD07FB65966AB315C1289E067C169A81\n",
+            "Proc-Type: 4,ENCRYPTED\n",
+            "DEK-Info: AES-128-CBC,00\n",
+        ] {
+            assert!(
+                encrypted_limit(check(pem_with_headers(label, headers))),
+                "{label}: {headers}"
+            );
+        }
+    }
+    // PKCS#8's encrypted form.
+    assert!(encrypted_limit(check(armor(
+        "ENCRYPTED PRIVATE KEY",
+        &[1, 2, 3, 4]
+    ))));
+    // OpenSSH's, by its cipher, with or without a key derivation function named.
+    for (cipher, kdf, options) in [
+        (
+            b"aes256-ctr".as_slice(),
+            b"bcrypt".as_slice(),
+            [0xff; 16].as_slice(),
+        ),
+        (b"aes256-gcm@openssh.com", b"bcrypt", &[1, 2, 3]),
+        (b"aes128-ctr", b"none", b""),
+    ] {
+        let text = armor("OPENSSH PRIVATE KEY", &openssh(cipher, kdf, options));
+        assert!(
+            encrypted_limit(check(text)),
+            "{}",
+            String::from_utf8_lossy(cipher)
+        );
+    }
+    // Line endings and text around the block do not hide it.
+    let block = armor("ENCRYPTED PRIVATE KEY", &[1]);
+    for ending in ["\r", "\n", "\r\n"] {
+        let text = format!("note{ending}{}", block.replace('\n', ending));
+        assert!(encrypted_limit(check(text)), "{ending:?}");
+    }
+}
+
+#[test]
+fn what_is_not_a_passphrase_is_refused_as_before_and_names_none() {
+    let key = armor("RSA PRIVATE KEY", &[1, 2, 3, 4]);
+    for text in [
+        // A header that is not an encryption header.
+        pem_with_headers("RSA PRIVATE KEY", "Comment: not a passphrase\n"),
+        pem_with_headers("RSA PRIVATE KEY", "Proc-Type: 4,MIC-ONLY\n"),
+        // A PEM header on a block that is not a key is refused whatever it says (OpenSSL decrypts it).
+        format!(
+            "{}{key}",
+            pem_with_headers("CERTIFICATE", "Proc-Type: 4,ENCRYPTED\n")
+        ),
+        // Two keys, a label that is not a key type, an armor that does not close, no key at all.
+        format!("{key}{key}"),
+        armor("ED448 PRIVATE KEY", &[1]),
+        format!("{key}-----BEGIN CERTIFICATE-----\nAQ==\n"),
+        "Bag Attributes\n".to_owned(),
+        // The OpenSSH framing with no cipher but a key derivation function, or with options, or too short.
+        armor("OPENSSH PRIVATE KEY", &openssh(b"none", b"bcrypt", b"")),
+        armor("OPENSSH PRIVATE KEY", &openssh(b"none", b"none", &[1])),
+        armor("OPENSSH PRIVATE KEY", &[b'o'; 15]),
+    ] {
+        let error = check(text.clone()).expect_err(&text);
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{text}");
+        assert_eq!(SshLimit::of_error(&error), None, "{text}");
+    }
+}
+
+/// `ssh-keygen -p` rewrites the key file `path` in `format` (`PEM` or `PKCS8`; the OpenSSH form without one), with
+/// the passphrase `new` (none when empty) where there was none.
+fn rewrite(path: &Path, format: Option<&str>, new: &str) {
+    let mut command = Command::new(fixture_host::programs().keygen);
+    command.args(["-q", "-p", "-P", "", "-N", new]);
+    if let Some(format) = format {
+        command.args(["-m", format]);
+    }
+    common::run(command.arg("-f").arg(path));
+}
+
+/// `ssh-keygen`'s own keys, of each form it writes, with and without a passphrase: the unencrypted ones are admitted,
+/// the others are named.
+#[test]
+fn keys_that_ssh_keygen_writes_are_admitted_without_a_passphrase_and_named_with_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let rsa = keys::keygen(dir.path(), "rsa", "rsa", Some(2048));
+    let ecdsa = keys::keygen(dir.path(), "ecdsa", "ecdsa", Some(256));
+    let ed25519 = keys::keygen(dir.path(), "ed25519", "ed25519", None);
+    let openssh = "-----BEGIN OPENSSH PRIVATE KEY-----";
+    for (name, from, format, first) in [
+        ("rsa-openssh", &rsa, None, openssh),
+        (
+            "rsa-pem",
+            &rsa,
+            Some("PEM"),
+            "-----BEGIN RSA PRIVATE KEY-----",
+        ),
+        (
+            "rsa-pkcs8",
+            &rsa,
+            Some("PKCS8"),
+            "-----BEGIN PRIVATE KEY-----",
+        ),
+        ("ecdsa-openssh", &ecdsa, None, openssh),
+        (
+            "ecdsa-pem",
+            &ecdsa,
+            Some("PEM"),
+            "-----BEGIN EC PRIVATE KEY-----",
+        ),
+        (
+            "ecdsa-pkcs8",
+            &ecdsa,
+            Some("PKCS8"),
+            "-----BEGIN PRIVATE KEY-----",
+        ),
+        ("ed25519-openssh", &ed25519, None, openssh),
+    ] {
+        let plain = dir.path().join(name);
+        fs::copy(from, &plain).unwrap();
+        rewrite(&plain, format, "");
+        let text = fs::read_to_string(&plain).unwrap();
+        assert!(text.starts_with(first), "{name}: {text}");
+        check(text).unwrap_or_else(|error| panic!("{name}: {error}"));
+        let locked = dir.path().join(format!("{name}-locked"));
+        fs::copy(&plain, &locked).unwrap();
+        rewrite(&locked, format, "fixture-passphrase");
+        let text = fs::read_to_string(&locked).unwrap();
+        assert!(encrypted_limit(check(text.clone())), "{name}: {text}");
+    }
 }

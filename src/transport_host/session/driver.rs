@@ -181,6 +181,8 @@ pub(crate) struct SshLimitFailure {
     port: u16,
     /// The `known_hosts` file the endpoint read and where its home came from, which a host-key limit prints.
     known_hosts: Option<KnownHostsFile>,
+    /// The key file the open selected, as the user can name it to a command, which a key-file limit prints.
+    key_file: Option<String>,
 }
 impl SshLimitFailure {
     pub(crate) fn model_error(&self) -> crate::model::ModelError {
@@ -192,11 +194,12 @@ impl SshLimitFailure {
 }
 impl std::fmt::Display for SshLimitFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(
-            &self
-                .limit
-                .reason(&self.host, self.port, self.known_hosts.as_ref()),
-        )
+        f.write_str(&self.limit.reason(
+            &self.host,
+            self.port,
+            self.known_hosts.as_ref(),
+            self.key_file.as_deref(),
+        ))
     }
 }
 impl std::error::Error for SshLimitFailure {}
@@ -297,6 +300,27 @@ impl std::error::Error for SshTrustFailure {
         Some(self.found.as_ref().unwrap_or(&HostKeyRefused::NotListed))
     }
 }
+/// The key file an open selected, as the user can give it to a command: an absolute path or a `~/` path as it was
+/// written, a relative one under the base its request came from (the directory the command was run in). An open that
+/// selected no key file names none.
+fn key_file_name(identity: &gwz_transport::protocol::Identity) -> Option<String> {
+    use gwz_transport::protocol::IdentityMode;
+    if identity.mode != IdentityMode::ExplicitKey {
+        return None;
+    }
+    let raw = identity.key_path.as_deref()?;
+    let path = std::path::Path::new(raw);
+    if raw.starts_with('~') || path.is_absolute() {
+        return Some(raw.to_owned());
+    }
+    Some(match identity.path_base.as_deref() {
+        Some(base) => std::path::Path::new(base)
+            .join(path)
+            .to_string_lossy()
+            .into_owned(),
+        None => raw.to_owned(),
+    })
+}
 /// The error for an open that failed with `failure` for `host` and `port`,
 /// under the stall bound `stall_ms`; `agent` is the source its runtime chose.
 fn open_failure_io(
@@ -306,6 +330,7 @@ fn open_failure_io(
     host: String,
     port: u16,
     known_hosts: Option<KnownHostsFile>,
+    key_file: Option<String>,
     agent: &AgentSource,
     trust: Option<HostKeyRefused>,
 ) -> io::Error {
@@ -334,6 +359,7 @@ fn open_failure_io(
                 host,
                 port,
                 known_hosts,
+                key_file,
             },
         ),
         None if HostKeyRefused::of_failure(&failure) => io::Error::new(
@@ -427,7 +453,7 @@ cfg_if::cfg_if! {
                 ..Default::default()
             };
             let said = |note: Option<EndNote>| {
-                let mut reported = open_failure_io(stall(), None, 9_000, "github.com".into(), 22, None, &AgentSource::None, None);
+                let mut reported = open_failure_io(stall(), None, 9_000, "github.com".into(), 22, None, None, &AgentSource::None, None);
                 note_ssh_end(&mut reported, note, "github.com", 22);
                 reported.get_ref().unwrap().downcast_ref::<SshOpenFailure>().unwrap().to_string()
             };
@@ -627,25 +653,64 @@ cfg_if::cfg_if! {
         fn an_open_that_met_a_platform_limit_says_what_and_how_to_fix_it_for_its_destination() {
             use crate::git::endpoint::ssh_limits::SshLimit;
             use gwz_transport::protocol::AuthMethod;
-            for (limit, method) in [(SshLimit::HostKeys, AuthMethod::None), (SshLimit::KeyFile, AuthMethod::SshKey)] {
+            // Each limit as the open's facts show it: a host key's before any credential, a key file's form after the
+            // key was offered, a passphrase's when the key file was admitted, before any credential.
+            for (limit, method, offered) in [
+                (SshLimit::HostKeys, AuthMethod::None, false),
+                (SshLimit::KeyFile, AuthMethod::SshKey, true),
+                (SshLimit::EncryptedKeyFile, AuthMethod::SshKey, false),
+            ] {
                 let mut failure = limit.failure();
-                failure.facts = Some(Facts { method, ..Facts::default() });
+                failure.facts = Some(Facts { method, credential_offered: offered, ..Facts::default() });
                 let file = crate::git::endpoint::ssh_home::KnownHostsFile {
                     path: std::path::PathBuf::from("known_hosts_of_the_open"),
                     source: crate::git::endpoint::ssh_home::HomeSource::UserProfile,
                 };
-                let reported = open_failure_io(failure, Some((1, 4)), 9_000, "git.example.com".into(), 2222, Some(file.clone()), &AgentSource::None, None);
+                let key_file = Some("keys/id_work".to_owned());
+                let reported = open_failure_io(failure, Some((1, 4)), 9_000, "git.example.com".into(), 2222, Some(file.clone()), key_file.clone(), &AgentSource::None, None);
                 assert_eq!(reported.kind(), io::ErrorKind::Unsupported, "{limit:?}");
-                let words = limit.reason("git.example.com", 2222, Some(&file));
+                let words = limit.reason("git.example.com", 2222, Some(&file), key_file.as_deref());
                 assert_eq!(reported.to_string(), words, "{limit:?}");
                 let failed = reported.get_ref().unwrap().downcast_ref::<SshLimitFailure>().unwrap();
                 let model = failed.model_error();
                 assert_eq!(model.code, crate::model::ErrorCode::UnsupportedOperation);
                 assert_eq!(model.message, words);
             }
+            // The passphrase's words name the key file the open selected.
+            let mut failure = SshLimit::EncryptedKeyFile.failure();
+            failure.facts = Some(Facts { method: AuthMethod::SshKey, ..Facts::default() });
+            let reported = open_failure_io(failure, None, 9_000, "git.example.com".into(), 22, None, Some("keys/id_work".into()), &AgentSource::None, None);
+            assert!(reported.to_string().contains("keys/id_work"), "{reported}");
+            assert!(reported.to_string().contains("protected by a passphrase"), "{reported}");
             // The driver's own refusal of the same code carries no facts and keeps its generic display.
-            let own = open_failure_io(limit_free_unsupported(), None, 9_000, "git.example.com".into(), 22, None, &AgentSource::None, None);
+            let own = open_failure_io(limit_free_unsupported(), None, 9_000, "git.example.com".into(), 22, None, None, &AgentSource::None, None);
             assert!(own.get_ref().unwrap().downcast_ref::<SshOpenFailure>().is_some());
+        }
+
+        /// The key file an open selected is named as the user can give it to a command: an absolute path as it was
+        /// written, a relative one under the base the request came from, `~/` as written.
+        #[test]
+        fn the_selected_key_file_is_named_as_a_command_can_take_it() {
+            use gwz_transport::protocol::{Identity, IdentityMode};
+            let identity = |mode, key_path: Option<&str>, path_base: Option<&str>| Identity {
+                mode,
+                key_path: key_path.map(str::to_owned),
+                path_base: path_base.map(str::to_owned),
+            };
+            let absolute = std::env::temp_dir().join("id_work");
+            let absolute_text = absolute.to_string_lossy().into_owned();
+            let explicit = IdentityMode::ExplicitKey;
+            assert_eq!(key_file_name(&identity(explicit, Some(&absolute_text), None)), Some(absolute_text.clone()));
+            assert_eq!(key_file_name(&identity(explicit, Some("~/.ssh/id_work"), None)), Some("~/.ssh/id_work".to_owned()));
+            let base = std::env::temp_dir();
+            assert_eq!(
+                key_file_name(&identity(explicit, Some("keys/id_work"), Some(&base.to_string_lossy()))),
+                Some(base.join("keys/id_work").to_string_lossy().into_owned())
+            );
+            // A relative path with no base is what was typed; an open that selected no key file names none.
+            assert_eq!(key_file_name(&identity(explicit, Some("id_work"), None)), Some("id_work".to_owned()));
+            assert_eq!(key_file_name(&identity(IdentityMode::Ambient, Some("id_work"), None)), None);
+            assert_eq!(key_file_name(&identity(explicit, None, None)), None);
         }
 
         /// The agent step's failure is worded from the agent the runtime chose, which only the host knows (plan step
@@ -663,7 +728,7 @@ cfg_if::cfg_if! {
                 ..Failure::default()
             };
             let source = AgentSource::Refused(refusal.clone());
-            let reported = open_failure_io(step(false, AuthMethod::SshAgent), Some((1, 4)), 9_000, "git.example.com".into(), 22, None, &source, None);
+            let reported = open_failure_io(step(false, AuthMethod::SshAgent), Some((1, 4)), 9_000, "git.example.com".into(), 22, None, None, &source, None);
             assert_eq!(reported.kind(), io::ErrorKind::Unsupported);
             assert_eq!(reported.to_string(), refusal.to_string());
             let failed = reported.get_ref().unwrap().downcast_ref::<AgentFailure>().unwrap();
@@ -672,11 +737,11 @@ cfg_if::cfg_if! {
             assert_eq!(model.message, refusal.to_string());
             // A failure that was not the agent step, or that came after a key was offered, keeps its generic words.
             for other in [step(false, AuthMethod::None), step(true, AuthMethod::SshAgent), step(false, AuthMethod::Gh)] {
-                let generic = open_failure_io(other, None, 9_000, "git.example.com".into(), 22, None, &source, None);
+                let generic = open_failure_io(other, None, 9_000, "git.example.com".into(), 22, None, None, &source, None);
                 assert!(generic.get_ref().unwrap().downcast_ref::<SshOpenFailure>().is_some());
             }
             // So does a source with no words of its own.
-            let generic = open_failure_io(step(false, AuthMethod::SshAgent), None, 9_000, "git.example.com".into(), 22, None, &AgentSource::None, None);
+            let generic = open_failure_io(step(false, AuthMethod::SshAgent), None, 9_000, "git.example.com".into(), 22, None, None, &AgentSource::None, None);
             assert!(generic.get_ref().unwrap().downcast_ref::<SshOpenFailure>().is_some());
         }
 
@@ -694,22 +759,22 @@ cfg_if::cfg_if! {
                 ..Failure::default()
             };
             let host = || "git.example.com".to_owned();
-            let timed = open_failure_io(step(ErrorCode::Timeout, Some(SetupFailureCause::Stall), true), Some((2, 4)), 9_000, host(), 22, None, &source, None);
+            let timed = open_failure_io(step(ErrorCode::Timeout, Some(SetupFailureCause::Stall), true), Some((2, 4)), 9_000, host(), 22, None, None, &source, None);
             assert_eq!(timed.kind(), io::ErrorKind::TimedOut);
             assert!(timed.to_string().starts_with("Pageant did not answer within 9 seconds (the SSH stall limit, set by --ssh-timeout)."), "{timed}");
             assert!(timed.to_string().ends_with("(attempt 2 of 4)"), "{timed}");
             let failed = timed.get_ref().unwrap().downcast_ref::<AgentFailure>().unwrap();
             assert!(failed.reported().is_none(), "a timeout is not a typed refusal");
-            let empty = open_failure_io(step(ErrorCode::Authentication, None, false), None, 9_000, host(), 22, None, &source, None);
+            let empty = open_failure_io(step(ErrorCode::Authentication, None, false), None, 9_000, host(), 22, None, None, &source, None);
             assert_eq!(empty.kind(), io::ErrorKind::PermissionDenied);
             assert!(empty.to_string().starts_with("Pageant has no key this transport can use"), "{empty}");
             assert!(empty.get_ref().unwrap().source().is_some_and(|cause| cause.is::<crate::git::endpoint::ssh_remote::AuthenticationRejected>()));
-            let gone = open_failure_io(step(ErrorCode::Unavailable, Some(SetupFailureCause::NotFound), true), None, 9_000, host(), 22, None, &source, None);
+            let gone = open_failure_io(step(ErrorCode::Unavailable, Some(SetupFailureCause::NotFound), true), None, 9_000, host(), 22, None, None, &source, None);
             assert_eq!(gone.kind(), io::ErrorKind::Unsupported);
             let failed = gone.get_ref().unwrap().downcast_ref::<AgentFailure>().unwrap();
             assert_eq!(failed.reported().unwrap().code, crate::model::ErrorCode::UnsupportedOperation);
             // The same failures of another source keep their generic words.
-            let generic = open_failure_io(step(ErrorCode::Timeout, Some(SetupFailureCause::Stall), true), None, 9_000, host(), 22, None, &AgentSource::None, None);
+            let generic = open_failure_io(step(ErrorCode::Timeout, Some(SetupFailureCause::Stall), true), None, 9_000, host(), 22, None, None, &AgentSource::None, None);
             assert!(generic.get_ref().unwrap().downcast_ref::<SshOpenFailure>().is_some());
         }
 
@@ -725,7 +790,7 @@ cfg_if::cfg_if! {
                 ..Failure::default()
             };
             let source = AgentSource::NamedPipe(PipeName::default_pipe());
-            let reported = open_failure_io(missing, Some((1, 4)), 9_000, "git.example.com".into(), 22, None, &source, None);
+            let reported = open_failure_io(missing, Some((1, 4)), 9_000, "git.example.com".into(), 22, None, None, &source, None);
             let failed = reported.get_ref().unwrap().downcast_ref::<AgentFailure>().unwrap();
             assert!(failed.to_string().starts_with("The OpenSSH Authentication Agent service (ssh-agent) is not running."), "{failed}");
         }
@@ -738,7 +803,7 @@ cfg_if::cfg_if! {
                 source: HomeSource::HomeDrivePath,
             };
             let failure = HostKeyRefused::failure();
-            let reported = open_failure_io(failure.clone(), Some((1, 4)), 9_000, "git.example.com".into(), 2222, Some(file.clone()), &AgentSource::None, None);
+            let reported = open_failure_io(failure.clone(), Some((1, 4)), 9_000, "git.example.com".into(), 2222, Some(file.clone()), None, &AgentSource::None, None);
             assert_eq!(reported.kind(), io::ErrorKind::PermissionDenied);
             let words = HostKeyRefused::reason("git.example.com", 2222, Some(&file), WINDOWS_SHELLS);
             assert_eq!(reported.to_string(), words);
@@ -748,7 +813,7 @@ cfg_if::cfg_if! {
             assert!(cause.is::<SshTrustFailure>());
             assert!(cause.source().is_some_and(|source| source.is::<HostKeyRefused>()));
             // Without a known file the words still stand.
-            let bare = open_failure_io(failure, None, 9_000, "h.example".into(), 22, None, &AgentSource::None, None);
+            let bare = open_failure_io(failure, None, 9_000, "h.example".into(), 22, None, None, &AgentSource::None, None);
             assert!(bare.to_string().contains("h.example"));
         }
 
@@ -760,7 +825,7 @@ cfg_if::cfg_if! {
                 source: HomeSource::Home,
             };
             for found in [HostKeyRefused::NotListed, HostKeyRefused::Changed { line: Some(3) }, HostKeyRefused::Changed { line: None }] {
-                let reported = open_failure_io(HostKeyRefused::failure(), None, 9_000, "h.example".into(), 22, Some(file.clone()), &AgentSource::None, Some(found));
+                let reported = open_failure_io(HostKeyRefused::failure(), None, 9_000, "h.example".into(), 22, Some(file.clone()), None, &AgentSource::None, Some(found));
                 assert_eq!(reported.kind(), io::ErrorKind::PermissionDenied);
                 assert_eq!(reported.to_string(), found.words("h.example", 22, Some(&file), WINDOWS_SHELLS));
                 // The remote adapter still finds the rejection, and the finding rides in it.
