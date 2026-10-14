@@ -8,7 +8,7 @@ use crate::git::endpoint::{
     agent_job::Supervisor,
     cut_proxy::CutProxy,
     ssh_channel::GitService,
-    ssh_fixture::SshdFixture,
+    ssh_fixture::{DialRetries, SshdFixture},
     ssh_key_snapshot::Registry,
     ssh_setup::{Authenticated, Setup, SetupConnector},
     ssh_worker::Endpoint,
@@ -33,11 +33,10 @@ fn config() -> Config {
     }
 }
 
-#[test]
-fn a_fresh_retry_after_idle_loss_takes_one_place_from_the_hosts_supervisor() {
+fn fresh_retry(retries: DialRetries) {
     let fixture = SshdFixture::new();
     let proxy = Arc::new(CutProxy::start(fixture.port));
-    let dial = Arc::new(fixture.dialer(proxy.port));
+    let dial = Arc::new(fixture.dialer_counting(proxy.port, retries.clone()));
     let supervisor = Supervisor::new();
     // The places the supervisor had taken as each setup ran inside its job.
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -96,12 +95,16 @@ fn a_fresh_retry_after_idle_loss_takes_one_place_from_the_hosts_supervisor() {
     assert!(!exchange().reused);
     let deadline = Instant::now() + Duration::from_secs(5);
     while endpoint.pool().counts().idle != 1 {
-        assert!(Instant::now() < deadline, "the session is idle");
+        assert!(
+            Instant::now() < deadline,
+            "the session is idle: the pool counts {:?}",
+            endpoint.pool().counts()
+        );
         thread::sleep(Duration::from_millis(5));
     }
     proxy.arm_existing();
     assert!(!exchange().reused, "the dead session was replaced");
-    assert_eq!(proxy.connections(), 2);
+    assert_eq!(retries.sessions_in(proxy.connections()), 2);
     assert_eq!(
         *seen.lock().unwrap(),
         [1, 1],
@@ -109,8 +112,23 @@ fn a_fresh_retry_after_idle_loss_takes_one_place_from_the_hosts_supervisor() {
     );
     let deadline = Instant::now() + Duration::from_secs(5);
     while supervisor.taken() != 0 {
-        assert!(Instant::now() < deadline, "every place was returned");
+        assert!(
+            Instant::now() < deadline,
+            "every place was returned: {} still taken",
+            supervisor.taken()
+        );
         thread::sleep(Duration::from_millis(5));
     }
     endpoint.shutdown();
+}
+
+#[test]
+fn a_fresh_retry_after_idle_loss_takes_one_place_from_the_hosts_supervisor() {
+    fresh_retry(DialRetries::default());
+}
+
+#[test]
+fn a_fresh_retry_after_idle_loss_takes_one_place_from_the_hosts_supervisor_when_each_first_key_exchange_fails()
+ {
+    fresh_retry(DialRetries::failing_key_exchanges());
 }

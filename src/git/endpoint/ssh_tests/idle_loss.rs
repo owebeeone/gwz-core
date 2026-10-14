@@ -6,7 +6,7 @@ use super::attachment;
 use crate::git::endpoint::{
     cut_proxy::CutProxy,
     ssh_channel::GitService,
-    ssh_fixture::SshdFixture,
+    ssh_fixture::{DialRetries, SshdFixture},
     ssh_key_snapshot::Registry,
     ssh_setup::{Authenticated, Setup, SetupConnector},
     ssh_worker::Endpoint,
@@ -39,16 +39,18 @@ struct Case {
     fixture: SshdFixture,
     proxy: Arc<CutProxy>,
     endpoint: Endpoint,
+    retries: DialRetries,
 }
 impl Case {
-    /// `arm_new`: each new session dies when it first sends after its setup.
-    fn new(arm_new: bool) -> Self {
-        Self::with_config(arm_new, config())
+    /// `arm_new`: each new session dies when it first sends after its setup. `retries`: how the dialer's retried
+    /// connections are counted, and whether each dial's first key exchange is made to fail.
+    fn new(arm_new: bool, retries: DialRetries) -> Self {
+        Self::with_config(arm_new, config(), retries)
     }
-    fn with_config(arm_new: bool, config: Config) -> Self {
+    fn with_config(arm_new: bool, config: Config, retries: DialRetries) -> Self {
         let fixture = SshdFixture::new();
         let proxy = Arc::new(CutProxy::start(fixture.port));
-        let dial = Arc::new(fixture.dialer(proxy.port));
+        let dial = Arc::new(fixture.dialer_counting(proxy.port, retries.clone()));
         let armed = proxy.clone();
         let endpoint = Endpoint::with_registry(
             config,
@@ -82,7 +84,14 @@ impl Case {
             fixture,
             proxy,
             endpoint,
+            retries,
         }
+    }
+    /// The sessions the proxy's connections carried: its connections less the ones a dial abandoned and replaced
+    /// (`DialRetries`), as a key exchange that libssh2 ended on its own side, which Windows CNG does about once in a
+    /// hundred.
+    fn sessions_dialed(&self) -> usize {
+        self.retries.sessions_in(self.proxy.connections())
     }
     fn key(&self) -> Key {
         Key::ssh(&self.fixture.user, "127.0.0.1", self.fixture.port)
@@ -107,7 +116,13 @@ impl Case {
     fn wait_for(&self, what: &str, done: impl Fn(&Self) -> bool) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while !done(self) {
-            assert!(Instant::now() < deadline, "{what}");
+            assert!(
+                Instant::now() < deadline,
+                "{what}: the pool counts {:?}, the proxy accepted {} connections, {} of them sessions",
+                self.endpoint.pool().counts(),
+                self.proxy.connections(),
+                self.sessions_dialed()
+            );
             thread::sleep(Duration::from_millis(5));
         }
     }
@@ -118,9 +133,8 @@ impl Drop for Case {
     }
 }
 
-#[test]
-fn the_server_closing_an_idle_session_frees_its_slot_with_no_open() {
-    let case = Case::new(false);
+fn closing_an_idle_session(retries: DialRetries) {
+    let case = Case::new(false, retries);
     assert!(!case.exchange().unwrap().reused);
     case.wait_for("the session is idle", |case| {
         case.endpoint.pool().counts().idle == 1
@@ -130,12 +144,22 @@ fn the_server_closing_an_idle_session_frees_its_slot_with_no_open() {
         case.endpoint.pool().counts().total() == 0
     });
     assert!(!case.exchange().unwrap().reused);
-    assert_eq!(case.proxy.connections(), 2);
+    assert_eq!(case.sessions_dialed(), 2);
 }
 
 #[test]
-fn a_reused_session_dying_at_its_channel_open_is_replaced_by_a_fresh_one() {
-    let case = Case::new(false);
+fn the_server_closing_an_idle_session_frees_its_slot_with_no_open() {
+    closing_an_idle_session(DialRetries::default());
+}
+
+#[test]
+fn the_server_closing_an_idle_session_frees_its_slot_with_no_open_when_each_first_key_exchange_fails()
+ {
+    closing_an_idle_session(DialRetries::failing_key_exchanges());
+}
+
+fn replacing_a_reused_session(retries: DialRetries) {
+    let case = Case::new(false, retries);
     case.exchange().unwrap();
     case.wait_for("the session is idle", |case| {
         case.endpoint.pool().counts().idle == 1
@@ -144,16 +168,26 @@ fn a_reused_session_dying_at_its_channel_open_is_replaced_by_a_fresh_one() {
     let opened = case.exchange().unwrap();
     assert!(!opened.reused);
     assert!(opened.facts.credential_offered);
-    assert_eq!(case.proxy.connections(), 2);
+    assert_eq!(case.sessions_dialed(), 2);
+}
+
+#[test]
+fn a_reused_session_dying_at_its_channel_open_is_replaced_by_a_fresh_one() {
+    replacing_a_reused_session(DialRetries::default());
+}
+
+#[test]
+fn a_reused_session_dying_at_its_channel_open_is_replaced_by_a_fresh_one_when_each_first_key_exchange_fails()
+ {
+    replacing_a_reused_session(DialRetries::failing_key_exchanges());
 }
 
 /// Two idle sessions, both of which die at their channel open: the open that
 /// leases one is retried on a fresh connection, which never leases the other
 /// idle one (P3-2 of the idle-loss State review). Were the retry not fresh, it
 /// would lease the second dead session and use it up.
-#[test]
-fn the_retry_after_a_dead_lease_is_fresh_and_leaves_another_idle_session_alone() {
-    let case = Case::with_config(false, sessions(3));
+fn retry_after_a_dead_lease(retries: DialRetries) {
+    let case = Case::with_config(false, sessions(3), retries);
     // Two exchanges at once, so that the pool opens two sessions.
     let repository = case.fixture.repository.to_str().unwrap();
     let mut both = Vec::new();
@@ -183,22 +217,42 @@ fn the_retry_after_a_dead_lease_is_fresh_and_leaves_another_idle_session_alone()
     case.proxy.arm_existing();
     let opened = case.exchange().unwrap();
     assert!(!opened.reused);
-    assert_eq!(case.proxy.connections(), 3);
+    assert_eq!(case.sessions_dialed(), 3);
     case.wait_for("the new session is idle beside the untouched one", |case| {
         case.endpoint.pool().counts().idle == 2
     });
 }
 
 #[test]
-fn a_fresh_session_dying_at_its_channel_open_fails_the_open() {
-    let case = Case::new(true);
+fn the_retry_after_a_dead_lease_is_fresh_and_leaves_another_idle_session_alone() {
+    retry_after_a_dead_lease(DialRetries::default());
+}
+
+#[test]
+fn the_retry_after_a_dead_lease_is_fresh_and_leaves_another_idle_session_alone_when_each_first_key_exchange_fails()
+ {
+    retry_after_a_dead_lease(DialRetries::failing_key_exchanges());
+}
+
+fn fresh_session_dying(retries: DialRetries) {
+    let case = Case::new(true, retries);
     assert!(case.exchange().is_err());
-    assert_eq!(case.proxy.connections(), 1);
+    assert_eq!(case.sessions_dialed(), 1);
+}
+
+#[test]
+fn a_fresh_session_dying_at_its_channel_open_fails_the_open() {
+    fresh_session_dying(DialRetries::default());
+}
+
+#[test]
+fn a_fresh_session_dying_at_its_channel_open_fails_the_open_when_each_first_key_exchange_fails() {
+    fresh_session_dying(DialRetries::failing_key_exchanges());
 }
 
 #[test]
 fn an_open_cancelled_before_its_channel_opens_is_cancelled() {
-    let case = Case::new(false);
+    let case = Case::new(false, DialRetries::default());
     case.exchange().unwrap();
     case.wait_for("the session is idle", |case| {
         case.endpoint.pool().counts().idle == 1
@@ -235,9 +289,8 @@ fn an_open_cancelled_before_its_channel_opens_is_cancelled() {
 /// disposal once returned, to be retried at once for ever with the slot held. Microsoft documents such errors, but
 /// the Windows host used to qualify the transport does not give one here, so this row passes with and without the
 /// fix there; the injected failures in `regression` and in `ssh_connection` are what tell them apart.
-#[test]
-fn a_connection_reset_in_the_middle_of_an_exchange_frees_its_slot_for_the_next_open() {
-    let case = Case::with_config(false, sessions(1));
+fn connection_reset(retries: DialRetries) {
+    let case = Case::with_config(false, sessions(1), retries);
     let (mut stream, opened) = attachment::open(
         &case.endpoint,
         case.key(),
@@ -259,5 +312,18 @@ fn a_connection_reset_in_the_middle_of_an_exchange_frees_its_slot_for_the_next_o
     });
     // The one slot serves the next open, on a new connection.
     assert!(!case.exchange().unwrap().reused);
-    assert_eq!(case.proxy.connections(), 2);
+    assert_eq!(case.sessions_dialed(), 2);
 }
+
+#[test]
+fn a_connection_reset_in_the_middle_of_an_exchange_frees_its_slot_for_the_next_open() {
+    connection_reset(DialRetries::default());
+}
+
+#[test]
+fn a_connection_reset_in_the_middle_of_an_exchange_frees_its_slot_for_the_next_open_when_each_first_key_exchange_fails()
+ {
+    connection_reset(DialRetries::failing_key_exchanges());
+}
+
+mod stress;

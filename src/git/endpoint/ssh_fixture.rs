@@ -23,6 +23,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
+pub(crate) use dial::{DialRetries, dialer, dialer_counting, handshaken, handshaken_counting};
 pub(crate) use ssh_channel::{GitService, SshChannel};
 pub(crate) use ssh_connection::SshConnection;
 
@@ -321,49 +322,24 @@ impl SshdFixture {
         &self,
         port: u16,
     ) -> impl Fn() -> io::Result<SshConnection> + Send + Sync + 'static {
-        dialer(
+        self.dialer_counting(port, DialRetries::default())
+    }
+
+    /// [`Self::dialer`], whose retried connections are counted (and, if `retries` says so,
+    /// injected) as [`DialRetries`] describes.
+    pub(crate) fn dialer_counting(
+        &self,
+        port: u16,
+        retries: DialRetries,
+    ) -> impl Fn() -> io::Result<SshConnection> + Send + Sync + 'static {
+        dialer_counting(
             port,
             self.port,
             self.user.clone(),
             self.known_hosts.clone(),
             self.temp.path().join("client_ed25519"),
+            retries,
         )
-    }
-}
-
-/// An authenticated, nonblocking session through `port`, which may be a proxy in front of the server that listens
-/// on `server_port`: the host key checked is that server's own, from `known_hosts`, and the client authenticates
-/// as `user` with the key file `key`.
-pub(crate) fn dialer(
-    port: u16,
-    server_port: u16,
-    user: String,
-    known_hosts: PathBuf,
-    key: PathBuf,
-) -> impl Fn() -> io::Result<SshConnection> + Send + Sync + 'static {
-    move || {
-        let (mut connection, _) = handshaken(port, 5_000)?;
-        {
-            let session = connection.session();
-            let (host_key, _) = session
-                .host_key()
-                .ok_or_else(|| io::Error::other("sshd did not provide a host key"))?;
-            let host_key = host_key.to_owned();
-            let mut known = session.known_hosts()?;
-            known.read_file(&known_hosts, KnownHostFileKind::OpenSSH)?;
-            if !matches!(
-                known.check_port("127.0.0.1", server_port, &host_key),
-                CheckResult::Match
-            ) {
-                return Err(io::Error::other(HOST_KEY_MISMATCH));
-            }
-            session.userauth_pubkey_file(&user, None, &key, None)?;
-            if !session.authenticated() {
-                return Err(io::Error::other("temporary SSH authentication failed"));
-            }
-        }
-        connection.set_nonblocking()?;
-        Ok(connection)
     }
 }
 
@@ -500,32 +476,13 @@ impl Drop for SshdFixture {
         self.job.terminate();
         let _ = self.child.kill();
         let _ = self.child.wait();
-    }
-}
-
-/// How many times [`handshaken`] connects before it gives up.
-const HANDSHAKE_ATTEMPTS: usize = 6;
-
-/// Connects to `port` and completes the SSH handshake within `timeout_ms`, with a duplicate of the socket for
-/// the caller to watch or break. libssh2 on Windows CNG sometimes ends a key exchange on its own side, about one
-/// connection in a hundred, whatever the server, key exchange method or host key algorithm (the server's log shows
-/// it finished its half and then saw the client close; `Session(-8)`, "Unable to exchange encryption keys"), so a
-/// failure with that code connects afresh; any other failure, and the last attempt's, is returned.
-pub(crate) fn handshaken(port: u16, timeout_ms: u32) -> io::Result<(SshConnection, TcpStream)> {
-    let mut attempt = 1;
-    loop {
-        let stream = TcpStream::connect(("127.0.0.1", port))?;
-        let watch = stream.try_clone()?;
-        let mut connection = SshConnection::new(stream)?;
-        connection.session().set_timeout(timeout_ms);
-        match connection.session().handshake() {
-            Ok(()) => return Ok((connection, watch)),
-            Err(error)
-                if attempt < HANDSHAKE_ATTEMPTS && error.code() == ssh2::ErrorCode::Session(-8) =>
-            {
-                attempt += 1;
+        // A row that failed says what its server saw (the log is only read once the server has ended: a Windows
+        // server holds it without sharing).
+        if thread::panicking() {
+            let log = self.log();
+            if !log.is_empty() {
+                eprintln!("the fixture's sshd logged:\n{log}");
             }
-            Err(error) => return Err(error.into()),
         }
     }
 }
@@ -857,5 +814,7 @@ mod tests {
     }
 }
 
+mod dial;
+mod dial_retry_tests;
 mod port_stress;
 mod port_tests;
