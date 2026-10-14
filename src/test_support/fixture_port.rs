@@ -38,12 +38,13 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
+    // Whether a drawn port is free is `fixture_port`'s own bind; binding it again here would race the other tests'
+    // fixtures, which draw from the same range in parallel (CI run 38546224994 met one: AddrInUse).
     #[test]
-    fn a_fixture_port_is_below_every_range_the_system_hands_out_and_is_free() {
+    fn a_fixture_port_is_below_every_range_the_system_hands_out() {
         for _ in 0..50 {
             let port = fixture_port();
             assert!((FIRST..END).contains(&port), "{port}");
-            drop(TcpListener::bind(("127.0.0.1", port)).unwrap());
         }
     }
 
