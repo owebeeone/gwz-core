@@ -24,12 +24,16 @@
 //! Unix process group.
 use std::{ffi::OsString, path::PathBuf};
 
-/// What one helper is started with. The environment is the child's complete environment.
+mod environment;
+pub(super) use environment::{EnvValue, Unit};
+
+/// What one helper is started with. The environment is the child's complete environment, its values in owners
+/// that wipe them (`environment.rs`).
 pub(super) struct HelperCommand {
     pub(super) program: PathBuf,
     pub(super) args: Vec<OsString>,
     pub(super) directory: PathBuf,
-    pub(super) environment: Vec<(OsString, OsString)>,
+    pub(super) environment: Vec<(OsString, EnvValue)>,
 }
 
 cfg_if::cfg_if! {
@@ -45,14 +49,17 @@ cfg_if::cfg_if! {
             group: Option<u32>,
         }
 
-        /// Starts `command` as the leader of a new process group, with all three standard streams piped.
+        /// Starts `command` as the leader of a new process group, with all three standard streams piped. std's
+        /// `Command` copies each environment value twice (its map, then the `envp` string) and frees both unwiped
+        /// when this returns: the copies the helper-owner contract's OQ-C lists as accepted. The command's own
+        /// values stay in their wiping owners.
         pub(super) fn spawn(command: &HelperCommand) -> io::Result<(HelperChild, ProcessTree)> {
             let mut process = Command::new(&command.program);
             process
                 .current_dir(&command.directory)
                 .args(&command.args)
                 .env_clear()
-                .envs(command.environment.iter().map(|(key, value)| (key, value)))
+                .envs(command.environment.iter().map(|(key, value)| (key, value.as_os_str())))
                 .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())

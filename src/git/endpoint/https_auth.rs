@@ -136,6 +136,7 @@ mod owner;
 mod pipes;
 mod process_tree;
 mod runner;
+mod wiped;
 pub(crate) use owner::AuthOwner;
 use owner::HelperJob;
 use process_tree::{HelperChild, ProcessTree};
