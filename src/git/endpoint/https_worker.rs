@@ -260,7 +260,8 @@ pub(crate) struct Budget {
     cleanup: Duration,
     redirect_hops: usize,
     /// The request rounds the operation's native exchanges have used: the eight are the operation's, not one
-    /// exchange's, so a retry of the open resumes this count (design 8).
+    /// exchange's or one attempt's. The endpoint's retry machine carries the count from an attempt that ended to
+    /// the one it starts next (`Budget::resume_native_rounds`; design 8).
     native_rounds: usize,
     logical_deadline: Option<Instant>,
     logical_started: bool,

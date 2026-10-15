@@ -149,9 +149,10 @@ fn a_redirect_during_the_exchange_ends_it_and_nothing_reaches_the_new_location()
 #[test]
 fn the_eight_rounds_are_the_operations_and_a_retry_does_not_get_eight_more() {
     run(async {
-        // The server always continues the exchange, so an exchange runs until the cap. A second attempt of the
-        // same operation (the setup retry after a network loss, TR2.1) carries the first one's budget: it has no
-        // rounds left, starts no SSPI work, and does not reset the count.
+        // The server always continues the exchange, so an exchange runs until the cap. The client's cap is on the
+        // budget it is given: a second attempt on the first one's budget has no rounds left, starts no SSPI work,
+        // and does not reset the count. That the endpoint's own retry machine hands the second attempt the first
+        // one's count is pinned apart, through the endpoint (`d19_code_p3_2_*` in `https_endpoint`).
         let (server, requests) = server("NTLM", "NTLM YQ==").await;
         let mut endpoint = Endpoint::new(server.config(), None, pool::Config::default()).unwrap();
         let (caller, port) = fake(false, 2);

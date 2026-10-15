@@ -99,36 +99,36 @@ cfg_if::cfg_if! { if #[cfg(test)] {
             assert_eq!(stream.read(&mut bytes).await.unwrap(), 0); stream.close().await.unwrap(); task.await.unwrap();
         });
     }
+    /// A request cancelled while the helper works ends `Cancelled` and never falls back to the logon session. The
+    /// helper's time is its own allowance's, not the network deadline D's (see `d19_state_p2_2_*` in `closure.rs`).
     #[test]
-    fn production_helper_crossing_deadline_or_cancel_never_falls_back() {
+    fn production_helper_cancel_never_falls_back() {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
             use crate::git::endpoint::https_fixture::{Server, input, response};
-            for cancel_request in [false, true] {
-                // Basic is the one challenge the helper is asked about (the logon session answers the others).
-                let server = Server::start(Arc::new(|_| Box::pin(async {
-                    let mut result = response(401, GitService::UploadPackAdvertisement, Bytes::new());
-                    result.headers_mut().insert(WWW_AUTHENTICATE, "Basic realm=x".parse().unwrap()); result
-                }))).await;
-                let dir = tempfile::tempdir().unwrap(); let entered = dir.path().join("entered");
-                let script = format!("touch '{}'; sleep 30; printf 'username=fixture\npassword=fixture\n\n'", crate::git::endpoint::helper_script::script_path(&entered));
-                let helper = crate::git::endpoint::helper_script::git_fixture(dir.path(), &script);
-                let mut endpoint = Endpoint::new(server.config(), Some(helper), pool::Config::default()).unwrap();
-                let (caller, port) = fake(true, 2); endpoint.client.set_native(caller);
-                let mut request = input(&server, GitService::UploadPackAdvertisement); request.policy = AuthPolicy::WindowsConfigured;
-                let client = endpoint.client.clone(); let cancel = CancellationToken::new(); let signal = cancel.clone();
-                let task = tokio::spawn(async move {
-                    let mut budget = client.budget(); budget.connect = Some(Duration::from_millis(if cancel_request { 20_000 } else { 5_000 }));
-                    client.prepare_attempt(request, &cancel, &mut budget, &mut None).await
-                });
-                // Starting a helper takes longer on Windows than the deadline of a test that was written for Unix.
-                let until = Instant::now() + Duration::from_secs(15);
-                while !entered.exists() { assert!(Instant::now() < until, "the helper never started"); tokio::time::sleep(Duration::from_millis(1)).await; }
-                if cancel_request { signal.cancel(); }
-                let (result, connect) = task.await.unwrap(); let error = result.err().unwrap();
-                assert_eq!(error.code, if cancel_request { ErrorCode::Cancelled } else { ErrorCode::Timeout });
-                assert_eq!(connect, FirstConnect::Connected); assert_eq!(port.starts.load(Ordering::Acquire), 0);
-                endpoint.client.finish_operation("operation"); assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
-            }
+            // Basic is the one challenge the helper is asked about (the logon session answers the others).
+            let server = Server::start(Arc::new(|_| Box::pin(async {
+                let mut result = response(401, GitService::UploadPackAdvertisement, Bytes::new());
+                result.headers_mut().insert(WWW_AUTHENTICATE, "Basic realm=x".parse().unwrap()); result
+            }))).await;
+            let dir = tempfile::tempdir().unwrap(); let entered = dir.path().join("entered");
+            let script = format!("touch '{}'; sleep 30; printf 'username=fixture\npassword=fixture\n\n'", crate::git::endpoint::helper_script::script_path(&entered));
+            let helper = crate::git::endpoint::helper_script::git_fixture(dir.path(), &script);
+            let mut endpoint = Endpoint::new(server.config(), Some(helper), pool::Config::default()).unwrap();
+            let (caller, port) = fake(true, 2); endpoint.client.set_native(caller);
+            let mut request = input(&server, GitService::UploadPackAdvertisement); request.policy = AuthPolicy::WindowsConfigured;
+            let client = endpoint.client.clone(); let cancel = CancellationToken::new(); let signal = cancel.clone();
+            let task = tokio::spawn(async move {
+                let mut budget = client.budget(); budget.connect = Some(Duration::from_millis(20_000));
+                client.prepare_attempt(request, &cancel, &mut budget, &mut None).await
+            });
+            // Starting a helper takes longer on Windows than the deadline of a test that was written for Unix.
+            let until = Instant::now() + Duration::from_secs(15);
+            while !entered.exists() { assert!(Instant::now() < until, "the helper never started"); tokio::time::sleep(Duration::from_millis(1)).await; }
+            signal.cancel();
+            let (result, connect) = task.await.unwrap(); let error = result.err().unwrap();
+            assert_eq!(error.code, ErrorCode::Cancelled);
+            assert_eq!(connect, FirstConnect::Connected); assert_eq!(port.starts.load(Ordering::Acquire), 0);
+            endpoint.client.finish_operation("operation"); assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
         });
     }
     #[test]

@@ -632,8 +632,7 @@ impl Client {
                                     destination: destination.base(),
                                     session: input.session.clone(),
                                     operation: input.operation.clone(),
-                                    expires: Instant::now()
-                                        + budget.cleanup.min(Duration::from_secs(5)),
+                                    expires: Instant::now() + budget.cleanup.min(CHALLENGE_HOLD),
                                 });
                                 if input.policy == AuthPolicy::Gh {
                                     let Prepared {
@@ -692,6 +691,9 @@ impl Client {
         }
     }
 }
+/// How long a challenge's connection is kept for the credential that answers it: a lookup that takes longer gives it
+/// back and takes another once the credential is in hand.
+pub(super) const CHALLENGE_HOLD: Duration = Duration::from_secs(5);
 pub(super) fn duration_ms(duration: Duration) -> u64 {
     duration
         .as_millis()

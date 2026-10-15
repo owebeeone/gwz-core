@@ -634,6 +634,7 @@ cfg_if::cfg_if! { if #[cfg(test)] {
     mod capacity_tests;
     mod carrier_tests;
     mod down_tests;
+    mod native_round_tests;
     mod requeue_tests;
     mod retry_tests;
     mod stale_action_tests;
