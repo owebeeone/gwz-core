@@ -114,12 +114,17 @@ fn local_http_and_git_remain_native_compatibility_transports() {
             let target = root.path().join(request_id);
             let target_for_clone = target.clone();
             let url_for_clone = url.clone();
+            // Git for Windows' daemon ends a session with a reset, which can take the end of it from a client that
+            // is busy between two reads (see `test_support::git_daemon_relay`).
             let result = tokio::task::spawn_blocking(move || {
-                backend.clone_repo(&url_for_clone, &target_for_clone)
+                crate::test_support::retry_a_lost_tail(|| {
+                    let _ = std::fs::remove_dir_all(&target_for_clone);
+                    backend.clone_repo(&url_for_clone, &target_for_clone)
+                })
             })
             .await
             .unwrap()
-            .unwrap();
+            .unwrap_or_else(|error| panic!("{request_id}: cloning {url} failed: {error:?}"));
             assert_eq!(result.head.commit, Some(expected_commit.to_string()));
             let refs_backend = request.backend().clone();
             let refs_target = target.clone();
