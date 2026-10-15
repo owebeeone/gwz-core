@@ -43,6 +43,7 @@ pub(crate) mod redirect_log;
 mod serve;
 mod throttle;
 pub(crate) use throttle::Rejection;
+use throttle::Setup;
 
 #[derive(Clone)]
 pub(crate) struct Input {

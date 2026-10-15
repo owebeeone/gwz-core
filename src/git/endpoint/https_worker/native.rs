@@ -9,7 +9,7 @@ mod owners;
 mod sspi;
 
 /// The request rounds one operation's native exchanges may use (design 8).
-const NATIVE_ROUNDS: usize = 8;
+pub(super) const NATIVE_ROUNDS: usize = 8;
 
 pub use sspi::NativeCaller;
 
@@ -402,6 +402,8 @@ cfg_if::cfg_if! { if #[cfg(test)] {
     /// A caller whose logon session never completes, for a server reached by `host`, and the count of the steps
     /// every session of it has taken.
     pub(crate) fn counting_fixture(host: &'static str) -> (NativeCaller, Arc<AtomicUsize>) { tests::counting_caller(host) }
+    /// `counting_fixture`, and the deadline D every exchange of it was started with.
+    pub(crate) fn recording_fixture(host: &'static str) -> (NativeCaller, Arc<AtomicUsize>, Arc<Mutex<Vec<Instant>>>) { tests::recording_caller(host) }
     impl Authenticated {
         pub(crate) fn revoked_for_test(&self) -> bool { self.revoked.load(Ordering::Acquire) }
     }

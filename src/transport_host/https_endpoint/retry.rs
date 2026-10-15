@@ -194,7 +194,10 @@ impl Retries {
             // No verdict for the key, but a Down key's retest that ends so is
             // a failed one: its next is paced 30 s on (§5.5).
             machine.retest_refused(&member, now);
-            if entry.attempts >= allowed {
+            // An open whose operation's native rounds are spent cannot start another exchange: its next attempt
+            // would end `Protocol` before any work, naming nothing of the throttle, so it ends now with the
+            // throttle's own outcome (design 8).
+            if entry.attempts >= allowed || carry.budget.native_rounds_spent() {
                 let facts = failure.facts.clone();
                 let throttle = rejection
                     .throttled

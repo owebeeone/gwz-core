@@ -82,17 +82,18 @@ impl Client {
     pub(in crate::git::endpoint::https_worker) async fn authenticate(
         &self,
         prepared: &mut Prepared,
-        mut response: Response<Incoming>,
+        response: Response<Incoming>,
         key: &RouteKey,
         budget: &mut Budget,
         cancel: &CancellationToken,
+        setup: &mut Setup<'_>,
     ) -> Result<Response<Incoming>, Failure> {
         let offers = Offers::parse(response.headers()).map_err(failure)?;
         // TD1: the logon session answers Negotiate and NTLM, alone or beside Basic or Digest, and the helper is
         // not asked. Only a challenge that has nothing for the logon session goes on to Basic.
         let Some(offer) = offers.select() else {
             return self
-                .answer_basic(prepared, response, &offers, key, budget, cancel)
+                .answer_basic(prepared, response, &offers, key, budget, cancel, setup)
                 .await;
         };
         let mut history = History::new(offer.scheme);
@@ -126,6 +127,18 @@ impl Client {
             .port
             .as_ref()
             .map_err(|kind| with_facts(native_code(*kind), Effect::None, &history.facts))?;
+        // A 401 marked `Connection: close` ends its connection, so the first token goes on a fresh one, whose own
+        // final origin handshake gives the binding (below). A close in the middle of an exchange ends it: the exchange
+        // belongs to its connection, and no other can continue it.
+        let mut response = Some(response);
+        if response
+            .as_ref()
+            .is_some_and(|challenge| prepare::closes(challenge.headers()))
+        {
+            response = None;
+            self.lease_again(prepared, None, setup, budget, cancel)
+                .await?;
+        }
         let connection = prepared
             .lease
             .as_ref()
@@ -214,19 +227,31 @@ impl Client {
                     Header::token(offer.scheme, step.payload.as_bytes()).map_err(failure)?;
                 prepared.authorization = Some(https_auth::SecretHeader::from_bytes(header.bytes()));
                 prepared.opened.facts = history.facts.clone();
-                response = self.auth_send(prepared, response, budget, cancel).await?;
+                response = Some(
+                    self.auth_send(prepared, response.take(), budget, cancel)
+                        .await?,
+                );
                 history.facts = prepared.opened.facts.clone();
             }
             control(cancel, prepared.lease.as_ref().unwrap(), until)
                 .map_err(|code| with_facts(code, Effect::None, &history.facts))?;
-            let status = response.status().as_u16();
+            // No answer: the first step ended with nothing to send on the fresh connection, so there is no
+            // response to consume and nothing the server said.
+            let Some(answer) = response.as_ref() else {
+                return Err(with_facts(
+                    ErrorCode::Authentication,
+                    Effect::None,
+                    &history.facts,
+                ));
+            };
+            let status = answer.status().as_u16();
             history.reject(status);
             prepared.opened.facts = history.facts.clone();
             if status == 200 {
-                validate_content(&response, prepared.input.service)
+                validate_content(answer, prepared.input.service)
                     .map_err(|code| with_facts(code, Effect::None, &history.facts))?;
                 if !history.complete {
-                    let final_offers = Offers::parse(response.headers())
+                    let final_offers = Offers::parse(answer.headers())
                         .map_err(|code| with_facts(code, Effect::None, &history.facts))?;
                     let final_offer = final_offers
                         .native
@@ -273,13 +298,13 @@ impl Client {
                     .map_err(failure)?;
                 prepared.native_route = Some(authenticated);
                 prepared._slot = guard.slot.take();
-                return Ok(response);
+                return Ok(response.take().expect("the answer that was read"));
             }
             // A final answer that is no verdict on the logon identity is not this exchange's to judge: a 403, a 404, a
             // 429 or a 5xx goes to the shared classification of the response (as on every platform), with the facts
             // of the exchange. A redirect, and a 401 that ends the exchange, are its refusals (design 7).
             if is_classified_elsewhere(status) {
-                return Ok(response);
+                return Ok(response.take().expect("the answer that was read"));
             }
             if status != 401 || history.complete {
                 return Err(with_facts(
@@ -288,7 +313,7 @@ impl Client {
                     &history.facts,
                 ));
             }
-            let next = Offers::parse(response.headers())
+            let next = Offers::parse(answer.headers())
                 .map_err(|code| with_facts(code, Effect::None, &history.facts))?;
             let offer = next
                 .native
@@ -329,6 +354,7 @@ impl Client {
         key: &RouteKey,
         budget: &mut Budget,
         cancel: &CancellationToken,
+        setup: &mut Setup<'_>,
     ) -> Result<Response<Incoming>, Failure> {
         if !offers.basic || prepared.input.policy != AuthPolicy::WindowsConfigured {
             // The challenge is what is being refused, so its status is what the refusal reports.
@@ -349,11 +375,26 @@ impl Client {
         // `gh` path asks), and ends at the allowance with the M4 report. D is the network setup clock and does not run
         // while the helper does: the time the lookup took is added to it.
         let lookup_began = Instant::now();
-        // The challenge's connection is kept for the `gh` path's hold (`prepare::CHALLENGE_HOLD`) and no longer.
+        // The challenge's connection is kept for the `gh` path's hold (`prepare::CHALLENGE_HOLD`) and no longer: when
+        // the hold lapses during the lookup the connection is given back then, not when the helper is done, so an
+        // interactive helper does not keep an idle leased connection against its site's room.
         let hold = budget.cleanup.min(prepare::CHALLENGE_HOLD);
-        let credential = self
-            .credential(key, &prepared.destination, budget, cancel)
-            .await?;
+        let mut challenge = Some(response);
+        let credential = {
+            let lookup = self.credential(key, &prepared.destination, budget, cancel);
+            tokio::pin!(lookup);
+            tokio::select! {
+                biased;
+                result = &mut lookup => result?,
+                () = tokio::time::sleep(hold) => {
+                    challenge = None;
+                    if let Some(lapsed) = prepared.lease.take() {
+                        lapsed.finish(Disposition::Discarded)?;
+                    }
+                    lookup.await?
+                }
+            }
+        };
         let lookup = lookup_began.elapsed();
         if let Some(until) = budget.logical_deadline.as_mut() {
             *until += lookup;
@@ -365,15 +406,26 @@ impl Client {
         prepared.authorization = Some(credential.header());
         let scope = credential.scope.clone();
         prepared.credential = Some(credential);
-        // A lookup that outlasts the hold gives the connection back and takes one again with the credential's scope,
-        // as the `gh` path does once the credential is in hand: the server may have closed the idle one.
-        let response = if lookup < hold {
+        // The credential goes on the challenge's connection when it is still held and can carry the request: the
+        // challenge ended with its connection open, the server has not closed it meanwhile, and the request starts on
+        // it. Otherwise the connection is given back and a fresh one, scoped to the credential, carries it (as the
+        // `gh` path does, `prepare.rs`); a credential is never refused for a connection that could not carry it.
+        let mut sent = None;
+        if let Some(challenge) = challenge
+            && self
+                .challenge_usable(prepared, challenge, budget, cancel)
+                .await?
+        {
             prepared.lease.as_ref().unwrap().scope(&scope)?;
-            self.auth_send(prepared, response, budget, cancel).await?
-        } else {
-            self.lease_again(prepared, response, &scope, budget, cancel)
-                .await?;
-            self.send_authorized(prepared, budget, cancel).await?
+            sent = self.send_once(prepared, budget, cancel).await?;
+        }
+        let response = match sent {
+            Some(response) => response,
+            None => {
+                self.lease_again(prepared, Some(&scope), setup, budget, cancel)
+                    .await?;
+                self.send_authorized(prepared, budget, cancel).await?
+            }
         };
         prepared.opened.facts.credential_offered = true;
         let status = response.status().as_u16();
@@ -407,17 +459,18 @@ impl Client {
             .map_err(failure)?;
         Ok(response)
     }
-    /// Gives the challenge's connection up, dropping its unread answer, and takes a fresh one scoped to the
-    /// credential (the `gh` path's checkout once a challenge's hold has lapsed, `prepare.rs`).
+    /// Gives the challenge's connection up and takes a fresh one, scoped to `scope` when the open has a credential
+    /// (the `gh` path's checkout once a challenge's hold has lapsed, `prepare.rs`). The connect is the open's setup as
+    /// the `gh` path's first-hop checkout is: tagged for the limit machine, its failure keeps its origin and is
+    /// judged, and a fresh connect is noted for the open's key (`setup`).
     async fn lease_again(
         &self,
         prepared: &mut Prepared,
-        response: Response<Incoming>,
-        scope: &str,
+        scope: Option<&str>,
+        setup: &mut Setup<'_>,
         budget: &mut Budget,
         cancel: &CancellationToken,
     ) -> Result<(), Failure> {
-        drop(response);
         if let Some(lapsed) = prepared.lease.take() {
             lapsed.finish(Disposition::Discarded)?;
         }
@@ -431,10 +484,10 @@ impl Client {
                 |until| prepare::duration_ms(until.saturating_duration_since(Instant::now())),
             ),
             cancel,
-            Some(scope),
+            scope,
             true,
             true,
-            None,
+            setup.tag(self, &prepared.input.operation),
         );
         let checkout = match budget.logical_deadline {
             Some(until) => tokio::time::timeout_at(until, checkout)
@@ -442,24 +495,38 @@ impl Client {
                 .unwrap_or_else(|_| Err((failure(ErrorCode::Timeout), Phase::Other))),
             None => checkout.await,
         };
-        let lease = checkout.map_err(|(error, _)| with_facts(error.code, error.effect, &facts))?;
+        let lease = checkout.map_err(|(error, phase)| {
+            setup.failed(
+                self,
+                &prepared.input.operation,
+                &prepared.destination,
+                error,
+                phase,
+                &facts,
+            )
+        })?;
+        setup.connected(&lease);
         if let Some(remaining) = budget.connect.as_mut() {
             *remaining = remaining.saturating_sub(lease.connect_elapsed);
         }
         budget.allocation = budget.allocation.saturating_sub(lease.allocation_elapsed);
-        lease.scope(scope)?;
+        if let Some(scope) = scope {
+            lease.scope(scope)?;
+        }
         prepared.opened.connection_id = lease.id.clone();
         prepared.opened.reused = lease.reused;
         prepared.lease = Some(lease);
         Ok(())
     }
-    async fn auth_send(
+    /// Reads a challenge's answer to its end on `prepared`'s connection, and says whether the connection can carry
+    /// the next request: it was not closed by the answer, and has not died.
+    async fn challenge_usable(
         &self,
-        prepared: &mut Prepared,
+        prepared: &Prepared,
         response: Response<Incoming>,
         budget: &mut Budget,
         cancel: &CancellationToken,
-    ) -> Result<Response<Incoming>, Failure> {
+    ) -> Result<bool, Failure> {
         let connection = prepared
             .lease
             .as_ref()
@@ -476,7 +543,7 @@ impl Client {
             &prepared.lease.as_ref().unwrap().cancel,
             budget,
         );
-        let clean = match fixed {
+        match fixed {
             Some(until) => tokio::time::timeout_at(until, draining)
                 .await
                 .map_err(|_| {
@@ -484,8 +551,23 @@ impl Client {
                 })?,
             None => draining.await,
         }
-        .map_err(|code| with_facts(code, Effect::None, &prepared.opened.facts))?;
-        if !clean {
+        .map_err(|code| with_facts(code, Effect::None, &prepared.opened.facts))
+    }
+    /// Sends the next token of an exchange on the connection that carried the one before: the answer to it is read
+    /// to its end first (`response`, if it is not already), and a connection that cannot carry the request ends the
+    /// exchange, which belongs to that connection.
+    async fn auth_send(
+        &self,
+        prepared: &mut Prepared,
+        response: Option<Response<Incoming>>,
+        budget: &mut Budget,
+        cancel: &CancellationToken,
+    ) -> Result<Response<Incoming>, Failure> {
+        if let Some(response) = response
+            && !self
+                .challenge_usable(prepared, response, budget, cancel)
+                .await?
+        {
             return Err(with_facts(
                 ErrorCode::Authentication,
                 Effect::None,
@@ -494,13 +576,26 @@ impl Client {
         }
         self.send_authorized(prepared, budget, cancel).await
     }
-    /// Sends the authenticated request on `prepared`'s connection.
+    /// Sends the authenticated request on `prepared`'s connection, which must carry it: a request that never started
+    /// is an `Io` failure.
     async fn send_authorized(
         &self,
         prepared: &mut Prepared,
         budget: &mut Budget,
         cancel: &CancellationToken,
     ) -> Result<Response<Incoming>, Failure> {
+        self.send_once(prepared, budget, cancel)
+            .await?
+            .ok_or_else(|| with_facts(ErrorCode::Io, Effect::None, &prepared.opened.facts))
+    }
+    /// Sends the authenticated request on `prepared`'s connection, or returns `None` when the connection never
+    /// started it (it had died, or was closing): nothing reached the server, and the credential is not offered.
+    async fn send_once(
+        &self,
+        prepared: &mut Prepared,
+        budget: &mut Budget,
+        cancel: &CancellationToken,
+    ) -> Result<Option<Response<Incoming>>, Failure> {
         let connection = prepared
             .lease
             .as_ref()
@@ -512,6 +607,7 @@ impl Client {
         let (tx, body) = body_channel();
         drop(tx);
         let request = prepared.request(body)?;
+        let offered_before = prepared.opened.facts.credential_offered;
         let mut connection = connection.lock().await;
         let started = Instant::now();
         let result = tokio::select! {
@@ -520,12 +616,17 @@ impl Client {
             result = async {
                 if let Some(until) = budget.logical_deadline { control(cancel, prepared.lease.as_ref().unwrap(), until)?; }
                 prepared.opened.facts.credential_offered |= request.headers().contains_key(AUTHORIZATION);
-                let send = connection.sender.send_request(request);
+                let send = send_request(&mut connection.sender, request);
                 let send = async {
-                    match budget.network {
+                    let sent = match budget.network {
                         Some(remaining) => tokio::time::timeout(remaining, send).await.map_err(|_| ErrorCode::Timeout)?,
                         None => send.await,
-                    }.map_err(|error| classify_hyper_error(&error))
+                    };
+                    match sent {
+                        Ok(response) => Ok(Some(response)),
+                        Err(SendFailure::NotStarted) => Ok(None),
+                        Err(SendFailure::Sent(error)) => Err(classify_hyper_error(&error)),
+                    }
                 };
                 match budget.logical_deadline {
                     Some(until) => tokio::time::timeout_at(until, send).await.map_err(|_| ErrorCode::Timeout)?,
@@ -537,8 +638,12 @@ impl Client {
             *remaining = remaining.saturating_sub(started.elapsed());
         }
         prepared.io_ms = budget.network.map_or(0, prepare::duration_ms);
-        let response =
-            result.map_err(|code| with_facts(code, Effect::None, &prepared.opened.facts))?;
+        let Some(response) =
+            result.map_err(|code| with_facts(code, Effect::None, &prepared.opened.facts))?
+        else {
+            prepared.opened.facts.credential_offered = offered_before;
+            return Ok(None);
+        };
         prepared.opened.facts.http_status = Some(response.status().as_u16() as i64);
         if prepared.protocol_error.load(Ordering::Acquire) {
             return Err(with_facts(
@@ -547,6 +652,6 @@ impl Client {
                 &prepared.opened.facts,
             ));
         }
-        Ok(response)
+        Ok(Some(response))
     }
 }
