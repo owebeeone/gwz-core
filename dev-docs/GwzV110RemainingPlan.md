@@ -74,7 +74,11 @@ B1–B3 run on the Mac and the x86-64 host while B4–B6 hold dabeest.
 ### Phase C: activation (product code)
 
 - **C1. S7.1a:** the candidate manifest's dependencies, `windows-sys` features and TLS target tables into gwz-core's `Cargo.toml`, still behind the switch (no behaviour change; the candidate and ordinary shapes build the same dependency set).
-- **C2. S7.1b:** the protocol pair: name the candidate fields 1.1.0 needs, one generated module, gwz-py's protocol regenerated.
+- **C2. S7.1b:** the protocol pair: name the candidate fields 1.1.0 needs, one generated module, gwz-py's protocol regenerated. **Done 2026-10-16** (dual review GO; the P3 findings closed in the addendum commit):
+  - gwz-core `158c628c` (C2.1: schema, generated Rust, corpus, `check_log_additive.py` pin, candidate files) and `6f0699c9` (review P3s: merge refuses `policy.max_retries` in every build; the receipts' absence comment corrected).
+  - gwz-py `0c8bcc70` (C2.2: regenerated protocol, `check_protocol_drift.py`) and `c5bb918` (the absence comment in `test_transport_reporting.py`).
+  - What C2 put in the ordinary schema is listed under D3 below ("S7.5 Surface list"). C2.3 (this record) also carries the catalog fix: `docs/generate_message_catalog.py` now renders `MISSING_OK` as `yes (absent ok)`, distinct from `optional=True` (`yes`), and has a `--check` mode.
+  - The proposal's re-cut of C3 and C4 (`GwzV110S71ProtocolProposal-DRAFT.md` §5) is not adopted by this plan text yet. C3a (move the 1.2.0-gating sites to `gwz_session_candidate`) has started in lane `c3x`.
 - **C3. S7.1c:** remove the switch from gwz-core's sites (the `cfg_if` arms stay; the native branch stays for unsupported paths and the off switch).
 - **C4. S7.1d:** the same in gwz-cli and gwz-py; `check-cfg` declarations; `prepare.py` retired or inverted; CI's candidate leg becomes the ordinary job (the session leg stays, `gwz_session_candidate` is 1.2.0).
 - **C5. S7.2:** help, the route ledger, migration notes (after C4 and B9).
@@ -86,6 +90,14 @@ C1 and C2 can run in parallel with Phase B; C3 and C4 wait on S7.1's gates (S5.5
 - **D1. S7.3 and WPP 6.4:** clean consumer builds on the three platforms.
 - **D2. S7.4:** observation recheck.
 - **D3. S7.5:** activation and release review, dual plus Surface.
+  - **S7.5 Surface list (from S7.1 C2).** Ordinary-protocol fields S7.1 (1.1.0) names, all `MISSING_OK` (a map without the key decodes as `None`; a null value also decodes as `None`):
+    - `OperationPolicy.max_retries` (tag 9).
+    - `TransportObservation.endpoint_id` (9), `connection_id` (10), `stream_id` (11), `reused` (12).
+  - gwz-py effects (proposal decisions D4 and D5, accepted): `--json` rows for operations that carry a `TransportObservation` gain four keys (`endpoint_id`, `connection_id`, `stream_id`, `reused`; `dataclasses.asdict` emits all four, null when absent). Python code that constructs `OperationPolicy` or `TransportObservation` by keyword must pass the new arguments. Both go into the migration notes (C5).
+  - Absence rule for the four receipts (State review P3-2; use this wording in the Surface entry and the migration note): they are absent unless the transport route reported an open for the row. They are therefore absent on the native route, on a transport-route row whose setup failed or was refused before the open, for remotes the transport does not carry (file, git://, Windows `http://`), and in an older writer's map. Null does not mean "native route".
+  - HTTPS limitation (State review follow-up; a limitation, not a C2 defect): `opened()` runs once per libgit2 request, so one row keeps only the last open's receipts. A fresh connection for the GET followed by a reused connection for the POST reports `reused: true`.
+  - Native route and the ordinary build ignore `max_retries` on network operations; merge refuses it as it refuses every policy field it does not act on.
+  - Pins at C2 (gwz-core `6f0699c9`): `protocol/gwz.taut.py` sha256 `3209bbd7e5b7becb736f2919216eecd15094d706c7d9c30faa6294fd77494bcb` (`protocol/candidate/candidate-generator.json`, `current-core-schema-sha256`). The pre-log projection (the five fields removed) hashes to `sha256:4d377a496c8905293b5e9b53392b70867cf6dafccbb623841a623dbd2d555f14` in both gwz-core's `check_log_additive.py` and gwz-py's `check_protocol_drift.py`; unprojected, the new IR fingerprints as `sha256:cbfdfbcb...`. gwz-py's packaged `gwz.ir.json` sha256 is `5da172e1d955904c6b4b285a3edff95d7a19692df2d9a3ab287b9bce109a42fd`.
 - **D4. WPP 5.5:** gwz-sspi activation review (dual).
 - **D5. WPP 6.5 and Phase 8:** the Windows matrix on the release commit, tags, publish jobs, the post-release check on each host; release-gate dual review.
 
