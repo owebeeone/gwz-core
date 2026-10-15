@@ -38,3 +38,7 @@ Code §3 (cfg-boundary checker coverage of gwz-transport and gwz-sspi; Kerberos 
 ## Re-verdict
 
 One merged revision of the lanes goes back to the same two reviewers with this plan and the diff since the D19 tuple. Each reviewer re-checks its own counterexamples and fills a prior-finding closure table. Round 1 of the two-round cap.
+
+## Outcome of round 1 (2026-10-16)
+
+Re-verdicts: [Code-2](GwzV110PreActivationReview-ReviewCode-2.md) **GO** (P2-1, P2-2, P3-2 closed; P3-1 deferred, accepted; new P3-3, P3-4, P3-5); [State-2](GwzV110PreActivationReview-ReviewState-2.md) **NO-GO** on a new P2-3 (present at the round-1 tuple, missed then; the round-1 P2s closed), with new P3-6 and P3-7, and P3-1, P3-2, P3-5 with the operator. No new architectural root cause. **Deferred and recorded:** Code P3-1 (the SSPI status needs a gwz-transport `FailureDetail` field — 1.2.0 wire list beside D16; the "Reinstall gwz" wording for a policy refusal is a known 1.1.0 limitation for S7.2's notes); the backstop's Cli-placement residue (no holds reported across processes — a wire field, 1.2.0). Round 2: `GwzV110PreActivationReview-RemPlan-2.md`.
