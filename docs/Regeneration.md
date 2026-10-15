@@ -42,7 +42,9 @@ The docs catalog is generated from the taut IR, not from generated Rust:
 python docs/generate_message_catalog.py
 ```
 
-The generator writes `docs/MessageCatalog.md`. It uses the vendored `taut/src`
+The generator writes `docs/MessageCatalog.md`. `--check` writes nothing and exits 1
+when the file differs from a fresh render; `scripts/checks/test_message_catalog.py`
+covers the Optional column and runs `--check`. The generator uses the vendored `taut/src`
 tree when present and sets `SETUPTOOLS_SCM_PRETEND_VERSION=0.6.0` as an import
 workaround for non-version GWZ Git tags. This affects catalog inspection only;
 release protocol generation still uses `protocol/regen.py`.
@@ -54,6 +56,7 @@ Recommended checks after schema or docs changes:
 ```text
 python docs/generate_message_catalog.py
 git diff --exit-code -- docs/MessageCatalog.md
+python docs/generate_message_catalog.py --check
 python protocol/regen.py --check
 cargo test
 ```

@@ -117,6 +117,15 @@ def render_enums(schema) -> list[str]:
     return out
 
 
+def presence(field) -> str:
+    """The Optional cell. `optional` is False, True or taut's MISSING_OK, which is truthy."""
+    from taut.ir.model import MISSING_OK  # importable once load_schema has put taut on sys.path
+
+    if field.optional == MISSING_OK:
+        return "yes (absent ok)"
+    return "yes" if field.optional else "no"
+
+
 def render_messages(schema) -> list[str]:
     out: list[str] = []
     for message in schema.messages.values():
@@ -133,7 +142,7 @@ def render_messages(schema) -> list[str]:
                 field.name,
                 field.tag,
                 type_name(field.type),
-                "yes" if field.optional else "no",
+                presence(field),
                 "yes" if field.transient else "no",
                 field.merge or "-",
             ]
@@ -166,8 +175,7 @@ def render_matrix(schema) -> list[str]:
     return table(["Request", "Response", "Core Handler", "CLI Family", "Contract"], rows)
 
 
-def main() -> None:
-    schema = load_schema()
+def render_catalog(schema) -> str:
     lines: list[str] = [
         "# GWZ Message Catalog",
         "",
@@ -201,7 +209,16 @@ def main() -> None:
     lines.extend(render_matrix(schema))
     lines.extend(["", "## Enums", ""])
     lines.extend(render_enums(schema))
-    lines.extend(["## Messages", ""])
+    lines.extend(
+        [
+            "## Messages",
+            "",
+            "Optional column: `no` = the key is required and the value is not null; `yes` = the key is",
+            "required and the value may be null (an absent key is a `MissingKey` error); `yes (absent ok)` =",
+            "the value may be null and an absent key also decodes as null (`MISSING_OK`).",
+            "",
+        ]
+    )
     lines.extend(render_messages(schema))
     lines.extend(
         [
@@ -215,8 +232,23 @@ def main() -> None:
             "",
         ]
     )
-    OUT_PATH.write_text("\n".join(lines), encoding="utf-8")
+    return "\n".join(lines)
+
+
+def main(argv: list[str]) -> int:
+    check = argv[1:] == ["--check"]
+    if argv[1:] and not check:
+        print(f"usage: {argv[0]} [--check]", file=sys.stderr)
+        return 2
+    text = render_catalog(load_schema())
+    if check:
+        if OUT_PATH.read_text(encoding="utf-8") != text:
+            print(f"{OUT_PATH} is out of date; rerun {argv[0]} without --check", file=sys.stderr)
+            return 1
+        return 0
+    OUT_PATH.write_text(text, encoding="utf-8")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main(sys.argv))

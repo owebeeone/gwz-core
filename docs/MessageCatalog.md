@@ -946,6 +946,10 @@ has no service method and no handler that executes commands.
 
 ## Messages
 
+Optional column: `no` = the key is required and the value is not null; `yes` = the key is
+required and the value may be null (an absent key is a `MissingKey` error); `yes (absent ok)` =
+the value may be null and an absent key also decodes as null (`MISSING_OK`).
+
 ### WorkspaceRef
 
 | Field | Tag | Type | Optional | Transient | Merge |
@@ -1002,7 +1006,7 @@ has no service method and no handler that executes commands.
 | concurrency | 6 | int | yes | no | - |
 | progress_min_interval_ms | 7 | int | yes | no | - |
 | max_connections_per_host | 8 | int | yes | no | - |
-| max_retries | 9 | int | yes | no | - |
+| max_retries | 9 | int | yes (absent ok) | no | - |
 
 ### RemoteSshIdentity
 
@@ -1074,10 +1078,10 @@ has no service method and no handler that executes commands.
 | credential_offered | 6 | bool | no | no | - |
 | authenticated | 7 | bool | yes | no | - |
 | public_key_fingerprint | 8 | str | yes | no | - |
-| endpoint_id | 9 | str | yes | no | - |
-| connection_id | 10 | str | yes | no | - |
-| stream_id | 11 | int | yes | no | - |
-| reused | 12 | bool | yes | no | - |
+| endpoint_id | 9 | str | yes (absent ok) | no | - |
+| connection_id | 10 | str | yes (absent ok) | no | - |
+| stream_id | 11 | int | yes (absent ok) | no | - |
+| reused | 12 | bool | yes (absent ok) | no | - |
 
 ### MemberUrlResolution
 
