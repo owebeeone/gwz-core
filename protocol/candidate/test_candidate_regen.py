@@ -121,8 +121,10 @@ def test_retained_reader_is_pinned_checked_in_baseline():
     # S7.1 (1.1.0) step C2.1 moved the pin: production now carries
     # `OperationPolicy.max_retries` and the four `TransportObservation`
     # receipts. Was 76455b404d2d3396af6bd0f5b6bf2cc69d78d73013b875472b1c8a47598e22c5.
+    # The C2 addendum reworded a receipts comment in the schema (the IR is the same),
+    # which moved the file digest from a7866259f7557d9f147b42e46ed1964dc015c83fa817a9e15c8400942adb107d.
     assert metadata["current-core-schema-sha256"] == (
-        "a7866259f7557d9f147b42e46ed1964dc015c83fa817a9e15c8400942adb107d"
+        "3209bbd7e5b7becb736f2919216eecd15094d706c7d9c30faa6294fd77494bcb"
     )
 
 

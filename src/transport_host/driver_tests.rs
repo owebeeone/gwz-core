@@ -767,7 +767,18 @@ fn cli_authentication_failure_retains_attempt_facts_without_claiming_an_open_str
         .unwrap();
     assert!(row.credential_offered);
     assert_eq!(row.authenticated, Some(false));
-    assert!(row.connection_id.is_none());
+    // The setup was refused before any open: no receipt is reported, though the
+    // credential facts are (S7.1 C2: a null receipt is "no open reported for this
+    // row", which a transport-route failure is as much as the native route).
+    assert_eq!(
+        (
+            row.endpoint_id,
+            row.connection_id,
+            row.stream_id,
+            row.reused
+        ),
+        (None, None, None, None)
+    );
     block_on(request.finish());
     block_on(client.finish());
     block_on(harness.endpoint.shutdown());

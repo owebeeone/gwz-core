@@ -1,6 +1,6 @@
 # S7.1 (1.1.0), step C2: the protocol pair, and how C3 and C4 follow from it — proposal (DRAFT)
 
-Date: 2026-10-16. Status: **draft analysis, uncommitted; no code was changed.** Author: analyst for lane `c2protocol`, at gwz-core `0ba40f63`. Nothing here is decided: §6 lists what needs the operator or a review.
+Date: 2026-10-16. Status: **C2.1/C2.2 accepted at gwz-core `158c628c`, gwz-py `0c8bcc70` after `GwzV110S71Protocol-ReviewCode.md` and `GwzV110S71Protocol-ReviewState.md` reported GO (2026-10-16); their P3s (State P3-1 = Code F1, State P3-2, the null-encoding nit) closed in the addendum commit, Windows receipt `c21-20261016-b`; Code F2 (catalog renders MISSING_OK as optional) goes to C2.3; the stale "candidate adds" text to C3b/C4; the gwz-cli exact-keys row to C5. This accepts C2.1/C2.2 only.** The analysis below was written as a draft, uncommitted, with no code changed. Author: analyst for lane `c2protocol`, at gwz-core `0ba40f63`. Nothing here is decided: §6 lists what needs the operator or a review.
 
 Controlling text: [Amendment 2](GwzTransportReleasePlanAmendment-2.md) lines 276–284 (S7.1 (1.1.0)), [the 1.1.0 amendment](GwzV110PlanAmendment.md) lines 112–120, [the 1.1.0 plan](GwzV110Plan.md) lines 308–315, and [the remaining plan](GwzV110RemainingPlan.md) lines 77–81 (C2 to C4).
 

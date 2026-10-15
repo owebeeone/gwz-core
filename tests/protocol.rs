@@ -91,6 +91,14 @@ fn ordinary_operation_policy_and_observation_carry_the_1_1_0_fields() {
     };
     assert_eq!(entries.last().map(|(tag, _)| *tag), Some(9));
     assert_eq!(entries.last().map(|(_, value)| value), Some(&Cbor::Int(0)));
+    let Cbor::Map(entries) = OperationPolicy::default().to_cbor() else {
+        panic!("a policy encodes as a map");
+    };
+    assert_eq!(
+        entries.iter().map(|(tag, _)| *tag).collect::<Vec<i64>>(),
+        (1..=9).collect::<Vec<i64>>()
+    );
+    assert_eq!(entries.last(), Some(&(9, Cbor::Null)));
 
     let observation = TransportObservation {
         repository_path: "repos/core".to_owned(),

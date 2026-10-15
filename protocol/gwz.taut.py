@@ -1103,8 +1103,10 @@ SCHEMA = schema(
         public_key_fingerprint=F(8, STR, optional=True),
         # Receipts of the transport route (S7.1 (1.1.0) step C2.1): which endpoint
         # and connection served the open, the stream on it, and whether the
-        # connection was reused. Absent on the native route and in an older
-        # writer's map (MISSING_OK).
+        # connection was reused. Absent unless the transport route reported an
+        # open for this row: on the native route, on a transport-route row whose
+        # setup failed or was refused before the open, and in an older writer's
+        # map (MISSING_OK).
         endpoint_id=F(9, STR, optional=MISSING_OK),
         connection_id=F(10, STR, optional=MISSING_OK),
         stream_id=F(11, INT, optional=MISSING_OK),
