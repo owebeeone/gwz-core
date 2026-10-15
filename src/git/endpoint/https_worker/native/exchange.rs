@@ -60,6 +60,12 @@ fn deadline(budget: &Budget) -> Result<Instant, ErrorCode> {
     }
     Ok(deadline)
 }
+/// Whether a final answer to an authenticated request, once it is neither a 200 nor a redirect nor a 401, is
+/// classified by the shared response classification rather than by the exchange: a client or server error that is no
+/// verdict on the identity (403, 404, 429, 5xx).
+fn is_classified_elsewhere(status: u16) -> bool {
+    (400..=599).contains(&status) && status != 401
+}
 fn control(cancel: &CancellationToken, lease: &HttpLease, until: Instant) -> Result<(), ErrorCode> {
     if cancel.is_cancelled() || lease.cancel.is_cancelled() {
         return Err(ErrorCode::Cancelled);
@@ -269,6 +275,12 @@ impl Client {
                 prepared._slot = guard.slot.take();
                 return Ok(response);
             }
+            // A final answer that is no verdict on the logon identity is not this exchange's to judge: a 403, a 404, a
+            // 429 or a 5xx goes to the shared classification of the response (as on every platform), with the facts
+            // of the exchange. A redirect, and a 401 that ends the exchange, are its refusals (design 7).
+            if is_classified_elsewhere(status) {
+                return Ok(response);
+            }
             if status != 401 || history.complete {
                 return Err(with_facts(
                     ErrorCode::Authentication,
@@ -333,29 +345,40 @@ impl Client {
             }
             return Err(refused);
         }
-        let fixed = budget.logical_deadline;
-        let lookup = self.credential(key, &prepared.destination, budget, cancel);
-        let credential = match fixed {
-            Some(until) => tokio::time::timeout_at(until, lookup)
-                .await
-                .map_err(|_| failure(ErrorCode::Timeout))??,
-            None => lookup.await?,
-        };
+        // The lookup is the helper's own time, on its allocation and its interaction allowance (`credential`, as the
+        // `gh` path asks), and ends at the allowance with the M4 report. D is the network setup clock and does not run
+        // while the helper does: the time the lookup took is added to it.
+        let lookup_began = Instant::now();
+        // The challenge's connection is kept for the `gh` path's hold (`prepare::CHALLENGE_HOLD`) and no longer.
+        let hold = budget.cleanup.min(prepare::CHALLENGE_HOLD);
+        let credential = self
+            .credential(key, &prepared.destination, budget, cancel)
+            .await?;
+        let lookup = lookup_began.elapsed();
+        if let Some(until) = budget.logical_deadline.as_mut() {
+            *until += lookup;
+        }
         prepared.opened.facts = Facts {
             method: AuthMethod::Gh,
             ..Default::default()
         };
-        prepared.lease.as_ref().unwrap().scope(&credential.scope)?;
         prepared.authorization = Some(credential.header());
+        let scope = credential.scope.clone();
         prepared.credential = Some(credential);
-        let response = self.auth_send(prepared, response, budget, cancel).await?;
+        // A lookup that outlasts the hold gives the connection back and takes one again with the credential's scope,
+        // as the `gh` path does once the credential is in hand: the server may have closed the idle one.
+        let response = if lookup < hold {
+            prepared.lease.as_ref().unwrap().scope(&scope)?;
+            self.auth_send(prepared, response, budget, cancel).await?
+        } else {
+            self.lease_again(prepared, response, &scope, budget, cancel)
+                .await?;
+            self.send_authorized(prepared, budget, cancel).await?
+        };
         prepared.opened.facts.credential_offered = true;
-        if matches!(response.status().as_u16(), 301 | 302 | 303 | 307 | 308) {
-            // Basic follows TR1.6 OQ4(a): validated discovery at the new
-            // location, with no forwarded header and a new helper lookup.
-            return Ok(response);
-        }
-        if response.status() != 200 {
+        let status = response.status().as_u16();
+        if status == 401 {
+            // The server's rejection of the credential, and only that, marks it rejected.
             prepared
                 .credential
                 .as_ref()
@@ -369,6 +392,12 @@ impl Client {
                 &prepared.opened.facts,
             ));
         }
+        if status != 200 {
+            // A redirect follows TR1.6 OQ4(a): validated discovery at the new location, with no forwarded header and
+            // a new helper lookup. Any other answer (403, 404, 429, 5xx) goes to the shared classification of the
+            // response, as the `gh` path's does.
+            return Ok(response);
+        }
         validate_content(&response, prepared.input.service)
             .map_err(|code| with_facts(code, Effect::None, &prepared.opened.facts))?;
         self.routes
@@ -377,6 +406,52 @@ impl Client {
             .basic_install(key)
             .map_err(failure)?;
         Ok(response)
+    }
+    /// Gives the challenge's connection up, dropping its unread answer, and takes a fresh one scoped to the
+    /// credential (the `gh` path's checkout once a challenge's hold has lapsed, `prepare.rs`).
+    async fn lease_again(
+        &self,
+        prepared: &mut Prepared,
+        response: Response<Incoming>,
+        scope: &str,
+        budget: &mut Budget,
+        cancel: &CancellationToken,
+    ) -> Result<(), Failure> {
+        drop(response);
+        if let Some(lapsed) = prepared.lease.take() {
+            lapsed.finish(Disposition::Discarded)?;
+        }
+        let facts = prepared.opened.facts.clone();
+        let checkout = self.pool.checkout_scoped(
+            Key::https(prepared.destination.host(), prepared.destination.port()),
+            Owner::new(&prepared.input.session, &prepared.input.operation),
+            prepare::duration_ms(budget.allocation),
+            budget.logical_deadline.map_or_else(
+                || budget.connect.map_or(0, prepare::duration_ms),
+                |until| prepare::duration_ms(until.saturating_duration_since(Instant::now())),
+            ),
+            cancel,
+            Some(scope),
+            true,
+            true,
+            None,
+        );
+        let checkout = match budget.logical_deadline {
+            Some(until) => tokio::time::timeout_at(until, checkout)
+                .await
+                .unwrap_or_else(|_| Err((failure(ErrorCode::Timeout), Phase::Other))),
+            None => checkout.await,
+        };
+        let lease = checkout.map_err(|(error, _)| with_facts(error.code, error.effect, &facts))?;
+        if let Some(remaining) = budget.connect.as_mut() {
+            *remaining = remaining.saturating_sub(lease.connect_elapsed);
+        }
+        budget.allocation = budget.allocation.saturating_sub(lease.allocation_elapsed);
+        lease.scope(scope)?;
+        prepared.opened.connection_id = lease.id.clone();
+        prepared.opened.reused = lease.reused;
+        prepared.lease = Some(lease);
+        Ok(())
     }
     async fn auth_send(
         &self,
@@ -417,6 +492,23 @@ impl Client {
                 &prepared.opened.facts,
             ));
         }
+        self.send_authorized(prepared, budget, cancel).await
+    }
+    /// Sends the authenticated request on `prepared`'s connection.
+    async fn send_authorized(
+        &self,
+        prepared: &mut Prepared,
+        budget: &mut Budget,
+        cancel: &CancellationToken,
+    ) -> Result<Response<Incoming>, Failure> {
+        let connection = prepared
+            .lease
+            .as_ref()
+            .unwrap()
+            .connection
+            .as_ref()
+            .unwrap()
+            .clone();
         let (tx, body) = body_channel();
         drop(tx);
         let request = prepared.request(body)?;

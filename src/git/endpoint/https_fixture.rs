@@ -101,8 +101,55 @@ fn identity_parts() -> &'static (Vec<u8>, Arc<ServerConfig>, Vec<u8>) {
         (read("ca.pem"), Arc::new(config), leaf_digest)
     })
 }
+/// Serves one connection, and ends it when it has had no request in flight for `idle`, as a server that closes its
+/// idle keep-alive connections does.
+async fn serve_connection(
+    tls: tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+    connection_id: ConnectionId,
+    handler: Handler,
+    idle: Option<Duration>,
+) {
+    let busy = Arc::new(AtomicUsize::new(0));
+    let last = Arc::new(Mutex::new(Instant::now()));
+    let (in_flight, seen) = (busy.clone(), last.clone());
+    let serving = hyper::server::conn::http1::Builder::new().serve_connection(
+        TokioIo::new(tls),
+        service_fn(move |mut req| {
+            let handler = handler.clone();
+            let (in_flight, seen) = (in_flight.clone(), seen.clone());
+            req.extensions_mut().insert(connection_id);
+            async move {
+                in_flight.fetch_add(1, Ordering::SeqCst);
+                let answer = handler(req).await;
+                *seen.lock().unwrap() = Instant::now();
+                in_flight.fetch_sub(1, Ordering::SeqCst);
+                Ok::<_, Infallible>(answer)
+            }
+        }),
+    );
+    let Some(idle) = idle else {
+        let _ = serving.await;
+        return;
+    };
+    let watchdog = async {
+        loop {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if busy.load(Ordering::SeqCst) == 0 && last.lock().unwrap().elapsed() >= idle {
+                return;
+            }
+        }
+    };
+    tokio::select! {
+        _ = serving => {}
+        _ = watchdog => {}
+    }
+}
 impl Server {
     pub async fn start(handler: Handler) -> Self {
+        Self::start_closing_idle(handler, None).await
+    }
+    /// A server that closes a connection after `idle` without a request in flight.
+    pub async fn start_closing_idle(handler: Handler, idle: Option<Duration>) -> Self {
         let (ca, acceptor) = identity();
         let listener = Loopback::bind();
         let url = format!("https://localhost:{}/repo", listener.port);
@@ -114,7 +161,7 @@ impl Server {
                 tokio::select! {
                     result=listener.accept()=>{let socket=result.unwrap();let connection_id=ConnectionId(count.fetch_add(1,Ordering::SeqCst)+1);let acceptor=acceptor.clone();let handler=handler.clone();children.spawn(async move {
                         if let Ok(tls)=acceptor.accept(socket).await {
-                            let _=hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(tls),service_fn(move |mut req|{let handler=handler.clone();req.extensions_mut().insert(connection_id);async move {Ok::<_,Infallible>(handler(req).await)}})).await;
+                            serve_connection(tls,connection_id,handler,idle).await;
                         }
                     });},
                     _=children.join_next(),if !children.is_empty()=>{},

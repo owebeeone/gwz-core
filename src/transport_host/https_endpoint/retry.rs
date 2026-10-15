@@ -57,12 +57,23 @@ pub(super) struct Held {
     /// Its allocation clock, as the SSH endpoint's queue keeps it: it runs
     /// while the per-host limit holds the open and stops while its key does.
     allocation: AllocationClock,
+    /// The request rounds of native exchanges that the open's earlier attempts used: a later attempt starts afresh
+    /// but its operation's eight rounds are not renewed (design 8).
+    native_rounds: usize,
 }
 impl Held {
     pub(super) fn new(carry: Option<Retry>, now: u64, allocation_ms: i64) -> Self {
         Self {
             carry,
             allocation: AllocationClock::new(now, allocation_ms.max(0) as u64),
+            native_rounds: 0,
+        }
+    }
+    /// An open held for another attempt after one that used `rounds` request rounds of native exchanges.
+    fn after_attempt(now: u64, allocation_ms: i64, rounds: usize) -> Self {
+        Self {
+            native_rounds: rounds,
+            ..Self::new(None, now, allocation_ms)
         }
     }
     /// Drops a carried challenge connection once it lapses, as `step` does
@@ -210,7 +221,11 @@ impl Retries {
                 .open
                 .as_ref()
                 .map_or(0, |open| open.deadlines.allocation_ms);
-            entry.held = Some(Held::new(None, now, allocation));
+            entry.held = Some(Held::after_attempt(
+                now,
+                allocation,
+                carry.budget.native_rounds(),
+            ));
             return None;
         }
         let verdict = setup_retry::classify(&failure, phase);
@@ -244,7 +259,11 @@ impl Retries {
                     .open
                     .as_ref()
                     .map_or(0, |open| open.deadlines.allocation_ms);
-                entry.held = Some(Held::new(None, now, allocation));
+                entry.held = Some(Held::after_attempt(
+                    now,
+                    allocation,
+                    carry.budget.native_rounds(),
+                ));
                 return None;
             }
             // Its own attempts' facts, also when the key finishes it with a
@@ -505,7 +524,7 @@ impl HttpsEndpoint {
                 if left == 0 {
                     fail(entry, setup_retry::allocation_timeout());
                 } else if room {
-                    self.start_attempt(key, held.carry, left, carries_test);
+                    self.start_attempt(key, held.carry, held.native_rounds, left, carries_test);
                 } else {
                     held.lapse();
                     entry.held = Some(held);
@@ -535,11 +554,12 @@ impl HttpsEndpoint {
 
     /// One attempt of `key`'s open, with its own budget, afresh unless it
     /// continues the anonymous attempt `carry`, and the allocation its hold
-    /// `left`.
+    /// `left`. The operation's `native_rounds` already used are not renewed.
     fn start_attempt(
         &mut self,
         key: &Key,
         carry: Option<Retry>,
+        native_rounds: usize,
         left: u64,
         carries_test: Option<TestToken>,
     ) {
@@ -566,6 +586,7 @@ impl HttpsEndpoint {
         carry
             .budget
             .shorten(self.client.budget_for_open(&deadlines));
+        carry.budget.resume_native_rounds(native_rounds);
         self.retries
             .machines
             .machine(&key.0, &entry.pool_key)

@@ -15,6 +15,18 @@ impl Budget {
         self.cleanup = self.cleanup.min(cap.cleanup);
     }
 }
+impl Budget {
+    /// The request rounds the operation's native exchanges have used.
+    pub(crate) fn native_rounds(&self) -> usize {
+        self.native_rounds
+    }
+    /// Resumes the operation's count of native request rounds in this budget, which an attempt that the endpoint
+    /// starts afresh after an earlier one has used some would otherwise begin again at none: the eight rounds are
+    /// the operation's, not one attempt's (design 8).
+    pub(crate) fn resume_native_rounds(&mut self, rounds: usize) {
+        self.native_rounds = self.native_rounds.max(rounds);
+    }
+}
 impl Client {
     pub(crate) fn budget(&self) -> Budget {
         budget_for_config(&self.config, self.io_timeout_ms)

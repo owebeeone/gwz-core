@@ -226,6 +226,14 @@ impl HttpsOpenFailure {
                 "The server refused this account (HTTP 403) after gwz sent your credential helper's credential. The account may lack access to the repository, a token scope, or single sign-on authorization; `git ls-remote` with this member's URL {MEMBER_URL} shows the server's own explanation. See Troubleshooting: HTTPS Credential Failure."
             );
         }
+        if status == Some(403)
+            && facts.is_some_and(|f| f.method == AuthMethod::Sspi && f.credential_offered)
+        {
+            // The `gh` path's refusal, for the credential this open sent: the logon session's, not a helper's.
+            return format!(
+                "The server refused this account (HTTP 403) after gwz sent your Windows sign-in. The account may lack access to the repository; `git ls-remote` with this member's URL {MEMBER_URL} shows the server's own explanation. See Troubleshooting: HTTPS Credential Failure."
+            );
+        }
         if self.failure.code == ErrorCode::Authentication
             && facts.is_some_and(|f| f.method == AuthMethod::Sspi && f.authenticated == Some(false))
             && let Some(scheme) = facts
