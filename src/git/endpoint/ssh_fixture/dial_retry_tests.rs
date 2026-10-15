@@ -3,7 +3,9 @@
 //! and `handshaken` connects afresh; a server has refused the fixture's own key about one dial in six thousand and
 //! the dial connects afresh: CI and host runs of the `idle_loss` rows saw the proxy count one connection more than
 //! the sessions dialed, and a dial fail. `DialRetries` makes either the case of every dial, which a Unix host never
-//! produces by itself.
+//! produces by itself. The rows therefore assert sessions and a lower bound on the abandoned connections, never an
+//! exact count of the connections a proxy accepted, which a Windows host's own key-exchange failures raise at random
+//! (CI runs 38746214496 and 38776718017).
 use super::{DialRetries, SshdFixture, dialer_counting, handshaken_counting};
 use crate::git::endpoint::cut_proxy::CutProxy;
 
@@ -13,10 +15,10 @@ fn a_key_exchange_that_fails_is_a_connection_and_not_a_session() {
     let proxy = CutProxy::start(fixture.port);
     let retries = DialRetries::failing_key_exchanges();
     handshaken_counting(proxy.port, 5_000, &retries, true).unwrap();
-    assert_eq!(proxy.connections(), 2);
+    assert!(retries.abandoned() >= 1);
     assert_eq!(retries.sessions_in(proxy.connections()), 1);
     handshaken_counting(proxy.port, 5_000, &retries, true).unwrap();
-    assert_eq!(proxy.connections(), 4);
+    assert!(retries.abandoned() >= 2);
     assert_eq!(retries.sessions_in(proxy.connections()), 2);
 }
 
@@ -40,7 +42,7 @@ fn a_dial_whose_key_exchange_fails_connects_again() {
     let retries = DialRetries::failing_key_exchanges();
     let dial = fixture.dialer_counting(proxy.port, retries.clone());
     dial().unwrap();
-    assert_eq!(proxy.connections(), 2);
+    assert!(retries.abandoned() >= 1);
     assert_eq!(retries.sessions_in(proxy.connections()), 1);
 }
 
@@ -51,10 +53,10 @@ fn a_dial_whose_key_the_server_refuses_connects_again() {
     let retries = DialRetries::refusing_keys();
     let dial = fixture.dialer_counting(proxy.port, retries.clone());
     dial().unwrap();
-    assert_eq!(proxy.connections(), 2);
+    assert!(retries.abandoned() >= 1);
     assert_eq!(retries.sessions_in(proxy.connections()), 1);
     dial().unwrap();
-    assert_eq!(proxy.connections(), 4);
+    assert!(retries.abandoned() >= 2);
     assert_eq!(retries.sessions_in(proxy.connections()), 2);
 }
 
@@ -66,7 +68,7 @@ fn a_dial_that_is_retried_for_its_key_exchange_and_for_its_key_is_three_connecti
     let retries = DialRetries::failing_key_exchanges().and_refusing_keys();
     let dial = fixture.dialer_counting(proxy.port, retries.clone());
     dial().unwrap();
-    assert_eq!(proxy.connections(), 3);
+    assert!(retries.abandoned() >= 2);
     assert_eq!(retries.sessions_in(proxy.connections()), 1);
 }
 
@@ -87,6 +89,8 @@ fn a_key_the_server_does_not_authorize_fails_the_dial_at_its_first_connection() 
         retries.clone(),
     );
     assert!(dial().is_err());
-    // A refusal that the fixture's own key never gets is the server's answer: it is final at the first connection.
-    assert_eq!(proxy.connections(), 1);
+    // A refusal that the fixture's own key never gets is the server's answer: it is final at the first connection the
+    // server judged. A key exchange libssh2 on Windows CNG ended by itself is abandoned before that (CI run
+    // 38776718017), so the row counts the connections that were not abandoned.
+    assert_eq!(retries.sessions_in(proxy.connections()), 1);
 }

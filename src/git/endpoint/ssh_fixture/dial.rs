@@ -214,6 +214,12 @@ impl DialRetries {
         accepted.saturating_sub(self.abandoned.load(Ordering::Acquire))
     }
 
+    /// The connections the dialer has abandoned and replaced so far: the ones a test forced and any key exchange
+    /// libssh2 on Windows CNG ended by itself.
+    pub(crate) fn abandoned(&self) -> usize {
+        self.abandoned.load(Ordering::Acquire)
+    }
+
     fn abandon(&self) {
         self.abandoned.fetch_add(1, Ordering::AcqRel);
     }
