@@ -295,9 +295,12 @@ impl Session {
                 .map_or(setup_retry::DEFAULT_MAX_RETRIES, |record| {
                     record.max_retries
                 });
-            let deadline = (state.io_timeout_ms != 0)
-                .then(|| open_backstop_ms(state.io_timeout_ms, max_retries))
-                .and_then(|backstop| Instant::now().checked_add(Duration::from_millis(backstop)));
+            let backstop = (state.io_timeout_ms != 0).then(|| {
+                Backstop::new(
+                    open_backstop_ms(state.io_timeout_ms, max_retries),
+                    self.backstop_clock_ms(),
+                )
+            });
             state.streams.insert(
                 id,
                 Entry {
@@ -313,7 +316,7 @@ impl Session {
                         Effect::None
                     },
                     reply: reply.clone(),
-                    deadline,
+                    backstop,
                     pending: None,
                     next: None,
                     observe,

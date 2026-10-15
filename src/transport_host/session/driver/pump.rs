@@ -1,6 +1,44 @@
 use super::*;
 
 impl Session {
+    /// The streams whose opens the endpoint in this process holds now (waiting
+    /// for room, behind a hold of its site, or in its key's retry wait), each
+    /// with its allocation clock stopped, as the endpoint's session published
+    /// them in the handoff. Empty when no open is waiting on a backstop, which
+    /// is nearly always, and for an endpoint beyond the port, which has no
+    /// handoff and reports no holds.
+    pub(in crate::transport_host::session) fn held_opens(state: &State) -> BTreeSet<i64> {
+        let waiting = state
+            .streams
+            .values()
+            .any(|entry| !entry.opened && entry.backstop.is_some());
+        match (&state.handoff, &state.session) {
+            (Some(handoff), Some(session)) if waiting => handoff.holds(session),
+            _ => BTreeSet::new(),
+        }
+    }
+    /// Keeps the handoff's record of the opens this endpoint session holds
+    /// current, for the driver's backstops. Only a change takes the handoff's
+    /// lock.
+    pub(in crate::transport_host::session) fn publish_holds(state: &mut State) {
+        let Some(handoff) = state.holds_to.clone() else {
+            return;
+        };
+        let held: BTreeSet<(String, i64)> = if state.closed {
+            BTreeSet::new()
+        } else {
+            let ssh = state.engine.iter().flat_map(|engine| engine.held_opens());
+            let https = state.https.iter().flat_map(|engine| engine.held_opens());
+            ssh.chain(https).collect()
+        };
+        if held == state.published_holds {
+            return;
+        }
+        let released: Vec<_> = state.published_holds.difference(&held).cloned().collect();
+        let added: Vec<_> = held.difference(&state.published_holds).cloned().collect();
+        handoff.update_holds(&released, &added);
+        state.published_holds = held;
+    }
     /// One pass. `waker` wakes the thread that runs passes; the result says
     /// whether the pass moved a message, so that another pass runs at once.
     pub(in crate::transport_host::session) fn drive(&self, waker: &Waker) -> bool {
@@ -30,6 +68,7 @@ impl Session {
                 Self::close_state(&mut state);
             }
         }
+        Self::publish_holds(&mut state);
         if !state.closed {
             if let Some(owner) = state.owner.clone() {
                 let held = self.test_hooks.should_hold_pump();
@@ -262,15 +301,47 @@ impl Session {
                     .map(|(id, _)| id.clone())
                     .collect();
                 let session = state.session.clone();
+                // The opens an endpoint of this process holds now, with their
+                // allocation clocks stopped: the backstop does not run for them.
+                let holds = Self::held_opens(&state);
+                let backstop_now = self.backstop_clock_ms();
                 let mut failed = false;
-                'streams: for entry in state.streams.values_mut().filter(|_| !held) {
+                'streams: for (id, entry) in state.streams.iter_mut().filter(|_| !held) {
                     entry.peer.advance(now);
                     if !entry.opened {
-                        if entry.deadline.is_some_and(|at| Instant::now() >= at) {
+                        let spent = entry.backstop.as_mut().is_some_and(|backstop| {
+                            backstop.look(backstop_now, holds.contains(id))
+                        });
+                        if spent {
+                            // The backstop ends its own open and no other: the
+                            // request's other streams are not its to cancel,
+                            // so the request is not sealed. The endpoint is told
+                            // to drop this open alone, as the mux's own deadline
+                            // tells it (`Mux::advance`).
+                            let cancel = Envelope {
+                                version: 2,
+                                session_id: session.clone().unwrap_or_default(),
+                                stream_id: *id,
+                                kind: MessageKind::Cancel,
+                                cancel: Some(Cancel {
+                                    reason: gwz_transport::protocol::ErrorCode::Timeout,
+                                }),
+                                ..Default::default()
+                            };
+                            if matches!(
+                                owner.send(&entry.request, &cancel),
+                                Err(mux::Error::WouldBlock)
+                            ) {
+                                // The mux has no room for the Cancel: the open
+                                // stays spent and the next pass ends it.
+                                continue;
+                            }
+                            moved = true;
+                            entry.backstop = None;
                             entry.reply.complete(Err(protocol_failure(
                                 gwz_transport::protocol::ErrorCode::Timeout,
                             )));
-                            let _ = owner.cancel(&entry.request);
+                            entry.stream.cancel();
                             entry.peer.disconnect();
                         }
                         continue;

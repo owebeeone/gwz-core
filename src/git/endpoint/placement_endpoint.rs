@@ -235,6 +235,15 @@ impl PlacementEndpoint {
             || self.opens.iter().any(|job| job.key.0 == request)
             || self.checks.iter().any(|job| job.key.0 == request)
     }
+    /// The streams of the opens this endpoint holds now: queued behind their
+    /// key's retry machine, their site or the operation's limits, each with
+    /// its allocation clock stopped (adaptive concurrency §5.2). An open
+    /// whose attempt is under way is not held.
+    pub(crate) fn held_opens(&self) -> impl Iterator<Item = (String, i64)> + '_ {
+        self.queued_opens
+            .iter()
+            .map(|queued| (queued.envelope.session_id.clone(), queued.key.1))
+    }
     pub(crate) fn pending_request_count(&self, request: &str) -> usize {
         self.requests.keys().filter(|key| key.0 == request).count()
             + self.opens.iter().filter(|job| job.key.0 == request).count()

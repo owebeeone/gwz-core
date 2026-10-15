@@ -41,6 +41,7 @@ cfg_if::cfg_if! {
         mod https_route_scale_tests;
         mod endpoint_environment_tests;
         mod retry_tests;
+        mod backstop_tests;
     }
 }
 

@@ -2,9 +2,11 @@ use super::*;
 use crate::git::endpoint::agent_source::AgentSource;
 use crate::git::endpoint::ssh_host_key::{HostKeyRefused, WINDOWS_SHELLS};
 
+mod backstop;
 pub(in crate::transport_host) mod native_hint;
 mod opening;
 mod pump;
+pub(in crate::transport_host::session) use backstop::Backstop;
 /// The endpoint messages one pass hands to the mux, at most.
 const MAX_HANDOFFS: usize = 64;
 /// How long an open or a check without its own allocation deadline waits for
@@ -18,6 +20,11 @@ const MAX_STREAM_MESSAGES: usize = 8;
 /// waits between them come on top (the retry plan's §5 bound). The cleanup
 /// allowance counts because the endpoint disposes a failed setup, joining
 /// its setup thread, before it reports the failure.
+///
+/// The bound covers attempts, not holds (`backstop.rs`): the time an endpoint
+/// of this process holds the open, with its allocation clock stopped, is not
+/// charged, and the backstop ends only its own stream. The waits between
+/// attempts are holds, so the `wait_bound_ms` term is now margin.
 fn open_backstop_ms(io_timeout_ms: u64, max_retries: u32) -> u64 {
     let attempt = OPEN_ATTEMPT_MS
         .saturating_add(io_timeout_ms)

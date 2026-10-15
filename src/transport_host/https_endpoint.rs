@@ -221,6 +221,16 @@ impl HttpsEndpoint {
     pub(super) fn set_max_retries(&mut self, request: &str, max_retries: u32) {
         self.retries.set_max_retries(request, max_retries);
     }
+    /// The streams of the opens this endpoint holds now: waiting for room on
+    /// their site or host, behind a hold of their site, or in their key's
+    /// retry wait, each with its allocation clock stopped (adaptive
+    /// concurrency §5.2). An open whose attempt is under way is not held.
+    pub(super) fn held_opens(&self) -> impl Iterator<Item = (String, i64)> + '_ {
+        self.entries
+            .iter()
+            .filter(|(_, entry)| entry.held.is_some())
+            .map(|(key, entry)| (entry.envelope.session_id.clone(), key.1))
+    }
     pub(super) fn owns(&self, request: &str, id: i64) -> bool {
         self.entries.contains_key(&(request.into(), id))
     }
