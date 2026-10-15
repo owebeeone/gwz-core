@@ -701,8 +701,28 @@ deliberate local/remote consumer pressure, bounded message queues or exhausted
 credit. `Interaction` is only a supported, visible and cancellable helper wait;
 the host cannot use it as a generic pause. `Idle` means no backend operation is
 pending. If one direction remains eligible for peer I/O, use `Network` even if
-the other direction is backpressured. Application think time and an idle pooled
-connection do not start this clock.
+the other direction is backpressured. A direction is eligible only if the
+exchange is waiting on it: over SSH that is the server's standard output, and
+the client's own bytes while any are queued toward the server. The server's
+standard error never counts. It carries diagnostics, the host reads it on every
+pass, and a byte on it still resets the budget through `record_io_progress`, so
+an open standard error is no reason to charge the consumer's backpressure to
+the peer. Bytes the consumer has not taken are `Backpressure` when nothing is
+queued toward the server and either the buffer is full, or the server has
+finished its turn (the client's turn) or both of the server's outputs have
+ended: nothing more is owed by the peer. When both of the server's outputs have
+ended and nothing is queued toward the server, report `Idle` if the consumer
+holds nothing, or `Backpressure` if bytes remain that it has not taken. Bytes
+queued toward a server that has ended stay `Network`: a write to an exited
+server must be able to time out. What the client does after the server's last
+byte (resolving deltas, writing the index, closing) is local work. On a push,
+once the client's first pack byte is sent the pump cannot tell a producer that
+has paused (compressing a large object, a slow disk) from a finished pack that
+is waiting for the server's report, so a pause of the client's own producer
+mid-pack is charged as `Network`; reporting `Backpressure` there would hide a
+dead server, and only a read-demand signal from the stream could separate the
+two. Application think time and an idle pooled connection do not start this
+clock.
 
 The host initializes monotonic time with `advance` before beginning timed work
 and advances that same origin before recording subsequent state/progress events.
@@ -788,6 +808,27 @@ receive-pack, which is all libgit2 speaks over SSH (it never asks for v2). The
 HTTPS endpoint charges no think time: each RPC is its own exchange, and its
 request producer waits for the client's bytes in `Backpressure`, which
 preserves the network budget.
+
+Implementation note, 2026-10-16 (run `2026-10-16-r19stall`): the SSH pump
+reported `Backpressure` only when its buffer was full **and** the server's
+standard error had ended, which happens only when the server's process ends, so
+during an exchange a full buffer behind a consumer that was not reading (a
+blocked stdout or terminal, a stalled write, a scanner) was reported as
+`Network`: the server, blocked by the client's own window, was charged as
+silent and the stream failed with `StreamStall` after the limit. And after the
+server's last byte the pump stayed `Network` until the client closed, so local
+work such as resolving deltas ran the clock: a clone or fetch finished, but its
+stream had died and the connection was discarded. `SshPump::set_io_state`
+(`src/git/endpoint/ssh_pump.rs`) now reports `Backpressure` whenever nothing is
+queued toward the server and the reverse buffer is full, whatever the state of
+standard error; `Backpressure` also, with nothing queued toward the server, when
+bytes remain untaken and either it is the client's turn or both of the server's
+outputs have ended; and `Idle` when nothing is queued either way and either it
+is the client's turn or both outputs have ended. Everything with bytes queued
+toward the server, a partly full buffer at the server's turn, and one output
+ended while the other is open, stays `Network` (rows in `ssh_pump_clock_tests.rs`). A stopped
+process (Ctrl-Z, a paused virtual machine) is not covered: the monotonic clock
+jumps while no thread runs.
 
 ### 10.2 Native timeout representation
 

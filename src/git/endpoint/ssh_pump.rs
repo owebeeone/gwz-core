@@ -463,14 +463,24 @@ impl<C: ChannelIo> SshPump<C> {
         if self.close_received {
             return Ok(());
         }
+        // The server has said all it will (both of its outputs ended): no peer I/O is pending, and whatever is left
+        // (bytes the consumer has not taken, the consumer's own work before it closes) is the client's.
+        let server_done = self.stdout_eof && self.stderr_eof;
         let state = if self.forward.is_empty()
-            && self.reverse.len() >= self.mirror_cap
-            && self.stderr_eof
+            && (self.reverse.len() >= self.mirror_cap
+                || (!self.reverse.is_empty() && (server_done || self.turns.clients_turn())))
         {
+            // Everything pending is held by the consumer (a full buffer, or the last bytes it has not taken once the
+            // server's turn or its exchange is over): the server is blocked by our window or owes nothing, it is not
+            // silent. A stderr byte still resets the budget (`report_network`).
             IoState::Backpressure
-        } else if self.forward.is_empty() && self.reverse.is_empty() && self.turns.clients_turn() {
-            // The server has finished its turn and the client has it: think
-            // time does not start the stall clock.
+        } else if self.forward.is_empty()
+            && self.reverse.is_empty()
+            && (server_done || self.turns.clients_turn())
+        {
+            // The server has finished its turn, or its exchange, and the client has it: think time, and the
+            // consumer's local work after the last byte (resolving deltas, writing the index), do not start the
+            // stall clock.
             IoState::Idle
         } else {
             IoState::Network
