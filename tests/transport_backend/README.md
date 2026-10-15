@@ -3,7 +3,33 @@
 This harness compiles the actual backend and workspace command drivers against
 the local `git2-rs` fork and `gwz-transport` member, with the SSH endpoint's own
 suites (`src/git/endpoint/ssh_tests`, formerly the separate `tests/transport_ssh`
-crate). It does not change production manifests or enable a released route.
+crate). It does not enable a released route.
+
+## Where the transport's dependencies are
+
+They are in gwz-core's own `Cargo.toml`, in `[target.'cfg(..)']` tables whose condition
+names `gwz_transport_candidate`: `gwz-transport`, `gwz-sspi`, `ssh2`, `tokio`, `hyper` and the rest
+(normal dependencies); `pyo3`, `rustls`, `tokio-rustls` and `russh` (dev-dependencies); the 19
+`windows-sys` features the transport adds to the production list; and the per-platform TLS tables
+(`native-tls` and `tokio-native-tls` on Apple and Windows, `openssl` and `openssl-probe` elsewhere, with
+`native-tls` as the OpenSSL build's test oracle). Cargo reads a `cfg(..)` target key against
+`rustc --print cfg`, which lists the `--cfg` values of `RUSTFLAGS`, so a build with
+`RUSTFLAGS='--cfg gwz_transport_candidate'` resolves them and an ordinary build does not: its
+`cargo tree` is the one the manifest had before the tables were added.
+`test_prepare.py::test_the_ordinary_shape_resolves_the_dependencies_it_resolved_without_the_switch_tables`
+holds that for macOS, Linux and Windows. `Cargo.lock` names every package of both shapes, since a lock resolves
+every target, and all builds use that one lock. Cargo reads a path dependency's manifest whatever the
+condition, so `../gwz-transport` and `../gwz-sspi` must be on disk beside gwz-core for every build, ordinary
+ones included, as `../git2-rs` is. A candidate build needs no generated manifest for these dependencies:
+
+```sh
+RUSTFLAGS='--cfg gwz_transport_candidate' cargo +1.95.0 test --lib --locked --target-dir <outside the workspace> <filter>
+```
+
+`prepare.py` is kept for what the manifest cannot say: the `transport_placement_guide` test target
+(no cfg gates a `[[test]]` in a manifest), the protocol pair's `placement-candidate.json`, and an isolated
+tree for callers that build away from the workspace (`windows_lane_check.py`, gwz-py's
+`build_candidate_extension.py`, the CI jobs). Steps C2 to C4 of `dev-docs/GwzV110RemainingPlan.md` retire each.
 
 From the GWZ workspace root, using Rust 1.95.0, Git, OpenSSH's `/usr/sbin/sshd`,
 `ssh-keygen`, `ssh-agent` and `ssh-add`, `openssl`, `ps`, `kill` and `python3`:
@@ -16,18 +42,17 @@ RUSTFLAGS='--cfg gwz_transport_candidate' cargo +1.95.0 test \
   --lib git::gitbackend::transport_candidate_tests
 ```
 
-The first invocation derives a candidate lock from the production lock, using
-already cached dependencies. Subsequent invocations must add `--locked`. The
-generated manifest and lock identify that local resolution; retain their hashes
-with evidence. This is not clean-install or published-source qualification.
+The first invocation prunes the copied lock to what the prepared tree uses (it is not a
+workspace, so the members' own dev-dependencies leave it), using already cached dependencies.
+Subsequent invocations must add `--locked`. The generated manifest and lock identify that local
+resolution; retain their hashes with evidence. This is not clean-install or published-source qualification.
 The prepared directory symlinks source, so source edits require rebuilding. It also links `.github` and
 `scripts`, which `tests/publish_workflow.rs` reads through `CARGO_MANIFEST_DIR`: a read through `tests/../.github`
 resolves to the core on Linux and to the prepared directory's own `.github` on Windows, where `..` is collapsed
 before the lookup.
 
 The HTTPS tests' TLS servers (`src/git/endpoint/https_fixture.rs`) are rustls over the
-`ring` provider, test-only dev-dependencies that `prepare.py` adds to the candidate
-manifest; the clients under test stay the product's TLS stack (`src/git/endpoint/https_backend.rs`: native-tls
+`ring` provider, test-only dev-dependencies that `Cargo.toml` names behind the switch; the clients under test stay the product's TLS stack (`src/git/endpoint/https_backend.rs`: native-tls
 on macOS and Windows, the `openssl` crate directly elsewhere) and verify against the fixture's CA, which
 `openssl` generates per run. The servers are not native-tls because schannel loads a server
 identity through the user's key store, which Windows denies under a key-based OpenSSH logon.
@@ -55,7 +80,7 @@ that the test owns and closes.
 The stuck-close rows (`ssh_tests::background_close`, `ssh_tests::channel`) need a channel whose output ends while the
 server's session process lives, which a Windows `sshd.exe` 9.5p2 never does (it sends EOF when the process exits). They
 run against a small SSH server a test controls instead, on every platform: `src/git/endpoint/ssh_controlled_server`,
-test code over [russh](https://crates.io/crates/russh), a dev-dependency that `prepare.py` adds to the candidate manifest
+test code over [russh](https://crates.io/crates/russh), a dev-dependency that `Cargo.toml` names behind the switch
 (`default-features = false`, features `ring` and `rsa`, so it shares `ring` with the TLS servers and needs no C
 toolchain). It serves the fixture's host key, public-key authentication for the fixture's one client key, and exec
 requests for `git-upload-pack` and `git-receive-pack`, which it runs with Git; its `Ending` says whether the channel then
@@ -105,7 +130,7 @@ fixture server uses disposable keys; no user's credentials are used.
 
 ## In-process operation-message embedding
 
-The prepared candidate has a test-only PyO3 dependency (`auto-initialize`) to run
+The candidate shape has a test-only PyO3 dependency (`auto-initialize`, behind the switch in `Cargo.toml`) to run
 Python inside the Rust test process. A Python installation with a linkable shared
 library is required; select it with `PYO3_PYTHON` if autodetection is unsuitable.
 Python and Taut sources are loaded from the same workspace's `gwz-py/src` and

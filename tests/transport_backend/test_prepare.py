@@ -18,6 +18,26 @@ PRODUCTION = ROOT / "src" / "protocol" / "generated.rs"
 PROTOCOL_MOD = ROOT / "src" / "protocol" / "mod.rs"
 GUIDE = ROOT / "tests" / "transport_backend" / "guide_example.rs"
 DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
+SWITCH = "gwz_transport_candidate"
+OTHER_THAN_PLATFORM_TLS = 'any(windows, target_vendor = "apple")'
+# The cfg of the tables the manifest keeps behind the switch (C1 of dev-docs/GwzV110RemainingPlan.md): Cargo evaluates a
+# `[target.'cfg(..)']` key against `rustc --print cfg`, which carries the `--cfg` values of RUSTFLAGS, so these crates are in
+# the resolve only when the switch is on. One table per distinct condition, as the candidate manifest had.
+SWITCH_ALL = f"cfg({SWITCH})"
+SWITCH_PLATFORM_TLS = f"cfg(all({SWITCH}, {OTHER_THAN_PLATFORM_TLS}))"
+SWITCH_OPENSSL = f"cfg(all({SWITCH}, not({OTHER_THAN_PLATFORM_TLS})))"
+SWITCH_WINDOWS = f"cfg(all(windows, {SWITCH}))"
+# What the candidate shape adds to the ordinary dependency set, by the table that carries it.
+SWITCH_DEPENDENCIES = {
+    "gwz-transport", "gwz-sspi", "base64", "socket2", "ssh2", "libssh2-sys", "tokio", "tokio-util", "hyper",
+    "hyper-util", "http-body-util", "bytes",
+}
+SWITCH_DEV_DEPENDENCIES = {"pyo3", "rustls", "tokio-rustls", "russh"}
+SWITCH_ONLY_CRATES = (
+    SWITCH_DEPENDENCIES
+    | SWITCH_DEV_DEPENDENCIES
+    | {"native-tls", "tokio-native-tls", "openssl", "openssl-probe"}
+)
 
 
 def prepare(destination: Path) -> Path:
@@ -68,31 +88,48 @@ def test_prepare_selects_candidate_overlay_without_touching_production(tmp_path)
     assert hashlib.sha256(PROTOCOL_MOD.read_bytes()).hexdigest() == before
 
 
+def _production() -> dict:
+    return tomllib.loads((ROOT / "Cargo.toml").read_text())
+
+
+def _switch_tables(manifest: dict) -> dict:
+    """The `[target.'cfg(..)']` tables whose condition names the switch, by condition."""
+    return {key: table for key, table in manifest.get("target", {}).items() if SWITCH in key}
+
+
 def test_prepare_manifest_keeps_candidate_dependency_outside_production(tmp_path):
+    # The transport and gwz-sspi are named in the core's own manifest, in the table that only the switch turns on; the
+    # prepared copy anchors their paths like any other.
+    assert _production()["target"][SWITCH_ALL]["dependencies"]["gwz-transport"] == {"path": "../gwz-transport"}
+    assert _production()["target"][SWITCH_ALL]["dependencies"]["gwz-sspi"] == {"path": "../gwz-sspi"}
+    assert "gwz-transport" not in _production()["dependencies"]
     destination = prepare(tmp_path / "backend")
     manifest = (destination / "Cargo.toml").read_text()
+    prepared = tomllib.loads(manifest)["target"][SWITCH_ALL]["dependencies"]
 
-    assert f'gwz-transport = {{ path = "{WORKSPACE / "gwz-transport"}" }}' in manifest
-    assert "gwz_transport_candidate" not in manifest
+    assert prepared["gwz-transport"] == {"path": str(WORKSPACE / "gwz-transport")}
+    assert prepared["gwz-sspi"] == {"path": str(WORKSPACE / "gwz-sspi")}
+    assert "cfg(gwz_transport_candidate)" in manifest
     # The candidate builds against the workspace's git2-rs fork with the fork's
     # vendored libgit2, exactly as production declares it; only the path is anchored.
     git2 = tomllib.loads(manifest)["dependencies"]["git2"]
-    production = tomllib.loads((ROOT / "Cargo.toml").read_text())["dependencies"]["git2"]
+    production = _production()["dependencies"]["git2"]
     assert git2 == {**production, "path": str(WORKSPACE / "git2-rs")}
     assert git2["package"] == "gwz-git2"
     assert "vendored-libgit2" in git2["features"]
 
 
 def test_candidate_adds_the_windows_networking_features_the_endpoint_needs(tmp_path):
-    destination = prepare(tmp_path / "backend")
-    prepared = _manifest(destination)["target"]["cfg(windows)"]["dependencies"]["windows-sys"]
-    production = tomllib.loads((ROOT / "Cargo.toml").read_text())["target"]["cfg(windows)"]["dependencies"]["windows-sys"]
-    # The candidate adds to production's list, never replaces it: WinHttp for the HTTPS endpoint, WinSock for
-    # the SSH endpoint's socket waits (GwzTransportWindowsParityPlan.md, step 1.2), and the features the SSH test
-    # fixtures use (step 1.1), and Pageant's exchange (step 3.5: its mapping, descriptor and `WM_COPYDATA`; step 3.6's
-    # synthetic Pageant window class, `Win32_Graphics_Gdi`). Production names none of them.
-    assert set(production["features"]) < set(prepared["features"])
-    assert set(prepared["features"]) - set(production["features"]) == {
+    production = _production()["target"]["cfg(windows)"]["dependencies"]["windows-sys"]
+    added = _production()["target"][SWITCH_WINDOWS]["dependencies"]["windows-sys"]
+    # The switch's table names the same crate again with the features it adds; Cargo unifies the two entries when both
+    # conditions hold, so the candidate adds to production's list and never replaces it. WinHttp for the HTTPS endpoint,
+    # WinSock for the SSH endpoint's socket waits (GwzTransportWindowsParityPlan.md, step 1.2), the features the SSH test
+    # fixtures use (step 1.1), Pageant's exchange (step 3.5: its mapping, descriptor and `WM_COPYDATA`; step 3.6's
+    # synthetic Pageant window class, `Win32_Graphics_Gdi`). Production names none of them. The switch's removal moves
+    # every one of them into production's list.
+    assert set(production["features"]).isdisjoint(added["features"])
+    assert set(added["features"]) == {
         "Win32_Graphics_Gdi",
         "Win32_NetworkManagement_IpHelper",
         "Win32_NetworkManagement_Ndis",
@@ -113,6 +150,11 @@ def test_candidate_adds_the_windows_networking_features_the_endpoint_needs(tmp_p
         "Win32_System_Threading",
         "Win32_UI_WindowsAndMessaging",
     }
+    assert added["version"] == production["version"]
+    # The prepared copy carries the same two entries.
+    prepared = _manifest(prepare(tmp_path / "backend"))["target"]
+    assert prepared["cfg(windows)"]["dependencies"]["windows-sys"] == production
+    assert prepared[SWITCH_WINDOWS]["dependencies"]["windows-sys"] == added
 
 
 def test_protocol_module_has_explicit_candidate_boundary():
@@ -131,51 +173,126 @@ def test_guide_fixture_is_exact_design_example():
     assert GUIDE.read_text() == expected
 
 
-def test_in_process_python_dependency_is_candidate_only(tmp_path):
-    destination = prepare(tmp_path / "backend")
-    manifest = (destination / "Cargo.toml").read_text()
-    assert 'pyo3 = { version = "=0.28.3", features = ["auto-initialize"] }' in manifest
-    assert 'pyo3' not in (ROOT / "Cargo.toml").read_text()
+def test_in_process_python_dependency_is_candidate_only():
+    manifest = _production()
+    assert manifest["target"][SWITCH_ALL]["dev-dependencies"]["pyo3"] == {
+        "version": "=0.28.3",
+        "features": ["auto-initialize"],
+    }
+    assert "pyo3" not in manifest.get("dev-dependencies", {})
+    assert "pyo3" not in manifest["dependencies"]
 
 
-def test_tls_test_servers_are_rustls_dev_dependencies_and_product_tls_stays_native(tmp_path):
+def test_tls_test_servers_are_rustls_dev_dependencies_and_product_tls_stays_native():
     # Step 0.5b: the fixture's servers must not load a platform identity, and the product must not gain rustls.
-    manifest = _manifest(prepare(tmp_path / "backend"))
+    manifest = _production()
+    dev = manifest["target"][SWITCH_ALL]["dev-dependencies"]
     for crate in ("rustls", "tokio-rustls"):
-        assert crate in manifest["dev-dependencies"]
+        assert crate in dev
         assert crate not in manifest["dependencies"]
-    assert manifest["dev-dependencies"]["rustls"]["default-features"] is False
-    assert "ring" in manifest["dev-dependencies"]["rustls"]["features"]
-    assert "rustls" not in (ROOT / "Cargo.toml").read_text()
+        assert crate not in manifest["target"][SWITCH_ALL]["dependencies"]
+        assert crate not in manifest.get("dev-dependencies", {})
+    assert dev["rustls"]["default-features"] is False
+    assert "ring" in dev["rustls"]["features"]
 
 
-def test_tls_stack_is_native_tls_on_apple_and_windows_and_openssl_directly_elsewhere(tmp_path):
+def test_tls_stack_is_native_tls_on_apple_and_windows_and_openssl_directly_elsewhere():
     # src/git/endpoint/https_backend.rs: native-tls would parse the system bundle twice for a store it replaces, so the
     # OpenSSL build does not depend on it (only its tests do, as the oracle for what the stack puts on the wire).
-    manifest = _manifest(prepare(tmp_path / "backend"))
+    manifest = _production()
     targets = manifest["target"]
-    platform = targets['cfg(any(windows, target_vendor = "apple"))']["dependencies"]
-    openssl = targets['cfg(not(any(windows, target_vendor = "apple")))']
-    assert set(platform) == {"native-tls", "tokio-native-tls"}
-    assert openssl["dependencies"]["openssl"] == "=0.10.81"
-    assert "native-tls" not in openssl["dependencies"]
-    assert "tokio-native-tls" not in openssl["dependencies"]
-    assert openssl["dev-dependencies"]["native-tls"] == "=0.2.18"
-    assert openssl["dev-dependencies"]["tokio-native-tls"] == "=0.3.1"
+    platform = targets[SWITCH_PLATFORM_TLS]
+    openssl = targets[SWITCH_OPENSSL]
+    assert platform["dependencies"] == {"native-tls": "=0.2.18", "tokio-native-tls": "=0.3.1"}
+    assert "dev-dependencies" not in platform
+    assert openssl["dependencies"] == {"openssl": "=0.10.81", "openssl-probe": "=0.1.6"}
+    assert openssl["dev-dependencies"] == {"native-tls": "=0.2.18", "tokio-native-tls": "=0.3.1"}
     assert "native-tls" not in manifest["dependencies"]
-    assert "openssl" not in (ROOT / "Cargo.toml").read_text()
+    assert "native-tls" not in targets[SWITCH_ALL]["dependencies"]
+    assert "openssl" not in targets[SWITCH_ALL]["dependencies"]
 
 
-def test_ssh_test_server_is_a_russh_dev_dependency_over_ring_and_the_product_has_none(tmp_path):
+def test_ssh_test_server_is_a_russh_dev_dependency_over_ring_and_the_product_has_none():
     # The controlled SSH server (src/git/endpoint/ssh_controlled_server): test-only, pure Rust over the same ring as the
     # TLS servers, so no C toolchain beyond ring's own; the product's manifest and its normal dependencies gain nothing.
-    manifest = _manifest(prepare(tmp_path / "backend"))
-    russh = manifest["dev-dependencies"]["russh"]
+    manifest = _production()
+    russh = manifest["target"][SWITCH_ALL]["dev-dependencies"]["russh"]
     assert russh["version"].startswith("=")
     assert russh["default-features"] is False
     assert set(russh["features"]) == {"ring", "rsa"}
     assert "russh" not in manifest["dependencies"]
-    assert "russh" not in (ROOT / "Cargo.toml").read_text()
+    assert "russh" not in manifest["target"][SWITCH_ALL]["dependencies"]
+
+
+def test_only_tables_behind_the_switch_name_a_transport_crate():
+    # C1: the manifest names the transport's crates, but no table an ordinary build evaluates does. A crate is a switch
+    # crate if the candidate manifest added it; every table that names one has the switch in its own condition.
+    manifest = _production()
+    unconditional = [(name, manifest.get(name, {})) for name in DEPENDENCY_TABLES]
+    for key, table in manifest["target"].items():
+        if SWITCH not in key:
+            unconditional += [(f"{key}.{name}", table.get(name, {})) for name in DEPENDENCY_TABLES]
+    stray = sorted(
+        f"{where}: {crate}"
+        for where, table in unconditional
+        for crate in table
+        if crate in SWITCH_ONLY_CRATES
+    )
+    assert stray == []
+    named = {
+        crate
+        for table in _switch_tables(manifest).values()
+        for name in DEPENDENCY_TABLES
+        for crate in table.get(name, {})
+    }
+    assert SWITCH_ONLY_CRATES <= named
+    assert set(_switch_tables(manifest)) == {SWITCH_ALL, SWITCH_PLATFORM_TLS, SWITCH_OPENSSL, SWITCH_WINDOWS}
+
+
+TARGETS = ("aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc")
+
+
+def _without_the_switch_tables(manifest: str) -> str:
+    """The manifest text with every table whose header names the switch removed."""
+    kept: list[str] = []
+    dropped = False
+    for line in manifest.splitlines(keepends=True):
+        if line.startswith("["):
+            dropped = SWITCH in line.split("#", 1)[0]
+        if not dropped:
+            kept.append(line)
+    return "".join(kept)
+
+
+def _resolved(manifest_dir: Path, target: str, *, switch: bool) -> str:
+    environment = {key: value for key, value in os.environ.items() if key != "RUSTFLAGS"}
+    if switch:
+        environment["RUSTFLAGS"] = "--cfg " + SWITCH
+    result = subprocess.run(
+        [
+            "cargo", "tree", "--offline", "--manifest-path", str(manifest_dir / "Cargo.toml"),
+            "-e", "normal,dev,build", "--target", target, "--prefix", "none", "-f", "{p} [{f}]",
+        ],
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+    assert result.returncode == 0, result.stderr
+    # The root package prints its own directory, which differs between the two copies.
+    return "\n".join(sorted(set(result.stdout.replace(str(manifest_dir), "<core>").splitlines())))
+
+
+def test_the_ordinary_shape_resolves_the_dependencies_it_resolved_without_the_switch_tables(tmp_path):
+    # The ordinary build's dependency set is unchanged by the switch tables: a copy of the manifest with them removed
+    # resolves, for each platform, to exactly the set the real manifest does without the switch, and the candidate shape
+    # resolves to more. (The copy's lock is cargo's pruning of the real one, which keeps every version it still uses.)
+    whole = prepare(tmp_path / "whole")
+    stripped = prepare(tmp_path / "stripped")
+    (stripped / "Cargo.toml").write_text(_without_the_switch_tables((stripped / "Cargo.toml").read_text()))
+    for target in TARGETS:
+        ordinary = _resolved(whole, target, switch=False)
+        assert ordinary == _resolved(stripped, target, switch=False), target
+        assert ordinary != _resolved(whole, target, switch=True), target
 
 
 def test_prepared_path_dependencies_resolve_from_a_fresh_destination(tmp_path):

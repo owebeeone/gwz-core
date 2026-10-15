@@ -3,8 +3,8 @@
 //!
 //! A system `sshd` cannot serve them everywhere: Windows' `sshd.exe` 9.5p2 sends a channel's EOF only when the session
 //! process exits, whatever has happened to the pipes (run `2026-10-11-winp1c`, `raw/stuck-close-experiments`), so no
-//! process under it can end the output and keep the channel open. This server is test code only, [russh] in the
-//! candidate manifest's dev-dependencies (`tests/transport_backend/prepare.py`), and the same on every platform. It
+//! process under it can end the output and keep the channel open. This server is test code only, [russh] in
+//! `Cargo.toml`'s dev-dependencies behind `gwz_transport_candidate`, and the same on every platform. It
 //! serves what those rows use and nothing more: the fixture's host key, public-key authentication for the fixture's
 //! one client key and user, and exec requests for `git-upload-pack` and `git-receive-pack`, which it runs with Git.
 //! When the service is over, [`Ending`] says whether the server then closes the channel as `sshd` does, or sends the

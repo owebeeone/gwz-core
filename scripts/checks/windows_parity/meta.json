@@ -71,6 +71,6 @@
     "0.5b"
   ],
   "step_notes": {
-    "0.5b": "The TLS fixture on Windows: https_fixture.rs's servers are rustls over ring (test-only dev-dependencies of the candidate manifest, tests/transport_backend/prepare.py), because under dabeest's key-based OpenSSH logon schannel cannot load a server identity (DPAPI and persisted key containers are denied: Protect, CAPI and CNG all fail with Access is denied, so native_tls Identity::from_pkcs12 and from_pkcs8 both fail). The clients under test stay native-tls and verify against the fixture CA. Added by the lane, not in plan revision 3."
+    "0.5b": "The TLS fixture on Windows: https_fixture.rs's servers are rustls over ring (test-only dev-dependencies in Cargo.toml, behind gwz_transport_candidate), because under dabeest's key-based OpenSSH logon schannel cannot load a server identity (DPAPI and persisted key containers are denied: Protect, CAPI and CNG all fail with Access is denied, so native_tls Identity::from_pkcs12 and from_pkcs8 both fail). The clients under test stay native-tls and verify against the fixture CA. Added by the lane, not in plan revision 3."
   }
 }

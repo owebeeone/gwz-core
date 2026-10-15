@@ -53,6 +53,15 @@ jobs:
           path: gwz-transport
           persist-credentials: false
           fetch-depth: 0
+      - name: Check out gwz-transport and gwz-sspi beside gwz-core
+        # gwz-core's Cargo.toml names both by path (`../gwz-transport`,
+        # `../gwz-sspi`) behind gwz_transport_candidate, and Cargo reads a path
+        # dependency's manifest in every build, ordinary ones included. Each is
+        # at the commit gwz-core's .github/gwz-transport.commit or
+        # .github/gwz-sspi.commit pins; one this job checked out already stays.
+        shell: bash
+        working-directory: gwz-core
+        run: bash .github/checkout-siblings.sh
       - name: gwz-transport process globals at the reconciled commit
         # This step has no skip. The bump rule keeps the pinned commit on
         # gwz-transport's main: a gwz-core commit that changes the allowlist
@@ -139,6 +148,14 @@ jobs:
         # `gwz-git2`), at the commit .github/git2-rs.commit pins.
         shell: bash
         run: bash .github/checkout-git2-rs.sh
+      - name: Check out gwz-transport and gwz-sspi beside gwz-core
+        # gwz-core's Cargo.toml names both by path (`../gwz-transport`,
+        # `../gwz-sspi`) behind gwz_transport_candidate, and Cargo reads a path
+        # dependency's manifest in every build, ordinary ones included. Each is
+        # at the commit gwz-core's .github/gwz-transport.commit or
+        # .github/gwz-sspi.commit pins; one this job checked out already stays.
+        shell: bash
+        run: bash .github/checkout-siblings.sh
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
