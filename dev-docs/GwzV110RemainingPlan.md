@@ -91,6 +91,8 @@ C1 and C2 can run in parallel with Phase B; C3 and C4 wait on S7.1's gates (S5.5
 
 ## 4. Open questions for the operator
 
+**Answered 2026-10-15:** OQ-E (a) as D19; OQ-A as D20 (WSL 2 on dabeest); OQ-B as D21 (run them); F1 of run `2026-10-15-parityrows` as D22 (transport route only). Still open: OQ-C, OQ-D, the items under "Open from before".
+
 - **OQ-A. Linux x86-64 evidence.** There is no x86-64 Linux host. (a) GitHub-hosted runners (x86-64, noisy for timing); (b) a rented or borrowed x86-64 box; (c) amend the plan to accept the Pi as the Linux evidence platform for 1.1.0. Recommendation: (b) for speed and memory rows, (a) for functional rows.
 - **OQ-B. S5.2 and S5.3.** Run as written (about a day each), or amend scope. Recommendation: run them; S5.4's defaults rest on them.
 - **OQ-C. A refused signature on Windows** (`PUBLICKEY_UNVERIFIED`, about 1 in 6,000 dials against `sshd.exe`, run `2026-10-14-idleloss`): D14 retries only a failed key exchange. Recommendation: leave it for 1.1.0 and record it; measure 1.0.17 on the same rows to confirm parity.
