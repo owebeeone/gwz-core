@@ -1,6 +1,6 @@
 # 1.1.0 pre-activation review (operator decision D19): the review package
 
-Status: **review package, 2026-10-15.** One combined Code and State review point before S7.1's switch removal (remaining plan C3/C4), per D19 (`GwzTransportTR18-OperatorDecisions.md`). Two reviewers, peer-blind, the two-round cap. Reports are filed verbatim as `GwzV110PreActivationReview-ReviewCode.md` and `-ReviewState.md` beside this file.
+Status: **accepted at root `90dff378`, gwz-core `aee4c257`, gwz-transport `a27817b9`, gwz-cli `8d909ec4`, gwz-py `da098f5c`, gwz-sspi `d3038882` after `GwzV110PreActivationReview-ReviewCode-3.md` and `GwzV110PreActivationReview-ReviewState-3.md` reported GO (2026-10-16), at round 2 of the two-round cap; this accepts the five D19 objects (TR2.6, S3.1, S3.2, WPP 4.8/TR4.10, WPP 4.2/4.3) only.** Review package of 2026-10-15. One combined Code and State review point before S7.1's switch removal (remaining plan C3/C4), per D19 (`GwzTransportTR18-OperatorDecisions.md`). Two reviewers, peer-blind, the two-round cap. Reports are filed verbatim as `GwzV110PreActivationReview-ReviewCode.md` and `-ReviewState.md` beside this file.
 
 ## Tuple (review workspace `/Volumes/projects/limbo/gwz-dev-review19`, a frozen `gwz local clone`)
 

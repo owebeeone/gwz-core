@@ -1,6 +1,6 @@
 # 1.1.0 pre-activation review (D19) — remediation plan, round 2
 
-Status: **DRAFT, 2026-10-16.** Round 2 of the two-round cap. The object is the round-1 remediation at root `484a5d88`, gwz-core `8e425e76`, gwz-cli `b7c9edcd`, gwz-py `da098f5c` (reviewed in `gwz-dev-review19b`). Reports: [Code-2](GwzV110PreActivationReview-ReviewCode-2.md) GO with three new P3s; [State-2](GwzV110PreActivationReview-ReviewState-2.md) NO-GO on P2-3, pre-committed to GO on a revision that resolves it as specified. No architectural root cause in either report.
+Status: **closed 2026-10-16: both re-verdicts GO** ([Code-3](GwzV110PreActivationReview-ReviewCode-3.md), [State-3](GwzV110PreActivationReview-ReviewState-3.md)). Round 2 of the two-round cap. The object is the round-1 remediation at root `484a5d88`, gwz-core `8e425e76`, gwz-cli `b7c9edcd`, gwz-py `da098f5c` (reviewed in `gwz-dev-review19b`). Reports: [Code-2](GwzV110PreActivationReview-ReviewCode-2.md) GO with three new P3s; [State-2](GwzV110PreActivationReview-ReviewState-2.md) NO-GO on P2-3, pre-committed to GO on a revision that resolves it as specified. No architectural root cause in either report.
 
 Every finding below is in the Windows native HTTPS authentication path (gwz-core `https_worker/native/*`, `prepare.rs`, `https_endpoint/retry.rs`), so one lane (`auth2`) takes them, plus a design amendment and a docs entry.
 
@@ -21,3 +21,7 @@ Every finding below is in the Windows native HTTPS authentication path (gwz-core
 ## Re-verdict
 
 One revision goes to the same two reviewers with this plan, the amended design text, and the diff since `8e425e76`. This is round 2 of the two-round cap: a third new architectural root cause on this object stops the lane for an operator decision.
+
+## Outcome of round 2 (2026-10-16)
+
+Both axes **GO**; every round-1 and round-2 finding is closed or deferred with a record; no architectural root cause in round 2. **Blind convergence:** both axes found the State P3-6 amendment's requeue triggers too narrow (Code P3-6, State P3-9); the three sentences were reworded to the adaptive design's requeue rule (a throttle — a 429, or a 503 or 403 with `Retry-After` — or a refusal the limit machine takes as evidence, such as a bare 503; "another connection"). Open P3s, not blocking: State P3-8 (a challenge connection that dies without `Connection: close` before the first SSPI token still ends `Authentication`); follow-ups (a defensive spent-rounds check on `Outcome::Retry`, a deterministic not-started-send row, the spent-rounds wording, "per operation" wording, and those carried from round 1). State P3-1, P3-2 and P3-5 remain with the operator before S7.1.
