@@ -1,5 +1,19 @@
 #!/usr/bin/env python3
-"""Prepare a local full-core candidate; never changes production manifests."""
+"""Prepare a local full-core candidate tree; never changes production manifests.
+
+The transport's dependencies, the `windows-sys` features it needs and the per-platform TLS tables are in gwz-core's own
+Cargo.toml, behind `cfg(gwz_transport_candidate)` (dev-docs/GwzV110RemainingPlan.md C1), so a build with
+RUSTFLAGS='--cfg gwz_transport_candidate' needs no generated manifest for them. What this script still makes, and why:
+
+- a copy of Cargo.toml in a directory outside the workspace, with its relative path dependencies anchored at the core and
+  `crates/*` no longer workspace members (the libraries are path dependencies at their own location);
+- the `transport_placement_guide` test target, which no cfg can gate in a manifest and the core's manifest must not name
+  (step C3 turns the guide into an ordinary test and removes this);
+- `placement-candidate.json`, the digests of the candidate and production generated protocol sources and the taut source
+  directory the protocol tests read from outside the workspace (step C2 names the candidate fields 1.1.0 needs and
+  retires the pair);
+- symlinks to the core's sources, tests, workflows and scripts, and a copy of Cargo.lock (step C4 retires the tree).
+"""
 import argparse
 import hashlib
 import json
@@ -7,51 +21,6 @@ import os
 from pathlib import Path
 import re
 import shutil
-
-# The `windows-sys` features the candidate's endpoint code needs beyond the production list in Cargo.toml. A step
-# that needs one more Windows API adds a name here (GwzTransportWindowsParityPlan.md, section 4). They serve
-# product code and test fixtures:
-#   product (step 4.2's helper process owner, `https_auth/process_tree/windows*`): Win32_System_JobObjects (the
-#     job), Win32_System_Threading (CreateProcessW, the attribute list, process waits), Win32_System_Pipes (the
-#     overlapped pipes), Win32_Security (inheritable handle attributes), Win32_System_SystemInformation (the Windows
-#     directory), and the production list's own Win32_Foundation and Win32_Storage_FileSystem; Win32_Networking_
-#     WinHttp and Win32_Networking_WinSock serve the HTTPS and SSH code; step 4.6's machine proxy lists the
-#     interface addresses with Win32_NetworkManagement_IpHelper (GetAdaptersAddresses, whose records need
-#     Win32_NetworkManagement_Ndis); step 3.5's Pageant exchange
-#     (`pageant_exchange/sys.rs`) needs Win32_Security_Authorization, Win32_System_DataExchange, Win32_System_Memory
-#     and Win32_UI_WindowsAndMessaging, and step 3.3's agent pipe (`agent_pipe.rs`) needs Win32_System_IO
-#     (overlapped I/O: `CancelIoEx`, `GetOverlappedResult`) beside the Pipes, Threading and FileSystem ones above.
-#     The candidate-to-production switch must carry every one of them into Cargo.toml's `windows-sys` list.
-#   test only: Win32_Graphics_Gdi, for `RegisterClassW` (step 3.6's synthetic Pageant makes a window of the class
-#     `Pageant`, as the real one does, so that the probe's `FindWindowW` finds it); Win32_System_Diagnostics_ToolHelp
-#     and Win32_System_Ioctl, for the Job Object,
-#     thread suspension and process lists of the SSH test servers and their native helper (`fixture_job.rs`), a
-#     named pipe in the regular-file test, pipe reads and writes in the agent fixture, and the directory junction of
-#     the URL tests; Win32_Security_Authentication_Identity and Win32_Security_Credentials, for the SSPI acceptor of
-#     step 4.8's real-SSPI rows (`native/tests/real_sspi.rs`); they are named here as well as in Cargo.toml's Windows
-#     dev-dependencies, because `cargo check --lib --profile test`, which scripts/windows_lane_check.py runs, does
-#     not enable dev-dependency features.
-CANDIDATE_WINDOWS_FEATURES = (
-    "Win32_Graphics_Gdi",
-    "Win32_NetworkManagement_IpHelper",
-    "Win32_NetworkManagement_Ndis",
-    "Win32_Networking_WinHttp",
-    "Win32_Networking_WinSock",
-    "Win32_Security",
-    "Win32_Security_Authentication_Identity",
-    "Win32_Security_Authorization",
-    "Win32_Security_Credentials",
-    "Win32_System_DataExchange",
-    "Win32_System_Diagnostics_ToolHelp",
-    "Win32_System_IO",
-    "Win32_System_Ioctl",
-    "Win32_System_JobObjects",
-    "Win32_System_Memory",
-    "Win32_System_Pipes",
-    "Win32_System_SystemInformation",
-    "Win32_System_Threading",
-    "Win32_UI_WindowsAndMessaging",
-)
 
 # Cargo resolves a dependency path against the directory of the manifest that
 # names it, lexically, without following symlinks. The prepared manifest is a
@@ -117,46 +86,6 @@ for name in ["src", "build.rs", "build_support", "protocol", "tests", ".github",
 manifest = anchor_dependency_paths((core / "Cargo.toml").read_text(), core)
 # The libraries are path dependencies at their own location, not members here.
 manifest = replace_once(manifest, 'members = ["crates/*"]\n', '')
-extra = '\n'.join([
-    'gwz-transport = { path = ' + json.dumps(str(root / "gwz-transport")) + ' }',
-    'gwz-sspi = { path = ' + json.dumps(str(root / "gwz-sspi")) + ' }',
-    'base64 = "=0.22.1"', 'socket2 = "=0.6.4"',
-    'ssh2 = "=0.9.6"', 'libssh2-sys = "=0.3.3"',
-    'tokio = { version = "=1.53.1", features = ["rt", "net", "time", "sync", "macros", "process", "io-util"] }',
-    'tokio-util = { version = "=0.7.19", features = ["rt"] }',
-    'hyper = { version = "=1.11.1", features = ["client", "server", "http1"] }',
-    'hyper-util = { version = "=0.1.20", features = ["tokio"] }',
-    'http-body-util = "=0.1.5"', 'bytes = "=1.11.1"',
-])
-manifest = replace_once(
-    manifest,
-    '"Win32_Globalization"',
-    ", ".join(['"Win32_Globalization"', *(json.dumps(name) for name in CANDIDATE_WINDOWS_FEATURES)]),
-)
-manifest = replace_once(manifest, '[dependencies]\n', '[dependencies]\n' + extra + '\n')
-# The HTTPS test fixture's TLS servers are rustls over the ring provider (pure Rust apart from ring's
-# own assembly): a native-tls server loads its identity from the platform key store, which Windows
-# denies under a key-based OpenSSH logon (step 0.5b). Test-only; the product's TLS stays the platform's (below).
-dev_extra = '\n'.join([
-    'pyo3 = { version = "=0.28.3", features = ["auto-initialize"] }',
-    'rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }',
-    'tokio-rustls = { version = "=0.26.5", default-features = false, features = ["ring", "tls12"] }',
-    # The test-controlled SSH server (src/git/endpoint/ssh_controlled_server): pure Rust over the same ring.
-    'russh = { version = "=0.63.3", default-features = false, features = ["ring", "rsa"] }',
-])
-manifest = replace_once(manifest, '[dev-dependencies]\n', '[dev-dependencies]\n' + dev_extra + '\n')
-# The HTTPS client's TLS stack is per platform (src/git/endpoint/https_backend.rs): the platform's own through
-# native-tls on macOS and Windows, and OpenSSL through the `openssl` crate directly everywhere else. native-tls would
-# parse the system bundle twice to fill a store it then replaces (gwz-core-evidence 2026-10-13-https-fixed-cost-pi), so
-# it is not a dependency of the OpenSSL build; its dev-dependency there is the oracle the tests compare the stack's
-# ClientHello and channel binding against. `openssl` is the version native-tls and libgit2's openssl-sys already
-# resolve to in the lock. openssl-probe 0.1 is the crate git2 runs at its start; the transport resolves OpenSSL's
-# default verify paths with it (src/git/endpoint/verify_paths.rs).
-manifest += '\n[target.\'cfg(any(windows, target_vendor = "apple"))\'.dependencies]\nnative-tls = "=0.2.18"\ntokio-native-tls = "=0.3.1"\n'
-manifest += '\n[target.\'cfg(not(any(windows, target_vendor = "apple")))\'.dependencies]\nopenssl = "=0.10.81"\nopenssl-probe = "=0.1.6"\n'
-manifest += '\n[target.\'cfg(not(any(windows, target_vendor = "apple")))\'.dev-dependencies]\nnative-tls = "=0.2.18"\ntokio-native-tls = "=0.3.1"\n'
-# gwz-core names the git2-rs fork (gwz-git2) directly, with its vendored
-# libgit2, so the candidate needs no [patch] and no feature of its own.
 # The placement guide's example (docs/TransportPlacement.md), compiled with
 # gwz_core as an extern crate; ordinary builds never see this target.
 manifest += '\n[[test]]\nname = "transport_placement_guide"\npath = "tests/transport_backend/guide_test.rs"\n'

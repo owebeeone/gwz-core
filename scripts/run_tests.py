@@ -81,8 +81,8 @@ def transport_checkout() -> Path:
     """The gwz-transport checkout that gwz-core builds against.
 
     GWZ_TRANSPORT_CHECKOUT names it, or else it is the checkout beside
-    gwz-core, which tests/transport_backend/prepare.py links into the
-    transport build. A named checkout that is missing is an error, never a
+    gwz-core, which gwz-core's Cargo.toml names by path behind the
+    transport switch. A named checkout that is missing is an error, never a
     reason to look elsewhere, and so is finding neither.
     """
     sibling = ROOT.parent / "gwz-transport"

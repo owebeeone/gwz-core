@@ -184,7 +184,7 @@ def stage_script(label: str, cache_from: str | None) -> str:
         for name in SUITE_TARGETS:
             lines += [f'if [ -d {HOST_ROOT}/{cache_from}/{name} ]; then '
                       f'cp -a {HOST_ROOT}/{cache_from}/{name} {d}/{name}; fi']
-    # `cargo metadata` completes the candidate's lock file (the core's lists only the ordinary build), as the CI job does.
+    # `cargo metadata` prunes the prepared copy's lock file to the packages the copy uses (it is not a workspace), as the CI job does.
     lines += [f'python tests/transport_backend/prepare.py {d}/candidate', f'export RUSTUP_TOOLCHAIN={TOOLCHAIN}',
               f'cargo metadata --format-version 1 --manifest-path {d}/candidate/Cargo.toml > /dev/null', 'rustc --version']
     return '\n'.join(lines) + '\n'
