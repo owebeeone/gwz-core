@@ -270,7 +270,7 @@ def _resolved(manifest_dir: Path, target: str, *, switch: bool) -> str:
         environment["RUSTFLAGS"] = "--cfg " + SWITCH
     result = subprocess.run(
         [
-            "cargo", "tree", "--offline", "--manifest-path", str(manifest_dir / "Cargo.toml"),
+            "cargo", "tree", "--manifest-path", str(manifest_dir / "Cargo.toml"),
             "-e", "normal,dev,build", "--target", target, "--prefix", "none", "-f", "{p} [{f}]",
         ],
         capture_output=True,
