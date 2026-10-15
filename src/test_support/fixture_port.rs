@@ -23,11 +23,22 @@ const DRAWS: usize = 1_000;
 /// A port in `FIRST..END` that nothing listens on at the moment: drawn at random, then bound and released to see
 /// that it is free.
 pub(crate) fn fixture_port() -> u16 {
+    let listener = fixture_listener();
+    listener
+        .local_addr()
+        .expect("a bound listener has an address")
+        .port()
+}
+
+/// A loopback listener on a port of `FIRST..END`, drawn at random among the free ones. The caller holds the port, so
+/// nothing takes it in a gap; for a server of the test's own that needs a port a client can be told, and that the
+/// system's `bind(0)` must not have given to someone else a moment after the server is gone.
+pub(crate) fn fixture_listener() -> TcpListener {
     for _ in 0..DRAWS {
         let draw = RandomState::new().build_hasher().finish();
         let port = FIRST + (draw % u64::from(END - FIRST)) as u16;
-        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
-            return port;
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
+            return listener;
         }
     }
     panic!("no free port in {FIRST}..{END} for a fixture server after {DRAWS} draws");
