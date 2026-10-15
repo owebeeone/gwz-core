@@ -1002,6 +1002,7 @@ has no service method and no handler that executes commands.
 | concurrency | 6 | int | yes | no | - |
 | progress_min_interval_ms | 7 | int | yes | no | - |
 | max_connections_per_host | 8 | int | yes | no | - |
+| max_retries | 9 | int | yes | no | - |
 
 ### RemoteSshIdentity
 
@@ -1073,6 +1074,10 @@ has no service method and no handler that executes commands.
 | credential_offered | 6 | bool | no | no | - |
 | authenticated | 7 | bool | yes | no | - |
 | public_key_fingerprint | 8 | str | yes | no | - |
+| endpoint_id | 9 | str | yes | no | - |
+| connection_id | 10 | str | yes | no | - |
+| stream_id | 11 | int | yes | no | - |
+| reused | 12 | bool | yes | no | - |
 
 ### MemberUrlResolution
 

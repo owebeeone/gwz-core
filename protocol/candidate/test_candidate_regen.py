@@ -118,6 +118,12 @@ def test_retained_reader_is_pinned_checked_in_baseline():
     assert REGEN.hashlib.sha256(CORE_SCHEMA.read_bytes()).hexdigest() == metadata[
         "current-core-schema-sha256"
     ]
+    # S7.1 (1.1.0) step C2.1 moved the pin: production now carries
+    # `OperationPolicy.max_retries` and the four `TransportObservation`
+    # receipts. Was 76455b404d2d3396af6bd0f5b6bf2cc69d78d73013b875472b1c8a47598e22c5.
+    assert metadata["current-core-schema-sha256"] == (
+        "a7866259f7557d9f147b42e46ed1964dc015c83fa817a9e15c8400942adb107d"
+    )
 
 
 @pytest.mark.parametrize("artifact", ["CORPUS_GOLDEN", "CORPUS_VECTORS"])

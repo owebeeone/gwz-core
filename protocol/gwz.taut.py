@@ -1,6 +1,7 @@
 """GWZ v0 taut protocol schema."""
 
 from taut.ir.dsl import BOOL, BYTES, INT, STR, Enum, F, List, Msg, Params, Ref, method, schema, service
+from taut.ir.model import MISSING_OK
 
 SCHEMA = schema(
     # ---- service ----------------------------------------------------------
@@ -1052,7 +1053,13 @@ SCHEMA = schema(
         # Maximum concurrent network operations per remote host. Protects each
         # host from too many simultaneous connections; members whose host cannot
         # be parsed are bounded only by `concurrency`.
-        max_connections_per_host=F(8, INT, optional=True)),
+        max_connections_per_host=F(8, INT, optional=True),
+        # `--max-retries`: the setup attempts an operation makes after the first
+        # (gwz-core dev-docs/GwzRemoteTransportRetryPlan.md §5). Absent or null
+        # means the default, 3, so a writer without the field keeps it.
+        # MISSING_OK: a map from an older writer lacks the key and still decodes
+        # (S7.1 (1.1.0) step C2.1).
+        max_retries=F(9, INT, optional=MISSING_OK)),
 
     # Invocation-scoped SSH authority, distinct from descriptive attribution.
     RemoteSshIdentity=Msg(
@@ -1093,7 +1100,15 @@ SCHEMA = schema(
         selection_source=F(5, Ref.TransportSelectionSource),
         credential_offered=F(6, BOOL),
         authenticated=F(7, BOOL, optional=True),
-        public_key_fingerprint=F(8, STR, optional=True)),
+        public_key_fingerprint=F(8, STR, optional=True),
+        # Receipts of the transport route (S7.1 (1.1.0) step C2.1): which endpoint
+        # and connection served the open, the stream on it, and whether the
+        # connection was reused. Absent on the native route and in an older
+        # writer's map (MISSING_OK).
+        endpoint_id=F(9, STR, optional=MISSING_OK),
+        connection_id=F(10, STR, optional=MISSING_OK),
+        stream_id=F(11, INT, optional=MISSING_OK),
+        reused=F(12, BOOL, optional=MISSING_OK)),
     # URL scheme preference for members on known hosts (github.com, gitlab.com,
     # bitbucket.org); `manifest` means the URL as written. Added 2026-09-12
     # (gwz-dev dev-docs/GwzUrlSchemePlan.md §2.7).

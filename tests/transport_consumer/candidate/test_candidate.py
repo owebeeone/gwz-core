@@ -20,8 +20,10 @@ CANDIDATE_SCHEMA = ROOT.parents[1] / "protocol" / "candidate" / "candidate.taut.
 os.environ["GWZ_CORE_SCHEMA"] = str(CORE_SCHEMA)
 os.environ["GWZ_TRANSPORT_SCHEMA"] = str(OWNER_SCHEMA)
 
+from dataclasses import replace  # noqa: E402
+
 from taut.ir.load import load_schema, schema_from_json  # noqa: E402
-from taut.ir.model import MISSING_OK  # noqa: E402
+from taut.ir.model import MISSING_OK, Schema  # noqa: E402
 from taut.wire import codec  # noqa: E402
 
 spec = importlib.util.spec_from_file_location("candidate_admission", Path(__file__).with_name("admission.py"))
@@ -35,8 +37,40 @@ assert retained_spec is not None and retained_spec.loader is not None
 retained_codec = importlib.util.module_from_spec(retained_spec)
 retained_spec.loader.exec_module(retained_codec)
 
+# S7.1 (1.1.0) step C2.1 moved `OperationPolicy.max_retries` and the four
+# `TransportObservation` receipts into the production schema, so the
+# production schema is no longer the old reader. The old reader is production
+# with exactly those five members removed (the repository's "measured
+# additive" idiom); the Rust old reader is a checked-in file already.
+C2_ADDITIONS = {
+    "OperationPolicy": {"max_retries": 9},
+    "TransportObservation": {
+        "endpoint_id": 9,
+        "connection_id": 10,
+        "stream_id": 11,
+        "reused": 12,
+    },
+}
+
+
+def _without_c2_members(schema: Schema) -> Schema:
+    messages = dict(schema.messages)
+    for message_name, fields in C2_ADDITIONS.items():
+        message = messages[message_name]
+        kept = tuple(field for field in message.fields if field.name not in fields)
+        assert len(kept) == len(message.fields) - len(fields), message_name
+        messages[message_name] = replace(message, fields=kept)
+    return Schema(
+        enums=dict(schema.enums),
+        messages=messages,
+        services=dict(schema.services),
+        extensions=schema.extensions,
+    )
+
+
 NEW = load_schema(CANDIDATE_SCHEMA)
-OLD = load_schema(CORE_SCHEMA)
+PRODUCTION = load_schema(CORE_SCHEMA)
+OLD = _without_c2_members(PRODUCTION)
 # The transport owner's declarations, which the candidate composition imports
 # whole: they are the owner's schema, not the candidate's overlay.
 OWNER = schema_from_json(json.loads(OWNER_SCHEMA.read_text()))
@@ -63,6 +97,28 @@ def _old_policy():
     }
 
 
+def _old_observation():
+    return {
+        "repository_path": "repos/core",
+        "remote": "origin",
+        "operation": "fetch",
+        "credential_method": "agent",
+        "selection_source": "ambient",
+        "credential_offered": True,
+        "authenticated": True,
+        "public_key_fingerprint": None,
+    }
+
+
+def _receipts():
+    return {
+        "endpoint_id": "endpoint-1",
+        "connection_id": "connection-1",
+        "stream_id": 7,
+        "reused": True,
+    }
+
+
 def _old_request_meta():
     return {
         "request_id": "request-1",
@@ -82,7 +138,6 @@ def test_overlay_has_exact_additive_tags_and_missing_ok_contract():
         "TransportOptions": {"placement": 4, "endpoint_path_base": 5},
         "RequestMeta": {"transport_message": 10},
         "ResponseMeta": {"transport_message": 9},
-        "OperationPolicy": {"max_retries": 9},
         "TransportCapabilitiesResponse": {
             "message_versions": 3,
             "placements": 4,
@@ -90,37 +145,48 @@ def test_overlay_has_exact_additive_tags_and_missing_ok_contract():
             "auth_policies": 6,
             "message_limits": 7,
         },
-        "TransportObservation": {
-            "endpoint_id": 9,
-            "connection_id": 10,
-            "stream_id": 11,
-            "reused": 12,
-        },
     }
     assert NEW.enums["TransportPlacement"].members == {"local": 1, "cli": 2}
     # `expected` is the whole overlay: every field the candidate has and the
     # production core schema lacks, outside the owner's declarations, and the
     # one enum it adds. A field added, removed or renamed without it fails here.
+    # `max_retries` and the four receipts are production's since C2.1 and are
+    # pinned by `test_production_carries_the_1_1_0_fields_as_missing_ok`.
     added = {
         (message_name, field.name)
         for message_name, message in NEW.messages.items()
         if message_name not in OWNER.messages
         for field in message.fields
-        if message_name not in OLD.messages
-        or field.name not in {old.name for old in OLD.messages[message_name].fields}
+        if message_name not in PRODUCTION.messages
+        or field.name not in {old.name for old in PRODUCTION.messages[message_name].fields}
     }
     assert added == {
         (message_name, field_name)
         for message_name, fields in expected.items()
         for field_name in fields
     }
-    assert set(NEW.enums) - set(OLD.enums) - set(OWNER.enums) == {"TransportPlacement"}
+    assert set(NEW.enums) - set(PRODUCTION.enums) - set(OWNER.enums) == {"TransportPlacement"}
     for message_name, fields in expected.items():
         actual = {field.name: field for field in NEW.messages[message_name].fields}
         for field_name, tag in fields.items():
             field = actual[field_name]
             assert field.tag == tag
             assert field.optional == MISSING_OK
+
+
+def test_production_carries_the_1_1_0_fields_as_missing_ok():
+    # C2.1: the ordinary protocol names the five members, at the candidate's
+    # tags and with the candidate's presence contract, and the old reader is
+    # exactly production without them.
+    for message_name, fields in C2_ADDITIONS.items():
+        production = {field.name: field for field in PRODUCTION.messages[message_name].fields}
+        candidate = {field.name: field for field in NEW.messages[message_name].fields}
+        old = {field.name for field in OLD.messages[message_name].fields}
+        for field_name, tag in fields.items():
+            assert production[field_name].tag == tag
+            assert production[field_name].optional == MISSING_OK
+            assert production[field_name] == candidate[field_name]
+            assert field_name not in old
 
 
 def test_old_production_request_and_capability_snapshots_are_stable():
@@ -206,6 +272,45 @@ def test_max_retries_crosses_the_retained_python_reader_and_absent_or_null_is_no
     assert absent["max_retries"] is None
     assert null["max_retries"] is None
     assert absent["concurrency"] == null["concurrency"] == 4
+
+
+def test_receipts_cross_the_retained_python_reader_and_absent_or_null_are_none():
+    # A new writer's receipts are unknown tags 9 to 12 to the old reader, which
+    # reads the rest of the observation.
+    wire = codec.encode(
+        PRODUCTION, "TransportObservation", {**_old_observation(), **_receipts()}
+    )
+    retained = retained_codec.decode(OLD, "TransportObservation", wire)
+    assert retained["remote"] == "origin"
+    assert set(retained["__unknown__"]) == {9, 10, 11, 12}
+    read = codec.decode(PRODUCTION, "TransportObservation", wire)
+    assert {name: read[name] for name in _receipts()} == _receipts()
+    # An older writer leaves them absent, and null reads the same.
+    old_wire = codec.encode_struct(OLD, "TransportObservation", _old_observation())
+    absent = codec.decode_struct(PRODUCTION, "TransportObservation", old_wire, strict=True)
+    null = codec.decode_struct(
+        PRODUCTION,
+        "TransportObservation",
+        {**old_wire, 9: None, 10: None, 11: None, 12: None},
+        strict=True,
+    )
+    for decoded in (absent, null):
+        assert all(decoded[name] is None for name in _receipts())
+        assert decoded["remote"] == "origin"
+    malformed = {**old_wire, 11: "seven"}
+    with pytest.raises(codec.DecodeError):
+        codec.decode_struct(PRODUCTION, "TransportObservation", malformed, strict=True)
+
+
+def test_max_retries_is_production_and_an_older_writer_without_it_decodes():
+    wire = codec.encode(PRODUCTION, "OperationPolicy", {**_old_policy(), "max_retries": 0})
+    assert codec.decode(PRODUCTION, "OperationPolicy", wire)["max_retries"] == 0
+    retained = retained_codec.decode(OLD, "OperationPolicy", wire)
+    assert set(retained["__unknown__"]) == {9}
+    old_wire = codec.encode_struct(OLD, "OperationPolicy", _old_policy())
+    absent = codec.decode_struct(PRODUCTION, "OperationPolicy", old_wire, strict=True)
+    assert absent["max_retries"] is None
+    assert absent["concurrency"] == 4
 
 
 def test_default_local_and_capability_gating_refuse_old_or_incomplete_results():

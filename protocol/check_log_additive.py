@@ -193,6 +193,11 @@ from taut.ir.load import load_schema
 # transport_record_limit (74), TR1.6 OQ5(a) credential_helper_timeout (75) and
 # the capacity code (76, operator decision 2026-10-13). The projection removes
 # exactly those members before comparing with the existing historical pin.
+# S7.1 (1.1.0) step C2.1 (2026-10-16) adds OperationPolicy.max_retries (tag 9)
+# and TransportObservation.endpoint_id (9), connection_id (10), stream_id (11)
+# and reused (12), each MISSING_OK. MEASURED additive, not assumed: removing
+# exactly those five field objects from the new IR reproduced the pin below
+# (4d377a49...) exactly; the unprojected new IR fingerprints as cbfdfbcb....
 PRE_LOG_WIRE_SHA256 = "4d377a496c8905293b5e9b53392b70867cf6dafccbb623841a623dbd2d555f14"
 LOG_METHODS = {"log", "log.output"}
 
@@ -281,6 +286,33 @@ def pre_log_projection(schema_ir: dict[str, Any]) -> dict[str, Any]:
         actual = error_codes["members"].pop(name, None)
         if actual != value:
             raise ValueError(f"GwzErrorCode.{name} must occupy additive slot {value}")
+    # S7.1 (1.1.0) step C2.1 appends one optional budget to OperationPolicy and
+    # four optional receipts to TransportObservation, all MISSING_OK so an
+    # older writer's map still decodes. Require the exact objects, then remove
+    # only them to retain the historical pin.
+    for message_name, additions in (
+        ("OperationPolicy", (("max_retries", 9, "int"),)),
+        (
+            "TransportObservation",
+            (
+                ("endpoint_id", 9, "str"),
+                ("connection_id", 10, "str"),
+                ("stream_id", 11, "int"),
+                ("reused", 12, "bool"),
+            ),
+        ),
+    ):
+        message = next(m for m in projected["messages"] if m["name"] == message_name)
+        for name, tag, scalar in additions:
+            expected = {"name": name, "tag": tag,
+                        "type": {"k": "scalar", "scalar": scalar},
+                        "optional": "missing_ok", "transient": False, "merge": None}
+            added = [f for f in message["fields"] if f["name"] == name]
+            if added != [expected]:
+                raise ValueError(
+                    f"{message_name}.{name} must be the MISSING_OK {scalar} at tag {tag}"
+                )
+            message["fields"].remove(added[0])
     return projected
 
 

@@ -62,6 +62,100 @@ fn round_trip<T>(
     from_cbor(&cbor).expect("round-trip decode")
 }
 
+/// S7.1 (1.1.0) step C2.1: the ordinary protocol carries `--max-retries` and
+/// the four transport receipts, as optional slots an older writer's map may
+/// lack (MISSING_OK). Built with no cfg: this is the ordinary build's contract.
+#[test]
+fn ordinary_operation_policy_and_observation_carry_the_1_1_0_fields() {
+    use gwz_core::{
+        Cbor, OperationPolicy, TransportCredentialMethod, TransportObservation, TransportOperation,
+        TransportSelectionSource,
+    };
+
+    let policy = OperationPolicy {
+        concurrency: Some(4),
+        max_retries: Some(0),
+        ..OperationPolicy::default()
+    };
+    assert_eq!(
+        round_trip(
+            &policy,
+            OperationPolicy::to_cbor,
+            OperationPolicy::from_cbor
+        ),
+        policy
+    );
+    // Tag 9 is the new slot; an unset budget writes null there, never omits it.
+    let Cbor::Map(entries) = policy.to_cbor() else {
+        panic!("a policy encodes as a map");
+    };
+    assert_eq!(entries.last().map(|(tag, _)| *tag), Some(9));
+    assert_eq!(entries.last().map(|(_, value)| value), Some(&Cbor::Int(0)));
+
+    let observation = TransportObservation {
+        repository_path: "repos/core".to_owned(),
+        remote: "origin".to_owned(),
+        operation: TransportOperation::Fetch,
+        credential_method: TransportCredentialMethod::Agent,
+        selection_source: TransportSelectionSource::Ambient,
+        credential_offered: true,
+        authenticated: Some(true),
+        public_key_fingerprint: None,
+        endpoint_id: Some("endpoint-1".to_owned()),
+        connection_id: Some("connection-1".to_owned()),
+        stream_id: Some(7),
+        reused: Some(true),
+    };
+    assert_eq!(
+        round_trip(
+            &observation,
+            TransportObservation::to_cbor,
+            TransportObservation::from_cbor,
+        ),
+        observation
+    );
+    let Cbor::Map(entries) = observation.to_cbor() else {
+        panic!("an observation encodes as a map");
+    };
+    let tags: Vec<i64> = entries.iter().map(|(tag, _)| *tag).collect();
+    assert_eq!(tags, (1..=12).collect::<Vec<i64>>());
+
+    // An older writer's map lacks the new tags: they read as absent, and null
+    // reads the same.
+    let old_policy = Cbor::Map(
+        (1..=8)
+            .map(|tag| (tag, if tag == 6 { Cbor::Int(4) } else { Cbor::Null }))
+            .collect(),
+    );
+    let read = OperationPolicy::from_cbor(&old_policy).expect("an older policy map decodes");
+    assert_eq!(read.concurrency, Some(4));
+    assert_eq!(read.max_retries, None);
+    let Cbor::Map(mut entries) = observation.to_cbor() else {
+        panic!("an observation encodes as a map");
+    };
+    entries.truncate(8);
+    let read = TransportObservation::from_cbor(&Cbor::Map(entries.clone()))
+        .expect("an older observation map decodes");
+    assert_eq!(read.remote, "origin");
+    assert_eq!(
+        (
+            read.endpoint_id,
+            read.connection_id,
+            read.stream_id,
+            read.reused
+        ),
+        (None, None, None, None)
+    );
+    entries.extend((9..=12).map(|tag| (tag, Cbor::Null)));
+    let read = TransportObservation::from_cbor(&Cbor::Map(entries)).expect("null receipts decode");
+    assert_eq!(read.stream_id, None);
+
+    // A present but malformed value is an error, not a silent default.
+    let mut malformed = vec![(9, Cbor::Text("three".to_owned()))];
+    malformed.splice(0..0, (1..=8).map(|tag| (tag, Cbor::Null)));
+    assert!(OperationPolicy::from_cbor(&Cbor::Map(malformed)).is_err());
+}
+
 #[test]
 fn status_request_round_trips() {
     let request = StatusRequest {

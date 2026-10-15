@@ -2420,6 +2420,7 @@ pub struct OperationPolicy {
     pub concurrency: Option<i64>,
     pub progress_min_interval_ms: Option<i64>,
     pub max_connections_per_host: Option<i64>,
+    pub max_retries: Option<i64>,
 }
 impl OperationPolicy {
     pub const MAX_DEPTH: usize = 32;
@@ -2434,6 +2435,7 @@ impl OperationPolicy {
             (6, match &self.concurrency { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
             (7, match &self.progress_min_interval_ms { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
             (8, match &self.max_connections_per_host { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+            (9, match &self.max_retries { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -2446,6 +2448,7 @@ impl OperationPolicy {
             concurrency: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_int()?) } },
             progress_min_interval_ms: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_int()?) } },
             max_connections_per_host: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            max_retries: { let v = c.try_get_opt(9)?; match v { None => None, Some(v) => if v.is_null() { None } else { Some(v.try_int()?) } } },
         })
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
@@ -2669,6 +2672,10 @@ pub struct TransportObservation {
     pub credential_offered: bool,
     pub authenticated: Option<bool>,
     pub public_key_fingerprint: Option<String>,
+    pub endpoint_id: Option<String>,
+    pub connection_id: Option<String>,
+    pub stream_id: Option<i64>,
+    pub reused: Option<bool>,
 }
 impl TransportObservation {
     pub const MAX_DEPTH: usize = 32;
@@ -2683,6 +2690,10 @@ impl TransportObservation {
             (6, Cbor::Bool(self.credential_offered)),
             (7, match &self.authenticated { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
             (8, match &self.public_key_fingerprint { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (9, match &self.endpoint_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (10, match &self.connection_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+            (11, match &self.stream_id { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+            (12, match &self.reused { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -2695,6 +2706,10 @@ impl TransportObservation {
             credential_offered: c.try_get(6)?.try_bool()?,
             authenticated: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(v.try_bool()?) } },
             public_key_fingerprint: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+            endpoint_id: { let v = c.try_get_opt(9)?; match v { None => None, Some(v) => if v.is_null() { None } else { Some(v.try_text()?) } } },
+            connection_id: { let v = c.try_get_opt(10)?; match v { None => None, Some(v) => if v.is_null() { None } else { Some(v.try_text()?) } } },
+            stream_id: { let v = c.try_get_opt(11)?; match v { None => None, Some(v) => if v.is_null() { None } else { Some(v.try_int()?) } } },
+            reused: { let v = c.try_get_opt(12)?; match v { None => None, Some(v) => if v.is_null() { None } else { Some(v.try_bool()?) } } },
         })
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
