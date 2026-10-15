@@ -467,10 +467,12 @@ impl<C: ChannelIo> SshPump<C> {
         // (bytes the consumer has not taken, the consumer's own work before it closes) is the client's.
         let server_done = self.stdout_eof && self.stderr_eof;
         let state = if self.forward.is_empty()
-            && (self.reverse.len() >= self.mirror_cap || (server_done && !self.reverse.is_empty()))
+            && (self.reverse.len() >= self.mirror_cap
+                || (!self.reverse.is_empty() && (server_done || self.turns.clients_turn())))
         {
-            // Everything pending is held by the consumer (a full buffer, or the last bytes it has not taken): the
-            // server is blocked by our window, not silent. A stderr byte still resets the budget (`report_network`).
+            // Everything pending is held by the consumer (a full buffer, or the last bytes it has not taken once the
+            // server's turn or its exchange is over): the server is blocked by our window or owes nothing, it is not
+            // silent. A stderr byte still resets the budget (`report_network`).
             IoState::Backpressure
         } else if self.forward.is_empty()
             && self.reverse.is_empty()
