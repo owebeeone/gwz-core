@@ -117,7 +117,8 @@ struct Entry {
     report_open_failure: bool,
     opening_cancel_effect: Effect,
     reply: Arc<Wait<Result<(BlockingStream, Opened), Failure>>>,
-    deadline: Option<Instant>,
+    /// The open's backstop (`driver/backstop.rs`), until the open is answered.
+    backstop: Option<driver::Backstop>,
     pending: Option<Envelope>,
     next: Option<NextMessage>,
     observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
@@ -160,6 +161,10 @@ struct State {
     /// A driver's handoff to the endpoint session in its process, when it
     /// has one: each SSH open's URL extras go through it (TR2.18).
     handoff: Option<Handoff>,
+    /// An endpoint session's handoff, where it keeps current which of its
+    /// opens it holds (`driver/backstop.rs`), and what it last published there.
+    holds_to: Option<Handoff>,
+    published_holds: BTreeSet<(String, i64)>,
     /// The SSH home the endpoint in this process reads under, and the variable that named it (plan step 3.1): a driver
     /// prints the `known_hosts` file when it words a host-key failure, and expands `~/` identity paths under it.
     home: Option<Home>,
@@ -228,6 +233,8 @@ cfg_if::cfg_if! {
             pumps: std::sync::atomic::AtomicUsize,
             park_ms: AtomicU64,
             passes: std::sync::atomic::AtomicUsize,
+            /// How far a test has stepped the backstop's clock.
+            backstop_skew_ms: AtomicU64,
         }
         impl TestHooks {
             fn new() -> Self {
@@ -238,7 +245,12 @@ cfg_if::cfg_if! {
                     pumps: std::sync::atomic::AtomicUsize::new(0),
                     park_ms: AtomicU64::new(PARK.as_millis() as u64),
                     passes: std::sync::atomic::AtomicUsize::new(0),
+                    backstop_skew_ms: AtomicU64::new(0),
                 }
+            }
+            /// What a test stepped the backstop's clock by.
+            fn backstop_skew_ms(&self) -> u64 {
+                self.backstop_skew_ms.load(Ordering::Acquire)
             }
             /// How long the placement thread parks when a pass moved nothing.
             fn park(&self) -> Duration {
@@ -267,6 +279,7 @@ cfg_if::cfg_if! {
         struct TestHooks;
         impl TestHooks {
             fn new() -> Self { Self }
+            fn backstop_skew_ms(&self) -> u64 { 0 }
             fn park(&self) -> Duration { PARK }
             fn passed(&self) {}
             fn should_hold_retirement(&self) -> bool { false }
@@ -276,6 +289,13 @@ cfg_if::cfg_if! {
     }
 }
 impl Session {
+    /// The clock the open backstops (`driver/backstop.rs`) run on, in
+    /// milliseconds since the session began. It is the passes' clock, which a
+    /// test can step ahead without moving the endpoints' or the streams'.
+    pub(super) fn backstop_clock_ms(&self) -> u64 {
+        let elapsed = self.origin.elapsed().as_millis().min(u64::MAX as u128) as u64;
+        elapsed.saturating_add(self.test_hooks.backstop_skew_ms())
+    }
     /// Has this session's endpoints give their limit machines' notes to
     /// `notes` (§9), between passes.
     pub(super) fn set_notes(&self, notes: &super::NoteSink) {
@@ -401,6 +421,30 @@ impl Session {
         pub(super) fn passes_for_test(&self) -> usize {
             self.test_hooks.passes.load(Ordering::Acquire)
         }
+        /// How many opens an endpoint of this process holds now.
+        pub(super) fn held_opens_for_test(&self) -> usize {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            Self::held_opens(&state).len()
+        }
+        /// How many streams this driver is tracking, opened or not.
+        pub(super) fn streams_for_test(&self) -> usize {
+            self.state.lock().unwrap_or_else(|e| e.into_inner()).streams.len()
+        }
+        /// Whether `request` has been sealed, which cancels all of it.
+        pub(super) fn sealed_for_test(&self, request: &str) -> bool {
+            let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            state
+                .registrations
+                .get(request)
+                .is_some_and(|record| record.sealed.is_some())
+        }
+        /// Steps the open backstops' clock ahead by `by`, and wakes a pass.
+        pub(super) fn step_backstop_for_test(&self, by: Duration) {
+            self.test_hooks
+                .backstop_skew_ms
+                .fetch_add(by.as_millis() as u64, Ordering::AcqRel);
+            self.wake();
+        }
         pub(super) fn hold_retirement_for_test(&self) {
             self.test_hooks.hold_retirement.store(true, Ordering::Release);
         }
@@ -431,6 +475,8 @@ impl Session {
             ssh_allocation_ms: 30_000,
             ssh_interaction_ms: 120_000,
             handoff: None,
+            holds_to: None,
+            published_holds: BTreeSet::new(),
             home: None,
             machine: MachineSetting::default(),
         }
@@ -487,6 +533,7 @@ impl Session {
         let id = unique()?;
         // Where the HTTPS endpoint leaves how a failed open ended beyond its failure, for the driver that shares it.
         let ends = handoff.clone();
+        state.holds_to = Some(handoff.clone());
         let authority = crate::git::endpoint::shared_reservation::Authority::new(
             config.pool.total,
             config.pool.per_host,

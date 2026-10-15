@@ -43,6 +43,7 @@ impl Session {
         }
         state.pending = None;
         state.incoming = None;
+        Self::publish_holds(state);
     }
     pub(super) fn report(&self) -> CleanupReport {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());

@@ -18,7 +18,7 @@ use super::agent_source::AgentSource;
 use super::setup_retry::EndNote;
 use super::ssh_host_key::HostKeyRefused;
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt,
     sync::{Arc, Mutex},
 };
@@ -108,6 +108,11 @@ pub(crate) struct Handoff {
     /// session and stream, and the driver takes it once to word the failure. Bounded by `END_LIMIT`; an open the
     /// driver never takes it for (cancelled) is pushed out by later ones.
     ends: Arc<Mutex<BTreeMap<(String, i64), EndNote>>>,
+    /// The opens the endpoint holds now, under their carrier session and stream: waiting for room, behind a hold of
+    /// their site or in their key's retry wait, with their allocation clocks stopped. The wire has no field for it, so
+    /// the endpoint's session keeps this current and the driver's open backstop reads it, to charge an open for its
+    /// attempts and not for its holds (`transport_host/session/driver/backstop.rs`).
+    holds: Arc<Mutex<BTreeSet<(String, i64)>>>,
 }
 
 /// The destinations whose trust findings a handoff keeps.
@@ -124,7 +129,26 @@ impl Handoff {
             agent,
             trust: Arc::default(),
             ends: Arc::default(),
+            holds: Arc::default(),
         }
+    }
+
+    /// Records that the endpoint no longer holds the opens of `released` and holds those of `held`.
+    pub(crate) fn update_holds(&self, released: &[(String, i64)], held: &[(String, i64)]) {
+        let mut holds = self.holds.lock().unwrap_or_else(|e| e.into_inner());
+        for open in released {
+            holds.remove(open);
+        }
+        holds.extend(held.iter().cloned());
+    }
+
+    /// The streams of `session` whose opens the endpoint holds now.
+    pub(crate) fn holds(&self, session: &str) -> BTreeSet<i64> {
+        let holds = self.holds.lock().unwrap_or_else(|e| e.into_inner());
+        holds
+            .range((session.to_owned(), i64::MIN)..=(session.to_owned(), i64::MAX))
+            .map(|(_, stream)| *stream)
+            .collect()
     }
 
     /// Leaves `note` for the driver of `session`'s `stream`, which words that open's failure with it.

@@ -271,6 +271,18 @@ full wall-clock bound adds, on every attempt, the interaction allowance
 that adds 500 s, so the full bound is 627.75 s. `--ssh-timeout 0` has no
 network-clock bound. The full bound is not a claim about that mode.
 
+The session driver's per-open backstop is this full bound and covers
+attempts, not holds. While an endpoint of the process holds an open, waiting
+for room on its site or host, behind a hold of its site, or in its key's
+wait, the open's allocation clock is stopped (adaptive concurrency §5.2) and
+the backstop is not charged for that time. It resumes with what it had left
+when an attempt starts. When it runs out it ends its own open only: the open's
+reply fails with `Timeout`, a `Cancel` of that stream goes to the endpoint,
+and the request and its other streams are untouched (a member's failure is
+its own). It never cancels or seals the request. An endpoint beyond the session
+port (the Cli placement) reports no holds, so its opens are charged for the
+whole wait. D19 State P2-1.
+
 The classifier and the machine live in `gwz-core`, beside the endpoint that
 already sees the setup failure. `gwz-transport`'s pool keeps granting leases.
 It does not learn error codes. A retriable failure drops its lease before
@@ -481,6 +493,8 @@ The candidate amendment that stood here was withdrawn when the Python concurrenc
 
 ## Changelog
 
+- 2026-10-16: §5 records that the driver's per-open backstop covers attempts,
+  not holds, and ends only its own stream (D19 State P2-1; lane `backstop`).
 - 2026-09-28: amended by the
   [connection reuse design](../../dev-docs/GwzConnectionReuseDesign.md) §13,
   accepted at SHA-256 `e8ee63f8…`. For the transport host, its §5 replaces the
