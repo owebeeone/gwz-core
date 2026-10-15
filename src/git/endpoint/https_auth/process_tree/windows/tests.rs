@@ -3,8 +3,13 @@
 //! guarantees of the private `CreateProcessW`: the job's limits, a handle the helper must not inherit, a
 //! grandchild that cannot break away, a creation that fails without leaving a process, and a retired job.
 use super::*;
+use crate::git::endpoint::https_auth::{
+    process_tree::EnvValue,
+    runner::environment::exact,
+    wiped::{Probe, Records},
+};
 use std::{
-    ffi::OsString,
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -30,12 +35,12 @@ fn command(program: &Path, args: &[&str]) -> HelperCommand {
         program: program.to_path_buf(),
         args: args.iter().map(OsString::from).collect(),
         directory: system32(),
-        environment: vec![
+        environment: exact(&[
             ("SystemRoot".into(), std::env::var_os("SystemRoot").unwrap()),
             ("PATH".into(), system32().into_os_string()),
             ("TEMP".into(), std::env::temp_dir().into_os_string()),
             ("TMP".into(), std::env::temp_dir().into_os_string()),
-        ],
+        ]),
     }
 }
 
@@ -362,11 +367,15 @@ fn powershell(
             &path.to_string_lossy(),
         ],
     );
-    command
-        .environment
-        .push(("OUT".into(), output.clone().into_os_string()));
+    command.environment.push((
+        "OUT".into(),
+        EnvValue::from_os(output.as_os_str(), Probe::inert()),
+    ));
     for (name, value) in extra {
-        command.environment.push(((*name).into(), value.into()));
+        command.environment.push((
+            (*name).into(),
+            EnvValue::from_os(OsStr::new(value), Probe::inert()),
+        ));
     }
     (directory, output, command)
 }
@@ -452,15 +461,23 @@ public static class B {
 #[test]
 fn an_environment_block_keeps_a_drive_variable_and_refuses_an_equals_after_the_first_unit() {
     let wide = |text: &str| text.encode_utf16().collect::<Vec<u16>>();
-    let pairs = |items: &[(&str, &str)]| -> Vec<(OsString, OsString)> {
+    let pairs = |items: &[(&str, &str)]| -> Vec<(OsString, EnvValue)> {
         items
             .iter()
-            .map(|(n, v)| ((*n).into(), (*v).into()))
+            .map(|(n, v)| {
+                (
+                    (*n).into(),
+                    EnvValue::from_os(OsStr::new(v), Probe::inert()),
+                )
+            })
             .collect()
     };
     // The snapshot accepts "=C:" (a hidden per-drive directory variable), and so must the block; it sorts first.
-    let block =
-        launch::environment_block(&pairs(&[("b", "2"), ("=C:", r"C:\work"), ("A", "1")])).unwrap();
+    let block = launch::environment_block(
+        &pairs(&[("b", "2"), ("=C:", r"C:\work"), ("A", "1")]),
+        Probe::inert(),
+    )
+    .unwrap();
     let mut expected = wide(r"=C:=C:\work");
     expected.push(0);
     expected.extend(wide("A=1"));
@@ -468,19 +485,61 @@ fn an_environment_block_keeps_a_drive_variable_and_refuses_an_equals_after_the_f
     expected.extend(wide("b=2"));
     expected.push(0);
     expected.push(0);
-    assert_eq!(block, expected);
+    assert_eq!(block.as_slice(), expected);
     for refused in [("A=B", "v"), ("", "v"), ("N", "a\0b"), ("N\0", "v")] {
-        let error = launch::environment_block(&pairs(&[refused])).unwrap_err();
+        let error = launch::environment_block(&pairs(&[refused]), Probe::inert()).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput, "{refused:?}");
     }
+}
+
+/// P3-3: the block is one owner of exactly its size that is overwritten when it drops, built from the values'
+/// own owners, which stay alive and unwiped until their own drop. The probes see both.
+#[test]
+fn the_environment_block_is_one_wiping_owner_of_exactly_its_size() {
+    let wide = |text: &str| text.encode_utf16().collect::<Vec<u16>>();
+    let values = Records::default();
+    let blocks = Records::default();
+    let pairs: Vec<(OsString, EnvValue)> = vec![
+        (
+            "b".into(),
+            EnvValue::from_os(
+                OsStr::new("Authorization: Bearer token"),
+                Probe::recording(&values),
+            ),
+        ),
+        (
+            "A".into(),
+            EnvValue::from_os(OsStr::new("1"), Probe::inert()),
+        ),
+    ];
+    let block = launch::environment_block(&pairs, Probe::recording(&blocks)).unwrap();
+    let mut expected = wide("A=1");
+    expected.push(0);
+    expected.extend(wide("b=Authorization: Bearer token"));
+    expected.push(0);
+    expected.push(0);
+    assert_eq!(block.as_slice(), expected);
+    assert!(blocks.lock().unwrap().is_empty() && values.lock().unwrap().is_empty());
+    drop(block);
+    assert_eq!(*blocks.lock().unwrap(), vec![(expected.len(), true)]);
+    assert!(
+        values.lock().unwrap().is_empty(),
+        "a value's owner outlives the block built from it"
+    );
+    drop(pairs);
+    assert_eq!(
+        *values.lock().unwrap(),
+        vec![("Authorization: Bearer token".len(), true)]
+    );
 }
 
 #[tokio::test]
 async fn a_helper_started_with_a_drive_variable_in_its_snapshot_sees_it() {
     let mut start = command(&system32().join("cmd.exe"), &["/d", "/c", "echo %=Q:%"]);
-    start
-        .environment
-        .push(("=Q:".into(), r"Q:\drive-variable".into()));
+    start.environment.push((
+        "=Q:".into(),
+        EnvValue::from_os(OsStr::new(r"Q:\drive-variable"), Probe::inert()),
+    ));
     let (mut child, tree) = spawn(&start).unwrap();
     let mut seen = Vec::new();
     {

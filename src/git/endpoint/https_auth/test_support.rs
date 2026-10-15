@@ -30,7 +30,7 @@ cfg_if::cfg_if! {
                     program: fixture.config.executable.clone(),
                     args: fixture.argv().iter().map(Into::into).collect(),
                     directory: fixture.directory().to_owned(),
-                    environment: fixture.config.environment.clone(),
+                    environment: super::runner::environment::exact(&fixture.config.environment),
                 })
                 .unwrap();
                 let pending = PendingChild {

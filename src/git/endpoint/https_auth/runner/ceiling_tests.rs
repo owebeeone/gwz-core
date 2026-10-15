@@ -49,7 +49,7 @@ fn git_does_not_search_above_the_ceiling_the_owner_sets() {
     );
     let mut confined = Environment::snapshot(&captured());
     confine(&mut confined, &child);
-    let found = git(&child, confined.into_pairs(), &["rev-parse", "--git-dir"]);
+    let found = git(&child, confined.plain(), &["rev-parse", "--git-dir"]);
     assert!(
         !found.status.success(),
         "{version} searched above the ceiling: {}",

@@ -3,7 +3,10 @@
 //! job from its first instruction and inherits its three pipe ends and nothing else. The pattern is copied, not
 //! the crate: this stays the HTTPS helpers' private owner, not a second SSPI owner.
 use super::{HelperChild, attributes::Attributes, pipe};
-use crate::git::endpoint::https_auth::process_tree::HelperCommand;
+use crate::git::endpoint::https_auth::{
+    process_tree::{EnvValue, HelperCommand},
+    wiped::{Probe, Wiped},
+};
 use std::{
     ffi::OsStr,
     io,
@@ -75,11 +78,15 @@ pub(super) fn command_line(program: &[u16], args: &[Vec<u16>]) -> io::Result<Vec
     Ok(line)
 }
 
-/// The environment block: `NAME=value` strings, sorted by name without regard to case, ending in a double NUL.
+/// The environment block: `NAME=value` strings, sorted by name without regard to case, ending in a double NUL. It
+/// is built in one owner of exactly its size that wipes itself, straight from the values' own owners: no entry
+/// copies a value, and nothing grows, so no plain buffer that held part of a credential is freed unwiped. `probe`
+/// is how a test sees the owner drop.
 pub(super) fn environment_block(
-    environment: &[(std::ffi::OsString, std::ffi::OsString)],
-) -> io::Result<Vec<u16>> {
-    let mut entries = Vec::with_capacity(environment.len());
+    environment: &[(std::ffi::OsString, EnvValue)],
+    probe: Probe,
+) -> io::Result<Wiped<u16>> {
+    let mut entries: Vec<(Vec<u16>, &[u16])> = Vec::with_capacity(environment.len());
     for (name, value) in environment {
         let name = wide(name)?;
         // A name may start with '=' (the hidden per-drive variables, "=C:"), as the snapshot accepts; an '=' after
@@ -89,7 +96,10 @@ pub(super) fn environment_block(
                 "an environment name that is empty or holds '=' after its first unit",
             ));
         }
-        entries.push((name, wide(value)?));
+        if value.units().contains(&0) {
+            return Err(invalid("a NUL in a process argument, name or path"));
+        }
+        entries.push((name, value.units()));
     }
     let fold = |unit: u16| match u8::try_from(unit) {
         Ok(byte) => u16::from(byte.to_ascii_uppercase()),
@@ -101,17 +111,21 @@ pub(super) fn environment_block(
             .map(|u| fold(*u))
             .cmp(right.0.iter().map(|u| fold(*u)))
     });
-    let mut block = Vec::new();
-    for (name, value) in entries {
-        block.extend(name);
-        block.push(b'=' as u16);
-        block.extend(value);
-        block.push(0);
+    // Each entry is `NAME=value` and its NUL; the block ends in one more NUL, and an empty one is two.
+    let size = entries
+        .iter()
+        .map(|(name, value)| name.len() + 1 + value.len() + 1)
+        .sum::<usize>();
+    let mut block = Wiped::zeroed(size.max(1) + 1, probe);
+    let mut rest = block.as_mut_slice();
+    for (name, value) in &entries {
+        let (entry, after) = rest.split_at_mut(name.len() + 1 + value.len() + 1);
+        let (head, tail) = entry.split_at_mut(name.len());
+        head.copy_from_slice(name);
+        tail[0] = b'=' as u16;
+        tail[1..=value.len()].copy_from_slice(value);
+        rest = after;
     }
-    if block.is_empty() {
-        block.push(0);
-    }
-    block.push(0);
     Ok(block)
 }
 
@@ -153,7 +167,7 @@ pub(super) fn create(command: &HelperCommand, job: &OwnedHandle) -> io::Result<H
         .map(|arg| wide(arg))
         .collect::<io::Result<Vec<_>>>()?;
     let mut line = command_line(&program, &args)?;
-    let mut block = environment_block(&command.environment)?;
+    let mut block = environment_block(&command.environment, Probe::inert())?;
     let mut directory = wide(command.directory.as_os_str())?;
     directory.push(0);
     let mut application = program;
@@ -198,13 +212,15 @@ pub(super) fn create(command: &HelperCommand, job: &OwnedHandle) -> io::Result<H
             std::ptr::null(),
             1,
             CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT,
-            block.as_mut_ptr().cast(),
+            block.as_mut_slice().as_mut_ptr().cast(),
             directory.as_ptr(),
             &startup.StartupInfo,
             &mut information,
         )
     };
     let failure = (created == 0).then(io::Error::last_os_error);
+    // The child has its own copy of the environment: the block is wiped now.
+    drop(block);
     // The window closes before anything else is done, created or not.
     drop(window);
     drop(attributes);

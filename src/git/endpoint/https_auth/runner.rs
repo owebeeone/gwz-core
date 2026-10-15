@@ -92,24 +92,12 @@ impl Runner<'_> {
         } = request;
         self.check()?;
         let directory = environment::working_directory()?;
-        let mut variables = environment::Environment::snapshot(&self.config.environment);
-        variables.set("GIT_TERMINAL_PROMPT", "0");
-        environment::confine(&mut variables, &directory);
-        if let Some(parameters) = parameters {
-            variables.remove("GIT_CONFIG_COUNT");
-            variables.remove_prefix("GIT_CONFIG_KEY_");
-            variables.remove_prefix("GIT_CONFIG_VALUE_");
-            variables.remove("GIT_CONFIG_SYSTEM");
-            variables.set("GIT_CONFIG_GLOBAL", environment::NULL_CONFIG);
-            variables.set("GIT_CONFIG_NOSYSTEM", "1");
-            variables.set(
-                "GIT_CONFIG_PARAMETERS",
-                environment::parameters_value(parameters)?,
-            );
-            if parameters.is_empty() {
-                variables.remove("GIT_CONFIG_PARAMETERS");
-            }
-        }
+        let variables = environment::helper_environment(
+            &self.config.environment,
+            &directory,
+            parameters,
+            wiped::Probe::inert(),
+        )?;
         let command = process_tree::HelperCommand {
             program: self.executable.to_path_buf(),
             args: args.iter().map(OsString::from).collect(),
@@ -117,7 +105,11 @@ impl Runner<'_> {
             environment: variables.into_pairs(),
         };
         self.check()?;
-        let started = process_tree::spawn(&command).map_err(|error| match error.kind() {
+        let spawned = process_tree::spawn(&command);
+        // The child has its own copy of the environment (or the spawn failed): the command's owners wipe theirs
+        // now, not when the helper ends.
+        drop(command);
+        let started = spawned.map_err(|error| match error.kind() {
             io::ErrorKind::NotFound => AuthError::MissingExecutable,
             io::ErrorKind::ArgumentListTooLong if parameters.is_some() => {
                 AuthError::ConfigurationRefused
