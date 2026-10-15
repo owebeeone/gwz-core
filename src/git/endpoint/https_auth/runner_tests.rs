@@ -269,7 +269,9 @@ exit 0",
         &owner,
         &config,
         &Destination::parse("https://example.com/repo").unwrap(),
-        Instant::now() + Duration::from_millis(1500),
+        // Long enough for the descendant to start on a loaded Windows runner, where starting an MSYS shell can take
+        // more than a second (CI run 38793264504 timed out before the heartbeat file existed at 1.5 s).
+        Instant::now() + Duration::from_secs(4),
         &CancellationToken::new(),
     )
     .await;

@@ -278,7 +278,9 @@ cfg_if::cfg_if! {
                         .await
                     }));
                 }
-                let barrier = Instant::now() + Duration::from_secs(2);
+                // A readiness wait, not a speed claim: eight MSYS shells can take more than 2 s to start on a loaded
+                // Windows runner (CI run 38793264504).
+                let barrier = Instant::now() + Duration::from_secs(20);
                 while fs::read_to_string(&started).map_or(0, |started| started.lines().count()) < 8 {
                     assert!(Instant::now() < barrier, "helper start barrier timed out");
                     tokio::time::sleep(Duration::from_millis(5)).await;
@@ -360,7 +362,9 @@ cfg_if::cfg_if! {
                     )
                     .await
                 });
-                let barrier = Instant::now() + Duration::from_secs(2);
+                // A readiness wait, not a speed claim: eight MSYS shells can take more than 2 s to start on a loaded
+                // Windows runner (CI run 38793264504).
+                let barrier = Instant::now() + Duration::from_secs(20);
                 while !started.exists() {
                     assert!(Instant::now() < barrier, "helper start barrier timed out");
                     tokio::time::sleep(Duration::from_millis(5)).await;
