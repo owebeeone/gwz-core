@@ -3,11 +3,11 @@
 //! the classification of the shared policy on Windows as on every platform. State P2-2: the Basic helper lookup
 //! is on the helper's own allowance, and the native network deadline D does not run during it.
 use super::*;
-use crate::git::endpoint::https_fixture::{Server, input, response};
+use crate::git::endpoint::https_fixture::{Behaviour, Server, input, response};
 use crate::transport_host::{HttpsOpenFailure, policy_words};
 use hyper::header::RETRY_AFTER;
 
-fn run<F: std::future::Future<Output = ()>>(work: F) {
+pub(super) fn run<F: std::future::Future<Output = ()>>(work: F) {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -139,6 +139,17 @@ fn d19_code_p2_1_a_non_401_answer_to_a_windows_credential_is_classified_as_the_g
                         "{row}: {text}"
                     );
                     assert!(!text.contains("credential helper"), "{row}: {text}");
+                    // It points at the entry about its case, and qualifies the advice for a server that offers NTLM only.
+                    assert!(
+                        text.ends_with("See Troubleshooting: Windows Sign-In."),
+                        "{row}: {text}"
+                    );
+                    assert!(
+                        text.contains(
+                            "on a server that offers NTLM only, git may ask you for a password"
+                        ),
+                        "{row}: {text}"
+                    );
                 }
                 if policy == AuthPolicy::WindowsDefault {
                     assert_eq!(windows.steps, 1, "{row}");
@@ -160,18 +171,55 @@ fn d19_code_p2_1_a_401_answering_a_windows_basic_credential_is_still_its_rejecti
     });
 }
 
-/// An open under the configured policy against a server that challenges Basic and accepts the helper's credential,
-/// whose helper takes `helper_seconds` to answer, with `connect` as the native network deadline D and `interaction`
-/// as the helper's interaction allowance. The server closes a connection that has had no request for `idle`. It
-/// returns what the open ended with, the logon session's starts and the connections the server accepted.
-async fn slow_helper(
-    helper_seconds: u32,
-    connect: Duration,
-    interaction: Duration,
-    idle: Option<Duration>,
-) -> (Result<Facts, Failure>, usize, usize) {
-    let server = Server::start_closing_idle(
-        Arc::new(|request| {
+/// How `slow` runs an open under the configured policy against a server that challenges Basic and accepts the
+/// helper's credential: the helper takes `helper_seconds` to answer, `connect` is the native network deadline D and
+/// `interaction` the helper's interaction allowance.
+#[derive(Clone, Copy)]
+pub(super) struct Slow {
+    pub(super) helper_seconds: u32,
+    pub(super) connect: Duration,
+    pub(super) interaction: Duration,
+    /// The server closes a connection that has had no request for this long.
+    pub(super) idle: Option<Duration>,
+    /// The server marks its 401 `Connection: close`.
+    pub(super) close_after_challenge: bool,
+    /// The server stops listening once it has accepted this many connections.
+    pub(super) stop_after: Option<usize>,
+    /// When the open's server-side connection count is read, from the start of the open.
+    pub(super) sample_open_at: Option<Duration>,
+}
+
+impl Slow {
+    pub(super) fn helper(helper_seconds: u32) -> Self {
+        Self {
+            helper_seconds,
+            connect: Duration::from_secs(20),
+            interaction: Duration::from_secs(60),
+            idle: None,
+            close_after_challenge: false,
+            stop_after: None,
+            sample_open_at: None,
+        }
+    }
+}
+
+/// What an open run by `slow` ended with, and what the server and the logon session saw of it.
+pub(super) struct Slowed {
+    pub(super) result: Result<Facts, Failure>,
+    /// What the attempt's first connect did, which the key's retry machine learns.
+    pub(super) connect: FirstConnect,
+    /// What the limit machine made of the attempt's refusal.
+    pub(super) refusal: Option<super::super::super::throttle::Rejection>,
+    pub(super) starts: usize,
+    pub(super) accepted: usize,
+    /// The connections the server was serving at `sample_open_at`.
+    pub(super) open: Option<usize>,
+}
+
+pub(super) async fn slow(options: Slow) -> Slowed {
+    let close = options.close_after_challenge;
+    let server = Server::start_behaving(
+        Arc::new(move |request| {
             let authorized = request.headers().contains_key(AUTHORIZATION);
             Box::pin(async move {
                 let mut result = response(
@@ -183,16 +231,26 @@ async fn slow_helper(
                     result
                         .headers_mut()
                         .insert(WWW_AUTHENTICATE, "Basic realm=x".parse().unwrap());
+                    if close {
+                        result
+                            .headers_mut()
+                            .insert(hyper::header::CONNECTION, "close".parse().unwrap());
+                    }
                 }
                 result
             })
         }),
-        idle,
+        Behaviour {
+            idle: options.idle,
+            stop_after: options.stop_after,
+        },
     )
     .await;
     let dir = tempfile::tempdir().unwrap();
-    let script =
-        format!("sleep {helper_seconds}; printf 'username=fixture\\npassword=fixture\\n\\n'");
+    let script = format!(
+        "sleep {}; printf 'username=fixture\\npassword=fixture\\n\\n'",
+        options.helper_seconds
+    );
     let helper = crate::git::endpoint::helper_script::git_fixture(dir.path(), &script);
     let mut endpoint =
         Endpoint::new(server.config(), Some(helper), pool::Config::default()).unwrap();
@@ -201,19 +259,56 @@ async fn slow_helper(
     let mut request = input(&server, GitService::UploadPackAdvertisement);
     request.policy = AuthPolicy::WindowsConfigured;
     let mut budget = endpoint.client.budget();
-    budget.connect = Some(connect);
-    budget.helper = interaction;
-    let (result, _) = endpoint
-        .client
-        .prepare_attempt(request, &CancellationToken::new(), &mut budget, &mut None)
-        .await;
+    budget.connect = Some(options.connect);
+    budget.helper = options.interaction;
+    let sampled = async {
+        match options.sample_open_at {
+            Some(at) => {
+                tokio::time::sleep(at).await;
+                Some(server.open.load(Ordering::SeqCst))
+            }
+            None => None,
+        }
+    };
+    let cancel = CancellationToken::new();
+    let mut challenge = None;
+    let opening =
+        endpoint
+            .client
+            .prepare_attempt_judged(request, &cancel, &mut budget, &mut challenge);
+    let ((result, connect, refusal), open) = tokio::join!(opening, sampled);
     let starts = port.starts.load(Ordering::Acquire);
     let accepted = server.connections.load(Ordering::Acquire);
     let result = result.map(|prepared| prepared.opened.facts.clone());
     endpoint.client.finish_operation("operation");
     let _ = endpoint.client.reap_cleanup(Duration::from_secs(2)).await;
     assert_eq!(endpoint.shutdown(Duration::from_secs(5)).await, 0);
-    (result, starts, accepted)
+    Slowed {
+        result,
+        connect,
+        refusal,
+        starts,
+        accepted,
+        open,
+    }
+}
+
+/// `slow` with the helper's time, D, the interaction allowance and the server's idle limit; the result, the logon
+/// session's starts and the connections the server accepted.
+async fn slow_helper(
+    helper_seconds: u32,
+    connect: Duration,
+    interaction: Duration,
+    idle: Option<Duration>,
+) -> (Result<Facts, Failure>, usize, usize) {
+    let slowed = slow(Slow {
+        connect,
+        interaction,
+        idle,
+        ..Slow::helper(helper_seconds)
+    })
+    .await;
+    (slowed.result, slowed.starts, slowed.accepted)
 }
 
 #[test]

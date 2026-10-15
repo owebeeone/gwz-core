@@ -45,8 +45,32 @@ pub(crate) struct ConnectionId(pub usize);
 pub(crate) struct Server {
     pub url: String,
     pub ca: Vec<u8>,
+    /// The connections the server has accepted.
     pub connections: Arc<AtomicUsize>,
+    /// The connections it is serving now: one ends when its peer or the server closes it.
+    pub open: Arc<AtomicUsize>,
     task: JoinHandle<()>,
+}
+/// How a `Server` treats its connections beyond answering requests.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Behaviour {
+    /// Close a connection that has had no request in flight for this long.
+    pub idle: Option<Duration>,
+    /// Stop listening once this many connections have been accepted: a later connect is refused by the host.
+    pub stop_after: Option<usize>,
+}
+/// Counts a served connection as open until it ends.
+struct Open(Arc<AtomicUsize>);
+impl Open {
+    fn begin(count: &Arc<AtomicUsize>) -> Self {
+        count.fetch_add(1, Ordering::SeqCst);
+        Self(count.clone())
+    }
+}
+impl Drop for Open {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 impl Drop for Server {
     fn drop(&mut self) {
@@ -150,21 +174,50 @@ impl Server {
     }
     /// A server that closes a connection after `idle` without a request in flight.
     pub async fn start_closing_idle(handler: Handler, idle: Option<Duration>) -> Self {
+        Self::start_behaving(
+            handler,
+            Behaviour {
+                idle,
+                ..Behaviour::default()
+            },
+        )
+        .await
+    }
+    /// A server that serves as `behaviour` says.
+    pub async fn start_behaving(handler: Handler, behaviour: Behaviour) -> Self {
         let (ca, acceptor) = identity();
-        let listener = Loopback::bind();
-        let url = format!("https://localhost:{}/repo", listener.port);
+        let mut listener = Some(Loopback::bind());
+        let url = format!(
+            "https://localhost:{}/repo",
+            listener.as_ref().map_or(0, |bound| bound.port)
+        );
         let connections = Arc::new(AtomicUsize::new(0));
-        let count = connections.clone();
+        let open = Arc::new(AtomicUsize::new(0));
+        let (count, serving) = (connections.clone(), open.clone());
         let task = tokio::spawn(async move {
             let mut children = JoinSet::new();
             loop {
                 tokio::select! {
-                    result=listener.accept()=>{let socket=result.unwrap();let connection_id=ConnectionId(count.fetch_add(1,Ordering::SeqCst)+1);let acceptor=acceptor.clone();let handler=handler.clone();children.spawn(async move {
-                        if let Ok(tls)=acceptor.accept(socket).await {
-                            serve_connection(tls,connection_id,handler,idle).await;
+                    result = async {
+                        match listener.as_ref() {
+                            Some(bound) => bound.accept().await,
+                            None => std::future::pending().await,
                         }
-                    });},
-                    _=children.join_next(),if !children.is_empty()=>{},
+                    } => {
+                        let socket = result.unwrap();
+                        let number = count.fetch_add(1, Ordering::SeqCst) + 1;
+                        if behaviour.stop_after == Some(number) {
+                            listener = None;
+                        }
+                        let (acceptor, handler, serving) = (acceptor.clone(), handler.clone(), serving.clone());
+                        children.spawn(async move {
+                            if let Ok(tls) = acceptor.accept(socket).await {
+                                let _open = Open::begin(&serving);
+                                serve_connection(tls, ConnectionId(number), handler, behaviour.idle).await;
+                            }
+                        });
+                    },
+                    _ = children.join_next(), if !children.is_empty() => {},
                 }
             }
         });
@@ -172,6 +225,7 @@ impl Server {
             url,
             ca,
             connections,
+            open,
             task,
         }
     }
@@ -284,6 +338,7 @@ impl Server {
             url,
             ca,
             connections,
+            open: Arc::new(AtomicUsize::new(0)),
             task,
         }
     }
@@ -312,6 +367,7 @@ impl Server {
             url,
             ca,
             connections,
+            open: Arc::new(AtomicUsize::new(0)),
             task,
         }
     }

@@ -20,6 +20,11 @@ impl Budget {
     pub(crate) fn native_rounds(&self) -> usize {
         self.native_rounds
     }
+    /// Whether the operation's native exchanges have used all the request rounds it may (design 8): no further
+    /// exchange starts, and an attempt that would start one ends at once.
+    pub(crate) fn native_rounds_spent(&self) -> bool {
+        self.native_rounds >= super::native::NATIVE_ROUNDS
+    }
     /// Resumes the operation's count of native request rounds in this budget, which an attempt that the endpoint
     /// starts afresh after an earlier one has used some would otherwise begin again at none: the eight rounds are
     /// the operation's, not one attempt's (design 8).

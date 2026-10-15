@@ -36,6 +36,16 @@ pub(super) fn endpoint(
     per_host: usize,
     max_retries: u32,
 ) -> HttpsEndpoint {
+    endpoint_with(tls, None, per_host, max_retries)
+}
+
+/// `endpoint`, with the credential helpers `auth` configures.
+pub(super) fn endpoint_with(
+    tls: https_connection::Config,
+    auth: Option<crate::git::endpoint::https_auth::Config>,
+    per_host: usize,
+    max_retries: u32,
+) -> HttpsEndpoint {
     let config = pool::Config {
         per_host,
         per_user_host: per_host,
@@ -43,7 +53,7 @@ pub(super) fn endpoint(
     };
     let authority = Authority::new(config.total, config.per_host);
     let mut endpoint = HttpsEndpoint::new(
-        HttpsEndpointConfig { tls, auth: None },
+        HttpsEndpointConfig { tls, auth },
         config,
         3_000,
         authority,

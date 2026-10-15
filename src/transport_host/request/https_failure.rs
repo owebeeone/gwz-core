@@ -231,7 +231,7 @@ impl HttpsOpenFailure {
         {
             // The `gh` path's refusal, for the credential this open sent: the logon session's, not a helper's.
             return format!(
-                "The server refused this account (HTTP 403) after gwz sent your Windows sign-in. The account may lack access to the repository; `git ls-remote` with this member's URL {MEMBER_URL} shows the server's own explanation. See Troubleshooting: HTTPS Credential Failure."
+                "The server refused this account (HTTP 403) after gwz sent your Windows sign-in. The account may lack access to the repository. `git ls-remote` with this member's URL {MEMBER_URL} shows the server's own explanation, but on a server that offers NTLM only, git may ask you for a password instead of signing in with your Windows account. See Troubleshooting: Windows Sign-In."
             );
         }
         if self.failure.code == ErrorCode::Authentication

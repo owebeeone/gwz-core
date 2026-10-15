@@ -4,6 +4,7 @@ mod closure;
 mod exchange;
 mod precedence;
 mod protocol;
+mod reconnect;
 mod redirect;
 mod rejection;
 mod retention;
@@ -131,6 +132,8 @@ cfg_if::cfg_if! { if #[cfg(test)] {
     }
     pub(super) fn publication_caller() -> NativeCaller { fake(true, 2).0 }
     pub(super) fn counting_caller(host: &'static str) -> (NativeCaller, Arc<AtomicUsize>) { let (caller, port) = fake_for(host, false, 2); (caller, port.steps.clone()) }
+    /// `counting_caller`, and the deadline every exchange of it was started with.
+    pub(super) fn recording_caller(host: &'static str) -> (NativeCaller, Arc<AtomicUsize>, Arc<Mutex<Vec<Instant>>>) { let (caller, port) = fake_for(host, false, 2); (caller, port.steps.clone(), port.deadlines.clone()) }
     struct ValidatorPort(Arc<FakePort>);
     impl Port for ValidatorPort {
         fn start(&self, request: gwz_sspi::AuthRequest, deadline: Instant, cancel: gwz_sspi::Cancellation) -> Work<'static, Result<Box<dyn Session>, BridgeError>> {

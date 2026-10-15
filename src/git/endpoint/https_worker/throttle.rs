@@ -21,6 +21,58 @@ pub(super) enum Said {
     Unanswered,
 }
 
+/// What an attempt records of the connects it makes for the open's first request: the member the limit machines know
+/// it as, whether this hop's connect is the open's setup, and where the connect's outcome and the machine's judgement
+/// of its failure are left for the open's key (the retry plan's §4 and §5). Only the first hop's connect is a setup.
+pub(super) struct Setup<'a> {
+    pub(super) member: &'a str,
+    pub(super) first: bool,
+    pub(super) connect: &'a mut FirstConnect,
+    pub(super) refusal: &'a mut Option<Rejection>,
+}
+impl Setup<'_> {
+    /// The tag a checkout carries for the limit machine, if its connect is the open's setup.
+    pub(super) fn tag(&self, client: &Client, operation: &str) -> Option<String> {
+        self.first
+            .then(|| client.pool.governor().scoped(operation).tag(self.member))
+    }
+    /// The failure of a checkout that ended with `error` in `phase`. The one authentication failure a connection
+    /// setup has is the proxy's own 407 to the CONNECT, which the machine proxy's is named so: it asks for a sign-in,
+    /// which is not supported. A setup's failure keeps its origin and is judged by the limit machine.
+    pub(super) fn failed(
+        &mut self,
+        client: &Client,
+        operation: &str,
+        destination: &Destination,
+        error: Failure,
+        phase: Phase,
+        facts: &Facts,
+    ) -> Failure {
+        let mut failed = with_facts(error.code, error.effect, facts);
+        if client.machine_proxy
+            && phase == Phase::Setup
+            && error.code == ErrorCode::Authentication
+            && let Some(facts) = failed.facts.as_mut()
+        {
+            facts.http_status = Some(407);
+        }
+        if self.first {
+            failed.setup_cause = error.setup_cause;
+            if phase == Phase::Setup {
+                *self.connect = FirstConnect::Failed;
+                *self.refusal = client.judge_setup(operation, destination, self.member, &failed);
+            }
+        }
+        failed
+    }
+    /// A fresh connect for the open's first request succeeded.
+    pub(super) fn connected(&mut self, lease: &HttpLease) {
+        if self.first && !lease.reused {
+            *self.connect = FirstConnect::Connected;
+        }
+    }
+}
+
 /// What the limit machine made of an open's refusal, which its endpoint acts on
 /// (adaptive concurrency design §5.1): a throttle is requeued whatever the
 /// machine made of it, any other refusal when the machine took it as evidence.

@@ -231,6 +231,12 @@ impl Client {
                 // byte, so its connect alone is the open's setup, and only its
                 // failure keeps an origin a retry is decided by (§4).
                 let first = hops == 0;
+                let mut setup = Setup {
+                    member: &member,
+                    first,
+                    connect: &mut *connect,
+                    refusal: &mut *refusal,
+                };
                 let checkout = self.pool.checkout_scoped(
                     Key::https(destination.host(), destination.port()),
                     Owner::new(&input.session, &input.operation),
@@ -246,7 +252,7 @@ impl Client {
                         .or_else(|| native_route.as_ref().map(|auth| auth.scope.as_str())),
                     std::mem::take(&mut fresh),
                     !retried,
-                    first.then(|| self.pool.governor().scoped(&input.operation).tag(&member)),
+                    setup.tag(self, &input.operation),
                 );
                 let checkout = match budget.logical_deadline {
                     Some(until) => tokio::time::timeout_at(until, checkout)
@@ -257,34 +263,17 @@ impl Client {
                 let lease = match checkout {
                     Ok(lease) => lease,
                     Err((error, phase)) => {
-                        let mut failed = with_facts(error.code, error.effect, &facts);
-                        // The one authentication failure a connection setup has is the proxy's own 407 to the
-                        // CONNECT. The machine proxy's is named so: it asks for a sign-in, which is not supported.
-                        if self.machine_proxy
-                            && phase == Phase::Setup
-                            && error.code == ErrorCode::Authentication
-                            && let Some(facts) = failed.facts.as_mut()
-                        {
-                            facts.http_status = Some(407);
-                        }
-                        if first {
-                            failed.setup_cause = error.setup_cause;
-                            if phase == Phase::Setup {
-                                *connect = FirstConnect::Failed;
-                                *refusal = self.judge_setup(
-                                    &input.operation,
-                                    &destination,
-                                    &member,
-                                    &failed,
-                                );
-                            }
-                        }
-                        return Err(failed);
+                        return Err(setup.failed(
+                            self,
+                            &input.operation,
+                            &destination,
+                            error,
+                            phase,
+                            &facts,
+                        ));
                     }
                 };
-                if first && !lease.reused {
-                    *connect = FirstConnect::Connected;
-                }
+                setup.connected(&lease);
                 lease
             };
             retried |= lease.retried;
@@ -483,7 +472,19 @@ impl Client {
             drop(connection);
             if native_policy && response.status() == 401 {
                 response = self
-                    .authenticate(&mut prepared, response, &key, budget, cancel)
+                    .authenticate(
+                        &mut prepared,
+                        response,
+                        &key,
+                        budget,
+                        cancel,
+                        &mut Setup {
+                            member: &member,
+                            first: hops == 0,
+                            connect: &mut *connect,
+                            refusal: &mut *refusal,
+                        },
+                    )
                     .await?;
             }
             if native_policy
@@ -702,6 +703,17 @@ pub(super) fn duration_ms(duration: Duration) -> u64 {
         ))
         .min(u64::MAX as u128) as u64
 }
+/// Whether a response says that its connection ends with it (`Connection: close`), or says it in words that cannot be
+/// read: such a connection carries no further request.
+pub(super) fn closes(headers: &hyper::HeaderMap) -> bool {
+    !headers.get_all(CONNECTION).iter().all(|value| {
+        value.to_str().is_ok_and(|text| {
+            !text
+                .split(',')
+                .any(|token| token.trim().eq_ignore_ascii_case("close"))
+        })
+    })
+}
 pub(super) async fn clean_challenge(
     mut response: Response<Incoming>,
     connection: &Arc<tokio::sync::Mutex<https_connection::Connection>>,
@@ -709,14 +721,7 @@ pub(super) async fn clean_challenge(
     resource_cancel: &CancellationToken,
     budget: &mut Budget,
 ) -> Result<bool, ErrorCode> {
-    let keep_alive = response.headers().get_all(CONNECTION).iter().all(|value| {
-        value.to_str().is_ok_and(|text| {
-            !text
-                .split(',')
-                .any(|token| token.trim().eq_ignore_ascii_case("close"))
-        })
-    });
-    if !keep_alive {
+    if closes(response.headers()) {
         return Ok(false);
     }
     let started = Instant::now();
