@@ -221,9 +221,8 @@ impl GitBackend for Git2Backend {
         start: &Path,
         options: Option<&crate::TransportOptions>,
     ) -> ModelResult<Option<Self>> {
-        let empty = crate::TransportOptions::default();
         cfg_if::cfg_if! {
-            if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
+            if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
                 if options.is_some_and(|value| {
                     value.placement == Some(crate::TransportPlacement::Cli)
                         && !self.ssh.is_cli_context()
@@ -235,31 +234,12 @@ impl GitBackend for Git2Backend {
                 }
             }
         }
-        let identities;
-        if self.ssh.is_cli_context() {
-            cfg_if::cfg_if! {
-                if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
-                    identities = transport_support::identity::Selection::from_options_cli(
-                        options.unwrap_or(&empty),
-                    )?;
-                    identities.validate_endpoint_files(self)?;
-                } else {
-                    identities = transport_support::identity::Selection::from_options(
-                        start,
-                        None,
-                        options.unwrap_or(&empty),
-                    )?;
-                }
-            }
-        } else {
-            // A host context's `~/` is its endpoint's SSH home, the one `known_hosts` is read from.
-            identities = transport_support::identity::Selection::from_options(
-                start,
-                self.ssh.ssh_home().as_deref(),
-                options.unwrap_or(&empty),
-            )?;
-            identities.validate_files()?;
-        }
+        let empty = crate::TransportOptions::default();
+        let identities = transport_support::identity::Selection::for_backend(
+            self,
+            start,
+            options.unwrap_or(&empty),
+        )?;
         Ok(Some(Self {
             filesystem: self.filesystem.clone(),
             credential_helpers: self.credential_helpers,

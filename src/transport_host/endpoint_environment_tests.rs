@@ -6,10 +6,10 @@
 
 use super::endpoint_environment::{endpoint_config, endpoint_config_in};
 use super::*;
+use crate::TransportOptions;
 use crate::git::GitBackend;
 use crate::git::endpoint::agent_source::AgentSource;
 use crate::session_host::EnvironmentSnapshot;
-use crate::{TransportOptions, TransportPlacement};
 use std::{
     ffi::{OsStr, OsString},
     path::PathBuf,
@@ -198,10 +198,7 @@ fn the_runtime_takes_home_and_the_agent_from_the_snapshot_not_the_process() {
             ("HOME", home.as_os_str()),
             ("SSH_AUTH_SOCK", socket.as_os_str()),
         ]);
-        let options = TransportOptions {
-            placement: Some(TransportPlacement::Local),
-            ..Default::default()
-        };
+        let options = TransportOptions::default();
         let meta = RequestMeta {
             request_id: name.into(),
             schema_version: "gwz.protocol/v0".into(),

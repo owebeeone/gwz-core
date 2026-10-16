@@ -1,4 +1,5 @@
 use super::*;
+use gwz_transport::protocol::AuthPolicy;
 #[test]
 fn explicit_anonymous_refusal_does_not_hold_capacity_for_the_request_lifetime() {
     run(async {

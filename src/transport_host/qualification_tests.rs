@@ -1,6 +1,7 @@
 //! Exercises the real request constructor and endpoint with no SSH settings.
 use super::*;
 use crate::git::CredentialHelperPolicy;
+use gwz_transport::protocol::{AuthPolicy, Scheme};
 
 fn meta(id: &str) -> RequestMeta {
     RequestMeta {
@@ -95,17 +96,25 @@ cfg_if::cfg_if! { if #[cfg(windows)] {
         executor.block_on(async {
             let settings = EndpointSettings { ssh: None, pool: pool::Config::default(), io_timeout_ms: 3000 };
             let runtime = TransportRuntime::build_native(settings, Some((HttpsEndpointConfig { tls: Default::default(), auth: None }, HelperSlots::new())), None).unwrap();
-            let caps = runtime.capabilities(TransportCapabilitiesRequest { schema_version: "gwz.protocol/v0".into(), ..Default::default() }).unwrap();
-            assert_eq!(caps.schemes, Some(vec![Scheme::Ssh, Scheme::Https]));
+            let schemes = vec![Scheme::Ssh, Scheme::Https];
             // The helper policies are offered since plan step 4.4: `Gh`, and the logon session with the helper and without.
-            assert_eq!(caps.auth_policies, Some(vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit, AuthPolicy::Anonymous, AuthPolicy::Gh, AuthPolicy::WindowsConfigured, AuthPolicy::WindowsDefault]));
-            assert!(!caps.file_identity);
-            assert!(!caps.exact_agent_identity);
+            let policies = vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit, AuthPolicy::Anonymous, AuthPolicy::Gh, AuthPolicy::WindowsConfigured, AuthPolicy::WindowsDefault];
             let request = runtime.request(meta("qualification-refusal"), "operation".into()).await.unwrap();
             let endpoint = runtime.0.lock().unwrap().local_endpoint.clone();
             let (_, bound) = endpoint.endpoint_offer_for_test();
-            assert_eq!(Some(bound.schemes.clone()), caps.schemes);
-            assert_eq!(Some(bound.policies.clone()), caps.auth_policies);
+            assert_eq!(bound.schemes, schemes);
+            assert_eq!(bound.policies, policies);
+            cfg_if::cfg_if! {
+                if #[cfg(gwz_session_candidate)] {
+                    use crate::TransportCapabilitiesRequest;
+                    // The session candidate reports what the endpoint bound, and no file or exact agent identity on Windows.
+                    let caps = runtime.capabilities(TransportCapabilitiesRequest { schema_version: "gwz.protocol/v0".into(), ..Default::default() }).unwrap();
+                    assert_eq!(caps.schemes, Some(schemes));
+                    assert_eq!(caps.auth_policies, Some(policies));
+                    assert!(!caps.file_identity);
+                    assert!(!caps.exact_agent_identity);
+                }
+            }
             // A forged Open with an SSH policy over HTTPS is refused before any effect.
             for policy in [AuthPolicy::SshAmbient, AuthPolicy::SshExplicit] {
                 let failure = endpoint.open_https("qualification-refusal", "operation", "https://example.invalid/repo", gwz_transport::protocol::GitService::UploadPackAdvertisement, policy, None, None, Arc::new(|_, _| {}), Arc::new(|_| {})).err().unwrap().failure;
@@ -290,17 +299,30 @@ fn public_ssh_constructor_retains_its_engine_and_defaults() {
             endpoint.capacity_for_test(),
             Some(pool::Capacity::from(&pool::Config::default()))
         );
-        let caps = runtime
-            .capabilities(TransportCapabilitiesRequest {
-                schema_version: "gwz.protocol/v0".into(),
-                ..Default::default()
-            })
-            .unwrap();
-        assert_eq!(caps.schemes, Some(vec![Scheme::Ssh]));
         assert_eq!(
-            caps.auth_policies,
-            Some(vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit])
+            endpoint.endpoint_offer_for_test().1.schemes,
+            vec![Scheme::Ssh]
         );
+        assert_eq!(
+            endpoint.endpoint_offer_for_test().1.policies,
+            vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit]
+        );
+        cfg_if::cfg_if! {
+            if #[cfg(gwz_session_candidate)] {
+                use crate::TransportCapabilitiesRequest;
+                let caps = runtime
+                    .capabilities(TransportCapabilitiesRequest {
+                        schema_version: "gwz.protocol/v0".into(),
+                        ..Default::default()
+                    })
+                    .unwrap();
+                assert_eq!(caps.schemes, Some(vec![Scheme::Ssh]));
+                assert_eq!(
+                    caps.auth_policies,
+                    Some(vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit])
+                );
+            }
+        }
         assert_eq!(runtime.shutdown().await.pending_local_work, 0);
     });
 }
@@ -326,20 +348,27 @@ fn ssh_and_https_runtime_offers_both_schemes_and_binds_what_it_offers() {
             None,
         )
         .unwrap();
-        let caps = runtime
-            .capabilities(TransportCapabilitiesRequest {
-                schema_version: "gwz.protocol/v0".into(),
-                ..Default::default()
-            })
-            .unwrap();
-        assert_eq!(caps.schemes, Some(vec![Scheme::Ssh, Scheme::Https]));
         let endpoint = runtime.0.lock().unwrap().local_endpoint.clone();
         assert!(
             endpoint.endpoint_offer_for_test().0,
             "the SSH engine is constructed"
         );
         let (_, bound) = endpoint.endpoint_offer_for_test();
-        assert_eq!(Some(bound.schemes.clone()), caps.schemes);
+        assert_eq!(bound.schemes, vec![Scheme::Ssh, Scheme::Https]);
+        cfg_if::cfg_if! {
+            if #[cfg(gwz_session_candidate)] {
+                use crate::TransportCapabilitiesRequest;
+                // The session candidate reports what the endpoint bound.
+                let caps = runtime
+                    .capabilities(TransportCapabilitiesRequest {
+                        schema_version: "gwz.protocol/v0".into(),
+                        ..Default::default()
+                    })
+                    .unwrap();
+                assert_eq!(caps.schemes, Some(vec![Scheme::Ssh, Scheme::Https]));
+                assert_eq!(Some(bound.schemes.clone()), caps.schemes);
+            }
+        }
         assert_eq!(runtime.shutdown().await.pending_local_work, 0);
     });
 }

@@ -33,10 +33,7 @@ pub(crate) fn protocol_state(
     }
 }
 
-#[allow(
-    clippy::needless_update,
-    reason = "gwz_transport_candidate adds fields"
-)]
+#[allow(clippy::needless_update, reason = "gwz_session_candidate adds fields")]
 pub(crate) fn response_envelope(
     context: crate::operation::OperationContext,
     aggregate_status: crate::AggregateStatus,

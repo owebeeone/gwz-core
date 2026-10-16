@@ -5,7 +5,7 @@ use super::driver_tests::{block_on, common};
 use super::*;
 use crate::git::endpoint::agent_source::{AgentSource, select};
 use crate::git::endpoint::ssh_channel::GitService;
-use crate::{RequestMeta, TransportOptions, TransportPlacement};
+use crate::{RequestMeta, TransportOptions};
 use std::ffi::OsStr;
 
 /// The error text of an ambient open that needs an agent, for a runtime whose agent is `source`. The server is the
@@ -25,10 +25,7 @@ fn open_error_within(source: AgentSource, io_timeout_ms: u64) -> (String, bool) 
     let meta = RequestMeta {
         request_id: "agent-words".into(),
         schema_version: "gwz.protocol/v0".into(),
-        transport: Some(TransportOptions {
-            placement: Some(TransportPlacement::Local),
-            ..Default::default()
-        }),
+        transport: Some(TransportOptions::default()),
         ..Default::default()
     };
     let request = block_on(runtime.request(meta, "fetch".into())).unwrap();

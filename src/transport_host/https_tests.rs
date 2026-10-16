@@ -9,7 +9,7 @@ use super::*;
 use crate::TransportOptions;
 use crate::git::GitBackend;
 use bytes::Bytes;
-use gwz_transport::protocol::AuthPolicy;
+use gwz_transport::protocol::{AuthPolicy, Scheme};
 use http_body_util::{BodyExt, Full};
 use hyper::{
     Request, Response, StatusCode,
@@ -217,10 +217,7 @@ pub(super) fn meta(request_id: &str) -> RequestMeta {
     RequestMeta {
         request_id: request_id.into(),
         schema_version: "gwz.protocol/v0".into(),
-        transport: Some(TransportOptions {
-            placement: Some(TransportPlacement::Local),
-            ..Default::default()
-        }),
+        transport: Some(TransportOptions::default()),
         ..Default::default()
     }
 }
@@ -243,18 +240,28 @@ fn local_https_advertisement_and_clone_use_scoped_host_runtime() {
             auth: None,
         };
         let transport = TransportRuntime::with_https(local, https, HelperSlots::new()).unwrap();
-        let capabilities = transport
-            .capabilities(TransportCapabilitiesRequest {
-                schema_version: "gwz.protocol/v0".into(),
-            })
-            .unwrap();
-        assert!(capabilities.schemes.unwrap().contains(&Scheme::Https));
-        assert!(
-            capabilities
-                .auth_policies
-                .unwrap()
-                .contains(&AuthPolicy::Anonymous)
-        );
+        let endpoint = transport.0.lock().unwrap().local_endpoint.clone();
+        let (_, offered) = endpoint.endpoint_offer_for_test();
+        assert!(offered.schemes.contains(&Scheme::Https));
+        assert!(offered.policies.contains(&AuthPolicy::Anonymous));
+        cfg_if::cfg_if! {
+            if #[cfg(gwz_session_candidate)] {
+                use crate::TransportCapabilitiesRequest;
+                // The session candidate reports what the endpoint offered.
+                let capabilities = transport
+                    .capabilities(TransportCapabilitiesRequest {
+                        schema_version: "gwz.protocol/v0".into(),
+                    })
+                    .unwrap();
+                assert!(capabilities.schemes.unwrap().contains(&Scheme::Https));
+                assert!(
+                    capabilities
+                        .auth_policies
+                        .unwrap()
+                        .contains(&AuthPolicy::Anonymous)
+                );
+            }
+        }
 
         let request_meta = meta("https-local-clone");
         let request = transport

@@ -1,5 +1,6 @@
 //! Candidate embedding ownership for endpoint placement. The host supplies message delivery.
 mod cancellable;
+mod cli_placement;
 pub(crate) mod endpoint_environment;
 mod helper_failure;
 mod https_endpoint;
@@ -36,7 +37,6 @@ cfg_if::cfg_if! {
         mod tests;
         mod throughput_tests;
         mod fault_tests;
-        mod message_embedding_tests;
         mod https_notes_tests;
         mod https_route_scale_tests;
         mod endpoint_environment_tests;
@@ -47,6 +47,19 @@ cfg_if::cfg_if! {
 
 // Step 3.2b: the agent step's refusals, worded from the runtime's agent source.
 cfg_if::cfg_if! { if #[cfg(test)] { mod agent_source_tests; } }
+
+// S7.1 (1.1.0) step C3a: the Cli placement is the 1.2.0 session host's transport entry, so the tests that drive it
+// (the Cli harness, the embedded messages, the workspace commands and the fetch preflight over it) belong to the
+// session candidate.
+cfg_if::cfg_if! {
+    if #[cfg(all(test, gwz_session_candidate))] {
+        mod cli_driver_tests;
+        mod cli_placement_tests;
+        mod command_tests;
+        mod fetch_preflight_tests;
+        mod message_embedding_tests;
+    }
+}
 
 // Step 5.1: the plain HTTP and git protocol clones this module's one test makes. The Windows qualification refused
 // those remotes; retiring the switch removed the refusal, so the module runs on every platform.
@@ -62,8 +75,6 @@ cfg_if::cfg_if! {
         mod driver_tests;
         mod https_tests;
         mod close_tests;
-        mod command_tests;
-        mod fetch_preflight_tests;
         mod https_policy_tests;
         mod https_helper_projection_tests;
         mod ssh_helper_projection_tests;
@@ -80,7 +91,7 @@ use crate::git::endpoint::https_auth::HelperSlots;
 use crate::git::endpoint::ssh_home::{self, Home, HomeSource};
 use crate::git::endpoint::ssh_local;
 use crate::{
-    RequestMeta, TransportCapabilitiesRequest, TransportCapabilitiesResponse, TransportPlacement,
+    RequestMeta,
     git::Git2Backend,
     model::{ErrorCode, ModelError, ModelResult},
 };
@@ -88,10 +99,7 @@ use crate::{
 /// controls that create and cancel it: gwz-session-host's, as the core session
 /// contract's §5.2 transport entry takes them (1.1.0 S6.1).
 pub use gwz_session_host::{CallControls, CancellationToken};
-use gwz_transport::{
-    binding, pool,
-    protocol::{AuthPolicy, Scheme},
-};
+use gwz_transport::{binding, pool};
 pub use request::{ClientRequest, TransportCancellation, TransportRequest};
 
 /// Validate an operation before constructing an endpoint or consulting credentials.
@@ -102,38 +110,17 @@ pub(crate) use request::{HttpsAttemptReceipt, HttpsOpenFailure, RequestContext, 
 use session::Session;
 pub(crate) use session::{AgentFailure, SshLimitFailure, SshOpenFailure};
 pub use session::{Attachment, TransportPort};
+// S7.1 (1.1.0) step C3a: the Cli placement's public surface is the session candidate's (1.2.0).
+cfg_if::cfg_if! {
+    if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
+        pub use cli_placement::{CliEndpoint, require_cli_ssh};
+    }
+}
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
     time::Duration,
 };
-
-cfg_if::cfg_if! {
-    if #[cfg(not(windows))] {
-        /// The policies an SSH and HTTPS runtime offers.
-        fn ssh_and_https_policies() -> Vec<AuthPolicy> {
-            vec![
-                AuthPolicy::SshAmbient,
-                AuthPolicy::SshExplicit,
-                AuthPolicy::Anonymous,
-                AuthPolicy::Gh,
-            ]
-        }
-    } else {
-        /// The policies an SSH and HTTPS runtime offers on Windows: the Unix ones, whose `Gh` is the helper over
-        /// `Basic`, and the two Windows ones, the logon session with the configured helper and without it.
-        fn ssh_and_https_policies() -> Vec<AuthPolicy> {
-            vec![
-                AuthPolicy::SshAmbient,
-                AuthPolicy::SshExplicit,
-                AuthPolicy::Anonymous,
-                AuthPolicy::Gh,
-                AuthPolicy::WindowsConfigured,
-                AuthPolicy::WindowsDefault,
-            ]
-        }
-    }
-}
 
 /// The agent the process environment's `SSH_AUTH_SOCK` selects (plan step 3.2b chooses on Windows).
 fn agent_from_environment() -> AgentSource {
@@ -248,11 +235,9 @@ struct RuntimeState {
     local: Arc<Session>,
     local_endpoint: Arc<Session>,
     local_link: session::LocalLink,
-    cli: Option<Arc<Session>>,
+    /// The Cli placement's driver session and the budgets it is built with: nothing without the session candidate.
+    cli: cli_placement::CliSlot,
     closed: bool,
-    io_timeout_ms: u64,
-    connect_timeout_ms: u64,
-    https: bool,
     /// Where the command's warnings and notes go, if it gave a reader.
     notes: Option<NoteSink>,
 }
@@ -260,9 +245,7 @@ impl Drop for RuntimeState {
     fn drop(&mut self) {
         self.local.close();
         self.local_endpoint.close();
-        if let Some(cli) = &self.cli {
-            cli.close();
-        }
+        self.cli.close();
     }
 }
 #[derive(Clone)]
@@ -340,11 +323,8 @@ impl TransportRuntime {
             local: driver,
             local_endpoint: endpoint,
             local_link: link,
-            cli: None,
+            cli: cli_placement::CliSlot::new(io_timeout_ms, connect_timeout_ms, enabled),
             closed: false,
-            io_timeout_ms,
-            connect_timeout_ms,
-            https: enabled,
             notes: None,
         }))))
     }
@@ -360,54 +340,6 @@ impl TransportRuntime {
         let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
         state.local_endpoint.set_notes(notes);
         state.notes = Some(notes.clone());
-    }
-    pub fn install_cli(&self) -> ModelResult<TransportPort> {
-        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if state.closed {
-            return Err(unavailable("transport runtime is closed"));
-        }
-        if state.cli.is_some() {
-            return Err(invalid("client endpoint already installed"));
-        }
-        // The client's endpoint runs in another process: no handoff.
-        let (session, port) = Session::driver(state.io_timeout_ms, state.connect_timeout_ms, None)?;
-        state.cli = Some(session);
-        Ok(port)
-    }
-    pub fn capabilities(
-        &self,
-        request: TransportCapabilitiesRequest,
-    ) -> ModelResult<TransportCapabilitiesResponse> {
-        if request.schema_version != "gwz.protocol/v0" {
-            return Err(unsupported("unsupported protocol version"));
-        }
-        let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        if state.closed {
-            return Err(unavailable("transport runtime is closed"));
-        }
-        let mut placements = vec![TransportPlacement::Local];
-        if state.cli.as_ref().is_some_and(|s| !s.is_closed()) {
-            placements.push(TransportPlacement::Cli);
-        }
-        Ok(TransportCapabilitiesResponse {
-            // Windows advertises neither a selected file identity nor an exact agent identity until a named fixture
-            // GO (GwzV110Plan.md S4.3 and S7.2).
-            file_identity: !cfg!(windows),
-            exact_agent_identity: !cfg!(windows),
-            message_versions: Some(vec![2]),
-            placements: Some(placements),
-            schemes: Some(if state.https {
-                vec![Scheme::Ssh, Scheme::Https]
-            } else {
-                vec![Scheme::Ssh]
-            }),
-            auth_policies: Some(if state.https {
-                ssh_and_https_policies()
-            } else {
-                vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit]
-            }),
-            message_limits: Some(session::limits()),
-        })
     }
     pub async fn request(
         &self,
@@ -435,41 +367,26 @@ impl TransportRuntime {
         token: Option<&CancellationToken>,
     ) -> ModelResult<TransportRequest> {
         request::validate_meta(&meta, &operation_id)?;
-        let cli = request::is_cli(&meta);
-        // The Cli placement's endpoint is beyond the port, and the session
-        // protocol carries it no retry budget: it would run the default while
-        // this driver counted the request's. Until that protocol carries one,
-        // a budget is refused there, so the driver's record keeps the default.
-        if cli
-            && meta
-                .policy
-                .as_ref()
-                .is_some_and(|policy| policy.max_retries.is_some())
-        {
-            return Err(unsupported(
-                "--max-retries is not carried to the Cli placement's endpoint",
-            ));
+        cfg_if::cfg_if! {
+            if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
+                cli_placement::refuse_budget_for_cli(&meta)?;
+            }
         }
         let (session, local_endpoint, notes) = {
             let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
             if state.closed {
                 return Err(unavailable("transport runtime is closed"));
             }
-            if cli {
-                (
-                    state
-                        .cli
-                        .clone()
-                        .ok_or_else(|| unavailable("client endpoint is not installed"))?,
-                    None,
-                    state.notes.clone(),
-                )
-            } else {
-                (
-                    state.local.clone(),
-                    Some(state.local_endpoint.clone()),
-                    state.notes.clone(),
-                )
+            cfg_if::cfg_if! {
+                if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
+                    state.route(&meta)?
+                } else {
+                    (
+                        state.local.clone(),
+                        Some(state.local_endpoint.clone()),
+                        state.notes.clone(),
+                    )
+                }
             }
         };
         // The in-process endpoint's session, which the request asks for the words its failures cannot carry (T5).
@@ -512,15 +429,6 @@ impl TransportRuntime {
         guard.backend = Some(Git2Backend::new().with_host_context(guard.context.clone()));
         Ok(guard)
     }
-    pub async fn remove_cli(&self) -> CleanupReport {
-        let cli = self.0.lock().unwrap_or_else(|e| e.into_inner()).cli.take();
-        if let Some(cli) = cli {
-            cli.close();
-            cli.cleanup().await
-        } else {
-            CleanupReport::default()
-        }
-    }
     pub async fn shutdown(&self) -> CleanupReport {
         let (local, endpoint, cli) = {
             let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
@@ -534,79 +442,12 @@ impl TransportRuntime {
         };
         local.close();
         endpoint.close();
-        if let Some(cli) = &cli {
-            cli.close();
-        }
+        cli.close();
         let mut report = endpoint.cleanup().await;
         report.pending_local_work += local.cleanup().await.pending_local_work;
-        if let Some(cli) = cli {
-            report.pending_local_work += cli.cleanup().await.pending_local_work;
-        }
+        report.pending_local_work += cli.cleanup().await;
         report
     }
-}
-pub struct CliEndpoint(Arc<Session>);
-impl CliEndpoint {
-    pub fn new(config: SshEndpointConfig) -> ModelResult<(Self, TransportPort)> {
-        let (session, port) = Session::endpoint(config)?;
-        Ok((Self(session), port))
-    }
-    pub fn register_request(&self, request_id: &str) -> ModelResult<ClientRequest> {
-        ClientRequest::new(self.0.clone(), request_id)
-    }
-    pub async fn shutdown(&self) -> CleanupReport {
-        self.0.close();
-        self.0.cleanup().await
-    }
-}
-impl Drop for CliEndpoint {
-    fn drop(&mut self) {
-        self.0.close();
-    }
-}
-pub fn require_cli_ssh(
-    capabilities: &TransportCapabilitiesResponse,
-    policy: AuthPolicy,
-) -> ModelResult<()> {
-    let valid = matches!(policy, AuthPolicy::SshAmbient | AuthPolicy::SshExplicit)
-        && capabilities
-            .message_versions
-            .as_ref()
-            .is_some_and(|v| v.contains(&2))
-        && capabilities
-            .placements
-            .as_ref()
-            .is_some_and(|v| v.contains(&TransportPlacement::Cli))
-        && capabilities
-            .schemes
-            .as_ref()
-            .is_some_and(|v| v.contains(&Scheme::Ssh))
-        && capabilities
-            .auth_policies
-            .as_ref()
-            .is_some_and(|v| v.contains(&policy));
-    let limits = capabilities
-        .message_limits
-        .clone()
-        .ok_or_else(|| unsupported("client message limits missing"))?;
-    let mut offer = binding::offer(
-        "capability-check",
-        gwz_transport::protocol::EndpointRole::Driver,
-    );
-    offer.bind.as_mut().expect("Bind").versions = vec![2];
-    offer.bind.as_mut().expect("Bind").receive_limits = limits.clone();
-    let endpoint = binding::EndpointConfig {
-        endpoint_id: "validation".into(),
-        trust_owner: "validation".into(),
-        role: gwz_transport::protocol::EndpointRole::Driver,
-        schemes: vec![Scheme::Ssh],
-        policies: vec![policy],
-        limits,
-    };
-    if !valid || endpoint.accept(&offer).is_err() {
-        return Err(unsupported("client SSH placement is unavailable"));
-    }
-    Ok(())
 }
 fn invalid(message: &str) -> ModelError {
     ModelError::new(ErrorCode::InvalidRequest, message)

@@ -379,7 +379,7 @@ fn private_materialize_keeps_production_native_identity_refusal_visible() {
         let runtime = TransportRuntime::with_https_native(SshEndpointConfig::fixture(home, None), HttpsEndpointConfig { tls: server.config(), auth: None },
             HelperSlots::new(), NativeCaller::refused_for_test(gwz_sspi::ErrorKind::IdentityMismatch)).unwrap();
         let mut input = materialize_lock_request(false);
-        input.meta.transport = Some(crate::TransportOptions { placement: Some(crate::TransportPlacement::Local), ..Default::default() });
+        input.meta.transport = Some(crate::TransportOptions::default());
         let held = runtime.request(input.meta.clone(), "materialize".into()).await.unwrap();
         let mut backend = held.backend().clone();
         backend.credential_helpers = crate::git::CredentialHelperPolicy::Disabled;

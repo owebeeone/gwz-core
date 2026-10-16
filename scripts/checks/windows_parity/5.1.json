@@ -2,7 +2,7 @@
   "entries": [
     {"path": "src/transport_host/endpoint_environment.rs", "kind": "gate", "gate": "else", "target": "arm: stmt None", "state": "paired", "owner": ["5.1"], "appendix": "new: step 5.1: the Unix arm of capture_machine_proxy, which reads no machine proxy (Unix takes its proxy from the environment); the `windows` arm beside it captures the WinHTTP setting"},
     {"path": "src/transport_host/endpoint_environment.rs", "kind": "split", "gate": "cfg!(windows)", "target": "", "state": "paired", "owner": ["5.1"], "appendix": "new: step 5.1: the one guard that a Windows entry captured the machine proxy setting (Windows never reads the environment's); both arms are in one build"},
-    {"path": "src/transport_host/mod.rs", "kind": "split", "gate": "cfg!(windows)", "target": "", "count": 2, "state": "paired", "owner": ["5.1"], "appendix": "new: step 5.1: the capability projection's `file_identity` and `exact_agent_identity`, which Windows keeps false until a named fixture GO (GwzV110Plan.md S4.3, S7.2); both arms are in one build"},
+    {"path": "src/transport_host/cli_placement.rs", "kind": "split", "gate": "cfg!(windows)", "target": "", "count": 2, "state": "paired", "owner": ["5.1"], "appendix": "new: step 5.1: the capability projection's `file_identity` and `exact_agent_identity`, which Windows keeps false until a named fixture GO (GwzV110Plan.md S4.3, S7.2); both arms are in one build"},
     {"path": "src/transport_host/qualification_tests.rs", "kind": "split", "gate": "cfg!(windows)", "target": "", "state": "paired", "owner": ["5.1"], "appendix": "new: step 5.1: the expected helper policy mapping differs by platform (Windows maps the configured helpers to its own policy); both arms are in one build"}
   ]
 }

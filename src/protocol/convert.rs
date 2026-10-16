@@ -204,10 +204,6 @@ impl From<&model::Selection> for generated::Selection {
 }
 
 impl From<&model::OperationPolicy> for generated::OperationPolicy {
-    #[allow(
-        clippy::needless_update,
-        reason = "gwz_transport_candidate adds max_retries"
-    )]
     fn from(value: &model::OperationPolicy) -> Self {
         Self {
             partial: Some(value.partial.into()),

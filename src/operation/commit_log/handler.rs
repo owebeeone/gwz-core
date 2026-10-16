@@ -332,10 +332,7 @@ impl CommitLogOutputRegistry {
 }
 
 /// Execute the completed commit-history engine and retain its finite stream.
-#[allow(
-    clippy::needless_update,
-    reason = "gwz_transport_candidate adds fields"
-)]
+#[allow(clippy::needless_update, reason = "gwz_session_candidate adds fields")]
 pub(in crate::operation) fn handle_log(
     start: &Path,
     request: crate::LogRequest,

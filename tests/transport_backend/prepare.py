@@ -7,11 +7,12 @@ RUSTFLAGS='--cfg gwz_transport_candidate' needs no generated manifest for them. 
 
 - a copy of Cargo.toml in a directory outside the workspace, with its relative path dependencies anchored at the core and
   `crates/*` no longer workspace members (the libraries are path dependencies at their own location);
-- the `transport_placement_guide` test target, which no cfg can gate in a manifest and the core's manifest must not name
-  (step C3 turns the guide into an ordinary test and removes this);
+- the `transport_placement_guide` test target, which no cfg can gate in a manifest and the core's manifest must not name.
+  The guide documents the Cli placement, the 1.2.0 session host's transport entry, so its test compiles to nothing
+  unless `gwz_session_candidate` is set (S7.1 step C3a; D6 of dev-docs/GwzV110S71ProtocolProposal-DRAFT.md);
 - `placement-candidate.json`, the digests of the candidate and production generated protocol sources and the taut source
-  directory the protocol tests read from outside the workspace (step C2 names the candidate fields 1.1.0 needs and
-  retires the pair);
+  directory the protocol tests read from outside the workspace. The ordinary source already carries the fields 1.1.0
+  needs (step C2); the candidate source is the session candidate's, which adds the 1.2.0 placement projection;
 - symlinks to the core's sources, tests, workflows and scripts, and a copy of Cargo.lock (step C4 retires the tree).
 """
 import argparse

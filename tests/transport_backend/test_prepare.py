@@ -161,7 +161,10 @@ def test_protocol_module_has_explicit_candidate_boundary():
     source = PROTOCOL_MOD.read_text()
 
     assert "cfg_if::cfg_if!" in source
-    assert "gwz_transport_candidate" in source
+    # S7.1 (1.1.0) step C3a: only the session candidate selects the candidate protocol module; the transport
+    # switch alone is the ordinary protocol.
+    assert "gwz_session_candidate" in source
+    assert "gwz_transport_candidate" not in source
     assert "candidate_generated.rs" in source
     assert 'path = "generated.rs"' in source
 
