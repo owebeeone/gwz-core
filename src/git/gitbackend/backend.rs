@@ -20,6 +20,10 @@ pub struct Git2Repository {
     pub(crate) route_policy: super::native_commit::RoutePolicy,
     /// Where a commit or tag says why it ran the Git CLI, if the caller gave a reader.
     pub(crate) route_notes: Option<super::native_commit::RouteNotes>,
+    /// The spawn gate of the host this backend's operation runs under (WH2 contract C9): held by every spawn of the
+    /// backend's that names no handle list, so none lands in a launch's inheritance window. A backend with no host
+    /// has a gate of its own, which nothing else holds.
+    pub(crate) spawn_gate: crate::git::spawn_gate::SpawnGate,
 }
 
 /// Compatibility name for existing callers.
@@ -55,6 +59,7 @@ impl Git2Backend {
             environment: super::native_commit::GitEnvironment::process(),
             route_policy: Default::default(),
             route_notes: None,
+            spawn_gate: Default::default(),
         }
     }
 
@@ -77,6 +82,7 @@ impl Git2Backend {
             environment: super::native_commit::GitEnvironment::process(),
             route_policy: Default::default(),
             route_notes: None,
+            spawn_gate: Default::default(),
         }
     }
 
@@ -84,6 +90,7 @@ impl Git2Backend {
         if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
             pub(crate) fn with_host_context(&self, context: crate::transport_host::RequestContext) -> Self {
                 let mut backend = self.clone();
+                backend.spawn_gate = context.spawn_gate();
                 backend.ssh = backend.ssh.with_host_context(context);
                 backend
             }

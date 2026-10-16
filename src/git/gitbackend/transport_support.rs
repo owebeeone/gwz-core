@@ -1,5 +1,6 @@
 use super::transport_observations::TransportAttempt;
 use super::*;
+use crate::git::spawn_gate::SpawnGate;
 
 pub(crate) mod identity;
 
@@ -160,6 +161,7 @@ pub(crate) fn remote_callbacks<'a>(
         &mut callbacks,
     );
     let credential_helpers = backend.credential_helpers;
+    let spawn_gate = backend.spawn_gate.clone();
     // libgit2 re-invokes this after each auth rejection; track SSH attempts so we offer
     // the agent once and then fail, instead of re-offering a dead credential forever.
     let mut ssh_attempts = 0u32;
@@ -183,6 +185,7 @@ pub(crate) fn remote_callbacks<'a>(
                 username_from_url,
                 allowed_types,
                 credential_helpers,
+                &spawn_gate,
                 &mut ssh_attempts,
             )
         };
@@ -242,6 +245,7 @@ pub(crate) fn remote_credential(
     username_from_url: Option<&str>,
     allowed_types: git2::CredentialType,
     credential_helpers: CredentialHelperPolicy,
+    spawn_gate: &SpawnGate,
     ssh_attempts: &mut u32,
 ) -> Result<git2::Cred, git2::Error> {
     let username = username_from_url.unwrap_or("git");
@@ -265,7 +269,7 @@ pub(crate) fn remote_credential(
     if allowed_types.is_user_pass_plaintext()
         && credential_helpers == CredentialHelperPolicy::AllowConfigured
         && let Ok(config) = git2::Config::open_default()
-        && let Ok(credential) = git2::Cred::credential_helper(&config, url, username_from_url)
+        && let Ok(credential) = helper_credential(&config, url, username_from_url, spawn_gate)
     {
         return Ok(credential);
     }
@@ -277,6 +281,21 @@ pub(crate) fn remote_credential(
         git2::ErrorClass::Callback,
         "GWZ could not acquire credentials for the requested remote",
     ))
+}
+
+/// libgit2's credential helper: git2-rs spawns the configured helpers and waits for them inside this one call, with
+/// a standard spawn that names no handle list. The call is ours, so the host's spawn gate is held around all of it
+/// (operator decision D25; WH2 contract C9): no launch of the host's has an inheritance window open while it runs,
+/// and none opens until it returns. git2-rs is not changed, so the spawn cannot be held alone and a helper that
+/// waits for the user holds the gate for as long as it waits; a launch that waits for it is bounded by its own clock.
+pub(crate) fn helper_credential(
+    config: &git2::Config,
+    url: &str,
+    username_from_url: Option<&str>,
+    spawn_gate: &SpawnGate,
+) -> Result<git2::Cred, git2::Error> {
+    let _hold = spawn_gate.hold();
+    git2::Cred::credential_helper(config, url, username_from_url)
 }
 
 cfg_if::cfg_if! {

@@ -26,7 +26,7 @@ cfg_if::cfg_if! {
             /// holding one of `slots`.
             fn retained_helper(behavior: Behavior, slots: &Arc<Semaphore>) -> (Fixture, PendingChild) {
                 let fixture = Fixture::new(behavior);
-                let (child, tree) = super::super::process_tree::spawn(&super::super::process_tree::HelperCommand {
+                let (child, tree) = super::super::process_tree::spawn_for_test(&super::super::process_tree::HelperCommand {
                     program: fixture.config.executable.clone(),
                     args: fixture.argv().iter().map(Into::into).collect(),
                     directory: fixture.directory().to_owned(),

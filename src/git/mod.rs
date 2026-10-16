@@ -8,6 +8,7 @@ cfg_if::cfg_if! {
 }
 mod index_status_char;
 pub(crate) mod regular_file;
+pub(crate) mod spawn_gate;
 #[cfg(test)]
 mod tests;
 mod url_scheme;

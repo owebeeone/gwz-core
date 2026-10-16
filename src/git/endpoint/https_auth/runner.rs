@@ -104,8 +104,11 @@ impl Runner<'_> {
             directory,
             environment: variables.into_pairs(),
         };
-        self.check()?;
-        let spawned = process_tree::spawn(&command);
+        // The host's spawn gate, for the launch alone: nothing else of the host spawns while the helper's pipe ends
+        // are inheritable, and the wait that follows is not under it (WH2 contract C9).
+        let hold = self.hold_spawn_gate().await?;
+        let spawned = process_tree::spawn(&command, &hold);
+        drop(hold);
         // The child has its own copy of the environment (or the spawn failed): the command's owners wipe theirs
         // now, not when the helper ends.
         drop(command);
@@ -183,6 +186,20 @@ impl Runner<'_> {
             })
     }
 
+    /// Holds the host's spawn gate, waiting for whoever has it. The wait is spent from the lookup's own clock and
+    /// ends at its cancellation, like every other wait of the lookup, and nothing is started for it: a lookup that
+    /// gives up here has not launched.
+    async fn hold_spawn_gate(&self) -> Result<SpawnHold, AuthError> {
+        let gate = self.owner.inner.helper_slots.gate();
+        loop {
+            self.check()?;
+            if let Some(hold) = gate.try_hold() {
+                return Ok(hold);
+            }
+            sleep(GATE_POLL).await;
+        }
+    }
+
     async fn finish_job<T>(
         &self,
         job: &mut HelperJob,
@@ -253,6 +270,7 @@ async fn bounded_output<R: AsyncRead + Unpin>(
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
+        mod gate_tests;
         mod process_tests;
         mod tests;
         cfg_if::cfg_if! {

@@ -1,5 +1,6 @@
 //! The Windows arm: the helper is created inside a Job Object and the job is the tree (see the module above).
 use super::HelperCommand;
+use crate::git::spawn_gate::SpawnHold;
 use std::{
     io,
     mem::size_of,
@@ -47,13 +48,16 @@ pub(in crate::git::endpoint::https_auth) struct HelperChild {
     pub(in crate::git::endpoint::https_auth) stderr: Option<NamedPipeServer>,
 }
 
-/// Creates the helper inside a new job. If anything fails no process is left behind.
+/// Creates the helper inside a new job. If anything fails no process is left behind. `hold` is the host's spawn
+/// gate: the creation window opens only under it, so no standard spawn of the host runs while the helper's pipe ends
+/// are inheritable.
 pub(in crate::git::endpoint::https_auth) fn spawn(
     command: &HelperCommand,
+    hold: &SpawnHold,
 ) -> io::Result<(HelperChild, ProcessTree)> {
     // The job exists before the helper does, so a failure here starts nothing.
     let tree = ProcessTree::new()?;
-    let child = launch::create(command, &tree.job)?;
+    let child = launch::create(command, &tree.job, hold)?;
     Ok((child, tree))
 }
 

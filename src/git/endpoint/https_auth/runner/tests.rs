@@ -167,7 +167,7 @@ async fn completed_leader_boundary(boundary: Boundary) {
         directory: environment::working_directory().unwrap(),
         environment: environment::Environment::snapshot(&config.environment).into_pairs(),
     };
-    let (mut child, tree) = process_tree::spawn(&command).unwrap();
+    let (mut child, tree) = process_tree::spawn_for_test(&command).unwrap();
     drop(child.stdin.take());
     let mut stdout = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();

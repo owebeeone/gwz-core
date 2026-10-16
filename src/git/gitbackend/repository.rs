@@ -305,7 +305,7 @@ pub(super) fn commit_cli(
         command.arg("-a");
     }
     command.arg("-m").arg(message);
-    let output = command.output().map_err(|err| {
+    let output = backend.spawn_gate.output(&mut command).map_err(|err| {
         ModelError::new(
             ErrorCode::GitCommandFailed,
             format!("failed to run git commit: {err}"),

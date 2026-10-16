@@ -25,7 +25,7 @@ async fn a_retained_tree_with_a_live_member_keeps_its_slot_and_reap_ready_ends_i
         directory: environment::working_directory().unwrap(),
         environment: environment::Environment::snapshot(&fixture.config.environment).into_pairs(),
     };
-    let (mut child, tree) = process_tree::spawn(&command).unwrap();
+    let (mut child, tree) = process_tree::spawn_for_test(&command).unwrap();
     // The leader exits at once; its descendant keeps running and is a member of the job. Nothing has ended it.
     child.wait().await.unwrap();
     fixture.started().await;

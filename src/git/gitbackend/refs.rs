@@ -183,7 +183,7 @@ pub(super) fn tag_create_cli(
         command.arg("-m").arg(message);
     }
     command.arg(name);
-    let output = command.output().map_err(|err| {
+    let output = backend.spawn_gate.output(&mut command).map_err(|err| {
         ModelError::new(
             ErrorCode::GitCommandFailed,
             format!("failed to run git tag: {err}"),
@@ -242,20 +242,20 @@ pub(super) fn tag_list(_backend: &Git2Backend, path: &Path) -> ModelResult<Vec<S
 
 /// The Git CLI route of `tag_delete`; see [`tag_create_cli`].
 pub(super) fn tag_delete_cli(backend: &Git2Backend, path: &Path, name: &str) -> ModelResult<()> {
-    let output = std::process::Command::new("git")
+    let mut command = std::process::Command::new("git");
+    command
         .current_dir(path)
         .arg("-C")
         .arg(path)
         .arg("tag")
         .arg("-d")
-        .arg(name)
-        .output()
-        .map_err(|err| {
-            ModelError::new(
-                ErrorCode::GitCommandFailed,
-                format!("failed to run git tag -d: {err}"),
-            )
-        })?;
+        .arg(name);
+    let output = backend.spawn_gate.output(&mut command).map_err(|err| {
+        ModelError::new(
+            ErrorCode::GitCommandFailed,
+            format!("failed to run git tag -d: {err}"),
+        )
+    })?;
     if !output.status.success() {
         return Err(ModelError::new(
             ErrorCode::GitCommandFailed,

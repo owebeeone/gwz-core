@@ -5,6 +5,7 @@
 //! bytes leave the endpoint adapter.
 
 use super::https_destination::Destination;
+use crate::git::spawn_gate::{SpawnGate, SpawnHold};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::{
     ffi::{OsStr, OsString},
@@ -27,6 +28,8 @@ const OUTPUT_LIMIT: usize = 16 * 1024;
 const CLEANUP_GRACE: Duration = Duration::from_millis(500);
 /// How often a helper's owner looks again at a process tree that has not yet emptied.
 const DRAIN_POLL: Duration = Duration::from_millis(2);
+/// How often a launch that waits for the host's spawn gate looks again. A hold lasts one spawn, so a wait is short.
+const GATE_POLL: Duration = Duration::from_millis(1);
 /// Live helper processes one host admits, retained unreaped children included.
 const HELPER_SLOTS: usize = 8;
 
@@ -122,12 +125,21 @@ impl AuthError {
 mod secret;
 pub(crate) use secret::{Secret, SecretHeader};
 use secret::{SecretBuffer, parse_secret};
-/// Real host helper admission ledger.
+/// Real host helper admission ledger, and the host's spawn gate (`git/spawn_gate.rs`): the helpers' launches hold
+/// the gate for their inheritance windows, and the host's other spawns, which share it, wait for those windows.
 #[derive(Clone)]
-pub(crate) struct HelperSlots(pub(super) Arc<Semaphore>);
+pub(crate) struct HelperSlots(pub(super) Arc<Semaphore>, SpawnGate);
 impl HelperSlots {
     pub(crate) fn new() -> Self {
-        Self(Arc::new(Semaphore::new(HELPER_SLOTS)))
+        Self::with_gate(SpawnGate::new())
+    }
+    /// Slots whose launches use `gate`, which the host's other spawns hold too.
+    pub(crate) fn with_gate(gate: SpawnGate) -> Self {
+        Self(Arc::new(Semaphore::new(HELPER_SLOTS)), gate)
+    }
+    /// The host's spawn gate: a handle to the one the launches hold.
+    pub(crate) fn gate(&self) -> &SpawnGate {
+        &self.1
     }
 }
 // The helper process owner, which both platforms compile (step 4.2): the process tree, the owner that ends it, the

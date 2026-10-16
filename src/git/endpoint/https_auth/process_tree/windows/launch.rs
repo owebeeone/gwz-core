@@ -3,9 +3,12 @@
 //! job from its first instruction and inherits its three pipe ends and nothing else. The pattern is copied, not
 //! the crate: this stays the HTTPS helpers' private owner, not a second SSPI owner.
 use super::{HelperChild, attributes::Attributes, pipe};
-use crate::git::endpoint::https_auth::{
-    process_tree::{EnvValue, HelperCommand},
-    wiped::{Probe, Wiped},
+use crate::git::{
+    endpoint::https_auth::{
+        process_tree::{EnvValue, HelperCommand},
+        wiped::{Probe, Wiped},
+    },
+    spawn_gate::SpawnHold,
 };
 use std::{
     ffi::OsStr,
@@ -131,13 +134,16 @@ pub(super) fn environment_block(
 
 /// The creation window: the child's pipe ends are inheritable from [`InheritWindow::open`] to its drop, and are
 /// not inheritable at any other time. It spans exactly the `CreateProcessW` call, including process creation
-/// itself (milliseconds), and is closed on every path, a failed call included.
+/// itself (milliseconds), and is closed on every path, a failed call included. It opens only under the host's spawn
+/// gate: a standard spawn on another thread names no handle list, so it would inherit the ends, and the gate keeps
+/// every such spawn of the host out until the window is closed (WH2 contract C9).
 pub(super) struct InheritWindow<'a> {
     ends: [&'a OwnedHandle; 3],
 }
 
 impl<'a> InheritWindow<'a> {
-    pub(super) fn open(ends: [&'a OwnedHandle; 3]) -> io::Result<Self> {
+    /// `_hold` is the proof that the host's spawn gate is held; the caller keeps it until the window is dropped.
+    pub(super) fn open(_hold: &SpawnHold, ends: [&'a OwnedHandle; 3]) -> io::Result<Self> {
         // The guard exists before the first end is opened, so that a failure part way closes the ones opened.
         let window = Self { ends };
         for end in window.ends {
@@ -156,7 +162,11 @@ impl Drop for InheritWindow<'_> {
 }
 
 /// Creates the helper in `job`. On any failure no process is left running.
-pub(super) fn create(command: &HelperCommand, job: &OwnedHandle) -> io::Result<HelperChild> {
+pub(super) fn create(
+    command: &HelperCommand,
+    job: &OwnedHandle,
+    hold: &SpawnHold,
+) -> io::Result<HelperChild> {
     if !command.program.is_absolute() {
         return Err(invalid("a helper executable that is not an absolute path"));
     }
@@ -200,7 +210,7 @@ pub(super) fn create(command: &HelperCommand, job: &OwnedHandle) -> io::Result<H
     startup.StartupInfo.hStdError = stderr.child.as_raw_handle();
     startup.lpAttributeList = attributes.pointer();
     let mut information = PROCESS_INFORMATION::default();
-    let window = InheritWindow::open([&stdin.child, &stdout.child, &stderr.child])?;
+    let window = InheritWindow::open(hold, [&stdin.child, &stdout.child, &stderr.child])?;
     // SAFETY: every pointer names storage that lives through the call (and, for the attribute list, until it is
     // deleted below): the exact application, a mutable NUL-terminated command line, a double-NUL environment
     // block, the working directory and the startup information.
