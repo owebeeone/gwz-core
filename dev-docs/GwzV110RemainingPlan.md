@@ -52,7 +52,7 @@ Foundational first; steps within a phase are independent unless a dependency is 
 ### Phase A: settle the record (documents; no product code)
 
 - **A1.** Done 2026-10-15 (read-only audit): S3.1, S3.2, TR2.6, 4.8/SSPI and the 4.2/4.3 dual are open; S3.3 is partly done; the Phase 1, 3, 4, 4.4 and 3.5 reviews are partly covered by 5.6 (rows above).
-- **A5.** Done 2026-10-16: the owed reviews were taken as one combined Code and State review point (D19). Accepted at gwz-core `aee4c257` after two remediation rounds (`GwzV110PreActivationReview-Review*-3.md`); TR2.6, S3.1, S3.2, WPP 4.8/TR4.10 and the WPP 4.2/4.3 dual are closed. S3.3's live fetches remain (Phase B). Open with the operator before S7.1: State P3-1 (gwz-sspi pipe inheritance), P3-2 (the WH2 spawn gate), P3-5 (gwz-py async `call()` at exit).
+- **A5.** Done 2026-10-16: the owed reviews were taken as one combined Code and State review point (D19). Accepted at gwz-core `aee4c257` after two remediation rounds (`GwzV110PreActivationReview-Review*-3.md`); TR2.6, S3.1, S3.2, WPP 4.8/TR4.10 and the WPP 4.2/4.3 dual are closed. S3.3's live fetches remain (Phase B). Open with the operator before S7.1: State P3-1 (gwz-sspi pipe inheritance), P3-5 (gwz-py async `call()` at exit). P3-2 (the WH2 spawn gate): D25 is built for the WH2 helper launch and gwz-core's std spawn sites (gwz-core `7933e9e7` and its addendum; contract C9, OQ-H); the gwz-sspi worker-launch window is open, pending an operator ruling between coarse gating of `Supervisor::start` and a gwz-sspi 0.1.2 launch guard, and S7.1 waits on that ruling.
 - **A2.** OQ-A answered: the Linux x86-64 evidence host.
 - **A3.** Amendment 2's revisions 3–8: one review, or folded into S7.5 (OQ-D).
 - **A4.** The checkpoint carries this plan's list.

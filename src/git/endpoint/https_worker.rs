@@ -353,7 +353,10 @@ fn helper_failure(error: https_auth::AuthError, facts: &Facts) -> Failure {
     let mut failure = with_facts(error.code(), Effect::None, facts);
     failure.setup_cause = match error {
         https_auth::AuthError::Timeout => Some(SetupFailureCause::Interaction),
-        https_auth::AuthError::AllocationTimeout => Some(SetupFailureCause::Allocation),
+        // A wait for the host's spawn gate is a wait for a resource: another helper of the host held it.
+        https_auth::AuthError::AllocationTimeout | https_auth::AuthError::GateTimeout => {
+            Some(SetupFailureCause::Allocation)
+        }
         https_auth::AuthError::MissingExecutable => Some(SetupFailureCause::NotFound),
         _ => None,
     };
@@ -387,7 +390,7 @@ fn helper_failure(error: https_auth::AuthError, facts: &Facts) -> Failure {
     failure
 }
 
-pub(super) fn helper_timeout(
+pub(crate) fn helper_timeout(
     error: https_auth::AuthError,
     facts: &Facts,
     allocation_ms: i64,
@@ -396,7 +399,11 @@ pub(super) fn helper_timeout(
     let mut failed = helper_failure(error, facts);
     let allowance = match error {
         https_auth::AuthError::AllocationTimeout => Some(allocation_ms),
-        https_auth::AuthError::Timeout if interaction_ms > 0 => Some(interaction_ms),
+        https_auth::AuthError::Timeout | https_auth::AuthError::GateTimeout
+            if interaction_ms > 0 =>
+        {
+            Some(interaction_ms)
+        }
         _ => None,
     };
     if let Some(allowance) = allowance {

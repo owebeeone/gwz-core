@@ -160,12 +160,33 @@ pub(crate) fn remote_callbacks<'a>(
         attempt.as_ref(),
         &mut callbacks,
     );
+    callbacks.credentials(credential_callback(
+        backend,
+        identity,
+        attempt,
+        git2::Config::open_default,
+    ));
+    callbacks
+}
+
+/// Where the configured credential helpers are read from: the user's configuration, in production.
+pub(crate) type OpenConfig = fn() -> Result<git2::Config, git2::Error>;
+
+/// The credentials callback of `backend`'s remote operations. It holds `backend`'s spawn gate around libgit2's
+/// credential helper call, so the gate it uses is the one of the host the backend was built under.
+pub(super) fn credential_callback(
+    backend: &Git2Backend,
+    identity: Option<identity::SelectedIdentity>,
+    attempt: Option<TransportAttempt>,
+    open_config: OpenConfig,
+) -> impl FnMut(&str, Option<&str>, git2::CredentialType) -> Result<git2::Cred, git2::Error> + use<>
+{
     let credential_helpers = backend.credential_helpers;
     let spawn_gate = backend.spawn_gate.clone();
     // libgit2 re-invokes this after each auth rejection; track SSH attempts so we offer
     // the agent once and then fail, instead of re-offering a dead credential forever.
     let mut ssh_attempts = 0u32;
-    callbacks.credentials(move |url, username_from_url, allowed_types| {
+    move |url, username_from_url, allowed_types| {
         if ssh_attempts != 0
             && allowed_types.is_ssh_key()
             && let Some(attempt) = &attempt
@@ -186,6 +207,7 @@ pub(crate) fn remote_callbacks<'a>(
                 allowed_types,
                 credential_helpers,
                 &spawn_gate,
+                open_config,
                 &mut ssh_attempts,
             )
         };
@@ -207,8 +229,7 @@ pub(crate) fn remote_callbacks<'a>(
             }
         }
         credential
-    });
-    callbacks
+    }
 }
 
 /// Explicit authority never enters the ambient agent/helper credential path.
@@ -246,6 +267,7 @@ pub(crate) fn remote_credential(
     allowed_types: git2::CredentialType,
     credential_helpers: CredentialHelperPolicy,
     spawn_gate: &SpawnGate,
+    open_config: OpenConfig,
     ssh_attempts: &mut u32,
 ) -> Result<git2::Cred, git2::Error> {
     let username = username_from_url.unwrap_or("git");
@@ -268,7 +290,7 @@ pub(crate) fn remote_credential(
     }
     if allowed_types.is_user_pass_plaintext()
         && credential_helpers == CredentialHelperPolicy::AllowConfigured
-        && let Ok(config) = git2::Config::open_default()
+        && let Ok(config) = open_config()
         && let Ok(credential) = helper_credential(&config, url, username_from_url, spawn_gate)
     {
         return Ok(credential);

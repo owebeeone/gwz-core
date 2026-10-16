@@ -191,11 +191,19 @@ impl Runner<'_> {
     /// gives up here has not launched.
     async fn hold_spawn_gate(&self) -> Result<SpawnHold, AuthError> {
         let gate = self.owner.inner.helper_slots.gate();
+        let mut waited = false;
         loop {
-            self.check()?;
+            if let Err(error) = self.check() {
+                // A clock that ran out while this lookup waited for the gate is the gate's doing, and says so.
+                return Err(match error {
+                    AuthError::Timeout if waited => AuthError::GateTimeout,
+                    other => other,
+                });
+            }
             if let Some(hold) = gate.try_hold() {
                 return Ok(hold);
             }
+            waited = true;
             sleep(GATE_POLL).await;
         }
     }

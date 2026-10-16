@@ -62,6 +62,9 @@ pub(crate) enum AuthError {
     HelperDeclined,
     ConfigurationRefused,
     Timeout,
+    /// The lookup's clock ran out while it waited for the host's spawn gate (`git/spawn_gate.rs`): another spawn of
+    /// the host, such as a credential helper waiting for a sign-in, held it, and this lookup's helper was never started.
+    GateTimeout,
     AllocationTimeout,
     Cancelled,
     CleanupPending,
@@ -88,6 +91,9 @@ impl fmt::Display for AuthError {
             Self::NoHelper => "no credential helper is configured for the HTTPS remote",
             Self::HelperDeclined => "the configured HTTPS credential helper gave no password",
             Self::Timeout => "HTTPS credential helper timed out",
+            Self::GateTimeout => {
+                "HTTPS credential helper was not started: another credential helper of this host held the spawn gate"
+            }
             Self::AllocationTimeout => "HTTPS credential helper admission timed out",
             Self::Cancelled => "HTTPS credential helper was cancelled",
             Self::CleanupPending => "HTTPS credential helper cleanup remains pending",
@@ -115,7 +121,7 @@ impl AuthError {
             | Self::NoHelper
             | Self::HelperDeclined
             | Self::ConfigurationRefused => ErrorCode::Authentication,
-            Self::Timeout | Self::AllocationTimeout => ErrorCode::Timeout,
+            Self::Timeout | Self::GateTimeout | Self::AllocationTimeout => ErrorCode::Timeout,
             Self::Cancelled => ErrorCode::Cancelled,
             Self::Io | Self::CleanupPending => ErrorCode::Io,
         }

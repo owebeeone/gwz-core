@@ -113,6 +113,7 @@ fn ssh_credential_callback_gives_up_after_one_agent_attempt() {
         git2::CredentialType::SSH_KEY,
         CredentialHelperPolicy::Disabled,
         &crate::git::spawn_gate::SpawnGate::default(),
+        git2::Config::open_default,
         &mut attempts,
     );
     assert!(first.is_ok(), "first ssh-key request offers the agent");
@@ -122,6 +123,7 @@ fn ssh_credential_callback_gives_up_after_one_agent_attempt() {
         git2::CredentialType::SSH_KEY,
         CredentialHelperPolicy::Disabled,
         &crate::git::spawn_gate::SpawnGate::default(),
+        git2::Config::open_default,
         &mut attempts,
     );
     assert!(
@@ -136,6 +138,7 @@ fn ssh_credential_callback_gives_up_after_one_agent_attempt() {
         git2::CredentialType::USERNAME,
         CredentialHelperPolicy::Disabled,
         &crate::git::spawn_gate::SpawnGate::default(),
+        git2::Config::open_default,
         &mut username_attempts,
     );
     assert_eq!(username_attempts, 0);

@@ -8,6 +8,7 @@ pub(crate) fn remote_credentials_reject_plaintext_auth_when_helpers_are_disabled
         git2::CredentialType::USER_PASS_PLAINTEXT,
         CredentialHelperPolicy::Disabled,
         &crate::git::spawn_gate::SpawnGate::default(),
+        git2::Config::open_default,
         &mut 0u32,
     );
     let err = match result {

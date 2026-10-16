@@ -94,3 +94,21 @@ fn the_credential_helper_call_holds_the_gate_for_the_whole_call() {
     });
     assert!(gate.try_hold().is_some(), "the call released the gate");
 }
+
+#[test]
+fn the_credentials_callback_holds_the_backends_gate_around_the_helper_call() {
+    let gate = SpawnGate::with_exclusion(true);
+    let mut backend = Git2Backend::new();
+    backend.spawn_gate = gate.clone();
+    blocked_until_released(&gate, "the credentials callback's helper call", || {
+        // No level, so no helper is configured and nothing is spawned: the row is about the gate.
+        let mut callback =
+            transport_support::credential_callback(&backend, None, None, git2::Config::new);
+        let credential = callback(
+            "https://gate.example.invalid/x.git",
+            None,
+            git2::CredentialType::USER_PASS_PLAINTEXT,
+        );
+        assert!(credential.is_err());
+    });
+}

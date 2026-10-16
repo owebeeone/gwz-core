@@ -22,7 +22,6 @@
 //! members create through `CreateProcess`; a process that a broker creates on a member's behalf (WMI, Task
 //! Scheduler, COM activation, a packaged-app launch) is outside any job, as a `setsid` descendant is outside a
 //! Unix process group.
-use crate::git::spawn_gate::SpawnHold;
 use std::{ffi::OsString, path::PathBuf};
 
 mod environment;
@@ -57,7 +56,7 @@ cfg_if::cfg_if! {
         /// inheritance window to close, so the hold only keeps the interface the Windows arm needs.
         pub(super) fn spawn(
             command: &HelperCommand,
-            _hold: &SpawnHold,
+            _hold: &crate::git::spawn_gate::SpawnHold,
         ) -> io::Result<(HelperChild, ProcessTree)> {
             let mut process = Command::new(&command.program);
             process

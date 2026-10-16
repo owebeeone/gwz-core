@@ -48,3 +48,9 @@ pub(super) fn timeout_reason(failure: &Failure) -> Option<String> {
         ),
     })
 }
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        mod tests;
+    }
+}
