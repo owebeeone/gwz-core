@@ -123,6 +123,36 @@ fn registration_dropped_before_bind_cannot_be_resurrected_by_late_message() {
     assert_eq!(wait(endpoint.shutdown()).pending_local_work, 0);
 }
 
+/// TR2.18: a URL's password goes only to an endpoint in the driver's own
+/// process. The client placement's driver has none, so it refuses the open
+/// before anything is queued, and its error holds no part of the password.
+#[test]
+fn a_driver_with_no_endpoint_in_process_refuses_a_url_password() {
+    let (driver, _port) = session::Session::driver(3000, 3000, None).unwrap();
+    let error = driver
+        .open(
+            "request",
+            "operation",
+            "ssh://git:sentinel-pw@example.invalid/repository.git",
+            crate::git::endpoint::ssh_channel::GitService::UploadPack,
+            Default::default(),
+            true,
+            Arc::new(|_, _| {}),
+            Arc::new(|_| {}),
+        )
+        .err()
+        .expect("the open is refused");
+    let failure = error
+        .get_ref()
+        .and_then(|cause| cause.downcast_ref::<session::SshOpenFailure>())
+        .expect("an open failure");
+    assert_eq!(
+        failure.0.code,
+        gwz_transport::protocol::ErrorCode::InvalidRequest
+    );
+    assert!(!format!("{error:?} {error}").contains("sentinel"));
+}
+
 #[test]
 fn the_cli_placement_refuses_a_retry_budget_it_cannot_carry_to_its_endpoint() {
     // The Cli placement's endpoint is beyond the port, and the session

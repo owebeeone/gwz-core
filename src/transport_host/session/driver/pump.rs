@@ -134,17 +134,7 @@ impl Session {
                         continue;
                     }
                     moved = true;
-                    if let Some(check) = state.checks.remove(&message.stream_id) {
-                        let result = match message.kind {
-                            MessageKind::IdentityChecked => Ok(()),
-                            MessageKind::IdentityCheckFailed => Err(message
-                                .identity_check_failed
-                                .expect("validated check failure")),
-                            _ => Err(protocol_failure(
-                                gwz_transport::protocol::ErrorCode::Cancelled,
-                            )),
-                        };
-                        check.result.complete(result);
+                    if state.checks.complete(&message) {
                         continue;
                     }
                     if let Some(entry) = state.streams.get_mut(&message.stream_id) {
@@ -424,7 +414,7 @@ impl Session {
                     .as_ref()
                     .is_some_and(|e| e.pending_request_count(&id) > 0)
                 || state.streams.values().any(|e| e.request == id)
-                || state.checks.values().any(|e| e.request == id)
+                || state.checks.waits_on(&id)
                 || state.pending.as_ref().is_some_and(|p| p.0 == id)
                 || state.incoming.as_ref().is_some_and(|p| p.0 == id);
             let retired = state.registrations[&id].mux_retired

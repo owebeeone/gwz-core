@@ -343,10 +343,9 @@ impl Session {
         let _ = listener.arm(&Context::from_waker(&waker));
         thread::park_timeout(limit.min(Duration::from_millis(10)));
     }
-    // Only the Cli placement checks a path on its endpoint (the in-process endpoint is the driver's own process);
-    // a test drives the check over a mux of its own.
+    // Only the Cli placement checks a path on its endpoint: the in-process endpoint is the driver's own process.
     cfg_if::cfg_if! {
-        if #[cfg(any(test, all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows))))] {
+        if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
             pub(in crate::transport_host) fn check(
                 &self,
                 request: &str,
@@ -376,13 +375,7 @@ impl Session {
                         }
                         Err(error) => return Err(mux_error(error)),
                     };
-                    state.checks.insert(
-                        id,
-                        Check {
-                            request: request.into(),
-                            result: result.clone(),
-                        },
-                    );
+                    state.checks.insert(id, request, result.clone());
                     break;
                 }
                 result.get().map_err(|failure| match failure.code {

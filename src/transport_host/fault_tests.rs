@@ -491,26 +491,19 @@ fn a_client_message_queued_before_the_endpoints_terminal_never_closes_the_sessio
     );
 }
 
-#[test]
-fn oversized_open_deadlines_fail_through_bound_session_without_stopping_progress() {
-    let home = tempfile::tempdir().unwrap();
-    std::fs::create_dir(home.path().join(".ssh")).unwrap();
-    std::fs::write(home.path().join(".ssh/known_hosts"), b"").unwrap();
-    let (driver, host) = session::Session::driver(3000, 3000, None).unwrap();
-    let (endpoint, client) =
-        session::Session::endpoint(SshEndpointConfig::fixture(home.path().into(), None)).unwrap();
-    driver
-        .register("oversize", Some("operation".into()))
-        .unwrap();
-    endpoint.register("oversize", None).unwrap();
-    driver.begin("oversize").unwrap();
-    wait_future(client.deliver(wait_future(host.next_message()).unwrap().unwrap())).unwrap();
-    wait_future(host.deliver(wait_future(client.next_message()).unwrap().unwrap())).unwrap();
+/// Opens `request` on `driver` with a connect deadline the endpoint refuses at admission, relays the exchange through
+/// `host` and `client`, and asserts the open ends in an `InvalidRequest` failure rather than a stranded waiter.
+fn refused_oversized_open(
+    driver: &Arc<session::Session>,
+    host: &TransportPort,
+    client: &TransportPort,
+    request: &'static str,
+) {
     let worker = driver.clone();
     let (tx, rx) = mpsc::channel();
     let open = thread::spawn(move || {
         tx.send(worker.open(
-            "oversize",
+            request,
             "operation",
             "ssh://git@example.invalid/repo",
             GitService::UploadPack,
@@ -563,28 +556,29 @@ fn oversized_open_deadlines_fail_through_bound_session_without_stopping_progress
         gwz_transport::protocol::ErrorCode::InvalidRequest
     );
     assert!(result.is_err());
-    // Another request is serviced on the same binding after policy rejection.
-    driver.register("after", Some("operation".into())).unwrap();
-    endpoint.register("after", None).unwrap();
-    let worker = driver.clone();
-    let check = thread::spawn(move || {
-        worker.check(
-            "after",
-            Identity {
-                mode: IdentityMode::ExplicitKey,
-                key_path: Some(
-                    std::env::temp_dir()
-                        .join("missing-after-policy-rejection")
-                        .to_string_lossy()
-                        .into_owned(),
-                ),
-                path_base: None,
-            },
-        )
-    });
+}
+
+#[test]
+fn oversized_open_deadlines_fail_through_bound_session_without_stopping_progress() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::create_dir(home.path().join(".ssh")).unwrap();
+    std::fs::write(home.path().join(".ssh/known_hosts"), b"").unwrap();
+    let (driver, host) = session::Session::driver(3000, 3000, None).unwrap();
+    let (endpoint, client) =
+        session::Session::endpoint(SshEndpointConfig::fixture(home.path().into(), None)).unwrap();
+    driver
+        .register("oversize", Some("operation".into()))
+        .unwrap();
+    endpoint.register("oversize", None).unwrap();
+    driver.begin("oversize").unwrap();
     wait_future(client.deliver(wait_future(host.next_message()).unwrap().unwrap())).unwrap();
     wait_future(host.deliver(wait_future(client.next_message()).unwrap().unwrap())).unwrap();
-    assert!(check.join().unwrap().is_err());
+    refused_oversized_open(&driver, &host, &client, "oversize");
+    // Another request is serviced on the same binding after the policy rejection: a second open is refused the same
+    // way (the Cli identity check this probe once used is the session candidate's).
+    driver.register("after", Some("operation".into())).unwrap();
+    endpoint.register("after", None).unwrap();
+    refused_oversized_open(&driver, &host, &client, "after");
     host.disconnect();
     client.disconnect();
 }

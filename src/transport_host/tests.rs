@@ -9,34 +9,43 @@ use std::{
 pub(super) fn config() -> SshEndpointConfig {
     SshEndpointConfig::fixture(std::env::temp_dir().join("nonexistent-endpoint-home"), None)
 }
-/// TR2.18: a URL's password goes only to an endpoint in the driver's own
-/// process. The client placement's driver has none, so it refuses the open
-/// before anything is queued, and its error holds no part of the password.
+/// The endpoint session's bootstrap refusals (the in-process Local endpoint is the same `Session::endpoint`): a Bind
+/// for a request nobody registered creates no authority, and registering after that is refused too. The Cli twin is
+/// `cli_placement_tests`.
 #[test]
-fn a_driver_with_no_endpoint_in_process_refuses_a_url_password() {
-    let (driver, _port) = session::Session::driver(3000, 3000, None).unwrap();
-    let error = driver
-        .open(
-            "request",
-            "operation",
-            "ssh://git:sentinel-pw@example.invalid/repository.git",
-            crate::git::endpoint::ssh_channel::GitService::UploadPack,
-            Default::default(),
-            true,
-            Arc::new(|_, _| {}),
-            Arc::new(|_| {}),
-        )
-        .err()
-        .expect("the open is refused");
-    let failure = error
-        .get_ref()
-        .and_then(|cause| cause.downcast_ref::<session::SshOpenFailure>())
-        .expect("an open failure");
-    assert_eq!(
-        failure.0.code,
-        gwz_transport::protocol::ErrorCode::InvalidRequest
+fn unregistered_bind_cannot_create_endpoint_authority() {
+    let (endpoint, port) = session::Session::endpoint(config()).unwrap();
+    let mut bind =
+        gwz_transport::binding::offer("session", gwz_transport::protocol::EndpointRole::Driver);
+    bind.bind.as_mut().unwrap().versions = vec![2];
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(matches!(
+        pin!(port.deliver(("unknown".into(), bind))).poll(&mut cx),
+        Poll::Ready(Err(_))
+    ));
+    assert!(ClientRequest::new(endpoint.clone(), "later").is_err());
+}
+/// A registration retired before the driver's Bind cannot be revived by that Bind arriving late, which the Local
+/// route races too: `open_request` admits the client before the driver binds. The Cli twin is `cli_placement_tests`.
+#[test]
+fn registration_dropped_before_bind_cannot_be_resurrected_by_late_message() {
+    let (endpoint, port) = session::Session::endpoint(config()).unwrap();
+    let owner = ClientRequest::new(endpoint.clone(), "cancelled").unwrap();
+    drop(owner);
+    let mut bind = gwz_transport::binding::offer(
+        "late-session",
+        gwz_transport::protocol::EndpointRole::Driver,
     );
-    assert!(!format!("{error:?} {error}").contains("sentinel"));
+    bind.bind.as_mut().unwrap().versions = vec![2];
+    bind.bind.as_mut().unwrap().receive_limits = session::limits();
+    let delivery = wait(port.deliver(("cancelled".into(), bind)));
+    assert!(
+        delivery.is_err(),
+        "late Bind must not revive a retired request"
+    );
+    assert!(ClientRequest::new(endpoint.clone(), "cancelled").is_err());
+    endpoint.close();
+    assert_eq!(wait(endpoint.cleanup()).pending_local_work, 0);
 }
 #[test]
 fn operation_policy_carries_max_retries_and_an_older_writer_leaves_it_absent() {

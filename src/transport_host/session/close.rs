@@ -36,11 +36,7 @@ impl Session {
                 gwz_transport::protocol::ErrorCode::CarrierLost,
             )));
         }
-        for (_, check) in std::mem::take(&mut state.checks) {
-            check.result.complete(Err(protocol_failure(
-                gwz_transport::protocol::ErrorCode::CarrierLost,
-            )));
-        }
+        state.checks.fail_all();
         state.pending = None;
         state.incoming = None;
         Self::publish_holds(state);

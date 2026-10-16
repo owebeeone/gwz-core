@@ -49,6 +49,7 @@ gwz_session_candidate  src/transport_host/request.rs  fn validate_meta
 gwz_session_candidate  src/transport_host/session.rs  const CHECK_MS
 gwz_session_candidate  src/transport_host/session.rs  fn driver
 gwz_session_candidate  src/transport_host/session.rs  fn endpoint
+gwz_session_candidate  src/transport_host/session/checks.rs  struct Check
 gwz_session_candidate  src/transport_host/session/driver/opening.rs  fn check
 gwz_session_candidate  tests/protocol.rs  fn merge_request_and_response_round_trip_reserved_lifecycle_shape
 gwz_session_candidate  tests/protocol.rs  fn the_build_without_the_session_candidate_has_no_session_projection
@@ -88,5 +89,6 @@ gwz_transport_candidate  src/transport_host/request.rs  fn validate_meta
 gwz_transport_candidate  src/transport_host/session.rs  const CHECK_MS
 gwz_transport_candidate  src/transport_host/session.rs  fn driver
 gwz_transport_candidate  src/transport_host/session.rs  fn endpoint
+gwz_transport_candidate  src/transport_host/session/checks.rs  struct Check
 gwz_transport_candidate  src/transport_host/session/driver/opening.rs  fn check
 gwz_transport_candidate  src/workspace_ops/tests/g00/private_members.rs  fn private_materialize_keeps_production_native_identity_refusal_visible

@@ -30,6 +30,7 @@ use std::{
     time::Instant,
 };
 mod capacity;
+mod checks;
 mod close;
 mod driver;
 /// The missing-git message's closing hint, shared with the HTTPS twin in `request/https_failure.rs`.
@@ -49,7 +50,7 @@ const CLEANUP: Duration = Duration::from_secs(5);
 /// it can miss a deadline. Whatever gives a pass work wakes it before that.
 const PARK: Duration = Duration::from_millis(5);
 cfg_if::cfg_if! {
-    if #[cfg(any(test, all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows))))] {
+    if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
         const CHECK_MS: u64 = 120_000;
     }
 }
@@ -128,10 +129,6 @@ struct Entry {
     observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
     facts: Arc<dyn Fn(&Facts) + Send + Sync>,
 }
-struct Check {
-    request: String,
-    result: Arc<Wait<Result<(), Failure>>>,
-}
 struct Registration {
     operation: Option<String>,
     sealed: Option<Instant>,
@@ -149,7 +146,7 @@ struct State {
     used: BTreeSet<String>,
     closed: bool,
     streams: BTreeMap<i64, Entry>,
-    checks: BTreeMap<i64, Check>,
+    checks: checks::CheckSlot,
     engine: Option<PlacementEndpoint>,
     https: Option<super::https_endpoint::HttpsEndpoint>,
     authority: Option<Authority>,
@@ -465,7 +462,7 @@ impl Session {
             used: BTreeSet::new(),
             closed: false,
             streams: BTreeMap::new(),
-            checks: BTreeMap::new(),
+            checks: Default::default(),
             engine: None,
             https: None,
             authority: None,
