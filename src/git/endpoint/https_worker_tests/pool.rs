@@ -62,7 +62,7 @@ fn seeded_cancellation_releases_paused_streams_and_physical_capacity() {
             tokio::select! {_=&mut writing=>{},_=tokio::time::sleep(Duration::from_millis(1+state%7))=>{}}
             // No response reader grants additional credit; cancellation must still pass.
             stream.cancel();let result=stream.read(&mut [0;1]).await;assert_eq!(result,Err(gwz_transport::stream::Error::Cancelled),"seed={seed} iteration={iteration}");
-            timeout(Duration::from_secs(2),task).await.expect("cancelled relay stalled").unwrap();
+            timeout(Duration::from_secs(30),task).await.expect("cancelled relay stalled").unwrap();
         }
         assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await,0);
     });
@@ -99,7 +99,7 @@ fn the_server_closing_an_idle_connection_frees_its_slot_with_no_open() {
                 .unwrap();
         let input = input(&server, GitService::UploadPackAdvertisement);
         finish(advertisement(&mut endpoint, input.clone()).await.unwrap()).await;
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
         while endpoint.client.pool.pool.counts().total() != 0 {
             assert!(Instant::now() < deadline, "the idle loss is reported");
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -197,7 +197,7 @@ async fn attempt_on_a_dead_carried_lease(retried: bool) -> (Result<bool, Failure
     // The server closes it before the credentialed request is written.
     proxy.cut_all();
     let connection = lease.connection.clone().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !connection.lock().await.sender.is_closed() {
         assert!(Instant::now() < deadline, "the connection's driver ends");
         tokio::time::sleep(Duration::from_millis(5)).await;

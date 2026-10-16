@@ -181,7 +181,7 @@ fn a_stalled_sign_is_never_answered_and_the_agent_sees_the_client_leave() {
     );
     assert_eq!(fixture.requests(), vec![Request::Sign { key: 1, flags: 4 }]);
     assert!(
-        fixture.wait_client_closed(Duration::from_secs(3)),
+        fixture.wait_client_closed(Duration::from_secs(30)),
         "the agent did not see the client leave"
     );
 }
@@ -310,7 +310,7 @@ fn a_start_that_fails_after_the_pipe_exists_leaves_no_pipe_behind() {
 
 /// Reads once the channel has bytes, and returns how many came.
 fn read_when_ready(channel: &mut PipeChannel, buffer: &mut [u8]) -> usize {
-    let until = Instant::now() + Duration::from_secs(3);
+    let until = Instant::now() + Duration::from_secs(30);
     loop {
         match channel.read(buffer) {
             Ok(count) => return count,

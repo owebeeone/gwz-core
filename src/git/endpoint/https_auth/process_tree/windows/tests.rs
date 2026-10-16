@@ -10,18 +10,21 @@ use crate::git::endpoint::https_auth::{
 };
 use std::{
     ffi::{OsStr, OsString},
+    os::windows::process::CommandExt,
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 use windows_sys::Win32::{
-    Foundation::{CloseHandle, HANDLE_FLAG_INHERIT, SetHandleInformation},
+    Foundation::{CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation},
+    Storage::FileSystem::GetFinalPathNameByHandleW,
     System::{
         JobObjects::{
             IsProcessInJob, JOBOBJECT_BASIC_PROCESS_ID_LIST, JobObjectBasicProcessIdList,
             QueryInformationJobObject as Query,
         },
         Threading::{
-            CreateEventW, GetCurrentProcess, OpenProcess, PROCESS_TERMINATE, TerminateProcess,
+            CREATE_BREAKAWAY_FROM_JOB, CreateEventW, GetCurrentProcess, OpenProcess,
+            PROCESS_TERMINATE, TerminateProcess,
         },
     },
 };
@@ -345,28 +348,31 @@ fn arguments_are_quoted_the_way_the_command_line_parser_reads_them_back() {
     );
 }
 
-/// A PowerShell script written to a file and run as a helper through the owner (`powershell -File`).
-fn powershell(
-    script: &str,
-    extra: &[(&str, String)],
-) -> (tempfile::TempDir, PathBuf, HelperCommand) {
+/// This test binary as a helper through the owner: it runs the probe `name` (an `#[ignore]`d row below) and nothing
+/// else. A Rust program starts in milliseconds under any load. The rows used PowerShell for this, whose start and
+/// whose `Add-Type` compile of the probe took longer than a loaded hosted runner allowed (CI run 38799134384 lost
+/// `a_grandchild_cannot_break_away_from_the_job` to a 60 s wait for it).
+fn probe(name: &str, extra: &[(&str, String)]) -> (tempfile::TempDir, PathBuf, HelperCommand) {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("probe.ps1");
-    std::fs::write(&path, script).unwrap();
     let output = directory.path().join("output");
+    let (_, module) = module_path!().split_once("::").unwrap();
+    let test = format!("{module}::{name}");
     let mut command = command(
-        &system32()
-            .join("WindowsPowerShell")
-            .join("v1.0")
-            .join("powershell.exe"),
-        &[
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            &path.to_string_lossy(),
-        ],
+        &std::env::current_exe().unwrap(),
+        &["--exact", &test, "--ignored", "--nocapture"],
     );
+    // The other helpers get `System32` for a `PATH`. This one is the test binary, which may import DLLs that only the
+    // process's own `PATH` finds, and without them it ends before it runs anything (`0xC0000135` on dabeest).
+    command
+        .environment
+        .retain(|(name, _)| !name.eq_ignore_ascii_case("PATH"));
+    command.environment.push((
+        "PATH".into(),
+        EnvValue::from_os(
+            &std::env::var_os("PATH").unwrap_or_default(),
+            Probe::inert(),
+        ),
+    ));
     command.environment.push((
         "OUT".into(),
         EnvValue::from_os(output.as_os_str(), Probe::inert()),
@@ -380,23 +386,87 @@ fn powershell(
     (directory, output, command)
 }
 
-async fn run_to_exit(command: &HelperCommand) {
+/// How long a row waits for a probe to start, run and end: readiness, not a speed claim.
+const PROBE_WITHIN: Duration = Duration::from_secs(30);
+
+/// Runs the helper until it ends, and returns what it printed (so that a probe that ends without its answer says why).
+async fn run_to_exit(command: &HelperCommand) -> String {
+    use tokio::io::AsyncReadExt;
     let (mut child, tree) = spawn(command).unwrap();
-    let status = tokio::time::timeout(Duration::from_secs(60), child.wait()).await;
+    let status = tokio::time::timeout(PROBE_WITHIN, child.wait()).await;
     tree.kill();
-    assert!(status.is_ok(), "the probe did not finish");
+    let mut printed = String::new();
+    for (name, pipe) in [
+        ("stdout", child.stdout.as_mut()),
+        ("stderr", child.stderr.as_mut()),
+    ] {
+        let Some(pipe) = pipe else {
+            continue;
+        };
+        let mut bytes = vec![0u8; 4096];
+        let read = tokio::time::timeout(Duration::from_secs(2), pipe.read(&mut bytes)).await;
+        if let Ok(Ok(count)) = read {
+            printed.push_str(&format!(
+                "{name}: {}\n",
+                String::from_utf8_lossy(&bytes[..count])
+            ));
+        }
+    }
+    assert!(status.is_ok(), "the probe did not finish: {printed}");
+    if let Ok(Ok(code)) = status {
+        printed.push_str(&format!("exit status: {code}\n"));
+    }
+    printed
+}
+
+/// The helper side of `an_inheritable_handle_of_the_process_is_not_inherited_by_the_helper`: the probe names what
+/// its handle value refers to. A bare "is the value valid" would prove nothing: handle values are small multiples of
+/// four, and the helper has handles of its own.
+#[test]
+#[ignore = "a helper process of a row below, started by it; not a test"]
+fn probe_handle_target() {
+    let Some(output) = std::env::var_os("OUT") else {
+        return;
+    };
+    let value: i64 = std::env::var("PROBE").unwrap().parse().unwrap();
+    let mut path = [0u16; 1024];
+    // SAFETY: the pointer and length describe `path`; a value that is no handle only makes the call return 0.
+    let length = unsafe {
+        GetFinalPathNameByHandleW(
+            value as usize as HANDLE,
+            path.as_mut_ptr(),
+            path.len() as u32,
+            0,
+        )
+    };
+    let text = String::from_utf16_lossy(&path[..(length as usize).min(path.len())]);
+    std::fs::write(output, format!("path={text}")).unwrap();
+}
+
+/// The helper side of `a_grandchild_cannot_break_away_from_the_job`: it asks for a process outside its job.
+#[test]
+#[ignore = "a helper process of a row below, started by it; not a test"]
+fn probe_breakaway() {
+    let Some(output) = std::env::var_os("OUT") else {
+        return;
+    };
+    let attempt = std::process::Command::new(system32().join("cmd.exe"))
+        .args(["/c", "exit", "0"])
+        .creation_flags(CREATE_BREAKAWAY_FROM_JOB)
+        .spawn();
+    let text = match attempt {
+        Ok(mut grandchild) => {
+            let _ = grandchild.kill();
+            let _ = grandchild.wait();
+            "ok=True err=0".to_string()
+        }
+        Err(error) => format!("ok=False err={}", error.raw_os_error().unwrap_or(-1)),
+    };
+    std::fs::write(output, text).unwrap();
 }
 
 #[tokio::test]
 async fn an_inheritable_handle_of_the_process_is_not_inherited_by_the_helper() {
-    // The probe names what its handle value refers to. A bare "is the value valid" would prove nothing: handle
-    // values are small multiples of four, and the helper has handles of its own.
-    let probe = r#"
-Add-Type -MemberDefinition '[DllImport("kernel32.dll", CharSet=CharSet.Unicode)] public static extern uint GetFinalPathNameByHandleW(System.IntPtr h, System.Text.StringBuilder s, uint n, uint f);' -Name K -Namespace W
-$sb = New-Object System.Text.StringBuilder 1024
-$n = [W.K]::GetFinalPathNameByHandleW([System.IntPtr][int64]$env:PROBE, $sb, 1024, 0)
-"path=" + $sb.ToString() | Set-Content -Path $env:OUT
-"#;
     // An inheritable handle to a uniquely named file in this process: any child created with "inherit
     // everything" holds it.
     let directory = tempfile::tempdir().unwrap();
@@ -414,7 +484,7 @@ $n = [W.K]::GetFinalPathNameByHandleW([System.IntPtr][int64]$env:PROBE, $sb, 102
     let value = (file.as_raw_handle() as usize as i64).to_string();
 
     // Control: a process created the standard way inherits it, so the probe finds the file by that handle.
-    let (_dir, output, helper) = powershell(probe, &[("PROBE", value.clone())]);
+    let (_dir, output, helper) = probe("probe_handle_target", &[("PROBE", value.clone())]);
     let status = tokio::process::Command::new(&helper.program)
         .args(&helper.args)
         .env("PROBE", &value)
@@ -429,31 +499,22 @@ $n = [W.K]::GetFinalPathNameByHandleW([System.IntPtr][int64]$env:PROBE, $sb, 102
         "control: {control:?}"
     );
 
-    // The owner's helper has the same script, the same value and not the file.
-    let (_dir, output, helper) = powershell(probe, &[("PROBE", value)]);
-    run_to_exit(&helper).await;
-    let seen = std::fs::read_to_string(&output).unwrap();
+    // The owner's helper has the same probe, the same value and not the file.
+    let (_dir, output, helper) = probe("probe_handle_target", &[("PROBE", value)]);
+    let printed = run_to_exit(&helper).await;
+    let seen = std::fs::read_to_string(&output)
+        .unwrap_or_else(|error| panic!("the probe left no answer ({error}): {printed}"));
+    assert!(seen.starts_with("path="), "the probe did not run: {seen:?}");
     assert!(!seen.contains("inheritable-canary.txt"), "owner: {seen:?}");
     drop(file);
 }
 
 #[tokio::test]
 async fn a_grandchild_cannot_break_away_from_the_job() {
-    let probe = r#"
-Add-Type -TypeDefinition @'
-using System; using System.Runtime.InteropServices;
-public static class B {
-  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct SI { public int cb; public string r; public string d; public string t; public int x, y, xs, ys, xc, yc, fa, fl; public short sw, cr; public IntPtr r2, i, o, e; }
-  [StructLayout(LayoutKind.Sequential)] public struct PI { public IntPtr hp, ht; public int pid, tid; }
-  [DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] public static extern bool CreateProcessW(string app, string cmd, IntPtr pa, IntPtr ta, bool inh, uint flags, IntPtr env, string dir, ref SI si, out PI pi);
-  public static string Try() { SI si = new SI(); si.cb = Marshal.SizeOf(typeof(SI)); PI pi; bool ok = CreateProcessW(null, "cmd.exe /c exit 0", IntPtr.Zero, IntPtr.Zero, false, 0x01000000, IntPtr.Zero, null, ref si, out pi); return "ok=" + ok + " err=" + Marshal.GetLastWin32Error(); }
-}
-'@
-[B]::Try() | Set-Content -Path $env:OUT
-"#;
-    let (_dir, output, helper) = powershell(probe, &[]);
-    run_to_exit(&helper).await;
-    let seen = std::fs::read_to_string(&output).unwrap();
+    let (_dir, output, helper) = probe("probe_breakaway", &[]);
+    let printed = run_to_exit(&helper).await;
+    let seen = std::fs::read_to_string(&output)
+        .unwrap_or_else(|error| panic!("the probe left no answer ({error}): {printed}"));
     // ERROR_ACCESS_DENIED: the job allows no breakaway.
     assert!(seen.contains("ok=False err=5"), "{seen:?}");
 }

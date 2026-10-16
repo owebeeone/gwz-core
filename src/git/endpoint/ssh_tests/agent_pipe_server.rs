@@ -65,7 +65,7 @@ impl RawServer {
     /// Waits until the reply has been written.
     pub(crate) fn wait_replied(&self) {
         self.replied
-            .recv_timeout(std::time::Duration::from_secs(5))
+            .recv_timeout(std::time::Duration::from_secs(30))
             .expect("the raw server never replied");
     }
 

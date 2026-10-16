@@ -20,7 +20,7 @@ use std::{
     time::{Duration, Instant},
 };
 fn done(endpoint: &Endpoint) -> ssh_worker::ShutdownStatus {
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let status = endpoint.shutdown_status();
         if status.cleanup_complete {
@@ -166,10 +166,10 @@ fn overrun_retains_physical_charge_after_worker_and_endpoint_exit() {
         100,
     );
     let caller = start(&endpoint, "host", deadlines.clone()).unwrap();
-    entered.recv_timeout(Duration::from_secs(3)).unwrap();
+    entered.recv_timeout(Duration::from_secs(30)).unwrap();
     endpoint.shutdown();
     assert!(attachment::finish(&caller).is_err());
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while endpoint.shutdown_status().failure.is_none() {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(2));
@@ -214,7 +214,7 @@ fn connector_deadline_keeps_original_origin_and_refuses_expired_effects() {
     let mut resource = connector
         .start(&Key::ssh("git", "host", 22), &Identity::Ambient, Some(1))
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Poll::Ready(result) =
             resource.poll_connected(&mut Context::from_waker(Waker::noop()))
@@ -284,7 +284,7 @@ fn worker_shutdown_interrupts_native_sign_without_network_deadline() {
         deadlines,
     )
     .unwrap();
-    fixture.wait_signing(Duration::from_secs(3));
+    fixture.wait_signing(Duration::from_secs(30));
     endpoint.shutdown();
     assert!(attachment::finish(&caller).is_err());
     assert_eq!(done(&endpoint).failure, None);
@@ -338,9 +338,9 @@ fn cleanup_overrun_stops_admission_without_explicit_shutdown() {
         1000,
     );
     let caller = start(&endpoint, "host", deadlines.clone()).unwrap();
-    entered.recv_timeout(Duration::from_secs(3)).unwrap();
+    entered.recv_timeout(Duration::from_secs(30)).unwrap();
     assert!(attachment::finish(&caller).is_err());
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while endpoint.shutdown_status().failure.is_none() {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(2));
@@ -376,10 +376,10 @@ fn worker_panic_retains_existing_setup_until_joined_disposal() {
         1000,
     );
     let caller = start(&endpoint, "first", deadlines.clone()).unwrap();
-    entered.recv_timeout(Duration::from_secs(3)).unwrap();
+    entered.recv_timeout(Duration::from_secs(30)).unwrap();
     assert!(open(&endpoint, "second", deadlines).is_err());
     assert!(attachment::finish(&caller).is_err());
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while endpoint.shutdown_status().failure.is_none() {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(2));

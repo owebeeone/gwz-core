@@ -38,7 +38,7 @@ fn cancellation_wakes_pending_https_open_and_retires_its_owner() {
                 Arc::new(Mutex::new(None)),
             )
         });
-        tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::time::timeout(Duration::from_secs(30), async {
             while started.load(Ordering::SeqCst) == 0 {
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }
@@ -123,7 +123,7 @@ fn cancelling_receive_pack_challenge_helper_has_no_publication_effect() {
                 Arc::new(Mutex::new(None)),
             )
         });
-        tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::time::timeout(Duration::from_secs(30), async {
             while !blocked.exists() {
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }
@@ -132,7 +132,7 @@ fn cancelling_receive_pack_challenge_helper_has_no_publication_effect() {
         .unwrap();
         request.cancel();
         assert!(
-            tokio::time::timeout(Duration::from_secs(2), pending)
+            tokio::time::timeout(Duration::from_secs(30), pending)
                 .await
                 .unwrap()
                 .unwrap()

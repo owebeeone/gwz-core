@@ -119,7 +119,7 @@ fn assert_closes_overlap(count: usize) {
     }
     // The endpoint's worker keeps each connection leased, and counted, until
     // its graceful close ends, and then returns it to the pool reusable.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let counts = loop {
         let counts = endpoint.ssh_counts_for_test().unwrap();
         if (counts.idle, counts.leased) == (count, 0) || Instant::now() >= deadline {

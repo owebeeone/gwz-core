@@ -11,7 +11,7 @@ use std::{
     time::{Duration, Instant},
 };
 fn finish<T: Send + 'static>(job: &mut Job<T>) -> io::Result<T> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Poll::Ready(result) = job.poll_result(&mut Context::from_waker(Waker::noop())) {
             return result;
@@ -28,7 +28,7 @@ fn authenticates_ed25519_and_rsa_sha2_and_transfers_a_usable_connection() {
         let path = fixture.path.clone();
         let user = fixture.ssh.user.clone();
         let mut job = Job::start_isolated(
-            Some(Instant::now() + Duration::from_secs(3)),
+            Some(Instant::now() + Duration::from_secs(30)),
             Duration::from_secs(1),
             move |control| {
                 agent_auth::authenticate_reporting(
@@ -105,7 +105,7 @@ fn stalled_sign_can_be_cancelled_or_expired_and_does_not_stop_an_active_stream()
             )
         })
         .unwrap();
-        fixture.wait_signing(Duration::from_secs(3));
+        fixture.wait_signing(Duration::from_secs(30));
         if !timed {
             let mut other = common::SshdFixture::new();
             let connection = other.session();
@@ -148,7 +148,7 @@ fn all_rejected_keys_end_without_signing_or_retry() {
     let path = fixture.path.clone();
     let user = fixture.ssh.user.clone();
     let mut job = Job::start_isolated(
-        Some(Instant::now() + Duration::from_secs(3)),
+        Some(Instant::now() + Duration::from_secs(30)),
         Duration::from_secs(1),
         move |control| {
             agent_auth::authenticate_reporting(
@@ -206,7 +206,7 @@ fn signing_callback_contains_rust_panic_and_destroys_connection() {
     let socket = fixture.raw_channel();
     let user = fixture.ssh.user.clone();
     let mut job = Job::start_isolated(
-        Some(Instant::now() + Duration::from_secs(3)),
+        Some(Instant::now() + Duration::from_secs(30)),
         Duration::from_secs(1),
         move |control| {
             agent_auth::authenticate_reporting(
@@ -247,7 +247,7 @@ fn malformed_signature_shape_and_algorithm_fail_without_second_sign_request() {
         let path = fixture.path.clone();
         let user = fixture.ssh.user.clone();
         let mut job = Job::start_isolated(
-            Some(Instant::now() + Duration::from_secs(3)),
+            Some(Instant::now() + Duration::from_secs(30)),
             Duration::from_secs(1),
             move |control| {
                 agent_auth::authenticate_reporting(
@@ -291,7 +291,7 @@ fn native_network_wait_retries_with_stable_state_and_is_cancellable() {
             )
         })
         .unwrap();
-        fixture.wait_listed(Duration::from_secs(3));
+        fixture.wait_listed(Duration::from_secs(30));
         std::thread::sleep(Duration::from_millis(60));
         assert!(
             job.poll_result(&mut Context::from_waker(Waker::noop()))
@@ -329,7 +329,7 @@ fn native_disconnect_is_terminal_before_a_second_identity() {
     let user = fixture.ssh.user.clone();
     let mut disconnected = false;
     let mut job = Job::start_isolated(
-        Some(Instant::now() + Duration::from_secs(3)),
+        Some(Instant::now() + Duration::from_secs(30)),
         Duration::from_secs(1),
         move |control| {
             agent_auth::observed_authenticate(

@@ -35,7 +35,7 @@ fn retained_cleanup_slots_are_bounded_and_progress_without_live_helpers() {
     );
     std::thread::sleep(Duration::from_millis(60));
     ready.store(true, Ordering::SeqCst); // no helper and no unpark
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while complete.load(Ordering::SeqCst) != 64 {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(1));

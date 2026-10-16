@@ -79,7 +79,7 @@ fn cancel_after_opened_is_queued_replaces_opened_with_cancelled_terminal() {
                 )
                 .unwrap();
             let mut cx = Context::from_waker(Waker::noop());
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
             loop {
                 endpoint.step(0, &mut cx).unwrap();
                 if endpoint
@@ -112,7 +112,7 @@ fn cancel_after_opened_is_queued_replaces_opened_with_cancelled_terminal() {
             assert_eq!(failure.code, ErrorCode::Cancelled);
             assert_eq!(failure.effect, Effect::None);
             endpoint.shutdown();
-            let until = tokio::time::Instant::now() + Duration::from_secs(2);
+            let until = tokio::time::Instant::now() + Duration::from_secs(30);
             while endpoint.pending() != 0 {
                 endpoint.step(0, &mut cx).unwrap();
                 assert!(

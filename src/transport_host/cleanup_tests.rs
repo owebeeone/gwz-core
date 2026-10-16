@@ -154,7 +154,7 @@ fn shutdown_reports_blocked_physical_disposal_then_eventual_zero() {
             .accept("request".into(), envelope)
             .unwrap();
     }
-    let until = Instant::now() + Duration::from_secs(2);
+    let until = Instant::now() + Duration::from_secs(30);
     while !entered.load(Ordering::Acquire) {
         assert!(Instant::now() < until, "physical setup was never admitted");
         std::thread::sleep(Duration::from_millis(2));

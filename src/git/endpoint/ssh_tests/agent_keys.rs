@@ -316,7 +316,7 @@ fn a_refusal_is_none_and_leaves_the_agent_usable_for_the_next_key() {
         Ok(())
     })
     .unwrap();
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = Instant::now() + Duration::from_secs(30);
     loop {
         if let Poll::Ready(result) = job.poll_result(&mut Context::from_waker(Waker::noop())) {
             return result.unwrap();

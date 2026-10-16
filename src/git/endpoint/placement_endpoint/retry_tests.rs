@@ -421,6 +421,16 @@ fn an_allocation_timeout_is_returned_once_and_moves_nothing() {
     endpoint.accept(OPERATION.into(), open(2, 100)).unwrap();
     let mut terminals = Vec::new();
     step(&mut endpoint, 0, &mut terminals);
+    // The first open's setup runs on a thread of its own: wait for it to have begun (a readiness wait, not a speed
+    // claim) before the second open's allocation runs out, or a loaded host counts 0 starts where 1 is the answer.
+    let until = std::time::Instant::now() + Duration::from_secs(30);
+    while *starts.lock().unwrap() < 1 {
+        assert!(
+            std::time::Instant::now() < until,
+            "the first open never set up"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
     step(&mut endpoint, 100, &mut terminals);
     assert_eq!(terminals.len(), 1);
     assert_eq!(terminals[0].stream_id, 2);

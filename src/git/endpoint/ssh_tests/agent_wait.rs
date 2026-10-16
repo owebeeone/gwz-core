@@ -44,7 +44,7 @@ cfg_if::cfg_if! {
                     .args(["--exact", &child_test(), "--ignored", "--nocapture"])
                     .env("GWZ_TEST_AGENT_WAIT_SOCKET", &path)
                     .stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
-                let deadline = Instant::now() + Duration::from_secs(5);
+                let deadline = Instant::now() + Duration::from_secs(30);
                 let mut peer = loop {
                     match listener.accept() {
                         Ok((peer, _)) => break peer,
@@ -56,7 +56,7 @@ cfg_if::cfg_if! {
                         Err(error) => panic!("accept: {error}"),
                     }
                 };
-                peer.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                peer.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
                 let mut request = [0; 5];
                 peer.read_exact(&mut request).unwrap();
                 assert_eq!(request, [0, 0, 0, 1, 11], "agent identity request");

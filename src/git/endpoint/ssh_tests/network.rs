@@ -18,7 +18,7 @@ use std::{
     time::{Duration, Instant},
 };
 pub(super) fn finish<T: Send + 'static>(job: &mut Job<T>) -> io::Result<T> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         if let Poll::Ready(r) = job.poll_result(&mut Context::from_waker(Waker::noop())) {
             return r;
@@ -30,7 +30,7 @@ pub(super) fn finish<T: Send + 'static>(job: &mut Job<T>) -> io::Result<T> {
 fn establish(key: Key, path: PathBuf) -> io::Result<(SshConnection, Vec<u8>)> {
     finish(
         &mut Job::start_isolated(
-            Some(Instant::now() + Duration::from_secs(3)),
+            Some(Instant::now() + Duration::from_secs(30)),
             Duration::from_secs(1),
             move |c| ssh_network::establish(&key, &path, &c),
         )
@@ -67,7 +67,7 @@ fn missing_unknown_and_mismatched_trust_never_reach_authentication() {
         let key = key(&f);
         let result = finish(
             &mut Job::start_isolated(
-                Some(Instant::now() + Duration::from_secs(2)),
+                Some(Instant::now() + Duration::from_secs(30)),
                 Duration::from_secs(1),
                 move |c| {
                     let pair = ssh_network::establish(&key, &path, &c)?;
@@ -164,7 +164,7 @@ fn stalled_handshake_is_cancelled_or_times_out_and_closes_the_socket() {
         })
         .unwrap();
         listener.set_nonblocking(true).unwrap();
-        let until = Instant::now() + Duration::from_secs(2);
+        let until = Instant::now() + Duration::from_secs(30);
         let mut peer = loop {
             match listener.accept() {
                 Ok((s, _)) => break s,
@@ -222,7 +222,7 @@ fn trusted_rsa_host_is_negotiated_when_peer_also_offers_ed25519() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while TcpStream::connect(("127.0.0.1", f.port)).is_err() {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(5));
@@ -412,7 +412,16 @@ fn carriage_return_data_matches_native_trust() {
                     ssh2::CheckResult::Match
                 );
             drop(native);
-            let result = establish(key(&f), f.known_hosts.clone());
+            let mut result = establish(key(&f), f.known_hosts.clone());
+            // libssh2 on Windows (CNG) ends about one key exchange in a hundred by itself, and this row makes sixteen
+            // connections. A connection the row expects is made again; a refusal is never retried, and a trust that
+            // the connection really refuses fails all five.
+            for _ in 0..4 {
+                if !matched || result.is_ok() {
+                    break;
+                }
+                result = establish(key(&f), f.known_hosts.clone());
+            }
             assert_eq!(
                 result.is_ok(),
                 matched,
@@ -464,9 +473,9 @@ fn late_loader_and_resolver_results_are_disposed_without_later_effects() {
             )
         })
         .unwrap();
-        entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        entered.recv_timeout(Duration::from_secs(30)).unwrap();
         job.cancel();
-        let deadline = Instant::now() + Duration::from_secs(2);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             match job.poll_disposed(&mut Context::from_waker(Waker::noop())) {
                 Poll::Ready(Err(e)) => {
@@ -503,7 +512,7 @@ fn address_fallback_stops_at_the_first_ssh_negotiation() {
     drop(dead);
     let live = ("127.0.0.1".parse::<std::net::IpAddr>().unwrap(), f.port).into();
     let mut job = Job::start_isolated(
-        Some(Instant::now() + Duration::from_secs(3)),
+        Some(Instant::now() + Duration::from_secs(30)),
         Duration::from_secs(1),
         move |c| {
             ssh_network::establish_with(
@@ -530,7 +539,7 @@ fn address_fallback_stops_at_the_first_ssh_negotiation() {
     let known = f.known_hosts.clone();
     let text = fs::read_to_string(&known).unwrap();
     let mut job = Job::start_isolated(
-        Some(Instant::now() + Duration::from_secs(2)),
+        Some(Instant::now() + Duration::from_secs(30)),
         Duration::from_secs(1),
         move |c| {
             ssh_network::establish_with(
@@ -562,7 +571,7 @@ fn invalid_encoding_and_nul_are_refused_before_resolution() {
         let resolved = Arc::new(AtomicBool::new(false));
         let observed = resolved.clone();
         let mut job = Job::start_isolated(
-            Some(Instant::now() + Duration::from_secs(3)),
+            Some(Instant::now() + Duration::from_secs(30)),
             Duration::from_secs(1),
             move |c| {
                 ssh_network::establish_with(

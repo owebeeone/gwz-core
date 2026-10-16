@@ -6,7 +6,9 @@
 use super::*;
 use std::time::Duration;
 
-const WAIT: Duration = Duration::from_secs(3);
+// A readiness wait, not a speed claim. It stays under the minute the thread is parked for, so that a pass within it can
+// only have been a wake.
+const WAIT: Duration = Duration::from_secs(20);
 
 /// A driver session whose placement thread has settled into a park of a
 /// minute, and the passes it had finished by then.

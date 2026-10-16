@@ -250,7 +250,7 @@ fn https_only_cancelled_capacity_retirement_closes_the_mutated_generation() {
         let mut request =
             Box::pin(runtime.request(capacity_meta("capacity-cancel", 1), "cancel".into()));
         let mut cx = Context::from_waker(Waker::noop());
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
         while !endpoint.retirement_waiting_for_test() {
             match request.as_mut().poll(&mut cx) {
                 Poll::Pending => {}

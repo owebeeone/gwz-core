@@ -128,9 +128,11 @@ fn one_operation_can_own_parallel_streams_and_shutdown_preserves_terminals() {
     assert!(endpoint.pending_request("operation"));
     let waker = Waker::noop();
     let mut cx = Context::from_waker(waker);
-    for _ in 0..100 {
+    // A readiness wait, not a speed claim (the same for the two rows below).
+    let settle_until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
         endpoint.step(1_000, &mut cx).unwrap();
-        if endpoint.pending() == 0 {
+        if endpoint.pending() == 0 || std::time::Instant::now() >= settle_until {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
@@ -228,9 +230,10 @@ fn check_identity_reads_regular_file_without_parsing_and_reports_missing_file() 
         .unwrap();
     let waker = Waker::noop();
     let mut cx = Context::from_waker(waker);
-    for _ in 0..100 {
+    let settle_until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
         regular_endpoint.step(0, &mut cx).unwrap();
-        if regular_endpoint.pending() == 0 {
+        if regular_endpoint.pending() == 0 || std::time::Instant::now() >= settle_until {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
@@ -253,9 +256,10 @@ fn check_identity_reads_regular_file_without_parsing_and_reports_missing_file() 
             check(path.to_string_lossy().into_owned(), 10),
         )
         .unwrap();
-    for _ in 0..100 {
+    let settle_until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
         endpoint.step(0, &mut cx).unwrap();
-        if endpoint.pending() == 0 {
+        if endpoint.pending() == 0 || std::time::Instant::now() >= settle_until {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
@@ -359,7 +363,7 @@ fn message_deadlines_tighten_pool_policy_and_cannot_disable_a_positive_policy() 
                 break outcome;
             }
             assert!(
-                start.elapsed() < std::time::Duration::from_secs(2),
+                start.elapsed() < std::time::Duration::from_secs(30),
                 "open reply stranded"
             );
             std::thread::sleep(std::time::Duration::from_millis(2));
@@ -408,7 +412,7 @@ fn open_timeout_replies_before_blocked_physical_work_finishes() {
             self.release
                 .lock()
                 .unwrap()
-                .recv_timeout(std::time::Duration::from_secs(5))
+                .recv_timeout(std::time::Duration::from_secs(30))
                 .unwrap();
             Err(gwz_transport::protocol::Failure {
                 detail: None,
@@ -436,7 +440,7 @@ fn open_timeout_replies_before_blocked_physical_work_finishes() {
     let mut message = open(Identity::default());
     message.open.as_mut().unwrap().policy = AuthPolicy::SshAmbient;
     bridge.accept("r".into(), message).unwrap();
-    seen.recv_timeout(std::time::Duration::from_secs(2))
+    seen.recv_timeout(std::time::Duration::from_secs(30))
         .unwrap();
     let mut cx = Context::from_waker(Waker::noop());
     bridge.step(1000, &mut cx).unwrap();

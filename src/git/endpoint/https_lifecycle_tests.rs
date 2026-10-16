@@ -153,7 +153,7 @@ mod helpers {
         (dir, config, marker)
     }
     async fn started(path: &std::path::Path) {
-        timeout(Duration::from_secs(2), async {
+        timeout(Duration::from_secs(30), async {
             while !path.exists() {
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }

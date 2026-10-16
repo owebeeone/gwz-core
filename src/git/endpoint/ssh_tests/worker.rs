@@ -378,7 +378,7 @@ fn shutdown_wakes_an_unbounded_connect_request_when_network_timeout_is_disabled(
 }
 
 fn await_started(started: &std::sync::atomic::AtomicBool) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while !started.load(std::sync::atomic::Ordering::Acquire) {
         assert!(
             std::time::Instant::now() < deadline,

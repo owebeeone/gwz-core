@@ -8,6 +8,11 @@ use crate::git::{
     endpoint::{helper_script, https_auth, ssh_password_fixture::PasswordSshd},
 };
 
+/// The interaction bound of the helper rows. It is also how long the faulted helper's shell has to start and write its
+/// marker file, which a loaded Windows runner (or host) takes longer than 0.5 s to do: a readiness wait, and the row
+/// that the bound itself is reported exactly is kept at this value.
+const INTERACTION_MS: u64 = 2_000;
+
 #[derive(Clone, Copy, Debug)]
 enum Fault {
     MissingGit,
@@ -39,7 +44,7 @@ fn ssh_clone_fetch_and_push_keep_typed_helper_outcomes() {
             let held = if matches!(fault, Fault::Allocation) { Some(slots.hold_all().await) } else { None };
             let mut local = SshEndpointConfig::fixture(home, None);
             if !matches!(fault, Fault::MissingGit | Fault::UnexecutableGit) {
-                local.pool.interaction_timeout_ms = 500;
+                local.pool.interaction_timeout_ms = INTERACTION_MS;
                 local.pool.allocation_timeout_ms = 1_250;
             }
             let runtime = TransportRuntime::with_https(local, HttpsEndpointConfig {
@@ -65,7 +70,7 @@ fn ssh_clone_fetch_and_push_keep_typed_helper_outcomes() {
                 }).await.unwrap().unwrap_err();
                 let (code, prefix) = match fault {
                     Fault::MissingGit | Fault::UnexecutableGit => (ErrorCode::ExternalToolMissing, "SSH authentication needs `git` on PATH:"),
-                    Fault::Interaction => (ErrorCode::CredentialHelperTimeout, "No credential helper answered within 0.5 seconds, a fixed bound"),
+                    Fault::Interaction => (ErrorCode::CredentialHelperTimeout, "No credential helper answered within 2 seconds, a fixed bound"),
                     Fault::Allocation => (ErrorCode::CredentialHelperTimeout, "No credential helper could start in the "),
                 };
                 assert_eq!(error.code, code, "{fault:?}/{operation}: {}", error.message);
@@ -88,7 +93,7 @@ fn ssh_clone_fetch_and_push_keep_typed_helper_outcomes() {
             assert_eq!(failure.facts.as_ref().unwrap().method, gwz_transport::protocol::AuthMethod::Gh);
             if matches!(fault, Fault::Interaction | Fault::Allocation) {
                 let captured = failure.detail.as_ref().unwrap().helper_budget_ms.unwrap();
-                if matches!(fault, Fault::Interaction) { assert_eq!(captured, 500); }
+                if matches!(fault, Fault::Interaction) { assert_eq!(captured, INTERACTION_MS as i64); }
                 else { assert!((1..=1_250).contains(&captured)); }
                 assert_eq!(message, super::helper_failure::timeout_reason(&failure).unwrap());
             } else if matches!(fault, Fault::UnexecutableGit) {

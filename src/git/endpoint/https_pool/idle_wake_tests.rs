@@ -140,7 +140,7 @@ fn a_dead_lease_released_by_adopt_is_disposed_of_at_once() {
             panic!("the idle connection is leased at once");
         };
         idle.proxy.cut_all();
-        let until = Instant::now() + Duration::from_secs(5);
+        let until = Instant::now() + Duration::from_secs(30);
         while pool.host.lock().unwrap().lost(&lease).is_none() {
             assert!(Instant::now() < until, "the host finds the connection dead");
             tokio::time::sleep(Duration::from_millis(2)).await;
@@ -177,7 +177,7 @@ fn a_fresh_retry_after_a_dead_lease_is_served_promptly() {
             panic!("the idle connection is leased at once");
         };
         idle.proxy.cut_all();
-        let until = Instant::now() + Duration::from_secs(5);
+        let until = Instant::now() + Duration::from_secs(30);
         while pool.host.lock().unwrap().lost(&lease).is_none() {
             assert!(Instant::now() < until, "the host finds the connection dead");
             tokio::time::sleep(Duration::from_millis(2)).await;
@@ -188,7 +188,7 @@ fn a_fresh_retry_after_a_dead_lease_is_served_promptly() {
         ));
         let began = Instant::now();
         let fresh = tokio::time::timeout(
-            Duration::from_secs(5),
+            Duration::from_secs(30),
             pool.checkout_scoped(
                 idle.key.clone(),
                 idle.owner.clone(),

@@ -128,7 +128,7 @@ fn wait_for_an_idle_connection(runtime: &TransportRuntime) {
         .unwrap_or_else(|error| error.into_inner())
         .local_endpoint
         .clone();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let counts = endpoint.ssh_counts_for_test().unwrap();
         if (counts.idle, counts.leased) == (1, 0) {

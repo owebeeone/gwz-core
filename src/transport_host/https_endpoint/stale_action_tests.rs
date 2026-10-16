@@ -262,9 +262,9 @@ impl Fixture {
             }
         }
     }
-    /// Waits, at most two seconds, until `done` or until the Session closes.
+    /// Waits, at most thirty seconds, until `done` or until the Session closes.
     async fn until(&self, done: impl Fn() -> bool) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         while !done() && !self.endpoint.is_closed() {
             assert!(tokio::time::Instant::now() < deadline, "no progress");
             tokio::time::sleep(Duration::from_millis(2)).await;

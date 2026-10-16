@@ -76,7 +76,7 @@ fn a_reused_lease_found_dead_is_released_for_a_fresh_one() {
             };
             // Then the server closes it, and the host finds it dead.
             proxy.cut_all();
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + Duration::from_secs(30);
             loop {
                 let lost = pool.host.lock().unwrap().lost(&lease);
                 if lost.is_some() {

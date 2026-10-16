@@ -61,7 +61,7 @@ fn early_post_rejection_wakes_blocked_writer_without_replay() {
                 .unwrap();
             let (stream, task) = attach(prepared);
             let result = timeout(
-                Duration::from_secs(2),
+                Duration::from_secs(30),
                 stream.write_all(&vec![7; 16 * 1024 * 1024]),
             )
             .await
@@ -154,7 +154,7 @@ fn stalled_post_response_times_out_after_endwrite_without_replay() {
                 .unwrap();
             let (stream, task) = attach(prepared);
             stream.end_write().await.unwrap();
-            let result = timeout(Duration::from_secs(5), stream.read(&mut [0; 1]))
+            let result = timeout(Duration::from_secs(30), stream.read(&mut [0; 1]))
                 .await
                 .unwrap();
             assert!(matches!(

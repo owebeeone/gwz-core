@@ -115,12 +115,17 @@ impl Fixture {
         assert_eq!(self.heartbeats(), length, "{message}");
     }
 
-    /// Asserts that the descendant is still running: the heartbeat grows.
+    /// Asserts that the descendant is still running: the heartbeat grows. The growth is waited for, as a readiness
+    /// wait and not a speed claim: a batch loop on a loaded Windows runner can go unscheduled for longer than any
+    /// fixed window, and a dead descendant still fails, at the bound.
     pub(super) async fn assert_alive(&self, message: &str) {
         sleep(CLEANUP_GRACE).await;
         let length = self.heartbeats();
-        sleep(Duration::from_millis(300)).await;
-        assert!(self.heartbeats() > length, "{message}");
+        let until = Instant::now() + Duration::from_secs(20);
+        while self.heartbeats() <= length {
+            assert!(Instant::now() < until, "{message}");
+            sleep(Duration::from_millis(5)).await;
+        }
     }
 }
 

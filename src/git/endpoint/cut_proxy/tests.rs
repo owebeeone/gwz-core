@@ -28,7 +28,7 @@ impl Link {
         let client = TcpStream::connect(("127.0.0.1", proxy.port)).unwrap();
         let (server, _) = listener.accept().unwrap();
         server
-            .set_read_timeout(Some(Duration::from_secs(5)))
+            .set_read_timeout(Some(Duration::from_secs(30)))
             .unwrap();
         // The proxy has connected to the server; the link is registered a moment later.
         while proxy.connections() == 0 {
@@ -127,7 +127,7 @@ fn marking_links_that_have_ended_does_not_wait_for_them() {
 
 /// Waits until every link's client read has taken the fault it was given.
 fn wait_for_the_fault_to_be_taken(proxy: &CutProxy) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while proxy
         .links
         .lock()

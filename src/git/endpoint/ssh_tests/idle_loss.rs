@@ -114,7 +114,7 @@ impl Case {
         Ok(opened)
     }
     fn wait_for(&self, what: &str, done: impl Fn(&Self) -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(30);
         while !done(self) {
             assert!(
                 Instant::now() < deadline,

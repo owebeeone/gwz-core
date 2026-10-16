@@ -37,7 +37,7 @@ fn watch(reactor: &Arc<IdleReactor>, client: &TcpStream, waker: &Waker) -> IdleS
 /// The reactor wakes the registered waker; nothing polls in between.
 fn lost_after_wake(socket: &IdleSocket, waker: &Waker, woken: &Receiver<()>) {
     woken
-        .recv_timeout(Duration::from_secs(5))
+        .recv_timeout(Duration::from_secs(30))
         .expect("the reactor woke the waker");
     let mut cx = Context::from_waker(waker);
     assert_eq!(socket.poll_lost(&mut cx), Poll::Ready(()));

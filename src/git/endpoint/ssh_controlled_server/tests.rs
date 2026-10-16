@@ -149,7 +149,7 @@ fn a_stuck_server_ends_both_outputs_and_then_withholds_its_exit_status_and_close
     let mut server = ControlledSshd::start(Ending::Stuck);
     let mut channel = channel_for(&mut server, GitService::ReceivePack);
     // The request and the client's EOF.
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut written = 0;
     while written < 4 {
         match io::Write::write(&mut channel, &b"0000"[written..]) {

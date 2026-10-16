@@ -57,7 +57,7 @@ fn explicit_anonymous_refusal_does_not_hold_capacity_for_the_request_lifetime() 
             .unwrap_or_else(|error| error.into_inner())
             .local_endpoint
             .clone();
-        let until = std::time::Instant::now() + Duration::from_secs(2);
+        let until = std::time::Instant::now() + Duration::from_secs(30);
         loop {
             let counts = endpoint.https_counts_for_test().unwrap();
             if counts.total() == 0 {

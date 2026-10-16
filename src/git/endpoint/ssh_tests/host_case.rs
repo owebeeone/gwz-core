@@ -41,7 +41,7 @@ fn establish_once(f: &common::SshdFixture, written: &str, known: String) -> io::
     let written = written.to_owned();
     let path = f.temp.path().join("unused_known_hosts");
     let mut job = Job::start_isolated(
-        Some(Instant::now() + Duration::from_secs(5)),
+        Some(Instant::now() + Duration::from_secs(30)),
         Duration::from_secs(1),
         move |control| {
             ssh_network::establish_inner(

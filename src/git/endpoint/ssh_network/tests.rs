@@ -13,7 +13,7 @@ use std::{
 };
 
 fn finish<T: Send + 'static>(job: &mut Job<T>) -> io::Result<T> {
-    finish_within(job, Duration::from_secs(5))
+    finish_within(job, Duration::from_secs(30))
 }
 
 fn finish_within<T: Send + 'static>(job: &mut Job<T>, within: Duration) -> io::Result<T> {
@@ -124,7 +124,7 @@ fn live_control_retries_socket_timeout_and_abort() {
         let attempts = Arc::new(AtomicUsize::new(0));
         let observed = attempts.clone();
         let mut job = Job::start_isolated(
-            Some(Instant::now() + Duration::from_secs(3)),
+            Some(Instant::now() + Duration::from_secs(30)),
             Duration::from_secs(1),
             move |c| {
                 connect_addresses(vec![live, live], &c, |address, _| {
@@ -149,7 +149,7 @@ fn the_tcp_connect_time_is_the_answering_addresses_and_none_when_nothing_answers
     let live = peer.local_addr().unwrap();
     let mut first = true;
     let mut job = Job::start_isolated(
-        Some(Instant::now() + Duration::from_secs(3)),
+        Some(Instant::now() + Duration::from_secs(30)),
         Duration::from_secs(1),
         move |c| {
             connect_addresses(vec![live, live], &c, |address, _| {
@@ -171,7 +171,7 @@ fn the_tcp_connect_time_is_the_answering_addresses_and_none_when_nothing_answers
         "{ms} ms: the failed address's time is not the round trip"
     );
     let mut none = Job::start_isolated(
-        Some(Instant::now() + Duration::from_secs(3)),
+        Some(Instant::now() + Duration::from_secs(30)),
         Duration::from_secs(1),
         move |c| connect_addresses(vec![live], &c, |_, _| Err(io::ErrorKind::TimedOut.into())),
     )
@@ -205,7 +205,7 @@ fn an_ssh_resource_reports_its_jobs_tcp_connect_time_while_connecting_and_after_
                 let _ = finished
                     .lock()
                     .unwrap()
-                    .recv_timeout(Duration::from_secs(5));
+                    .recv_timeout(Duration::from_secs(30));
                 Err(io::ErrorKind::Other.into())
             }))
         },
@@ -219,7 +219,7 @@ fn an_ssh_resource_reports_its_jobs_tcp_connect_time_while_connecting_and_after_
         )
         .unwrap();
     let mut cx = Context::from_waker(Waker::noop());
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = Instant::now() + Duration::from_secs(30);
     while resource.tcp_connect_ms().is_none() {
         assert!(
             Instant::now() < until,
@@ -259,7 +259,7 @@ fn terminal_control_wins_over_socket_error_without_retry() {
                 let error = connect_addresses(vec![address, address], &c, |_, _| {
                     assert_eq!(observed.fetch_add(1, Ordering::SeqCst), 0);
                     entered_tx.send(()).unwrap();
-                    released.recv_timeout(Duration::from_secs(3)).unwrap();
+                    released.recv_timeout(Duration::from_secs(30)).unwrap();
                     Err(if cancel {
                         io::ErrorKind::TimedOut
                     } else {
@@ -273,7 +273,7 @@ fn terminal_control_wins_over_socket_error_without_retry() {
             },
         )
         .unwrap();
-        entered.recv_timeout(Duration::from_secs(2)).unwrap();
+        entered.recv_timeout(Duration::from_secs(30)).unwrap();
         if cancel {
             job.cancel();
         } else {
@@ -286,7 +286,7 @@ fn terminal_control_wins_over_socket_error_without_retry() {
             io::ErrorKind::TimedOut
         };
         assert_eq!(
-            result.recv_timeout(Duration::from_secs(2)).unwrap(),
+            result.recv_timeout(Duration::from_secs(30)).unwrap(),
             expected
         );
         assert_eq!(finish(&mut job).unwrap_err().kind(), expected);
@@ -314,12 +314,12 @@ fn a_connect_to_a_listener_succeeds() {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     let address = listener.local_addr().unwrap();
     let mut job = Job::start_isolated(
-        Some(Instant::now() + Duration::from_secs(5)),
+        Some(Instant::now() + Duration::from_secs(30)),
         Duration::from_secs(1),
         move |c| connect(address, &c),
     )
     .unwrap();
-    let socket = finish_within(&mut job, Duration::from_secs(8)).unwrap();
+    let socket = finish_within(&mut job, Duration::from_secs(30)).unwrap();
     assert_eq!(socket.peer_addr().unwrap(), address);
 }
 
@@ -348,7 +348,7 @@ fn a_cancelled_control_ends_a_wait_inside_one_slice() {
     std::thread::sleep(Duration::from_millis(100));
     let cancelled = Instant::now();
     job.cancel();
-    let error: io::Error = finish_within(&mut job, Duration::from_secs(5)).unwrap_err();
+    let error: io::Error = finish_within(&mut job, Duration::from_secs(30)).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::ConnectionAborted);
     assert!(
         cancelled.elapsed() < Duration::from_secs(2),

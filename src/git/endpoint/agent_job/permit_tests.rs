@@ -66,7 +66,7 @@ fn a_taken_result_frees_its_permit_at_once() {
     let job = Job::start(&supervisor, None, Duration::from_secs(5), |_| Ok(8)).unwrap();
     assert_eq!(permits(), 1);
     drop(job);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while permits() != 0 {
         assert!(
             Instant::now() < deadline,

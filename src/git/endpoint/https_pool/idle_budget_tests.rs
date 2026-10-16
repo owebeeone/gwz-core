@@ -73,7 +73,7 @@ fn a_fresh_retry_after_a_dead_reused_lease_takes_its_place_from_the_hosts_superv
                 panic!("the idle connection is leased at once");
             };
             proxy.cut_all();
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + Duration::from_secs(30);
             while pool.host.lock().unwrap().lost(&lease).is_none() {
                 assert!(
                     Instant::now() < deadline,
@@ -95,7 +95,7 @@ fn a_fresh_retry_after_a_dead_reused_lease_takes_its_place_from_the_hosts_superv
             // the retry's was counted twice, and none is kept.
             assert!(supervisor.taken() <= 1, "the retry holds at most its own");
             fresh.finish(Disposition::Discarded).unwrap();
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now() + Duration::from_secs(30);
             while supervisor.taken() != 0 {
                 assert!(Instant::now() < deadline, "every place was returned");
                 tokio::time::sleep(Duration::from_millis(5)).await;

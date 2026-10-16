@@ -25,7 +25,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const WAIT: Duration = Duration::from_secs(3);
+const WAIT: Duration = Duration::from_secs(30);
 
 struct Harness {
     session: Arc<session::Session>,

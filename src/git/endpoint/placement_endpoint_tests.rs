@@ -63,7 +63,7 @@ fn blocked_check_times_out_before_physical_disposal() {
         Ok(())
     })
     .unwrap();
-    entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    entered_rx.recv_timeout(Duration::from_secs(30)).unwrap();
     let envelope = check(&std::env::temp_dir().join("unused"), 10);
     let key = ("request".into(), 1);
     endpoint
@@ -82,9 +82,12 @@ fn blocked_check_times_out_before_physical_disposal() {
     endpoint.step(11, &mut cx).unwrap();
     let duplicate = endpoint.take_outbound();
     release_tx.send(()).unwrap();
-    for _ in 0..500 {
+    // A readiness wait, not a speed claim: 500 one-millisecond turns were a few hundred milliseconds of wall clock,
+    // which a loaded runner can take away from the thread that settles the request.
+    let settle_until = Instant::now() + Duration::from_secs(20);
+    loop {
         endpoint.step(12, &mut cx).unwrap();
-        if endpoint.pending_request_count("request") == 0 {
+        if endpoint.pending_request_count("request") == 0 || Instant::now() >= settle_until {
             break;
         }
         thread::sleep(Duration::from_millis(1));
@@ -408,7 +411,7 @@ fn opens_beyond_the_operation_limits_wait_until_an_open_finishes() {
         .map(|queued| queued.key.1)
         .collect();
     let admitted = endpoint.opens.len();
-    step_until_started(&mut endpoint, &started, 5, origin, Duration::from_secs(5));
+    step_until_started(&mut endpoint, &started, 5, origin, Duration::from_secs(30));
     let started = started.lock().unwrap().len();
     endpoint.shutdown();
     // Host a's third open waits for the per-host limit, c's for the pool's total.
@@ -454,7 +457,7 @@ fn stepping_the_endpoint_has_its_worker_wake_the_stepper_when_the_shutdown_settl
     endpoint.step(0, &mut Context::from_waker(&waker)).unwrap();
     let before = wakes.0.load(std::sync::atomic::Ordering::SeqCst);
     endpoint.shutdown();
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while !endpoint.endpoint.shutdown_status().cleanup_complete
         || wakes.0.load(std::sync::atomic::Ordering::SeqCst) == before
     {

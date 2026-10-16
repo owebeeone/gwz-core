@@ -245,7 +245,7 @@ mod tests {
         assert!(!wait_readable(&client, MAX_WAIT).unwrap());
         assert!(started.elapsed() >= Duration::from_millis(10));
         server.write_all(b"x").unwrap();
-        assert!(until(Duration::from_secs(5), || wait_readable(
+        assert!(until(Duration::from_secs(30), || wait_readable(
             &client, MAX_WAIT
         )));
     }
@@ -253,7 +253,7 @@ mod tests {
     #[test]
     fn a_socket_with_room_is_writable() {
         let (client, _server) = pair();
-        assert!(until(Duration::from_secs(5), || wait_writable(
+        assert!(until(Duration::from_secs(30), || wait_writable(
             &client, MAX_WAIT
         )));
     }
@@ -262,7 +262,7 @@ mod tests {
     fn a_closed_peer_is_readable_as_end_of_file() {
         let (mut client, server) = pair();
         drop(server);
-        assert!(until(Duration::from_secs(5), || wait_readable(
+        assert!(until(Duration::from_secs(30), || wait_readable(
             &client, MAX_WAIT
         )));
         let mut buffer = [0u8; 8];
@@ -292,13 +292,13 @@ mod tests {
     #[test]
     fn interest_in_both_directions_reports_either() {
         let (client, mut server) = pair();
-        assert!(until(Duration::from_secs(5), || wait_for(
+        assert!(until(Duration::from_secs(30), || wait_for(
             &client,
             Interest::BOTH,
             MAX_WAIT
         )));
         server.write_all(b"x").unwrap();
-        assert!(until(Duration::from_secs(5), || wait_for(
+        assert!(until(Duration::from_secs(30), || wait_for(
             &client,
             Interest::READ,
             MAX_WAIT
@@ -309,7 +309,7 @@ mod tests {
     fn a_connect_to_a_listener_finishes_successfully() {
         let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let socket = connecting(listener.local_addr().unwrap());
-        assert!(until(Duration::from_secs(5), || connect_wait(
+        assert!(until(Duration::from_secs(30), || connect_wait(
             &socket, MAX_WAIT
         )));
         assert!(socket.take_error().unwrap().is_none());

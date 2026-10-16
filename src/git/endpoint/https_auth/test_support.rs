@@ -174,12 +174,12 @@ cfg_if::cfg_if! {
                 let (_fixture, pending) = retained_helper(Behavior::Hangs, &slots);
                 owner.retain_pending(pending);
                 let reaper = owner.clone();
-                let task = tokio::spawn(async move { reaper.reap_pending(Instant::now()+Duration::from_secs(5)).await });
+                let task = tokio::spawn(async move { reaper.reap_pending(Instant::now()+Duration::from_secs(30)).await });
                 while !owner.inner.pending.lock().unwrap().is_empty() { tokio::task::yield_now().await; }
                 task.abort(); let _ = task.await;
                 let retained = owner.pending_cleanup_count();
                 let permits = slots.available_permits();
-                let _ = owner.reap_pending(Instant::now()+Duration::from_secs(5)).await;
+                let _ = owner.reap_pending(Instant::now()+Duration::from_secs(30)).await;
                 assert_eq!(retained, 1, "aborting reap lost its owned child");
                 assert_eq!(permits, before-1, "permit released before actual reap");
                 assert_eq!(owner.pending_cleanup_count(), 0);
@@ -217,7 +217,7 @@ cfg_if::cfg_if! {
                 let reported = task.await.unwrap();
                 let actual = owner.pending_cleanup_count();
                 for pending in owner.inner.pending.lock().unwrap().iter_mut() { let _ = pending.child.start_kill(); }
-                let _ = owner.reap_pending(Instant::now()+Duration::from_secs(5)).await;
+                let _ = owner.reap_pending(Instant::now()+Duration::from_secs(30)).await;
                 assert_eq!(reported, actual, "reap omitted a child transferred during its wait");
                 assert_eq!(reported, 1);
             }
@@ -238,7 +238,7 @@ cfg_if::cfg_if! {
                 }
                 assert_eq!(owner.active_count(), 0);
                 let retained = owner
-                    .reap_pending(Instant::now() + Duration::from_secs(2))
+                    .reap_pending(Instant::now() + Duration::from_secs(30))
                     .await;
                 assert_eq!(retained, 0);
                 assert_eq!(owner.pending_cleanup_count(), 0);
@@ -293,7 +293,7 @@ cfg_if::cfg_if! {
                 for task in tasks {
                     let _ = task.await.unwrap();
                 }
-                assert_eq!(owner.reap_pending(Instant::now() + Duration::from_secs(2)).await, 0);
+                assert_eq!(owner.reap_pending(Instant::now() + Duration::from_secs(30)).await, 0);
             }
 
             async fn quick_lookup(owner: &AuthOwner) -> Result<String, AuthError> {
@@ -303,7 +303,7 @@ cfg_if::cfg_if! {
                     owner,
                     &config,
                     &destination,
-                    Instant::now() + Duration::from_secs(2),
+                    Instant::now() + Duration::from_secs(30),
                     &CancellationToken::new(),
                 )
                 .await
@@ -382,7 +382,7 @@ cfg_if::cfg_if! {
                 );
                 assert_eq!(owner.pending_cleanup_count(), 1);
                 assert_eq!(owner.inner.helper_slots.0.available_permits(), available_before - 1);
-                assert_eq!(owner.reap_pending(Instant::now() + Duration::from_secs(2)).await, 0);
+                assert_eq!(owner.reap_pending(Instant::now() + Duration::from_secs(30)).await, 0);
                 assert_eq!(owner.pending_cleanup_count(), 0);
                 assert_eq!(owner.inner.helper_slots.0.available_permits(), available_before);
             }

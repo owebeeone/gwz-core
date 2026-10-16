@@ -33,7 +33,7 @@ fn config() -> Config {
     }
 }
 fn done(endpoint: &Endpoint) {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = Instant::now() + Duration::from_secs(30);
     while !endpoint.shutdown_status().cleanup_complete {
         assert!(Instant::now() < until);
         std::thread::sleep(Duration::from_millis(1));
@@ -174,7 +174,7 @@ fn concurrent_initial_batch_uses_one_connection_and_keeps_idle_pin() {
     // snapshot's reservation is dropped: six pool requests mean every admission is over.
     // The shutdown status's admission count is only sampled once per worker pass, before
     // it takes new requests in, so it reads 0 while admissions are still running.
-    let until = Instant::now() + Duration::from_secs(3);
+    let until = Instant::now() + Duration::from_secs(30);
     while calls.load(Ordering::SeqCst) == 0 || endpoint.pool().outstanding_requests() != 6 {
         assert!(Instant::now() < until);
         std::thread::sleep(Duration::from_millis(1));
@@ -278,8 +278,8 @@ fn stalled_admission_expires_without_setup_and_retains_charge_until_join() {
             deadlines,
         )
     });
-    entered.recv_timeout(Duration::from_secs(3)).unwrap();
-    let until = Instant::now() + Duration::from_secs(3);
+    entered.recv_timeout(Duration::from_secs(30)).unwrap();
+    let until = Instant::now() + Duration::from_secs(30);
     while endpoint.shutdown_status().pending_admissions != 1 {
         assert!(Instant::now() < until);
         std::thread::sleep(Duration::from_millis(1));
@@ -296,7 +296,7 @@ fn stalled_admission_expires_without_setup_and_retains_charge_until_join() {
     assert!(!status.cleanup_complete);
     assert_eq!(status.pending_admissions, 1);
     release.send(()).unwrap();
-    let until = Instant::now() + Duration::from_secs(3);
+    let until = Instant::now() + Duration::from_secs(30);
     while !endpoint.shutdown_status().cleanup_complete {
         assert!(Instant::now() < until);
         std::thread::sleep(Duration::from_millis(1));
@@ -354,7 +354,7 @@ fn stalled_admission_does_not_stop_an_existing_stream() {
             deadlines,
         )
     });
-    entered.recv_timeout(Duration::from_secs(3)).unwrap();
+    entered.recv_timeout(Duration::from_secs(30)).unwrap();
     stream.write_all(b"0000").unwrap();
     stream.end_write().unwrap();
     let mut bytes = Vec::new();
@@ -373,7 +373,7 @@ fn stalled_admission_does_not_stop_an_existing_stream() {
         "the shutdown, not a deadline, ends the stalled open"
     );
     release_tx.send(()).unwrap();
-    let until = Instant::now() + Duration::from_secs(3);
+    let until = Instant::now() + Duration::from_secs(30);
     while !endpoint.shutdown_status().cleanup_complete {
         assert!(Instant::now() < until);
         std::thread::sleep(Duration::from_millis(1));

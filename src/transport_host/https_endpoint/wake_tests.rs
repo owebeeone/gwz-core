@@ -41,7 +41,7 @@ fn the_endpoint_wakes_its_stepper_when_its_shutdown_has_settled() {
     endpoint.step(0, &mut Context::from_waker(&waker)).unwrap();
     let before = wakes.0.load(Ordering::SeqCst);
     endpoint.shutdown();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while endpoint.pending() != 0 || wakes.0.load(Ordering::SeqCst) == before {
         assert!(
             Instant::now() < deadline,
