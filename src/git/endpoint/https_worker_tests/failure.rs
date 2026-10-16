@@ -116,7 +116,9 @@ fn stalled_post_response_times_out_after_endwrite_without_replay() {
                         response(200, GitService::ReceivePackAdvertisement, "ok")
                     } else {
                         let _ = request.into_body().collect().await.unwrap();
-                        tokio::time::sleep(Duration::from_secs(15)).await;
+                        // Longer than the row's wait (30 s) and than the endpoint's default I/O bound (9 s): only the
+                        // configured bound of 1 s can end the read, and the row says so by its elapsed time.
+                        tokio::time::sleep(Duration::from_secs(120)).await;
                         response(200, GitService::ReceivePackExchange, "")
                     }
                 })
@@ -154,6 +156,7 @@ fn stalled_post_response_times_out_after_endwrite_without_replay() {
                 .unwrap();
             let (stream, task) = attach(prepared);
             stream.end_write().await.unwrap();
+            let begun = std::time::Instant::now();
             let result = timeout(Duration::from_secs(30), stream.read(&mut [0; 1]))
                 .await
                 .unwrap();
@@ -164,6 +167,11 @@ fn stalled_post_response_times_out_after_endwrite_without_replay() {
                     effect: Effect::Possible
                 })
             ));
+            assert!(
+                begun.elapsed() < Duration::from_secs(9),
+                "the configured 1 s bound ended the read, not the 9 s default: {:?}",
+                begun.elapsed()
+            );
             task.await.unwrap();
             assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
         });

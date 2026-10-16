@@ -3,6 +3,7 @@
 //! on every platform; the platform's own policy is pinned by its own row.
 use super::{
     kex_retry::{KexRetry, Native},
+    observed::{TRIES, establish_retrying_double_kex},
     *,
 };
 use crate::git::endpoint::{
@@ -402,4 +403,85 @@ fn the_shared_setup_clock_gives_room_by_what_the_failed_try_spent() {
     assert!(control.has_room_since(mark), "700 ms left, 300 spent");
     now.store(600, Ordering::SeqCst);
     assert!(!control.has_room_since(mark), "400 ms left, 600 spent");
+}
+
+/// A `known_hosts` file that lists nothing, for the rows that read one before they connect.
+fn empty_known_hosts() -> (tempfile::TempDir, std::path::PathBuf) {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("known_hosts");
+    std::fs::write(&path, "").unwrap();
+    (directory, path)
+}
+
+#[test]
+fn the_rows_that_retry_a_connection_retry_a_double_key_exchange_failure_and_only_that() {
+    let (_listener, key) = unserved();
+    let (_directory, known) = empty_known_hosts();
+    let (_, control) = timed();
+    // D14's class that survived its retry: -8 twice. The row makes the connection again, up to its limit.
+    let counts = Counts::default();
+    let (result, tries) = establish_retrying_double_kex(
+        || counts.steps(usize::MAX),
+        KexRetry::Once,
+        &key,
+        &known,
+        &control,
+    );
+    assert!(result.is_err());
+    assert_eq!(tries.len(), TRIES);
+    assert!(tries.iter().all(|tried| tried.is_double_kex_failure()));
+    assert_eq!(counts.connects(), 2 * TRIES);
+    // Every other libssh2 code, on its first try: the row is told, with the codes, and does not make another.
+    for code in [-2, -5, -7, -9, -13, -43] {
+        let counts = Counts::default();
+        let (result, tries) = establish_retrying_double_kex(
+            || {
+                let mut steps = counts.steps(usize::MAX);
+                steps.code = Ssh2Code::Session(code);
+                steps
+            },
+            KexRetry::Once,
+            &key,
+            &known,
+            &control,
+        );
+        assert!(result.is_err(), "libssh2 error {code}");
+        assert_eq!(tries.len(), 1, "libssh2 error {code} was retried");
+        assert_eq!(tries[0].handshakes, [Some(Ssh2Code::Session(code))]);
+        assert!(!tries[0].is_double_kex_failure());
+        assert_eq!(counts.connects(), 1, "libssh2 error {code}");
+    }
+    // A single -8 (the platform's policy is not to retry it, as on Unix) is not the double either.
+    let counts = Counts::default();
+    let (result, tries) = establish_retrying_double_kex(
+        || counts.steps(usize::MAX),
+        KexRetry::Never,
+        &key,
+        &known,
+        &control,
+    );
+    assert!(result.is_err());
+    assert_eq!(tries.len(), 1);
+    assert_eq!(tries[0].handshakes, [Some(KEX_FAILURE)]);
+}
+
+#[test]
+fn a_double_key_exchange_failure_then_a_connection_that_completes_is_one_retry_by_the_row() {
+    let fixture = SshdFixture::new();
+    let key = Key::ssh(&fixture.user, "127.0.0.1", fixture.port);
+    let (_, control) = timed();
+    let counts = Counts::default();
+    // The first try's two handshakes fail (-8 twice, D14's retry included); the second try is the real thing.
+    let (result, tries) = establish_retrying_double_kex(
+        || counts.steps(2),
+        KexRetry::Once,
+        &key,
+        &fixture.known_hosts,
+        &control,
+    );
+    result.expect("the second try's handshake completes");
+    assert_eq!(tries.len(), 2);
+    assert!(tries[0].is_double_kex_failure());
+    assert_eq!(tries[1].handshakes, [None]);
+    assert_eq!(counts.connects(), 3);
 }

@@ -567,6 +567,7 @@ cfg_if! {
     if #[cfg(test)] {
         mod tests;
         mod kex_retry_tests;
+        pub(crate) mod observed;
 
         /// `establish_inner` for a URL that wrote the host as the key has it.
         pub(crate) fn establish_with<L, R>(

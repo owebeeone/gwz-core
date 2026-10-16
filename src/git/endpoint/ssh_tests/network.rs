@@ -37,6 +37,25 @@ fn establish(key: Key, path: PathBuf) -> io::Result<(SshConnection, Vec<u8>)> {
         .unwrap(),
     )
 }
+/// `establish`, made again when it ended on a double key exchange failure (see `ssh_network::observed`), with what
+/// every try's handshakes answered.
+fn establish_observed(
+    key: Key,
+    path: PathBuf,
+) -> (
+    io::Result<(SshConnection, Vec<u8>)>,
+    Vec<ssh_network::observed::Observed>,
+) {
+    let mut job = Job::start_isolated(
+        Some(Instant::now() + Duration::from_secs(30)),
+        Duration::from_secs(1),
+        move |c| {
+            Ok(ssh_network::observed::establish_production_retrying_double_kex(&key, &path, &c))
+        },
+    )
+    .unwrap();
+    finish(&mut job).unwrap()
+}
 pub(super) fn key(f: &common::SshdFixture) -> Key {
     Key::ssh(&f.user, "127.0.0.1", f.port)
 }
@@ -412,21 +431,21 @@ fn carriage_return_data_matches_native_trust() {
                     ssh2::CheckResult::Match
                 );
             drop(native);
-            let mut result = establish(key(&f), f.known_hosts.clone());
-            // libssh2 on Windows (CNG) ends about one key exchange in a hundred by itself, and this row makes sixteen
-            // connections. A connection the row expects is made again; a refusal is never retried, and a trust that
-            // the connection really refuses fails all five.
-            for _ in 0..4 {
-                if !matched || result.is_ok() {
-                    break;
-                }
-                result = establish(key(&f), f.known_hosts.clone());
-            }
+            // This row makes sixteen connections, and libssh2 on Windows (CNG) ends about one key exchange in a hundred
+            // by itself; the setup already connects afresh once after it (D14). The row makes the connection again
+            // only when it ended on two key exchange failures in a row, as the libssh2 codes say; any other end is
+            // the row's result, with the codes of every try printed.
+            let (result, tries) = establish_observed(key(&f), f.known_hosts.clone());
+            ssh_network::observed::report(&tries);
             assert_eq!(
                 result.is_ok(),
                 matched,
-                "comment={comment:?}, suffix={suffix:?}, result={:?}",
-                result.err()
+                "comment={comment:?}, suffix={suffix:?}, result={:?}, handshakes of each try: {:?}",
+                result.err(),
+                tries
+                    .iter()
+                    .map(|tried| (tried.connects, &tried.handshakes))
+                    .collect::<Vec<_>>()
             );
         }
     }

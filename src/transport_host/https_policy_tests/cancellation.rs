@@ -92,7 +92,9 @@ fn cancelling_receive_pack_challenge_helper_has_no_publication_effect() {
         let blocked = root.path().join("blocked");
         let mut config = crate::git::endpoint::helper_script::git_fixture(
             root.path(),
-            "touch \"$BLOCKED\"; exec /bin/sleep 10",
+            // Far longer than any wait of this row: a cancel that did nothing would leave the helper running, and the
+            // open would end only at its own bound, not as `Cancelled`.
+            "touch \"$BLOCKED\"; exec /bin/sleep 3600",
         );
         config.environment.push((
             "BLOCKED".into(),
@@ -131,13 +133,18 @@ fn cancelling_receive_pack_challenge_helper_has_no_publication_effect() {
         .await
         .unwrap();
         request.cancel();
-        assert!(
-            tokio::time::timeout(Duration::from_secs(30), pending)
-                .await
-                .unwrap()
-                .unwrap()
-                .is_err()
-        );
+        let error = tokio::time::timeout(Duration::from_secs(30), pending)
+            .await
+            .unwrap()
+            .unwrap()
+            .err()
+            .expect("canceled receive-pack challenge");
+        let receipt = error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<HttpsOpenFailure>()
+            .unwrap();
+        assert_eq!(receipt.failure.code, TransportError::Cancelled);
         assert_eq!(post_count.load(Ordering::SeqCst), 0);
         assert_eq!(request.finish().await.pending_local_work, 0);
         assert_eq!(runtime.shutdown().await.pending_local_work, 0);

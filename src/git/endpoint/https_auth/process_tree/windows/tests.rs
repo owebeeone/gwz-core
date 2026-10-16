@@ -374,7 +374,7 @@ fn probe(name: &str, extra: &[(&str, String)]) -> (tempfile::TempDir, PathBuf, H
         ),
     ));
     command.environment.push((
-        "OUT".into(),
+        PROBE_OUT.into(),
         EnvValue::from_os(output.as_os_str(), Probe::inert()),
     ));
     for (name, value) in extra {
@@ -385,6 +385,11 @@ fn probe(name: &str, extra: &[(&str, String)]) -> (tempfile::TempDir, PathBuf, H
     }
     (directory, output, command)
 }
+
+/// The environment of the probe rows below, named for them: the rows do nothing unless a row that starts them sets
+/// these, so a run of the ignored rows in a shell that has an `OUT` of its own touches nothing.
+const PROBE_OUT: &str = "GWZ_TEST_PROCESS_TREE_PROBE_OUT";
+const PROBE_HANDLE: &str = "GWZ_TEST_PROCESS_TREE_PROBE_HANDLE";
 
 /// How long a row waits for a probe to start, run and end: readiness, not a speed claim.
 const PROBE_WITHIN: Duration = Duration::from_secs(30);
@@ -425,10 +430,13 @@ async fn run_to_exit(command: &HelperCommand) -> String {
 #[test]
 #[ignore = "a helper process of a row below, started by it; not a test"]
 fn probe_handle_target() {
-    let Some(output) = std::env::var_os("OUT") else {
+    let Some(output) = std::env::var_os(PROBE_OUT) else {
         return;
     };
-    let value: i64 = std::env::var("PROBE").unwrap().parse().unwrap();
+    let Ok(value) = std::env::var(PROBE_HANDLE) else {
+        return;
+    };
+    let value: i64 = value.parse().unwrap();
     let mut path = [0u16; 1024];
     // SAFETY: the pointer and length describe `path`; a value that is no handle only makes the call return 0.
     let length = unsafe {
@@ -447,7 +455,7 @@ fn probe_handle_target() {
 #[test]
 #[ignore = "a helper process of a row below, started by it; not a test"]
 fn probe_breakaway() {
-    let Some(output) = std::env::var_os("OUT") else {
+    let Some(output) = std::env::var_os(PROBE_OUT) else {
         return;
     };
     let attempt = std::process::Command::new(system32().join("cmd.exe"))
@@ -484,11 +492,11 @@ async fn an_inheritable_handle_of_the_process_is_not_inherited_by_the_helper() {
     let value = (file.as_raw_handle() as usize as i64).to_string();
 
     // Control: a process created the standard way inherits it, so the probe finds the file by that handle.
-    let (_dir, output, helper) = probe("probe_handle_target", &[("PROBE", value.clone())]);
+    let (_dir, output, helper) = probe("probe_handle_target", &[(PROBE_HANDLE, value.clone())]);
     let status = tokio::process::Command::new(&helper.program)
         .args(&helper.args)
-        .env("PROBE", &value)
-        .env("OUT", &output)
+        .env(PROBE_HANDLE, &value)
+        .env(PROBE_OUT, &output)
         .status()
         .await
         .unwrap();
@@ -500,7 +508,7 @@ async fn an_inheritable_handle_of_the_process_is_not_inherited_by_the_helper() {
     );
 
     // The owner's helper has the same probe, the same value and not the file.
-    let (_dir, output, helper) = probe("probe_handle_target", &[("PROBE", value)]);
+    let (_dir, output, helper) = probe("probe_handle_target", &[(PROBE_HANDLE, value)]);
     let printed = run_to_exit(&helper).await;
     let seen = std::fs::read_to_string(&output)
         .unwrap_or_else(|error| panic!("the probe left no answer ({error}): {printed}"));
