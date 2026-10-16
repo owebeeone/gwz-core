@@ -702,40 +702,63 @@ async fn a_creation_that_fails_leaves_the_childs_ends_closed_to_inheritance() {
 
 /// A probe that prints the name of every pipe it holds a handle to: the helper pipes' names are unique, so the
 /// output says which of a launch's ends a process inherited and nothing about other tests' handles.
-const PIPE_NAMES_PROBE: &str = r#"
-Add-Type -MemberDefinition '[DllImport("kernel32.dll")] public static extern System.IntPtr GetStdHandle(int n); [DllImport("kernel32.dll")] public static extern uint GetFileType(System.IntPtr h); [DllImport("kernel32.dll", SetLastError=true)] public static extern bool GetFileInformationByHandleEx(System.IntPtr h, int c, System.IntPtr b, uint n);' -Name K -Namespace W
-# The probe's own standard handles are the test run's pipes: they are left alone, as a name query on a synchronous
-# pipe handle waits for any read or write in flight on it.
-$own = @(-10, -11, -12 | ForEach-Object { [int64][W.K]::GetStdHandle($_) })
-$buffer = [System.Runtime.InteropServices.Marshal]::AllocHGlobal(2048)
-$found = @()
-for ($value = 4; $value -lt 65536; $value += 4) {
-    if ($own -contains $value) { continue }
-    $handle = [System.IntPtr][int64]$value
-    if ([W.K]::GetFileType($handle) -ne 3) { continue }
-    if (-not [W.K]::GetFileInformationByHandleEx($handle, 2, $buffer, 2048)) { continue }
-    $length = [System.Runtime.InteropServices.Marshal]::ReadInt32($buffer)
-    $found += [System.Runtime.InteropServices.Marshal]::PtrToStringUni([System.IntPtr]($buffer.ToInt64() + 4), [int]($length / 2))
+/// The helper side of the gate rows: it names every pipe it holds other than its own standard handles (a name query
+/// on a synchronous pipe that is busy waits for the read or write in flight, and the test run's pipes are busy).
+#[test]
+#[ignore = "a helper process of a row below, started by it; not a test"]
+fn probe_pipe_names() {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_TYPE_PIPE, GetFileType};
+    let Some(output) = std::env::var_os(PROBE_OUT) else {
+        return;
+    };
+    let own = [
+        std::io::stdin().as_raw_handle() as usize,
+        std::io::stdout().as_raw_handle() as usize,
+        std::io::stderr().as_raw_handle() as usize,
+    ];
+    let mut found = Vec::new();
+    for value in (4..65536usize).step_by(4) {
+        if own.contains(&value) {
+            continue;
+        }
+        let handle = value as HANDLE;
+        // SAFETY: a value that is no handle only makes the call answer FILE_TYPE_UNKNOWN.
+        if unsafe { GetFileType(handle) } != FILE_TYPE_PIPE {
+            continue;
+        }
+        if let Some(name) = handle_pipe_name(handle) {
+            found.push(name);
+        }
+    }
+    std::fs::write(output, format!("names={}", found.join(";"))).unwrap();
 }
-"names=" + ($found -join ";") | Set-Content -Path $env:OUT
-"#;
 
 /// The pipe a handle is an end of, as the system names it (`\gwz-helper-...`).
 fn pipe_name(end: &OwnedHandle) -> String {
+    handle_pipe_name(end.as_raw_handle())
+        .unwrap_or_else(|| panic!("{}", io::Error::last_os_error()))
+}
+
+/// The name the system gives the pipe `handle` is an end of, or `None` if the query fails.
+fn handle_pipe_name(handle: HANDLE) -> Option<String> {
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_NAME_INFO, FileNameInfo, GetFileInformationByHandleEx,
     };
     let mut buffer = vec![0u32; 512];
-    // SAFETY: the pointer and length describe `buffer`, which outlives the call; the handle is open.
+    // SAFETY: the pointer and length describe `buffer`, which outlives the call; a value that is no open handle only
+    // makes the call fail.
     let read = unsafe {
         GetFileInformationByHandleEx(
-            end.as_raw_handle(),
+            handle,
             FileNameInfo,
             buffer.as_mut_ptr().cast(),
             (buffer.len() * size_of::<u32>()) as u32,
         )
     };
-    assert!(read != 0, "{}", io::Error::last_os_error());
+    if read == 0 {
+        return None;
+    }
     let info = buffer.as_ptr().cast::<FILE_NAME_INFO>();
     // SAFETY: the call filled the length and that many bytes of name after it, inside `buffer`.
     let name = unsafe {
@@ -744,7 +767,7 @@ fn pipe_name(end: &OwnedHandle) -> String {
             (*info).FileNameLength as usize / 2,
         )
     };
-    String::from_utf16(name).unwrap()
+    String::from_utf16(name).ok()
 }
 
 /// Three pipes the way a launch makes them (stdin, stdout, stderr), and the names of their child ends.
@@ -764,9 +787,9 @@ fn three_pipes() -> ([pipe::Pipe; 3], Vec<String>) {
 
 /// The probe as a standard `Command`, which names no handle list.
 fn standard_probe() -> (tempfile::TempDir, PathBuf, std::process::Command) {
-    let (directory, output, helper) = powershell(PIPE_NAMES_PROBE, &[]);
+    let (directory, output, helper) = probe("probe_pipe_names", &[]);
     let mut command = std::process::Command::new(&helper.program);
-    command.args(&helper.args).env("OUT", &output);
+    command.args(&helper.args).env(PROBE_OUT, &output);
     (directory, output, command)
 }
 
