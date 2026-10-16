@@ -39,7 +39,7 @@ async fn read(path: &[u8]) -> Result<Vec<u8>, AuthError> {
     };
     let parts = Parts::new().await;
     let executable = git();
-    let runner = parts.runner(&config, &executable, 5);
+    let runner = parts.runner(&config, &executable, 30);
     super::super::file_worker::read(&runner, SecretBuffer(path.to_vec()))
         .await
         .map(|bytes| bytes.0.clone())

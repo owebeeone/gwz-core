@@ -73,7 +73,7 @@ cfg_if::cfg_if! {
             let delay = match delay {
                 Delay::None => "",
                 Delay::Short => "/bin/sleep 0.35",
-                Delay::Forever => "/bin/sleep 30",
+                Delay::Forever => "/bin/sleep 3600",
             };
             helper_script::write_git_fixture(
                 &executable,
@@ -101,7 +101,7 @@ cfg_if::cfg_if! {
             let delay = match delay {
                 Delay::None => "",
                 Delay::Short => "sleep 1.2;",
-                Delay::Forever => "sleep 30;",
+                Delay::Forever => "sleep 3600;",
             };
             let home = directory.join("home");
             fs::create_dir_all(&home).unwrap();
@@ -497,7 +497,7 @@ fn x6(
             .clone()),
     };
     endpoint.shutdown();
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = Instant::now() + Duration::from_secs(30);
     while !endpoint.shutdown_status().cleanup_complete {
         assert!(Instant::now() < until, "setup cleanup remains owned");
         std::thread::sleep(Duration::from_millis(1));

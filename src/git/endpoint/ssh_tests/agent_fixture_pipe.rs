@@ -27,6 +27,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
     },
     thread,
     time::{Duration, Instant},
@@ -110,6 +111,8 @@ struct Shared {
     left: AtomicUsize,
     stop: AtomicBool,
     malformed_sent: AtomicBool,
+    /// What the serving thread did, in order, for a test that waits for a client to leave and is not told so.
+    notes: Mutex<Vec<String>>,
 }
 
 /// An agent serving on a named pipe. Dropping it stops the thread and frees the pipe's name.
@@ -168,6 +171,7 @@ impl PipeAgent {
             left: AtomicUsize::new(0),
             stop: AtomicBool::new(false),
             malformed_sent: AtomicBool::new(false),
+            notes: Mutex::new(Vec::new()),
         });
         // The agent owns the pipe from here: a failure below drops it, and the name is free again.
         let mut agent = Self {
@@ -176,7 +180,9 @@ impl PipeAgent {
             worker: None,
         };
         observe(Stage::PipeCreated);
-        agent.worker = Some(thread::spawn(move || serve(pipe, &shared)));
+        let (listening, started) = mpsc::channel();
+        agent.worker = Some(thread::spawn(move || serve(pipe, &shared, listening)));
+        let _ = started.recv_timeout(Duration::from_secs(30));
         observe(Stage::Serving);
         Ok(agent)
     }
@@ -214,11 +220,15 @@ impl PipeAgent {
             }
             thread::sleep(Duration::from_millis(2));
         }
+        eprintln!(
+            "the fixture agent saw no client leave within {within:?}; its thread did: {:?}",
+            self.shared.notes.lock().unwrap()
+        );
         false
     }
 
     pub(crate) fn connect(&self) -> PipeChannel {
-        let until = Instant::now() + Duration::from_secs(3);
+        let until = Instant::now() + Duration::from_secs(30);
         loop {
             match PipeChannel::open(&self.name) {
                 Ok(channel) => return channel,
@@ -249,19 +259,43 @@ impl Drop for PipeAgent {
     }
 }
 
-fn serve(pipe: Pipe, shared: &Shared) {
+fn serve(pipe: Pipe, shared: &Shared, listening: mpsc::Sender<()>) {
+    // The start waits for this, so that a client that is quick does not find the thread still starting.
+    let _ = listening.send(());
     while !shared.stop.load(Ordering::SeqCst) {
         // Waits for a client; ERROR_PIPE_CONNECTED means one connected before the call, which is a connection.
         let connected = unsafe { ConnectNamedPipe(pipe.0, ptr::null_mut()) };
-        if connected == 0
-            && unsafe { GetLastError() } != windows_sys::Win32::Foundation::ERROR_PIPE_CONNECTED
-        {
-            break;
+        if connected == 0 {
+            let error = unsafe { GetLastError() };
+            if error == windows_sys::Win32::Foundation::ERROR_NO_DATA {
+                // A client connected and was gone again before this call, which a thread that is slow to run does
+                // on a loaded host (about one run in 300 of a row that hurries a client through the pipe, under
+                // twelve busy processes). The instance is free for the next client once it is disconnected; this
+                // thread used to end here, and no later client was ever seen to leave.
+                shared
+                    .notes
+                    .lock()
+                    .unwrap()
+                    .push("a client came and left before the thread listened".into());
+                shared.left.fetch_add(1, Ordering::SeqCst);
+                unsafe { DisconnectNamedPipe(pipe.0) };
+                continue;
+            }
+            if error != windows_sys::Win32::Foundation::ERROR_PIPE_CONNECTED {
+                shared
+                    .notes
+                    .lock()
+                    .unwrap()
+                    .push(format!("connect failed with error {error}"));
+                break;
+            }
         }
         if shared.stop.load(Ordering::SeqCst) {
             break;
         }
+        shared.notes.lock().unwrap().push("client connected".into());
         converse(&pipe, shared);
+        shared.notes.lock().unwrap().push("client left".into());
         shared.left.fetch_add(1, Ordering::SeqCst);
         unsafe { DisconnectNamedPipe(pipe.0) };
     }
@@ -270,6 +304,11 @@ fn serve(pipe: Pipe, shared: &Shared) {
 /// One client's requests, until it leaves, the agent vanishes on it, or the fixture stops.
 fn converse(pipe: &Pipe, shared: &Shared) {
     while let Some(body) = read_frame(pipe, shared) {
+        shared
+            .notes
+            .lock()
+            .unwrap()
+            .push(format!("request of kind {:?}", body.first()));
         let Some(fault) = answer(&body, shared) else {
             return;
         };
@@ -288,6 +327,7 @@ fn converse(pipe: &Pipe, shared: &Shared) {
                 write_all(pipe, rest);
             }
             Reply::Stall => {
+                shared.notes.lock().unwrap().push("stalling".into());
                 // Never answers: waits for the client to go.
                 while !shared.stop.load(Ordering::SeqCst) && available(pipe).is_ok() {
                     thread::sleep(Duration::from_millis(2));

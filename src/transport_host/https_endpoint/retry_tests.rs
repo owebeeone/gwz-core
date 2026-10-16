@@ -159,7 +159,7 @@ pub(super) fn code(message: &Envelope) -> ErrorCode {
 pub(super) async fn shut(endpoint: &mut HttpsEndpoint) {
     endpoint.shutdown();
     let mut cx = Context::from_waker(Waker::noop());
-    let until = tokio::time::Instant::now() + Duration::from_secs(5);
+    let until = tokio::time::Instant::now() + Duration::from_secs(30);
     while endpoint.pending() != 0 {
         endpoint.step(endpoint.now_ms, &mut cx).unwrap();
         while endpoint.take_outbound(&mut cx).is_some() {}

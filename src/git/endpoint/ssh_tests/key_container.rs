@@ -20,7 +20,7 @@ use std::{
 };
 
 fn finish<T: Send + 'static>(job: &mut Job<T>) -> io::Result<T> {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = Instant::now() + Duration::from_secs(30);
     loop {
         if let Poll::Ready(result) = job.poll_result(&mut Context::from_waker(Waker::noop())) {
             return result;
@@ -32,7 +32,7 @@ fn finish<T: Send + 'static>(job: &mut Job<T>) -> io::Result<T> {
 
 fn check(text: String) -> io::Result<()> {
     let mut job = Job::start_isolated(
-        Some(Instant::now() + Duration::from_secs(2)),
+        Some(Instant::now() + Duration::from_secs(30)),
         Duration::from_secs(1),
         move |control| ssh_key_container::check(&text, &control),
     )?;
@@ -215,7 +215,7 @@ fn cancellation_is_observed_while_scanning_bounded_chunks() {
         ssh_key_container::check(&text, &control)
     })
     .unwrap();
-    seen.recv_timeout(Duration::from_secs(1)).unwrap();
+    seen.recv_timeout(Duration::from_secs(30)).unwrap();
     job.cancel();
     assert_eq!(
         finish(&mut job).unwrap_err().kind(),
@@ -247,7 +247,7 @@ fn checked_scan_observes_cancellation_after_first_chunk() {
         result.map(|_| ())
     })
     .unwrap();
-    reached.recv_timeout(Duration::from_secs(1)).unwrap();
+    reached.recv_timeout(Duration::from_secs(30)).unwrap();
     job.cancel();
     release.send(()).unwrap();
     assert_eq!(

@@ -118,12 +118,12 @@ fn configured_stall_reaches_native_handshake_through_the_endpoint() {
     let (release_tx, release_rx) = mpsc::channel();
     let server = std::thread::spawn(move || {
         listener.set_nonblocking(true).unwrap();
-        let until = Instant::now() + Duration::from_secs(3);
+        let until = Instant::now() + Duration::from_secs(30);
         loop {
             match listener.accept() {
                 Ok((socket, _)) => {
                     accepted_tx.send(()).unwrap();
-                    let _ = release_rx.recv_timeout(Duration::from_secs(3));
+                    let _ = release_rx.recv_timeout(Duration::from_secs(30));
                     drop(socket);
                     return;
                 }
@@ -156,7 +156,7 @@ fn configured_stall_reaches_native_handshake_through_the_endpoint() {
     )
     .err()
     .expect("stalled native handshake must fail");
-    accepted_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+    accepted_rx.recv_timeout(Duration::from_secs(30)).unwrap();
     assert_eq!(
         failure(&error).setup_cause,
         Some(SetupFailureCause::Stall),
@@ -169,7 +169,7 @@ fn configured_stall_reaches_native_handshake_through_the_endpoint() {
 }
 pub(super) fn finish(e: &Endpoint) {
     e.shutdown();
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = Instant::now() + Duration::from_secs(30);
     while !e.shutdown_status().cleanup_complete {
         assert!(Instant::now() < until);
         std::thread::sleep(Duration::from_millis(1));

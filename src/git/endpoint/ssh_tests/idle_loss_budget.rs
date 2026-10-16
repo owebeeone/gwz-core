@@ -93,7 +93,7 @@ fn fresh_retry(retries: DialRetries) {
         opened
     };
     assert!(!exchange().reused);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while endpoint.pool().counts().idle != 1 {
         assert!(
             Instant::now() < deadline,
@@ -110,7 +110,7 @@ fn fresh_retry(retries: DialRetries) {
         [1, 1],
         "each setup held one place, the retry's not added to the dead session's"
     );
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while supervisor.taken() != 0 {
         assert!(
             Instant::now() < deadline,

@@ -93,7 +93,7 @@ fn a_discarded_release_on_an_otherwise_idle_worker_is_disposed_of_within_millise
     let began = Instant::now();
     while endpoint.pool().counts().total() != 0 {
         assert!(
-            began.elapsed() < Duration::from_secs(5),
+            began.elapsed() < Duration::from_secs(30),
             "the discarded session was never disposed of"
         );
         thread::sleep(Duration::from_millis(1));

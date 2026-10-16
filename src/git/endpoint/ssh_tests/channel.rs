@@ -69,7 +69,7 @@ fn upload_pack_advertisement_and_abort_keep_cleanup_explicit() {
 
 /// Writes the client's whole request and its EOF, reading nothing.
 fn send_request_and_eof(channel: &mut SshChannel) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut written = 0;
     while written < 4 {
         match channel.write(&b"0000"[written..]) {
@@ -93,7 +93,7 @@ fn send_request_and_eof(channel: &mut SshChannel) {
 /// Closes early until the server's CHANNEL_CLOSE has arrived. The status is
 /// the server's, which a client's close may have stopped: it is not checked.
 fn finish_early(channel: &mut SshChannel) -> i32 {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         match channel.finish_early() {
             Ok(status) => return status,
@@ -159,7 +159,7 @@ fn disposing_a_closing_channel_does_not_wait_for_the_server() {
     let mut channel = SshChannel::new(session, GitService::ReceivePack, &repository).unwrap();
     open(&mut channel);
     send_request_and_eof(&mut channel);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut stdout = [0_u8; 4096];
     let (mut stdout_eof, mut stderr_eof) = (false, false);
     while !(stdout_eof && stderr_eof) {

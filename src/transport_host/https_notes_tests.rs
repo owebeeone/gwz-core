@@ -71,7 +71,7 @@ fn a_host_that_asks_for_a_wait_is_noted_once_to_the_reader_the_command_gave() {
         .unwrap();
         assert!(refs.iter().any(|r| r.target == commit.to_string()));
         let begun = std::time::Instant::now();
-        while lines.lock().unwrap().is_empty() && begun.elapsed() < Duration::from_secs(5) {
+        while lines.lock().unwrap().is_empty() && begun.elapsed() < Duration::from_secs(30) {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert_eq!(

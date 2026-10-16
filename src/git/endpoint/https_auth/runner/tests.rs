@@ -109,7 +109,7 @@ async fn completed_native_child_and_ready_timeout_or_cancel_never_admit_answer()
             work.as_mut().poll(&mut Context::from_waker(&waker)),
             Poll::Pending
         ));
-        let until = Instant::now() + Duration::from_secs(1);
+        let until = Instant::now() + Duration::from_secs(30);
         while !marker.exists() {
             assert!(Instant::now() < until);
             tokio::time::sleep(Duration::from_millis(1)).await;
@@ -128,7 +128,7 @@ async fn completed_native_child_and_ready_timeout_or_cancel_never_admit_answer()
         ));
         assert_eq!(
             owner
-                .reap_pending(Instant::now() + Duration::from_secs(1))
+                .reap_pending(Instant::now() + Duration::from_secs(30))
                 .await,
             0
         );
@@ -236,7 +236,7 @@ async fn completed_leader_boundary(boundary: Boundary) {
     assert!(expected, "boundary outcome");
     assert_eq!(
         owner
-            .reap_pending(Instant::now() + Duration::from_secs(1))
+            .reap_pending(Instant::now() + Duration::from_secs(30))
             .await,
         0
     );

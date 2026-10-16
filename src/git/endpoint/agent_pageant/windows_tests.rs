@@ -225,8 +225,11 @@ fn with_the_stall_off_the_send_still_has_a_finite_nonzero_bound() {
         .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     assert!(timeout_reason(&error).is_none());
+    // The wait is the system timer's, in whole milliseconds, and `Instant` is the performance counter: a timer that
+    // fires on its tick can read 0.3 ms short of the cap (299.7 ms of 300 on dabeest), so the lower bound allows a tick.
     assert!(
-        begun.elapsed() >= cap && begun.elapsed() < Duration::from_millis(1800),
+        begun.elapsed() + Duration::from_millis(16) >= cap
+            && begun.elapsed() < Duration::from_millis(1800),
         "{:?}",
         begun.elapsed()
     );
@@ -242,7 +245,7 @@ fn a_cancel_returns_at_once_while_the_blocked_send_retires() {
         Agent::new(channel, control).identities()
     })
     .unwrap();
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = Instant::now() + Duration::from_secs(30);
     while pageant.seen().is_empty() {
         assert!(
             Instant::now() < until,

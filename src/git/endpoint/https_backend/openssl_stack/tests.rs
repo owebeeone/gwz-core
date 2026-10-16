@@ -677,10 +677,10 @@ async fn early_response<S: AsyncRead + AsyncWrite + Unpin>(tls: S) {
         head
     };
     let head = tokio::select! {
-        head = tokio::time::timeout(Duration::from_secs(2), read) => head,
+        head = tokio::time::timeout(Duration::from_secs(20), read) => head,
         _ = write => unreachable!(),
     };
-    let head = head.expect("the response head did not arrive within 2 s");
+    let head = head.expect("the response head did not arrive within 20 s");
     assert!(head.starts_with(b"HTTP/1.1 413"), "{head:?}");
 }
 

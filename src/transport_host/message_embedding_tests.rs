@@ -199,7 +199,7 @@ impl Link {
     }
     pub(super) fn hold(&self) {
         self.pause.store(true, Ordering::Release);
-        let until = Instant::now() + Duration::from_secs(3);
+        let until = Instant::now() + Duration::from_secs(30);
         while !self.paused.load(Ordering::Acquire) {
             assert!(Instant::now() < until);
             thread::sleep(Duration::from_millis(1));

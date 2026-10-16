@@ -149,7 +149,7 @@ fn cancelled_opened_waiting_for_mux_capacity_is_replaced_before_handoff() {
             endpoint.accept(target.into(), target_action).unwrap();
 
             let mut cx = Context::from_waker(Waker::noop());
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
             let pending_opened = loop {
                 endpoint.step(0, &mut cx).unwrap();
                 if let Some(outbound) = endpoint.take_outbound(&mut cx) {
@@ -219,7 +219,7 @@ fn cancelled_opened_waiting_for_mux_capacity_is_replaced_before_handoff() {
             assert!(mux_endpoint.next_message().is_none());
 
             endpoint.shutdown();
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
             while endpoint.pending() != 0 {
                 endpoint.step(0, &mut cx).unwrap();
                 assert!(tokio::time::Instant::now() < deadline);
@@ -381,7 +381,7 @@ async fn native_publication_case(delay_collection: bool, backpressure: bool, exp
     endpoint.step(0, &mut cx).unwrap();
     assert_eq!(authority.counts(destination.host()), (1, 1));
     drop(connection);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     while endpoint.pending() != 0 {
         endpoint.step(0, &mut cx).unwrap();
         assert!(
@@ -600,7 +600,7 @@ async fn session_publication_case(in_lock: fn(tokio::time::Instant) -> tokio::ti
         );
         // That terminal is the stream's only one: its entry retires and the
         // pump runs on with nothing more to publish.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         while !endpoint.with_https_for_test(|https| https.entries.is_empty()) {
             assert!(tokio::time::Instant::now() < deadline);
             tokio::time::sleep(Duration::from_millis(2)).await;
@@ -619,7 +619,7 @@ async fn session_publication_case(in_lock: fn(tokio::time::Instant) -> tokio::ti
     endpoint.close();
     assert_eq!(authority.counts(destination.host()), (1, 1));
     drop(connection);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
     while authority.counts(destination.host()) != (0, 0) {
         assert!(
             tokio::time::Instant::now() < deadline,
@@ -731,7 +731,7 @@ fn https_only_capacity_replacement_waits_for_actual_physical_disposal() {
             prepared.revoke_native_route();
             client.finish_operation("operation");
             drop(prepared);
-            let until = tokio::time::Instant::now() + Duration::from_secs(2);
+            let until = tokio::time::Instant::now() + Duration::from_secs(30);
             while endpoint.https_counts_for_test().unwrap().closing == 0 {
                 assert!(tokio::time::Instant::now() < until);
                 tokio::time::sleep(Duration::from_millis(2)).await;

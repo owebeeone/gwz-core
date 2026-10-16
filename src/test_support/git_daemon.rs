@@ -35,7 +35,7 @@ use super::git_daemon_relay::Relay;
 use super::{TempDir, fixture_port};
 
 const ATTEMPTS: usize = 5;
-const READY_WITHIN: Duration = Duration::from_secs(5);
+const READY_WITHIN: Duration = Duration::from_secs(30);
 
 /// A running `git-daemon` on a loopback port, killed and reaped on drop.
 pub(crate) struct GitDaemon {

@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 fn finish<T: Send + 'static>(job: &mut Job<T>) -> io::Result<T> {
-    let limit = Instant::now() + Duration::from_secs(5);
+    let limit = Instant::now() + Duration::from_secs(30);
     loop {
         if let Poll::Ready(result) = job.poll_result(&mut Context::from_waker(Waker::noop())) {
             return result;
@@ -167,7 +167,7 @@ fn cancellation_discards_late_success_and_disposal_requires_join() {
         Ok(Owned(observed))
     })
     .unwrap();
-    running.recv_timeout(Duration::from_secs(3)).unwrap();
+    running.recv_timeout(Duration::from_secs(30)).unwrap();
     job.cancel();
     job.cancel();
     std::thread::sleep(Duration::from_millis(30));
@@ -222,7 +222,7 @@ fn cleanup_deadline_wakes_a_pending_disposal_waiter() {
         Ok(())
     })
     .unwrap();
-    running.recv_timeout(Duration::from_secs(3)).unwrap();
+    running.recv_timeout(Duration::from_secs(30)).unwrap();
     let waker = Waker::from(wakes.clone());
     assert!(
         job.poll_disposed(&mut Context::from_waker(&waker))
@@ -293,7 +293,7 @@ cfg_if::cfg_if! {
                         let read = socket.read(&mut [0]); assert!(super::super::agent_fixture::reads_closed(&read), "helper must close agent handle: {read:?}");
                     });
                     let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| agent_socket::connect(&path, control)?.identities()).unwrap();
-                    seen.recv_timeout(Duration::from_secs(3)).unwrap(); job.cancel();
+                    seen.recv_timeout(Duration::from_secs(30)).unwrap(); job.cancel();
                     assert_eq!(finish(&mut job).unwrap_err().kind(), io::ErrorKind::ConnectionAborted);
                     peer.join().unwrap();
                     assert!(matches!(job.poll_disposed(&mut Context::from_waker(Waker::noop())), Poll::Ready(Ok(()))));
@@ -393,7 +393,7 @@ fn stalled_partial_request_write_is_cancelled_without_replay() {
         Agent::new(Blocked { accepted: count }, control).identities()
     })
     .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while accepted.load(Ordering::SeqCst) == 0 {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(1));
@@ -540,12 +540,12 @@ fn cancellation_at_publication_and_join_discards_once_but_claim_transfers_owner(
                 Ok(std::thread::spawn(move || {
                     body(); // result published, but this thread cannot exit until released
                     published.send(()).unwrap();
-                    allow_exit.recv_timeout(Duration::from_secs(3)).unwrap();
+                    allow_exit.recv_timeout(Duration::from_secs(30)).unwrap();
                 }))
             },
         )
         .unwrap();
-        publication.recv_timeout(Duration::from_secs(3)).unwrap();
+        publication.recv_timeout(Duration::from_secs(30)).unwrap();
         let (wake, joined) = std::sync::mpsc::channel();
         let waker = Waker::from(Arc::new(Notice(wake)));
         assert!(
@@ -555,7 +555,7 @@ fn cancellation_at_publication_and_join_discards_once_but_claim_transfers_owner(
         if after_join {
             exit.send(()).unwrap();
             // No deadline/cancellation is set, so this wake can only follow join.
-            joined.recv_timeout(Duration::from_secs(3)).unwrap();
+            joined.recv_timeout(Duration::from_secs(30)).unwrap();
         }
         assert_eq!(dropped.load(Ordering::SeqCst), 0);
         job.cancel();

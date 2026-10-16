@@ -40,7 +40,7 @@ cfg_if::cfg_if! { if #[cfg(test)] {
                 assert_eq!(endpoint.client.native_cleanup.lock().unwrap().records.len(), 1);
                     port.cleanup.store(2, Ordering::Release);
                 }
-                let until = Instant::now() + Duration::from_secs(1);
+                let until = Instant::now() + Duration::from_secs(30);
                 while endpoint.client.pending_cleanup() != 0 {
                     assert!(Instant::now() < until, "physical and native cleanup must settle");
                     tokio::time::sleep(Duration::from_millis(1)).await;

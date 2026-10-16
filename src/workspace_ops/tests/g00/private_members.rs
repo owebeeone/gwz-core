@@ -29,7 +29,7 @@ impl RefusingServer {
                         // applies only to a blocking stream.
                         stream.set_nonblocking(false).unwrap();
                         stream
-                            .set_read_timeout(Some(Duration::from_secs(2)))
+                            .set_read_timeout(Some(Duration::from_secs(30)))
                             .unwrap();
                         // TCP may split one request across reads. Closing with
                         // unread request bytes can reset the connection before

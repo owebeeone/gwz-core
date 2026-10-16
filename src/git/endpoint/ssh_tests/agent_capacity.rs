@@ -54,7 +54,7 @@ fn capacity_counts_abandoned_helpers_until_join_and_disposal() {
                 },
             )
             .unwrap();
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let deadline = Instant::now() + Duration::from_secs(30);
             loop {
                 if let std::task::Poll::Ready(result) =
                     job.poll_result(&mut std::task::Context::from_waker(std::task::Waker::noop()))
@@ -95,7 +95,7 @@ fn capacity_counts_abandoned_helpers_until_join_and_disposal() {
         let gate = gate.clone();
         let disposed = disposed.clone();
         let started = started.clone();
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             let gate = gate.clone();
             let disposed = disposed.clone();
@@ -122,7 +122,7 @@ fn capacity_counts_abandoned_helpers_until_join_and_disposal() {
         }
     }
     for _ in 0..64 {
-        running.recv_timeout(Duration::from_secs(3)).unwrap();
+        running.recv_timeout(Duration::from_secs(30)).unwrap();
     }
     let full = || {
         assert!(
@@ -138,7 +138,7 @@ fn capacity_counts_abandoned_helpers_until_join_and_disposal() {
     }));
     *gate.0.lock().unwrap() = true;
     gate.1.notify_all();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while disposed.load(Ordering::SeqCst) != 64 {
         assert!(
             Instant::now() < deadline,

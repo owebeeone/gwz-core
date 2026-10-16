@@ -67,7 +67,7 @@ impl Fake {
 
     /// Waits until `count` sends have returned.
     fn wait_returned(&self, count: usize) {
-        let until = Instant::now() + Duration::from_secs(5);
+        let until = Instant::now() + Duration::from_secs(30);
         while self.returned() < count {
             assert!(Instant::now() < until, "the send never returned");
             thread::sleep(Duration::from_millis(2));
@@ -335,10 +335,10 @@ fn a_cancel_returns_at_once_while_the_blocked_request_retires() {
         agent(&held, CAP, &control).identities()
     })
     .unwrap();
-    entered.recv_timeout(Duration::from_secs(5)).unwrap();
+    entered.recv_timeout(Duration::from_secs(30)).unwrap();
     let begun = Instant::now();
     job.cancel();
-    let result = poll(&mut job, Duration::from_secs(2)).expect("the cancel returns");
+    let result = poll(&mut job, Duration::from_secs(30)).expect("the cancel returns");
     assert_eq!(result.unwrap_err().kind(), io::ErrorKind::ConnectionAborted);
     assert!(begun.elapsed() < Duration::from_millis(500));
     // The request is still blocked, and ends on its own once Pageant lets it go.

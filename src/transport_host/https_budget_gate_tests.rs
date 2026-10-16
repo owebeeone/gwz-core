@@ -116,10 +116,10 @@ fn route_wait_reduces_first_open_allocation_budget_and_second_stage_times_out() 
             first_owner,
             observed.clone(),
         );
-        tokio::time::timeout(Duration::from_secs(2), first_entered.notified())
+        tokio::time::timeout(Duration::from_secs(30), first_entered.notified())
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(2), first_attempt.notified())
+        tokio::time::timeout(Duration::from_secs(30), first_attempt.notified())
             .await
             .unwrap();
         let second = open_for_test(
@@ -130,14 +130,14 @@ fn route_wait_reduces_first_open_allocation_budget_and_second_stage_times_out() 
             second_owner.clone(),
             observed.clone(),
         );
-        tokio::time::timeout(Duration::from_secs(2), second_attempt.notified())
+        tokio::time::timeout(Duration::from_secs(30), second_attempt.notified())
             .await
             .unwrap();
         let started = std::time::Instant::now();
         tokio::time::sleep(Duration::from_millis(600)).await;
         release_first.notify_one();
         let first_stream = first.await.unwrap().unwrap();
-        tokio::time::timeout(Duration::from_secs(2), second_owner.notified())
+        tokio::time::timeout(Duration::from_secs(30), second_owner.notified())
             .await
             .unwrap();
         let result = second.await.unwrap();
@@ -224,7 +224,7 @@ fn exhausted_route_budget_sends_no_second_open() {
             first_owner,
             observed.clone(),
         );
-        tokio::time::timeout(Duration::from_secs(2), first_entered.notified())
+        tokio::time::timeout(Duration::from_secs(30), first_entered.notified())
             .await
             .unwrap();
         let second = open_for_test(
@@ -235,7 +235,7 @@ fn exhausted_route_budget_sends_no_second_open() {
             second_owner,
             observed.clone(),
         );
-        tokio::time::timeout(Duration::from_secs(2), second_attempt.notified())
+        tokio::time::timeout(Duration::from_secs(30), second_attempt.notified())
             .await
             .unwrap();
         let result = tokio::time::timeout(Duration::from_millis(300), second)

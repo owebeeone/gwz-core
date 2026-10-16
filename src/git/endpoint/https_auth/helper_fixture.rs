@@ -20,7 +20,7 @@ pub(super) enum Behavior {
     Answer,
     /// Starts a background descendant that keeps the helper's output pipes, and exits at once.
     ExitsLeavingDescendantOnOutput,
-    /// Starts a background descendant that keeps the helper's output pipes, and then runs for a long time.
+    /// Starts a background descendant that keeps the helper's output pipes, and then runs for a long time (an hour).
     RunsWithDescendantOnOutput,
     /// Starts a background descendant with no pipes of its own, prints a credential and exits.
     AnswersLeavingDetachedDescendant,
@@ -29,7 +29,8 @@ pub(super) enum Behavior {
     AnswersLeavingSurvivorOnStderr,
     /// Prints a credential, then creates the marker file and exits.
     AnswersAndMarks,
-    /// Runs for a long time and never reads its input.
+    /// Runs for a long time (an hour, well above every wait of a row: a row that waits for it to be killed must not be
+    /// able to pass by its ending on its own) and never reads its input.
     Hangs,
     /// Runs for a moment (about a tenth of a second on Unix, about a second on Windows, where the shortest wait a batch
     /// file has is one) and exits with no answer.
@@ -115,12 +116,17 @@ impl Fixture {
         assert_eq!(self.heartbeats(), length, "{message}");
     }
 
-    /// Asserts that the descendant is still running: the heartbeat grows.
+    /// Asserts that the descendant is still running: the heartbeat grows. The growth is waited for, as a readiness
+    /// wait and not a speed claim: a batch loop on a loaded Windows runner can go unscheduled for longer than any
+    /// fixed window, and a dead descendant still fails, at the bound.
     pub(super) async fn assert_alive(&self, message: &str) {
         sleep(CLEANUP_GRACE).await;
         let length = self.heartbeats();
-        sleep(Duration::from_millis(300)).await;
-        assert!(self.heartbeats() > length, "{message}");
+        let until = Instant::now() + Duration::from_secs(20);
+        while self.heartbeats() <= length {
+            assert!(Instant::now() < until, "{message}");
+            sleep(Duration::from_millis(5)).await;
+        }
     }
 }
 
@@ -171,7 +177,7 @@ cfg_if::cfg_if! {
             let body = match behavior {
                 Behavior::Answer => "printf 'username=alice\\npassword=token\\n'".to_string(),
                 Behavior::ExitsLeavingDescendantOnOutput => format!("{LOOP} &\nexit 0"),
-                Behavior::RunsWithDescendantOnOutput => format!("{LOOP} &\n/bin/sleep 30"),
+                Behavior::RunsWithDescendantOnOutput => format!("{LOOP} &\n/bin/sleep 3600"),
                 Behavior::AnswersLeavingDetachedDescendant => format!(
                     "{LOOP} 0</dev/null 1>/dev/null 2>/dev/null &\nprintf 'username=alice\\npassword=token\\n'\nexit 0"
                 ),
@@ -181,7 +187,7 @@ cfg_if::cfg_if! {
                 Behavior::AnswersAndMarks => {
                     "printf 'username=alice\\npassword=token\\n'\nexec 1>&-\nprintf x > \"$MARKER\"\nexit 0".to_string()
                 }
-                Behavior::Hangs => "/bin/sleep 30".to_string(),
+                Behavior::Hangs => "/bin/sleep 3600".to_string(),
                 Behavior::EndsSoon => "/bin/sleep 0.1".to_string(),
                 Behavior::FloodsDiagnosticsThenAnswers => {
                     "/usr/bin/head -c 40000 /dev/zero >&2\nprintf 'username=alice\\npassword=token\\n'".to_string()
@@ -222,13 +228,13 @@ cfg_if::cfg_if! {
             let body = match behavior {
                 Behavior::Answer => ANSWER.to_string(),
                 Behavior::ExitsLeavingDescendantOnOutput => format!("{start}\r\nexit /b 0\r\n"),
-                Behavior::RunsWithDescendantOnOutput => format!("{start}\r\nping -n 30 127.0.0.1 >nul\r\n"),
+                Behavior::RunsWithDescendantOnOutput => format!("{start}\r\nping -n 3600 127.0.0.1 >nul\r\n"),
                 Behavior::AnswersLeavingDetachedDescendant => format!("{}{ANSWER}exit /b 0\r\n", role::start(role::DETACHED)),
                 Behavior::AnswersLeavingSurvivorOnStderr => format!("{}{ANSWER}exit /b 0\r\n", role::start(role::SURVIVOR)),
                 Behavior::AnswersAndMarks => {
                     format!("{ANSWER}echo x> \"%MARKER%\"\r\nexit /b 0\r\n")
                 }
-                Behavior::Hangs => "ping -n 30 127.0.0.1 >nul\r\n".to_string(),
+                Behavior::Hangs => "ping -n 3600 127.0.0.1 >nul\r\n".to_string(),
                 Behavior::EndsSoon => "ping -n 2 127.0.0.1 >nul\r\n".to_string(),
                 Behavior::FloodsDiagnosticsThenAnswers => format!(
                     "for /l %%i in (1,1,400) do echo 0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789>&2\r\n{ANSWER}"

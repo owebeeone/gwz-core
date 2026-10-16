@@ -109,7 +109,8 @@ fn dropping_the_relay_ends_a_connection_held_open() {
     let (_accepted, _) = listener.accept().unwrap();
     drop(relay);
 
-    held.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    held.set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
     let ended = held.read_to_end(&mut Vec::new());
     // An end of stream or a reset, not a timeout: the held connection did not outlive its relay.
     assert!(

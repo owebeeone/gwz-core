@@ -117,7 +117,7 @@ fn queued_expiry_releases_admission_without_stopping_worker() {
     });
     let check_expired = |result: Receiver<OpenOutcome>| {
         let error = result
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(Duration::from_secs(30))
             .unwrap()
             .err()
             .unwrap();
@@ -139,7 +139,7 @@ fn queued_expiry_releases_admission_without_stopping_worker() {
         let next = enqueue(None, false);
         join.thread().unpark();
         let error = next
-            .recv_timeout(Duration::from_secs(5))
+            .recv_timeout(Duration::from_secs(30))
             .unwrap()
             .err()
             .unwrap();
@@ -265,7 +265,7 @@ fn an_open_cancelled_while_connecting_fails_cancelled_whichever_pass_sees_it() {
             &Status::default(),
         )
     });
-    let outcome = result.recv_timeout(Duration::from_secs(5));
+    let outcome = result.recv_timeout(Duration::from_secs(30));
     stop.store(true, Ordering::Release);
     join.thread().unpark();
     join.join().unwrap();
@@ -344,7 +344,7 @@ fn the_worker_wakes_its_watcher_when_its_shutdown_has_settled() {
     endpoint.watch_shutdown(&Waker::from(wakes.clone()));
     let status = endpoint.shutdown_watch();
     endpoint.shutdown();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while wakes.0.load(Ordering::SeqCst) == 0 {
         assert!(
             Instant::now() < deadline,

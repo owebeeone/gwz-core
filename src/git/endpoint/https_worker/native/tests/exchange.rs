@@ -21,7 +21,7 @@ cfg_if::cfg_if! { if #[cfg(test)] {
     fn production_round_cap_and_http_allowance_do_not_reset_native_deadline() {
         tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
             use crate::git::endpoint::https_fixture::{Server, input, response};
-            for (io, delay, expected) in [(9000, 0, ErrorCode::Protocol), (60, 40, ErrorCode::Timeout)] {
+            for (io, delay, expected) in [(9000, 0, ErrorCode::Protocol), (600, 400, ErrorCode::Timeout)] {
                 let server = Server::start(Arc::new(move |request| Box::pin(async move {
                     tokio::time::sleep(Duration::from_millis(delay)).await;
                     let mut result = response(401, GitService::UploadPackAdvertisement, Bytes::new());

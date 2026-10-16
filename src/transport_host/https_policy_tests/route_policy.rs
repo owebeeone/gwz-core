@@ -57,7 +57,7 @@ fn concurrent_same_route_auth_transitions_do_not_interleave() {
                 .unwrap()
         };
         let a = tokio::task::spawn_blocking(open.clone());
-        tokio::time::timeout(Duration::from_secs(2), first.notified())
+        tokio::time::timeout(Duration::from_secs(30), first.notified())
             .await
             .unwrap();
         let b = tokio::task::spawn_blocking(open);

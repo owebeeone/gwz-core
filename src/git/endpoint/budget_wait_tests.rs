@@ -35,7 +35,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const PATIENCE: Duration = Duration::from_secs(5);
+const PATIENCE: Duration = Duration::from_secs(30);
 
 /// Counts its setups and refuses each one, with no thread and no job.
 struct Counted(Arc<AtomicUsize>);

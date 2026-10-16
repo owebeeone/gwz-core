@@ -76,7 +76,7 @@ pub(super) async fn lookup(config: &Config) -> Result<Secret, AuthError> {
         &AuthOwner::new(HelperSlots::new()),
         config,
         &Destination::parse("https://example.test/repo").unwrap(),
-        Instant::now() + Duration::from_secs(5),
+        Instant::now() + Duration::from_secs(30),
         &CancellationToken::new(),
     )
     .await
@@ -182,7 +182,7 @@ async fn native_view_keeps_null_empty_escapes_bytes_and_repeated_scope_occurrenc
     ]);
     let parts = Parts::new().await;
     let executable = git();
-    let runner = parts.runner(&config, &executable, 5);
+    let runner = parts.runner(&config, &executable, 30);
     let params = prepare(&runner, b"https://example.test/repo")
         .await
         .unwrap()
@@ -516,7 +516,7 @@ async fn controlled_stdin_parse_does_not_preread_a_special_file_and_core_refuses
     let config = config(home.path(), &global);
     let parts = Parts::new().await;
     let executable = git();
-    let runner = parts.runner(&config, &executable, 2);
+    let runner = parts.runner(&config, &executable, 30);
     let raw = runner
         .run(
             &["config", "--no-includes", "--null", "--file", "-", "--list"],

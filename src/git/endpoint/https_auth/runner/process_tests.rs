@@ -49,7 +49,7 @@ fn runner<'a>(
 /// lookup runs before it asks for a slot, must be enough once the tree is gone; `reap_pending` then has nothing
 /// left to join.
 async fn assert_reaped(owner: &AuthOwner) {
-    let until = Instant::now() + Duration::from_secs(5);
+    let until = Instant::now() + Duration::from_secs(30);
     while owner.pending_cleanup_count() > 0 {
         assert!(
             Instant::now() < until,
@@ -61,7 +61,7 @@ async fn assert_reaped(owner: &AuthOwner) {
     assert_eq!(owner.inner.helper_slots.available(), 8);
     assert_eq!(
         owner
-            .reap_pending(Instant::now() + Duration::from_secs(2))
+            .reap_pending(Instant::now() + Duration::from_secs(30))
             .await,
         0
     );
@@ -79,7 +79,9 @@ async fn timeout_kills_descendants_even_after_the_helper_exited_with_stdout_open
         &fixture.config,
         &cancelled,
         permits(&owner).await,
-        Instant::now() + Duration::from_millis(1500),
+        // Long enough for the descendant to start on a loaded Windows runner, where starting an MSYS shell can take
+        // more than a second (the same bound as the lookup of `runner_tests`' sibling row, CI run 38793264504).
+        Instant::now() + Duration::from_secs(10),
     );
     let result = runner
         .run(&fixture.argv(), &[], None, OUTPUT_LIMIT, false)

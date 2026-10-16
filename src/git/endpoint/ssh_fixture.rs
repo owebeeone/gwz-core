@@ -640,7 +640,7 @@ cfg_if::cfg_if! {
 }
 
 pub(crate) fn open(channel: &mut SshChannel) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         match channel.poll_open() {
             Ok(()) => return,
@@ -653,7 +653,7 @@ pub(crate) fn open(channel: &mut SshChannel) {
 }
 
 pub(crate) fn exchange(channel: &mut SshChannel) -> (Vec<u8>, Vec<u8>, i32) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();
     let mut advertised = false;

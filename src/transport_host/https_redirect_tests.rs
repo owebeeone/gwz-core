@@ -168,7 +168,7 @@ fn concurrent_members_each_get_their_own_redirect_refusal_and_an_unrelated_failu
                 // together before any member words its failure.
                 seen.fetch_add(1, Ordering::SeqCst);
                 let begun = std::time::Instant::now();
-                while seen.load(Ordering::SeqCst) < 3 && begun.elapsed() < Duration::from_secs(5) {
+                while seen.load(Ordering::SeqCst) < 3 && begun.elapsed() < Duration::from_secs(30) {
                     tokio::time::sleep(Duration::from_millis(5)).await;
                 }
                 let target = match request.uri().path().split('/').nth(1) {
@@ -293,7 +293,7 @@ fn a_followed_redirect_is_told_to_the_reader_as_detail_and_only_to_a_reader_that
             let begun = std::time::Instant::now();
             while detail
                 && lines.lock().unwrap().is_empty()
-                && begun.elapsed() < Duration::from_secs(5)
+                && begun.elapsed() < Duration::from_secs(30)
             {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }

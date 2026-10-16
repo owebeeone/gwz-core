@@ -85,7 +85,7 @@ fn fresh_network_setup_authenticates_and_reuses_in_the_shared_pool() {
         stream.close().unwrap();
     }
     endpoint.shutdown();
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + Duration::from_secs(30);
     while !endpoint.shutdown_status().cleanup_complete {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(1));
@@ -110,7 +110,7 @@ fn terminal_authentication_failure_never_tries_another_address() {
     let text = fs::read_to_string(&known).unwrap();
     let path = fixture.path.clone();
     let mut job = Job::start_isolated(
-        Some(Instant::now() + Duration::from_secs(3)),
+        Some(Instant::now() + Duration::from_secs(30)),
         Duration::from_secs(1),
         move |c| {
             let (connection, host) = ssh_network::establish_with(

@@ -90,7 +90,7 @@ printf 'username=alice\\npassword=token\\n'");
         &AuthOwner::new(HelperSlots::new()),
         &config,
         &Destination::parse("https://example.com/repo%20name").unwrap(),
-        Instant::now() + Duration::from_secs(3),
+        Instant::now() + Duration::from_secs(30),
         &CancellationToken::new(),
     )
     .await
@@ -122,7 +122,9 @@ async fn occupied_host_slot_waits_for_release_instead_of_failing_capacity() {
             &owner,
             &config,
             &destination,
-            started + Duration::from_secs(1),
+            // The slot is released after 30 ms; this bound is how long the helper, once admitted, may take to
+            // start and answer, a readiness wait on a loaded runner and not a speed claim.
+            started + Duration::from_secs(30),
             &cancelled
         ),
         release,
@@ -175,7 +177,7 @@ async fn globally_matching_conditional_include_does_not_replace_unconditional_he
         &AuthOwner::new(HelperSlots::new()),
         &config,
         &Destination::parse("https://example.com/repo").unwrap(),
-        Instant::now() + Duration::from_secs(3),
+        Instant::now() + Duration::from_secs(30),
         &CancellationToken::new(),
     )
     .await
@@ -270,8 +272,9 @@ exit 0",
         &config,
         &Destination::parse("https://example.com/repo").unwrap(),
         // Long enough for the descendant to start on a loaded Windows runner, where starting an MSYS shell can take
-        // more than a second (CI run 38793264504 timed out before the heartbeat file existed at 1.5 s).
-        Instant::now() + Duration::from_secs(4),
+        // more than a second (CI run 38793264504 timed out before the heartbeat file existed at 1.5 s; 4 s did not
+        // hold on dabeest under 48 busy processes, where it took longer than that).
+        Instant::now() + Duration::from_secs(10),
         &CancellationToken::new(),
     )
     .await;
@@ -293,7 +296,7 @@ exit 0",
     );
     assert_eq!(
         owner
-            .reap_pending(Instant::now() + Duration::from_secs(1))
+            .reap_pending(Instant::now() + Duration::from_secs(30))
             .await,
         0
     );
@@ -310,7 +313,7 @@ printf 'username=alice\\npassword=token\\n'",
         &AuthOwner::new(HelperSlots::new()),
         &config,
         &Destination::parse("https://example.com/repo").unwrap(),
-        Instant::now() + Duration::from_secs(3),
+        Instant::now() + Duration::from_secs(30),
         &CancellationToken::new(),
     )
     .await;

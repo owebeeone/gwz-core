@@ -60,7 +60,7 @@ fn a_signature_reply_in_pieces_is_assembled() {
     })
     .unwrap();
     assert_eq!(finish(&mut job).unwrap().len(), 2);
-    assert!(fixture.wait_client_closed(Duration::from_secs(3)));
+    assert!(fixture.wait_client_closed(Duration::from_secs(30)));
     fixture.script(Fault::Chunked);
     let mut job = Job::start_isolated(None, Duration::from_secs(1), move |control| {
         agent.open(control)?.sign(&key, b"data", 4)
@@ -84,7 +84,7 @@ fn stalled_agent_reply_spends_absolute_deadline() {
         io::ErrorKind::TimedOut
     );
     assert!(
-        fixture.wait_client_closed(Duration::from_secs(3)),
+        fixture.wait_client_closed(Duration::from_secs(30)),
         "the pipe must be closed once the job ends"
     );
 }
@@ -98,7 +98,7 @@ fn cancellation_interrupts_a_request_the_agent_never_answers_and_closes_the_pipe
         agent.open(control)?.sign(&key, b"data", 4)
     })
     .unwrap();
-    let until = Instant::now() + Duration::from_secs(3);
+    let until = Instant::now() + Duration::from_secs(30);
     while fixture.requests().is_empty() {
         assert!(
             Instant::now() < until,
@@ -111,7 +111,7 @@ fn cancellation_interrupts_a_request_the_agent_never_answers_and_closes_the_pipe
         finish(&mut job).unwrap_err().kind(),
         io::ErrorKind::ConnectionAborted
     );
-    assert!(fixture.wait_client_closed(Duration::from_secs(3)));
+    assert!(fixture.wait_client_closed(Duration::from_secs(30)));
     assert!(matches!(
         job.poll_disposed(&mut Context::from_waker(Waker::noop())),
         Poll::Ready(Ok(()))
@@ -188,7 +188,7 @@ fn a_cancel_mid_read_completes_before_the_storage_is_released() {
     assert!(pending, "the read must be pending while the agent stalls");
     assert_eq!(first, Retired::Observed);
     assert_eq!(second, Retired::Idle);
-    assert!(fixture.wait_client_closed(Duration::from_secs(3)));
+    assert!(fixture.wait_client_closed(Duration::from_secs(30)));
 }
 
 #[test]

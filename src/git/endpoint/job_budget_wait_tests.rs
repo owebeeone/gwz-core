@@ -368,7 +368,9 @@ fn the_end_of_a_local_wait_wakes_the_sleeping_supervisor() {
             );
             assert!(!waiting.is_finished(), "{budget:?}: a full budget leased");
             held.release();
-            let lease = tokio::time::timeout(Duration::from_secs(2), waiting)
+            // A readiness wait that stays under the 20 s at which the open's allocation would find the connection
+            // without any wake (the row's whole claim): 10 s is generous for a woken turn and still proves the wake.
+            let lease = tokio::time::timeout(Duration::from_secs(10), waiting)
                 .await
                 .unwrap_or_else(|_| panic!("{budget:?}: the end of the wait woke nothing"))
                 .unwrap()

@@ -6,7 +6,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 fn drain_until_would_block(channel: &mut SshChannel) {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut stdout_blocked = false;
     let mut stderr_blocked = false;
     let mut drained = 0usize;
@@ -55,7 +55,7 @@ fn flush_preserves_buffered_upload_pack_advertisement() {
     let repository = fixture.repository.to_str().unwrap().to_owned();
     let mut channel = SshChannel::new(session, GitService::UploadPack, &repository).unwrap();
     open(&mut channel);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let first = loop {
         let mut byte = [0; 1];
         match channel.read(&mut byte) {
@@ -80,7 +80,9 @@ fn flush_preserves_buffered_upload_pack_advertisement() {
         thread::sleep(Duration::from_millis(2));
     }
     let mut advertisement = vec![first];
-    while !advertisement.windows(4).any(|window| window == b"0000") {
+    // Until the whole advertisement has arrived. (This waited for a "0000" anywhere in it, which the all-zero object
+    // id of its first line holds, so a read that came back in pieces ended the wait before the flush packet.)
+    while advertisement.len() < expected.len() {
         let mut output = [0; 4096];
         match channel.read(&mut output) {
             Ok(0) => panic!("upload-pack ended before its advertisement flush"),
@@ -133,7 +135,7 @@ fn poll_dispose_completes_or_waits_without_releasing_session() {
     let repository = fixture.repository.to_str().unwrap().to_owned();
     let mut channel = SshChannel::new(session, GitService::ReceivePack, &repository).unwrap();
     open(&mut channel);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         match channel.poll_dispose() {
             Ok(()) => break,
