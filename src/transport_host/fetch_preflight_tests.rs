@@ -1,4 +1,5 @@
-use super::driver_tests::{CliHarness, block_on, fixture_url};
+use super::cli_driver_tests::CliHarness;
+use super::driver_tests::{block_on, fixture_url};
 use crate::RemoteSshIdentity;
 use crate::operation::NullSink;
 use crate::workspace_ops::{handle_fetch, handle_init_from_sources};

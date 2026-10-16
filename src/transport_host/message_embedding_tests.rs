@@ -1,7 +1,10 @@
 //! In-process proof using existing operation envelopes; no new wire service.
 use super::driver_tests::{block_on, common, fixture_url};
 use super::*;
-use crate::{InitFromSourcesRequest, InitFromSourcesResponse, ResponseEnvelope, ResponseMeta};
+use crate::{
+    InitFromSourcesRequest, InitFromSourcesResponse, ResponseEnvelope, ResponseMeta,
+    TransportPlacement,
+};
 use gwz_transport::protocol::MessageKind;
 use std::{
     collections::BTreeMap,

@@ -68,11 +68,7 @@ impl Session {
             }));
             entry.stream.cancel();
         }
-        for check in state.checks.values().filter(|c| c.request == request) {
-            check.result.complete(Err(protocol_failure(
-                gwz_transport::protocol::ErrorCode::Cancelled,
-            )));
-        }
+        state.checks.cancel(request);
         drop(state);
         self.event.signal();
     }

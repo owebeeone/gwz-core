@@ -30,6 +30,7 @@ use std::{
     time::Instant,
 };
 mod capacity;
+mod checks;
 mod close;
 mod driver;
 /// The missing-git message's closing hint, shared with the HTTPS twin in `request/https_failure.rs`.
@@ -48,7 +49,11 @@ const CLEANUP: Duration = Duration::from_secs(5);
 /// How long the placement thread parks when a pass moved nothing: the longest
 /// it can miss a deadline. Whatever gives a pass work wakes it before that.
 const PARK: Duration = Duration::from_millis(5);
-const CHECK_MS: u64 = 120_000;
+cfg_if::cfg_if! {
+    if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
+        const CHECK_MS: u64 = 120_000;
+    }
+}
 /// The policies a driver or endpoint with SSH and HTTPS binds.
 fn ssh_and_https_endpoint_policies() -> Vec<AuthPolicy> {
     vec![
@@ -124,10 +129,6 @@ struct Entry {
     observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
     facts: Arc<dyn Fn(&Facts) + Send + Sync>,
 }
-struct Check {
-    request: String,
-    result: Arc<Wait<Result<(), Failure>>>,
-}
 struct Registration {
     operation: Option<String>,
     sealed: Option<Instant>,
@@ -145,7 +146,7 @@ struct State {
     used: BTreeSet<String>,
     closed: bool,
     streams: BTreeMap<i64, Entry>,
-    checks: BTreeMap<i64, Check>,
+    checks: checks::CheckSlot,
     engine: Option<PlacementEndpoint>,
     https: Option<super::https_endpoint::HttpsEndpoint>,
     authority: Option<Authority>,
@@ -461,7 +462,7 @@ impl Session {
             used: BTreeSet::new(),
             closed: false,
             streams: BTreeMap::new(),
-            checks: BTreeMap::new(),
+            checks: Default::default(),
             engine: None,
             https: None,
             authority: None,
@@ -481,14 +482,18 @@ impl Session {
             machine: MachineSetting::default(),
         }
     }
-    /// A driver session. `handoff` is shared with the endpoint session its
-    /// carrier reaches in this process, if any.
-    pub(super) fn driver(
-        io_timeout_ms: u64,
-        connect_timeout_ms: u64,
-        handoff: Option<Handoff>,
-    ) -> ModelResult<(Arc<Self>, TransportPort)> {
-        Self::driver_with_ssh_budgets(io_timeout_ms, connect_timeout_ms, handoff, 30_000, 120_000)
+    cfg_if::cfg_if! {
+        if #[cfg(any(test, all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows))))] {
+            /// A driver session. `handoff` is shared with the endpoint session its
+            /// carrier reaches in this process, if any.
+            pub(super) fn driver(
+                io_timeout_ms: u64,
+                connect_timeout_ms: u64,
+                handoff: Option<Handoff>,
+            ) -> ModelResult<(Arc<Self>, TransportPort)> {
+                Self::driver_with_ssh_budgets(io_timeout_ms, connect_timeout_ms, handoff, 30_000, 120_000)
+            }
+        }
     }
     pub(super) fn driver_with_ssh_budgets(
         io_timeout_ms: u64,
@@ -511,17 +516,21 @@ impl Session {
         let session = Self::start(state)?;
         Ok((session.clone(), TransportPort(Arc::new(PortLease(session)))))
     }
-    pub(super) fn endpoint(config: SshEndpointConfig) -> ModelResult<(Arc<Self>, TransportPort)> {
-        Self::endpoint_with_https(config, None, Handoff::default())
-    }
-    /// An HTTPS endpoint takes the helper slots of the host that opens it.
-    /// `handoff` is shared with the driver session in this process, if any.
-    pub(super) fn endpoint_with_https(
-        config: SshEndpointConfig,
-        https: Option<(HttpsEndpointConfig, HelperSlots)>,
-        handoff: Handoff,
-    ) -> ModelResult<(Arc<Self>, TransportPort)> {
-        Self::endpoint_with_https_native(config.into(), https, handoff, None)
+    cfg_if::cfg_if! {
+        if #[cfg(any(test, all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows))))] {
+            pub(super) fn endpoint(config: SshEndpointConfig) -> ModelResult<(Arc<Self>, TransportPort)> {
+                Self::endpoint_with_https(config, None, Handoff::default())
+            }
+            /// An HTTPS endpoint takes the helper slots of the host that opens it.
+            /// `handoff` is shared with the driver session in this process, if any.
+            pub(super) fn endpoint_with_https(
+                config: SshEndpointConfig,
+                https: Option<(HttpsEndpointConfig, HelperSlots)>,
+                handoff: Handoff,
+            ) -> ModelResult<(Arc<Self>, TransportPort)> {
+                Self::endpoint_with_https_native(config.into(), https, handoff, None)
+            }
+        }
     }
     pub(super) fn endpoint_with_https_native(
         config: EndpointSettings,

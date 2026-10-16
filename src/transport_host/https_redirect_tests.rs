@@ -3,7 +3,7 @@
 //! the server's administrator; a followed redirect is told to the reader a command gave, as detail (`--verbose`).
 use super::https_tests::{endpoint_home, fixture, meta};
 use super::*;
-use gwz_transport::protocol::GitService;
+use gwz_transport::protocol::{AuthPolicy, GitService};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn runtime() -> tokio::runtime::Runtime {

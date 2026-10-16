@@ -82,6 +82,7 @@ B1–B3 run on the Mac and the x86-64 host while B4–B6 hold dabeest.
 - **C3. S7.1c:** remove the switch from gwz-core's sites (the `cfg_if` arms stay; the native branch stays for unsupported paths and the off switch).
 - **C4. S7.1d:** the same in gwz-cli and gwz-py; `check-cfg` declarations; `prepare.py` retired or inverted; CI's candidate leg becomes the ordinary job (the session leg stays, `gwz_session_candidate` is 1.2.0).
 - **C5. S7.2:** help, the route ledger, migration notes (after C4 and B9).
+  - **Open for C5 (found by the S7.1 C3a State review, F1; decision pending):** the 1.1.0 build's only capability answer is the static `transport_capabilities::handle`, which answers `file_identity` and `exact_agent_identity` true on Windows (it has no platform split). S7.2 requires Windows selected-identity SSH not to be advertised before a named fixture GO, so S7.2 requires false there until that GO. The runtime projection that keeps the Windows-false rule (`TransportRuntime::capabilities`) is session-only since C3a (Windows parity row 5.1). The handler's value is not changed until the operator decides.
 
 C1 and C2 can run in parallel with Phase B; C3 and C4 wait on S7.1's gates (S5.5, S5.6, S3.3, TR2.6).
 

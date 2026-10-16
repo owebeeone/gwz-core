@@ -164,6 +164,44 @@ fn ordinary_operation_policy_and_observation_carry_the_1_1_0_fields() {
     assert!(OperationPolicy::from_cbor(&Cbor::Map(malformed)).is_err());
 }
 
+cfg_if::cfg_if! {
+    if #[cfg(not(gwz_session_candidate))] {
+        /// S7.1 (1.1.0) step C3a: the build without the session candidate, the
+        /// ordinary one and the transport switch alone, carries none of the
+        /// 1.2.0 projection. `TransportCapabilitiesResponse` is the static
+        /// answer's two fields (`transport_capabilities::handle` is untouched),
+        /// and the placement, the embedded message and the capability extras
+        /// have no slot on the wire.
+        #[test]
+        fn the_build_without_the_session_candidate_has_no_session_projection() {
+            use gwz_core::{Cbor, ResponseMeta, TransportCapabilitiesRequest, TransportCapabilitiesResponse, TransportOptions};
+
+            // An exhaustive literal: a field the 1.2.0 projection adds fails this to compile.
+            let static_answer = TransportCapabilitiesResponse {
+                file_identity: true,
+                exact_agent_identity: false,
+            };
+            let answered = gwz_core::protocol::transport_capabilities::handle(TransportCapabilitiesRequest {
+                schema_version: "gwz.protocol/v0".to_owned(),
+            })
+            .expect("the static answer");
+            assert_eq!(answered, static_answer);
+            let Cbor::Map(entries) = static_answer.to_cbor() else {
+                panic!("a capabilities answer encodes as a map");
+            };
+            assert_eq!(entries.iter().map(|(tag, _)| *tag).collect::<Vec<i64>>(), vec![1, 2]);
+
+            let tags = |value: Cbor| match value {
+                Cbor::Map(entries) => entries.iter().map(|(tag, _)| *tag).collect::<Vec<i64>>(),
+                other => panic!("a record encodes as a map, not {other:?}"),
+            };
+            assert_eq!(tags(TransportOptions::default().to_cbor()), (1..=3).collect::<Vec<i64>>());
+            assert_eq!(tags(RequestMeta::default().to_cbor()), (1..=9).collect::<Vec<i64>>());
+            assert_eq!(tags(ResponseMeta::default().to_cbor()), (1..=8).collect::<Vec<i64>>());
+        }
+    }
+}
+
 #[test]
 fn status_request_round_trips() {
     let request = StatusRequest {
@@ -610,8 +648,8 @@ fn merge_request_and_response_round_trip_reserved_lifecycle_shape() {
     // additive: every pre-existing slot is byte-identical.
     //   was: a901a901697265715f6d65726765026667777a2e763003f604f605f606f607f608f609f602000369666561747572652f7804f6050006f607f608f609f6
     cfg_if::cfg_if! {
-        if #[cfg(gwz_transport_candidate)] {
-            // The transport candidate's RequestMeta adds `transport_message`
+        if #[cfg(gwz_session_candidate)] {
+            // The session candidate's RequestMeta adds `transport_message`
             // (tag 10). taut's encoder always writes a declared key, so absent
             // it is `0a f6` (taut ir/model.py): RequestMeta's header grows from
             // a9 to aa and every other byte is production's.

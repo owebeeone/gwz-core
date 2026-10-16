@@ -1,42 +1,51 @@
 use super::*;
-use crate::{RequestMeta, TransportOptions, TransportPlacement};
+use crate::RequestMeta;
 use std::{
     future::Future,
     pin::pin,
     task::{Context, Poll, Waker},
 };
 
-fn config() -> SshEndpointConfig {
+pub(super) fn config() -> SshEndpointConfig {
     SshEndpointConfig::fixture(std::env::temp_dir().join("nonexistent-endpoint-home"), None)
 }
-/// TR2.18: a URL's password goes only to an endpoint in the driver's own
-/// process. The client placement's driver has none, so it refuses the open
-/// before anything is queued, and its error holds no part of the password.
+/// The endpoint session's bootstrap refusals (the in-process Local endpoint is the same `Session::endpoint`): a Bind
+/// for a request nobody registered creates no authority, and registering after that is refused too. The Cli twin is
+/// `cli_placement_tests`.
 #[test]
-fn a_driver_with_no_endpoint_in_process_refuses_a_url_password() {
-    let (driver, _port) = session::Session::driver(3000, 3000, None).unwrap();
-    let error = driver
-        .open(
-            "request",
-            "operation",
-            "ssh://git:sentinel-pw@example.invalid/repository.git",
-            crate::git::endpoint::ssh_channel::GitService::UploadPack,
-            Default::default(),
-            true,
-            Arc::new(|_, _| {}),
-            Arc::new(|_| {}),
-        )
-        .err()
-        .expect("the open is refused");
-    let failure = error
-        .get_ref()
-        .and_then(|cause| cause.downcast_ref::<session::SshOpenFailure>())
-        .expect("an open failure");
-    assert_eq!(
-        failure.0.code,
-        gwz_transport::protocol::ErrorCode::InvalidRequest
+fn unregistered_bind_cannot_create_endpoint_authority() {
+    let (endpoint, port) = session::Session::endpoint(config()).unwrap();
+    let mut bind =
+        gwz_transport::binding::offer("session", gwz_transport::protocol::EndpointRole::Driver);
+    bind.bind.as_mut().unwrap().versions = vec![2];
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(matches!(
+        pin!(port.deliver(("unknown".into(), bind))).poll(&mut cx),
+        Poll::Ready(Err(_))
+    ));
+    assert!(ClientRequest::new(endpoint.clone(), "later").is_err());
+}
+/// A registration retired before the driver's Bind cannot be revived by that Bind arriving late, which the Local
+/// route races too: `open_request` admits the client before the driver binds. The Cli twin is `cli_placement_tests`.
+#[test]
+fn registration_dropped_before_bind_cannot_be_resurrected_by_late_message() {
+    let (endpoint, port) = session::Session::endpoint(config()).unwrap();
+    let owner = ClientRequest::new(endpoint.clone(), "cancelled").unwrap();
+    drop(owner);
+    let mut bind = gwz_transport::binding::offer(
+        "late-session",
+        gwz_transport::protocol::EndpointRole::Driver,
     );
-    assert!(!format!("{error:?} {error}").contains("sentinel"));
+    bind.bind.as_mut().unwrap().versions = vec![2];
+    bind.bind.as_mut().unwrap().receive_limits = session::limits();
+    let delivery = wait(port.deliver(("cancelled".into(), bind)));
+    assert!(
+        delivery.is_err(),
+        "late Bind must not revive a retired request"
+    );
+    assert!(ClientRequest::new(endpoint.clone(), "cancelled").is_err());
+    endpoint.close();
+    assert_eq!(wait(endpoint.cleanup()).pending_local_work, 0);
 }
 #[test]
 fn operation_policy_carries_max_retries_and_an_older_writer_leaves_it_absent() {
@@ -59,7 +68,7 @@ fn operation_policy_carries_max_retries_and_an_older_writer_leaves_it_absent() {
 #[test]
 fn request_installs_its_resolved_pool_capacity_before_bind() {
     let runtime = TransportRuntime::new(config()).unwrap();
-    let mut custom = meta("capacity-custom", TransportPlacement::Local);
+    let mut custom = meta("capacity-custom");
     custom.policy = Some(crate::OperationPolicy {
         concurrency: Some(400),
         max_connections_per_host: Some(50),
@@ -82,11 +91,7 @@ fn request_installs_its_resolved_pool_capacity_before_bind() {
         })
     );
     wait(request.finish());
-    let request = wait(runtime.request(
-        meta("capacity-default", TransportPlacement::Local),
-        "operation-two".into(),
-    ))
-    .unwrap();
+    let request = wait(runtime.request(meta("capacity-default"), "operation-two".into())).unwrap();
     assert_eq!(
         endpoint.capacity_for_test(),
         Some(pool::Capacity {
@@ -102,12 +107,8 @@ fn request_installs_its_resolved_pool_capacity_before_bind() {
 #[test]
 fn live_request_between_leases_refuses_a_different_physical_capacity() {
     let runtime = TransportRuntime::new(config()).unwrap();
-    let first = wait(runtime.request(
-        meta("capacity-first", TransportPlacement::Local),
-        "first".into(),
-    ))
-    .unwrap();
-    let mut different = meta("capacity-different", TransportPlacement::Local);
+    let first = wait(runtime.request(meta("capacity-first"), "first".into())).unwrap();
+    let mut different = meta("capacity-different");
     different.policy = Some(crate::OperationPolicy {
         max_connections_per_host: Some(16),
         ..Default::default()
@@ -135,7 +136,7 @@ fn waiting_for_admission_leadership_times_out_before_registration() {
         .local_endpoint
         .clone();
     endpoint.hold_admission_for_test();
-    let request = meta("waiting-capacity", TransportPlacement::Local);
+    let request = meta("waiting-capacity");
     let began = std::time::Instant::now();
     let error = wait(runtime.request(request.clone(), "waiting".into()))
         .err()
@@ -158,7 +159,7 @@ fn capacity_wait_after_leadership_does_not_register_request_id() {
         .local_endpoint
         .clone();
     endpoint.hold_capacity_for_test();
-    let request = meta("late-capacity", TransportPlacement::Local);
+    let request = meta("late-capacity");
     let began = std::time::Instant::now();
     let error = wait(runtime.request(request.clone(), "first".into()))
         .err()
@@ -182,7 +183,7 @@ fn dropping_staged_capacity_installation_closes_the_generation() {
         .local_endpoint
         .clone();
     endpoint.hold_retirement_for_test();
-    let mut changed = meta("staged-capacity", TransportPlacement::Local);
+    let mut changed = meta("staged-capacity");
     changed.policy = Some(crate::OperationPolicy {
         max_connections_per_host: Some(16),
         ..Default::default()
@@ -204,66 +205,18 @@ fn dropping_staged_capacity_installation_closes_the_generation() {
         endpoint.is_closed(),
         "dropped transaction closes mutated endpoint"
     );
-    assert!(
-        wait(runtime.request(meta("later", TransportPlacement::Local), "later".into())).is_err()
-    );
+    assert!(wait(runtime.request(meta("later"), "later".into())).is_err());
     wait(runtime.shutdown());
 }
-fn meta(id: &str, placement: TransportPlacement) -> RequestMeta {
+fn meta(id: &str) -> RequestMeta {
     RequestMeta {
         request_id: id.into(),
         schema_version: "gwz.protocol/v0".into(),
-        transport: Some(TransportOptions {
-            placement: Some(placement),
-            ..Default::default()
-        }),
         ..Default::default()
     }
 }
-#[test]
-fn explicit_cli_requires_installed_endpoint_and_local_rejects_remote_path_base() {
-    let runtime = TransportRuntime::new(config()).unwrap();
-    let mut cx = Context::from_waker(Waker::noop());
-    let result =
-        pin!(runtime.request(meta("r", TransportPlacement::Cli), "op".into())).poll(&mut cx);
-    assert!(matches!(result, Poll::Ready(Err(_))));
-    let mut local = meta("local", TransportPlacement::Local);
-    local.transport.as_mut().unwrap().endpoint_path_base = Some("/remote".into());
-    assert!(matches!(
-        pin!(runtime.request(local, "op".into())).poll(&mut cx),
-        Poll::Ready(Err(_))
-    ));
-}
-#[test]
-fn dropped_bootstrap_owner_closes_installed_generation() {
-    let runtime = TransportRuntime::new(config()).unwrap();
-    let port = runtime.install_cli().unwrap();
-    let mut cx = Context::from_waker(Waker::noop());
-    {
-        let mut request = pin!(runtime.request(meta("r", TransportPlacement::Cli), "op".into()));
-        assert!(request.as_mut().poll(&mut cx).is_pending());
-    }
-    assert!(matches!(
-        pin!(port.next_message()).poll(&mut cx),
-        Poll::Ready(Ok(None))
-    ));
-    assert!(runtime.install_cli().is_err());
-}
-#[test]
-fn unregistered_bind_cannot_create_endpoint_authority() {
-    let (endpoint, port) = CliEndpoint::new(config()).unwrap();
-    let mut bind =
-        gwz_transport::binding::offer("session", gwz_transport::protocol::EndpointRole::Driver);
-    bind.bind.as_mut().unwrap().versions = vec![2];
-    let mut cx = Context::from_waker(Waker::noop());
-    assert!(matches!(
-        pin!(port.deliver(("unknown".into(), bind))).poll(&mut cx),
-        Poll::Ready(Err(_))
-    ));
-    assert!(endpoint.register_request("later").is_err());
-}
 
-fn wait<F: Future>(future: F) -> F::Output {
+pub(super) fn wait<F: Future>(future: F) -> F::Output {
     let mut future = pin!(future);
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     let mut cx = Context::from_waker(Waker::noop());
@@ -278,7 +231,7 @@ fn wait<F: Future>(future: F) -> F::Output {
 #[test]
 fn local_scope_clones_share_retirement_and_complete_without_a_network_exchange() {
     let runtime = TransportRuntime::new(config()).unwrap();
-    let meta = meta("local", TransportPlacement::Local);
+    let meta = meta("local");
     let scope = wait(runtime.request(meta.clone(), "op".into())).unwrap();
     let context = scope.context.clone();
     context.validate(&meta, "op").unwrap();
@@ -290,52 +243,18 @@ fn local_scope_clones_share_retirement_and_complete_without_a_network_exchange()
     assert!(context.validate(&meta, "op").is_err());
     assert_eq!(wait(runtime.shutdown()).pending_local_work, 0);
 }
-#[test]
-fn last_port_clone_drop_invalidates_all_scopes_and_remove_allows_fresh_binding() {
-    let runtime = TransportRuntime::new(config()).unwrap();
-    let port = runtime.install_cli().unwrap();
-    let clone = port.clone();
-    drop(port);
-    assert!(
-        runtime
-            .capabilities(TransportCapabilitiesRequest {
-                schema_version: "gwz.protocol/v0".into()
-            })
-            .unwrap()
-            .placements
-            .unwrap()
-            .contains(&TransportPlacement::Cli)
-    );
-    drop(clone);
-    assert!(
-        !runtime
-            .capabilities(TransportCapabilitiesRequest {
-                schema_version: "gwz.protocol/v0".into()
-            })
-            .unwrap()
-            .placements
-            .unwrap()
-            .contains(&TransportPlacement::Cli)
-    );
-    let cleanup = wait(runtime.remove_cli());
-    assert!(!cleanup.peer_cleanup_confirmed);
-    assert!(runtime.install_cli().is_ok());
-    wait(runtime.shutdown());
-}
 
 #[test]
 fn cancelling_one_bound_request_preserves_its_sibling_and_future_requests() {
     let runtime = TransportRuntime::new(config()).unwrap();
-    let first =
-        wait(runtime.request(meta("first", TransportPlacement::Local), "op1".into())).unwrap();
-    let second_meta = meta("second", TransportPlacement::Local);
+    let first = wait(runtime.request(meta("first"), "op1".into())).unwrap();
+    let second_meta = meta("second");
     let second = wait(runtime.request(second_meta.clone(), "op2".into())).unwrap();
     first.cancel();
     assert_eq!(wait(first.finish()).pending_local_work, 0);
     second.context.validate(&second_meta, "op2").unwrap();
     assert_eq!(wait(second.finish()).pending_local_work, 0);
-    let third =
-        wait(runtime.request(meta("third", TransportPlacement::Local), "op3".into())).unwrap();
+    let third = wait(runtime.request(meta("third"), "op3".into())).unwrap();
     assert_eq!(wait(third.finish()).pending_local_work, 0);
     wait(runtime.shutdown());
 }
@@ -345,9 +264,9 @@ fn cloned_cancellation_handle_only_cancels_its_live_request() {
     fn send_sync<T: Send + Sync>() {}
     send_sync::<super::TransportCancellation>();
     let runtime = TransportRuntime::new(config()).unwrap();
-    let first_meta = meta("handle-first", TransportPlacement::Local);
+    let first_meta = meta("handle-first");
     let first = wait(runtime.request(first_meta.clone(), "op1".into())).unwrap();
-    let second_meta = meta("handle-second", TransportPlacement::Local);
+    let second_meta = meta("handle-second");
     let second = wait(runtime.request(second_meta.clone(), "op2".into())).unwrap();
     let handle = first.cancellation_handle();
     let clone = handle.clone();
@@ -364,30 +283,10 @@ fn cloned_cancellation_handle_only_cancels_its_live_request() {
 #[test]
 fn finish_after_supervisor_shutdown_does_not_strand_request_owner() {
     let runtime = TransportRuntime::new(config()).unwrap();
-    let scope = wait(runtime.request(meta("r", TransportPlacement::Local), "op".into())).unwrap();
+    let scope = wait(runtime.request(meta("r"), "op".into())).unwrap();
     wait(runtime.shutdown());
     std::thread::sleep(Duration::from_millis(20));
     let report = wait(scope.finish());
     assert_eq!(report.pending_local_work, 0);
     assert!(!report.peer_cleanup_confirmed);
-}
-
-#[test]
-fn registration_dropped_before_bind_cannot_be_resurrected_by_late_message() {
-    let (endpoint, port) = CliEndpoint::new(config()).unwrap();
-    let owner = endpoint.register_request("cancelled").unwrap();
-    drop(owner);
-    let mut bind = gwz_transport::binding::offer(
-        "late-session",
-        gwz_transport::protocol::EndpointRole::Driver,
-    );
-    bind.bind.as_mut().unwrap().versions = vec![2];
-    bind.bind.as_mut().unwrap().receive_limits = session::limits();
-    let delivery = wait(port.deliver(("cancelled".into(), bind)));
-    assert!(
-        delivery.is_err(),
-        "late Bind must not revive a retired request"
-    );
-    assert!(endpoint.register_request("cancelled").is_err());
-    assert_eq!(wait(endpoint.shutdown()).pending_local_work, 0);
 }

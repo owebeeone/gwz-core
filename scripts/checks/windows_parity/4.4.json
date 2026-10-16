@@ -3,6 +3,6 @@
   "entries": [
     {"path": "src/git/gitbackend/transport_binding.rs", "kind": "split", "gate": "cfg!(windows)", "target": "", "count": 3, "state": "paired", "owner": ["4.4"], "appendix": "new: tooling P3-2, a runtime platform split the gate scan could not see; both arms are in one build, so it is paired: Windows asks for its own HTTPS policies where the others leave the choice to the helper, and carries a plain http:// remote on the native route (step 4.4, decision D2)"},
     {"path": "src/git/gitbackend/https_transport_binding_tests.rs", "kind": "split", "gate": "cfg!(windows)", "target": "", "count": 2, "state": "paired", "owner": ["4.4"], "appendix": "new: tooling P3-2, a runtime platform split the gate scan could not see; both arms are in one build, so it is paired: the expectation split for that policy mapping, and for an http:// remote off Windows (step 4.4, decision D2)"},
-    {"path": "src/transport_host/mod.rs", "kind": "gate", "gate": "not(windows)", "target": "arm: fn ssh_and_https_policies", "state": "paired", "owner": ["4.4"], "appendix": "the Windows list offers Gh, WindowsConfigured and WindowsDefault, the Unix one only Gh (step 4.4)"}
+    {"path": "src/transport_host/cli_placement.rs", "kind": "gate", "gate": "not(windows)", "target": "arm: fn ssh_and_https_policies", "state": "paired", "owner": ["4.4"], "appendix": "the Windows list offers Gh, WindowsConfigured and WindowsDefault, the Unix one only Gh (step 4.4)"}
   ]
 }

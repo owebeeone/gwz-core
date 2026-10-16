@@ -10,7 +10,9 @@
 extern crate alloc;
 
 cfg_if::cfg_if! {
-    if #[cfg(gwz_transport_candidate)] {
+    // The session candidate's `RequestMeta.transport_message` is the transport's `Envelope`, so
+    // both share the transport's `Cbor` type (S7.1 (1.1.0) step C3a); nothing else mixes the two.
+    if #[cfg(gwz_session_candidate)] {
         pub use gwz_transport::cbor;
     } else {
         #[rustfmt::skip]
@@ -103,8 +105,8 @@ pub fn version() -> &'static str {
 }
 
 cfg_if::cfg_if! {
-    if #[cfg(all(test, gwz_transport_candidate))] {
-        // The candidate schema's own corpus. Its added fields carry sample
+    if #[cfg(all(test, gwz_session_candidate))] {
+        // The session candidate schema's own corpus. Its added fields carry sample
         // values, and taut's encoder writes every key (an absent one as null),
         // so production's vectors cannot round-trip through candidate types.
         #[rustfmt::skip]

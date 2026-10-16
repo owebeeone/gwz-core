@@ -747,10 +747,7 @@ pub(super) fn attach_transport<B: GitBackend>(backend: &B, response: &mut crate:
     }
 }
 
-#[allow(
-    clippy::needless_update,
-    reason = "gwz_transport_candidate adds fields"
-)]
+#[allow(clippy::needless_update, reason = "gwz_session_candidate adds fields")]
 pub(super) fn attach_transport_error<B: GitBackend>(
     backend: &B,
     mut error: ModelError,

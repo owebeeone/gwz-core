@@ -1,6 +1,7 @@
 //! Aggregate command-driver coverage over one host endpoint.
 
-use super::driver_tests::{CliHarness, block_on};
+use super::cli_driver_tests::CliHarness;
+use super::driver_tests::block_on;
 use crate::RequestMeta;
 use crate::operation::NullSink;
 use crate::workspace_ops::*;

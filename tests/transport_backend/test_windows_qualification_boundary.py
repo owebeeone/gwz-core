@@ -112,7 +112,7 @@ class CoreBoundary(unittest.TestCase):
 
     def test_fixed_backend_rule_is_at_shared_request_constructor(self):
         source = (CORE / "src/transport_host/mod.rs").read_text()
-        body = source[source.index("async fn open_request("):source.index("pub async fn remove_cli(")]
+        body = source[source.index("async fn open_request("):source.index("pub async fn shutdown(")]
         # One backend for every build: configured credential helpers are on (plan step 4.4), so there is no
         # Windows-only constructor that leaves them off.
         self.assertIn("Git2Backend::new().with_host_context(guard.context.clone())", body)

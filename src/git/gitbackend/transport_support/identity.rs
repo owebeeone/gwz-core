@@ -80,10 +80,10 @@ impl Selection {
         })
     }
 
-    // Candidate CLI placement keeps identity paths opaque to core. The
-    // endpoint owns path parsing, expansion and file checks.
+    // The session candidate's CLI placement keeps identity paths opaque to core.
+    // The endpoint owns path parsing, expansion and file checks.
     cfg_if::cfg_if! {
-        if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
+        if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
             pub(crate) fn from_options_cli(options: &crate::TransportOptions) -> ModelResult<Self> {
         let default = options
             .default_identity
@@ -129,11 +129,33 @@ impl Selection {
         Ok(())
     }
 
+    /// The selection for `options` where `backend`'s operation runs: a host context's `~/` is its endpoint's SSH
+    /// home, the one `known_hosts` is read from, and each selected file is checked here. The session candidate's
+    /// Cli placement keeps the paths opaque and has its endpoint check them.
+    pub(crate) fn for_backend(
+        backend: &super::super::Git2Backend,
+        start: &Path,
+        options: &crate::TransportOptions,
+    ) -> ModelResult<Self> {
+        cfg_if::cfg_if! {
+            if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
+                if backend.ssh.is_cli_context() {
+                    let identities = Self::from_options_cli(options)?;
+                    identities.validate_endpoint_files(backend)?;
+                    return Ok(identities);
+                }
+            }
+        }
+        let identities = Self::from_options(start, backend.ssh.ssh_home().as_deref(), options)?;
+        identities.validate_files()?;
+        Ok(identities)
+    }
+
     // CLI placement validates every invocation supplied identity before any
     // driver starts. This includes an overridden default, so a malformed or
     // unavailable path cannot be hidden by remote selection.
     cfg_if::cfg_if! {
-        if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
+        if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
             pub(crate) fn validate_endpoint_files(
                 &self,
                 backend: &super::super::Git2Backend,
@@ -190,11 +212,54 @@ pub(crate) fn resolve_path(start: &Path, home: Option<&Path>, path: &str) -> Mod
     std::path::absolute(path).map_err(|_| invalid("cannot resolve SSH identity path"))
 }
 
-fn opaque_path(path: &str) -> ModelResult<PathBuf> {
-    if path.trim().is_empty() || path.contains('\0') {
-        return Err(invalid("SSH identity requires a nonempty file path"));
+cfg_if::cfg_if! {
+    if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
+        fn opaque_path(path: &str) -> ModelResult<PathBuf> {
+            if path.trim().is_empty() || path.contains('\0') {
+                return Err(invalid("SSH identity requires a nonempty file path"));
+            }
+            Ok(PathBuf::from(path))
+        }
     }
-    Ok(PathBuf::from(path))
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
+        /// Checks the selected identity at `path` where the backend's operation runs it: the file itself, or, for
+        /// the session candidate's Cli placement, by asking its endpoint.
+        fn check_selected(backend: &super::super::Git2Backend, path: &Path) -> ModelResult<()> {
+            if backend.ssh.is_cli_context() {
+                return backend.ssh.check_identity(&path.to_string_lossy());
+            }
+            validate_file(path)
+        }
+    } else {
+        /// Checks the selected identity at `path`: the file itself.
+        fn check_selected(_backend: &super::super::Git2Backend, path: &Path) -> ModelResult<()> {
+            validate_file(path)
+        }
+    }
+}
+
+/// The repository-local identity setting `value` as a path: expanded under the operation's SSH home, or, for the
+/// session candidate's Cli placement, left opaque to core.
+fn configured_path(
+    backend: &super::super::Git2Backend,
+    repo: &git2::Repository,
+    value: &str,
+) -> ModelResult<PathBuf> {
+    cfg_if::cfg_if! {
+        if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
+            if backend.ssh.is_cli_context() {
+                return opaque_path(value);
+            }
+        }
+    }
+    resolve_path(
+        repo.workdir().unwrap_or(repo.path()),
+        backend.ssh.ssh_home().as_deref(),
+        value,
+    )
 }
 
 pub(crate) fn validate_file(path: &Path) -> ModelResult<()> {
@@ -224,13 +289,8 @@ pub(crate) fn for_remote(
             )
         })?;
         if let Some(identity) = cache.get(&key) {
-            if let Some(identity) = identity.as_ref().filter(|_| !backend.ssh.is_cli_context()) {
-                validate_file(&identity.path)?;
-            }
-            if let Some(identity) = identity.as_ref().filter(|_| backend.ssh.is_cli_context()) {
-                backend
-                    .ssh
-                    .check_identity(&identity.path.to_string_lossy())?;
+            if let Some(identity) = identity.as_ref() {
+                check_selected(backend, &identity.path)?;
             }
             return Ok(identity.clone());
         }
@@ -257,14 +317,18 @@ fn resolve_remote(
             .iter()
             .any(|v| scheme.eq_ignore_ascii_case(v))
     });
-    let https_scheme = url
-        .split_once("://")
-        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("https"));
-    if backend.ssh.is_cli_context() && !ssh_scheme && !scp && !https_scheme {
-        return Err(ModelError::new(
-            ErrorCode::UnsupportedOperation,
-            "explicit cli placement supports SSH and HTTPS routes only; native transport fallback is disabled",
-        ));
+    cfg_if::cfg_if! {
+        if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
+            let https_scheme = url
+                .split_once("://")
+                .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("https"));
+            if backend.ssh.is_cli_context() && !ssh_scheme && !scp && !https_scheme {
+                return Err(ModelError::new(
+                    ErrorCode::UnsupportedOperation,
+                    "explicit cli placement supports SSH and HTTPS routes only; native transport fallback is disabled",
+                ));
+            }
+        }
     }
     if !ssh_scheme && !scp {
         if remote.is_some_and(|remote| backend.identities.remotes.contains_key(remote)) {
@@ -283,15 +347,7 @@ fn resolve_remote(
                 .open_level(git2::ConfigLevel::Local)
                 .map_err(crate::git::git_error)?;
             match local.get_string(&format!("remote.{remote}.gwzSshIdentity")) {
-                Ok(value) => Some(if backend.ssh.is_cli_context() {
-                    opaque_path(&value)?
-                } else {
-                    resolve_path(
-                        repo.workdir().unwrap_or(repo.path()),
-                        backend.ssh.ssh_home().as_deref(),
-                        &value,
-                    )?
-                }),
+                Ok(value) => Some(configured_path(backend, repo, &value)?),
                 Err(error) if error.code() == git2::ErrorCode::NotFound => None,
                 Err(error) => return Err(crate::git::git_error(error)),
             }
@@ -300,13 +356,7 @@ fn resolve_remote(
     };
     let identity = invocation.or_else(|| backend.identities.resolve(remote, configured.as_deref()));
     if let Some(identity) = &identity {
-        if !backend.ssh.is_cli_context() {
-            validate_file(&identity.path)?;
-        } else {
-            backend
-                .ssh
-                .check_identity(&identity.path.to_string_lossy())?;
-        }
+        check_selected(backend, &identity.path)?;
     }
     Ok(identity)
 }
@@ -427,7 +477,7 @@ mod tests {
             "fixture: only local selection is tested",
         )
         .unwrap();
-        #[allow(clippy::needless_update, reason = "gwz_transport_candidate adds fields")]
+        #[allow(clippy::needless_update, reason = "gwz_session_candidate adds fields")]
         let backend = Git2Backend::without_credential_helpers()
             .with_transport(
                 temp.path(),
@@ -507,7 +557,7 @@ mod tests {
     #[test]
     fn explicit_precedence_and_equals_in_paths_are_preserved() {
         let temp = tempfile::tempdir().unwrap();
-        #[allow(clippy::needless_update, reason = "gwz_transport_candidate adds fields")]
+        #[allow(clippy::needless_update, reason = "gwz_session_candidate adds fields")]
         let options = crate::TransportOptions {
             url_scheme: None,
             default_identity: Some("default=key".into()),
@@ -584,7 +634,7 @@ mod tests {
             remote: "origin".into(),
             private_key_path: "key".into(),
         };
-        #[allow(clippy::needless_update, reason = "gwz_transport_candidate adds fields")]
+        #[allow(clippy::needless_update, reason = "gwz_session_candidate adds fields")]
         let mut options = crate::TransportOptions {
             url_scheme: None,
             default_identity: None,

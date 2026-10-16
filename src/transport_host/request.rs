@@ -84,8 +84,18 @@ impl RequestContext {
             None => eprintln!("{line}"),
         }
     }
-    pub(crate) fn is_cli(&self) -> bool {
-        is_cli(&self.meta)
+    cfg_if::cfg_if! {
+        if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
+            pub(crate) fn is_cli(&self) -> bool {
+                is_cli(&self.meta)
+            }
+        } else {
+            /// Without the session candidate there is no Cli placement: the missing-git hint is worded for the
+            /// in-process surface, as it has been (D8 of the S7.1 proposal; its finding 1 stays filed).
+            pub(crate) fn is_cli(&self) -> bool {
+                false
+            }
+        }
     }
     /// The SSH home of the runtime this request runs on, which `~/` identity paths expand under (plan step 3.1).
     pub(crate) fn ssh_home(&self) -> Option<PathBuf> {
@@ -102,10 +112,14 @@ impl RequestContext {
         }
         Ok(())
     }
-    pub(crate) fn check_identity(&self, raw: &str) -> ModelResult<()> {
-        self.validate(&self.meta, &self.operation)?;
-        self.session
-            .check(&self.meta.request_id, identity(raw, &self.meta))
+    cfg_if::cfg_if! {
+        if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
+            pub(crate) fn check_identity(&self, raw: &str) -> ModelResult<()> {
+                self.validate(&self.meta, &self.operation)?;
+                self.session
+                    .check(&self.meta.request_id, identity(raw, &self.meta))
+            }
+        }
     }
     pub(crate) fn open_https_recording(
         &self,
@@ -348,10 +362,22 @@ fn identity(raw: &str, meta: &RequestMeta) -> gwz_transport::protocol::Identity 
     gwz_transport::protocol::Identity {
         mode: gwz_transport::protocol::IdentityMode::ExplicitKey,
         key_path: Some(raw.into()),
-        path_base: meta
-            .transport
-            .as_ref()
-            .and_then(|t| t.endpoint_path_base.clone()),
+        path_base: path_base(meta),
+    }
+}
+cfg_if::cfg_if! {
+    if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
+        /// What the Cli placement's endpoint resolves a relative identity path under.
+        fn path_base(meta: &RequestMeta) -> Option<String> {
+            meta.transport
+                .as_ref()
+                .and_then(|t| t.endpoint_path_base.clone())
+        }
+    } else {
+        /// Only the Cli placement names a base: the in-process endpoint resolves paths itself.
+        fn path_base(_meta: &RequestMeta) -> Option<String> {
+            None
+        }
     }
 }
 #[derive(Clone)]
@@ -451,12 +477,24 @@ impl Drop for ClientRequest {
         self.session.seal(&self.request);
     }
 }
-pub(super) fn is_cli(meta: &RequestMeta) -> bool {
-    meta.transport.as_ref().and_then(|t| t.placement) == Some(TransportPlacement::Cli)
+cfg_if::cfg_if! {
+    if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
+        pub(super) fn is_cli(meta: &RequestMeta) -> bool {
+            meta.transport.as_ref().and_then(|t| t.placement) == Some(crate::TransportPlacement::Cli)
+        }
+    }
 }
 pub(super) fn validate_meta(meta: &RequestMeta, operation: &str) -> ModelResult<()> {
-    if !identifier(&meta.request_id) || !identifier(operation) || meta.transport_message.is_some() {
+    if !identifier(&meta.request_id) || !identifier(operation) {
         return Err(invalid("invalid transport request context"));
+    }
+    cfg_if::cfg_if! {
+        if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
+            // An embedded message is the session host's; the in-process transport carries none.
+            if meta.transport_message.is_some() {
+                return Err(invalid("invalid transport request context"));
+            }
+        }
     }
     if meta.schema_version != "gwz.protocol/v0" {
         return Err(unsupported("unsupported request version"));
@@ -479,13 +517,17 @@ pub(super) fn validate_meta(meta: &RequestMeta, operation: &str) -> ModelResult<
     {
         return Err(invalid("max_retries exceeds the supported range"));
     }
-    if let Some(base) = meta
-        .transport
-        .as_ref()
-        .and_then(|t| t.endpoint_path_base.as_deref())
-    {
-        if !is_cli(meta) || base.is_empty() || base.len() > 16384 || base.contains('\0') {
-            return Err(invalid("invalid endpoint path context"));
+    cfg_if::cfg_if! {
+        if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
+            if let Some(base) = meta
+                .transport
+                .as_ref()
+                .and_then(|t| t.endpoint_path_base.as_deref())
+            {
+                if !is_cli(meta) || base.is_empty() || base.len() > 16384 || base.contains('\0') {
+                    return Err(invalid("invalid endpoint path context"));
+                }
+            }
         }
     }
     Ok(())

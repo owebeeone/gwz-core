@@ -53,8 +53,12 @@ cfg_if::cfg_if! {
             pub(crate) fn host_context(&self) -> Option<RequestContext> {
                 self.0.clone()
             }
-            pub(crate) fn is_cli_context(&self) -> bool {
-                self.host_context().is_some_and(|context| context.is_cli())
+            cfg_if::cfg_if! {
+                if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
+                    pub(crate) fn is_cli_context(&self) -> bool {
+                        self.host_context().is_some_and(|context| context.is_cli())
+                    }
+                }
             }
             /// The SSH home of the transport this backend's operation runs on, if it has one.
             pub(crate) fn ssh_home(&self) -> Option<std::path::PathBuf> {
@@ -71,11 +75,15 @@ cfg_if::cfg_if! {
                     Ok(())
                 }
             }
-            pub(crate) fn check_identity(&self, raw: &str) -> crate::model::ModelResult<()> {
-                if let Some(context) = self.host_context() {
-                    context.check_identity(raw)
-                } else {
-                    Ok(())
+            cfg_if::cfg_if! {
+                if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
+                    pub(crate) fn check_identity(&self, raw: &str) -> crate::model::ModelResult<()> {
+                        if let Some(context) = self.host_context() {
+                            context.check_identity(raw)
+                        } else {
+                            Ok(())
+                        }
+                    }
                 }
             }
         }
@@ -320,9 +328,6 @@ cfg_if::cfg_if! {
         #[derive(Clone, Default)]
         pub(crate) struct Runtime;
         impl Runtime {
-            pub(crate) fn is_cli_context(&self) -> bool {
-                false
-            }
             pub(crate) fn ssh_home(&self) -> Option<std::path::PathBuf> {
                 None
             }
@@ -331,9 +336,6 @@ cfg_if::cfg_if! {
                 _meta: &crate::RequestMeta,
                 _operation_id: &str,
             ) -> crate::model::ModelResult<()> {
-                Ok(())
-            }
-            pub(crate) fn check_identity(&self, _raw: &str) -> crate::model::ModelResult<()> {
                 Ok(())
             }
         }

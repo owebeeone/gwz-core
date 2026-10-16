@@ -179,7 +179,7 @@ fn shutdown_reports_blocked_physical_disposal_then_eventual_zero() {
 #[test]
 fn completed_request_retirement_cannot_expire_the_shared_session() {
     use crate::transport_host::{SshEndpointConfig, TransportRuntime};
-    use crate::{RequestMeta, TransportOptions, TransportPlacement};
+    use crate::{RequestMeta, TransportOptions};
     let runtime = TransportRuntime::new(SshEndpointConfig::fixture(
         std::env::temp_dir().join("nonexistent-endpoint-home"),
         None,
@@ -188,10 +188,7 @@ fn completed_request_retirement_cannot_expire_the_shared_session() {
     let request_meta = |id: &str| RequestMeta {
         request_id: id.into(),
         schema_version: "gwz.protocol/v0".into(),
-        transport: Some(TransportOptions {
-            placement: Some(TransportPlacement::Local),
-            ..Default::default()
-        }),
+        transport: Some(TransportOptions::default()),
         ..Default::default()
     };
     let request = block_on(runtime.request(request_meta("retired"), "fetch".into())).unwrap();

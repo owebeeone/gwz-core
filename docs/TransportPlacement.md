@@ -1,7 +1,10 @@
 # Choosing where Git connections run
 
-**Candidate embedding API: available only in the isolated integration harness,
-not in default or released builds.** The implementation follows the accepted
+**Session candidate API: available only in the isolated integration harness
+built with `--cfg gwz_transport_candidate --cfg gwz_session_candidate`, not in
+the 1.1.0 transport build, default builds or released builds.** The Cli
+placement, its endpoint and the capability extras this document uses belong to
+the 1.2.0 session host. The implementation follows the accepted
 endpoint-placement contract. Existing CLI commands and the default
 `Git2Backend::new()` usage remain unchanged.
 

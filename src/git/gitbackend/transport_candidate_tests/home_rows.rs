@@ -34,7 +34,6 @@ fn clone_with(f: &common::SshdFixture, pairs: &[(&str, &OsStr)], name: &str) -> 
     )
     .unwrap();
     let options = crate::TransportOptions {
-        placement: Some(crate::TransportPlacement::Local),
         default_identity: Some(f.temp.path().join("client_ed25519").display().to_string()),
         ..Default::default()
     };
