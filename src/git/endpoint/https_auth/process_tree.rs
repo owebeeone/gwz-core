@@ -52,8 +52,12 @@ cfg_if::cfg_if! {
         /// Starts `command` as the leader of a new process group, with all three standard streams piped. std's
         /// `Command` copies each environment value twice (its map, then the `envp` string) and frees both unwiped
         /// when this returns: the copies the helper-owner contract's OQ-C lists as accepted. The command's own
-        /// values stay in their wiping owners.
-        pub(super) fn spawn(command: &HelperCommand) -> io::Result<(HelperChild, ProcessTree)> {
+        /// values stay in their wiping owners. `hold` is the host's spawn gate, held for the launch: Unix has no
+        /// inheritance window to close, so the hold only keeps the interface the Windows arm needs.
+        pub(super) fn spawn(
+            command: &HelperCommand,
+            _hold: &crate::git::spawn_gate::SpawnHold,
+        ) -> io::Result<(HelperChild, ProcessTree)> {
             let mut process = Command::new(&command.program);
             process
                 .current_dir(&command.directory)
@@ -93,5 +97,16 @@ cfg_if::cfg_if! {
     } else if #[cfg(windows)] {
         mod windows;
         pub(super) use windows::{HelperChild, ProcessTree, spawn};
+    }
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        /// A launch for a test that races no other spawn: it holds a gate of its own.
+        pub(super) fn spawn_for_test(
+            command: &HelperCommand,
+        ) -> std::io::Result<(HelperChild, ProcessTree)> {
+            spawn(command, &crate::git::spawn_gate::SpawnGate::new().hold())
+        }
     }
 }

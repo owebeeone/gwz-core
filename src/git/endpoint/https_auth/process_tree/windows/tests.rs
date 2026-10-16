@@ -3,10 +3,13 @@
 //! guarantees of the private `CreateProcessW`: the job's limits, a handle the helper must not inherit, a
 //! grandchild that cannot break away, a creation that fails without leaving a process, and a retired job.
 use super::*;
-use crate::git::endpoint::https_auth::{
-    process_tree::EnvValue,
-    runner::environment::exact,
-    wiped::{Probe, Records},
+use crate::git::{
+    endpoint::https_auth::{
+        process_tree::EnvValue,
+        runner::environment::exact,
+        wiped::{Probe, Records},
+    },
+    spawn_gate::SpawnGate,
 };
 use std::{
     ffi::{OsStr, OsString},
@@ -25,6 +28,11 @@ use windows_sys::Win32::{
         },
     },
 };
+
+/// A launch under a gate of the test's own: these rows race no other spawn (`gate_tests.rs` is the ones that do).
+fn spawn(command: &HelperCommand) -> io::Result<(HelperChild, ProcessTree)> {
+    super::spawn(command, &SpawnGate::new().hold())
+}
 
 fn system32() -> PathBuf {
     Path::new(&std::env::var_os("SystemRoot").unwrap()).join("System32")
@@ -305,6 +313,7 @@ async fn a_creation_that_fails_after_the_job_exists_runs_nothing() {
     let result = launch::create(
         &command(&system32().join("cmd.exe"), &["/c", &script]),
         &not_a_job,
+        &SpawnGate::new().hold(),
     );
     assert!(
         result.is_err(),
@@ -597,8 +606,10 @@ fn the_creation_window_makes_the_childs_ends_inheritable_only_while_it_is_open()
         pipe::create(pipe::Parent::Reads).unwrap(),
         pipe::create(pipe::Parent::Reads).unwrap(),
     );
+    let gate = SpawnGate::new();
     {
-        let _window = launch::InheritWindow::open([&a.child, &b.child, &c.child]).unwrap();
+        let hold = gate.hold();
+        let _window = launch::InheritWindow::open(&hold, [&a.child, &b.child, &c.child]).unwrap();
         assert!(inheritable(&a.child) && inheritable(&b.child) && inheritable(&c.child));
         assert!(!inheritable(&a.parent) && !inheritable(&b.parent) && !inheritable(&c.parent));
     }
@@ -614,4 +625,140 @@ async fn a_creation_that_fails_leaves_the_childs_ends_closed_to_inheritance() {
         spawn(&command(&missing, &[])).err().unwrap().kind(),
         io::ErrorKind::NotFound
     );
+}
+
+// The spawn gate against the creation window (WH2 contract C9; operator decision D25). The window is opened by hand
+// over three pipe ends, which is the whole of what the production launch does around `CreateProcessW`, so that a
+// standard spawn can be made to land inside it every time instead of by chance.
+
+/// A probe that prints the name of every pipe it holds a handle to: the helper pipes' names are unique, so the
+/// output says which of a launch's ends a process inherited and nothing about other tests' handles.
+const PIPE_NAMES_PROBE: &str = r#"
+Add-Type -MemberDefinition '[DllImport("kernel32.dll")] public static extern System.IntPtr GetStdHandle(int n); [DllImport("kernel32.dll")] public static extern uint GetFileType(System.IntPtr h); [DllImport("kernel32.dll", SetLastError=true)] public static extern bool GetFileInformationByHandleEx(System.IntPtr h, int c, System.IntPtr b, uint n);' -Name K -Namespace W
+# The probe's own standard handles are the test run's pipes: they are left alone, as a name query on a synchronous
+# pipe handle waits for any read or write in flight on it.
+$own = @(-10, -11, -12 | ForEach-Object { [int64][W.K]::GetStdHandle($_) })
+$buffer = [System.Runtime.InteropServices.Marshal]::AllocHGlobal(2048)
+$found = @()
+for ($value = 4; $value -lt 65536; $value += 4) {
+    if ($own -contains $value) { continue }
+    $handle = [System.IntPtr][int64]$value
+    if ([W.K]::GetFileType($handle) -ne 3) { continue }
+    if (-not [W.K]::GetFileInformationByHandleEx($handle, 2, $buffer, 2048)) { continue }
+    $length = [System.Runtime.InteropServices.Marshal]::ReadInt32($buffer)
+    $found += [System.Runtime.InteropServices.Marshal]::PtrToStringUni([System.IntPtr]($buffer.ToInt64() + 4), [int]($length / 2))
+}
+"names=" + ($found -join ";") | Set-Content -Path $env:OUT
+"#;
+
+/// The pipe a handle is an end of, as the system names it (`\gwz-helper-...`).
+fn pipe_name(end: &OwnedHandle) -> String {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_NAME_INFO, FileNameInfo, GetFileInformationByHandleEx,
+    };
+    let mut buffer = vec![0u32; 512];
+    // SAFETY: the pointer and length describe `buffer`, which outlives the call; the handle is open.
+    let read = unsafe {
+        GetFileInformationByHandleEx(
+            end.as_raw_handle(),
+            FileNameInfo,
+            buffer.as_mut_ptr().cast(),
+            (buffer.len() * size_of::<u32>()) as u32,
+        )
+    };
+    assert!(read != 0, "{}", io::Error::last_os_error());
+    let info = buffer.as_ptr().cast::<FILE_NAME_INFO>();
+    // SAFETY: the call filled the length and that many bytes of name after it, inside `buffer`.
+    let name = unsafe {
+        std::slice::from_raw_parts(
+            std::ptr::addr_of!((*info).FileName).cast::<u16>(),
+            (*info).FileNameLength as usize / 2,
+        )
+    };
+    String::from_utf16(name).unwrap()
+}
+
+/// Three pipes the way a launch makes them (stdin, stdout, stderr), and the names of their child ends.
+fn three_pipes() -> ([pipe::Pipe; 3], Vec<String>) {
+    let pipes = [
+        pipe::create(pipe::Parent::Writes).unwrap(),
+        pipe::create(pipe::Parent::Reads).unwrap(),
+        pipe::create(pipe::Parent::Reads).unwrap(),
+    ];
+    let names: Vec<String> = pipes.iter().map(|pipe| pipe_name(&pipe.child)).collect();
+    assert!(
+        names.iter().all(|name| name.starts_with(r"\gwz-helper-")),
+        "{names:?}"
+    );
+    (pipes, names)
+}
+
+/// The probe as a standard `Command`, which names no handle list.
+fn standard_probe() -> (tempfile::TempDir, PathBuf, std::process::Command) {
+    let (directory, output, helper) = powershell(PIPE_NAMES_PROBE, &[]);
+    let mut command = std::process::Command::new(&helper.program);
+    command.args(&helper.args).env("OUT", &output);
+    (directory, output, command)
+}
+
+#[test]
+fn without_the_gate_a_standard_spawn_inside_an_open_window_inherits_the_childs_ends() {
+    // The control: without the gate the exposure is real, so the row below means something.
+    let (pipes, names) = three_pipes();
+    let gate = SpawnGate::new();
+    let hold = gate.hold();
+    let window =
+        launch::InheritWindow::open(&hold, [&pipes[0].child, &pipes[1].child, &pipes[2].child])
+            .unwrap();
+    let (_directory, output, mut command) = standard_probe();
+    let status = command.status().unwrap();
+    drop(window);
+    drop(hold);
+    assert!(status.success());
+    let seen = std::fs::read_to_string(&output).unwrap();
+    for name in &names {
+        assert!(
+            seen.contains(name.as_str()),
+            "control: {name} not in {seen:?}"
+        );
+    }
+}
+
+#[test]
+fn a_spawn_through_the_gate_waits_for_the_window_and_inherits_none_of_the_ends() {
+    let (pipes, names) = three_pipes();
+    let gate = SpawnGate::new();
+    let hold = gate.hold();
+    let window =
+        launch::InheritWindow::open(&hold, [&pipes[0].child, &pipes[1].child, &pipes[2].child])
+            .unwrap();
+    let (_directory, output, mut command) = standard_probe();
+    let (spawned, started) = std::sync::mpsc::channel();
+    let spawner = {
+        let gate = gate.clone();
+        std::thread::spawn(move || {
+            let mut child = gate.spawn(&mut command).unwrap();
+            spawned.send(()).unwrap();
+            child.wait().unwrap().success()
+        })
+    };
+    // The spawn is asked for while the window is open, and does not happen.
+    assert!(
+        started.recv_timeout(Duration::from_millis(750)).is_err(),
+        "a standard spawn went ahead inside the creation window"
+    );
+    drop(window);
+    drop(hold);
+    started
+        .recv_timeout(Duration::from_secs(60))
+        .expect("the spawn goes ahead once the window is closed");
+    assert!(spawner.join().unwrap());
+    let seen = std::fs::read_to_string(&output).unwrap();
+    assert!(seen.starts_with("names="), "the probe ran: {seen:?}");
+    for name in &names {
+        assert!(
+            !seen.contains(name.as_str()),
+            "the gated spawn inherited {name}: {seen:?}"
+        );
+    }
 }

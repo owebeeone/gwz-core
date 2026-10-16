@@ -42,6 +42,7 @@ cfg_if::cfg_if! {
         mod endpoint_environment_tests;
         mod retry_tests;
         mod backstop_tests;
+        mod spawn_gate_chain_tests;
     }
 }
 
@@ -79,6 +80,7 @@ use crate::git::endpoint::agent_source::AgentSource;
 use crate::git::endpoint::https_auth::HelperSlots;
 use crate::git::endpoint::ssh_home::{self, Home, HomeSource};
 use crate::git::endpoint::ssh_local;
+use crate::git::spawn_gate::SpawnGate;
 use crate::{
     RequestMeta, TransportCapabilitiesRequest, TransportCapabilitiesResponse, TransportPlacement,
     git::Git2Backend,
@@ -255,6 +257,9 @@ struct RuntimeState {
     https: bool,
     /// Where the command's warnings and notes go, if it gave a reader.
     notes: Option<NoteSink>,
+    /// The host's spawn gate: its helper slots' (the launches hold it), or one of its own for a runtime that has
+    /// no HTTPS endpoint and so no launch. Every request's backend holds it around the spawns it makes.
+    spawn_gate: SpawnGate,
 }
 impl Drop for RuntimeState {
     fn drop(&mut self) {
@@ -300,6 +305,12 @@ impl TransportRuntime {
         native: Option<NativeCaller>,
     ) -> ModelResult<Self> {
         let enabled = https.is_some();
+        // The launches of this host's helpers hold the gate their slots carry, so the backends of its requests must
+        // hold that one.
+        let spawn_gate = https
+            .as_ref()
+            .map(|(_, slots)| slots.gate().clone())
+            .unwrap_or_default();
         // What the machine proxy setting said (Windows), which the driver words an https failure with (D6, D7).
         let machine = https
             .as_ref()
@@ -346,6 +357,7 @@ impl TransportRuntime {
             connect_timeout_ms,
             https: enabled,
             notes: None,
+            spawn_gate,
         }))))
     }
     cfg_if::cfg_if! { if #[cfg(test)] {
@@ -450,7 +462,7 @@ impl TransportRuntime {
                 "--max-retries is not carried to the Cli placement's endpoint",
             ));
         }
-        let (session, local_endpoint, notes) = {
+        let (session, local_endpoint, notes, spawn_gate) = {
             let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
             if state.closed {
                 return Err(unavailable("transport runtime is closed"));
@@ -463,12 +475,14 @@ impl TransportRuntime {
                         .ok_or_else(|| unavailable("client endpoint is not installed"))?,
                     None,
                     state.notes.clone(),
+                    state.spawn_gate.clone(),
                 )
             } else {
                 (
                     state.local.clone(),
                     Some(state.local_endpoint.clone()),
                     state.notes.clone(),
+                    state.spawn_gate.clone(),
                 )
             }
         };
@@ -499,7 +513,8 @@ impl TransportRuntime {
             None
         };
         let context = RequestContext::new(session, meta, operation_id, notes)?
-            .with_endpoint(endpoint_session);
+            .with_endpoint(endpoint_session)
+            .with_spawn_gate(spawn_gate);
         let mut guard = TransportRequest::pending(context, client_guard);
         if let Some(token) = token {
             guard.attach(token)?;

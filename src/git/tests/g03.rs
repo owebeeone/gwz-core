@@ -7,6 +7,8 @@ pub(crate) fn remote_credentials_support_ssh_agent_username_and_default_auth() {
         Some("git"),
         git2::CredentialType::SSH_KEY,
         CredentialHelperPolicy::Disabled,
+        &crate::git::spawn_gate::SpawnGate::default(),
+        git2::Config::open_default,
         &mut 0u32,
     )
     .unwrap();
@@ -17,6 +19,8 @@ pub(crate) fn remote_credentials_support_ssh_agent_username_and_default_auth() {
         None,
         git2::CredentialType::USERNAME,
         CredentialHelperPolicy::Disabled,
+        &crate::git::spawn_gate::SpawnGate::default(),
+        git2::Config::open_default,
         &mut 0u32,
     )
     .unwrap();
@@ -27,6 +31,8 @@ pub(crate) fn remote_credentials_support_ssh_agent_username_and_default_auth() {
         None,
         git2::CredentialType::DEFAULT,
         CredentialHelperPolicy::Disabled,
+        &crate::git::spawn_gate::SpawnGate::default(),
+        git2::Config::open_default,
         &mut 0u32,
     )
     .unwrap();

@@ -1,4 +1,5 @@
 use super::*;
+use crate::git::spawn_gate::SpawnGate;
 mod https_failure;
 mod ssh_opening;
 use crate::git::endpoint::{
@@ -27,8 +28,19 @@ pub(crate) struct RequestContext {
     /// The session of the endpoint in this process, which holds what the endpoint remembers of this request: the
     /// redirect it refused, whose address a failure has no place for (text T5). Absent for the Cli placement.
     endpoint: Option<Arc<Session>>,
+    /// The spawn gate of the host this request runs under: the one its helpers' launches hold (WH2 contract C9).
+    spawn_gate: SpawnGate,
 }
 impl RequestContext {
+    /// The same context, whose backend holds `gate` around its spawns: the host's, the one its launches hold.
+    pub(super) fn with_spawn_gate(mut self, gate: SpawnGate) -> Self {
+        self.spawn_gate = gate;
+        self
+    }
+    /// A handle to the host's spawn gate, for the backend this request builds.
+    pub(crate) fn spawn_gate(&self) -> SpawnGate {
+        self.spawn_gate.clone()
+    }
     /// The same context, asking `endpoint` for what the endpoint in this process remembers of the request.
     pub(super) fn with_endpoint(mut self, endpoint: Option<Arc<Session>>) -> Self {
         self.endpoint = endpoint;
@@ -51,6 +63,7 @@ impl RequestContext {
             notes,
             warned: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
             endpoint: None,
+            spawn_gate: SpawnGate::default(),
         })
     }
     /// Gives `line` as a warning, once per `key` for this operation. A warning is not a note: it is not gated by

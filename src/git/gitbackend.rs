@@ -269,6 +269,7 @@ impl GitBackend for Git2Backend {
             environment: self.environment.clone(),
             route_policy: self.route_policy,
             route_notes: self.route_notes.clone(),
+            spawn_gate: self.spawn_gate.clone(),
         }))
     }
     fn validate_transport_scope(
@@ -481,6 +482,13 @@ mod fixture_native;
 
 #[cfg(test)]
 pub(crate) use factory::GitTestRepository;
+
+// The spawn gate's sites (WH2 contract C9): the Git CLI routes and libgit2's credential helper hold the host's gate.
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        mod spawn_gate_tests;
+    }
+}
 
 // Characterization remains outside the production backend.
 cfg_if::cfg_if! {
