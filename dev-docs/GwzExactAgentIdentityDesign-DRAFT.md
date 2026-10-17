@@ -1,9 +1,6 @@
 # Exact SSH agent-key selection (operator decision D38)
 
-Date: 2026-10-18. Status: **DRAFT, revision 1** (the first draft is gwz-core `de8e4788`; both round-1
-reviews returned NO-GO and section 11 maps every finding to its closure). A design only: no product
-code is written, and nothing here is accepted until the re-review the lane owner runs (Code and Safety,
-with the Surface concerns folded in, because the feature adds a user-facing way to name a key).
+Date: 2026-10-18. Status: **accepted at gwz-core revision 2 (this commit) after `GwzExactAgentIdentityDesign-ReviewConsistency-2.md` and `-ReviewSafety-2.md` reported GO (round 2 of two); the round-2 P3s are folded in; the open questions are decided as D39. This accepts the design only: no product code.** The first draft is `de8e4788` (both round-1 reviews NO-GO); revision 1 is `7f206c22`; section 11 maps every finding of both rounds to its closure.
 Authority: operator decisions D30 and D38 (`GwzTransportTR18-OperatorDecisions.md`). Read with
 [`GwzDebtRecoveryAuthCapability.md`](../../dev-docs/GwzDebtRecoveryAuthCapability.md),
 [`GwzRemoteTransportSshAgentDesign.md`](GwzRemoteTransportSshAgentDesign.md),
@@ -33,10 +30,10 @@ and fixtures and validation (2 to 4), and it left Windows to "its own capability
 transport route already has its own agent client and signer, so the first two items are not needed;
 what is needed instead is the selection surface (parser, admission, routing, words, docs) and the
 evidence. For the same scope (Phases A to C and step 4.1, macOS and Linux) the budget in section 7 is
-about 2,000 production lines and 3,300 test lines, which I estimate at 6 to 9 engineering days, no
-smaller than the old figure. Windows (step 4.2, Pageant, receipts) adds 3 to 5, and two review rounds
-are on top: **9 to 14 days in all**, with dabeest bookings and one optional operator Pageant session
-setting the calendar. These are estimates, not measurements, and they replace the first draft's
+about 2,000 production lines and 3,350 test lines, which I estimate at 6 to 9 engineering days, no
+smaller than the old figure. Windows (step 4.2, Pageant, receipts) adds 3 to 5, which is 9 to 14 before
+review, and the two review rounds of section 7 add 1 to 2 more: **10 to 16 days in all**, with dabeest
+bookings and one optional operator Pageant session setting the calendar. These are estimates, not measurements, and they replace the first draft's
 "4 to 7 days".
 
 ## 1. What exists today
@@ -105,14 +102,18 @@ one pure function, `agent_pubkey::classify(bytes)`, used by admission and by the
 refusal (K5). It runs on the bytes **before** the UTF-8 check, and the first matching step wins:
 
 1. **Armor.** Some line (split on CR and on LF, exactly as `ssh_key_container::line` splits, so the
-   two rules cannot disagree) starts `-----BEGIN ` (ignoring one leading UTF-8 byte-order mark for this
-   test only, so that a private key saved with a mark keeps today's refusal instead of K4): a private-key
+   two rules cannot disagree) starts `-----BEGIN `: a private-key
    candidate, and today's container check runs unchanged, D17 included, whatever else the file holds. A
-   file with a private block and a public line is a private key.
+   file with a private block and a public line is a private key. (A private key saved with a UTF-8
+   byte-order mark has no such line and goes to step 2; since K4 is worded for either intent, that is
+   better than the generic refusal it gets today.)
 2. **Encoding near-miss.** The file starts with a UTF-16 byte-order mark (`FF FE`, `FE FF`) or a
    UTF-8 one (`EF BB BF`), or has a NUL byte in its first 256 bytes: refusal K4. (Windows PowerShell's
-   `>` writes UTF-16 with a mark, section 3.1.)
-3. **Not UTF-8.** Refused as today (the generic refusal), unchanged.
+   `>` writes UTF-16 with a mark, section 3.1.) The user may have meant a private key (a UTF-16 private
+   key, a binary DER key) as well as a public one, and the wire cannot carry which, so K4's words are
+   worded for either intent.
+3. **Not UTF-8.** Also K4 (a binary key such as DER, or any file that is not text). Before revision 2
+   this was the generic refusal, which tells the user nothing.
 4. **Foreign formats.** The first non-blank line starts `---- BEGIN SSH2 PUBLIC KEY ----` (RFC 4716,
    which PuTTYgen's "Save public key" writes) or `PuTTY-User-Key-File-` (a `.ppk`): refusal K4.
    RFC 4716 is classified, not accepted: one more format to bound and parse buys nothing when K4
@@ -169,8 +170,8 @@ a `.pub` name, in either direction (no "use `id_x` because `id_x.pub` was named"
 ### 2.4 Help text (proposed, for the Surface look)
 
 `--identity PATH`: "Use only this SSH key and no other: a private-key file without a passphrase, or a
-public-key file (for example ~/.ssh/id_work.pub) to use that key from your SSH agent. gwz's own transport
-only." `--remote-identity NAME=PATH`: "Override the SSH key for this remote name across selected
+public-key file (for example ~/.ssh/id_work.pub) to use that key from your SSH agent (gwz's own transport
+only)." `--remote-identity NAME=PATH`: "Override the SSH key for this remote name across selected
 repositories, as --identity; repeatable." The long help adds: whether a file is a private or a public key
 is decided by what it holds, not by its name; the agent must already hold the key (`ssh-add`); on
 Windows the agent is Pageant if a Pageant window is running, else the OpenSSH agent; `--transport
@@ -219,8 +220,16 @@ mark; it was not available on the host and was not measured.
 4. **The agent lacks the key** (the list has no match, is empty, the agent is locked, or it refuses to
    list): the step ends **before** `offered()` and before the fingerprint is set, and the open ends
    with refusal K1.
-5. **An agent that cannot be reached.** On Unix, no `SSH_AUTH_SOCK` (source `None`) or a socket that
-   does not answer (source `Path`) is refusal K0. On Windows the pipe, Pageant and a refused
+5. **An agent that cannot be reached.** On Unix, no `SSH_AUTH_SOCK` (source `None`), a socket that
+   does not exist or does not answer (source `Path`), or one that refuses access (`EACCES`, as when a
+   shell keeps another user's socket path after `su` or `sudo`) is refusal K0. The last needs a code
+   change: `agent_socket::connect` passes `EACCES` on as `PermissionDenied` (`agent_socket.rs:67`), which the
+   setup maps to `Authentication` (`ssh_setup.rs:604`) and the table would word K1, and which breaks the
+   invariant of `agent_source/fault.rs:33-36` ("never `PermissionDenied`: that is an authentication
+   failure, and no key was offered"). Step 2.2 maps a connect-time `PermissionDenied` of a `Path` source
+   to `AgentFault::Denied` (kind `Unsupported`, so `Unavailable` with no cause) in
+   `AgentSource::open_path`. A list-time `PermissionDenied` (an agent that answers `SSH_AGENT_FAILURE`,
+   `agent_client.rs:46-48`) is not touched: it is rule 4, K1. On Windows the pipe, Pageant and a refused
    `SSH_AUTH_SOCK` keep their existing source words (`unavailable_reason`: the stopped service, the
    missing pipe, a gone or refusing Pageant). K1 is only for a reachable agent. Everything before the
    agent step is unchanged: the host key is checked first, then the agent is listed.
@@ -241,8 +250,13 @@ mark; it was not available on the host and was not measured.
 9. **Retried opens.** An open's final facts merge its attempts (`setup_retry::merged_facts`). If an
    earlier attempt offered the key and a later one ended before offering it, the merged facts say the
    key was offered; the words are then K2 or K3 instead of K1. The words add the existing
-   `(attempt N of M)` suffix for a retried open so the user is told there was more than one attempt;
-   the limitation is recorded in section 8.
+   `(attempt N of M)` suffix for a retried open so the user is told there was more than one attempt.
+   **Not fixed in 1.1.0, deliberately.** The Local placement could record the final attempt's offered bit
+   through the `Handoff` (as D12 does for a host-key finding), with no wire change. It is not done
+   because the Cli placement (1.2.0) cannot do it without a wire change, so the same failure would be
+   worded differently by placement; because the case needs an attempt that stalls or drops *after* the
+   offer and an agent that changes before the next attempt; and because the suffix already tells the
+   user to look at more than one attempt. The pinned row stays; revisit when the wire is next opened.
 
 ### 3.3 The texts, and the one table that selects them
 
@@ -262,7 +276,7 @@ endpoint sets it only when the selected key is offered, so it is the bit "the se
 | # | Outcome | Selected when | Text | Source of the words |
 | --- | --- | --- | --- | --- |
 | 1 | The key file cannot select a key | `UnsupportedOperation`, method `SshAgent`, no fingerprint | **K4** | new, step 1.3 |
-| 2 | The agent cannot be reached, Unix | `Unavailable` (cause `NotFound` or `ConnectionRefused`), exact open, no fingerprint, source `None` or `Path` | **K0** | new, step 1.3 |
+| 2 | The agent cannot be reached, Unix | `Unavailable` (cause `NotFound`, `ConnectionRefused`, or none: an `EACCES` socket, rule 5), exact open, no fingerprint, source `None` or `Path` | **K0** | new, step 1.3 |
 | 3 | The agent cannot be reached, Windows | `Unavailable`, exact open, no fingerprint, source `NamedPipe`, `Pageant` or `Refused` | existing source words, unchanged (`unavailable_reason`) | `agent_source/words.rs`, `pageant_words.rs` |
 | 4 | Pageant did not answer | `Timeout` with cause stall, aggregate or none, exact open, source `Pageant` | T6, T6b, or the cap text, **without** the "use --transport native" clause | `pageant_words.rs`, step 2.3 |
 | 5 | The agent lacks the key | `Authentication`, exact open, no fingerprint | **K1**, one remedy per source | new, step 1.3 |
@@ -272,14 +286,23 @@ endpoint sets it only when the selected key is offered, so it is the bit "the se
 | 9 | A private key has a passphrase | `UnsupportedOperation`, method `SshKey`, no credential offered | **K6** (D17, revised) | `ssh_limits.rs`, step 3.2 |
 | 10 | Any other code, or `effect` not `None` | otherwise | the generic words, unchanged | `driver.rs:157` |
 
+**Where each row is selected.** Rows 1 to 7 and 10 are selected by the table function, which
+`open_failure_io` calls first for an exact open. Rows 8 and 9 are listed for completeness only, so that
+the table covers every outcome of the feature, and the table function never matches them: row 8 is
+selected where it is made (core's native `explicit_credential`, no wire failure exists), and row 9 by
+the existing `SshLimit::of_failure` path (`method SshKey`, so not an exact open), whose words step 3.2
+makes source-aware by passing `open_failure_io`'s agent source kind to `SshLimit::reason`.
+
 Rows 2 to 7 add `(attempt N of M)` when the open was retried (rule 9). Row 5 replaces Pageant's "no key
 this transport can use" (`NO_KEY_WORDS`) for an exact open, because Pageant may hold other keys.
 
-- **K0, the agent cannot be reached** (Unix). Source `None` says "SSH_AUTH_SOCK is not set in this
-  environment"; source `Path` says "the agent SSH_AUTH_SOCK names is not answering":
+- **K0, the agent cannot be reached** (Unix). The clause is chosen by the source and its cause: source
+  `None` says it is not set; `Path` with cause `NotFound` says the socket does not exist; with cause
+  `ConnectionRefused` that nothing is answering; with no cause (an `EACCES` socket) that it belongs to
+  another user:
 
   ```
-  GWZ could not reach an SSH agent, so it could not use the key in <file>, and it offered the server nothing. <SSH_AUTH_SOCK is not set in this environment. | The agent that SSH_AUTH_SOCK names is not answering.> Start an agent (eval "$(ssh-agent -s)" in a POSIX shell), add the key with ssh-add <the private key file>, and run the command again. A shell started by sudo, cron or an IDE terminal may not have the SSH_AUTH_SOCK of your login session.
+  GWZ could not reach an SSH agent, so it could not use the key in <file>, and it offered the server nothing. <SSH_AUTH_SOCK is not set in this environment. | The socket that SSH_AUTH_SOCK names does not exist. | The agent that SSH_AUTH_SOCK names is not answering. | The agent that SSH_AUTH_SOCK names belongs to another user or refuses this account.> Start an agent (eval "$(ssh-agent -s)" in a POSIX shell), add the key with ssh-add <the private key file>, and run the command again. A shell started by sudo, su, cron or an IDE terminal may not have the SSH_AUTH_SOCK of your login session.
   ```
 
 - **K1, the agent does not hold the key** (a reachable agent; the key was not offered). Every variant
@@ -307,10 +330,12 @@ this transport can use" (`NO_KEY_WORDS`) for an exact open, because Pageant may 
   <host> did not accept the key in <file> (<fingerprint>). GWZ offered that key and no other, so it did not try the agent's other keys. Check that the key is added to your account on <host> (ssh-keygen -lf <file> prints the fingerprint to compare), or select another key. For an RSA key this includes a server that accepts none of rsa-sha2-512, rsa-sha2-256 or ssh-rsa.
   ```
 
-- **K4, the file cannot select a key** (rule C steps 2, 4, 5 and 6; `UnsupportedOperation`, at admission):
+- **K4, the file cannot be used as an SSH key file** (rule C steps 2 to 6; `UnsupportedOperation`, at
+  admission). The wire cannot say whether the user meant a public or a private key, so the text is worded
+  for either:
 
   ```
-  <file> cannot select an SSH agent key. It must hold exactly one OpenSSH public key on one line, as ssh-keygen writes to a .pub file, of type ssh-ed25519, ecdsa-sha2-nistp256, ecdsa-sha2-nistp384, ecdsa-sha2-nistp521, ssh-rsa, ssh-dss, sk-ssh-ed25519@openssh.com or sk-ecdsa-sha2-nistp256@openssh.com, or an OpenSSH certificate of one of those except ssh-dss, saved as plain ASCII or UTF-8 text with no byte-order mark. Common causes: a file from PuTTYgen's Save public key (it starts ---- BEGIN SSH2 PUBLIC KEY ----; copy the box Public key for pasting into OpenSSH authorized_keys file into a new file instead, or convert it with ssh-keygen -i -f <file>, saving the output the way the commands below do); a PuTTY .ppk private key file (save its public key from PuTTYgen the same way); a file that Windows PowerShell wrote with > (it is UTF-16); text in front of the key type; or more than one key. To write the public key of a private key you have: [Unix and Git Bash] ssh-keygen -y -f <the private key> > <file>   [PowerShell] ssh-keygen -y -f <the private key> | Set-Content -Encoding ascii <file>. To use a private-key file instead, select the private key itself.
+  GWZ cannot use <file> as an SSH key file. To select a key from your SSH agent it must hold exactly one OpenSSH public key on one line, as ssh-keygen writes to a .pub file, of type ssh-ed25519, ecdsa-sha2-nistp256, ecdsa-sha2-nistp384, ecdsa-sha2-nistp521, ssh-rsa, ssh-dss, sk-ssh-ed25519@openssh.com or sk-ecdsa-sha2-nistp256@openssh.com, or an OpenSSH certificate of one of those except ssh-dss. To use a private key it must be a PEM or OpenSSH private-key text file without a passphrase. Either way the file must be plain ASCII or UTF-8 text with no byte-order mark. Common causes: a file saved as UTF-16 or with a byte-order mark (Windows PowerShell's > and Out-File do this), or a binary (DER) key; a file from PuTTYgen's Save public key (it starts ---- BEGIN SSH2 PUBLIC KEY ----; copy the box Public key for pasting into OpenSSH authorized_keys file into a new file instead, or convert it with ssh-keygen -i -f <file>, saving the output the way the commands below do); a PuTTY .ppk private key file (save its public key from PuTTYgen the same way); text in front of the key type; or more than one key. To write the public key of a private key you have: [Unix and Git Bash] ssh-keygen -y -f <the private key> > <file>   [PowerShell] ssh-keygen -y -f <the private key> | Set-Content -Encoding ascii <file>.
   ```
 
 - **K5, the native transport** (emitted by core's native `explicit_credential`, which reads at most
@@ -323,14 +348,20 @@ this transport can use" (`NO_KEY_WORDS`) for an exact open, because Pageant may 
   ```
 
 - **K6, D17's words, revised** (a private key file with a passphrase; Surface re-reads an accepted
-  text). The remedies become: load the key with `ssh-add "<file>"` and name its public key wherever you
-  named `<file>` (`--identity`, `--remote-identity`, or `gwz auth identity <remote> --set`):
-  `<file>.pub`, so that gwz offers that key only (always followed by the shell-safe `ssh-keygen -y`
-  line of K4, because the host cannot see whether the `.pub` exists: the endpoint resolves the path,
-  and in the Cli placement it is in another process); or drop those three to let gwz offer every key
-  the agent holds; or remove the passphrase from a copy and select the copy. The Windows RSA-PEM
-  limit's words (`SshLimit::KeyFile`, which end "load the key into an SSH agent ... instead") gain
-  "and name its public key file, `--identity <key>.pub`".
+  text). It is **source-aware**, like K1, because `ssh-add` reaches the OpenSSH agent and not Pageant:
+  `SshLimit::reason` gains the agent source kind, which `open_failure_io` already holds (step 3.2). The
+  first remedy is: load the key into the agent gwz uses, and name its public key wherever you named
+  `<file>` (`--identity`, `--remote-identity`, or `gwz auth identity <remote> --set`): `<file>.pub`, so
+  that gwz offers that key only. The loading step is `ssh-add "<file>"` for a Unix agent or the Windows
+  OpenSSH agent (the service must be running), and for Pageant "Add Key" from its notification-area
+  icon (Pageant loads PuTTY .ppk files, which PuTTYgen makes from the OpenSSH key; `ssh-add` cannot add
+  a key to Pageant). The first remedy is always followed by the shell-safe `ssh-keygen -y` line of K4,
+  because the host cannot see whether the `.pub` exists: the endpoint resolves the path, and in the Cli
+  placement it is in another process. The second remedy, drop those three to let gwz offer every key the
+  agent holds, and the third, remove the passphrase from a copy and select the copy, are as before. The
+  Windows RSA-PEM limit's words (`SshLimit::KeyFile`, which end "load the key into an SSH agent ...
+  instead") gain, with the same source branch, "and name its public key file wherever you named the
+  key file, `<key>.pub`".
 
 Pageant's passphrase or confirmation wait, a refused Pageant and a gone Pageant keep T6, T6b, T10 and
 the gone-words as they are, except that an exact open drops the clause "or use --transport native" from
@@ -400,7 +431,7 @@ sources.
 - **Words** (new module beside `agent_source/words.rs`, so `driver.rs` stays under 1,000 lines): the
   selection table of section 3.3 as one pure function, and the K texts. `open_failure_io` calls it
   first for an exact open, with Pageant's timeout rows taking the no-native variant. `AgentSource`
-  gains a `kind()` for the K1 variants.
+  gains a `kind()` for the K1 and K6 variants.
 
 ### 4.2 Per platform
 
@@ -410,7 +441,15 @@ sources.
 | Exact selection | the shared filter | the shared filter | the shared filter |
 | What differs | nothing; a stale socket (`ECONNREFUSED`) is a refused connection to the retry machine and is retried like the ambient step's (F6) | nothing | the list may include a key whose passphrase Pageant asks for at first use, so the sign request can outlast the stall (T6, T6b); a request or reply over 8,188 payload bytes is refused (parity design §5), as for the ambient step |
 | Unreachable agent | K0 | the existing service and pipe words | the existing gone and refused words |
-| Evidence new here | two-key agent, both orders | two-key pipe agent (`agent_fixture_pipe`) | the in-crate synthetic Pageant (step 2.4) and, if the operator asks for it, one real-Pageant session (step 4.2) |
+| Evidence new here | two-key agent, both orders | two-key pipe agent (`agent_fixture_pipe`) | the in-crate synthetic Pageant (step 2.4), which carries no parity claim of its own (`pageant_endpoint.rs:4-5`), and, if the operator asks for it, one real-Pageant session (step 4.2) |
+
+**The Pageant cell of S5.6 rests on composition, and says so.** Without a real-Pageant exact row
+(OQ5), the claim is: the filter is above `Channel` and is the same for all three sources (the
+scripted-`Channel` unit rows); the synthetic-Pageant rows X9e, B06e and PX drive the real
+`PageantChannel` and the product's source selection; real Pageant 0.83's list and sign were proven for
+the ambient step on 2026-10-17 (run `2026-10-17-pageant-operator`, B06 and X9); and D30's exact row ran on
+the OpenSSH pipe agent. Step 5.2 records that basis in the S5.6 table and the route ledger's cell 9.7 as
+"composition", not as a real-Pageant exact run.
 
 **Source precedence is unchanged and the exact key does not change it.** The runtime still chooses
 one source once, when it is built: on Windows a Pageant window first, else a local pipe named by
@@ -444,8 +483,9 @@ Step 5.1 therefore:
 
 - adds one function, `transport_route_installed()`, beside the route's own cfg in
   `git/gitbackend/transport_binding.rs`, with the same predicate that compiles the route
-  (`all(gwz_transport_candidate, any(unix, windows))` today; the activation step C4 replaces that cfg
-  and the function with it, in one place, so the two cannot drift);
+  (`all(gwz_transport_candidate, any(unix, windows))` today; step C3 (S7.1c) of
+  `GwzV110RemainingPlan.md`, which removes the switch from gwz-core's sites, replaces that cfg and this
+  function with it in one place, so the two cannot drift; C4 is gwz-cli and gwz-py);
 - makes the static handler answer `exact_agent_identity: transport_route_installed()`, and rewrites its
   doc comment, which says "of the native backend";
 - drops `!cfg!(windows)` from the session projection's field (`cli_placement.rs:129`);
@@ -481,18 +521,22 @@ held in one agent, a rejected plain key, an authorized plain key and an authoriz
 | a plain key, rejected | `Failed publickey for U ssh2: ED25519 SHA256:aaa` |
 | a plain key, accepted | `Accepted key ED25519 SHA256:bbb found at <authorized_keys>:1`, then `Accepted publickey for U ssh2: ED25519 SHA256:bbb` |
 | a certificate, accepted | `Accepted certificate ID "id" (serial 0) ...`, then `Accepted publickey for U ssh2: ED25519-CERT SHA256:aaa ID id (serial 0) CA ED25519 SHA256:ca` |
+| a certificate, rejected | `Refusing certificate ID "id" ...`, then `Failed publickey for U ssh2: ED25519-CERT SHA256:aaa ID id (serial 0) CA ED25519 SHA256:ca` (seen by the Safety reviewer on the same sshd; step 2.0 pins it on each fixture) |
 
 A certificate and its own key log the **same fingerprint**; only the type token (`ED25519` against
 `ED25519-CERT`) and the certificate ID tell them apart. So the oracle parses each line into a
 (**type token**, **fingerprint**) pair plus the certificate ID where there is one, and every assertion is
 on that pair, **never on the fingerprint alone**. The line shapes are per sshd version, so step 2.0
-pins them on each fixture (macOS, Linux, and Windows OpenSSH 9.5p2, whose log is held until sshd
-stops) before any green step; a rejected certificate query's line was not observed here and is part of
-that step.
+pins all four shapes, the rejected certificate's included, on each fixture (macOS, Linux, and Windows
+OpenSSH 9.5p2, whose log is held until sshd stops) before any green step.
 
-Each exact row has a **negative control**: the same scenario under the ambient step shows every
-agent key's pair in the log. Without it a silent log would pass every row. The Windows control is
-proven in Phase B (step 2.0's Windows receipt), not only in step 4.2.
+Each exact row has a **negative control** that can be satisfied: the same scenario under the ambient
+step, run in the order where the **non-selected key is listed first**, so that the ambient step offers
+it before any key can authenticate, and the control asserts that the non-selected key's (type,
+fingerprint) pair appears in the log. (Asserting "every key's pair" would be false in the order where the
+authorizing key is listed first, because the ambient step stops at it.) Without a control a silent log
+would pass every row. The row itself still runs in both orders. The Windows control is proven in Phase B
+(step 2.0's Windows receipt), not only in step 4.2.
 
 ### 6.1 D30's row, and its companions
 
@@ -505,7 +549,7 @@ the rows run both list orders. Keys are named A and B here, and K0 to K6 are tex
 | **X2** `agent-exact-selected-unauthorized-no-fallthrough` | select B's `.pub` while A is in the agent, both orders | K3; the log shows only B's pair; A is never queried; no authentication |
 | **X3** `agent-exact-absent` | select a third key the agent lacks | K1; zero queries, zero signs; the facts carry no fingerprint |
 | X4 | empty agent; locked agent | K1; zero queries |
-| **X5u** (Unix) | `SSH_AUTH_SOCK` unset or empty; then a socket path whose agent is gone | K0 (the first says "not set", the second "not answering"); no offer; the second shows its attempts |
+| **X5u** (Unix) | `SSH_AUTH_SOCK` unset or empty; a path that does not exist; a socket whose agent is gone; a socket the user cannot connect to (mode `000`, so `EACCES`) | K0 with its four clauses ("not set", "does not exist", "not answering", "belongs to another user or refuses this account"), never K1; no offer; the stale socket shows its attempts; the `EACCES` case is `Unavailable` with no cause |
 | **X5w** (Windows) | the OpenSSH service stopped (default pipe absent); a pipe `SSH_AUTH_SOCK` names that does not exist; a refused `SSH_AUTH_SOCK`; a gone Pageant | the existing words of each source, unchanged, no offer |
 | X6 `agent-exact-declined` | the agent declines to sign the selected key | K2; no other key is offered |
 | **C1** | the agent holds A and A's certificate; select A's plain `.pub`; both list orders | the log shows `ED25519 <A>` and no `ED25519-CERT` line |
@@ -513,7 +557,7 @@ the rows run both list orders. Keys are named A and B here, and K0 to K6 are tex
 | **C3** | only A's certificate is authorized (CA trust), the plain key is not; select the plain `.pub` | K3; the certificate is never offered, the open never authenticates through it |
 | **C4** | the agent holds only the certificate; select the plain `.pub`; then the agent holds only the plain key and the certificate is selected | K1 in both |
 | X8 | RSA `.pub` against a server accepting `rsa-sha2-256` only, `rsa-sha2-512` only, `ssh-rsa` only | as the ambient RSA rows, with no other key |
-| **X8n** | an RSA `.pub` against a server whose `PubkeyAcceptedAlgorithms` lists none of the three RSA algorithms (`with_config`) | K3 (pinned), with the ambient control showing `METHOD_NONE` in the ambient step's facts |
+| **X8n** | an RSA `.pub` against a server whose `PubkeyAcceptedAlgorithms` lists none of the three RSA algorithms (`with_config`) | K3 (pinned): the `rejected()` hook fires and the facts read `authenticated: false`. The control is observable without facts (they carry no return code): the ambient step run through the test-only `observed_authenticate` hook (`agent_auth.rs:174`) reports `LIBSSH2_ERROR_METHOD_NONE`, and the server log shows no query for the key (libssh2 sent nothing), so the exact step's `rejected()` is the only thing that turns that silence into K3 |
 | X9e (Windows, in-crate synthetic Pageant) | Pageant is the source and lacks the selected key; the pipe agent holds it | K1 with the Pageant remedy; the pipe agent sees no connection |
 | B06e (Windows, in-crate) | Pageant and the pipe agent both hold it | authenticates through Pageant; the pipe sees no connection |
 | PX (Windows, in-crate) | the synthetic Pageant holds A and B; select A, then B | as X1 and X2 |
@@ -535,8 +579,10 @@ the rows run both list orders. Keys are named A and B here, and K0 to K6 are tex
   `authorized_keys` options in front; the type word not equal to the blob's; invalid base64; a
   truncated blob per family (the layout check); a blob of 65,537 bytes; a file over 128 KiB; a control
   character in the comment; a CR-separated armor block hidden in a comment (armor wins, so it is a
-  private candidate); non-UTF-8 bytes (generic refusal); a UTF-8 BOM; a UTF-16LE file with a BOM;
-  a NUL in the first 256 bytes; RFC 4716 as `ssh-keygen -e` writes it and as PuTTYgen writes it; a
+  private candidate); non-UTF-8 bytes (K4, step 3); a UTF-8 BOM; a UTF-16LE file with a BOM; a valid
+  private key saved as UTF-16LE with a BOM and without one (K4, with the intent-neutral words); a binary
+  DER private key (K4); a valid private key with a UTF-8 BOM (K4); a NUL
+  in the first 256 bytes; RFC 4716 as `ssh-keygen -e` writes it and as PuTTYgen writes it; a
   `.ppk` header; an unknown type (`ssh-xmss@openssh.com`); a DSA certificate. Random bytes never panic.
 - Matching: blob equality; a blob that differs in one byte (same type, same length) does not match; a
   certificate does not match its plain key and the reverse; a duplicate listing is offered once;
@@ -586,40 +632,40 @@ with no edge to another can be taken by a separate agent at the same time.
 | --- | --- |
 | 1.1, 1.2, 1.3 | nothing (parallel) |
 | 2.0 | 1.1, 1.2 |
-| 2.1 | 1.1 |
+| 2.1 | 1.1, 1.3 (the K4 `SshLimit` arm's text) |
 | 2.2 | 1.2, 2.1 |
 | 2.3 | 1.3, 2.1, 2.2 |
 | 2.4 | 2.2, 2.3 |
 | 3.1 | 1.1, 1.3 |
-| 3.2 | 1.3 |
+| 3.2 | 1.3, 2.3 (both edit `driver.rs`'s call to `SshLimit::reason`) |
 | 3.3 | 2.3, 3.1, 3.2 |
-| 4.1 | 2.3, 3.1 |
-| 4.2 | 2.3, 2.4, 3.1 |
+| 4.1 | 2.3, 3.1, 3.3 and the Phase C review |
+| 4.2 | 2.3, 2.4, 3.1, 3.3 and the Phase C review |
 | 5.1 | 3.3, 4.1, 4.2, and lane `cap72`'s merge |
 | 5.2 | 5.1 |
 
-Steps 2.0 and 2.1 are parallel; 3.1 and 3.2 are parallel with Phase B.
+Steps 2.0 and 2.1 are parallel; 3.1 is parallel with Phase B; 3.2 follows 2.3. The evidence steps wait for the Phase C review so that a change it makes to a text cannot stale an archived run.
 
 | Step | Goal | Files (indicative) | Lines (production + tests) |
 | --- | --- | --- | --- |
 | 1.1 | `agent_pubkey.rs`: the classifier (rule C) and the selection parser, bounded; `KeyType::key` made crate-visible; every accept and near-miss row | new `git/endpoint/agent_pubkey.rs`, `agent_keys.rs` | 300 + 450 |
 | 1.2 | Exact choice in `agent_auth`: filter, early end, one offer, `METHOD_NONE` as rejected; scripted-channel rows | `git/endpoint/agent_auth.rs` | 140 + 300 |
 | 1.3 | The selection table as one pure function; K0 to K5 texts, the K1 variants, the shell-safe `ssh-keygen -y` lines, `AgentSource::kind()`; every text pinned | new `agent_source/exact_words.rs` | 300 + 300 |
-| 2.0 | The in-crate rows (section 6.1 except the Windows-Pageant and capability rows) on the shared fixture API (Unix proxy agent and Windows pipe agent), with a server log oracle on (type, fingerprint), its negative controls proven on each fixture's sshd including Windows; written red against the ambient step | `ssh_tests/*`, the two agent fixtures, `ssh_fixture.rs` | 0 + 550 |
+| 2.0 | The in-crate rows (section 6.1 except the Windows-Pageant and capability rows) on the shared fixture API (Unix proxy agent and Windows pipe agent), with a server log oracle on (type, fingerprint), the four log shapes (the rejected certificate's `Refusing certificate ID` and `Failed publickey ... ED25519-CERT` lines included) pinned on each fixture, and its negative controls (non-selected key listed first) proven on each fixture's sshd including Windows; written red against the ambient step | `ssh_tests/*`, the two agent fixtures, `ssh_fixture.rs` | 0 + 550 |
 | 2.1 | Admission: rule C in `read_with`, Agent entry kind, interning by (pool key, kind, blob), the `SshLimit` variant for K4 with its own method mark, the `of_failure` arm, the refusal invariant of section 4.1 | `ssh_key_snapshot.rs`, `ssh_limits.rs`, `ssh_admission.rs` | 350 + 300 |
-| 2.2 | Routing: Agent entry to the exact agent step, early `SshAgent` mark for every source, fingerprint at the offer, success facts; never helpers or ambient | `ssh_local.rs`, `ssh_setup.rs` | 250 + 250 |
+| 2.2 | Routing: Agent entry to the exact agent step, early `SshAgent` mark for every source, fingerprint at the offer, success facts; never helpers or ambient; a connect-time `PermissionDenied` of a `Path` source becomes `AgentFault::Denied` (rule 5) | `ssh_local.rs`, `ssh_setup.rs`, `agent_source.rs` | 270 + 280 |
 | 2.3 | Host: `open_failure_io` calls the table first for an exact open; the no-native variants of T6, T6b and the cap text; the retried-open suffix | `transport_host/session/driver.rs`, `agent_source` | 200 + 250 |
 | 2.4 | Windows in-crate rows X9e, B06e and PX, driving the real `PageantChannel` and source selection against the synthetic Pageant window, and the Pageant K1 remedy, as twins of `pageant_endpoint.rs`'s B06 and X9 | `ssh_tests/pageant_endpoint.rs` | 0 + 250 |
 | 3.1 | Native refusal K5 from the shared classifier, with the named-by clause; the native explicit-credential text (`transport_support.rs:248`) | `git/gitbackend/transport_support.rs` | 180 + 200 |
-| 3.2 | K6 (D17 revised) and the `KeyFile` words, sole owner of the encrypted-key and Windows-limit texts | `git/endpoint/ssh_limits.rs` | 120 + 150 |
+| 3.2 | K6 (D17 revised) and the `KeyFile` words, source-aware (a Pageant branch, "wherever you named"), sole owner of the encrypted-key and Windows-limit texts; passes the agent source kind to `SshLimit::reason` | `git/endpoint/ssh_limits.rs`, `transport_host/session/driver.rs` | 140 + 170 |
 | 3.3 | Help (gwz-cli, gwz-py), `auth identity` help, and the docs: `gwz-cli/docs/commands/auth.md` (its "remains unsupported" paragraph), `Releases.md` (the two "remains unsupported" lines and the migration note), `Troubleshooting.md` (the D17 entry and a new one for K0 to K5), `MachineOutput.md` and `gwz-core/docs/MessageCatalog.md` (the field may hold a public-key path; the fingerprint is now filled), the gwz-py `RemoteSshIdentity` docstring; pins | gwz-cli, gwz-py, gwz-core docs | 150 + 150 |
 | 4.1 | CLI-level rows X1 to X3, X5u, X6, C1 to C3 and the native refusal on macOS and Linux (runner), archived | `tests/transport_backend`, evidence | 0 + 400 |
 | 4.2 | Windows: the same rows against the OpenSSH pipe agent on dabeest (runner), X5w, and the real-Pageant operator-session script if OQ5 asks for it; archived | evidence runner | 0 + 500 |
 | 5.1 | The capability tied to the route (section 5), the doc comment, the qualification tests, and gwz-py's advisory check | `transport_binding.rs`, `transport_capabilities.rs`, `cli_placement.rs`, gwz-py `client.py`, tests | 100 + 150 |
-| 5.2 | Route ledger cell 9.7, S5.6 table, checkpoint, decision record; evidence archive check | docs only | docs |
+| 5.2 | Route ledger cell 9.7, S5.6 table (the Pageant cell recorded as composition, section 4.2), checkpoint, decision record; evidence archive check | docs only | docs |
 
-Total about 2,090 production lines and 4,200 test and runner lines (the like-for-like scope of section 0
-is the sum without 2.4, 4.2 and 5.1: about 1,990 and 3,300). Step 2.0 starts as soon as 1.1 and 1.2
+Total about 2,130 production lines and 4,250 test and runner lines (the like-for-like scope of section 0
+is the sum without 2.4, 4.2 and 5.1: about 2,030 and 3,350). Step 2.0 starts as soon as 1.1 and 1.2
 land, so that Phase B is written against failing rows; the Windows twin of those rows runs in the
 Windows receipt of every Phase B step.
 
@@ -647,8 +693,9 @@ precedes the texts it reads.
   a file of any name holding one public line selects an agent key. Both follow content, stated in the
   help and covered by the rule C rows.
 - **Retried opens can misword K1 as K2 or K3** (rule 9): the merged facts of an open keep an earlier
-  attempt's offer. The suffix and a pinned row make it visible; separating the last attempt's facts
-  would need a wire change.
+  attempt's offer. The suffix and a pinned row make it visible. Recording the final attempt's offered
+  bit through the `Handoff` would fix it in the Local placement without a wire change, and is declined
+  for 1.1.0 for the reasons in rule 9; the Cli placement could only fix it with a wire change.
 - **Slot charge.** A public entry uses a full registry slot and its 1 MiB charge like a private one
   (64 slots in all). Fan-out shares one entry. Shrinking the charge after the read is a possible
   later change, not needed.
@@ -684,8 +731,8 @@ precedes the texts it reads.
 8. **OQ8, certificates.** Exact blob equality (recommended: a certificate is selected by its file),
    or also offer the matching certificate when a plain `.pub` is selected, as OpenSSH's `CertificateFile`
    does? The second offers more than was selected, possibly under different principals.
-9. **OQ9, the estimate.** Section 0 restates it like for like: 6 to 9 days for the old scope, 9 to 14 in
-   all. Confirm that the library work the old estimate priced (a git2 custom credential) is not needed
+9. **OQ9, the estimate.** Section 0 restates it like for like: 6 to 9 days for the old scope, 9 to 14
+   with Windows, 10 to 16 with the two review rounds. Confirm that the library work the old estimate priced (a git2 custom credential) is not needed
    and stays untouched, per the standing rule on git2-rs.
 
 ## 10. Findings outside the scope (not authorized, not blocking)
@@ -699,33 +746,35 @@ precedes the texts it reads.
 | F5 | `gwz auth identity <remote> --set` defaults to the active members; the root needs `--member @root` or `--all` (`gwz-cli/docs/commands/auth.md`). A user who stores a `.pub` without `--all` leaves the root on the all-keys behaviour. Existing behaviour, read from the docs. | It undercuts the hazard this feature closes | An operator decision on the default, or a hint in the command's output; the help of step 3.3 mentions `--all` | No |
 | F6 | A stale agent socket (`ECONNREFUSED`) maps to `Unavailable` with cause `ConnectionRefused`, which `setup_retry::classify` retries (up to the open's attempts, about 7.75 s of waits) like a refused server connection (`ssh_setup.rs:595-625`, `setup_retry.rs:63-77`). By reading; not run. | A dead agent is retried before it is reported, for the ambient step as well | Classify an agent-socket refusal as final; not needed for D38 | No |
 
-## 11. Revision 1: the findings and their closures
+## 11. Revisions 1 and 2: the findings and their closures
+
+### Revision 1 (round-1 findings)
 
 Both reviews are in `GwzExactAgentIdentityDesign-ReviewConsistency.md` (C) and `-ReviewSafety.md` (S);
 the plan is `-RemPlan.md`. Line numbers are of this file.
 
 | Finding | What it said | Closed in |
 | --- | --- | --- |
-| C P2-1 / S P3-2 | K1's remedy is wrong for Pageant | §3.3 K1, three remedies (line 285); §3.3 table row 5 (line 268); §4.2 evidence row (line 413); row X9e (line 517); step 1.3 (line 607); step 2.4 (line 612) |
-| C P2-2 | Unix no-agent gets the bare Unavailable text | §1 facts row (line 52); §3.2 rule 5 (line 222); §3.3 table rows 2 and 3 (line 265); K0 (line 278); rows X5u, X5w (line 508); F6 (line 700) |
-| C P2-3 / S P2-4 | Rule C near-misses (RFC 4716, .ppk, BOM, UTF-16LE, options) and the PowerShell remedy | §2.2 steps 2 to 6 (line 112); §3.1 measured behaviour (line 191); K4 (shell-safe lines) (line 310); §6.2 parser rows (line 533); step 1.1 (line 605) |
-| S P2-1 / C P3-4 | The capability is not tied to the compiled route; the doc comment and OQ4 | §1 route row (line 55); §5 capability (line 439); row Capability (line 529); OQ4 (line 666); step 5.1 (line 618) |
-| S P2-2 / C P3-1 | METHOD_NONE is worded K2 | §3.2 rule 6 (line 227); §3.3 table row 7 (line 270); §4.1 agent step (line 390); row X8n (line 516); step 1.2 (line 606) |
-| S P2-3 | The oracle cannot tell a certificate from its key; no both-loaded row | §3.2 rule 1 (line 207); §3.2 rule 8 (line 236); §3.5 (line 348); §6 oracle table (line 471); rows C1 to C4 (line 511); §6.2 matching and admission rows (line 541) |
-| C P3-2 | K5's native advice is not source-aware; T6, T6b and the cap text | §2.3 transport bullet (line 148); §3.3 table rows 4 and 8 (line 267); K5 (line 316); row Native route (line 526); steps 2.3 and 3.1 (line 613) |
-| C P3-3 | K6 names only --identity; the no-.pub branch; one owner | K6 (line 325); step 3.2 (sole owner) (line 614) |
-| C P3-5 | Step graph, ownership, Pageant rows, Windows control, Surface review, estimate | §0 estimate (line 30); §6 oracle controls (line 493); §7 dependency edges (line 583); steps 2.0 and 2.4 (line 608); reviews placed (line 626) |
-| C P3-6 | Unlisted user docs and the private_key_path name | §2.3 configuration bullet (line 143); step 3.3 file list (line 615) |
-| C P3-7 | Drift and citations | §2.3 HTTPS bullet (line 154); §2.1 option C (line 84); §1 citations (client.py:371, :75 in F2) (line 54); F2 (line 696); OQ6 citations (line 676); row Reuse isolation (keys A and B) (line 522) |
-| S P3-1 | K3 after a refused URL password | §3.3 'Fingerprint' bit (line 258); row UP (line 520) |
-| S P3-3 | K5's classifier, read discipline and wording | §2.2 intro (one function) (line 104); K5 (line 316); step 3.1 (line 613) |
-| S P3-4 | CR/LF line rule and control characters | §2.2 step 1 (line 107); §2.2 step 6 (line 124); §6.2 parser rows (line 533) |
-| S P3-5 | Blob structure not validated | §2.2 step 6 (KeyType::key) (line 127); §6.2 parser rows (line 533) |
-| S P3-6 | The no-fallback row can pass vacuously | row NF1 (line 523); row NF2 (line 524) |
-| S P3-7 | Step 2.1's intermediate state | §4.1 admission invariant (line 386); row Intermediate state (line 527) |
-| S P3-8 | gwz-py's advisory check precedes the flip | §2.3 gwz-py bullet (line 156); step 5.1 (line 618) |
-| S P3-9 | A URL password is still offered first | §2.3 URL password bullet (line 163); §2.4 long help (line 175); step 3.3 (Troubleshooting entry) (line 615) |
-| Surface note (root) | The root is not covered by `auth identity --set` without `--all` | F5, recorded as a separate operator finding, no change to this design (line 699) |
+| C P2-1 / S P3-2 | K1's remedy is wrong for Pageant | §3.3 K1, three remedies (line 312); §3.3 table row 5 (line 286); §4.2 evidence row (line 448); row X9e (line 565); step 1.3 (line 657); step 2.4 (line 662) |
+| C P2-2 | Unix no-agent gets the bare Unavailable text | §1 facts row (line 53); §3.2 rule 5 (line 227); §3.3 table rows 2 and 3 (line 283); K0 (line 303); rows X5u, X5w (line 556); F6 (line 751) |
+| C P2-3 / S P2-4 | Rule C near-misses (RFC 4716, .ppk, BOM, UTF-16LE, options) and the PowerShell remedy | §2.2 steps 2 to 6 (line 114); §3.1 measured behaviour (line 196); K4 (shell-safe lines) (line 337); §6.2 parser rows (line 581); step 1.1 (line 655) |
+| S P2-1 / C P3-4 | The capability is not tied to the compiled route; the doc comment and OQ4 | §1 route row (line 56); §5 capability (line 482); row Capability (line 577); OQ4 (line 717); step 5.1 (line 668) |
+| S P2-2 / C P3-1 | METHOD_NONE is worded K2 | §3.2 rule 6 (line 240); §3.3 table row 7 (line 288); §4.1 agent step (line 425); row X8n (line 564); step 1.2 (line 656) |
+| S P2-3 | The oracle cannot tell a certificate from its key; no both-loaded row | §3.2 rule 1 (line 212); §3.2 rule 8 (line 249); §3.5 (line 383); §6 oracle table (line 515); rows C1 to C4 (line 559); §6.2 matching and admission rows (line 591) |
+| C P3-2 | K5's native advice is not source-aware; T6, T6b and the cap text | §2.3 transport bullet (line 153); §3.3 table rows 4 and 8 (line 285); K5 (line 345); row Native route (line 574); steps 2.3 and 3.1 (line 663) |
+| C P3-3 | K6 names only --identity; the no-.pub branch; one owner | K6 (line 354); step 3.2 (sole owner) (line 664) |
+| C P3-5 | Step graph, ownership, Pageant rows, Windows control, Surface review, estimate | §0 estimate (line 31); §6 oracle controls (line 537); §7 dependency edges (line 633); steps 2.0 and 2.4 (line 658); reviews placed (line 676) |
+| C P3-6 | Unlisted user docs and the private_key_path name | §2.3 configuration bullet (line 148); step 3.3 file list (line 665) |
+| C P3-7 | Drift and citations | §2.3 HTTPS bullet (line 159); §2.1 option C (line 85); §1 citations (client.py:371, :75 in F2) (line 55); F2 (line 747); OQ6 citations (line 727); row Reuse isolation (keys A and B) (line 570) |
+| S P3-1 | K3 after a refused URL password | §3.3 'Fingerprint' bit (line 276); row UP (line 568) |
+| S P3-3 | K5's classifier, read discipline and wording | §2.2 intro (one function) (line 105); K5 (line 345); step 3.1 (line 663) |
+| S P3-4 | CR/LF line rule and control characters | §2.2 step 1 (line 108); §2.2 step 6 (line 129); §6.2 parser rows (line 581) |
+| S P3-5 | Blob structure not validated | §2.2 step 6 (KeyType::key) (line 132); §6.2 parser rows (line 581) |
+| S P3-6 | The no-fallback row can pass vacuously | row NF1 (line 571); row NF2 (line 572) |
+| S P3-7 | Step 2.1's intermediate state | §4.1 admission invariant (line 421); row Intermediate state (line 575) |
+| S P3-8 | gwz-py's advisory check precedes the flip | §2.3 gwz-py bullet (line 161); step 5.1 (line 668) |
+| S P3-9 | A URL password is still offered first | §2.3 URL password bullet (line 168); §2.4 long help (line 180); step 3.3 (Troubleshooting entry) (line 665) |
+| Surface note (root) | The root is not covered by `auth identity --set` without `--all` | F5, recorded as a separate operator finding, no change to this design (line 750) |
 
 Experiments for this revision, all deleted afterwards: a local sshd (OpenSSH_10.3p1) with a private
 agent on macOS, to read how it logs a plain key and a certificate (section 6, the oracle table); and
@@ -734,6 +783,27 @@ one dabeest booking (the lock `E:/gwz-tests/BUSY.lock`, the new directory
 each redirect form with Windows PowerShell 5.1 and read its bytes (section 3.1). Two `ssh-keygen -l -f`
 runs on UTF-16 files hung and were stopped by exact PID (74924 and 43520, with their parent
 `powershell.exe` 76132); no other process was touched.
+
+### Revision 2 (round-2 P3s, folded in without a re-review)
+
+The round-2 re-verdicts are `-ReviewConsistency-2.md` (C N1 to N7) and `-ReviewSafety-2.md` (S N-P3-1 to
+N-P3-3), both GO. Line numbers are of this file. No experiment was run for this revision.
+
+| Finding | What it said | Closed in |
+| --- | --- | --- |
+| C N1 | K6 and the `KeyFile` addition are source-blind | K6 (line 354); table intro, rows 8 and 9 (line 293); §4.1 words bullet (line 438); step 3.2 (line 664) |
+| C N2 | "gwz's own transport only" reads as covering the whole option | §2.4 help text (line 177) |
+| C N3 / S N-P3-2 | An `EACCES` agent socket is worded K1 | §3.2 rule 5 (line 227); table row 2 (line 283); K0 (four clauses) (line 303); row X5u (line 556); step 2.2 (the mapping) (line 660) |
+| C N4 | Private-key encoding near-misses get public-key words | §2.2 steps 1 to 3 (line 108); K4, intent-neutral (line 337); §6.2 parser rows (UTF-16 private key, DER, BOM) (line 587) |
+| C N5 | Edges 4.1 and 4.2 to the Phase C review; 2.1 to 1.3 | §7 edge table, 2.1 (line 639); §7 edge table, 4.1 and 4.2 (line 646); §7 note under the table (line 651) |
+| C N6 | The estimate sum leaves out the reviews | §0 estimate (line 31); OQ9 (line 738) |
+| C N7 (activation step) | gwz-core's cfg is removed by C3 (S7.1c), not C4 | §5 capability (line 491) |
+| C N7 (Pageant basis) | The Pageant cell rests on composition; record it for S5.6 | §4.2 composition paragraph (line 450); step 5.2 (line 669) |
+| C N7 (rows 8 and 9) | The table's rows 8 and 9 can never match under its gate | §3.3 'Where each row is selected' (line 293) |
+| C N7 (X8n) | X8n's control is not observable in facts | row X8n (line 564) |
+| S N-P3-1 | The negative control cannot pass in the order where the authorizing key is first | §6 controls paragraph (line 537) |
+| S N-P3-3 | Rule 9 accepts a misword on an unestablished premise | §3.2 rule 9 (declined, with reasons) (line 254); §8 retried opens (line 699) |
+| Step 2.0 pin | Pin the rejected-certificate log line | §6 oracle table, new row (line 528); §6 oracle paragraph (line 534); step 2.0 (line 658) |
 
 ## Review request
 
