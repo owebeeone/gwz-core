@@ -26,7 +26,7 @@ its `sh.exe`. The run is long (about twenty minutes warm) and belongs under the 
 `hosted-like` entry in the receipt: exit status, the suite's passed and failed counts and the names of the failed tests.
 After the suite the mode runs the job's integration targets (`INTEGRATION_TARGETS`, step 5.4) into the same log; a
 filtered run leaves them out. `--hosted-like-filter NAME` narrows the run to the tests whose path contains NAME, for iterating on one failure; the
-receipt says it was filtered. `--no-check-shapes` skips the `cargo check` shapes (a run that is only the suite).
+receipt says it was filtered. It reaches `run_tests.py` as `--test-filter`, which narrows each group to its own tests. `--no-check-shapes` skips the `cargo check` shapes (a run that is only the suite).
 """
 import argparse
 from dataclasses import dataclass, field
@@ -255,7 +255,7 @@ def hosted_like_script(label: str, git_root: str, test_filter: str | None) -> st
     """
     d = f'{HOST_ROOT}/{label}'
     ssh = f'{d}/openssh'
-    filter_word = f' {test_filter}' if test_filter else ''
+    filter_word = f' --test-filter {test_filter}' if test_filter else ''
     return '\n'.join([
         'set -uo pipefail', f'mkdir -p {d}/logs {ssh}', f"GIT_ROOT='{git_root}'",
         # The short TEMP: a directory whose long name has an 8.3 spelling, as `RUNNER~1` is on the runner. A host

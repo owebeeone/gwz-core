@@ -205,12 +205,15 @@ class HostedLike(unittest.TestCase):
         self.assertEqual([s['shape'] for s in receipt['shapes']], ['hosted-like'])
         self.assertFalse(any('cargo check' in s for s in runner.ssh_scripts()))
 
-    def test_the_filter_is_recorded_and_reaches_cargo_before_the_double_dash(self):
+    def test_the_filter_is_recorded_and_reaches_the_suite_as_its_test_filter(self):
+        """A bare name before `--` is one more libtest filter, ORed with each group's own: the fake-filesystem groups
+        then ran real-filesystem tests and failed them on every host (2026-10-14-fixc). run_tests.py intersects."""
         runner = FakeRun()
         code, receipt = self.go(runner, '--hosted-like', '--hosted-like-filter', 'background_close')
         self.assertEqual(receipt['shapes'][-1]['tests']['filter'], 'background_close')
         script = [s for s in runner.ssh_scripts() if 'run_tests.py' in s][0]
-        self.assertIn('--lib background_close ', script)
+        self.assertIn('--lib --test-filter background_close ', script)
+        self.assertNotIn('--lib background_close ', script)
 
     def test_tests_that_need_what_the_host_lacks_are_named_gaps_and_do_not_fail_the_receipt(self):
         """The embedded-Python rows need a gwz-py checkout and taut-proto in the interpreter's site-packages; the mode
