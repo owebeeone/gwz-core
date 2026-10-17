@@ -70,6 +70,30 @@ fn unregistered_bind_cannot_create_endpoint_authority() {
     assert!(endpoint.register_request("later").is_err());
 }
 
+/// The session projection's identity cells on every platform (decision D30, 2026-10-17; D38 builds exact agent-key
+/// selection in a separate lane): a selected key file is advertised (run 2026-10-15-parityrows, rows
+/// home-unset-absolute-identity and home-unset-tilde-identity), and no exact agent identity is, because no code selects
+/// one agent key yet. It agrees with the static `transport_capabilities::handle`.
+#[test]
+fn the_projection_advertises_a_key_file_identity_and_no_exact_agent_identity_on_every_platform() {
+    let runtime = TransportRuntime::new(config()).unwrap();
+    let caps = runtime
+        .capabilities(TransportCapabilitiesRequest {
+            schema_version: "gwz.protocol/v0".into(),
+        })
+        .unwrap();
+    assert!(caps.file_identity);
+    assert!(!caps.exact_agent_identity);
+    let statically =
+        crate::protocol::transport_capabilities::handle(TransportCapabilitiesRequest {
+            schema_version: "gwz.protocol/v0".into(),
+        })
+        .unwrap();
+    assert_eq!(caps.file_identity, statically.file_identity);
+    assert_eq!(caps.exact_agent_identity, statically.exact_agent_identity);
+    wait(runtime.shutdown());
+}
+
 #[test]
 fn last_port_clone_drop_invalidates_all_scopes_and_remove_allows_fresh_binding() {
     let runtime = TransportRuntime::new(config()).unwrap();
