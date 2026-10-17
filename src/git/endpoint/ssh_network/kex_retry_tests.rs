@@ -35,12 +35,19 @@ cfg_if::cfg_if! {
 }
 
 /// Steps that make the first `failures` handshakes fail with `code` without touching the session, count the
-/// connects, and leave the rest to the real handshake.
+/// connects, and leave the rest to the real handshake, whose own -8 (WinCNG ends about 0.8% of them) they count.
 struct Scripted {
     connects: Arc<AtomicUsize>,
     injected: Arc<AtomicUsize>,
+    /// The real handshakes that ended with a key exchange failure.
+    real_kex: Arc<AtomicUsize>,
     failures: usize,
     code: Ssh2Code,
+    /// Stand-ins for the platform's own failure, for the row that tests the rows' rerun: the first `real_failures`
+    /// real handshakes end with `real_code` without touching the session (counted in `real_kex` when that is -8).
+    real_failures: usize,
+    real_code: Ssh2Code,
+    real_failed: Arc<AtomicUsize>,
     /// A manual clock moved on at each injected failure by what the failed try cost: the n-th failure by the n-th
     /// entry, the last entry for every failure after the list.
     cost: Option<(ManualClock, Vec<Duration>)>,
@@ -51,8 +58,14 @@ struct Scripted {
 struct Counts {
     connects: Arc<AtomicUsize>,
     injected: Arc<AtomicUsize>,
+    real_kex: Arc<AtomicUsize>,
+    real_failed: Arc<AtomicUsize>,
 }
 impl Counts {
+    /// The real handshakes of this run that ended with a key exchange failure.
+    fn real_kex(&self) -> usize {
+        self.real_kex.load(Ordering::SeqCst)
+    }
     fn connects(&self) -> usize {
         self.connects.load(Ordering::SeqCst)
     }
@@ -63,8 +76,12 @@ impl Counts {
         Scripted {
             connects: self.connects.clone(),
             injected: self.injected.clone(),
+            real_kex: self.real_kex.clone(),
             failures,
             code: KEX_FAILURE,
+            real_failures: 0,
+            real_code: KEX_FAILURE,
+            real_failed: self.real_failed.clone(),
             cost: None,
         }
     }
@@ -88,8 +105,43 @@ impl Steps for Scripted {
                 "Unable to exchange encryption keys",
             ));
         }
-        Native.handshake(session)
+        if self.real_failed.load(Ordering::SeqCst) < self.real_failures {
+            self.real_failed.fetch_add(1, Ordering::SeqCst);
+            if self.real_code == KEX_FAILURE {
+                self.real_kex.fetch_add(1, Ordering::SeqCst);
+            }
+            return Err(ssh2::Error::new(
+                self.real_code,
+                "a real handshake that failed",
+            ));
+        }
+        let result = Native.handshake(session);
+        if result
+            .as_ref()
+            .is_err_and(|error| error.code() == KEX_FAILURE)
+        {
+            self.real_kex.fetch_add(1, Ordering::SeqCst);
+        }
+        result
     }
+}
+
+/// `run`, made again (at most [`TRIES`] times) only when a real handshake of the run, one beyond the injected ones,
+/// ended with a key exchange failure. A row that ends on a real handshake and asserts exact counts or classes
+/// must not be red by the platform's own 0.8% (the class-gated rerun of `observed.rs`): a run that met no such
+/// failure is the row's result, and so is the last run when the limit is reached. The failures it names stay the
+/// run's: the rerun is for the runs where the thing under test was not reached.
+fn settled<T>(mut run: impl FnMut(&Counts) -> T) -> (Counts, T) {
+    for _ in 1..TRIES {
+        let counts = Counts::default();
+        let out = run(&counts);
+        if counts.real_kex() == 0 {
+            return (counts, out);
+        }
+    }
+    let counts = Counts::default();
+    let out = run(&counts);
+    (counts, out)
 }
 
 /// A listener that is never served: a connect to it completes, a handshake on it is only ever injected.
@@ -143,19 +195,69 @@ fn network<'a, S: Steps>(steps: S, kex: KexRetry, offered: &'a dyn Fn() -> bool)
 }
 
 #[test]
+fn a_row_that_ends_on_a_real_handshake_reruns_only_for_a_real_key_exchange_failure() {
+    let fixture = SshdFixture::new();
+    let key = Key::ssh(&fixture.user, "127.0.0.1", fixture.port);
+    let known = std::fs::read_to_string(&fixture.known_hosts).unwrap();
+    let establish = |counts: &Counts, real_failures: usize, real_code: Ssh2Code| {
+        let (_, control) = timed();
+        let mut steps = counts.steps(1);
+        steps.real_failures = real_failures;
+        steps.real_code = real_code;
+        establish_against(
+            &key,
+            known.clone(),
+            &control,
+            &mut network(steps, KexRetry::Times(1), &|| false),
+        )
+        .map(|_| ())
+    };
+    // One injected -8 uses up the one retry; the real handshake then returns -8 (WinCNG's own) on the first run only:
+    // the first run fails, is not the row's result, and the second run completes.
+    let mut runs = 0;
+    let (counts, result) = settled(|counts| {
+        runs += 1;
+        establish(counts, usize::from(runs == 1), KEX_FAILURE)
+    });
+    assert_eq!(runs, 2, "a real -8 reruns the row");
+    result.expect("the rerun's real handshake completes");
+    assert_eq!(counts.real_kex(), 0);
+    // Another real failure is the row's result, not a reason to rerun it.
+    let mut runs = 0;
+    let (counts, result) = settled(|counts| {
+        runs += 1;
+        establish(counts, 1, Ssh2Code::Session(-5))
+    });
+    assert_eq!(runs, 1, "only a key exchange failure reruns the row");
+    result.expect_err("the real handshake failed with another code");
+    assert_eq!(counts.real_kex(), 0);
+    // And a platform that fails every real handshake is bounded: the last run is the row's result.
+    let mut runs = 0;
+    let (counts, result) = settled(|counts| {
+        runs += 1;
+        establish(counts, usize::MAX, KEX_FAILURE)
+    });
+    assert_eq!(runs, TRIES);
+    result.expect_err("every real handshake failed");
+    assert!(counts.real_kex() > 0);
+}
+
+#[test]
 fn a_key_exchange_failure_is_retried_once_on_a_new_connection_and_the_setup_succeeds() {
     let fixture = SshdFixture::new();
     let key = Key::ssh(&fixture.user, "127.0.0.1", fixture.port);
     let known = std::fs::read_to_string(&fixture.known_hosts).unwrap();
-    let counts = Counts::default();
-    let (_, control) = timed();
-    let (connection, trusted) = establish_against(
-        &key,
-        known,
-        &control,
-        &mut network(counts.steps(1), KexRetry::Times(1), &|| false),
-    )
-    .expect("the second connection's key exchange completes");
+    let (counts, (result, control)) = settled(|counts| {
+        let (_, control) = timed();
+        let result = establish_against(
+            &key,
+            known.clone(),
+            &control,
+            &mut network(counts.steps(1), KexRetry::Times(1), &|| false),
+        );
+        (result, control)
+    });
+    let (connection, trusted) = result.expect("the second connection's key exchange completes");
     assert_eq!(counts.injected(), 1);
     assert_eq!(
         counts.connects(),
@@ -173,15 +275,16 @@ fn two_key_exchange_failures_then_a_completing_handshake_connect_on_the_third_tr
     let fixture = SshdFixture::new();
     let key = Key::ssh(&fixture.user, "127.0.0.1", fixture.port);
     let known = std::fs::read_to_string(&fixture.known_hosts).unwrap();
-    let counts = Counts::default();
-    let (_, control) = timed();
-    let (connection, trusted) = establish_against(
-        &key,
-        known.clone(),
-        &control,
-        &mut network(counts.steps(2), KexRetry::Times(2), &|| false),
-    )
-    .expect("the third connection's key exchange completes");
+    let (counts, result) = settled(|counts| {
+        let (_, control) = timed();
+        establish_against(
+            &key,
+            known.clone(),
+            &control,
+            &mut network(counts.steps(2), KexRetry::Times(2), &|| false),
+        )
+    });
+    let (connection, trusted) = result.expect("the third connection's key exchange completes");
     assert_eq!(counts.injected(), 2);
     assert_eq!(counts.connects(), 3, "each try on a new TCP connection");
     assert!(!trusted.is_empty());
@@ -513,6 +616,93 @@ fn the_shared_setup_clock_gives_room_by_what_the_failed_try_spent() {
     assert!(!control.has_room_since(mark), "400 ms left, 600 spent");
 }
 
+#[test]
+fn the_stall_bound_limits_the_room_for_a_retry() {
+    // The local clock (review State F5): a 100 s aggregate and a 2 s stall bound, on a clock only the test moves.
+    // `has_room_since` takes the nearer of the two. The stall clock starts at a wait and restarts at network
+    // progress, which includes each new TCP connect, so the room at a failed try's end is what its handshake wait
+    // left of the 2 s, set against the whole try. (The aggregate alone would give every row three connects.)
+    let (_listener, key) = unserved();
+    let ms = Duration::from_millis;
+    for (spent, connects) in [(ms(500), 3), (ms(900), 3), (ms(1100), 1), (ms(1500), 1)] {
+        let counts = Counts::default();
+        let clock = ManualClock::new();
+        let control = Control::scripted(
+            Some(clock.now() + Duration::from_secs(100)),
+            Duration::from_secs(2),
+            Duration::from_secs(1),
+            clock.clock(),
+        );
+        let mut steps = counts.steps(usize::MAX);
+        steps.cost = Some((clock, vec![spent]));
+        let kex = KexRetry::Times(2);
+        let error = establish_against(
+            &key,
+            String::new(),
+            &control,
+            &mut network(steps, kex, &|| false),
+        )
+        .map(|_| ())
+        .expect_err("the key exchange never completes");
+        assert_eq!(counts.connects(), connects, "each try spent {spent:?}");
+        assert_eq!(error.kind(), io::ErrorKind::Other, "{error}");
+    }
+}
+
+#[test]
+fn the_shared_setup_clock_gives_room_within_the_stall_bound() {
+    // The shared clock (review State F5): a 100 s network bound and a 500 ms stall bound. A handshake wait starts
+    // the stall timer; the room left is the stall's, and network progress restarts it.
+    use gwz_transport::pool::{Action, Config, Key as PoolKey, Owner, PoolMachine, Request};
+    use std::sync::atomic::AtomicU64;
+    let mut pool = PoolMachine::new(Config {
+        connect_timeout_ms: 100_000,
+        ..Default::default()
+    })
+    .unwrap();
+    pool.request(Request::new(
+        PoolKey::ssh("user", "host", 22),
+        Identity::Ambient,
+        Owner::new("s", "o"),
+    ))
+    .unwrap();
+    let Action::Connect { connection, .. } = pool.next_action().unwrap() else {
+        panic!("connect")
+    };
+    let now = Arc::new(AtomicU64::new(0));
+    let source = now.clone();
+    let clock = pool
+        .install_setup_clock(
+            connection,
+            Arc::new(move || source.load(Ordering::SeqCst)),
+            500,
+        )
+        .unwrap();
+    let context = crate::git::endpoint::ssh_setup_context::SetupContext::new(
+        clock,
+        std::time::Instant::now(),
+    );
+    let control = Control::new_shared(
+        context,
+        Duration::from_millis(100),
+        crate::git::endpoint::agent_job::wall_clock(),
+    );
+    control.begin_wait().unwrap();
+    let mark = control.mark();
+    now.store(300, Ordering::SeqCst);
+    assert!(
+        !control.has_room_since(mark),
+        "200 ms of the stall bound left, 300 spent"
+    );
+    // Progress restarts the stall bound from 300 ms; a try that began there has 500 ms.
+    control.complete_wait().unwrap();
+    let mark = control.mark();
+    now.store(500, Ordering::SeqCst);
+    assert!(control.has_room_since(mark), "300 ms left, 200 spent");
+    now.store(600, Ordering::SeqCst);
+    assert!(!control.has_room_since(mark), "200 ms left, 300 spent");
+}
+
 /// A `known_hosts` file that lists nothing, for the rows that read one before they connect.
 fn empty_known_hosts() -> (tempfile::TempDir, std::path::PathBuf) {
     let directory = tempfile::tempdir().unwrap();
@@ -595,15 +785,16 @@ fn a_triple_key_exchange_failure_then_a_connection_that_completes_is_one_retry_b
     let fixture = SshdFixture::new();
     let key = Key::ssh(&fixture.user, "127.0.0.1", fixture.port);
     let (_, control) = timed();
-    let counts = Counts::default();
     // The first try's three handshakes fail (-8 three times, D32's two retries included); the second try is real.
-    let (result, tries) = establish_retrying_triple_kex(
-        || counts.steps(3),
-        KexRetry::Times(2),
-        &key,
-        &fixture.known_hosts,
-        &control,
-    );
+    let (counts, (result, tries)) = settled(|counts| {
+        establish_retrying_triple_kex(
+            || counts.steps(3),
+            KexRetry::Times(2),
+            &key,
+            &fixture.known_hosts,
+            &control,
+        )
+    });
     result.expect("the second try's handshake completes");
     assert_eq!(tries.len(), 2);
     assert!(tries[0].is_triple_kex_failure());
@@ -617,26 +808,28 @@ fn the_classes_of_a_try_count_the_retries_that_cured_a_first_key_exchange_failur
     let key = Key::ssh(&fixture.user, "127.0.0.1", fixture.port);
     let (_, control) = timed();
     for (failures, class) in [(0, "clean"), (1, "recovered"), (2, "recovered-twice")] {
-        let counts = Counts::default();
-        let (result, tries) = establish_retrying_triple_kex(
-            || counts.steps(failures),
-            KexRetry::Times(2),
-            &key,
-            &fixture.known_hosts,
-            &control,
-        );
+        let (_, (result, tries)) = settled(|counts| {
+            establish_retrying_triple_kex(
+                || counts.steps(failures),
+                KexRetry::Times(2),
+                &key,
+                &fixture.known_hosts,
+                &control,
+            )
+        });
         result.expect("the handshake completes");
         assert_eq!(tries.len(), 1);
         assert_eq!(tries[0].class(), class);
     }
-    let counts = Counts::default();
-    let (result, tries) = establish_retrying_triple_kex(
-        || counts.steps(3),
-        KexRetry::Times(2),
-        &key,
-        &fixture.known_hosts,
-        &control,
-    );
+    let (_, (result, tries)) = settled(|counts| {
+        establish_retrying_triple_kex(
+            || counts.steps(3),
+            KexRetry::Times(2),
+            &key,
+            &fixture.known_hosts,
+            &control,
+        )
+    });
     result.expect("the second try completes");
     assert_eq!(tries[0].class(), "triple");
     assert_eq!(tries[1].class(), "clean");

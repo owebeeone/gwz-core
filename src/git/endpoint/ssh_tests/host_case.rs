@@ -19,23 +19,6 @@ const HOST: &str = "githost.example";
 /// Establishes trust in the fixture's server for an open whose URL wrote
 /// the host as `written`, with `known` as its `known_hosts`.
 fn establish(f: &common::SshdFixture, written: &str, known: String) -> io::Result<()> {
-    // libssh2 on Windows CNG ends about one key exchange in a hundred on its own side (`common::handshaken`). The
-    // setup retries that twice itself on Windows (decisions D14, D32) and reports a third one as `Other`, which its
-    // driver retries, so these single opens do the same.
-    let mut result = establish_once(f, written, known.clone());
-    for _ in 0..5 {
-        if !result
-            .as_ref()
-            .is_err_and(|error| error.kind() == io::ErrorKind::Other)
-        {
-            break;
-        }
-        result = establish_once(f, written, known.clone());
-    }
-    result
-}
-
-fn establish_once(f: &common::SshdFixture, written: &str, known: String) -> io::Result<()> {
     let key = Key::ssh(&f.user, HOST, f.port);
     let address = SocketAddr::from(([127, 0, 0, 1], f.port));
     let written = written.to_owned();
@@ -44,22 +27,30 @@ fn establish_once(f: &common::SshdFixture, written: &str, known: String) -> io::
         Some(Instant::now() + Duration::from_secs(30)),
         Duration::from_secs(1),
         move |control| {
-            ssh_network::establish_inner(
-                &key,
-                &written,
-                &path,
-                &control,
-                move |_, _| Ok(known),
-                move |_, _, _| Ok(vec![address]),
-                &mut ssh_network::Network::production(&|| false),
-            )
-            .map(|_| ())
+            // libssh2 on Windows CNG ends about one key exchange in a hundred on its own side
+            // (`common::handshaken`). The setup retries that twice itself on Windows (decisions D14, D32); the
+            // setup is made again only when it ended on three in a row, as the libssh2 codes say
+            // (`ssh_network::observed`), and any other end is the row's result.
+            Ok(ssh_network::observed::retrying_triple_kex(|| {
+                let known = known.clone();
+                let (result, observed) = ssh_network::observed::establish_production_observed_with(
+                    &key,
+                    &written,
+                    &path,
+                    &control,
+                    move |_, _| Ok(known),
+                    move |_, _, _| Ok(vec![address]),
+                );
+                (result.map(|_| ()), observed)
+            }))
         },
     )
     .unwrap();
-    let until = Instant::now() + Duration::from_secs(10);
+    let until = Instant::now() + Duration::from_secs(10 * ssh_network::observed::TRIES as u64);
     loop {
         if let Poll::Ready(result) = job.poll_result(&mut Context::from_waker(Waker::noop())) {
+            let (result, tries) = result.unwrap();
+            ssh_network::observed::report(&tries);
             return result;
         }
         assert!(Instant::now() < until, "trust setup never finished");

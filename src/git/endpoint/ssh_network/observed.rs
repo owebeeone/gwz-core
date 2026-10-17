@@ -92,14 +92,24 @@ impl<S: Steps> Steps for Recording<S> {
     }
 }
 
-/// One setup for `key` against `steps` under the policy `kex`, and what it did on the network.
-pub(crate) fn establish_observed_once<S: Steps>(
+/// One setup for `key` (written in the URL as `written`) against `steps` under the policy `kex`, with the trust text
+/// and the addresses from `load` and `resolve_addresses`, and what it did on the network.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn establish_observed_with<S, L, R>(
     steps: S,
     kex: KexRetry,
     key: &Key,
+    written: &str,
     known_path: &Path,
     control: &Control,
-) -> (io::Result<(SshConnection, Vec<u8>)>, Observed) {
+    load: L,
+    resolve_addresses: R,
+) -> (io::Result<(SshConnection, Vec<u8>)>, Observed)
+where
+    S: Steps,
+    L: FnOnce(&Path, &Control) -> io::Result<String>,
+    R: FnOnce(&str, u16, &Control) -> io::Result<Vec<SocketAddr>>,
+{
     let seen = Arc::new(Mutex::new(Observed::default()));
     let mut network = Network {
         steps: Recording {
@@ -111,19 +121,79 @@ pub(crate) fn establish_observed_once<S: Steps>(
     };
     let result = establish_inner(
         key,
-        &key.host,
+        written,
         known_path,
         control,
-        read_regular,
-        resolve,
+        load,
+        resolve_addresses,
         &mut network,
     );
     let observed = seen.lock().unwrap().clone();
     (result, observed)
 }
 
-/// The setup, made again (at most [`TRIES`] times) only when it ended on a triple key exchange failure. Returns the
-/// last result and what every try did, so that a row can print the codes of a failure it does not expect.
+/// [`establish_observed_with`] with the real steps and the platform's policy: what production does.
+pub(crate) fn establish_production_observed_with<L, R>(
+    key: &Key,
+    written: &str,
+    known_path: &Path,
+    control: &Control,
+    load: L,
+    resolve_addresses: R,
+) -> (io::Result<(SshConnection, Vec<u8>)>, Observed)
+where
+    L: FnOnce(&Path, &Control) -> io::Result<String>,
+    R: FnOnce(&str, u16, &Control) -> io::Result<Vec<SocketAddr>>,
+{
+    establish_observed_with(
+        Native,
+        KexRetry::PLATFORM,
+        key,
+        written,
+        known_path,
+        control,
+        load,
+        resolve_addresses,
+    )
+}
+
+/// One setup for `key` against `steps` under the policy `kex`, and what it did on the network.
+pub(crate) fn establish_observed_once<S: Steps>(
+    steps: S,
+    kex: KexRetry,
+    key: &Key,
+    known_path: &Path,
+    control: &Control,
+) -> (io::Result<(SshConnection, Vec<u8>)>, Observed) {
+    establish_observed_with(
+        steps,
+        kex,
+        key,
+        &key.host,
+        known_path,
+        control,
+        read_regular,
+        resolve,
+    )
+}
+
+/// `once`, made again (at most [`TRIES`] times) only when it ended on a triple key exchange failure. Returns the last
+/// result and what every try did, so that a row can print the codes of a failure it does not expect.
+pub(crate) fn retrying_triple_kex<T>(
+    mut once: impl FnMut() -> (io::Result<T>, Observed),
+) -> (io::Result<T>, Vec<Observed>) {
+    let mut tries = Vec::new();
+    loop {
+        let (result, observed) = once();
+        let again = result.is_err() && observed.is_triple_kex_failure() && tries.len() + 1 < TRIES;
+        tries.push(observed);
+        if !again {
+            return (result, tries);
+        }
+    }
+}
+
+/// The setup, made again (at most [`TRIES`] times) only when it ended on a triple key exchange failure.
 pub(crate) fn establish_retrying_triple_kex<S: Steps>(
     mut make_steps: impl FnMut() -> S,
     kex: KexRetry,
@@ -131,16 +201,7 @@ pub(crate) fn establish_retrying_triple_kex<S: Steps>(
     known_path: &Path,
     control: &Control,
 ) -> (io::Result<(SshConnection, Vec<u8>)>, Vec<Observed>) {
-    let mut tries = Vec::new();
-    loop {
-        let (result, observed) =
-            establish_observed_once(make_steps(), kex, key, known_path, control);
-        let again = result.is_err() && observed.is_triple_kex_failure() && tries.len() + 1 < TRIES;
-        tries.push(observed);
-        if !again {
-            return (result, tries);
-        }
-    }
+    retrying_triple_kex(|| establish_observed_once(make_steps(), kex, key, known_path, control))
 }
 
 /// [`establish_retrying_triple_kex`] with the real steps and the platform's policy: what production does.
