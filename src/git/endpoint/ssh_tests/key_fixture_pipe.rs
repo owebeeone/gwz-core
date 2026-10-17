@@ -4,9 +4,10 @@
 //! The Unix `KeyAgent` is `key_agent.py` in front of a private `ssh-agent`, and starts two processes, which its
 //! startup-failure row terminates and reaps. This one is [`PipeAgent`] with a thread and a pipe handle in the test
 //! process, so its startup-failure row is that a start that fails part way leaves no pipe behind. What it cannot
-//! represent stays Unix: security keys and certificates (`Sign::Sk`), the DSA key (`Sign::Dsa`), and the SHA-1
+//! represent stays Unix: security keys (`Sign::Sk`), the DSA key (`Sign::Dsa`), and the SHA-1
 //! answer to an `rsa-sha2` request (libssh2 on Windows offers only `rsa-sha2-512`, and the agent signs RSA with
-//! `ring`, which has no SHA-1 RSA). It signs Ed25519 and ECDSA keys (P-256, P-384, P-521) too.
+//! `ring`, which has no SHA-1 RSA). It signs Ed25519 and ECDSA keys (P-256, P-384, P-521) too, and lists a key's OpenSSH certificate (`<key>-cert.pub`, which
+//! `ssh-keygen -s` writes) as a separate identity that the key signs for, as OpenSSH's agent does.
 //!
 //! [`KeyAgent::authenticate`] is the Windows twin of the Unix `authenticate`: the endpoint's own trust setup, then
 //! `agent_auth::authenticate_reporting` over a pipe channel to this agent (plan step 3.4). It authenticates on the
@@ -20,7 +21,7 @@ use crate::git::endpoint::{
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use gwz_transport::pool::Key;
 use std::{
-    io,
+    fs, io,
     path::{Path, PathBuf},
     process::Command,
     task::{Context, Poll, Waker},
@@ -55,9 +56,15 @@ impl KeyAgent {
         keys: &[Sign<'_>],
         observe: impl FnMut(Stage),
     ) -> Self {
+        // As `ssh-add` loads a key with its `-cert.pub`, the agent holds a key's certificate beside the key; the
+        // test's list names which of them the agent lists.
         let identities: Vec<Identity> = private
             .iter()
-            .map(|path| Identity::from_key_file(path))
+            .flat_map(|path| {
+                let key = Identity::from_key_file(path);
+                let certificate = certificate_blob(path).map(|blob| key.certified_by(blob));
+                [Some(key), certificate].into_iter().flatten()
+            })
             .collect();
         let find = |blob: &str| {
             identities
@@ -110,7 +117,15 @@ impl KeyAgent {
     }
 }
 
-pub(crate) use super::key_material::{keygen, public};
+pub(crate) use super::key_material::{certify, keygen, public};
+
+/// The blob of the certificate `ssh-keygen -s` wrote for the key at `key`, as `<key>-cert.pub`, if there is one.
+fn certificate_blob(key: &Path) -> Option<Vec<u8>> {
+    let mut name = key.file_name()?.to_owned();
+    name.push("-cert.pub");
+    let text = fs::read_to_string(key.with_file_name(name)).ok()?;
+    STANDARD.decode(text.split_whitespace().nth(1)?).ok()
+}
 
 /// A new RSA key of `bits` at `dir/name` in the traditional PEM form, which the agent signs from (a new-format RSA
 /// key is `keygen`'s default); its public key is `dir/name.pub`.
@@ -249,6 +264,44 @@ mod tests {
             ]
         );
         assert_eq!(agent.requests(), vec!["list".to_owned()]);
+    }
+
+    #[test]
+    fn a_certificate_is_listed_for_its_key_and_signed_by_that_key() {
+        // As `ssh-add` loads a key with its `-cert.pub`: the agent lists the certificate, and a sign request for the
+        // certificate's blob is answered with the key's own signature (RSA at the requested SHA-2, flag 4).
+        for (kind, flags) in [("ed25519", 0), ("rsa", 4)] {
+            let dir = tempfile::tempdir().unwrap();
+            let ca = keygen(dir.path(), "ca", "ed25519", None);
+            let path = if kind == "rsa" {
+                keygen_pem_rsa(dir.path(), "key", 2048)
+            } else {
+                keygen(dir.path(), "key", kind, None)
+            };
+            let certificate = certify(
+                dir.path(),
+                &ca,
+                "key",
+                &public(dir.path(), "key"),
+                "someone",
+            );
+            let agent = KeyAgent::start(dir.path(), &[&path], &[Sign::Upstream(&certificate.1)]);
+            assert_eq!(agent.blobs, vec![certificate.1.clone()], "{kind}");
+            let (channel, blob) = (agent.connect(), STANDARD.decode(&certificate.1).unwrap());
+            let signature =
+                run(move |control| Agent::new(channel, control).sign(&blob, b"data", flags))
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("{kind}: the agent refused"));
+            assert!(
+                Identity::from_key_file(&path).verify(flags, b"data", &signature),
+                "{kind}"
+            );
+            assert_eq!(
+                agent.requests(),
+                vec!["sign:0:".to_owned() + &flags.to_string()],
+                "{kind}"
+            );
+        }
     }
 
     #[test]

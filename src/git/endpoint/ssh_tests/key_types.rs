@@ -3,9 +3,11 @@
 //! certificates of those types, each against a disposable server; a key of a
 //! type outside the list is skipped and a later key tried; and an agent's
 //! refusal fails only that key. Ed25519 and RSA with SHA-2 are agent_auth.rs's
-//! rows, and RSA's SHA-1 cases are rsa_sha1.rs's.
-use crate::git::endpoint::ssh_fixture::SshdFixture;
-use std::fs;
+//! rows, and RSA's SHA-1 cases are rsa_sha1.rs's. Windows runs the plain keys,
+//! the certificates (an RSA certificate does not authenticate, as with 1.0.17)
+//! and the refusal on the pipe agent; security keys and DSA are Unix rows.
+use crate::git::endpoint::{fixture_host, ssh_fixture::SshdFixture};
+use std::{fs, path::Path};
 
 /// A disposable sshd that authorizes `authorized`, each a key's type
 /// and blob, with `extra` at the head of its configuration.
@@ -17,6 +19,19 @@ fn sshd(authorized: &[&(String, String)], extra: &str) -> SshdFixture {
         .collect();
     fs::write(server.temp.path().join("authorized_keys"), lines).unwrap();
     server
+}
+
+/// A disposable sshd that trusts the public half of the CA key `ca` and authorizes no key of its own, so that only a
+/// certificate that CA signed for its user authenticates.
+fn sshd_trusting(ca: &Path) -> SshdFixture {
+    let public = format!("{}.pub", ca.display());
+    sshd(
+        &[],
+        &format!(
+            "TrustedUserCAKeys {}\n",
+            fixture_host::config_value(&public)
+        ),
+    )
 }
 
 cfg_if::cfg_if! {
@@ -99,7 +114,7 @@ cfg_if::cfg_if! {
                 let ca = keys::keygen(dir.path(), "ca", "ed25519", None);
                 let path = keys::keygen(dir.path(), "key", kind, bits);
                 let plain = keys::public(dir.path(), "key");
-                let server = sshd(&[], &format!("TrustedUserCAKeys {}.pub\n", ca.display()));
+                let server = sshd_trusting(&ca);
                 let user = server.user.clone();
                 let certificate = if sk {
                     keys::certify(dir.path(), &ca, "sk", &keys::security_key(&plain.1), &user)
@@ -172,13 +187,14 @@ cfg_if::cfg_if! {
             assert_eq!(accepted(&server), ["ED25519"]);
         }
     } else {
-        // Windows. The agent is the in-process pipe agent (`key_fixture_pipe`), which signs RSA, ECDSA and Ed25519
-        // keys; security keys, certificates and DSA stay with the Unix rows above, and so does the transport's own
-        // agent signing (`agent_auth`, step 3.4). These rows run libssh2's own agent client against the fixture, as
-        // gwz 1.0.17 authenticates, and pin what the TD5 baseline recorded (`2026-10-10-tr18-windows-ssh-rows`,
-        // x4-pipe-*): RSA, ECDSA and Ed25519 agent keys authenticate; RSA signs at `rsa-sha2-512`, the other two with
-        // flags 0. (sshd.exe's log is held open by the server, so these rows read no log: the server authorizes only
-        // the keys under test, so a success is theirs.)
+        // Windows. The agent is the in-process pipe agent (`key_fixture_pipe`), which signs RSA, ECDSA and Ed25519 keys
+        // and lists a key's OpenSSH certificate; security keys and DSA stay with the Unix rows above (not qualified on
+        // Windows). These rows authenticate on the production path (`KeyAgent::authenticate`: the endpoint's trust
+        // setup, then the transport's own agent signing) and pin what the TD5 baseline recorded for gwz 1.0.17
+        // (`2026-10-10-tr18-windows-ssh-rows`, x4-pipe-*): RSA, ECDSA and Ed25519 agent keys authenticate, RSA signs
+        // at `rsa-sha2-512` and the other two with flags 0; an Ed25519 certificate authenticates and an RSA
+        // certificate does not (gap 3.4, run `2026-10-18-gapsb`). (sshd.exe's log is held open by the server, so
+        // these rows read no log: the server authorizes only the keys, or the CA, under test, so a success is theirs.)
         use super::key_fixture_pipe::{self as keys, KeyAgent, Sign};
         use std::io;
 
@@ -221,6 +237,47 @@ cfg_if::cfg_if! {
             let agent = KeyAgent::start(dir.path(), &[&path], &[Sign::Upstream(&key.1)]);
             authenticate(&server, &agent).unwrap();
             assert_eq!(agent.requests(), ["list", "sign:0:4"]);
+        }
+
+        /// Authenticates with the certificate a trusted user CA signs for the key `kind` (and `bits`) that the pipe
+        /// agent lists, in place of the key itself; returns the result and the requests the agent saw.
+        fn certificate_exchange(kind: &str, bits: Option<u32>) -> (io::Result<()>, Vec<String>) {
+            let dir = tempfile::tempdir().unwrap();
+            let ca = keys::keygen(dir.path(), "ca", "ed25519", None);
+            // The agent signs an RSA key from its traditional PEM file; the other types from their OpenSSH form.
+            let path = if kind == "rsa" {
+                keys::keygen_pem_rsa(dir.path(), "key", bits.unwrap())
+            } else {
+                keys::keygen(dir.path(), "key", kind, bits)
+            };
+            let plain = keys::public(dir.path(), "key");
+            let server = sshd_trusting(&ca);
+            let certificate = keys::certify(dir.path(), &ca, "key", &plain, &server.user);
+            let agent = KeyAgent::start(dir.path(), &[&path], &[Sign::Upstream(&certificate.1)]);
+            let result = authenticate(&server, &agent);
+            (result, agent.requests())
+        }
+
+        #[test]
+        fn ed25519_and_ecdsa_certificates_authenticate_against_a_trusted_user_ca() {
+            // The agent lists the certificate, not the key, and signs with the key (flags 0); the server authorizes
+            // no key, only the CA, so a success is the certificate's (x4-pipe-ed25519-certificate, TD5 baseline).
+            for (kind, bits) in [("ed25519", None), ("ecdsa", Some(256)), ("ecdsa", Some(384)), ("ecdsa", Some(521))] {
+                let (result, requests) = certificate_exchange(kind, bits);
+                result.unwrap_or_else(|e| panic!("{kind} {bits:?}: {e}"));
+                assert_eq!(requests, ["list", "sign:0:0"], "{kind} {bits:?}");
+            }
+        }
+
+        #[test]
+        fn an_rsa_certificate_does_not_authenticate_as_with_gwz_1_0_17() {
+            // The TD5 baseline (x4-pipe-rsa-certificate): 1.0.17's libssh2 on Windows offers the certificate under
+            // the algorithm `ssh-rsa-cert-v01@openssh.com`, which the server does not accept, and no key is left.
+            let (result, requests) = certificate_exchange("rsa", Some(2048));
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
+            // As 1.0.17's agent saw (connect, list): the server refuses the certificate's algorithm at its query,
+            // so no sign request is ever sent.
+            assert_eq!(requests, ["list"]);
         }
 
         #[test]

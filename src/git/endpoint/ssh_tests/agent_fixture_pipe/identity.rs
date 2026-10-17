@@ -79,6 +79,15 @@ impl Identity {
         }
     }
 
+    /// This key as the certificate `blob` certifies it: the agent lists the certificate, and signs for it with the key,
+    /// as OpenSSH's agent does for a key loaded with its `-cert.pub`.
+    pub(crate) fn certified_by(&self, blob: Vec<u8>) -> Self {
+        Self {
+            blob,
+            backing: self.backing.clone(),
+        }
+    }
+
     pub(crate) fn blob(&self) -> &[u8] {
         &self.blob
     }
