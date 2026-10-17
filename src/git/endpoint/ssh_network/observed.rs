@@ -1,9 +1,9 @@
 //! What the real handshakes answered, for the test rows that connect to a live `sshd` and must not hide a failure.
 //!
 //! libssh2's WinCNG backend ends about one key exchange in a hundred by itself (`LIBSSH2_ERROR_KEX_FAILURE`, -8), and
-//! the setup connects afresh once after it (operator decision D14, [`KexRetry`]). A row that makes many connections
-//! and may meet a failure that survived that retry retries on exactly that one class: two key exchange failures in a
-//! row, observed in the libssh2 codes themselves. Anything else fails the row with the codes printed, so a residual
+//! the setup connects afresh twice after it (operator decisions D14 and D32, [`KexRetry`]). A row that makes many
+//! connections and may meet a failure that survived those retries retries on exactly that one class: three key
+//! exchange failures in a row, observed in the libssh2 codes themselves. Anything else fails the row with the codes printed, so a residual
 //! class is seen and counted and not absorbed.
 use super::{
     Network, establish_inner,
@@ -20,7 +20,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// The most connections a row makes for one expected connection (the first and four retries).
+/// The most tries a row makes for one expected connection (the first and four more).
 pub(crate) const TRIES: usize = 5;
 
 /// What one `establish` did on the network: its TCP connects, and the answer of each handshake that was not
@@ -32,23 +32,25 @@ pub(crate) struct Observed {
 }
 
 impl Observed {
-    /// Whether the setup ended on the class D14 retries once, and the retry met again: two key exchange failures
-    /// and nothing else.
-    pub(crate) fn is_double_kex_failure(&self) -> bool {
-        self.handshakes == [Some(KEX_FAILURE), Some(KEX_FAILURE)]
+    /// Whether the setup ended on the class that survives D32's two retries: three key exchange failures and nothing
+    /// else. Two (or one) is not it: a setup that stopped there was refused a retry or had none, which the row must
+    /// be told.
+    pub(crate) fn is_triple_kex_failure(&self) -> bool {
+        self.handshakes == [Some(KEX_FAILURE); 3]
     }
 }
 
 impl Observed {
     /// What the handshakes of this try came to, for the count a loop keeps of them: `clean` (one handshake, completed),
-    /// `recovered` (D14's retry cured a first -8), `double` (-8 twice, what the row retries), `none` (the setup ended
-    /// before any handshake: a trust file it refused to read, say) and `other` (anything else, which the row never
-    /// retries).
+    /// `recovered` (the first retry cured a first -8), `recovered-twice` (the second cured it), `triple` (-8 three
+    /// times, what the row retries), `none` (the setup ended before any handshake: a trust file it refused to read,
+    /// say) and `other` (anything else, which the row never retries).
     pub(crate) fn class(&self) -> &'static str {
         match self.handshakes.as_slice() {
             [None] => "clean",
             [Some(KEX_FAILURE), None] => "recovered",
-            [Some(KEX_FAILURE), Some(KEX_FAILURE)] => "double",
+            [Some(KEX_FAILURE), Some(KEX_FAILURE), None] => "recovered-twice",
+            [Some(KEX_FAILURE), Some(KEX_FAILURE), Some(KEX_FAILURE)] => "triple",
             [] => "none",
             _ => "other",
         }
@@ -90,8 +92,8 @@ impl<S: Steps> Steps for Recording<S> {
     }
 }
 
-/// The setup for `key` against `steps` under the policy `kex`, and what it did on the network.
-fn establish_observed<S: Steps>(
+/// One setup for `key` against `steps` under the policy `kex`, and what it did on the network.
+pub(crate) fn establish_observed_once<S: Steps>(
     steps: S,
     kex: KexRetry,
     key: &Key,
@@ -120,9 +122,9 @@ fn establish_observed<S: Steps>(
     (result, observed)
 }
 
-/// The setup, made again (at most [`TRIES`] times) only when it ended on a double key exchange failure. Returns the
+/// The setup, made again (at most [`TRIES`] times) only when it ended on a triple key exchange failure. Returns the
 /// last result and what every try did, so that a row can print the codes of a failure it does not expect.
-pub(crate) fn establish_retrying_double_kex<S: Steps>(
+pub(crate) fn establish_retrying_triple_kex<S: Steps>(
     mut make_steps: impl FnMut() -> S,
     kex: KexRetry,
     key: &Key,
@@ -131,8 +133,9 @@ pub(crate) fn establish_retrying_double_kex<S: Steps>(
 ) -> (io::Result<(SshConnection, Vec<u8>)>, Vec<Observed>) {
     let mut tries = Vec::new();
     loop {
-        let (result, observed) = establish_observed(make_steps(), kex, key, known_path, control);
-        let again = result.is_err() && observed.is_double_kex_failure() && tries.len() + 1 < TRIES;
+        let (result, observed) =
+            establish_observed_once(make_steps(), kex, key, known_path, control);
+        let again = result.is_err() && observed.is_triple_kex_failure() && tries.len() + 1 < TRIES;
         tries.push(observed);
         if !again {
             return (result, tries);
@@ -140,11 +143,11 @@ pub(crate) fn establish_retrying_double_kex<S: Steps>(
     }
 }
 
-/// [`establish_retrying_double_kex`] with the real steps and the platform's policy: what production does.
-pub(crate) fn establish_production_retrying_double_kex(
+/// [`establish_retrying_triple_kex`] with the real steps and the platform's policy: what production does.
+pub(crate) fn establish_production_retrying_triple_kex(
     key: &Key,
     known_path: &Path,
     control: &Control,
 ) -> (io::Result<(SshConnection, Vec<u8>)>, Vec<Observed>) {
-    establish_retrying_double_kex(|| Native, KexRetry::PLATFORM, key, known_path, control)
+    establish_retrying_triple_kex(|| Native, KexRetry::PLATFORM, key, known_path, control)
 }

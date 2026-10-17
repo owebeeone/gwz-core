@@ -38,7 +38,7 @@ const HOSTKEYS: &[(&str, &str)] = &[
 /// an open whose URL wrote the host as `written`, one of the key's
 /// host's ASCII case variants (TR2.18). `credential_offered` says whether the
 /// open's facts show a credential could already have been offered, which
-/// forbids the one retry of a failed key exchange (D14).
+/// forbids a retry of a failed key exchange (D14, D32).
 pub(crate) fn establish_written(
     key: &Key,
     written: &str,
@@ -105,10 +105,11 @@ where
     if addresses.is_empty() {
         return Err(io::ErrorKind::NotFound.into());
     }
-    // What the setup has spent when a try began: a retry needs more budget left than a try took (D14).
-    let started = control.mark();
-    let mut retried = false;
+    let mut retried = 0u8;
     loop {
+        // What the setup has spent when this try began: the next retry needs more budget left than this try took
+        // (D14, D32).
+        let started = control.mark();
         let socket = connect_addresses(addresses.clone(), control, |address, control| {
             network.steps.connect(address, control)
         })?;
@@ -128,7 +129,7 @@ where
                 if !network.may_retry(retried, control, started) {
                     return Err(error);
                 }
-                retried = true;
+                retried += 1;
             }
             Err(Ended::Other(error)) => return Err(error),
         }
@@ -313,7 +314,7 @@ pub(crate) fn wait_step(
 
 /// How a handshake ended without a trusted connection.
 enum Ended {
-    /// libssh2's key exchange failure (-8), the one failure that D14 retries.
+    /// libssh2's key exchange failure (-8), the one failure that D14 and D32 retry.
     KexFailure(io::Error),
     /// Any other end.
     Other(io::Error),

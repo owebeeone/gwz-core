@@ -20,7 +20,7 @@ const HOST: &str = "githost.example";
 /// the host as `written`, with `known` as its `known_hosts`.
 fn establish(f: &common::SshdFixture, written: &str, known: String) -> io::Result<()> {
     // libssh2 on Windows CNG ends about one key exchange in a hundred on its own side (`common::handshaken`). The
-    // setup retries that once itself on Windows (decision D14) and reports a second one as `Other`, which its
+    // setup retries that twice itself on Windows (decisions D14, D32) and reports a third one as `Other`, which its
     // driver retries, so these single opens do the same.
     let mut result = establish_once(f, written, known.clone());
     for _ in 0..5 {

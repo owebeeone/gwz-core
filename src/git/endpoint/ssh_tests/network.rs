@@ -37,7 +37,7 @@ fn establish(key: Key, path: PathBuf) -> io::Result<(SshConnection, Vec<u8>)> {
         .unwrap(),
     )
 }
-/// `establish`, made again when it ended on a double key exchange failure (see `ssh_network::observed`), with what
+/// `establish`, made again when it ended on a triple key exchange failure (see `ssh_network::observed`), with what
 /// every try's handshakes answered.
 fn establish_observed(
     key: Key,
@@ -50,7 +50,7 @@ fn establish_observed(
         Some(Instant::now() + Duration::from_secs(30)),
         Duration::from_secs(1),
         move |c| {
-            Ok(ssh_network::observed::establish_production_retrying_double_kex(&key, &path, &c))
+            Ok(ssh_network::observed::establish_production_retrying_triple_kex(&key, &path, &c))
         },
     )
     .unwrap();
@@ -432,9 +432,9 @@ fn carriage_return_data_matches_native_trust() {
                 );
             drop(native);
             // This row makes sixteen connections, and libssh2 on Windows (CNG) ends about one key exchange in a hundred
-            // by itself; the setup already connects afresh once after it (D14). The row makes the connection again
-            // only when it ended on two key exchange failures in a row, as the libssh2 codes say; any other end is
-            // the row's result, with the codes of every try printed.
+            // by itself; the setup already connects afresh twice after it (D14, D32). The row makes the connection
+            // again only when it ended on three key exchange failures in a row, as the libssh2 codes say; any other
+            // end is the row's result, with the codes of every try printed.
             let (result, tries) = establish_observed(key(&f), f.known_hosts.clone());
             ssh_network::observed::report(&tries);
             assert_eq!(

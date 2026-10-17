@@ -1,10 +1,11 @@
-//! The network setup's steps that a test can replace, and the one retry of a key exchange that libssh2's WinCNG
-//! backend ends on its own side (operator decision D14).
+//! The network setup's steps that a test can replace, and the retries of a key exchange that libssh2's WinCNG backend
+//! ends on its own side (operator decisions D14 and D32).
 //!
 //! libssh2 on Windows CNG fails about one key exchange in a hundred with `LIBSSH2_ERROR_KEX_FAILURE` (-8), whatever
-//! the server. On Windows the setup connects afresh after that failure, once, inside the same setup attempt: the
-//! attempt's deadlines bound both tries and the retry machine sees one attempt. Elsewhere the failure ends the
-//! attempt as it always did.
+//! the server. On Windows the setup connects afresh after that failure, up to twice (D14 allowed one; D32 raised it
+//! to two after a retry left 1 in about 38,500 establishes failing), inside the same setup attempt: the attempt's
+//! deadlines bound all the tries and the retry machine sees one attempt. Elsewhere the failure ends the attempt as
+//! it always did.
 use super::super::agent_job::{Control, Mark};
 use cfg_if::cfg_if;
 use ssh2::{ErrorCode, Session};
@@ -21,15 +22,16 @@ pub(crate) const KEX_FAILURE: ErrorCode = ErrorCode::Session(-8);
 pub(crate) enum KexRetry {
     /// The failure ends the attempt.
     Never,
-    /// The setup connects afresh once, if the rest of the rules allow it.
-    Once,
+    /// The setup connects afresh after the failure up to this many times (D14 set it to one, D32 to two on Windows),
+    /// if the rest of the rules allow each. Zero is [`KexRetry::Never`].
+    Times(u8),
 }
 
 cfg_if! {
     if #[cfg(windows)] {
         impl KexRetry {
             /// The platform's policy: WinCNG's failure is rare and is the library's own.
-            pub(crate) const PLATFORM: Self = Self::Once;
+            pub(crate) const PLATFORM: Self = Self::Times(2);
         }
     } else {
         impl KexRetry {
@@ -82,18 +84,13 @@ impl<'a> Network<'a, Native> {
 
 impl<S: Steps> Network<'_, S> {
     /// Whether a handshake that failed with a key exchange failure (-8), the one failure retried, may be tried
-    /// again on a new connection. Only once; never when a credential could have been offered (the handshake comes
-    /// before any authentication step, so the open's facts must say none was); and never when the budget left is
-    /// no more than the failed try used since `started`, so that a repeat could only run the deadline out and hide
-    /// the failure under a timeout.
-    pub(crate) fn may_retry(
-        &self,
-        already_retried: bool,
-        control: &Control,
-        started: Mark,
-    ) -> bool {
-        self.kex == KexRetry::Once
-            && !already_retried
+    /// again on a new connection, when `retried` retries have been made already. Only as many as the policy allows;
+    /// never when a credential could have been offered (the handshake comes before any authentication step, so the
+    /// open's facts must say none was); and never when the budget left is no more than the failed try used since
+    /// `started` (the start of that try, not of the setup), so that a repeat could only run the deadline out and
+    /// hide the failure under a timeout.
+    pub(crate) fn may_retry(&self, retried: u8, control: &Control, started: Mark) -> bool {
+        matches!(self.kex, KexRetry::Times(allowed) if retried < allowed)
             && !(self.credential_offered)()
             && control.has_room_since(started)
     }
