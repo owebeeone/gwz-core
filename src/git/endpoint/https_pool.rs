@@ -476,6 +476,7 @@ fn pool_failure(error: pool::Error) -> Failure {
 }
 cfg_if::cfg_if! {
     if #[cfg(test)] {
+        mod handshake_gate_tests;
         mod idle_budget_tests;
         mod idle_tests;
         mod idle_wake_tests;

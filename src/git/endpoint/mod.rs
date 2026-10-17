@@ -63,6 +63,7 @@ cfg_if::cfg_if! {
         pub(crate) mod https_local;
         pub(crate) mod https_opening;
         pub(crate) mod loopback;
+        pub(crate) mod rendezvous;
     }
 }
 

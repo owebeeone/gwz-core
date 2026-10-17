@@ -96,6 +96,30 @@ pub(crate) enum MachineSetting {
     /// builds, so SSH and local operations run; an https open is refused with this text before any connection.
     Refused(Arc<str>),
 }
+cfg_if::cfg_if! { if #[cfg(test)] {
+    /// A test's stand-in for the synchronous work of a connection's TLS handshake (the certificate-chain check is
+    /// about 4 ms of CPU inside one poll on Windows): called inside the connect task's poll, just before the
+    /// origin's handshake, so that a test can ask whether the setups of N members run at once.
+    #[derive(Clone, Default)]
+    pub(crate) struct HandshakeHook(Option<Arc<dyn Fn() + Send + Sync>>);
+    impl HandshakeHook {
+        pub(crate) fn new(work: Arc<dyn Fn() + Send + Sync>) -> Self {
+            Self(Some(work))
+        }
+        fn run(&self) {
+            if let Some(work) = &self.0 {
+                work();
+            }
+        }
+    }
+} else {
+    /// The test seam of the same name, which does nothing.
+    #[derive(Clone, Default)]
+    pub(crate) struct HandshakeHook;
+    impl HandshakeHook {
+        fn run(&self) {}
+    }
+} }
 #[derive(Clone, Default)]
 pub(crate) struct Config {
     /// The CA file's certificates (`super::ca_bundle`), each a root beside the
@@ -114,6 +138,8 @@ pub(crate) struct Config {
     /// What the machine setting said, when one was captured (Windows). A refused one ends every https open at the
     /// connector, before name resolution, whatever else this configuration says.
     pub(crate) machine: MachineSetting,
+    /// Work a test does in place of a handshake's CPU (nothing outside tests).
+    pub(crate) handshake_hook: HandshakeHook,
 }
 impl Config {
     pub(crate) fn validate(&self) -> Result<(), Failure> {
@@ -247,6 +273,7 @@ struct Setup {
     addresses: Vec<SocketAddr>,
     tls: super::https_backend::Connector,
     proxy: Option<Proxy>,
+    hook: HandshakeHook,
 }
 pub(crate) struct HttpConnector {
     pub(crate) config: Config,
@@ -411,6 +438,7 @@ impl HttpResource {
                     addresses,
                     tls,
                     proxy,
+                    hook: config.handshake_hook.clone(),
                 })
             },
         )
@@ -618,6 +646,7 @@ async fn connect(setup: Setup, key: Key, tcp: Arc<AtomicU64>) -> Result<Connecti
         .set_nodelay(true)
         .map_err(|_| failure(ErrorCode::Io))?;
     let tls = setup.tls;
+    let hook = setup.hook;
     let mut io: Socket = Box::new(socket);
     if let Some(proxy) = setup.proxy {
         if proxy.tls {
@@ -678,6 +707,7 @@ async fn connect(setup: Setup, key: Key, tcp: Arc<AtomicU64>) -> Result<Connecti
             _ => return Err(failure(ErrorCode::Io)),
         }
     }
+    hook.run();
     let io = super::https_handshake::handshake(&tls, &key.host, io).await?;
     // Only the verified final origin TLS stream supplies CBT, after any proxy TLS.
     let binding = super::https_backend::tls_server_end_point(&io)

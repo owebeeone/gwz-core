@@ -32,6 +32,25 @@ mod poll;
 mod retry;
 use retry::{Held, Retries, Settling};
 
+/// The worker threads of the gwz-https endpoint's runtime (decision D33, run `2026-10-17-https611`). One thread
+/// queued every member's TLS handshake behind the others: on Windows the certificate-chain check alone is about
+/// 4 ms of CPU per connection, 78 % of that thread's time, so 32 members cost 0.14 s more than gwz 1.0.17, which
+/// does it on libgit2's per-member threads. Four workers closed the gap in that run's scratch build (paired
+/// against 1.0.17 at 1, 16 and 32 members: +0.007, +0.018 and -0.001 s, against +0.024, +0.073 and +0.140 s)
+/// for the same CPU. Fixed, not the machine's core count: the same runtime on every host.
+const RUNTIME_WORKERS: usize = 4;
+
+/// The endpoint's runtime, which `block_on` drives from the `gwz-https` thread and whose workers run its tasks.
+/// tokio gives its blocking-pool threads (the TLS configuration's prebuild, file reads) the same name as the
+/// workers, `gwz-https-worker`; a profile cannot tell them apart by name.
+fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(RUNTIME_WORKERS)
+        .thread_name("gwz-https-worker")
+        .enable_all()
+        .build()
+}
+
 type Key = (String, i64);
 /// An attempt's preparation, what its first connect did, what the limit
 /// machine made of a refusal, and the budget and challenge it leaves.
@@ -145,7 +164,7 @@ impl HttpsEndpoint {
         let watch = Watch::default();
         let ended = watch.clone();
         std::thread::Builder::new().name("gwz-https".into()).spawn(move || {
-            let runtime = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            let runtime = match runtime() {
                 Ok(runtime) => runtime,
                 Err(_) => { let _ = ready_tx.send(Err(())); return; }
             };
@@ -650,4 +669,4 @@ cfg_if::cfg_if! { if #[cfg(test)] {
     mod stale_action_tests;
 } }
 // Needs no HTTPS server, so it runs on Windows too.
-cfg_if::cfg_if! { if #[cfg(test)] { mod wake_tests; } }
+cfg_if::cfg_if! { if #[cfg(test)] { mod runtime_tests; mod wake_tests; } }
