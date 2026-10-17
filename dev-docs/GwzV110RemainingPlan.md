@@ -43,7 +43,7 @@ Status: **DRAFT, 2026-10-15.** It decides nothing; the choices that need the ope
 | WPP 4.2/4.3 dual (WH2) | open: the checkpoint says untaken; 5.6 excluded 4.1/4.2 as accepted | the WH2 re-review and the 4.2/4.3 dual, or a recorded ruling |
 | Phase 1, 3, 4, 4.4 and 3.5 reviews | partly covered by 5.6 (Phase 1 read on the State axis only; 3.5 read fully by State, sampled by Code); no document declares 5.6 closes them | an operator ruling, or the reviews |
 
-Also open: the real Pageant 0.83 console rows (operator session). **Correction (2026-10-15):** an earlier draft of this paragraph said step 5.6's review was made the single review point for the owed reviews. No document records that; it was the lane owner's reading of the operator's "wait for a more substantial review point". The rows above list what 5.6 did and did not cover (audit A1, 2026-10-15). 5.6 does cover the adaptive extensions (Down, RESTORING, Ns, POST holds, the notes drain).
+The real Pageant 0.83 console rows (operator session) were run 2026-10-17 (B6, done). **Correction (2026-10-15):** an earlier draft of this paragraph said step 5.6's review was made the single review point for the owed reviews. No document records that; it was the lane owner's reading of the operator's "wait for a more substantial review point". The rows above list what 5.6 did and did not cover (audit A1, 2026-10-15). 5.6 does cover the adaptive extensions (Down, RESTORING, Ns, POST holds, the notes drain).
 
 ## 3. Phases
 
@@ -64,7 +64,7 @@ Foundational first; steps within a phase are independent unless a dependency is 
 - **B3. S5.3:** sustained memory.
 - **B4. WPP 6.1:** TR8.4 speed on dabeest against 1.0.17 (about a day of host time, host otherwise idle; OQ12 and the operator's go for live fetch).
 - **B5. WPP 6.2:** the Windows parity rows.
-- **B6. Pageant 0.83 console rows** with the operator.
+- **B6. Pageant 0.83 console rows** with the operator. **Done 2026-10-17** (run `2026-10-17-pageant-operator`): `pageant-rsa-key`, `pageant-beats-pipe` and `pageant-empty-no-fallthrough` PASS on 1.0.17 and the candidate, with the pipe agent unused in both pipe rows; parity holds.
 - **B7. S5.4:** choose the defaults from B1–B4 (after them).
 - **B8. WPP 6.3:** S5.5's repeat on dabeest and the Windows column of S5.6 (after B7, B5). Phase review.
 - **B9. S5.6:** the full cell table (after B1–B8).
