@@ -37,7 +37,7 @@ Status: **DRAFT, 2026-10-15.** It decides nothing; the choices that need the ope
 | Phase 8 tags and publish | not started | gwz-transport and gwz-git still `publish = false`; tags; publish jobs; WPP 6.5 |
 | S3.1 (timeout plan S5.1 review) | open: implementation `1ac248ca` (2026-09-23) never reviewed; the SetupClock and retry work changed it since | one Code and State review on the settled tree |
 | S3.2 (Q6 aggregate review) | open: closing fix `a2a7878d` (2026-09-22) never reviewed | the retained Code and State aggregate gate |
-| S3.3 (timeout plan S5.2) | partly: the regression rows exist; the cold live fetches at the default timeout were never run | after S3.1's GO: the live fetches and the five-fetch check on 16 members |
+| S3.3 (timeout plan S5.2) | **done 2026-10-17** (run `2026-10-17-s33`): the production-graph stall rows (with a stall-unwired control red), five cold SSH fetches and five consecutive default fetches on 16 members all pass at default timeouts; HTTPS rows also pass | nothing |
 | TR2.6 (review of TR2.1 to TR2.22, S6.1, S6.2) | open: no report; every per-step review disclaims it | one dual review of the settled Phase 2 tree; gates S7.1 |
 | WPP 4.8 / TR4.10 review (SSPI) | open: required before TR4.7; neither 5.6 axis read the SSPI internals or gwz-sspi | a dual review of 4.8 and the SSPI secret ownership |
 | WPP 4.2/4.3 dual (WH2) | open: the checkpoint says untaken; 5.6 excluded 4.1/4.2 as accepted | the WH2 re-review and the 4.2/4.3 dual, or a recorded ruling |
