@@ -123,10 +123,13 @@ cfg_if::cfg_if! {
                     placements.push(TransportPlacement::Cli);
                 }
                 Ok(TransportCapabilitiesResponse {
-                    // Windows advertises neither a selected file identity nor an exact agent identity until a named fixture
-                    // GO (GwzV110Plan.md S4.3 and S7.2).
-                    file_identity: !cfg!(windows),
-                    exact_agent_identity: !cfg!(windows),
+                    // A selected key file is advertised on every platform: Windows has its named fixture GO (decision D30,
+                    // run 2026-10-15-parityrows, rows home-unset-absolute-identity and home-unset-tilde-identity).
+                    file_identity: true,
+                    // No platform selects one key from an agent yet (`--identity` names a private-key file), so no exact agent
+                    // identity is advertised anywhere. Decision D38 builds the selection in a separate lane; this cell
+                    // follows it then (GwzV110Plan.md S4.3 and S7.2, decision D30).
+                    exact_agent_identity: false,
                     message_versions: Some(vec![2]),
                     placements: Some(placements),
                     schemes: Some(if state.cli.https {

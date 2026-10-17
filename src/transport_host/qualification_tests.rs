@@ -107,11 +107,12 @@ cfg_if::cfg_if! { if #[cfg(windows)] {
             cfg_if::cfg_if! {
                 if #[cfg(gwz_session_candidate)] {
                     use crate::TransportCapabilitiesRequest;
-                    // The session candidate reports what the endpoint bound, and no file or exact agent identity on Windows.
+                    // The session candidate reports what the endpoint bound, a selected file identity (decision D30) and no
+                    // exact agent identity on Windows.
                     let caps = runtime.capabilities(TransportCapabilitiesRequest { schema_version: "gwz.protocol/v0".into(), ..Default::default() }).unwrap();
                     assert_eq!(caps.schemes, Some(schemes));
                     assert_eq!(caps.auth_policies, Some(policies));
-                    assert!(!caps.file_identity);
+                    assert!(caps.file_identity);
                     assert!(!caps.exact_agent_identity);
                 }
             }

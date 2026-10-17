@@ -59,6 +59,31 @@ mod tests {
             ErrorCode::UnsupportedOperation
         );
     }
+    /// The 1.1.0 capability answer on Windows, the platform S7.2 names (decision D30, 2026-10-17). The handler has no
+    /// platform split, so every platform, Windows included, gets this one answer.
+    ///
+    /// - `file_identity: true`. Evidence: run `2026-10-15-parityrows`, rows `home-unset-absolute-identity` and
+    ///   `home-unset-tilde-identity` (a selected key file clones on Windows, as it does on 1.0.17).
+    /// - `exact_agent_identity: false`. D30's GO for it needs one exact-selection row (an agent holding two keys, the
+    ///   selected one authenticating, the other never offered). That row cannot be run: no 1.1.0 option names a key to
+    ///   select from an agent (`--identity` takes a private-key file), and the agent step offers every key it lists. The
+    ///   Pageant run `2026-10-17-pageant-operator` is ambient agent authentication and does not select one key. So the
+    ///   cell is not advertised on any platform until that option and its row exist (decision D38 builds the option).
+    #[test]
+    fn windows_capability_answer_follows_decision_d30() {
+        let response = handle(TransportCapabilitiesRequest {
+            schema_version: "gwz.protocol/v0".to_owned(),
+        })
+        .unwrap();
+        assert!(
+            response.file_identity,
+            "D30: file_identity is GO on Windows (2026-10-15-parityrows)"
+        );
+        assert!(
+            !response.exact_agent_identity,
+            "D30: exact_agent_identity needs the exact-selection row, which has no option to run against"
+        );
+    }
     #[test]
     fn runtime_timeout_refuses_changes_after_backend_creation() {
         let _backend = crate::git::Git2Backend::without_credential_helpers();
