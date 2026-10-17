@@ -49,8 +49,9 @@ pub(crate) enum Seen {
     ServerClosed,
 }
 
-/// Told, by the one thread that drives a pool host, of every connection's
-/// state change in the order it happened (F10). An observer must not call
+/// Told, under the host's lock by whichever thread steps it, of every
+/// connection's state change in the order it happened (F10): the lock, not a
+/// single driving thread, is what orders the calls. An observer must not call
 /// back into the host.
 pub(crate) trait Observer: Send + Sync {
     fn seen(&self, key: &Key, connection: ConnectionId, seen: Seen, now: u64);

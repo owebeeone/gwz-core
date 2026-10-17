@@ -4,42 +4,13 @@
 //! blocks its thread in for that work and ask whether the endpoint's real runtime runs several at once.
 use super::*;
 use crate::git::endpoint::https_connection;
-use std::sync::{Condvar, Mutex};
+use crate::git::endpoint::rendezvous::Gate;
 
-/// Blocks each caller until `members` callers are inside, or `patience` has passed: with enough
-/// threads every caller returns as the last one enters; with too few the first ones can never be released.
-struct Gate {
-    state: Mutex<(usize, bool)>,
-    changed: Condvar,
-    members: usize,
-}
-impl Gate {
-    fn new(members: usize) -> Arc<Self> {
-        Arc::new(Self {
-            state: Mutex::new((0, false)),
-            changed: Condvar::new(),
-            members,
-        })
-    }
-    /// True if all the members were inside at once.
-    fn pass(&self, patience: Duration) -> bool {
-        let mut state = self.state.lock().unwrap();
-        state.0 += 1;
-        self.changed.notify_all();
-        let deadline = std::time::Instant::now() + patience;
-        while state.0 < self.members && !state.1 {
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            if left.is_zero() {
-                // Give up for everyone: the ones after it do not wait their turn.
-                state.1 = true;
-                self.changed.notify_all();
-                return false;
-            }
-            state = self.changed.wait_timeout(state, left).unwrap().0;
-        }
-        state.0 >= self.members
-    }
-}
+/// The tasks the test blocks at once: more than one, so that there are others to hold, and no more than the
+/// runtime has workers, whatever `RUNTIME_WORKERS` is later set to. The probe count is not the constant under
+/// test: a constant of 1 would make the probe pass on any runtime.
+const PROBES: usize = 2;
+const _: () = assert!(RUNTIME_WORKERS >= PROBES);
 
 fn endpoint() -> HttpsEndpoint {
     let config = pool::Config::default();
@@ -61,8 +32,8 @@ fn endpoint() -> HttpsEndpoint {
 #[test]
 fn one_task_that_blocks_its_thread_does_not_hold_the_others_of_the_endpoint() {
     let endpoint = endpoint();
-    let gate = Gate::new(RUNTIME_WORKERS);
-    let tasks: Vec<_> = (0..RUNTIME_WORKERS)
+    let gate = Gate::new(PROBES);
+    let tasks: Vec<_> = (0..PROBES)
         .map(|_| {
             let gate = gate.clone();
             endpoint
@@ -81,8 +52,8 @@ fn one_task_that_blocks_its_thread_does_not_hold_the_others_of_the_endpoint() {
     let outcomes: Vec<bool> = results.iter().collect();
     assert_eq!(
         outcomes,
-        vec![true; RUNTIME_WORKERS],
-        "{RUNTIME_WORKERS} tasks that each block their thread until all are inside must all get through: \
+        vec![true; PROBES],
+        "{PROBES} tasks that each block their thread until all are inside must all get through: \
          the endpoint's setups were serialized on one thread"
     );
 }

@@ -41,6 +41,8 @@ use retry::{Held, Retries, Settling};
 const RUNTIME_WORKERS: usize = 4;
 
 /// The endpoint's runtime, which `block_on` drives from the `gwz-https` thread and whose workers run its tasks.
+/// tokio gives its blocking-pool threads (the TLS configuration's prebuild, file reads) the same name as the
+/// workers, `gwz-https-worker`; a profile cannot tell them apart by name.
 fn runtime() -> std::io::Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(RUNTIME_WORKERS)
