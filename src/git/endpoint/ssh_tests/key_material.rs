@@ -30,3 +30,25 @@ pub(crate) fn public(dir: &Path, name: &str) -> (String, String) {
         fields.next().unwrap().to_owned(),
     )
 }
+
+/// Has the CA key `ca` certify `key` for `user` as `dir/name.pub`, which
+/// `ssh-keygen` signs as `dir/name-cert.pub`; returns the certificate's type
+/// and base64 blob.
+pub(crate) fn certify(
+    dir: &Path,
+    ca: &Path,
+    name: &str,
+    key: &(String, String),
+    user: &str,
+) -> (String, String) {
+    let path = dir.join(format!("{name}.pub"));
+    fs::write(&path, format!("{} {}\n", key.0, key.1)).unwrap();
+    common::run(
+        Command::new(fixture_host::programs().keygen)
+            .args(["-q", "-s"])
+            .arg(ca)
+            .args(["-I", "tr2-8", "-n", user])
+            .arg(&path),
+    );
+    public(dir, &format!("{name}-cert"))
+}

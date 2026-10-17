@@ -207,7 +207,7 @@ fn startup_failures_terminate_and_reap_every_spawned_child() {
     }
 }
 
-pub(crate) use super::key_material::{keygen, public};
+pub(crate) use super::key_material::{certify, keygen, public};
 
 /// The security key whose point is the plain Ed25519 or ECDSA P-256 key
 /// `blob`'s, with the application `ssh:`, as its type and base64 blob.
@@ -236,28 +236,6 @@ pub(crate) fn security_key(blob: &str) -> (String, String) {
         out.extend_from_slice(field);
     }
     (kind.to_owned(), STANDARD.encode(out))
-}
-
-/// Has the CA key `ca` certify `key` for `user` as `dir/name.pub`, which
-/// `ssh-keygen` signs as `dir/name-cert.pub`; returns the certificate's type
-/// and base64 blob.
-pub(crate) fn certify(
-    dir: &Path,
-    ca: &Path,
-    name: &str,
-    key: &(String, String),
-    user: &str,
-) -> (String, String) {
-    let path = dir.join(format!("{name}.pub"));
-    fs::write(&path, format!("{} {}\n", key.0, key.1)).unwrap();
-    common::run(
-        Command::new("ssh-keygen")
-            .args(["-q", "-s"])
-            .arg(ca)
-            .args(["-I", "tr2-8", "-n", user])
-            .arg(&path),
-    );
-    public(dir, &format!("{name}-cert"))
 }
 
 /// Authenticates as `user` with the agent at `agent` to the server at
