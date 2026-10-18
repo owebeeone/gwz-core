@@ -56,9 +56,11 @@ pub(super) fn clone_repo_named(
         Some(attempt.clone()),
         Some(progress),
     ));
-    let repo = builder
-        .clone(url, path)
-        .map_err(|error| attempt.error().unwrap_or_else(|| clone_error(url, error)))?;
+    let repo = builder.clone(url, path).map_err(|error| {
+        attempt
+            .error()
+            .unwrap_or_else(|| attempt.classified(clone_error(url, error)))
+    })?;
     attempt.succeeded();
     pin_creation_time_filter_neutralization(&repo)?;
     Ok(GitCloneResult {

@@ -230,6 +230,11 @@ cfg_if::cfg_if! {
                     if let (Some(error), Some(attempt)) = (reported, &self.attempt) {
                         attempt.failed(error);
                     }
+                    if crate::git::endpoint::ssh_remote::is_authentication_rejected(error)
+                        && let Some(attempt) = &self.attempt
+                    {
+                        attempt.ssh_authentication_rejected();
+                    }
                 })
             }
         }

@@ -247,7 +247,12 @@ fn with_member_context(
         error.member_path = Some(member.path.clone());
     }
     if let Some(url) = clone_url {
-        error.message = append_url_scheme_hint(std::mem::take(&mut error.message), url, url_scheme);
+        error.message = append_url_scheme_hint(
+            std::mem::take(&mut error.message),
+            error.ssh_authentication_rejected,
+            url,
+            url_scheme,
+        );
     }
     error
 }

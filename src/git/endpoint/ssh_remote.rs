@@ -24,6 +24,16 @@ impl std::fmt::Display for AuthenticationRejected {
 }
 impl std::error::Error for AuthenticationRejected {}
 
+/// Whether an SSH open's error is the `Authentication` class: the agent or the key was refused, or had nothing to offer.
+pub(crate) fn is_authentication_rejected(error: &io::Error) -> bool {
+    error.get_ref().is_some_and(|cause| {
+        cause.is::<AuthenticationRejected>()
+            || cause
+                .source()
+                .is_some_and(|source| source.is::<AuthenticationRejected>())
+    })
+}
+
 pub(crate) struct RemoteTransport {
     endpoint: Arc<dyn OpenStream>,
     active: Mutex<Option<BlockingStream>>,
@@ -74,12 +84,7 @@ impl SmartSubtransport for RemoteTransport {
                     .is_some_and(|source| source.is::<super::ssh_host_key::HostKeyRefused>())
             }) {
                 Error::new(ErrorCode::GenericError, ErrorClass::Ssh, error.to_string())
-            } else if error.get_ref().is_some_and(|cause| {
-                cause.is::<AuthenticationRejected>()
-                    || cause
-                        .source()
-                        .is_some_and(|source| source.is::<AuthenticationRejected>())
-            }) {
+            } else if is_authentication_rejected(&error) {
                 Error::new(ErrorCode::Auth, ErrorClass::Ssh, error.to_string())
             } else {
                 network_error(error)

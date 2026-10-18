@@ -194,6 +194,11 @@ fn candidate_failed_key_and_trust_have_distinct_facts() {
         .unwrap();
     assert!(row.credential_offered);
     assert_eq!(row.authenticated, Some(false));
+    // The rejection is the SSH Authentication class, which the URL-scheme hint keys on (D46).
+    let rejected = b
+        .clone_repo(&url(&f), &f.temp.path().join("denied-again"))
+        .unwrap_err();
+    assert!(rejected.ssh_authentication_rejected, "{rejected:?}");
     // The rejection closes the key for the rest of the operation (the retry
     // plan's §4): a later clone in it finishes with that rejection at once,
     // and its row reports no offer, since it set nothing up.
@@ -236,11 +241,11 @@ fn candidate_failed_key_and_trust_have_distinct_facts() {
         )
         .unwrap()
         .unwrap();
-    assert!(
-        scoped
-            .clone_repo(&url(&f), &f.temp.path().join("untrusted"))
-            .is_err()
-    );
+    // An untrusted host is not the Authentication class: no hint keys on it.
+    let untrusted = scoped
+        .clone_repo(&url(&f), &f.temp.path().join("untrusted"))
+        .unwrap_err();
+    assert!(!untrusted.ssh_authentication_rejected, "{untrusted:?}");
     let row = scoped
         .transport_observations()
         .unwrap()

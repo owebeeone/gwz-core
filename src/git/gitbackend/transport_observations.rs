@@ -24,6 +24,8 @@ pub(crate) struct TransportAttempt(
     Arc<Mutex<crate::TransportObservation>>,
     Arc<AtomicBool>,
     Arc<Mutex<Option<crate::model::ModelError>>>,
+    /// The attempt ended in the SSH `Authentication` class on gwz's own transport.
+    Arc<AtomicBool>,
 );
 
 impl TransportObservations {
@@ -87,6 +89,7 @@ impl TransportObservations {
             Arc::new(Mutex::new(row)),
             Arc::new(AtomicBool::new(false)),
             Arc::new(Mutex::new(None)),
+            Arc::new(AtomicBool::new(false)),
         );
         self.rows
             .lock()
@@ -97,12 +100,24 @@ impl TransportObservations {
 }
 
 impl TransportAttempt {
+    /// `error`, the failure this attempt ended in, as the layers above read it.
+    pub(crate) fn classified(
+        &self,
+        mut error: crate::model::ModelError,
+    ) -> crate::model::ModelError {
+        error.ssh_authentication_rejected = self.3.load(Ordering::Acquire);
+        error
+    }
     pub(crate) fn error(&self) -> Option<crate::model::ModelError> {
         self.2.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
     cfg_if::cfg_if! { if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
         pub(crate) fn failed(&self, error: crate::model::ModelError) {
             self.2.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(error);
+        }
+        /// The open ended in the SSH `Authentication` class on gwz's own transport.
+        pub(crate) fn ssh_authentication_rejected(&self) {
+            self.3.store(true, Ordering::Release);
         }
     } }
     cfg_if::cfg_if! {

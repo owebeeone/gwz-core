@@ -68,6 +68,7 @@ fn bridge_error(error: gwz_sspi::Failure, supervisor: &Arc<gwz_sspi::Supervisor>
     BridgeError {
         code: native_code(error.kind()),
         pending,
+        provider_refused: error.kind() == gwz_sspi::ErrorKind::ProviderRejected,
     }
 }
 impl Port for NativePort {

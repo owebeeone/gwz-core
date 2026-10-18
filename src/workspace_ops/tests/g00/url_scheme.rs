@@ -330,9 +330,11 @@ fn a_remote_identity_override_conflicts_with_https_before_any_network() {
 
 #[test]
 fn hints_name_the_https_remedy_only_for_ssh_forms_on_known_hosts() {
+    // The native route's failure is recognised by 1.0.17's text.
     let identity = "SSH key authentication failed (no usable identity in the ssh-agent); run `ssh-add` or check your SSH setup".to_owned();
     let hinted = append_url_scheme_hint(
         identity.clone(),
+        false,
         "git@github.com:o/r.git",
         UrlScheme::Manifest,
     );
@@ -342,12 +344,18 @@ fn hints_name_the_https_remedy_only_for_ssh_forms_on_known_hosts() {
         "{hinted}"
     );
     assert_eq!(
-        append_url_scheme_hint(identity.clone(), "git@github.com:o/r.git", UrlScheme::Https),
+        append_url_scheme_hint(
+            identity.clone(),
+            false,
+            "git@github.com:o/r.git",
+            UrlScheme::Https
+        ),
         identity
     );
     assert_eq!(
         append_url_scheme_hint(
             identity.clone(),
+            false,
             "git@example.com:o/r.git",
             UrlScheme::Manifest
         ),
@@ -356,6 +364,7 @@ fn hints_name_the_https_remedy_only_for_ssh_forms_on_known_hosts() {
     assert_eq!(
         append_url_scheme_hint(
             identity.clone(),
+            false,
             "https://github.com/o/r.git",
             UrlScheme::Manifest
         ),
@@ -364,6 +373,7 @@ fn hints_name_the_https_remedy_only_for_ssh_forms_on_known_hosts() {
     let hostkey = "invalid or unknown remote ssh hostkey".to_owned();
     let hinted = append_url_scheme_hint(
         hostkey.clone(),
+        false,
         "ssh://git@gitlab.com/o/r.git",
         UrlScheme::Ssh,
     );
@@ -374,8 +384,55 @@ fn hints_name_the_https_remedy_only_for_ssh_forms_on_known_hosts() {
     );
     let other = "unexpected http status code: 500".to_owned();
     assert_eq!(
-        append_url_scheme_hint(other.clone(), "git@github.com:o/r.git", UrlScheme::Ssh),
+        append_url_scheme_hint(
+            other.clone(),
+            false,
+            "git@github.com:o/r.git",
+            UrlScheme::Ssh
+        ),
         other
+    );
+}
+
+/// D46: the transport route's SSH `Authentication` failure has its own words, with none of 1.0.17's text in them, and
+/// gets the same public-repository hint on the same conditions.
+#[test]
+fn the_transport_routes_authentication_class_gets_the_hint_without_1_0_17s_text() {
+    let words = "GWZ offered github.com every key the SSH agent holds that it can use, and github.com accepted none of them.".to_owned();
+    let hinted = append_url_scheme_hint(
+        words.clone(),
+        true,
+        "git@github.com:o/r.git",
+        UrlScheme::Manifest,
+    );
+    assert_eq!(
+        hinted,
+        format!(
+            "{}; for public repositories, retry with --url-scheme https or set GWZ_URL_SCHEME=https",
+            words.trim_end_matches('.')
+        )
+    );
+    // The same conditions as for the native route's text.
+    for (url, scheme) in [
+        ("git@github.com:o/r.git", UrlScheme::Https),
+        ("git@example.com:o/r.git", UrlScheme::Manifest),
+        ("https://github.com/o/r.git", UrlScheme::Manifest),
+    ] {
+        assert_eq!(
+            append_url_scheme_hint(words.clone(), true, url, scheme),
+            words,
+            "{url}"
+        );
+    }
+    // Without the class, words that do not say 1.0.17's text get no hint: the class is the key.
+    assert_eq!(
+        append_url_scheme_hint(
+            words.clone(),
+            false,
+            "git@github.com:o/r.git",
+            UrlScheme::Manifest
+        ),
+        words
     );
 }
 
