@@ -351,6 +351,17 @@ fn open_failure_io(
         };
         return AgentFailure { reason, class }.into_io();
     }
+    // The ambient (all-keys) route's agent answered and no key got in. An open that selected a key file is the exact
+    // route's, which words it by the key it named.
+    if key_file.is_none()
+        && let Some(reason) = agent.ambient_reason(&failure, &host, attempts)
+    {
+        return AgentFailure {
+            reason,
+            class: AgentFailureClass::Authentication,
+        }
+        .into_io();
+    }
     if let Some(reason) = agent_reason(&failure, agent) {
         return AgentFailure {
             reason,
@@ -782,6 +793,38 @@ cfg_if::cfg_if! {
             assert_eq!(failed.reported().unwrap().code, crate::model::ErrorCode::UnsupportedOperation);
             // The same failures of another source keep their generic words.
             let generic = open_failure_io(step(ErrorCode::Timeout, Some(SetupFailureCause::Stall), true), None, 9_000, host(), 22, None, None, &AgentSource::None, None);
+            assert!(generic.get_ref().unwrap().downcast_ref::<SshOpenFailure>().is_some());
+        }
+
+        /// The ambient (all-keys) agent route words its own failure: what was offered and the next action for the
+        /// agent that answered, and the failure keeps the authentication class the callers tell it by.
+        #[test]
+        fn an_ambient_agent_that_answered_and_was_not_accepted_is_worded_and_keeps_its_class() {
+            use crate::git::endpoint::agent_source::PipeName;
+            use gwz_transport::protocol::AuthMethod;
+            let step = |offered, authenticated| Failure {
+                code: ErrorCode::Authentication,
+                facts: Some(Facts { method: AuthMethod::SshAgent, credential_offered: offered, authenticated, ..Facts::default() }),
+                ..Failure::default()
+            };
+            let host = || "git.example.com".to_owned();
+            for source in [AgentSource::Path("agent.sock".into()), AgentSource::NamedPipe(PipeName::default_pipe())] {
+                let rejected = open_failure_io(step(true, Some(false)), Some((1, 4)), 9_000, host(), 22, None, None, &source, None);
+                assert_eq!(rejected.kind(), io::ErrorKind::PermissionDenied);
+                assert!(rejected.to_string().starts_with("GWZ offered git.example.com every key the "), "{rejected}");
+                assert!(rejected.to_string().ends_with("then run the command again. (attempt 1 of 4)"), "{rejected}");
+                assert!(rejected.get_ref().unwrap().source().is_some_and(|cause| cause.is::<crate::git::endpoint::ssh_remote::AuthenticationRejected>()));
+                let failed = rejected.get_ref().unwrap().downcast_ref::<AgentFailure>().unwrap();
+                assert!(failed.reported().is_none(), "an authentication failure is not a typed refusal");
+                let empty = open_failure_io(step(false, None), None, 9_000, host(), 22, None, None, &source, None);
+                assert_eq!(empty.kind(), io::ErrorKind::PermissionDenied);
+                assert!(empty.to_string().contains("has no key GWZ can offer git.example.com"), "{empty}");
+                // An open that selected a key file is the exact route's, whose words are not these.
+                let exact = open_failure_io(step(true, Some(false)), None, 9_000, host(), 22, None, Some("keys/id_work.pub".into()), &source, None);
+                assert!(exact.get_ref().unwrap().downcast_ref::<SshOpenFailure>().is_some(), "{exact}");
+            }
+            // A source with no agent keeps the generic words.
+            let generic = open_failure_io(step(true, Some(false)), None, 9_000, host(), 22, None, None, &AgentSource::None, None);
             assert!(generic.get_ref().unwrap().downcast_ref::<SshOpenFailure>().is_some());
         }
 
