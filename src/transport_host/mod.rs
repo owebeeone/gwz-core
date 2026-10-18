@@ -76,6 +76,7 @@ cfg_if::cfg_if! {
         mod driver_tests;
         mod https_tests;
         mod close_tests;
+        mod producer_busy_tests;
         mod https_policy_tests;
         mod https_helper_projection_tests;
         mod ssh_helper_projection_tests;
@@ -86,6 +87,9 @@ cfg_if::cfg_if! {
         mod host_key_tests;
     }
 }
+
+// Follow-up 1 of the SSH pump stall review: the large-blob push rows, ignored (they take minutes and gigabytes).
+cfg_if::cfg_if! { if #[cfg(test)] { mod blob_push_tests; } }
 
 use crate::git::endpoint::agent_source::AgentSource;
 use crate::git::endpoint::https_auth::HelperSlots;
@@ -344,6 +348,10 @@ impl TransportRuntime {
         /// The SSH home the runtime's driver names and expands `~/` under.
         pub(crate) fn driver_home_for_test(&self) -> Option<Home> {
             self.0.lock().unwrap_or_else(|e| e.into_inner()).local.home()
+        }
+        /// Has the driver's push opens carry a producer ceiling of `ms`.
+        pub(crate) fn set_producer_ceiling_ms_for_test(&self, ms: u64) {
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).local.set_producer_ceiling_ms_for_test(ms);
         }
     } }
     /// Has the endpoints this runtime built give their limit machines' notes

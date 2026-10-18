@@ -17,6 +17,7 @@
 use super::agent_source::AgentSource;
 use super::setup_retry::EndNote;
 use super::ssh_host_key::HostKeyRefused;
+use super::stream_io::ProducerGate;
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
@@ -113,6 +114,9 @@ pub(crate) struct Handoff {
     /// the endpoint's session keeps this current and the driver's open backstop reads it, to charge an open for its
     /// attempts and not for its holds (`transport_host/session/driver/backstop.rs`).
     holds: Arc<Mutex<BTreeSet<(String, i64)>>>,
+    /// The producer gates of the push opens queued and not yet started, under their carrier session and stream: the
+    /// driver's `BlockingStream` and the endpoint's pump share each one (GwzPushProducerBusyDesign §2).
+    producers: Arc<Mutex<BTreeMap<(String, i64), ProducerGate>>>,
 }
 
 /// The destinations whose trust findings a handoff keeps.
@@ -130,6 +134,7 @@ impl Handoff {
             trust: Arc::default(),
             ends: Arc::default(),
             holds: Arc::default(),
+            producers: Arc::default(),
         }
     }
 
@@ -194,28 +199,44 @@ impl Handoff {
     }
 
     /// Queues an open with `open`, which returns its stream, and deposits
-    /// `extras` under `session` and that stream, holding the handoff
-    /// throughout: an `Open` can reach the endpoint only once `open` has
-    /// queued it, and the endpoint's [`Handoff::take`] waits for the deposit.
-    /// When `open` fails, the extras stay with the caller. The driver keeps
-    /// the [`Deposit`] until its open has its answer, whichever it is.
+    /// `extras` and `producer` under `session` and that stream, holding the
+    /// handoff throughout: an `Open` can reach the endpoint only once `open`
+    /// has queued it, and the endpoint's [`Handoff::take`] waits for the
+    /// deposit. When `open` fails, the extras stay with the caller and nothing
+    /// is deposited. The driver keeps the [`Deposit`] until its open has its
+    /// answer, whichever it is.
     pub(crate) fn open<E>(
         &self,
         session: &str,
         extras: &mut Option<UrlExtras>,
+        producer: Option<&ProducerGate>,
         open: impl FnOnce() -> Result<i64, E>,
     ) -> Result<(i64, Option<Deposit>), E> {
         let mut deposits = self.extras.lock().unwrap_or_else(|e| e.into_inner());
         let stream = open()?;
-        let deposit = extras.take().map(|extras| {
+        let deposited = extras.take().map(|extras| {
             deposits.insert((session.to_owned(), stream), extras);
-            Deposit {
-                handoff: self.clone(),
-                session: session.to_owned(),
-                stream,
-            }
+        });
+        let gated = producer.map(|gate| {
+            self.producers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert((session.to_owned(), stream), gate.clone());
+        });
+        let deposit = (deposited.is_some() || gated.is_some()).then(|| Deposit {
+            handoff: self.clone(),
+            session: session.to_owned(),
+            stream,
         });
         Ok((stream, deposit))
+    }
+
+    /// The producer gate deposited for `session`'s `stream`, once: the endpoint's, as it starts that open.
+    pub(crate) fn take_producer(&self, session: &str, stream: i64) -> Option<ProducerGate> {
+        self.producers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&(session.to_owned(), stream))
     }
 
     /// The extras deposited for `session`'s `stream`, once: the endpoint's,
@@ -228,7 +249,8 @@ impl Handoff {
     }
 }
 
-/// An open's deposit. Dropping it drops what the endpoint never took.
+/// An open's deposit. Dropping it drops what the endpoint never took: its
+/// extras and its producer gate.
 pub(crate) struct Deposit {
     handoff: Handoff,
     session: String,
@@ -238,6 +260,7 @@ pub(crate) struct Deposit {
 impl Drop for Deposit {
     fn drop(&mut self) {
         drop(self.handoff.take(&self.session, self.stream));
+        drop(self.handoff.take_producer(&self.session, self.stream));
     }
 }
 
@@ -247,7 +270,7 @@ cfg_if::cfg_if! {
         fn extras_reach_the_stream_their_open_queued_and_only_once() {
             let handoff = Handoff::default();
             let mut extras = Some(UrlExtras::new("GitHost.Example".into(), None));
-            let (stream, deposit) = handoff.open("s", &mut extras, || Ok::<_, ()>(7)).unwrap();
+            let (stream, deposit) = handoff.open("s", &mut extras, None, || Ok::<_, ()>(7)).unwrap();
             assert_eq!(stream, 7);
             assert!(extras.is_none());
             assert!(handoff.take("s", 8).is_none());
@@ -262,18 +285,65 @@ cfg_if::cfg_if! {
         fn a_failed_open_deposits_nothing_and_keeps_its_extras() {
             let handoff = Handoff::default();
             let mut extras = Some(UrlExtras::new("GitHost.Example".into(), None));
-            assert!(matches!(handoff.open("s", &mut extras, || Err::<i64, _>("full")), Err("full")));
+            assert!(matches!(handoff.open("s", &mut extras, None, || Err::<i64, _>("full")), Err("full")));
             assert!(extras.is_some());
             assert!(handoff.extras.lock().unwrap().is_empty());
-            let (stream, deposit) = handoff.open("s", &mut extras, || Ok::<_, ()>(9)).unwrap();
+            let (stream, deposit) = handoff.open("s", &mut extras, None, || Ok::<_, ()>(9)).unwrap();
             assert_eq!(stream, 9);
             assert_eq!(handoff.extras.lock().unwrap().len(), 1);
             // The endpoint never took them: the driver's deposit drops them.
             drop(deposit);
             assert!(handoff.extras.lock().unwrap().is_empty());
             let mut none = None;
-            let (_, deposit) = handoff.open("s", &mut none, || Ok::<_, ()>(10)).unwrap();
+            let (_, deposit) = handoff.open("s", &mut none, None, || Ok::<_, ()>(10)).unwrap();
             assert!(deposit.is_none() && handoff.extras.lock().unwrap().is_empty());
+        }
+
+        #[test]
+        fn a_producer_gate_reaches_the_stream_its_open_queued_and_only_once() {
+            let handoff = Handoff::default();
+            let gate = ProducerGate::new(7);
+            let mut none = None;
+            let (stream, deposit) = handoff
+                .open("s", &mut none, Some(&gate), || Ok::<_, ()>(7))
+                .unwrap();
+            assert_eq!(stream, 7);
+            assert!(deposit.is_some(), "a gate is a deposit");
+            assert!(handoff.take_producer("s", 8).is_none());
+            assert!(handoff.take_producer("other", 7).is_none());
+            assert!(handoff.take("s", 7).is_none(), "a gate is not URL extras: nothing else rides with it");
+            let taken = handoff.take_producer("s", 7).unwrap();
+            assert_eq!(taken.ceiling_ms(), 7);
+            drop(taken.enter());
+            assert!(gate.busy(), "the endpoint holds the driver's own gate");
+            assert!(handoff.take_producer("s", 7).is_none());
+            drop(deposit);
+        }
+
+        #[test]
+        fn a_dropped_deposit_takes_back_a_gate_the_endpoint_never_took() {
+            let handoff = Handoff::default();
+            let gate = ProducerGate::new(7);
+            let mut extras = Some(UrlExtras::new("GitHost.Example".into(), None));
+            let (_, deposit) = handoff
+                .open("s", &mut extras, Some(&gate), || Ok::<_, ()>(5))
+                .unwrap();
+            assert_eq!(handoff.producers.lock().unwrap().len(), 1);
+            drop(deposit);
+            assert!(handoff.producers.lock().unwrap().is_empty());
+            assert!(handoff.extras.lock().unwrap().is_empty());
+        }
+
+        #[test]
+        fn a_failed_open_deposits_no_gate() {
+            let handoff = Handoff::default();
+            let gate = ProducerGate::new(7);
+            let mut none = None;
+            assert!(matches!(
+                handoff.open("s", &mut none, Some(&gate), || Err::<i64, _>("full")),
+                Err("full")
+            ));
+            assert!(handoff.producers.lock().unwrap().is_empty());
         }
 
         #[test]
@@ -294,7 +364,7 @@ cfg_if::cfg_if! {
             let driver = handoff.clone();
             let opener = std::thread::spawn(move || {
                 let mut extras = Some(UrlExtras::new("GitHost.Example".into(), None));
-                driver.open("s", &mut extras, || {
+                driver.open("s", &mut extras, None, || {
                     // The Open is queued: an endpoint could see it now.
                     queued.send(()).unwrap();
                     wait.recv().unwrap();

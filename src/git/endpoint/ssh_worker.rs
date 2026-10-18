@@ -12,6 +12,7 @@ use super::{
     ssh_pool::{Connector, Opening, PoolHost, Progress, Resource},
     ssh_pump::SshPump,
     ssh_shutdown::{self, Status},
+    stream_io::ProducerGate,
 };
 use gwz_transport::{
     pool::{Checkout, Config as PoolConfig, Identity, Key, Lease, Owner, Pool},
@@ -322,8 +323,11 @@ where
         }
         *request.progress.lock().unwrap_or_else(|e| e.into_inner()) = facts.clone();
         resource.start_exchange(stream, endpoint, request.service, &request.path)?;
-        if resource.pump().is_none() {
+        let Some(pump) = resource.pump() else {
             return Err(io::Error::other("resource did not install a channel pump"));
+        };
+        if let Some(producer) = request.producer.clone() {
+            pump.set_producer(producer);
         }
         Ok((connection_id, reused, facts))
     })();

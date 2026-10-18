@@ -5,9 +5,79 @@ use std::{
     future::Future,
     io::{self, Read, Write},
     pin::pin,
-    sync::{Arc, Condvar, Mutex},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicU32, Ordering},
+    },
     task::{Context, Poll, Wake, Waker},
 };
+
+/// How long a push's producer may stay outside every call on its stream, with
+/// no byte moving, before the pump charges the silence to the network again:
+/// ten minutes (operator decision D45).
+pub(crate) const PRODUCER_CEILING_MS: u64 = 600_000;
+
+/// A call has returned at least once.
+const ARMED: u32 = 1 << 31;
+/// The calls in flight.
+const CALLS: u32 = ARMED - 1;
+
+/// Tells the pump of a push whether the thread that owns the stream is
+/// producing: outside every call on it. libgit2 reads a whole object into
+/// memory before it writes the object's first byte, and that silence is the
+/// producer's, not the network's (GwzPushProducerBusyDesign). One word holds
+/// the armed bit and the number of calls in flight, so that [`busy`] is one load
+/// and a thread about to enter a call can never read busy.
+///
+/// It lives in the process of the stream and its pump (the local placement); it
+/// crosses no carrier. A stream with no gate, or one no call has returned from,
+/// is never busy, which is the pump's behaviour without a gate.
+///
+/// [`busy`]: ProducerGate::busy
+#[derive(Clone)]
+pub(crate) struct ProducerGate(Arc<GateState>);
+struct GateState {
+    calls: AtomicU32,
+    ceiling_ms: u64,
+}
+impl ProducerGate {
+    pub(crate) fn new(ceiling_ms: u64) -> Self {
+        Self(Arc::new(GateState {
+            calls: AtomicU32::new(0),
+            ceiling_ms,
+        }))
+    }
+
+    /// The most the pump lets the producer stay busy with no byte moving.
+    pub(crate) fn ceiling_ms(&self) -> u64 {
+        self.0.ceiling_ms
+    }
+
+    /// The owner of the stream is outside every call on it, and has made one.
+    pub(crate) fn busy(&self) -> bool {
+        let calls = self.0.calls.load(Ordering::Acquire);
+        calls & ARMED != 0 && calls & CALLS == 0
+    }
+
+    pub(crate) fn enter(&self) -> CallGuard {
+        self.0.calls.fetch_add(1, Ordering::AcqRel);
+        CallGuard(self.clone())
+    }
+}
+/// One call in flight on a gated stream; the call ends when it drops, on every
+/// path out of it.
+pub(crate) struct CallGuard(ProducerGate);
+impl Drop for CallGuard {
+    fn drop(&mut self) {
+        let _ = self
+            .0
+            .0
+            .calls
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |calls| {
+                Some((calls | ARMED) - 1)
+            });
+    }
+}
 
 /// A file-like view of one existing exchange. Clones share byte positions and
 /// cancellation. Never call from the worker responsible for delivery/timers.
@@ -18,6 +88,9 @@ pub struct BlockingStream {
     /// 0 when the stall clock is off or the opener did not say. A timeout
     /// names the bound only when it is not 0.
     stall_ms: u64,
+    /// Whether the thread that owns this stream is inside a call on it, when
+    /// the pump of a push asked to know.
+    producer: Option<ProducerGate>,
 }
 pub(crate) const REPOSITORY_REFUSED: &str = "GWZ SSH repository access refused";
 impl BlockingStream {
@@ -25,7 +98,19 @@ impl BlockingStream {
         Self {
             stream,
             stall_ms: 0,
+            producer: None,
         }
+    }
+
+    /// This stream with a gate that says whether its owner is inside a call.
+    pub(crate) fn with_producer(mut self, producer: Option<ProducerGate>) -> Self {
+        self.producer = producer;
+        self
+    }
+
+    /// Marks a call on this stream, for the gate's sake; ends when dropped.
+    fn call(&self) -> Option<CallGuard> {
+        self.producer.as_ref().map(ProducerGate::enter)
     }
 
     /// This stream with the stall bound (`--ssh-timeout`, in milliseconds)
@@ -45,11 +130,13 @@ impl BlockingStream {
 
     /// Half-close outgoing bytes; incoming bytes remain readable.
     pub fn end_write(&self) -> io::Result<()> {
+        let _call = self.call();
         wait(self.stream.end_write()).map_err(|error| io_error(error, self.stall_ms))
     }
 
     /// Wait for endpoint cleanup and return its facts; does not imply Git success.
     pub fn close(&self) -> io::Result<CloseResult> {
+        let _call = self.call();
         wait(self.stream.close()).map_err(|error| io_error(error, self.stall_ms))
     }
 
@@ -60,15 +147,18 @@ impl BlockingStream {
 }
 impl Read for BlockingStream {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let _call = self.call();
         wait(self.stream.read(output)).map_err(|error| io_error(error, self.stall_ms))
     }
 }
 impl Write for BlockingStream {
     fn write(&mut self, input: &[u8]) -> io::Result<usize> {
+        let _call = self.call();
         wait(self.stream.write(input)).map_err(|error| io_error(error, self.stall_ms))
     }
 
     fn flush(&mut self) -> io::Result<()> {
+        let _call = self.call();
         wait(self.stream.flush()).map_err(|error| io_error(error, self.stall_ms))
     }
 }

@@ -188,6 +188,9 @@ impl Session {
             ADMISSION
         };
         let admit_until = allocation_until.unwrap_or_else(|| Instant::now() + allocation_allowance);
+        // A push's pump learns from this when the thread that owns the stream is producing and not waiting
+        // for the server (GwzPushProducerBusyDesign). It goes to an endpoint in this process only.
+        let mut producer = None;
         loop {
             let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.closed {
@@ -245,10 +248,19 @@ impl Session {
                 deadlines,
                 receive_limits: binding.limits().clone(),
             };
+            if ssh
+                && service == gwz_transport::protocol::GitService::ReceivePackExchange
+                && state.handoff.is_some()
+                && producer.is_none()
+            {
+                producer = Some(ProducerGate::new(state.producer_ceiling_ms));
+            }
             let opened = match &state.handoff {
-                Some(handoff) => handoff.open(binding.session_id(), &mut extras, || {
-                    owner.open(request, open)
-                }),
+                Some(handoff) => {
+                    handoff.open(binding.session_id(), &mut extras, producer.as_ref(), || {
+                        owner.open(request, open)
+                    })
+                }
                 None => owner.open(request, open).map(|id| (id, None)),
             };
             let id = match opened {
@@ -321,6 +333,7 @@ impl Session {
                     next: None,
                     observe,
                     facts,
+                    producer: producer.take(),
                 },
             );
             break;

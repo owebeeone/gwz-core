@@ -145,10 +145,13 @@ impl Session {
                             let reply = entry.reply.clone();
                             let stream = entry.stream.clone();
                             let stall_ms = entry.stall_ms;
+                            let producer = entry.producer.clone();
                             reports.push(Box::new(move || {
                                 reply.complete_with(
                                     Ok((
-                                        BlockingStream::new(stream).with_stall_ms(stall_ms),
+                                        BlockingStream::new(stream)
+                                            .with_stall_ms(stall_ms)
+                                            .with_producer(producer),
                                         opened,
                                     )),
                                     || {

@@ -42,6 +42,8 @@ fn advertisement() -> Vec<u8> {
 #[derive(Clone, Default)]
 struct Server {
     stdout: Rc<RefCell<VecDeque<u8>>>,
+    /// What the server has written to its standard error and the pump has not read.
+    stderr: Rc<RefCell<VecDeque<u8>>>,
     stdin: Rc<RefCell<Vec<u8>>>,
     /// The server has exited: both its outputs end once drained (r19stall).
     exited: Rc<std::cell::Cell<bool>>,
@@ -77,7 +79,15 @@ impl ChannelIo for Server {
         }
         Ok(count)
     }
-    fn read_stderr(&mut self, _: &mut [u8]) -> io::Result<usize> {
+    fn read_stderr(&mut self, output: &mut [u8]) -> io::Result<usize> {
+        let mut stderr = self.stderr.borrow_mut();
+        if !stderr.is_empty() {
+            let count = output.len().min(stderr.len());
+            for (slot, byte) in output.iter_mut().zip(stderr.drain(..count)) {
+                *slot = byte;
+            }
+            return Ok(count);
+        }
         if self.exited.get() {
             return Ok(0);
         }
@@ -115,6 +125,9 @@ struct Exchange {
 
 impl Exchange {
     fn new() -> Self {
+        Self::of(GitService::UploadPack)
+    }
+    fn of(service: GitService) -> Self {
         let mut config = Config::new("clock-session", 1, Side::Endpoint);
         config.io_timeout_ms = STALL_MS;
         config.receive_window = 65_536;
@@ -123,7 +136,7 @@ impl Exchange {
         let (stream, endpoint) = Stream::new(config).unwrap();
         let server = Server::default();
         let mut pump = SshPump::new(stream, endpoint, server.clone(), 65_536, 65_536);
-        pump.set_service(GitService::UploadPack);
+        pump.set_service(service);
         Self {
             pump,
             server,
@@ -138,6 +151,9 @@ impl Exchange {
     }
     fn server_writes(&self, bytes: &[u8]) {
         self.server.stdout.borrow_mut().extend(bytes);
+    }
+    fn server_writes_stderr(&self, bytes: &[u8]) {
+        self.server.stderr.borrow_mut().extend(bytes);
     }
     fn client_sends(&mut self, bytes: &[u8]) {
         self.pump
@@ -188,6 +204,8 @@ impl Exchange {
         self.pump.stream_stats().terminal && self.failures == [ErrorCode::Timeout]
     }
 }
+
+mod producer;
 
 #[test]
 fn client_think_time_never_runs_the_stall_clock() {

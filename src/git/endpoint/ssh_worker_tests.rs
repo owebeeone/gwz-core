@@ -72,6 +72,7 @@ fn queued_expiry_releases_admission_without_stopping_worker() {
                 selected: None,
                 authority: None,
                 url: None,
+                producer: None,
                 permit: Permit(permits.clone()),
                 context: BridgeContext {
                     session_id: "session".into(),
@@ -225,6 +226,7 @@ fn an_open_cancelled_while_connecting_fails_cancelled_whichever_pass_sees_it() {
             selected: None,
             authority: None,
             url: None,
+            producer: None,
             permit: Permit(Arc::new(AtomicUsize::new(1))),
             context: BridgeContext {
                 session_id: "session".into(),
