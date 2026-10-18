@@ -101,7 +101,7 @@ Only the clauses in §3 change. The rest of each document stays authoritative as
   | Release | In this release | Recorded as unsupported in this release |
   |---|---|---|
   | 1.1.0 | gwz-py's network operations on the transport, one runtime per operation, with its public API unchanged (OD14, §3.17) | Reuse across a Python process's operations, which 1.2.0 ships |
-  | 1.1.0 | On Windows, the transport does what 1.0.17's native path does: Pageant, the WinHTTP machine proxy, the logon session's default credentials under OD16, and libgit2's SSH home order (OD15, TR1.8, TR4.8–TR4.10) | — |
+  | 1.1.0 | On Windows, the transport does what 1.0.17's native path does: Pageant, the WinHTTP machine proxy, the logon session's default credentials under OD16, and libgit2's SSH home order (OD15, TR1.8, TR4.8–TR4.10) | Kerberos selected inside Negotiate; a certificate held by Pageant or by the Windows OpenSSH Authentication Agent service (`GwzV110AmendmentS56Scope.md`, D41) |
 
 - Line 64's dabeest rules apply to every Windows row of both releases.
 
@@ -135,7 +135,7 @@ Amendment 1's sections are assigned as follows:
 | §3.12: the server risks | 1.2.0 |
 | §3.13 (out of scope) | Both, as written, less its bullet on admitting security keys or certificates (§3.19) |
 | §3.14 (unchanged on purpose) | 1.1.0, and 1.2.0 |
-| §4: Phase 2's tests, S5.6's cell, S7.2's notes, and the manual security-key row, run on the transport (§3.19) | 1.1.0 |
+| §4: Phase 2's tests, S5.6's cell and S7.2's notes run on the transport (§3.19); the manual security-key row does not run in 1.1.0 and the real-key claim is unsupported (`GwzV110AmendmentS56Scope.md`, D41) | 1.1.0 |
 | §4: Phase 7's exit, S7.3's fifth route check, and the stdio post-release row | 1.2.0 |
 | §5 | Done: amendment 1 was accepted and applied |
 
@@ -266,7 +266,7 @@ Phase 5's milestone (line 344), Phase 6's (line 352) and Phase 7's (line 367) ar
   - **On a 1.1.0 miss,** S5.4 retunes first and the rows are measured again. A remaining gap goes to the operator as OD17: ship with the measured gap stated in the notes, hold 1.1.0, or bring in OD8's channels, whose re-run list for 1.1.0 is TR2.6's tests, TR8.1, TR8.4 and S7.4 (1.1.0). S7.1 (1.1.0) waits on TR8.1 being met or on OD17's answer. Lines 392–397 apply to 1.2.0's run.
   - **TR8.4** runs beside TR8.1 (1.1.0), after TR2.1 and before S5.4 (§3.5).
   - **Line 405's defaults** wait, for 1.1.0, on TR8.1, TR8.4 and S5.3. **S5.5 (1.1.0)** then repeats TR8.1's and TR8.4's speed targets on the chosen defaults.
-  - **Line 406's sign-off,** for 1.1.0, covers TR2.8's agent key types and signature algorithms, TR1.6's credential helpers, and a cell for each behaviour TR1.8 designs. The server and reuse cells are 1.2.0's.
+  - **Line 406's sign-off,** for 1.1.0, covers TR2.8's agent key types and signature algorithms, TR1.6's credential helpers, and a cell for each behaviour TR1.8 designs, except the three claims `GwzV110AmendmentS56Scope.md` (D41) removes, which are marked unsupported: a real hardware security-key signature; Kerberos in Windows `Negotiate`; a certificate held by Pageant or by the Windows OpenSSH Authentication Agent service. The server and reuse cells are 1.2.0's.
 - **1.2.0's run:** lines 382–406 as written, including TR8.2 and TR8.3. It repeats TR8.1 with reuse.
 
 ### 3.11 Phase 9 (lines 408–444)
@@ -481,15 +481,15 @@ The operator's words: "lift that", for OD16's zone bound; and "yes", for moving 
     - Ed25519;
     - RSA with `rsa-sha2-512` and `rsa-sha2-256`, and with `ssh-rsa` (SHA-1) exactly where libssh2 uses it, which the operator confirmed on 2026-10-02 ("keep sha-1 fallback"): when the server sent no `server-sig-algs`; when `server-sig-algs` lists `ssh-rsa` and no `rsa-sha2-*`; and, once per key, when the agent answers a `rsa-sha2-*` request with an `ssh-rsa` signature. When `server-sig-algs` lists none of the three, the key fails, as libssh2's does (`userauth.c:1380-1383`, `:1503-1506`, `:1754-1763`; `openssl.c:5213-5218`; `agent.c:560-563`);
     - ECDSA P-256, P-384 and P-521;
-    - security keys (`sk-ssh-ed25519@openssh.com`, `sk-ecdsa-sha2-nistp256@openssh.com`), whose touch the agent asks for;
-    - OpenSSH certificates of those types;
+    - security keys (`sk-ssh-ed25519@openssh.com`, `sk-ecdsa-sha2-nistp256@openssh.com`), whose touch the agent asks for (a real hardware key's signature is unsupported in 1.1.0: `GwzV110AmendmentS56Scope.md`, D41);
+    - OpenSSH certificates of those types (a certificate held by Pageant or by the Windows OpenSSH Authentication Agent service is unsupported in 1.1.0: `GwzV110AmendmentS56Scope.md`, D41);
     - DSA, if libssh2 1.11.1 offers it.
   - A key of a type neither supports is skipped, as libssh2 skips it, and a later key is tried. No remote takes a native route for its keys, so the route check before any open goes.
   - TR2.8 also records whether the transport's key files for `--identity` and `--remote-identity` cover the formats libssh2 reads, and closes any gap the same way.
-  - **Tests,** against the disposable SSH fixture and a disposable `sshd`: each listed type authenticates on the transport; a security key through a software authenticator the fixture provides, which TR2.8 names; a certificate against an `sshd` that trusts a test user CA; and, for `ssh-rsa`, one row for each of the three cases above, with `rsa-sha2-*` used whenever `server-sig-algs` lists it. TR2.8's Safety review names the SHA-1 cases, and that `server-sig-algs` travels after the key exchange, so an attacker on the path cannot strip it. Amendment 1's §4 manual security-key row runs on the transport, with a hardware key, and needs the operator's go.
+  - **Tests,** against the disposable SSH fixture and a disposable `sshd`: each listed type authenticates on the transport; a security key through a software authenticator the fixture provides, which TR2.8 names; a certificate against an `sshd` that trusts a test user CA; and, for `ssh-rsa`, one row for each of the three cases above, with `rsa-sha2-*` used whenever `server-sig-algs` lists it. TR2.8's Safety review names the SHA-1 cases, and that `server-sig-algs` travels after the key exchange, so an attacker on the path cannot strip it. Amendment 1's §4 manual security-key row, which would run on the transport with a hardware key, is not run in 1.1.0 (`GwzV110AmendmentS56Scope.md`, D41); TR2.8's security-key rows run through a software authenticator, on macOS and Linux.
   - **Amendment 1's texts:**
     - §3.8's "S7.2's route ledger gains a row for OD11's route" (line 264) is removed;
-    - §3.2's row reads, in this release, "SSH through an agent with any key type 1.0.17 uses (TR2.8)", and as unsupported "—";
+    - §3.2's row reads, in this release, "SSH through an agent with any key type 1.0.17 uses (TR2.8)", and as unsupported "a real hardware security-key signature; on Windows, a certificate held by Pageant or by the Windows OpenSSH Authentication Agent service (GwzV110AmendmentS56Scope.md, D41)";
     - §3.11's OD11 gains: "Reversed by the operator on 2026-10-02: the transport signs with every key type and signature 1.0.17 uses (TR2.8)";
     - §3.12's risk "Security-key users lose the transport" and §3.13's bullet "Admitting security keys or certificates to the transport's own signing" are removed;
     - §3.14's bullet "RSA with SHA-1" is replaced by TR2.8's rule above;

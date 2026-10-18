@@ -358,7 +358,7 @@ It gains: one command through the stdio mode's local client form.
 - **Phase 10:** the stdio row of the post-release check.
 - **The native path's key types.** Before S7.2's notes say the native route serves a routed key type, whether the native path authenticates with that type is recorded:
   - the certificate case, by TR2.8's fixture row;
-  - the security-key case, by a named manual row that S7.2 runs, with a hardware key, before its notes are written. A manual row against a live account needs the operator's go (the plan's §2).
+  - the security-key case, by a named manual row that S7.2 runs, with a hardware key, before its notes are written. A manual row against a live account needs the operator's go (the plan's §2). *Removed from 1.1.0 by `GwzV110AmendmentS56Scope.md` (D41): the row is not run in 1.1.0.*
 - **Redaction.** The plan's §2 evidence rule covers the new rows, including agent key comments and fingerprints (§3.2).
 
 ## 5. Review and application

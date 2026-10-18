@@ -37,12 +37,12 @@ The route is chosen per remote URL, after the effective-URL rewriting, before an
 
 | Id | Remote kind | Protocol / authentication | Route in the 1.1.0 build | Why (for a native route) | macOS ARM64 | Linux x86-64 | Windows x86-64 |
 |---|---|---|---|---|---|---|---|
-| L1 | scp-style `user@host:path`; `ssh://`, `ssh+git://`, `git+ssh://` | SSH, key from an agent (ssh-agent on Unix; Pageant, then the `SSH_AUTH_SOCK` pipe, then the default OpenSSH agent pipe on Windows) | transport | | S5.6 pending | S5.6 pending | S5.6 pending |
+| L1 | scp-style `user@host:path`; `ssh://`, `ssh+git://`, `git+ssh://` | SSH, key from an agent (ssh-agent on Unix; Pageant, then the `SSH_AUTH_SOCK` pipe, then the default OpenSSH agent pipe on Windows). Unsupported in 1.1.0 (`GwzV110AmendmentS56Scope.md`): a physical hardware security-key signature, and on Windows a certificate held by Pageant or by the OpenSSH agent service | transport | | S5.6 pending | S5.6 pending | S5.6 pending |
 | L2 | as L1 | SSH, a key file named with `--identity`, `--remote-identity` or a remote's `gwzSshIdentity`. Windows: an unencrypted RSA PEM file only. A passphrase-protected file is refused on every platform | transport | | S5.6 pending | S5.6 pending | S5.6 pending (`file_identity`, D30) |
 | L3 | as L1 | SSH, a password (a URL password, or the configured helper's password-only route) | transport | | S5.6 pending | S5.6 pending | S5.6 pending |
 | L4 | `https://` | anonymous | transport | | S5.6 pending | S5.6 pending | S5.6 pending |
 | L5 | `https://` | Basic, answered by the user's configured git credential helpers (`gh` among them; Git Credential Manager on Windows) | transport | | S5.6 pending | S5.6 pending | S5.6 pending |
-| L6 | `https://` | Negotiate or NTLM, answered by the Windows logon session | transport, **Windows only**. macOS and Linux serve neither scheme (as 1.0.17), so a Negotiate-only server is refused there | | not applicable | not applicable | S5.6 pending |
+| L6 | `https://` | Negotiate or NTLM, answered by the Windows logon session. Tested only where Negotiate selects NTLM: Windows may select Kerberos on a domain-joined host and gwz does not prevent it, but Kerberos is unsupported in 1.1.0, no claim (`GwzV110AmendmentS56Scope.md`) | transport, **Windows only**. macOS and Linux serve neither scheme (as 1.0.17), so a Negotiate-only server is refused there | | not applicable | not applicable | S5.6 pending |
 | L7 | `https://` through a proxy | macOS and Linux: `https_proxy`, `HTTPS_PROXY`, `all_proxy`, `ALL_PROXY` and `no_proxy`, an `http://` or `https://` proxy with no credentials and no path. Windows: the one static WinHTTP machine proxy (D1, D6, D8); a 407 is refused as proxy sign-in (measured on Windows; S5.6 to confirm on the others) | transport | | S5.6 pending | S5.6 pending | S5.6 pending |
 | L8 | `https://` with a custom CA | macOS: the platform roots plus one CA file (`GIT_SSL_CAINFO`, else `SSL_CERT_FILE`). Linux: OpenSSL's verify paths (`SSL_CERT_FILE` and `SSL_CERT_DIR` as OpenSSL reads them) plus the CA file `GIT_SSL_CAINFO` names. Windows: the Windows store plus one CA file (`GIT_SSL_CAINFO`, else `SSL_CERT_FILE`) (D4) | transport | | S5.6 pending | S5.6 pending | S5.6 pending |
 | L9 | `http://` | any | **native**, on every platform. Windows prints a warning before the first request (D2); macOS and Linux print none | the transport serves `https://` only (design §3.2, D2); a plain-HTTP remote is a compatibility exception, not a fallback | S5.6 pending | S5.6 pending | S5.6 pending |
@@ -95,6 +95,7 @@ These go into the gwz-cli migration notes (`gwz-cli/docs/Releases.md`) and the g
 3. HTTPS is authenticated through the user's configured credential helpers (`gh` among them); an `https://` URL password, query or fragment is refused (a user name alone is allowed); Windows adds the logon session for Negotiate and NTLM and nothing else (section 7, item 1 on the word "gh-only").
 4. The Windows list of differences from 1.0.17 (TD13, with D2, D4, D6, D8, D12, D14 and D32).
 5. Unsupported: Linux ARM64, macOS x86-64, Bazel's `@gwz_core_crates` (D27) until the Phase 8 registry pins.
+6. Unsupported in 1.1.0 (D41): a physical hardware security-key signature; Kerberos inside Windows `Negotiate`; a certificate held by Pageant or by the Windows OpenSSH agent service. The wording is section 3 of `GwzV110AmendmentS56Scope.md`; `Releases.md` (Known limits) and gwz-py's `Migration-1.1.0-DRAFT.md` (section 5) carry it.
 
 ## 6. Finalization checklist (after C4 and S5.6)
 

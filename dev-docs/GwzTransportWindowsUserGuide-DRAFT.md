@@ -332,10 +332,13 @@ Keys held by Pageant or the OpenSSH agent can be RSA, ECDSA or ed25519. RSA keys
 from an agent are signed with `rsa-sha2-512` only, so a server that accepts only
 `ssh-rsa` or `rsa-sha2-256` is refused, with a message that names the signature
 type the server lacks; use an ECDSA or ed25519 key, or have the server accept
-`rsa-sha2-512`. An RSA **certificate** held by an agent does not authenticate; the
-message says so. Not tested: a hardware security key, and certificates held by
-Pageant or by the OpenSSH agent itself (an ed25519 certificate served by a test
-agent on a pipe did authenticate).
+`rsa-sha2-512`. Certificates from an agent on a pipe other than the OpenSSH service: Ed25519 and
+ECDSA (P-256, P-384, P-521) certificates authenticated in the tests; an RSA
+certificate did not, as with 1.0.17 (the test server's default algorithm list
+refuses `ssh-rsa-cert-v01@openssh.com`; a server that accepts it was not tried).
+Unsupported in 1.1.0: a hardware security key, and a certificate held by Pageant
+or by the OpenSSH agent itself; naming one with `--identity <certificate>.pub` is
+equally unsupported.
 A connection that drops before login is retried; gwz 1.0.17 made one attempt.
 
 ## Proxy
@@ -580,7 +583,11 @@ administrator to fix the redirect.
 The address in the message is only shown to you; it is the server's choice, not
 something to copy into a remote.
 
-Kerberos is not tested; the Windows sign-in tests used NTLM. A server that
+Kerberos is unsupported in 1.1.0: the Windows sign-in tests used NTLM. On a
+domain-joined computer Windows may choose Kerberos inside Negotiate; GWZ does not
+prevent that, asks for no delegation and no mutual authentication, and makes no
+claim for it. If a Negotiate sign-in that worked with 1.0.17 fails, run with
+`--transport native`. A server that
 requires channel binding (Extended Protection) was tested only against this
 computer.
 
@@ -609,8 +616,9 @@ unencrypted RSA PEM key files; RSA agent signatures at `rsa-sha2-512` only; a
 Pageant owned by another user is not refused; the agent pipe's creator is not
 checked.
 
-**Not promised:** Kerberos; a hardware security key; certificates held in Pageant
-or in the OpenSSH agent; Pageant and the OpenSSH agent together; SSH host keys
+**Not supported in 1.1.0:** Kerberos; a hardware security key; certificates held in
+Pageant or in the OpenSSH agent. **Not promised:** Pageant and the OpenSSH agent
+together; SSH host keys
 other than RSA; key files other than unencrypted RSA PEM; proxy sign-in; PAC
 scripts (and whether the native transport follows them); GWZ's own transport through
 a proxy beyond the forms the step 4.7 rows ran; through a proxy, an HTTPS server written as an IP address, a redirect from one HTTPS
