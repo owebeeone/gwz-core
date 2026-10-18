@@ -178,6 +178,9 @@ pub struct ModelError {
     pub record_context: Option<Box<crate::MergeRecordCompatibilityContext>>,
     /// Typed operation metadata retained when failure precedes an envelope.
     pub response_meta: Option<Box<crate::ResponseMeta>>,
+    /// The failure was the SSH `Authentication` class on gwz's own transport (the agent or the key was refused or had
+    /// nothing to offer), which the native route reports only as text. The URL-scheme hint keys on it (D46).
+    pub(crate) ssh_authentication_rejected: bool,
 }
 
 // Response metadata contains only equivalence-comparable values (no floats).
@@ -193,6 +196,7 @@ impl ModelError {
             member_path: None,
             record_context: None,
             response_meta: None,
+            ssh_authentication_rejected: false,
         }
     }
 

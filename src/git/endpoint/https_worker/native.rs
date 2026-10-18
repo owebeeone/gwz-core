@@ -240,6 +240,15 @@ impl History {
             complete: false,
         }
     }
+    /// Records that the provider refused the sign-in before any mechanism was seen (decision D48): the sign-in
+    /// began and its mechanism is unresolved, which no other failure of `Protocol` with nothing sent has. The wire
+    /// accepts that state for Negotiate only, so an NTLM refusal leaves its facts as they were.
+    fn provider_refused(&mut self) {
+        let native = self.facts.native.as_mut().unwrap();
+        if native.scheme == NativeScheme::Negotiate && native.mechanism.is_none() {
+            native.observation = NativeObservation::Unresolved;
+        }
+    }
     fn observe(&mut self, step: &gwz_sspi::TokenStep) -> Result<(), ErrorCode> {
         let native = self.facts.native.as_mut().unwrap();
         if native.scheme == NativeScheme::Ntlm
@@ -311,6 +320,9 @@ trait Probe: Send {
 struct BridgeError {
     code: ErrorCode,
     pending: Option<Box<dyn Probe>>,
+    /// The native provider refused the sign-in or exceeded a bound (`ErrorKind::ProviderRejected`), which `code`
+    /// (`Protocol`) shares with a worker that broke its contract. The failure's facts carry the difference (D48).
+    provider_refused: bool,
 }
 trait Session: Send {
     fn step(

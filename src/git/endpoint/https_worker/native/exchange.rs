@@ -215,6 +215,9 @@ impl Client {
                 Ok(step) => step,
                 Err(error) => {
                     guard.retain(error.pending);
+                    if error.provider_refused {
+                        history.provider_refused();
+                    }
                     return Err(with_facts(error.code, Effect::None, &history.facts));
                 }
             };

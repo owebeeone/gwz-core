@@ -3,6 +3,8 @@ use crate::transport_host::helper_failure::{
     self, HELPER_ALLOCATION_PREFIX, HELPER_INTERACTION_PREFIX, MEMBER_URL,
 };
 
+mod provider_refusal;
+
 /// The machine proxy asked for a sign-in (HTTP 407 to the CONNECT). Only the Windows machine proxy produces this
 /// failure, so the text names it; it points to no native option, because the native route refuses a 407 the same way
 /// (design §6, "407").
@@ -324,6 +326,9 @@ impl HttpsOpenFailure {
             return Some(format!(
                 "The server answered GWZ's Windows sign-in with a redirect (HTTP {status}). GWZ does not follow a redirect once a Windows sign-in has started, so your credential is not carried to another address, and nothing was sent to the new location. Ask the server's administrator to fix the redirect, or for the address that serves the repository directly."
             ));
+        }
+        if let Some(words) = self.provider_refusal_words() {
+            return Some(words);
         }
         let began = facts.credential_offered
             || facts.http_status.is_some()

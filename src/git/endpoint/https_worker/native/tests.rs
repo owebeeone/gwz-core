@@ -4,6 +4,7 @@ mod closure;
 mod exchange;
 mod precedence;
 mod protocol;
+mod provider_refusal;
 mod reconnect;
 mod redirect;
 mod rejection;
@@ -115,7 +116,7 @@ cfg_if::cfg_if! { if #[cfg(test)] {
                     while self.cleanup.load(Ordering::Acquire) != 2 { tokio::time::sleep(Duration::from_millis(1)).await; }
                 }
                 if self.cleanup.load(Ordering::Acquire) != 2 {
-                    Err(BridgeError { code: ErrorCode::Timeout, pending: Some(Box::new(FakeProbe(self.cleanup))) })
+                    Err(BridgeError { code: ErrorCode::Timeout, pending: Some(Box::new(FakeProbe(self.cleanup))), provider_refused: false })
                 } else { Ok(()) }
             })
         }
@@ -137,7 +138,7 @@ cfg_if::cfg_if! { if #[cfg(test)] {
     struct ValidatorPort(Arc<FakePort>);
     impl Port for ValidatorPort {
         fn start(&self, request: gwz_sspi::AuthRequest, deadline: Instant, cancel: gwz_sspi::Cancellation) -> Work<'static, Result<Box<dyn Session>, BridgeError>> {
-            if !real_request_validation(&request) { return Box::pin(async { Err(BridgeError { code: ErrorCode::InvalidRequest, pending: None }) }); }
+            if !real_request_validation(&request) { return Box::pin(async { Err(BridgeError { code: ErrorCode::InvalidRequest, pending: None, provider_refused: false }) }); }
             self.0.start(request, deadline, cancel)
         }
     }

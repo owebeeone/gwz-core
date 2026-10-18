@@ -232,13 +232,24 @@ pub(crate) fn url_scheme_refusal_error(
 /// Appends the remedy to the two SSH failures a reader without keys meets on a
 /// known host, when the effective URL is an ssh form and https was not already
 /// the scheme in use. Any other message is returned unchanged.
-pub(crate) fn append_url_scheme_hint(message: String, url: &str, scheme: UrlScheme) -> String {
+/// `authentication_rejected` is the transport route's SSH `Authentication` class; the native route's failure is
+/// recognised by its text.
+pub(crate) fn append_url_scheme_hint(
+    message: String,
+    authentication_rejected: bool,
+    url: &str,
+    scheme: UrlScheme,
+) -> String {
     if scheme == UrlScheme::Https || !uses_ssh(url) {
         return message;
     }
     let Some(host) = known_host(url) else {
         return message;
     };
+    if authentication_rejected {
+        // The transport route's own words end in a full stop, which the hint's clause follows.
+        return format!("{}{IDENTITY_HINT}", message.trim_end_matches('.'));
+    }
     if message.contains("no usable identity in the ssh-agent") {
         return format!("{message}{IDENTITY_HINT}");
     }

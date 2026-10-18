@@ -143,7 +143,12 @@ where
             emitter.member_progress("workspace_root", &target_display, progress)
         })
         .map_err(|error| ModelError {
-            message: append_url_scheme_hint(error.message, &request.url, scheme.scheme),
+            message: append_url_scheme_hint(
+                error.message,
+                error.ssh_authentication_rejected,
+                &request.url,
+                scheme.scheme,
+            ),
             ..error
         })?;
     emitter.member_finished("workspace_root", &target_display);
