@@ -129,7 +129,7 @@ cfg_if::cfg_if! { if #[cfg(test)] {
     fn fake_for(host: &'static str, complete: bool, cleanup: usize) -> (NativeCaller, Arc<FakePort>) {
         let port = Arc::new(FakePort { host, complete, starts: Arc::new(AtomicUsize::new(0)), steps: Arc::new(AtomicUsize::new(0)), finishes: Arc::new(AtomicUsize::new(0)),
             cleanup: Arc::new(AtomicUsize::new(cleanup)), deadlines: Arc::new(Mutex::new(Vec::new())) });
-        (NativeCaller { port: Ok(port.clone()), machine_proxy: None }, port)
+        (NativeCaller { port: Ok(port.clone()), machine_proxy: None, gate: crate::git::spawn_gate::SpawnGate::new() }, port)
     }
     pub(super) fn publication_caller() -> NativeCaller { fake(true, 2).0 }
     pub(super) fn counting_caller(host: &'static str) -> (NativeCaller, Arc<AtomicUsize>) { let (caller, port) = fake_for(host, false, 2); (caller, port.steps.clone()) }
@@ -151,7 +151,7 @@ cfg_if::cfg_if! { if #[cfg(test)] {
                 if r.status() == 401 { r.headers_mut().insert(WWW_AUTHENTICATE, "NTLM".parse().unwrap()); } r
             }))).await;
             let mut endpoint = Endpoint::new(server.config(), None, pool::Config::default()).unwrap();
-            let (_, port) = fake(true, 2); endpoint.client.set_native(NativeCaller { port: Ok(Arc::new(ValidatorPort(port))), machine_proxy: None });
+            let (_, port) = fake(true, 2); endpoint.client.set_native(NativeCaller { port: Ok(Arc::new(ValidatorPort(port))), machine_proxy: None, gate: crate::git::spawn_gate::SpawnGate::new() });
             let mut request = input(&server, GitService::UploadPackAdvertisement); request.policy = AuthPolicy::WindowsDefault;
             let (prepared, _) = endpoint.client.prepare_attempt(request, &CancellationToken::new(), &mut endpoint.client.budget(), &mut None).await;
             assert_eq!(prepared.unwrap().opened.facts.authenticated, Some(true));

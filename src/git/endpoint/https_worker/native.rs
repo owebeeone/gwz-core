@@ -11,7 +11,7 @@ mod sspi;
 /// The request rounds one operation's native exchanges may use (design 8).
 pub(super) const NATIVE_ROUNDS: usize = 8;
 
-pub use sspi::NativeCaller;
+pub use sspi::{NativeCaller, NativeHost};
 
 /// Initialized fixed output; secrets never grow or move through a String.
 pub(super) struct Header {

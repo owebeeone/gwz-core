@@ -59,6 +59,15 @@ impl SpawnGate {
         }
     }
 
+    /// Whether `other` is a handle to this same gate, not another host's.
+    #[allow(
+        dead_code,
+        reason = "only the transport build's NativeHost asks whether a backend is on its gate"
+    )]
+    pub(crate) fn same_gate(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.shared, &other.shared)
+    }
+
     /// Waits until no other hold exists, then holds the gate. A thread that holds it must not ask again: the gate
     /// is not re-entrant.
     pub(crate) fn hold(&self) -> SpawnHold {

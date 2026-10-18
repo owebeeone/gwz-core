@@ -268,14 +268,11 @@ fn real_caller() -> (NativeCaller, Arc<gwz_sspi::Supervisor>) {
         .unwrap();
     assert!(status.success(), "the production worker did not build");
     let worker = worker_target.join("debug").join("gwz-sspi-worker.exe");
-    let supervisor = Arc::new(
-        gwz_sspi::Supervisor::new(
-            gwz_sspi::WorkerExecutable::new(worker, FINGERPRINT).unwrap(),
-            gwz_sspi::Options::default(),
-        )
-        .unwrap(),
-    );
-    let caller = NativeCaller::capture(&Ok::<_, gwz_sspi::ErrorKind>(supervisor.clone()));
+    let host = NativeHost::new(Ok(
+        gwz_sspi::WorkerExecutable::new(worker, FINGERPRINT).unwrap()
+    ));
+    let supervisor = host.supervisor().clone().unwrap();
+    let caller = host.caller();
     (caller, supervisor)
 }
 

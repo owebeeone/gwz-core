@@ -718,6 +718,12 @@ fn probe_pipe_names() {
         std::io::stderr().as_raw_handle() as usize,
     ];
     let mut found = Vec::new();
+    let mut unnamed = 0;
+    let mut anonymous = 0;
+    let mut foreign = 0;
+    let mut private = 0;
+    let mut other = 0;
+    let mut values: Vec<String> = Vec::new();
     for value in (4..65536usize).step_by(4) {
         if own.contains(&value) {
             continue;
@@ -727,11 +733,121 @@ fn probe_pipe_names() {
         if unsafe { GetFileType(handle) } != FILE_TYPE_PIPE {
             continue;
         }
-        if let Some(name) = handle_pipe_name(handle) {
-            found.push(name);
+        match handle_pipe_name(handle) {
+            // A handle that answers as a pipe and has no name is an anonymous pipe, if it also answers the pipe query;
+            // a socket answers as a pipe, has no name and does not (`foreign`). Only one that is inheritable counts
+            // (`anonymous`): a handle is inheritable here because the process that started this one made it
+            // inheritable, and a pipe this process made for itself is not (`private`).
+            Some(name) if name.is_empty() => {
+                if !is_pipe(handle) {
+                    foreign += 1;
+                } else if is_inheritable(handle) {
+                    // CreatePipe with no size asks for the system's default, 4096 bytes each way: a pipe of
+                    // another size is another maker's (a test run's own, in the process that started this one).
+                    let summary = pipe_summary(handle);
+                    if summary.default_buffers() {
+                        anonymous += 1;
+                    } else {
+                        other += 1;
+                    }
+                    values.push(format!("{value:x}/{summary}"));
+                } else {
+                    private += 1;
+                }
+            }
+            Some(name) => found.push(name),
+            None => unnamed += 1,
         }
     }
-    std::fs::write(output, format!("names={}", found.join(";"))).unwrap();
+    // The other lines count the pipes with no name, which are the anonymous ones CreatePipe makes (gwz-sspi's worker
+    // pipes among them), and the pipes whose name could not be read.
+    std::fs::write(
+        output,
+        format!(
+            "names={}\nunnamed={unnamed}\nanonymous={anonymous}\nforeign={foreign}\nprivate={private}\nother={other}\nvalues={}",
+            found.join(";"),
+            values.join(",")
+        ),
+    )
+    .unwrap();
+}
+
+/// What a pipe end says of itself: its flags and buffer sizes.
+struct PipeSummary {
+    answered: bool,
+    flags: u32,
+    out: u32,
+    input: u32,
+    instances: u32,
+}
+
+impl PipeSummary {
+    /// CreatePipe's default: 4096 bytes each way.
+    fn default_buffers(&self) -> bool {
+        self.answered && self.out == 4096 && self.input == 4096
+    }
+}
+
+impl std::fmt::Display for PipeSummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}:{:x}:{}:{}:{}",
+            u8::from(self.answered),
+            self.flags,
+            self.out,
+            self.input,
+            self.instances
+        )
+    }
+}
+
+fn pipe_summary(handle: HANDLE) -> PipeSummary {
+    use windows_sys::Win32::System::Pipes::GetNamedPipeInfo;
+    let mut summary = PipeSummary {
+        answered: false,
+        flags: 0,
+        out: 0,
+        input: 0,
+        instances: 0,
+    };
+    // SAFETY: initialized outputs; a value that is no pipe only makes the call fail.
+    summary.answered = unsafe {
+        GetNamedPipeInfo(
+            handle,
+            &mut summary.flags,
+            &mut summary.out,
+            &mut summary.input,
+            &mut summary.instances,
+        )
+    } != 0;
+    summary
+}
+
+/// Whether `handle` is inheritable.
+fn is_inheritable(handle: HANDLE) -> bool {
+    let mut flags = 0;
+    // SAFETY: an initialized output; a value that is no handle only makes the call fail.
+    let answered =
+        unsafe { windows_sys::Win32::Foundation::GetHandleInformation(handle, &mut flags) };
+    answered != 0 && flags & HANDLE_FLAG_INHERIT != 0
+}
+
+/// Whether `handle` is an end of a pipe, which a socket that answers `FILE_TYPE_PIPE` is not.
+fn is_pipe(handle: HANDLE) -> bool {
+    use windows_sys::Win32::System::Pipes::GetNamedPipeInfo;
+    let mut flags = 0;
+    // SAFETY: an initialized output; a value that is no pipe only makes the call fail.
+    let answered = unsafe {
+        GetNamedPipeInfo(
+            handle,
+            &mut flags,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    answered != 0
 }
 
 /// The pipe a handle is an end of, as the system names it (`\gwz-helper-...`).
@@ -854,3 +970,5 @@ fn a_spawn_through_the_gate_waits_for_the_window_and_inherits_none_of_the_ends()
         );
     }
 }
+
+mod sspi_window;

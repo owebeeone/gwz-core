@@ -72,9 +72,7 @@ fn build_runtime(
     // The command is the driver: its host's HTTPS helper slots are created
     // once here and shared by the endpoints of the sessions it opens.
     let runtime = match native {
-        Some(caller) => {
-            TransportRuntime::with_https_native(ssh, https, HelperSlots::new(), caller)?
-        }
+        Some(caller) => TransportRuntime::with_https_native(ssh, https, caller)?,
         None => TransportRuntime::with_https(ssh, https, HelperSlots::new())?,
     };
     if let Some(notes) = notes {
