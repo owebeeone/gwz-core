@@ -1,6 +1,6 @@
 {
   "done": true,
   "entries": [
-    {"path": "src/git/endpoint/ssh_tests/local_endpoint.rs", "kind": "gate", "gate": "unix", "target": "arm: use super::key_fixture::{self as keys, KeyAgent, Sign}", "state": "paired", "owner": ["3.6"], "appendix": "G46: the whole module ran on the agent fixture, a Unix socket; it now runs on login_fixture (a named pipe on Windows) and only the security-key exchange, which the pipe agent cannot represent (key_fixture_pipe), keeps a Unix arm, beside its Windows twin (the ECDSA half)"}
+    {"path": "src/git/endpoint/ssh_tests/local_endpoint.rs", "kind": "gate", "gate": "unix", "target": "arm: use super::key_fixture::{self as keys, KeyAgent, Sign}", "state": "paired", "owner": ["3.6"], "appendix": "G46: the whole module ran on the agent fixture, a Unix socket; it now runs on login_fixture (a named pipe on Windows), and the security-key exchange keeps a Unix arm only because its agent is the Unix socket one, beside its Windows twin on the pipe agent (S5.6 cell 9.2: the pipe agent signs security keys through a software authenticator)"}
   ]
 }

@@ -4,10 +4,12 @@
 //! The Unix `KeyAgent` is `key_agent.py` in front of a private `ssh-agent`, and starts two processes, which its
 //! startup-failure row terminates and reaps. This one is [`PipeAgent`] with a thread and a pipe handle in the test
 //! process, so its startup-failure row is that a start that fails part way leaves no pipe behind. What it cannot
-//! represent stays Unix: security keys (`Sign::Sk`), the DSA key (`Sign::Dsa`), and the SHA-1
-//! answer to an `rsa-sha2` request (libssh2 on Windows offers only `rsa-sha2-512`, and the agent signs RSA with
-//! `ring`, which has no SHA-1 RSA). It signs Ed25519 and ECDSA keys (P-256, P-384, P-521) too, and lists a key's OpenSSH certificate (`<key>-cert.pub`, which
-//! `ssh-keygen -s` writes) as a separate identity that the key signs for, as OpenSSH's agent does.
+//! represent stays Unix: the SHA-1 answer to an `rsa-sha2` request (libssh2 on Windows offers only `rsa-sha2-512`, and the
+//! agent signs RSA with `ring`, which has no SHA-1 RSA). It signs Ed25519 and ECDSA keys (P-256, P-384, P-521) too, and
+//! lists a key's OpenSSH certificate (`<key>-cert.pub`, which `ssh-keygen -s` writes) as a separate identity that the key
+//! signs for, as OpenSSH's agent does. A security key (`Sign::Sk`, or a certificate of one) is signed by a software
+//! authenticator over the plain key that backs it, and a DSA key (`Sign::Dsa`) is one the agent makes and signs with
+//! itself, as `key_agent.py` does for the Unix rows; a key nothing backs can be listed and refused (`Sign::Absent`).
 //!
 //! [`KeyAgent::authenticate`] is the Windows twin of the Unix `authenticate`: the endpoint's own trust setup, then
 //! `agent_auth::authenticate_reporting` over a pipe channel to this agent (plan step 3.4). It authenticates on the
@@ -32,7 +34,11 @@ use std::{
 pub(crate) enum Sign<'a> {
     /// The agent signs, for this base64 public key blob.
     Upstream(&'a str),
-    /// Every request for this key is refused, as for an absent security key.
+    /// The software authenticator signs for the security key (or its certificate) `key`, with the plain key `backing`.
+    Sk { key: &'a str, backing: &'a str },
+    /// The agent signs with a DSA key it makes itself.
+    Dsa,
+    /// Every request for this key is refused, as for an absent security key. The key need not be one the agent holds.
     Absent(&'a str),
     /// The first reply is a malformed SHA-1 signature; later replies sign.
     MalformedRsa { key: &'a str, length: usize },
@@ -66,18 +72,29 @@ impl KeyAgent {
                 [Some(key), certificate].into_iter().flatten()
             })
             .collect();
-        let find = |blob: &str| {
+        let held = |blob: &str| {
             identities
                 .iter()
                 .find(|identity| STANDARD.encode(identity.blob()) == blob)
-                .unwrap_or_else(|| panic!("no private key for the listed key {blob}"))
-                .clone()
+                .cloned()
+        };
+        let find = |blob: &str| {
+            held(blob).unwrap_or_else(|| panic!("no private key for the listed key {blob}"))
         };
         let entries: Vec<_> = keys
             .iter()
             .map(|key| match key {
                 Sign::Upstream(blob) => (find(blob), Behavior::Signs),
-                Sign::Absent(blob) => (find(blob), Behavior::Refuses),
+                Sign::Sk { key, backing } => (
+                    find(backing).security_key(STANDARD.decode(key).unwrap()),
+                    Behavior::Signs,
+                ),
+                Sign::Dsa => (Identity::dsa(), Behavior::Signs),
+                Sign::Absent(blob) => (
+                    held(blob)
+                        .unwrap_or_else(|| Identity::unbacked(STANDARD.decode(blob).unwrap())),
+                    Behavior::Refuses,
+                ),
                 Sign::MalformedRsa { key, length } => {
                     (find(key), Behavior::MalformedFirst(*length))
                 }
@@ -117,7 +134,7 @@ impl KeyAgent {
     }
 }
 
-pub(crate) use super::key_material::{certify, keygen, public};
+pub(crate) use super::key_material::{certify, keygen, public, security_key};
 
 /// The blob of the certificate `ssh-keygen -s` wrote for the key at `key`, as `<key>-cert.pub`, if there is one.
 fn certificate_blob(key: &Path) -> Option<Vec<u8>> {
@@ -302,6 +319,96 @@ mod tests {
                 "{kind}"
             );
         }
+    }
+
+    /// Asks the agent for a signature of `data` with the listed key `blob`, with flags 0.
+    fn signed(agent: &KeyAgent, blob: &str, data: &'static [u8]) -> Option<Vec<u8>> {
+        let (channel, blob) = (agent.connect(), STANDARD.decode(blob).unwrap());
+        run(move |control| Agent::new(channel, control).sign(&blob, data, 0)).unwrap()
+    }
+
+    /// The fields of a signature blob: its algorithm name, and the rest after the first two strings.
+    fn fields(signature: &[u8]) -> (&[u8], &[u8], &[u8]) {
+        let length =
+            |at: usize| u32::from_be_bytes(signature[at..at + 4].try_into().unwrap()) as usize;
+        let name = 4..4 + length(0);
+        let raw = name.end + 4..name.end + 4 + length(name.end);
+        (
+            &signature[name],
+            &signature[raw.clone()],
+            &signature[raw.end..],
+        )
+    }
+
+    #[test]
+    fn a_security_key_is_signed_by_the_software_authenticator_with_a_counter() {
+        // The signature OpenSSH's FIDO key types carry: the algorithm, the raw signature, the flags byte with user
+        // presence set and the counter. The raw signature is the plain key's over what an authenticator signs.
+        for (kind, bits, name, raw_length) in [
+            ("ed25519", None, "sk-ssh-ed25519@openssh.com", Some(64)),
+            (
+                "ecdsa",
+                Some(256),
+                "sk-ecdsa-sha2-nistp256@openssh.com",
+                None,
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = keygen(dir.path(), "backing", kind, bits);
+            let backing = public(dir.path(), "backing");
+            let security = security_key(&backing.1);
+            let sign = Sign::Sk {
+                key: &security.1,
+                backing: &backing.1,
+            };
+            let agent = KeyAgent::start(dir.path(), &[&path], &[sign]);
+            assert_eq!(agent.blobs, vec![security.1.clone()], "{kind}");
+            for counter in [1_u32, 2] {
+                let signature = signed(&agent, &security.1, b"data")
+                    .unwrap_or_else(|| panic!("{kind}: the agent refused"));
+                let (found, raw, tail) = fields(&signature);
+                assert_eq!(found, name.as_bytes(), "{kind}");
+                assert!(
+                    raw_length.is_none_or(|length| raw.len() == length),
+                    "{kind}"
+                );
+                assert_eq!(
+                    tail,
+                    [&[1][..], &counter.to_be_bytes()[..]].concat(),
+                    "{kind}: flags and counter"
+                );
+            }
+            assert_eq!(agent.requests(), ["sign:0:0", "sign:0:0"], "{kind}");
+        }
+    }
+
+    #[test]
+    fn a_dsa_key_is_listed_with_its_blob_and_signs_ssh_dss_afresh_each_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let agent = KeyAgent::start(dir.path(), &[], &[Sign::Dsa]);
+        let blob = STANDARD.decode(&agent.blobs[0]).unwrap();
+        assert_eq!(&blob[..11], b"\0\0\0\x07ssh-dss");
+        let (first, second) = (
+            signed(&agent, &agent.blobs[0], b"data").unwrap(),
+            signed(&agent, &agent.blobs[0], b"data").unwrap(),
+        );
+        for signature in [&first, &second] {
+            let (name, raw, tail) = fields(signature);
+            assert_eq!((name, raw.len(), tail), (&b"ssh-dss"[..], 40, &[][..]));
+        }
+        assert_ne!(first, second, "a nonce for each signature");
+    }
+
+    #[test]
+    fn a_key_nothing_backs_is_listed_and_refused() {
+        // The agent lists the blob it is told to, and every request for it fails, as for a device that is absent.
+        let dir = tempfile::tempdir().unwrap();
+        keygen(dir.path(), "absent", "ed25519", None);
+        let absent = security_key(&public(dir.path(), "absent").1);
+        let agent = KeyAgent::start(dir.path(), &[], &[Sign::Absent(&absent.1)]);
+        assert_eq!(agent.blobs, vec![absent.1.clone()]);
+        assert_eq!(signed(&agent, &absent.1, b"data"), None);
+        assert_eq!(agent.requests(), ["sign:0:0"]);
     }
 
     #[test]

@@ -425,22 +425,28 @@ cfg_if::cfg_if! {
     } else {
         use super::key_fixture_pipe::{self as keys, KeyAgent, Sign};
 
-        /// The Windows twin of the row above (plan step 3.6): the agent on a named pipe cannot represent a security
-        /// key (`key_fixture_pipe`), so the exchange is the ECDSA half of it, with the endpoint production builds.
+        /// The Windows twin of the row above (plan step 3.6; the security key since S5.6 cell 9.2): the agent is the
+        /// pipe agent, and the endpoint is the one production builds.
         #[test]
-        fn ecdsa_agent_key_serves_an_exchange_through_the_endpoint() {
+        fn security_key_and_ecdsa_agent_keys_serve_an_exchange_through_the_endpoint() {
             let f = common::SshdFixture::new();
             let dir = tempfile::tempdir().unwrap();
+            let backing = keys::keygen(dir.path(), "backing", "ed25519", None);
             let ecdsa = keys::keygen(dir.path(), "ecdsa", "ecdsa", Some(384));
+            let plain = keys::public(dir.path(), "backing");
+            let security = keys::security_key(&plain.1);
             let p384 = keys::public(dir.path(), "ecdsa");
-            let agent = KeyAgent::start(dir.path(), &[&ecdsa], &[Sign::Upstream(&p384.1)]);
-            let line = format!("{} {}\n", p384.0, p384.1);
-            fs::write(f.temp.path().join("authorized_keys"), line).unwrap();
-            let e = endpoint(&f, agent.source());
-            let opened = exchange(&e, &f, None).unwrap_or_else(|e| panic!("{}: {e}", p384.0));
-            assert_eq!(opened.facts.method, AuthMethod::SshAgent);
-            finish(&e);
-            assert_eq!(agent.requests(), ["list", "sign:0:0"]);
+            let listed = [Sign::Sk { key: &security.1, backing: &plain.1 }, Sign::Upstream(&p384.1)];
+            let agent = KeyAgent::start(dir.path(), &[&backing, &ecdsa], &listed);
+            for authorized in [&security, &p384] {
+                let line = format!("{} {}\n", authorized.0, authorized.1);
+                fs::write(f.temp.path().join("authorized_keys"), line).unwrap();
+                let e = endpoint(&f, agent.source());
+                let opened = exchange(&e, &f, None).unwrap_or_else(|e| panic!("{}: {e}", authorized.0));
+                assert_eq!(opened.facts.method, AuthMethod::SshAgent);
+                finish(&e);
+            }
+            assert_eq!(agent.requests(), ["list", "sign:0:0", "list", "sign:1:0"]);
         }
     }
 }

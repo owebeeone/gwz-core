@@ -5,6 +5,7 @@ use crate::git::endpoint::{
     agent_client::{Agent, Channel},
     agent_job::{Control, Job},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::{
     io::{self, Read, Write},
     panic::{AssertUnwindSafe, catch_unwind},
@@ -306,6 +307,76 @@ fn a_start_that_fails_after_the_pipe_exists_leaves_no_pipe_behind() {
             .kind(),
         io::ErrorKind::NotFound
     );
+}
+
+#[test]
+fn a_security_key_signs_with_a_counter_and_verifies_against_its_backing_key_only() {
+    // The two security key types, each over a plain key from ssh-keygen: what the signature carries after its
+    // algorithm and raw signature is the flags byte and the counter, which rises by one for each signature.
+    let dir = tempfile::tempdir().unwrap();
+    let keygen = crate::git::endpoint::fixture_host::programs().keygen;
+    let mut keys = Vec::new();
+    for (name, kind, bits) in [("ed25519", "ed25519", None), ("p256", "ecdsa", Some("256"))] {
+        let path = dir.path().join(name);
+        let mut command = std::process::Command::new(&keygen);
+        command.args(["-q", "-t", kind, "-N", "", "-f"]).arg(&path);
+        if let Some(bits) = bits {
+            command.args(["-b", bits]);
+        }
+        ssh_fixture::run(&mut command);
+        let plain = Identity::from_key_file(&path);
+        let security = crate::git::endpoint::ssh_tests::key_material::security_key(
+            &STANDARD.encode(plain.blob()),
+        );
+        let sk = plain.security_key(STANDARD.decode(&security.1).unwrap());
+        let (first, second) = (sk.sign(0, DATA).unwrap(), sk.sign(0, DATA).unwrap());
+        assert_ne!(first, second, "{name}: the counter differs");
+        for (signature, counter) in [(&first, 1_u32), (&second, 2)] {
+            assert_eq!(
+                &signature[signature.len() - 5..],
+                [&[1][..], &counter.to_be_bytes()[..]].concat(),
+                "{name}"
+            );
+            assert!(sk.verify(0, DATA, signature), "{name}");
+            assert!(!sk.verify(0, b"other data", signature), "{name}");
+            assert!(
+                !plain.verify(0, DATA, signature),
+                "{name}: the plain key does not verify an authenticator signature"
+            );
+        }
+        keys.push((name, sk, first));
+    }
+    for (name, _, signature) in &keys {
+        for (other, sk, _) in &keys {
+            assert_eq!(
+                sk.verify(0, DATA, signature),
+                name == other,
+                "{name} against {other}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_dsa_key_signs_ssh_dss_and_verifies_only_its_own_signature() {
+    let (key, other) = (Identity::dsa(), Identity::dsa());
+    let signature = key.sign(0, DATA).expect("the key signs");
+    assert_eq!(
+        split_signature(&signature).map(|(name, raw)| (name, raw.len())),
+        Some((&b"ssh-dss"[..], 40))
+    );
+    assert!(key.verify(0, DATA, &signature));
+    assert!(!key.verify(0, b"other data", &signature));
+    assert!(!other.verify(0, DATA, &signature));
+    assert_ne!(key.blob(), other.blob());
+}
+
+#[test]
+fn an_unbacked_key_signs_and_verifies_nothing() {
+    let key = Identity::unbacked(b"blob".to_vec());
+    assert_eq!(key.blob(), b"blob");
+    assert!(key.sign(0, DATA).is_none() && key.sign(4, DATA).is_none());
+    assert!(!key.verify(0, DATA, &signature_blob(b"ssh-ed25519", &[0; 64])));
 }
 
 /// Reads once the channel has bytes, and returns how many came.

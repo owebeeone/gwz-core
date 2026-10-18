@@ -2,6 +2,7 @@
 //! the test's temporary directory. The agent fixture that serves them is `key_fixture` on Unix and `key_fixture_pipe` on
 //! Windows.
 use crate::git::endpoint::{fixture_host, ssh_fixture as common};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -51,4 +52,33 @@ pub(crate) fn certify(
             .arg(&path),
     );
     public(dir, &format!("{name}-cert"))
+}
+
+/// The security key whose point is the plain Ed25519 or ECDSA P-256 key
+/// `blob`'s, with the application `ssh:`, as its type and base64 blob.
+pub(crate) fn security_key(blob: &str) -> (String, String) {
+    let raw = STANDARD.decode(blob).unwrap();
+    let mut fields = Vec::new();
+    let mut input = &raw[..];
+    while !input.is_empty() {
+        let length = u32::from_be_bytes(input[..4].try_into().unwrap()) as usize;
+        fields.push(&input[4..4 + length]);
+        input = &input[4 + length..];
+    }
+    let kind = match fields[0] {
+        b"ssh-ed25519" => "sk-ssh-ed25519@openssh.com",
+        b"ecdsa-sha2-nistp256" => "sk-ecdsa-sha2-nistp256@openssh.com",
+        other => panic!("no security key of {}", String::from_utf8_lossy(other)),
+    };
+    let mut out = Vec::new();
+    let tail: [&[u8]; 1] = [b"ssh:"];
+    for field in [kind.as_bytes()]
+        .into_iter()
+        .chain(fields[1..].iter().copied())
+        .chain(tail)
+    {
+        out.extend_from_slice(&(field.len() as u32).to_be_bytes());
+        out.extend_from_slice(field);
+    }
+    (kind.to_owned(), STANDARD.encode(out))
 }
