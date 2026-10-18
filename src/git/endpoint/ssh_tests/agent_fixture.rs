@@ -46,6 +46,13 @@ pub struct Fixture {
 }
 impl Fixture {
     pub fn new(method: &str, stall: bool) -> Self {
+        Self::start(method, stall, true)
+    }
+    /// A server and a reachable agent that holds no key at all.
+    pub fn without_keys(method: &str) -> Self {
+        Self::start(method, false, false)
+    }
+    fn start(method: &str, stall: bool, loaded: bool) -> Self {
         let ssh = SshdFixture::new();
         let key = ssh.temp.path().join("auth_key");
         let bad = ssh.temp.path().join("rejected_key");
@@ -114,7 +121,7 @@ impl Fixture {
             assert!(Instant::now() < deadline);
             thread::sleep(Duration::from_millis(2));
         }
-        for path in [&bad, &key] {
+        for path in [&bad, &key].into_iter().filter(|_| loaded) {
             common::run(
                 Command::new("ssh-add")
                     .env("SSH_AUTH_SOCK", &real)
@@ -196,7 +203,10 @@ impl Fixture {
                     }
                 }
                 if body[0] == 11 {
-                    assert_eq!(u32::from_be_bytes(response[1..5].try_into().unwrap()), 2);
+                    assert_eq!(
+                        u32::from_be_bytes(response[1..5].try_into().unwrap()),
+                        if loaded { 2 } else { 0 }
+                    );
                 }
                 write_frame(&mut peer, &response);
                 if body[0] == 11 {

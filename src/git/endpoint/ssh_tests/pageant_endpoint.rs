@@ -75,3 +75,33 @@ fn a_pageant_that_went_away_is_unavailable_and_the_pipe_is_not_tried() {
     f.no_requests();
     finish(&e);
 }
+
+#[test]
+fn a_visible_pageant_whose_rejected_keys_are_worded_as_offered_and_not_accepted() {
+    // The ambient route's words for Pageant: it holds keys, the server trusts a key it does not hold, and the pipe that
+    // the variable names is never tried.
+    let f = support::Fixture::new(support::METHOD, false);
+    std::fs::copy(
+        f.ssh.temp.path().join("client_ed25519.pub"),
+        f.ssh.temp.path().join("authorized_keys"),
+    )
+    .unwrap();
+    let pageant = Receiver::start(Reply::Handler(Box::new(f.responder())));
+    let source = chosen(&pageant, &f.path);
+    let e = endpoint(&f.ssh, source.clone());
+    let refused = failure(&exchange(&e, &f.ssh, None).unwrap_err());
+    assert_eq!(refused.code, ErrorCode::Authentication, "{refused:?}");
+    let facts = refused.facts.clone().expect("the step's facts");
+    assert_eq!(facts.method, AuthMethod::SshAgent);
+    assert!(facts.credential_offered);
+    assert_eq!(facts.authenticated, Some(false));
+    let said = source
+        .ambient_reason(&refused, "127.0.0.1", None)
+        .expect("Pageant's keys that the server rejected have words");
+    assert!(
+        said.starts_with("GWZ offered 127.0.0.1 every key Pageant holds that it can use"),
+        "{said}"
+    );
+    assert!(said.contains("Add Key"), "{said}");
+    finish(&e);
+}

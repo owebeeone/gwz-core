@@ -42,6 +42,15 @@ impl Fixture {
     /// A server and an agent for `method`, a key type's name as the sign algorithm names it: `ssh-ed25519`,
     /// `rsa-sha2-256` or `rsa-sha2-512`. `stall` makes the agent answer no sign request.
     pub fn new(method: &str, stall: bool) -> Self {
+        Self::start(method, stall, true)
+    }
+
+    /// A server and a reachable agent that holds no key at all.
+    pub fn without_keys(method: &str) -> Self {
+        Self::start(method, false, false)
+    }
+
+    fn start(method: &str, stall: bool, loaded: bool) -> Self {
         let ssh = SshdFixture::new();
         let key = ssh.temp.path().join("auth_key");
         let bad = ssh.temp.path().join("rejected_key");
@@ -64,6 +73,7 @@ impl Fixture {
         // The rejected key is listed first, as the Unix fixture lists it.
         let entries = [&bad, &key]
             .into_iter()
+            .filter(|_| loaded)
             .map(|path| (Identity::from_key_file(path), Behavior::Signs))
             .collect();
         let path = pipe_name(ssh.temp.path());

@@ -20,6 +20,7 @@
 mod agent_auth;
 mod agent_capacity;
 mod agent_client;
+mod ambient_words;
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
         mod agent_fixture;

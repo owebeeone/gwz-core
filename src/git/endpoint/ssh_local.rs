@@ -178,10 +178,11 @@ pub(crate) fn connect_with_helpers(
                                 facts.authenticated = Some(true);
                                 return Authenticated::new(accepted, requested, facts);
                             }
-                            // Pageant's failures are worded by the host from the step they ended in: the step is marked
-                            // before the first request, so that a request that times out, or a list with no usable key,
-                            // is known as Pageant's (plan step 3.6). No credential is offered by the mark.
-                            if matches!(agent, AgentSource::Pageant { .. }) {
+                            // The agent step's failures are worded by the host from the step they ended in: the step is
+                            // marked before the first request, so that a request that times out (Pageant, plan step
+                            // 3.6), or a list with no usable key or keys that the server rejected (any agent, the
+                            // ambient route's words), is known as the agent's. No credential is offered by the mark.
+                            if agent != AgentSource::None {
                                 progress.lock().unwrap_or_else(|e| e.into_inner()).method =
                                     AuthMethod::SshAgent;
                             }

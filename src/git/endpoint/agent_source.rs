@@ -17,8 +17,10 @@ use super::{
 use std::{ffi::OsStr, io, path::PathBuf, sync::Arc};
 
 // Unix builds none of the Windows forms, and Windows none of the Unix one; both are tested everywhere.
+mod ambient_words;
 #[allow(dead_code)]
 mod fault;
+mod kind;
 mod pageant_words;
 #[allow(dead_code)]
 mod pipe_name;
@@ -27,6 +29,7 @@ mod select;
 mod words;
 
 pub(crate) use fault::AgentFault;
+pub(crate) use kind::AgentKind;
 pub(crate) use pipe_name::{AgentRefusal, PipeName};
 // Windows applies the rule; Unix builds only test it.
 #[allow(unused_imports)]
@@ -137,4 +140,4 @@ cfg_if::cfg_if! {
     }
 }
 
-cfg_if::cfg_if! { if #[cfg(test)] { mod pageant_words_tests; mod select_tests; mod tests; mod words_tests; } }
+cfg_if::cfg_if! { if #[cfg(test)] { mod ambient_words_tests; mod pageant_words_tests; mod select_tests; mod tests; mod words_tests; } }
