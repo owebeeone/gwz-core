@@ -33,17 +33,18 @@ Cell states (the first token of every platform cell):
 | `E` evidenced | 49 | 49 | 46 | 144 |
 | `ES` evidenced, older tree (re-run recommended) | 1 | 0 | 10 | 11 |
 | `EP` evidenced, a pending step re-measures it | 1 | 1 | 5 | 7 |
-| `P` PENDING, no evidence yet | 1 | 1 | 8 | 10 |
-| `U` unsupported or out of the 1.1.0 scope, with its authority | 4 | 4 | 4 | 12 |
+| `P` PENDING, no evidence yet | 1 | 1 | 9 | 11 |
+| `U` unsupported or out of the 1.1.0 scope, with its authority | 5 | 5 | 6 | 16 |
 | `N` no cell on this platform | 21 | 22 | 2 | 45 |
-| **`G` gap: neither evidenced nor ruled unsupported** | **5** | **5** | **7** | **17** |
+| **`G` gap: neither evidenced nor ruled unsupported** | **4** | **4** | **4** | **12** |
 
-**The `G` cells are 17 platform cells in 9 rows, and they are the S7.5 and Phase 8 blockers** unless the operator rules or an accepted amendment removes the cell (questions 3.1 to 3.5, 3.8 and 3.9 below; 3.6 and 3.7 are confirmations). The `P` cells (10) and `EP` cells (7) become blockers only if the named step does not deliver. By pending step:
+**The `G` cells are 12 platform cells in 6 rows, and they are the S7.5 and Phase 8 blockers** unless the operator rules or an accepted amendment removes the cell (questions 3.1 to 3.5, 3.8 and 3.9 below; 3.6 and 3.7 are confirmations). The `P` cells (11) and `EP` cells (7) become blockers only if the named step does not deliver. By pending step:
 
 | Step | `P` (no evidence yet) | `EP` (evidence exists, step re-measures) |
 |---|---|---|
 | WPP 6.3 (S5.5 repeat on dabeest) | W: 11.2, 11.3, 17.7, 17.8, 17.9, 17.10 | W: 17.1, 17.2, 17.3 |
 | D30 (lane `cap72`) | W: 9.7 | |
+| D49 (lane `win92`) | W: 9.2 | |
 | D31 (gwz-sspi 0.1.2, lane `sspi012`) | | W: 18.5 |
 | D32 (lane `d14two`) | | W: 17.3, 18.16 |
 | D33 (HTTPS runtime, re-time on all three) | | M, L, W: 17.2 |
@@ -51,7 +52,7 @@ Cell states (the first token of every platform cell):
 
 A cell that waits on two steps appears under both (17.2 and 17.3 do).
 
-**Which Linux cells have x86-64 evidence.** All 82 L cells were assigned from x86-64 sources only. L is `E` on 49 cells. Functional cells rest on CI-L (hosted `ubuntu-24.04`, green at `965d884a`) and CI-T; speed, push, large-pack, coalescing and memory cells rest on the WSL runs S51, S52, S53 and R19S. L has **no** x86-64 evidence for the five `G` rows 9.4, 10.2, 10.7, 12.1b and 17.11, and the Pi cannot stand in (it is aarch64): where the only Linux number was the Pi's (HTTPS speed after the fixed-cost fix, CA-trust parity case rows, the 1.0.17 baselines RP and B17), the L cell cites CI-L or S51 instead. `D20` limit: WSL shares dabeest's CPU, so L timings are paired and booked, but are a VM's.
+**Which Linux cells have x86-64 evidence.** All 82 L cells were assigned from x86-64 sources only. L is `E` on 49 cells. Functional cells rest on CI-L (hosted `ubuntu-24.04`, green at `965d884a`) and CI-T; speed, push, large-pack, coalescing and memory cells rest on the WSL runs S51, S52, S53 and R19S. L has **no** x86-64 evidence for the four `G` rows 10.2, 10.7, 12.1b and 17.11 (9.4 is `U` by D41), and the Pi cannot stand in (it is aarch64): where the only Linux number was the Pi's (HTTPS speed after the fixed-cost fix, CA-trust parity case rows, the 1.0.17 baselines RP and B17), the L cell cites CI-L or S51 instead. `D20` limit: WSL shares dabeest's CPU, so L timings are paired and booked, but are a VM's.
 
 ## 3. Questions for the operator (from the gaps and the near-gaps)
 
@@ -65,7 +66,7 @@ Each item is a cell the record cannot sign. Items 3.1 to 3.5, 3.8 and 3.9 are `G
 
 3.4 **Windows agent security keys, certificates and DSA end to end (rows 9.2, 9.3; W).** `ssh_tests/key_types.rs` runs the security-key, certificate and DSA rows on `cfg(unix)` only, and its Windows arm says they stay with the Unix rows; the Windows pipe-agent fixture (`key_fixture_pipe`) signs RSA, ECDSA and Ed25519 only. P38 expected Windows twins "when 3.4 lands". The type-listing logic (`agent_keys.rs`) does run on Windows. 1.0.17 on Windows (WSSH baseline): an Ed25519 certificate from an owned pipe agent authenticates, an RSA certificate does not, a declining security key is skipped. Options: extend the pipe-agent fixture and add the Windows twins before 6.3; or rule these types unsupported on Windows as parity with 1.0.17's list, which A2 says the transport must at least match.
 
-3.5 **Claims the design leaves "not qualified" (rows 9.4, 18.19).** The manual hardware security-key row (A2 line 138; "needs the operator's go"), Kerberos (L1) and Pageant-held or native-agent certificates (L3) are neither evidenced nor declared unsupported (TD8 B kept them "not qualified"). WPP OQ10 (a) wanted Kerberos removed from the "in this release" column by amendment; no filed amendment text names it. S5.6 treats an unsupported in-scope cell as a blocker without that amendment. Options: run the hardware row; or one short amendment removing these three from the 1.1.0 column.
+3.5 **Claims the design leaves "not qualified" (rows 9.4, 18.19).** The manual hardware security-key row (A2 line 138; "needs the operator's go"), Kerberos (L1) and Pageant-held or native-agent certificates (L3) are neither evidenced nor declared unsupported (TD8 B kept them "not qualified"). WPP OQ10 (a) wanted Kerberos removed from the "in this release" column by amendment; no filed amendment text names it. S5.6 treats an unsupported in-scope cell as a blocker without that amendment. Options: run the hardware row; or one short amendment removing these three from the 1.1.0 column. **Ruled 2026-10-18 (D41): the amendment, `GwzV110AmendmentS56Scope.md`.**
 
 3.6 **OD17 on x86-64 (rows 17.1, 17.2).** OD17 ("ship 1.1.0 and state the Linux HTTPS gap") was taken on Pi data. S51 on Linux x86-64 shows the same shape: five of the six no-op rows miss by the TR8.1 rule (SSH by 0.003, 0.033, 0.005 s at 32, 16, 1; HTTPS by 0.017 and 0.009 s at 32 and 16, met at 1), and D33 will re-time HTTPS. Confirm that OD17 and D29's reasoning cover x86-64 SSH and HTTPS, or say otherwise.
 
@@ -189,9 +190,9 @@ gwz-transport is portable Rust. Its only CI job runs on Linux x86-64 (CI-T). It 
 | ID | Cell | M | L | W | Note |
 |---|---|---|---|---|---|
 | 9.1 | **Agent key types and signatures**: Ed25519; ECDSA P-256, P-384, P-521; RSA at `rsa-sha2-512`, `rsa-sha2-256` and the three `ssh-rsa` cases. `ssh_tests/key_types.rs`, `rsa_sha1.rs`, `agent_auth.rs`, `agent_keys.rs` | E: GM | E: CI-L | E: CI-W (Windows arms: 4 + 4 rows, libssh2's own agent client against the pipe agent); P38; PR (`agent-pipe-named-rsa` flag 4, `-ed25519` flag 0) | The Unix arms are `cfg(unix)`, so M and L run all rows |
-| 9.2 | Security keys (`sk-ssh-ed25519@openssh.com`, `sk-ecdsa-sha2-nistp256@openssh.com`) through a software authenticator; DSA | E: GM (`key_types.rs`, `local_endpoint.rs::security_key_and_ecdsa_agent_keys_serve_an_exchange_through_the_endpoint`) | E: CI-L (same rows) | G: the Windows arm of `key_types.rs` says security keys, certificates and DSA "stay with the Unix rows"; only the type-listing logic (`agent_keys.rs`) runs on Windows, no end-to-end authentication. P38 expected Windows twins "when 3.4 lands"; none found | Blocker 3.4 |
+| 9.2 | Security keys (`sk-ssh-ed25519@openssh.com`, `sk-ecdsa-sha2-nistp256@openssh.com`) through a software authenticator; DSA | E: GM (`key_types.rs`, `local_endpoint.rs::security_key_and_ecdsa_agent_keys_serve_an_exchange_through_the_endpoint`) | E: CI-L (same rows) | P: lane `win92` (D49). The Windows arm of `key_types.rs` says security keys, certificates and DSA "stay with the Unix rows"; only the type-listing logic (`agent_keys.rs`) runs on Windows, no end-to-end authentication. P38 expected Windows twins "when 3.4 lands"; none found | Owner: lane `win92` (D49, 2026-10-18: Windows twins of the security-key and DSA rows through the pipe-agent fixture, with a 1.0.17 comparison where 1.0.17 can express the case). D41 does not remove this cell |
 | 9.3 | OpenSSH certificates of those types against a test user CA. `key_types.rs::certificates_of_each_type_authenticate_against_a_trusted_user_ca` | E: GM | E: CI-L | G: as 9.2. 1.0.17 baseline (WSSH): an Ed25519 certificate from an owned pipe agent authenticates, an RSA certificate does not | Blocker 3.4 |
-| 9.4 | Manual hardware security-key row (amendment 1 section 4, "needs the operator's go"), and a Pageant-held or native-agent certificate (L2, L3) | G: no hardware run; TD8 B left it "not qualified" | G: same | G: same | Blocker 3.5 |
+| 9.4 | Manual hardware security-key row (amendment 1 section 4, "needs the operator's go"), and a Pageant-held or native-agent certificate (L2, L3) | U: D41, `GwzV110AmendmentS56Scope.md` (a real hardware-key signature) | U: same | U: D41, `GwzV110AmendmentS56Scope.md` (a real hardware-key signature, and a certificate held by Pageant or by the Windows OpenSSH agent service) | Facts kept: TD8 B, L2, L3. Certificates from a Unix agent are row 9.3; from the owned pipe agent on Windows, row 9.3 |
 | 9.5 | Agent source: one agent source per session. Unix `SSH_AUTH_SOCK`; Windows rule is in 10.x | E: GM | E: CI-L | N (rows 18.1, 18.3) | |
 | 9.6 | `file_identity` capability: a selected key file is honoured | E: the same rows as 8.1, 8.3; handler `file_identity: true` | E: same | E: D30 GO on PR `home-unset-absolute-identity`, `home-unset-tilde-identity` | |
 | 9.7 | `exact_agent_identity` capability (exact-agent-until-proven) | U: V110 S5.6 allows unsupported; the 1.1.0 handler answers false (`src/protocol/transport_capabilities.rs:15`) and no decision turns it on for macOS | U: same | P: D30 (GO subject to one Windows exact-selection row; lane `cap72`); PO is the Pageant evidence | Tree reading conflicts with the C5 note, see 3.7 |
@@ -272,7 +273,7 @@ These cells exist on Windows only. M and L are `N`. Evidence is the candidate's 
 | 18.16 | Key-exchange failure on WinCNG retried inside the setup attempt (D14), no partial result on the transport route | N | N | EP: D32 and 6.3. CNG, WF, T84 | D32 raises the retry to two |
 | 18.17 | A pre-authentication SSH drop retried (Reg7) | N | N | E: WP3; CNG | |
 | 18.18 | Redirect discovery on Windows: a relative `Location` followed within five hops, HTTPS only, no downgrade (TD3, Reg4) | N | N | E: WH3; CI-W | |
-| 18.19 | Kerberos | N | N | G: L1, "no claim is made" (design section 14 item 10); OQ10 (a) wanted it removed from the "in this release" column by amendment and no filed amendment text names it | Blocker 3.5 |
+| 18.19 | Kerberos | N | N | U: D41, `GwzV110AmendmentS56Scope.md` (L1): Windows may choose Kerberos inside Negotiate and gwz does not prevent it; no claim is made | Facts kept: L1 |
 
 ## 7. Unsupported, out-of-scope and not-claimed register
 
@@ -285,7 +286,7 @@ These cells exist on Windows only. M and L are `N`. Evidence is the candidate's 
 | WinCNG limits (RSA-only host keys, RSA PEM key files) | 8.4 | `U` | D16, TD5, L12 |
 | Plain `http://` remotes on the transport | 18.10 | native route with a warning, `E` | D2 |
 | Explicit-identity SSPI, Digest authentication | 18.7 | refused, `E` | D3, TD1, TD2 |
-| Kerberos; hardware security key; Pageant-held or native-agent certificate | 18.19, 9.4 | `G`: not qualified, never declared unsupported (design section 13: "none is declared unsupported unless it says so") | TD8 B, L1 to L3 |
+| Kerberos; a real hardware security-key signature; a Pageant-held or native-agent certificate | 18.19, 9.4 | `U` | D41, `GwzV110AmendmentS56Scope.md`; the facts: TD8 B, L1 to L3 |
 | Remote NTLMv2 Extended Protection (L7), the logon exchange's target name (L15), repeated NTLM attempts per host (L19), Mac trusted-HTTPS against 1.0.17 (L5) | no cell | limitations of the design, not cells: no claim is made and nothing is advertised | design sections 13 and 14 item 10 |
 
 ## 8. What is pending, by step
@@ -294,6 +295,7 @@ These cells exist on Windows only. M and L are `N`. Evidence is the candidate's 
 |---|---|
 | 6.3 (S5.5 repeat on dabeest) | 11.2, 11.3, 17.7, 17.8, 17.9, 17.10 (Windows, no evidence yet); 17.1, 17.2, 17.3 (Windows, evidence T84 to be re-measured) |
 | D30 (lane `cap72`) | 9.7 Windows (the exact-selection row) |
+| D49 (lane `win92`, Windows security-key and DSA rows) | 9.2 Windows |
 | D31 (gwz-sspi 0.1.2, lane `sspi012`) | 18.5 |
 | D32 (kex retry two, lane `d14two`) | 17.3 Windows, 18.16 |
 | D33 (HTTPS multi-thread runtime, re-time on M, L, W) | 17.2 on all three platforms |

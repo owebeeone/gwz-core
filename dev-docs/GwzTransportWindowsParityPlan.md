@@ -629,7 +629,7 @@ They are designed in by being OS-free above the closure, then proved on the Wind
 
 #### Step 6.3: S5.5 and the Windows cells of S5.6
 
-- **Goal.** Repeat S5.5's rows on dabeest after S5.4 (the defaults, and 6.2's parity evidence, which S5.6's Windows cells cite), and fill the Windows column of S5.6's table with an evidence ID or an explicit unsupported mark. A cell the release's scope puts "in this release" and marks unsupported blocks S5.6 unless an accepted amendment removes it (`GwzV110Plan.md` S5.6); OQ10 names the likely ones (Digest, Kerberos).
+- **Goal.** Repeat S5.5's rows on dabeest after S5.4 (the defaults, and 6.2's parity evidence, which S5.6's Windows cells cite), and fill the Windows column of S5.6's table with an evidence ID or an explicit unsupported mark. A cell the release's scope puts "in this release" and marks unsupported blocks S5.6 unless an accepted amendment removes it (`GwzV110Plan.md` S5.6); OQ10 named the likely ones: Digest, which is refused (D3, TD2) and has evidence, and Kerberos, which `GwzV110AmendmentS56Scope.md` (D41) removes from the "in this release" column and marks unsupported.
 - **Files.** the S5.6 table (evidence document).
 - **dabeest.** S5.5's repeat.
 - **Review.** Phase.
@@ -753,6 +753,7 @@ Each gives 1.0.17's behaviour on Windows where known, how to find out where not,
 - Rule: an "in this release" cell marked unsupported blocks S5.6 unless an accepted amendment removes it (`GwzV110Plan.md` S5.6).
 - Options: (a) refuse Digest with the existing unsupported-authentication message and mark Kerberos "not qualified, works through the OS provider when domain-joined", both removed from the "in this release" column by amendment; (b) obtain a provider-accepted Digest fixture and a domain fixture first.
 - **Recommend (a)**, decided only after step 2.3 has tried the 1.0.17 Digest row with an accepted identity if OQ9 allows it. Find out: B14 with a disposable local account.
+- **Kerberos, decided (operator, 2026-10-18, D41):** removed from the "in this release" column by `GwzV110AmendmentS56Scope.md` and named unsupported in the 1.1.0 notes. It is not marked "works through the OS provider": the notes say that Windows may choose Kerberos inside Negotiate, that gwz does not prevent it, and that no claim is made. Digest stays as D3 and TD2 decided.
 
 **OQ11. Proxy forms outside DIRECT and a plain named proxy, and 407.**
 - 1.0.17 (B09, B10): machine proxy applies to a `.invalid` origin; numeric loopback origins bypass even with an empty bypass list; a 407 with `Negotiate` or `NTLM` fails with zero credential offers.

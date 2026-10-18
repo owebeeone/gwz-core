@@ -52,6 +52,8 @@ stays in each repository's `release.published` workflow. Gearu does not run
 | Python using the same `gwz-transport` pool as Rust | A second pool implemented in Python |
 | New crates for this libgit2, the forked git2 bindings, `gwz-transport`, and `gwz-git` | Publishing those forks as `libgit2-sys` or `git2` |
 
+Not in this table, and not in §1: a real hardware security-key signature, Kerberos in Windows `Negotiate`, and a certificate held by Pageant or by the Windows OpenSSH Authentication Agent service. Neither §1 nor this table names them, so neither needs a row change. The rows that put them in the release are `GwzTransportReleasePlanAmendment-2.md` §3.2, §3.10 and §3.19, which `GwzV110AmendmentS56Scope.md` (D41) amends: it removes the three from S5.6's column and names them unsupported in the 1.1.0 notes.
+
 Windows work runs on `ssh gianni@dabeest`. The default SSH shell there is
 bash (mingw). Commands are bash commands. The work root is the E: drive,
 mingw path `/e/gwz-tests/<name>`. Earlier Q4 and Q6 trees under `D:/gwz-tests`
