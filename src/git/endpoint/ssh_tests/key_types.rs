@@ -3,10 +3,10 @@
 //! certificates of those types, each against a disposable server; a key of a
 //! type outside the list is skipped and a later key tried; and an agent's
 //! refusal fails only that key. Ed25519 and RSA with SHA-2 are agent_auth.rs's
-//! rows, and RSA's SHA-1 cases are rsa_sha1.rs's. Windows runs the plain keys,
-//! the certificates (an RSA certificate does not authenticate, as with 1.0.17)
-//! and the refusal on the pipe agent; security keys and DSA are Unix rows.
+//! rows, and RSA's SHA-1 cases are rsa_sha1.rs's. Windows runs the same rows on the pipe agent, except that an RSA
+//! certificate does not authenticate there, as with 1.0.17.
 use crate::git::endpoint::{fixture_host, ssh_fixture::SshdFixture};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::{fs, path::Path};
 
 /// A disposable sshd that authorizes `authorized`, each a key's type
@@ -34,11 +34,20 @@ fn sshd_trusting(ca: &Path) -> SshdFixture {
     )
 }
 
+/// A key blob of `kind` that no list holds, with filler fields.
+fn unlisted(kind: &str) -> String {
+    let mut blob = Vec::new();
+    for field in [kind.as_bytes(), b"filler", &[1; 32]] {
+        blob.extend_from_slice(&(field.len() as u32).to_be_bytes());
+        blob.extend_from_slice(field);
+    }
+    STANDARD.encode(blob)
+}
+
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
         use super::key_fixture::{self as keys, KeyAgent, Sign};
         use crate::git::endpoint::ssh_password_fixture::PasswordSshd;
-        use base64::{Engine as _, engine::general_purpose::STANDARD};
         use std::io;
 
         fn authenticate(server: &SshdFixture, agent: &KeyAgent) -> io::Result<()> {
@@ -53,16 +62,6 @@ cfg_if::cfg_if! {
                 .filter_map(|line| line.split_once("Accepted publickey"))
                 .map(|(_, rest)| rest.split_once(" ssh2: ").unwrap().1.split(' ').next().unwrap().to_owned())
                 .collect()
-        }
-
-        /// A key blob of `kind` that no list holds, with filler fields.
-        fn unlisted(kind: &str) -> String {
-            let mut blob = Vec::new();
-            for field in [kind.as_bytes(), b"filler", &[1; 32]] {
-                blob.extend_from_slice(&(field.len() as u32).to_be_bytes());
-                blob.extend_from_slice(field);
-            }
-            STANDARD.encode(blob)
         }
 
         #[test]
@@ -187,15 +186,19 @@ cfg_if::cfg_if! {
             assert_eq!(accepted(&server), ["ED25519"]);
         }
     } else {
-        // Windows. The agent is the in-process pipe agent (`key_fixture_pipe`), which signs RSA, ECDSA and Ed25519 keys
-        // and lists a key's OpenSSH certificate; security keys and DSA stay with the Unix rows above (not qualified on
-        // Windows). These rows authenticate on the production path (`KeyAgent::authenticate`: the endpoint's trust
-        // setup, then the transport's own agent signing) and pin what the TD5 baseline recorded for gwz 1.0.17
-        // (`2026-10-10-tr18-windows-ssh-rows`, x4-pipe-*): RSA, ECDSA and Ed25519 agent keys authenticate, RSA signs
+        // Windows. The agent is the in-process pipe agent (`key_fixture_pipe`), which signs RSA, ECDSA and Ed25519 keys,
+        // lists a key's OpenSSH certificate, signs security keys through a software authenticator and DSA keys with its
+        // own. These rows authenticate on the production path (`KeyAgent::authenticate`: the endpoint's trust setup, then
+        // the transport's own agent signing). RSA, ECDSA and Ed25519 keys, Ed25519 certificates and a declined key
+        // pin what the TD5 baseline recorded for gwz 1.0.17 (`2026-10-10-tr18-windows-ssh-rows`, x4-pipe-*): RSA signs
         // at `rsa-sha2-512` and the other two with flags 0; an Ed25519 certificate authenticates and an RSA
-        // certificate does not (gap 3.4, run `2026-10-18-gapsb`). (sshd.exe's log is held open by the server, so
-        // these rows read no log: the server authorizes only the keys, or the CA, under test, so a success is theirs.)
+        // certificate does not (gap 3.4, run `2026-10-18-gapsb`). Security keys and their certificates are the one
+        // place the candidate does more than 1.0.17 on Windows: 1.0.17's agent path sends a security key's signature
+        // without its flags and counter and the server refuses it, as on Unix (run `2026-10-18-win92`, which ran both
+        // CLIs). DSA authenticates in both. (sshd.exe's log is held open by the server, so the sshd rows read no log:
+        // the server authorizes only the keys, or the CA, under test, so a success is theirs.)
         use super::key_fixture_pipe::{self as keys, KeyAgent, Sign};
+        use crate::git::endpoint::ssh_password_fixture::PasswordSshd;
         use std::io;
 
         fn authenticate(server: &SshdFixture, agent: &KeyAgent) -> io::Result<()> {
@@ -295,6 +298,90 @@ cfg_if::cfg_if! {
                 &[&refused_path, &path],
                 &[Sign::Absent(&refused.1), Sign::Upstream(&present.1)],
             );
+            authenticate(&server, &agent).unwrap();
+            assert_eq!(agent.requests(), ["list", "sign:0:0", "sign:1:0"]);
+        }
+
+        #[test]
+        fn security_keys_authenticate_through_the_software_authenticator() {
+            for (kind, bits, logged) in [("ed25519", None, "ED25519-SK"), ("ecdsa", Some(256), "ECDSA-SK")] {
+                let dir = tempfile::tempdir().unwrap();
+                let path = keys::keygen(dir.path(), "backing", kind, bits);
+                let backing = keys::public(dir.path(), "backing");
+                let security = keys::security_key(&backing.1);
+                let server = sshd(&[&security], "");
+                let sign = Sign::Sk { key: &security.1, backing: &backing.1 };
+                let agent = KeyAgent::start(dir.path(), &[&path], &[sign]);
+                authenticate(&server, &agent).unwrap_or_else(|e| panic!("{logged}: {e}"));
+                // One sign request: the authenticator's one touch.
+                assert_eq!(agent.requests(), ["list", "sign:0:0"], "{logged}");
+            }
+        }
+
+        #[test]
+        fn security_key_certificates_authenticate_against_a_trusted_user_ca() {
+            for (kind, bits, logged) in [("ed25519", None, "ED25519-SK-CERT"), ("ecdsa", Some(256), "ECDSA-SK-CERT")] {
+                let dir = tempfile::tempdir().unwrap();
+                let ca = keys::keygen(dir.path(), "ca", "ed25519", None);
+                let path = keys::keygen(dir.path(), "key", kind, bits);
+                let plain = keys::public(dir.path(), "key");
+                let server = sshd_trusting(&ca);
+                let certificate = keys::certify(dir.path(), &ca, "sk", &keys::security_key(&plain.1), &server.user);
+                let sign = Sign::Sk { key: &certificate.1, backing: &plain.1 };
+                let agent = KeyAgent::start(dir.path(), &[&path], &[sign]);
+                authenticate(&server, &agent).unwrap_or_else(|e| panic!("{logged}: {e}"));
+                assert_eq!(agent.requests(), ["list", "sign:0:0"], "{logged}");
+            }
+        }
+
+        #[test]
+        fn dsa_keys_authenticate_through_the_agent() {
+            let dir = tempfile::tempdir().unwrap();
+            let agent = KeyAgent::start(dir.path(), &[], &[Sign::Dsa]);
+            let authorized = [format!("ssh-dss {}", agent.blobs[0])];
+            let server = PasswordSshd::start_with(&dir.path().join("server"), "unused", &["publickey"], &authorized, None);
+            let known = dir.path().join("known_hosts");
+            fs::write(&known, server.known_host("127.0.0.1")).unwrap();
+            agent.authenticate(server.port, &known, "git").unwrap();
+            assert_eq!(agent.requests(), ["list", "sign:0:0"]);
+            assert_eq!(server.publickey_requests(), ["ssh-dss:query", "ssh-dss:accepted"]);
+        }
+
+        #[test]
+        fn a_key_of_a_type_neither_supports_is_skipped_and_a_later_key_is_tried() {
+            let dir = tempfile::tempdir().unwrap();
+            let path = keys::keygen_pem_rsa(dir.path(), "rsa", 2048);
+            let rsa = keys::public(dir.path(), "rsa");
+            // A DSA certificate, which neither libssh2 nor the transport signs with, and a type in no list, which
+            // 1.0.17's libssh2 offers. No key backs either: the agent lists them and refuses.
+            let (certificate, xmss) = (unlisted("ssh-dss-cert-v01@openssh.com"), unlisted("ssh-xmss@openssh.com"));
+            let listed = [Sign::Absent(&certificate), Sign::Absent(&xmss), Sign::Upstream(&rsa.1)];
+            let agent = KeyAgent::start(dir.path(), &[&path], &listed);
+            let authorized = [
+                format!("ssh-dss-cert-v01@openssh.com {certificate}"),
+                format!("ssh-xmss@openssh.com {xmss}"),
+                format!("{} {}", rsa.0, rsa.1),
+            ];
+            let sig_algs = Some("rsa-sha2-512,rsa-sha2-256,ssh-rsa");
+            let server = PasswordSshd::start_with(&dir.path().join("server"), "unused", &["publickey"], &authorized, sig_algs);
+            let known = dir.path().join("known_hosts");
+            fs::write(&known, server.known_host("127.0.0.1")).unwrap();
+            agent.authenticate(server.port, &known, "git").unwrap();
+            assert_eq!(server.publickey_requests(), ["rsa-sha2-512:query", "rsa-sha2-512:accepted"]);
+            assert_eq!(agent.requests(), ["list", "sign:2:4"]);
+        }
+
+        #[test]
+        fn a_declined_security_key_fails_that_key_only_and_a_later_key_is_tried() {
+            // A security key whose device is absent: the server accepts its query, the agent refuses to sign, and
+            // the next key signs, as in 1.0.17 (x4-pipe-security-key-then-rsa). No key backs the security key.
+            let dir = tempfile::tempdir().unwrap();
+            keys::keygen(dir.path(), "absent", "ed25519", None);
+            let absent = keys::security_key(&keys::public(dir.path(), "absent").1);
+            let path = keys::keygen(dir.path(), "present", "ed25519", None);
+            let present = keys::public(dir.path(), "present");
+            let server = sshd(&[&absent, &present], "");
+            let agent = KeyAgent::start(dir.path(), &[&path], &[Sign::Absent(&absent.1), Sign::Upstream(&present.1)]);
             authenticate(&server, &agent).unwrap();
             assert_eq!(agent.requests(), ["list", "sign:0:0", "sign:1:0"]);
         }

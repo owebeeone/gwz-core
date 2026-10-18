@@ -12,6 +12,8 @@
 //! fixture's RSA keys are the PEM keys that `ssh-keygen` writes and that libssh2 on Windows can read, and it signs
 //! `rsa-sha2-256` and `rsa-sha2-512`. A request for `ssh-rsa` (SHA-1) gets the agent's refusal, as an agent
 //! without SHA-1 answers; the Windows libssh2 offers only `rsa-sha2-512` anyway (the baseline's SSH rows, run `2026-10-10-tr18-windows-ssh-rows`).
+//! Ed25519 and ECDSA keys sign as their own algorithm, a security key is signed by a software authenticator, and a DSA key
+//! by [`dsa`], a small SHA-1 and Montgomery routine on the standard library, since no signer in the test dependencies does DSA.
 //!
 //! **Scripted behaviour.** [`Fault`]s are one-shot, consumed by the next sign request: the reply delivered in
 //! pieces (1 byte, then 2, then the rest), a stall (no reply, until the client leaves), a vanishing pipe (the
@@ -41,6 +43,7 @@ use windows_sys::Win32::{
     },
 };
 
+mod dsa;
 mod identity;
 mod tests;
 
