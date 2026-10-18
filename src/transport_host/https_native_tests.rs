@@ -95,7 +95,6 @@ fn transport(root: &std::path::Path, gate: &Gate) -> TransportRuntime {
             tls: gate.server.config(),
             auth: None,
         },
-        HelperSlots::new(),
         crate::git::endpoint::https_worker::native::publication_fixture(),
     )
     .unwrap()

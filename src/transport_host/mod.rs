@@ -7,7 +7,7 @@ mod https_endpoint;
 mod local_command;
 // Step 4.6: the WinHTTP machine proxy. The grammar is portable and its tests run everywhere; Unix builds have no use for it.
 cfg_if::cfg_if! { if #[cfg(any(windows, test))] { mod machine_proxy; } }
-pub use crate::git::endpoint::https_worker::native::NativeCaller;
+pub use crate::git::endpoint::https_worker::native::{NativeCaller, NativeHost};
 pub use crate::git::endpoint::setup_retry::NoteSink;
 pub use cancellable::with_cancellable_local_transport;
 pub use cancellable::with_cancellable_local_transport_native;
@@ -274,12 +274,14 @@ impl TransportRuntime {
     ) -> ModelResult<Self> {
         Self::build_native(local.into(), https, None)
     }
+    /// The native route's runtime: its helper slots, and so its backends' spawns, take the caller's gate, the one
+    /// the supervisor's launch guard takes (operator decision D31).
     pub(crate) fn with_https_native(
         local: impl Into<EndpointSettings>,
         https: HttpsEndpointConfig,
-        slots: HelperSlots,
         caller: NativeCaller,
     ) -> ModelResult<Self> {
+        let slots = HelperSlots::with_gate(caller.spawn_gate().clone());
         Self::build_native(local.into(), Some((https, slots)), Some(caller))
     }
     fn build_native(

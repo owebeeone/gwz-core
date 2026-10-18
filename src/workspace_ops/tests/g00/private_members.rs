@@ -357,7 +357,6 @@ cfg_if::cfg_if! { if #[cfg(all(unix, gwz_transport_candidate))] {
 #[test]
 fn private_materialize_keeps_production_native_identity_refusal_visible() {
     use crate::git::endpoint::https_fixture::{Server, response};
-    use crate::git::endpoint::https_auth::HelperSlots;
     use crate::transport_host::{TransportRuntime, SshEndpointConfig, HttpsEndpointConfig, NativeCaller};
     use gwz_transport::protocol::GitService;
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
@@ -377,7 +376,7 @@ fn private_materialize_keeps_production_native_identity_refusal_visible() {
         let before = fs::read(root.path().join("gwz.conf/gwz.lock.yml")).unwrap();
         let home = root.path().join("endpoint-home"); fs::create_dir_all(home.join(".ssh")).unwrap(); fs::write(home.join(".ssh/known_hosts"), "").unwrap();
         let runtime = TransportRuntime::with_https_native(SshEndpointConfig::fixture(home, None), HttpsEndpointConfig { tls: server.config(), auth: None },
-            HelperSlots::new(), NativeCaller::refused_for_test(gwz_sspi::ErrorKind::IdentityMismatch)).unwrap();
+            NativeCaller::refused_for_test(gwz_sspi::ErrorKind::IdentityMismatch)).unwrap();
         let mut input = materialize_lock_request(false);
         input.meta.transport = Some(crate::TransportOptions::default());
         let held = runtime.request(input.meta.clone(), "materialize".into()).await.unwrap();

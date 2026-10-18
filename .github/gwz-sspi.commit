@@ -4,4 +4,4 @@
 # manifest in every build, so every job that runs cargo on gwz-core has it there. Bump rule: a gwz-core commit whose candidate build needs a newer
 # gwz-sspi moves this pin in the same commit, to a gwz-sspi commit already on
 # its main. The job reads the first 40-hex line.
-75c1b032e6ea43fb1e39f56fca9513a58cc89ef1
+a2978a8f3f6ce7a4b387a2f9ebcad555a7c8888e
