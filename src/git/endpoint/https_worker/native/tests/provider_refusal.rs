@@ -78,6 +78,7 @@ fn refused_open(offer: &'static str, provider_refused: bool) -> Failure {
             endpoint.client.set_native(NativeCaller {
                 port: Ok(port),
                 machine_proxy: None,
+                gate: crate::git::spawn_gate::SpawnGate::new(),
             });
             let mut request = input(&server, GitService::UploadPackAdvertisement);
             request.policy = AuthPolicy::WindowsDefault;
