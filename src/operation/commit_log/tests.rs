@@ -28,7 +28,7 @@ fn l_sel_2_default_selection_includes_root_and_all_active_members() {
         member("mem_old", "old", false),
     ]);
 
-    let histories = open_default_head_histories(fixture.path()).unwrap();
+    let histories = open_default_head_histories(fixture.path(), &SpawnGate::default()).unwrap();
 
     assert_eq!(
         histories
@@ -56,7 +56,7 @@ fn l_rng_2_no_operand_histories_start_at_each_repository_head() {
     let member_head = commit(&member_repo, "member head", 400, &[member_first]);
     fixture.write_manifest(&[member("mem_app", "app", true)]);
 
-    let histories = open_default_head_histories(fixture.path()).unwrap();
+    let histories = open_default_head_histories(fixture.path(), &SpawnGate::default()).unwrap();
     let later_root = commit(&fixture.root, "after cursor open", 500, &[root_head]);
 
     assert_eq!(entry_ids(&histories[0]), [root_head, root_first]);
@@ -79,7 +79,7 @@ fn entry_preserves_leading_newlines_from_the_raw_commit_message() {
     raw_commit(&fixture.root, expected, None);
     fixture.write_manifest(&[]);
 
-    let histories = open_default_head_histories(fixture.path()).unwrap();
+    let histories = open_default_head_histories(fixture.path(), &SpawnGate::default()).unwrap();
     let Some(CommitLogEvent::Entry(entry)) = histories[0].messages().next() else {
         panic!("root cursor did not emit the raw commit");
     };
@@ -94,7 +94,7 @@ fn entry_preserves_non_utf8_encoding_header_bytes() {
     raw_commit(&fixture.root, b"encoded message\n", Some(expected));
     fixture.write_manifest(&[]);
 
-    let histories = open_default_head_histories(fixture.path()).unwrap();
+    let histories = open_default_head_histories(fixture.path(), &SpawnGate::default()).unwrap();
     let Some(CommitLogEvent::Entry(entry)) = histories[0].messages().next() else {
         panic!("root cursor did not emit the raw commit");
     };
@@ -115,7 +115,7 @@ fn l_rng_5_local_read_is_network_free_and_does_not_take_the_mutation_lock() {
     let before_head = fs::read(&git_head_path).unwrap();
     let before_config = fs::read(&git_config_path).unwrap();
 
-    let histories = open_default_head_histories(fixture.path()).unwrap();
+    let histories = open_default_head_histories(fixture.path(), &SpawnGate::default()).unwrap();
 
     assert_eq!(entry_ids(&histories[0]), [head]);
     assert_eq!(fs::read(git_head_path).unwrap(), before_head);
@@ -187,7 +187,12 @@ fn f1_path_history_is_offline_and_read_only_for_a_promisor_clone() {
     );
 
     let before = repository_bytes(&partial.join(".git"));
-    let opened = open_request_histories(&partial, &log_request(&[], &["p"], false)).unwrap();
+    let opened = open_request_histories(
+        &partial,
+        &log_request(&[], &["p"], false),
+        &SpawnGate::default(),
+    )
+    .unwrap();
     let actual = events(&opened.histories()[0]);
 
     assert!(matches!(
@@ -214,7 +219,7 @@ fn l_ord_1_cursor_matches_git_log_default_order() {
     let merge = commit(&fixture.root, "merge", 500, &[left_two, right]);
     fixture.write_manifest(&[]);
 
-    let histories = open_default_head_histories(fixture.path()).unwrap();
+    let histories = open_default_head_histories(fixture.path(), &SpawnGate::default()).unwrap();
     let actual = entry_ids(&histories[0]);
     let output = Command::new("git")
         .args(["-C", fixture.path().to_str().unwrap(), "log", "--format=%H"])
@@ -257,7 +262,7 @@ fn l_tol_1_unreadable_member_degrades_without_stopping_other_histories() {
         generated,
     ]);
 
-    let histories = open_default_head_histories(fixture.path()).unwrap();
+    let histories = open_default_head_histories(fixture.path(), &SpawnGate::default()).unwrap();
 
     assert_eq!(entry_ids(&histories[0]), [root_head]);
     assert_eq!(entry_ids(&histories[1]), [good_head]);
@@ -281,7 +286,7 @@ fn l_tol_3_unborn_repository_contributes_no_entries_and_a_degradation() {
     Repository::init(fixture.path().join("empty")).unwrap();
     fixture.write_manifest(&[member("mem_empty", "empty", true)]);
 
-    let histories = open_default_head_histories(fixture.path()).unwrap();
+    let histories = open_default_head_histories(fixture.path(), &SpawnGate::default()).unwrap();
     let events = histories[1].messages().collect::<Vec<_>>();
 
     assert!(
@@ -308,7 +313,7 @@ fn l_tol_4_detached_member_logs_normally_from_the_detached_commit() {
     member_repo.set_head_detached(detached).unwrap();
     fixture.write_manifest(&[member("mem_app", "app", true)]);
 
-    let histories = open_default_head_histories(fixture.path()).unwrap();
+    let histories = open_default_head_histories(fixture.path(), &SpawnGate::default()).unwrap();
 
     assert_eq!(entry_ids(&histories[1]), [detached]);
 }
@@ -329,7 +334,7 @@ fn l_tol_5_shallow_member_contributes_every_locally_available_commit() {
     );
     fixture.write_manifest(&[member("mem_app", "app", true)]);
 
-    let histories = open_default_head_histories(fixture.path()).unwrap();
+    let histories = open_default_head_histories(fixture.path(), &SpawnGate::default()).unwrap();
 
     assert_eq!(entry_ids(&histories[1]), [head]);
 }
@@ -345,7 +350,7 @@ fn l_tol_6_conf_integrity_mismatch_does_not_gate_history_reads() {
     fs::write(&manifest_path, format!("{manifest}\n")).unwrap();
     assert!(crate::artifact::inspect_conf_integrity(fixture.path()).refuses());
 
-    let histories = open_default_head_histories(fixture.path()).unwrap();
+    let histories = open_default_head_histories(fixture.path(), &SpawnGate::default()).unwrap();
 
     assert_eq!(entry_ids(&histories[0]), [head]);
 }
@@ -374,6 +379,7 @@ fn l_rng_1_zero_or_more_revision_operands_use_the_diff_grammar() {
     let opened = open_request_histories(
         fixture.path(),
         &log_request(&["left", "middle", "right"], &[], false),
+        &SpawnGate::default(),
     )
     .unwrap();
     let mut actual = entry_ids(&opened.histories()[0]);
@@ -400,9 +406,12 @@ fn l_rng_1_three_dot_range_uses_symmetric_history() {
         .unwrap();
     fixture.write_manifest(&[]);
 
-    let opened =
-        open_request_histories(fixture.path(), &log_request(&["left...right"], &[], false))
-            .unwrap();
+    let opened = open_request_histories(
+        fixture.path(),
+        &log_request(&["left...right"], &[], false),
+        &SpawnGate::default(),
+    )
+    .unwrap();
     let mut actual = entry_ids(&opened.histories()[0]);
     actual.sort();
     let mut expected = vec![left, right];
@@ -436,9 +445,12 @@ fn f7_three_dot_hides_all_best_criss_cross_merge_bases() {
     ]));
     assert_eq!(bases.len(), 2, "fixture must have two best merge bases");
 
-    let opened =
-        open_request_histories(fixture.path(), &log_request(&["left...right"], &[], false))
-            .unwrap();
+    let opened = open_request_histories(
+        fixture.path(),
+        &log_request(&["left...right"], &[], false),
+        &SpawnGate::default(),
+    )
+    .unwrap();
 
     let mut actual = entry_ids(&opened.histories()[0]);
     let mut expected = native_log_ids(fixture.path(), &["left...right"], &[]);
@@ -463,8 +475,12 @@ fn l_rng_1_post_dash_leading_plus_is_a_literal_pathspec() {
 
     // No snapshot named `notes` exists. Success proves the post-`--` token never
     // entered the leading-`+` operand grammar.
-    let opened =
-        open_request_histories(fixture.path(), &log_request(&[], &["+notes"], false)).unwrap();
+    let opened = open_request_histories(
+        fixture.path(),
+        &log_request(&[], &["+notes"], false),
+        &SpawnGate::default(),
+    )
+    .unwrap();
 
     assert_eq!(opened.histories()[0].pathspecs(), ["+notes"]);
     assert_eq!(entry_ids(&opened.histories()[0]), [plus_commit]);
@@ -484,8 +500,12 @@ fn f7_bare_pre_dash_path_uses_the_shared_classifier() {
     );
     fixture.write_manifest(&[]);
 
-    let opened =
-        open_request_histories(fixture.path(), &log_request(&["notes"], &[], false)).unwrap();
+    let opened = open_request_histories(
+        fixture.path(),
+        &log_request(&["notes"], &[], false),
+        &SpawnGate::default(),
+    )
+    .unwrap();
 
     assert_eq!(entry_ids(&opened.histories()[0]), [path_commit]);
 }
@@ -507,9 +527,13 @@ fn f8_log_classifier_diagnostics_name_log_for_ambiguous_and_unknown_operands() {
             "unknown revision or path not in the working tree",
         ),
     ] {
-        let error = open_request_histories(fixture.path(), &log_request(&[operand], &[], false))
-            .err()
-            .expect("classifier must reject the operand");
+        let error = open_request_histories(
+            fixture.path(),
+            &log_request(&[operand], &[], false),
+            &SpawnGate::default(),
+        )
+        .err()
+        .expect("classifier must reject the operand");
         assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
         assert!(error.message.contains(reason), "{}", error.message);
         assert!(
@@ -548,7 +572,12 @@ fn l_rng_1_pathspec_history_matches_git_merge_simplification() {
     );
     fixture.write_manifest(&[]);
 
-    let opened = open_request_histories(fixture.path(), &log_request(&[], &["p"], false)).unwrap();
+    let opened = open_request_histories(
+        fixture.path(),
+        &log_request(&[], &["p"], false),
+        &SpawnGate::default(),
+    )
+    .unwrap();
     let actual = entry_ids(&opened.histories()[0]);
     let output = Command::new("git")
         .args([
@@ -578,8 +607,12 @@ fn f5_root_dot_and_companion_exclusion_match_native_git_history() {
     fixture.write_manifest(&[]);
 
     for pathspecs in [vec!["."], vec![".", ":(exclude)p"]] {
-        let opened =
-            open_request_histories(fixture.path(), &log_request(&[], &pathspecs, false)).unwrap();
+        let opened = open_request_histories(
+            fixture.path(),
+            &log_request(&[], &pathspecs, false),
+            &SpawnGate::default(),
+        )
+        .unwrap();
         assert_eq!(
             entry_ids(&opened.histories()[0]),
             native_log_ids(fixture.path(), &[], &pathspecs),
@@ -598,8 +631,12 @@ fn f5_member_root_dot_matches_native_empty_commit_and_merge_simplification() {
     fixture.write_manifest(&[member("mem_app", "app", true)]);
 
     for pathspecs in [vec!["."], vec![".", ":(exclude)p"]] {
-        let opened =
-            open_request_histories(&member_path, &log_request(&[], &pathspecs, false)).unwrap();
+        let opened = open_request_histories(
+            &member_path,
+            &log_request(&[], &pathspecs, false),
+            &SpawnGate::default(),
+        )
+        .unwrap();
         assert_eq!(target_ids(&opened), ["mem_app"]);
         assert_eq!(
             entry_ids(&opened.histories()[0]),
@@ -630,9 +667,12 @@ fn f5_magic_pathspecs_match_native_rev_list_from_root_and_member_subdirectories(
         (member_path.join("src"), member_path.as_path(), "mem_app"),
     ] {
         for pathspecs in &cases {
-            let opened =
-                open_request_histories(&start, &log_request(&[], pathspecs.as_slice(), false))
-                    .unwrap();
+            let opened = open_request_histories(
+                &start,
+                &log_request(&[], pathspecs.as_slice(), false),
+                &SpawnGate::default(),
+            )
+            .unwrap();
             assert_eq!(target_ids(&opened), [target], "pathspecs {pathspecs:?}");
             assert_eq!(
                 entry_ids(&opened.histories()[0]),
@@ -658,8 +698,12 @@ fn f5_workspace_root_fanout_preserves_long_and_short_member_exclusions() {
         vec![".", ":!artifact"],
         vec![".", ":^artifact"],
     ] {
-        let opened =
-            open_request_histories(fixture.path(), &log_request(&[], &pathspecs, false)).unwrap();
+        let opened = open_request_histories(
+            fixture.path(),
+            &log_request(&[], &pathspecs, false),
+            &SpawnGate::default(),
+        )
+        .unwrap();
         assert_eq!(target_ids(&opened), ["@root", "mem_app"]);
         assert_eq!(
             entry_ids(&opened.histories()[0]),
@@ -696,8 +740,12 @@ fn l_rng_3_snapshot_resolves_independently_for_each_member() {
         ],
     );
 
-    let opened =
-        open_request_histories(fixture.path(), &log_request(&["+release"], &[], false)).unwrap();
+    let opened = open_request_histories(
+        fixture.path(),
+        &log_request(&["+release"], &[], false),
+        &SpawnGate::default(),
+    )
+    .unwrap();
 
     assert_eq!(entry_ids(&opened.histories()[1])[0], app_snapshot);
     assert_eq!(entry_ids(&opened.histories()[2])[0], lib_snapshot);
@@ -715,8 +763,12 @@ fn l_rng_3_snapshot_to_snapshot_range_resolves_both_endpoints() {
     fixture.write_snapshot("base", &[("mem_app", "app", Some(base))]);
     fixture.write_snapshot("tip", &[("mem_app", "app", Some(tip))]);
 
-    let opened =
-        open_request_histories(fixture.path(), &log_request(&["+base..+tip"], &[], false)).unwrap();
+    let opened = open_request_histories(
+        fixture.path(),
+        &log_request(&["+base..+tip"], &[], false),
+        &SpawnGate::default(),
+    )
+    .unwrap();
 
     assert_eq!(entry_ids(&opened.histories()[1]), [tip]);
 }
@@ -738,6 +790,7 @@ fn l_rng_6_log_internal_dotted_snapshot_ids_work_on_both_range_sides() {
         let opened = open_request_histories(
             fixture.path(),
             &log_request(&[operand.as_str()], &[], false),
+            &SpawnGate::default(),
         )
         .unwrap();
         assert_eq!(
@@ -768,6 +821,7 @@ fn l_rng_6_log_standalone_legacy_dotted_snapshot_ids_remain_accessible() {
         let opened = open_request_histories(
             fixture.path(),
             &log_request(&[operand.as_str()], &[], false),
+            &SpawnGate::default(),
         )
         .unwrap();
         assert_eq!(entry_ids(&opened.histories()[1]), [head], "id {id:?}");
@@ -789,6 +843,7 @@ fn l_rng_6_log_teaches_for_ambiguous_legacy_snapshot_range_endpoints() {
             let error = open_request_histories(
                 fixture.path(),
                 &log_request(&[operand.as_str()], &[], false),
+                &SpawnGate::default(),
             )
             .err()
             .expect("ambiguous legacy range endpoint must be refused");
@@ -828,9 +883,13 @@ fn l_rng_6_log_teaches_for_open_legacy_range_endpoints_before_shorter_matches() 
     ];
 
     for (operand, id) in cases {
-        let error = open_request_histories(fixture.path(), &log_request(&[operand], &[], false))
-            .err()
-            .expect("open legacy range endpoint must be refused");
+        let error = open_request_histories(
+            fixture.path(),
+            &log_request(&[operand], &[], false),
+            &SpawnGate::default(),
+        )
+        .err()
+        .expect("open legacy range endpoint must be refused");
         assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
         assert_eq!(
             error.message,
@@ -853,8 +912,12 @@ fn l_rng_3_snapshot_to_head_range_resolves_mixed_endpoints() {
     fixture.write_manifest(&[member("mem_app", "app", true)]);
     fixture.write_snapshot("base", &[("mem_app", "app", Some(base))]);
 
-    let opened =
-        open_request_histories(fixture.path(), &log_request(&["+base..HEAD"], &[], false)).unwrap();
+    let opened = open_request_histories(
+        fixture.path(),
+        &log_request(&["+base..HEAD"], &[], false),
+        &SpawnGate::default(),
+    )
+    .unwrap();
 
     assert_eq!(entry_ids(&opened.histories()[1]), [head, middle]);
 }
@@ -873,8 +936,12 @@ fn l_rng_3_missing_snapshot_member_and_root_both_degrade_with_records() {
     ]);
     fixture.write_snapshot("partial", &[("mem_app", "app", Some(app_snapshot))]);
 
-    let opened =
-        open_request_histories(fixture.path(), &log_request(&["+partial"], &[], false)).unwrap();
+    let opened = open_request_histories(
+        fixture.path(),
+        &log_request(&["+partial"], &[], false),
+        &SpawnGate::default(),
+    )
+    .unwrap();
 
     let root = degradations(&opened.histories()[0]);
     let missing = degradations(&opened.histories()[2]);
@@ -918,8 +985,12 @@ fn l_rng_4_lock_resolves_each_member_to_pin_dot_dot_head_and_degrades_root() {
     fixture.write_snapshot("lock", &[("mem_app", "app", Some(app_middle))]);
 
     for operand in ["+lock..HEAD", "+lock.."] {
-        let opened =
-            open_request_histories(fixture.path(), &log_request(&[operand], &[], false)).unwrap();
+        let opened = open_request_histories(
+            fixture.path(),
+            &log_request(&[operand], &[], false),
+            &SpawnGate::default(),
+        )
+        .unwrap();
 
         let root = degradations(&opened.histories()[0]);
         assert_eq!(root[0].kind, CommitLogDegradationKind::LockEntryMissing);
@@ -931,6 +1002,7 @@ fn l_rng_4_lock_resolves_each_member_to_pin_dot_dot_head_and_degrades_root() {
     let routed = open_request_histories(
         fixture.path(),
         &log_request(&["+lock..HEAD"], &["app"], false),
+        &SpawnGate::default(),
     )
     .unwrap();
     assert_eq!(target_ids(&routed), ["@root", "mem_app"]);
@@ -942,19 +1014,31 @@ fn l_rng_4_lock_resolves_each_member_to_pin_dot_dot_head_and_degrades_root() {
 
     // A pre-existing snapshot named `lock` remains exact-standalone access;
     // only a range-position `+lock` is the lock pseudo-endpoint.
-    let snapshot =
-        open_request_histories(fixture.path(), &log_request(&["+lock"], &[], false)).unwrap();
-    let ordinary =
-        open_request_histories(fixture.path(), &log_request(&["HEAD"], &[], false)).unwrap();
+    let snapshot = open_request_histories(
+        fixture.path(),
+        &log_request(&["+lock"], &[], false),
+        &SpawnGate::default(),
+    )
+    .unwrap();
+    let ordinary = open_request_histories(
+        fixture.path(),
+        &log_request(&["HEAD"], &[], false),
+        &SpawnGate::default(),
+    )
+    .unwrap();
     assert_eq!(entry_ids(&snapshot.histories()[1])[0], app_middle);
     assert_eq!(entry_ids(&ordinary.histories()[1])[0], app_head);
 
     let mut foreign = crate::artifact::read_lock(fixture.path()).unwrap();
     foreign.workspace_id = "ws_other".to_owned();
     crate::artifact::write_lock(fixture.path(), &foreign).unwrap();
-    let error = open_request_histories(fixture.path(), &log_request(&["+lock..HEAD"], &[], false))
-        .err()
-        .expect("foreign workspace lock must be rejected");
+    let error = open_request_histories(
+        fixture.path(),
+        &log_request(&["+lock..HEAD"], &[], false),
+        &SpawnGate::default(),
+    )
+    .err()
+    .expect("foreign workspace lock must be rejected");
     assert_eq!(error.code, crate::model::ErrorCode::SourceIdentityMismatch);
     assert_eq!(
         error.message,
@@ -976,7 +1060,7 @@ fn l_rng_4_missing_and_unborn_lock_rows_degrade_benignly_and_strictly() {
     fixture.write_lock(&[("mem_unborn", "unborn", None)]);
     let request = log_request(&["+lock..HEAD"], &[], false);
 
-    let benign = open_request_histories(fixture.path(), &request).unwrap();
+    let benign = open_request_histories(fixture.path(), &request, &SpawnGate::default()).unwrap();
     let missing = degradations(&benign.histories()[1]);
     let unborn = degradations(&benign.histories()[2]);
     assert_eq!(missing[0].kind, CommitLogDegradationKind::LockEntryMissing);
@@ -995,7 +1079,8 @@ fn l_rng_4_missing_and_unborn_lock_rows_degrade_benignly_and_strictly() {
         strict: Some(true),
         ..crate::LogOptions::default()
     });
-    let strict = open_request_histories(fixture.path(), &strict_request).unwrap();
+    let strict =
+        open_request_histories(fixture.path(), &strict_request, &SpawnGate::default()).unwrap();
     assert_eq!(
         stream_request_histories(strict, &strict_request, |_| {})
             .aggregate()
@@ -1021,7 +1106,11 @@ fn f2_mismatched_snapshot_identity_cannot_panic_log_planning() {
     .unwrap();
 
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        open_request_histories(fixture.path(), &log_request(&["+alias"], &["app"], false))
+        open_request_histories(
+            fixture.path(),
+            &log_request(&["+alias"], &["app"], false),
+            &SpawnGate::default(),
+        )
     }));
     let error = outcome
         .expect("malformed snapshot operand must not panic")
@@ -1046,9 +1135,13 @@ fn f3_foreign_workspace_snapshot_is_rejected_before_member_resolution() {
         &[("mem_app", "app", Some(locally_present))],
     );
 
-    let error = open_request_histories(fixture.path(), &log_request(&["+release"], &[], false))
-        .err()
-        .expect("foreign snapshot must be rejected");
+    let error = open_request_histories(
+        fixture.path(),
+        &log_request(&["+release"], &[], false),
+        &SpawnGate::default(),
+    )
+    .err()
+    .expect("foreign snapshot must be rejected");
 
     assert_eq!(error.code, crate::model::ErrorCode::SnapshotNotFound);
     assert!(error.message.contains("ws_foreign"), "{}", error.message);
@@ -1072,6 +1165,7 @@ fn f4_snapshot_degradations_survive_member_path_routing() {
     let opened = open_request_histories(
         fixture.path(),
         &log_request(&["+partial"], &["app/file"], false),
+        &SpawnGate::default(),
     )
     .unwrap();
 
@@ -1126,8 +1220,12 @@ fn l_sel_3_tagged_narrows_to_repositories_containing_every_exact_local_tag() {
         member("mem_branch", "branch-only", true),
     ]);
 
-    let opened =
-        open_request_histories(fixture.path(), &log_request(&["v1..v2"], &[], true)).unwrap();
+    let opened = open_request_histories(
+        fixture.path(),
+        &log_request(&["v1..v2"], &[], true),
+        &SpawnGate::default(),
+    )
+    .unwrap();
 
     assert_eq!(target_ids(&opened), ["@root", "mem_app"]);
     assert_eq!(entry_ids(&opened.histories()[0]), [root_v2]);
@@ -1155,6 +1253,7 @@ fn l_rng_1_tagged_supports_three_arguments_and_a_nonfirst_range() {
     let opened = open_request_histories(
         fixture.path(),
         &log_request(&["first", "range-base..range-tip", "last"], &[], true),
+        &SpawnGate::default(),
     )
     .unwrap();
     let mut actual = entry_ids(&opened.histories()[0]);
@@ -1171,9 +1270,13 @@ fn l_sel_3_tagged_refusal_names_snapshot_and_lock_operands_accurately() {
     fixture.write_manifest(&[]);
 
     for operand in ["+snapshot", "+lock..HEAD"] {
-        let error = open_request_histories(fixture.path(), &log_request(&[operand], &[], true))
-            .err()
-            .expect("tagged GWZ '+' operand must be refused");
+        let error = open_request_histories(
+            fixture.path(),
+            &log_request(&[operand], &[], true),
+            &SpawnGate::default(),
+        )
+        .err()
+        .expect("tagged GWZ '+' operand must be refused");
 
         assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
         assert_eq!(
@@ -1189,9 +1292,13 @@ fn f7_tagged_rejects_a_tag_missing_from_every_selected_repository() {
     commit(&fixture.root, "root", 100, &[]);
     fixture.write_manifest(&[]);
 
-    let error = open_request_histories(fixture.path(), &log_request(&["absent"], &[], true))
-        .err()
-        .expect("missing tag must be rejected");
+    let error = open_request_histories(
+        fixture.path(),
+        &log_request(&["absent"], &[], true),
+        &SpawnGate::default(),
+    )
+    .err()
+    .expect("missing tag must be rejected");
 
     assert_eq!(error.code, crate::model::ErrorCode::TagNotFound);
     assert_eq!(
@@ -1210,9 +1317,13 @@ fn f7_tagged_rejects_distributed_tags_without_an_all_tag_intersection() {
     tag(&app, "right", app_head);
     fixture.write_manifest(&[member("mem_app", "app", true)]);
 
-    let error = open_request_histories(fixture.path(), &log_request(&["left", "right"], &[], true))
-        .err()
-        .expect("empty all-tag intersection must be rejected");
+    let error = open_request_histories(
+        fixture.path(),
+        &log_request(&["left", "right"], &[], true),
+        &SpawnGate::default(),
+    )
+    .err()
+    .expect("empty all-tag intersection must be rejected");
 
     assert_eq!(error.code, crate::model::ErrorCode::TagNotFound);
     assert_eq!(
@@ -1240,8 +1351,12 @@ fn l_tol_2_mixed_resolvable_and_unresolvable_members_degrade_independently() {
         member("mem_missing", "missing", true),
     ]);
 
-    let opened =
-        open_request_histories(fixture.path(), &log_request(&["shared"], &[], false)).unwrap();
+    let opened = open_request_histories(
+        fixture.path(),
+        &log_request(&["shared"], &[], false),
+        &SpawnGate::default(),
+    )
+    .unwrap();
 
     assert_eq!(entry_ids(&opened.histories()[0])[0], root_head);
     assert_eq!(entry_ids(&opened.histories()[1])[0], good_head);
@@ -1272,8 +1387,12 @@ fn f7_two_dot_degrades_only_the_member_missing_one_ordinary_endpoint() {
         .unwrap();
     fixture.write_manifest(&[member("mem_app", "app", true)]);
 
-    let opened =
-        open_request_histories(fixture.path(), &log_request(&["start..tip"], &[], false)).unwrap();
+    let opened = open_request_histories(
+        fixture.path(),
+        &log_request(&["start..tip"], &[], false),
+        &SpawnGate::default(),
+    )
+    .unwrap();
 
     assert_eq!(entry_ids(&opened.histories()[0]), [tip]);
     assert!(matches!(
@@ -1299,21 +1418,24 @@ fn l_tol_2_default_degradation_is_benign_and_strict_escalates_aggregate() {
     fixture.write_manifest(&[member("mem_missing", "missing", true)]);
     let request = log_request(&["root-only"], &[], false);
 
-    let benign = open_request_histories(fixture.path(), &request).unwrap();
+    let benign = open_request_histories(fixture.path(), &request, &SpawnGate::default()).unwrap();
     let mut clean_request = request.clone();
     clean_request.meta.selection = Some(crate::Selection {
         targets: vec!["@root".to_owned()],
         ..crate::Selection::default()
     });
-    let clean_benign = open_request_histories(fixture.path(), &clean_request).unwrap();
+    let clean_benign =
+        open_request_histories(fixture.path(), &clean_request, &SpawnGate::default()).unwrap();
     let mut strict_request = request.clone();
     strict_request.options = Some(crate::LogOptions {
         strict: Some(true),
         ..crate::LogOptions::default()
     });
-    let strict = open_request_histories(fixture.path(), &strict_request).unwrap();
+    let strict =
+        open_request_histories(fixture.path(), &strict_request, &SpawnGate::default()).unwrap();
     clean_request.options = strict_request.options.clone();
-    let clean_strict = open_request_histories(fixture.path(), &clean_request).unwrap();
+    let clean_strict =
+        open_request_histories(fixture.path(), &clean_request, &SpawnGate::default()).unwrap();
 
     assert_eq!(
         stream_request_histories(benign, &request, |_| {})
@@ -1351,7 +1473,8 @@ fn s2_5_production_merge_consumes_range_histories_and_degradations() {
     fixture.write_manifest(&[member("mem_member", "member", true)]);
     let request = log_request(&[&format!("{root_first}..{root_head}")], &[], false);
 
-    let histories = open_request_histories(fixture.path(), &request).unwrap();
+    let histories =
+        open_request_histories(fixture.path(), &request, &SpawnGate::default()).unwrap();
     assert!(histories.has_explicit_range());
     let mut events = Vec::new();
     let stats = stream_request_histories(histories, &request, |event| events.push(event));
@@ -1388,7 +1511,7 @@ fn l_fil_1_and_l_env_5_regexes_filter_raw_message_and_combined_author() {
     });
     assert_eq!(
         entry_ids(
-            &open_request_histories(fixture.path(), &request)
+            &open_request_histories(fixture.path(), &request, &SpawnGate::default())
                 .unwrap()
                 .histories()[0]
         ),
@@ -1398,7 +1521,7 @@ fn l_fil_1_and_l_env_5_regexes_filter_raw_message_and_combined_author() {
     request.options.as_mut().unwrap().grep = Some("Needle".to_owned());
     assert!(
         entry_ids(
-            &open_request_histories(fixture.path(), &request)
+            &open_request_histories(fixture.path(), &request, &SpawnGate::default())
                 .unwrap()
                 .histories()[0]
         )
@@ -1422,7 +1545,7 @@ fn l_env_5_6_filters_distinct_raw_author_and_committer_surfaces() {
     );
     fixture.write_manifest(&[]);
 
-    let unfiltered = open_default_head_histories(fixture.path()).unwrap();
+    let unfiltered = open_default_head_histories(fixture.path(), &SpawnGate::default()).unwrap();
     let unfiltered_events = events(&unfiltered[0]);
     let [CommitLogEvent::Entry(entry)] = unfiltered_events.as_slice() else {
         panic!("raw identity fixture did not yield exactly one entry");
@@ -1455,7 +1578,7 @@ fn l_env_5_6_filters_distinct_raw_author_and_committer_surfaces() {
         request.options = Some(options);
         assert_eq!(
             entry_ids(
-                &open_request_histories(fixture.path(), &request)
+                &open_request_histories(fixture.path(), &request, &SpawnGate::default())
                     .unwrap()
                     .histories()[0]
             ),
@@ -1486,10 +1609,13 @@ fn l_env_5_invalid_regex_refuses_before_workspace_access() {
             options: Some(option),
             ..crate::LogRequest::default()
         };
-        let error =
-            open_request_histories(Path::new("/definitely/missing/gwz-workspace"), &request)
-                .err()
-                .expect("invalid Rust regex must be an invocation refusal");
+        let error = open_request_histories(
+            Path::new("/definitely/missing/gwz-workspace"),
+            &request,
+            &SpawnGate::default(),
+        )
+        .err()
+        .expect("invalid Rust regex must be an invocation refusal");
         assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
         assert!(error.message.contains(field), "{}", error.message);
         assert!(error.message.contains("Rust regex"), "{}", error.message);
@@ -1560,9 +1686,13 @@ fn l_env_6_time_grammar_is_exact_local_and_inclusive() {
         }),
         ..Default::default()
     };
-    let error = open_request_histories(Path::new("/definitely/missing/gwz-workspace"), &request)
-        .err()
-        .expect("approxidate must refuse before workspace access");
+    let error = open_request_histories(
+        Path::new("/definitely/missing/gwz-workspace"),
+        &request,
+        &SpawnGate::default(),
+    )
+    .err()
+    .expect("approxidate must refuse before workspace access");
     assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
 
     let fixture = Fixture::new("s2-6-inclusive-time");
@@ -1578,7 +1708,7 @@ fn l_env_6_time_grammar_is_exact_local_and_inclusive() {
     });
     assert_eq!(
         entry_ids(
-            &open_request_histories(fixture.path(), &request)
+            &open_request_histories(fixture.path(), &request, &SpawnGate::default())
                 .unwrap()
                 .histories()[0]
         ),
@@ -1690,7 +1820,7 @@ fn l_fil_1_first_parent_and_no_merges_match_native_git_premerge() {
         let mut request = log_request(&[], &["."], false);
         request.options = Some(options);
         let actual = entry_ids(
-            &open_request_histories(fixture.path(), &request)
+            &open_request_histories(fixture.path(), &request, &SpawnGate::default())
                 .unwrap()
                 .histories()[0],
         );
@@ -1734,7 +1864,7 @@ fn l_fil_1_ancestry_filters_match_native_merge_range_with_and_without_paths() {
             let mut request = log_request(&["HEAD~2..HEAD"], pathspecs, false);
             request.options = Some(options.clone());
             let actual = entry_ids(
-                &open_request_histories(fixture.path(), &request)
+                &open_request_histories(fixture.path(), &request, &SpawnGate::default())
                     .unwrap()
                     .histories()[0],
             );
@@ -1785,7 +1915,7 @@ fn l_coa_5_l_env_7_partial_filtering_keeps_survivors_and_empty_is_ok() {
     });
     let mut events = Vec::new();
     let run = stream_request_histories(
-        open_request_histories(fixture.path(), &request).unwrap(),
+        open_request_histories(fixture.path(), &request, &SpawnGate::default()).unwrap(),
         &request,
         |event| events.push(event),
     );
@@ -1806,7 +1936,7 @@ fn l_coa_5_l_env_7_partial_filtering_keeps_survivors_and_empty_is_ok() {
 
     request.options.as_mut().unwrap().grep = Some("does-not-exist".to_owned());
     let empty = stream_request_histories(
-        open_request_histories(fixture.path(), &request).unwrap(),
+        open_request_histories(fixture.path(), &request, &SpawnGate::default()).unwrap(),
         &request,
         |_| {},
     );
@@ -1862,7 +1992,7 @@ fn l_env_7_filtering_precedes_cap_and_order_for_every_jobs_value() {
         });
         let mut events = Vec::new();
         let result = stream_request_histories(
-            open_request_histories(fixture.path(), &request).unwrap(),
+            open_request_histories(fixture.path(), &request, &SpawnGate::default()).unwrap(),
             &request,
             |event| events.push(event),
         );
@@ -1902,7 +2032,7 @@ fn l_exit_1_aggregate_distinguishes_benign_strict_and_read_failure() {
 
     let request = log_request(&["root-only"], &[], false);
     let benign = stream_request_histories(
-        open_request_histories(fixture.path(), &request).unwrap(),
+        open_request_histories(fixture.path(), &request, &SpawnGate::default()).unwrap(),
         &request,
         |_| {},
     );
@@ -1919,7 +2049,7 @@ fn l_exit_1_aggregate_distinguishes_benign_strict_and_read_failure() {
         ..Default::default()
     });
     let strict = stream_request_histories(
-        open_request_histories(fixture.path(), &strict_request).unwrap(),
+        open_request_histories(fixture.path(), &strict_request, &SpawnGate::default()).unwrap(),
         &strict_request,
         |_| {},
     );
@@ -1928,7 +2058,7 @@ fn l_exit_1_aggregate_distinguishes_benign_strict_and_read_failure() {
     fixture.write_manifest(&[member("mem_missing", "missing", true)]);
     let failed_request = log_request(&[], &[], false);
     let failed = stream_request_histories(
-        open_request_histories(fixture.path(), &failed_request).unwrap(),
+        open_request_histories(fixture.path(), &failed_request, &SpawnGate::default()).unwrap(),
         &failed_request,
         |_| {},
     );
@@ -1944,7 +2074,8 @@ fn l_exit_1_aggregate_distinguishes_benign_strict_and_read_failure() {
         ..Default::default()
     });
     let failed_only = stream_request_histories(
-        open_request_histories(fixture.path(), &failed_only_request).unwrap(),
+        open_request_histories(fixture.path(), &failed_only_request, &SpawnGate::default())
+            .unwrap(),
         &failed_only_request,
         |_| {},
     );
@@ -2115,9 +2246,10 @@ fn f4_jobs_one_bounds_real_path_reader_lifetimes() {
     });
 
     watch_path_readers("mem_f4_jobs_");
-    let histories = open_request_histories(fixture.path(), &request).unwrap();
+    let histories =
+        open_request_histories(fixture.path(), &request, &SpawnGate::default()).unwrap();
     let stats = stream_request_histories(histories, &request, |_| {});
-    let max_path_readers = finish_watching_path_readers();
+    let max_path_readers = finish_watching_path_readers("mem_f4_jobs_");
 
     assert_eq!(stats.groups_emitted(), 4);
     assert_eq!(stats.max_concurrent_reads(), 1);
@@ -2468,6 +2600,7 @@ fn l_int_1_dispatch_spools_every_record_with_cursor_eof_and_release() {
 
     let registry = crate::operation::CommitLogOutputRegistry::new();
     let response = crate::operation::handle_log(
+        &crate::git::Git2Backend::new(),
         fixture.path(),
         log_request(&[], &[], false),
         "op-log-spool",
@@ -2482,6 +2615,7 @@ fn l_int_1_dispatch_spools_every_record_with_cursor_eof_and_release() {
     assert!(!log_id.is_empty());
 
     let second_response = crate::operation::handle_log(
+        &crate::git::Git2Backend::new(),
         fixture.path(),
         log_request(&[], &[], false),
         "op-log-spool-second",
@@ -2612,6 +2746,7 @@ fn missing_explicit_root_manifest_is_a_typed_pre_dispatch_rejection() {
     let registry = crate::operation::CommitLogOutputRegistry::new();
 
     let error = crate::operation::handle_log(
+        &crate::git::Git2Backend::new(),
         fixture.path(),
         request,
         "op-log-missing-manifest",
@@ -2733,6 +2868,7 @@ fn l_int_1_spool_creation_failure_leaves_no_resolvable_log_id() {
     registry.fail_next_spool_for_test();
 
     let error = crate::operation::handle_log(
+        &crate::git::Git2Backend::new(),
         fixture.path(),
         log_request(&[], &[], false),
         "op-log-spool-failure",
@@ -2752,6 +2888,7 @@ fn l_int_1_post_registration_spool_failure_removes_the_output_authority() {
     registry.fail_next_append_for_test();
 
     let error = crate::operation::handle_log(
+        &crate::git::Git2Backend::new(),
         fixture.path(),
         log_request(&[], &[], false),
         "op-log-spool-append-failure",
@@ -2771,6 +2908,7 @@ fn l_int_1_seal_failure_removes_the_output_authority() {
     registry.fail_next_seal_for_test();
 
     let error = crate::operation::handle_log(
+        &crate::git::Git2Backend::new(),
         fixture.path(),
         log_request(&[], &[], false),
         "op-log-spool-seal-failure",
@@ -2789,6 +2927,7 @@ fn l_int_1_public_handler_preserves_partial_aggregate() {
     let registry = crate::operation::CommitLogOutputRegistry::new();
 
     let response = crate::operation::handle_log(
+        &crate::git::Git2Backend::new(),
         fixture.path(),
         log_request(&[], &[], false),
         "op-log-partial",
@@ -2826,8 +2965,14 @@ fn l_int_1_strict_degradation_sets_final_aggregate_and_streams_once() {
         ..crate::LogOptions::default()
     });
 
-    let response =
-        crate::operation::handle_log(fixture.path(), request, "op-log-strict", &registry).unwrap();
+    let response = crate::operation::handle_log(
+        &crate::git::Git2Backend::new(),
+        fixture.path(),
+        request,
+        "op-log-strict",
+        &registry,
+    )
+    .unwrap();
     assert_eq!(
         response.response.meta.aggregate_status,
         crate::AggregateStatus::Failed
@@ -3030,13 +3175,13 @@ cfg_if::cfg_if! {
                 log_request(&[aliased], &[], false),
                 log_request(&[], &[aliased], false),
             ] {
-                let opened = open_request_histories(fixture.path(), &request).unwrap();
+                let opened = open_request_histories(fixture.path(), &request, &SpawnGate::default()).unwrap();
                 assert_eq!(opened.histories()[0].pathspecs(), ["tracked.txt"]);
                 assert_eq!(entry_ids(&opened.histories()[0]), [tracked]);
             }
 
             let escape = log_request(&[], &["escape/tracked.txt"], false);
-            let error = open_request_histories(fixture.path(), &escape)
+            let error = open_request_histories(fixture.path(), &escape, &SpawnGate::default())
                 .err()
                 .expect("a pathspec through a link leaving the workspace must be refused");
             assert_eq!(error.code, crate::model::ErrorCode::PathEscape);
@@ -3046,3 +3191,4 @@ cfg_if::cfg_if! {
 
 #[path = "path_characterization.rs"]
 mod path_characterization;
+mod path_cursor_gate;

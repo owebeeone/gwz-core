@@ -334,13 +334,14 @@ impl CommitLogOutputRegistry {
 /// Execute the completed commit-history engine and retain its finite stream.
 #[allow(clippy::needless_update, reason = "gwz_session_candidate adds fields")]
 pub(in crate::operation) fn handle_log(
+    backend: &crate::git::Git2Backend,
     start: &Path,
     request: crate::LogRequest,
     operation_id: impl Into<String>,
     output_registry: &CommitLogOutputRegistry,
 ) -> model::ModelResult<crate::LogResponse> {
     let context = OperationRequest::Log(request.clone()).context(operation_id.into())?;
-    let histories = open_request_histories(start, &request)?;
+    let histories = open_request_histories(start, &request, &backend.spawn_gate)?;
     let (log_id, spool) = output_registry.create()?;
     let include_body = request
         .options

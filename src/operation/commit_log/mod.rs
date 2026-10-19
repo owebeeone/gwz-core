@@ -23,10 +23,9 @@ use request::open_request_histories;
 
 use std::path::Path;
 use std::process::{Command, Stdio};
-#[cfg(test)]
-use std::sync::{Mutex, OnceLock};
 
 use crate::artifact::ArtifactSourceKind;
+use crate::git::spawn_gate::SpawnGate;
 use crate::model::ModelResult;
 
 use filter::CommitLogFilters;
@@ -97,6 +96,9 @@ enum RepositoryState {
     Ready {
         repository: git2::Repository,
         walk: WalkPlan,
+        /// The spawn gate of the host this history's request runs under: the path cursor's `git rev-list` spawns
+        /// under it (operator decision D25). Only a history that can walk has one.
+        gate: SpawnGate,
     },
     Degraded(CommitLogDegradation),
 }
@@ -127,10 +129,15 @@ impl RepositoryHistory {
 
     pub fn messages(&self) -> RepositoryMessages<'_> {
         match &self.state {
-            RepositoryState::Ready { repository, walk } => RepositoryMessages::from_repository(
+            RepositoryState::Ready {
+                repository,
+                walk,
+                gate,
+            } => RepositoryMessages::from_repository(
                 &self.target,
                 repository,
                 walk,
+                gate,
                 &self.pathspecs,
                 &self.filters,
             ),
@@ -154,6 +161,7 @@ enum MessagesState<'repo> {
         pathspecs: Vec<String>,
         first_parent: bool,
         skip: usize,
+        gate: SpawnGate,
     },
     Single(Option<Box<CommitLogEvent>>),
     Done,
@@ -171,11 +179,12 @@ impl<'repo> RepositoryMessages<'repo> {
         target: &'repo CommitLogTarget,
         repository: &'repo git2::Repository,
         plan: &WalkPlan,
+        gate: &SpawnGate,
         pathspecs: &'repo [String],
         filters: &'repo CommitLogFilters,
     ) -> Self {
         if !pathspecs.is_empty() {
-            return Self::from_path_walk(target, repository, plan, pathspecs, filters);
+            return Self::from_path_walk(target, repository, plan, gate, pathspecs, filters);
         }
         let mut walk = match repository.revwalk() {
             Ok(walk) => walk,
@@ -254,6 +263,7 @@ impl<'repo> RepositoryMessages<'repo> {
         target: &'repo CommitLogTarget,
         repository: &'repo git2::Repository,
         plan: &WalkPlan,
+        gate: &SpawnGate,
         pathspecs: &[String],
         filters: &'repo CommitLogFilters,
     ) -> Self {
@@ -266,6 +276,7 @@ impl<'repo> RepositoryMessages<'repo> {
                 pathspecs: pathspecs.to_vec(),
                 first_parent: filters.first_parent(),
                 skip: 0,
+                gate: gate.clone(),
             },
         }
     }
@@ -314,9 +325,8 @@ impl<'repo> RepositoryMessages<'repo> {
                 pathspecs,
                 first_parent,
                 skip,
+                gate,
             } => {
-                #[cfg(test)]
-                let _reader_probe = path_reader_probe_enter(self.target);
                 let mut command = Command::new("git");
                 // The child's directory is explicit: it never inherits the host's.
                 command
@@ -329,15 +339,22 @@ impl<'repo> RepositoryMessages<'repo> {
                 if *first_parent {
                     command.arg("--first-parent");
                 }
-                let output = command
+                command
                     .args(plan.pushes.iter().map(ToString::to_string))
                     .args(plan.hides.iter().map(|oid| format!("^{oid}")))
                     .arg("--")
                     .args(pathspecs.iter())
                     .env("GIT_OPTIONAL_LOCKS", "0")
                     .env("GIT_NO_LAZY_FETCH", "1")
-                    .stderr(Stdio::null())
-                    .output();
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null());
+                // The spawn is under the host's gate and its wait is not (`git/spawn_gate.rs`); the probe
+                // watches the child's lifetime, so a reader held back by the gate is not yet counted.
+                let output = gate.spawn(&mut command).and_then(|child| {
+                    let _reader_probe = path_reader_probe_enter(self.target);
+                    child.wait_with_output()
+                });
                 match output {
                     Err(error) => {
                         self.fail(format!("could not run local path history cursor: {error}"))
@@ -391,62 +408,81 @@ impl Iterator for RepositoryMessages<'_> {
     }
 }
 
-#[cfg(test)]
-#[derive(Default)]
-struct PathReaderProbeState {
-    watched_prefix: Option<String>,
-    active: usize,
-    max_active: usize,
-}
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        use std::collections::BTreeMap;
+        use std::sync::{Mutex, OnceLock};
 
-#[cfg(test)]
-fn path_reader_probe() -> &'static Mutex<PathReaderProbeState> {
-    static PROBE: OnceLock<Mutex<PathReaderProbeState>> = OnceLock::new();
-    PROBE.get_or_init(|| Mutex::new(PathReaderProbeState::default()))
-}
+        /// The path readers (a spawned `git rev-list` child, from its spawn to its wait) of one watched
+        /// member-id prefix.
+        #[derive(Default)]
+        struct PathReaderCounts {
+            active: usize,
+            max_active: usize,
+        }
 
-#[cfg(test)]
-fn path_reader_probe_enter(target: &CommitLogTarget) -> PathReaderProbeGuard {
-    let mut state = path_reader_probe().lock().unwrap();
-    let watched = state
-        .watched_prefix
-        .as_ref()
-        .is_some_and(|prefix| target.member_id.starts_with(prefix));
-    if watched {
-        state.active += 1;
-        state.max_active = state.max_active.max(state.active);
-    }
-    PathReaderProbeGuard { watched }
-}
+        fn path_reader_probe() -> &'static Mutex<BTreeMap<String, PathReaderCounts>> {
+            static PROBE: OnceLock<Mutex<BTreeMap<String, PathReaderCounts>>> = OnceLock::new();
+            PROBE.get_or_init(|| Mutex::new(BTreeMap::new()))
+        }
 
-#[cfg(test)]
-struct PathReaderProbeGuard {
-    watched: bool,
-}
+        fn path_reader_probe_enter(target: &CommitLogTarget) -> PathReaderProbeGuard {
+            let mut watched = path_reader_probe().lock().unwrap();
+            let prefix = watched
+                .keys()
+                .find(|prefix| target.member_id.starts_with(prefix.as_str()))
+                .cloned();
+            if let Some(prefix) = &prefix {
+                let counts = watched.get_mut(prefix).unwrap();
+                counts.active += 1;
+                counts.max_active = counts.max_active.max(counts.active);
+            }
+            PathReaderProbeGuard { prefix }
+        }
 
-#[cfg(test)]
-impl Drop for PathReaderProbeGuard {
-    fn drop(&mut self) {
-        if self.watched {
-            path_reader_probe().lock().unwrap().active -= 1;
+        struct PathReaderProbeGuard {
+            prefix: Option<String>,
+        }
+
+        impl Drop for PathReaderProbeGuard {
+            fn drop(&mut self) {
+                if let Some(prefix) = &self.prefix {
+                    path_reader_probe()
+                        .lock()
+                        .unwrap()
+                        .get_mut(prefix)
+                        .unwrap()
+                        .active -= 1;
+                }
+            }
+        }
+
+        /// Starts counting the path readers of members whose id starts with `prefix`. Watches of different
+        /// prefixes do not disturb each other, so tests that run side by side may each have one.
+        fn watch_path_readers(prefix: &str) {
+            let mut watched = path_reader_probe().lock().unwrap();
+            assert_eq!(watched.get(prefix).map_or(0, |counts| counts.active), 0);
+            watched.insert(prefix.to_owned(), PathReaderCounts::default());
+        }
+
+        /// The most path readers of `prefix`'s members alive at once since the watch began, with the watch still on.
+        fn path_readers_seen(prefix: &str) -> usize {
+            path_reader_probe().lock().unwrap()[prefix].max_active
+        }
+
+        fn finish_watching_path_readers(prefix: &str) -> usize {
+            let counts = path_reader_probe().lock().unwrap().remove(prefix).unwrap();
+            assert_eq!(counts.active, 0);
+            counts.max_active
+        }
+    } else {
+        /// Nothing watches path readers outside tests.
+        struct PathReaderProbeGuard;
+
+        fn path_reader_probe_enter(_target: &CommitLogTarget) -> PathReaderProbeGuard {
+            PathReaderProbeGuard
         }
     }
-}
-
-#[cfg(test)]
-fn watch_path_readers(prefix: &str) {
-    let mut state = path_reader_probe().lock().unwrap();
-    assert_eq!(state.active, 0);
-    state.watched_prefix = Some(prefix.to_owned());
-    state.max_active = 0;
-}
-
-#[cfg(test)]
-fn finish_watching_path_readers() -> usize {
-    let mut state = path_reader_probe().lock().unwrap();
-    assert_eq!(state.active, 0);
-    state.watched_prefix = None;
-    state.max_active
 }
 
 impl std::iter::FusedIterator for RepositoryMessages<'_> {}
@@ -456,9 +492,12 @@ impl std::iter::FusedIterator for RepositoryMessages<'_> {}
 /// Reading the manifest is the only request-level fallible operation. Each
 /// repository thereafter either exposes its own HEAD cursor or a degradation
 /// event. This path performs no integrity gate, transport operation, or lock.
-pub fn open_default_head_histories(workspace_root: &Path) -> ModelResult<Vec<RepositoryHistory>> {
+pub fn open_default_head_histories(
+    workspace_root: &Path,
+    gate: &SpawnGate,
+) -> ModelResult<Vec<RepositoryHistory>> {
     let request = crate::LogRequest::default();
-    Ok(open_request_histories(workspace_root, &request)?.into_histories())
+    Ok(open_request_histories(workspace_root, &request, gate)?.into_histories())
 }
 
 fn degradation(

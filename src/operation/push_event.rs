@@ -504,12 +504,13 @@ pub use super::commit_log::{
 };
 
 pub fn handle_log(
+    backend: &crate::git::Git2Backend,
     start: &std::path::Path,
     request: crate::LogRequest,
     operation_id: impl Into<String>,
     output_registry: &CommitLogOutputRegistry,
 ) -> model::ModelResult<crate::LogResponse> {
-    super::commit_log::handle_log(start, request, operation_id, output_registry)
+    super::commit_log::handle_log(backend, start, request, operation_id, output_registry)
 }
 
 #[cfg(test)]

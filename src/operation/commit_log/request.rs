@@ -15,7 +15,7 @@ use crate::workspace_ops::{
 
 use super::{
     CommitLogDegradation, CommitLogDegradationKind, CommitLogFilters, CommitLogTarget,
-    RepositoryHistory, RepositoryState, WalkPlan,
+    RepositoryHistory, RepositoryState, SpawnGate, WalkPlan,
 };
 
 /// Request-scoped repository histories plus the S2.2 strictness parameter.
@@ -54,9 +54,13 @@ struct TargetPlan {
 const LOCK_ENDPOINT_ID: &str = "lock";
 
 /// Lower one S2.0 wire request into independently streaming repository cursors.
+///
+/// `gate` is the spawn gate of the host the request runs under: every history that can walk keeps a handle to it
+/// for the `git` child its path cursor spawns.
 pub(super) fn open_request_histories(
     start: &Path,
     request: &crate::LogRequest,
+    gate: &SpawnGate,
 ) -> ModelResult<CommitLogHistories> {
     // Invocation grammar is rejected before workspace or repository access.
     let filters = CommitLogFilters::from_request(request)?;
@@ -145,7 +149,16 @@ pub(super) fn open_request_histories(
         .any(|arg| matches!(arg, ParsedRevisionArg::Range { .. }));
     let histories = plans
         .into_iter()
-        .map(|plan| open_history(plan, &revision_args, &snapshots, lock.as_ref(), &filters))
+        .map(|plan| {
+            open_history(
+                plan,
+                &revision_args,
+                &snapshots,
+                lock.as_ref(),
+                &filters,
+                gate,
+            )
+        })
         .collect();
     Ok(CommitLogHistories {
         histories,
@@ -424,6 +437,7 @@ fn open_history(
     snapshots: &[SnapshotArtifact],
     lock: Option<&LockArtifact>,
     filters: &CommitLogFilters,
+    gate: &SpawnGate,
 ) -> RepositoryHistory {
     let TargetPlan {
         target,
@@ -465,7 +479,11 @@ fn open_history(
         target,
         pathspecs,
         filters: filters.clone(),
-        state: RepositoryState::Ready { repository, walk },
+        state: RepositoryState::Ready {
+            repository,
+            walk,
+            gate: gate.clone(),
+        },
     }
 }
 
