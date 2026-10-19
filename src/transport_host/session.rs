@@ -357,12 +357,17 @@ impl Session {
             .clone()
     }
     cfg_if::cfg_if! { if #[cfg(test)] {
-        /// Has this driver's push opens carry a producer ceiling of `ms`, to keep a test short.
         /// How many open streams carry a producer gate.
         pub(super) fn producer_gates_for_test(&self) -> usize {
             let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
             state.streams.values().filter(|entry| entry.producer.is_some()).count()
         }
+        /// The ceilings of the open streams' producer gates.
+        pub(super) fn producer_ceilings_for_test(&self) -> Vec<u64> {
+            let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.streams.values().filter_map(|entry| entry.producer.as_ref()).map(ProducerGate::ceiling_ms).collect()
+        }
+        /// Has this driver's push opens carry a producer ceiling of `ms`, to keep a test short.
         pub(super) fn set_producer_ceiling_ms_for_test(&self, ms: u64) {
             self.state.lock().unwrap_or_else(|error| error.into_inner()).producer_ceiling_ms = ms;
         }

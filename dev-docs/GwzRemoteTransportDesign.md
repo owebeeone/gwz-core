@@ -698,7 +698,7 @@ The host reports `IoState::Idle`, `Network`, `Backpressure` or `Interaction` via
 `set_io_state`. `Network` means at least one outstanding backend operation can
 make peer progress. `Backpressure` means all otherwise pending work is held by
 deliberate local/remote consumer pressure, bounded message queues or exhausted
-credit, or, on a push after its first pack byte, by the client's own producer
+credit, or, on a push after the client's first byte (its commands), by the client's own producer
 being demonstrably busy (below). `Interaction` is only a supported, visible and cancellable helper wait;
 the host cannot use it as a generic pause. `Idle` means no backend operation is
 pending. If one direction remains eligible for peer I/O, use `Network` even if
@@ -717,7 +717,7 @@ holds nothing, or `Backpressure` if bytes remain that it has not taken. Bytes
 queued toward a server that has ended stay `Network`: a write to an exited
 server must be able to time out. What the client does after the server's last
 byte (resolving deltas, writing the index, closing) is local work. On a push,
-once the client's first pack byte is sent, a pause of the client's own producer
+once the client's first byte (its commands) is sent, a pause of the client's own producer
 (libgit2 reads a whole object, which can be gigabytes, before it writes the
 object's first byte) is `Backpressure` while the stream's owner is outside every
 call on its stream, nothing is queued either way, the client has not

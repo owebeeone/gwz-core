@@ -146,6 +146,8 @@ fn the_pack_having_begun_does_not_depend_on_the_turn_tracker() {
     let mut exchange = push_at_the_clients_turn(Some(&gate));
     exchange.server_writes_stderr(b"remote: hello\n");
     exchange.tick(START - 1);
+    // The tracker has stopped: with the client's turn no longer known, the wait is the server's, not `Idle`.
+    assert_eq!(exchange.tick(START), IoState::Network);
     send_head(&mut exchange, START);
     assert_eq!(exchange.tick(START + 1), IoState::Backpressure);
     exchange.tick(START + 10 * STALL_MS);
@@ -154,6 +156,21 @@ fn the_pack_having_begun_does_not_depend_on_the_turn_tracker() {
         "the fix must not vanish with the tracker: {:?}",
         exchange.failures
     );
+}
+
+#[test]
+fn a_stopped_tracker_does_not_start_the_pack_before_the_clients_first_byte() {
+    // The same stderr line stops the tracker, and libgit2 is busy with its delta search: the gate reads busy, but
+    // no client byte has gone, so this is the server's wait and the stall clock runs.
+    let gate = busy_gate(600_000);
+    let mut exchange = push_at_the_clients_turn(Some(&gate));
+    exchange.server_writes_stderr(b"remote: hello\n");
+    exchange.tick(START - 1);
+    assert_eq!(exchange.tick(START), IoState::Network);
+    exchange.tick(START - 1 + STALL_MS - 1);
+    assert!(!exchange.pump.stream_stats().terminal);
+    exchange.tick(START - 1 + STALL_MS + 1);
+    assert!(exchange.timed_out(), "{:?}", exchange.failures);
 }
 
 // The negative controls: each is a state the new arm must leave to `Network`.

@@ -161,6 +161,42 @@ mod producer {
     }
 
     #[test]
+    fn the_owner_is_not_busy_in_a_close_waiting_for_the_endpoint() {
+        let (mut stream, gate, _peer) = gated();
+        assert_eq!(stream.write(b"x").unwrap(), 1);
+        assert!(gate.busy());
+        let (handle, result) = blocked_in(&stream, |stream| stream.close().map(|_| ()));
+        assert!(!gate.busy(), "the close waits for the endpoint's cleanup");
+        stream.cancel();
+        assert!(
+            result
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap()
+                .is_err()
+        );
+        handle.join().unwrap();
+        assert!(gate.busy());
+    }
+
+    #[test]
+    fn the_owner_is_not_busy_in_an_end_write_the_endpoint_has_not_taken() {
+        let (mut stream, gate, _peer) = gated();
+        assert_eq!(stream.write(b"x").unwrap(), 1);
+        assert!(gate.busy());
+        let (handle, result) = blocked_in(&stream, |stream| stream.end_write());
+        assert!(!gate.busy(), "the half-close waits to be sent");
+        stream.cancel();
+        assert!(
+            result
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap()
+                .is_err()
+        );
+        handle.join().unwrap();
+        assert!(gate.busy());
+    }
+
+    #[test]
     fn a_call_that_unwinds_ends_with_it() {
         let gate = ProducerGate::new(1);
         let owner = gate.clone();

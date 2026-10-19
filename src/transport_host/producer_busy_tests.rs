@@ -98,7 +98,7 @@ struct Rig {
     identity: String,
 }
 impl Rig {
-    fn new(name: &str, frozen_server: bool, ceiling_ms: u64) -> Self {
+    fn new(name: &str, frozen_server: bool, ceiling_ms: Option<u64>) -> Self {
         let fixture = common::SshdFixture::new();
         let home = endpoint_home(&fixture);
         let proxy = frozen_server.then(|| CutProxy::start(fixture.port));
@@ -114,7 +114,9 @@ impl Rig {
             SshEndpointConfig::fixture(home.clone(), None).with_io_timeout_ms(STALL_MS),
         )
         .unwrap();
-        runtime.set_producer_ceiling_ms_for_test(ceiling_ms);
+        if let Some(ceiling_ms) = ceiling_ms {
+            runtime.set_producer_ceiling_ms_for_test(ceiling_ms);
+        }
         let request = block_on(runtime.request(local_meta(name, &home), "push".into())).unwrap();
         let url = format!(
             "ssh://{}@127.0.0.1:{port}{}",
@@ -184,7 +186,7 @@ fn failure_after(stream: &BlockingStream, since: Instant, patience: Duration) ->
 
 #[test]
 fn a_push_whose_producer_pauses_past_the_stall_limit_between_calls_completes() {
-    let rig = Rig::new("producer-busy-pause", false, 600_000);
+    let rig = Rig::new("producer-busy-pause", false, Some(600_000));
     let material = Material::new(&rig.fixture.temp.path().join("local"));
     let part = material.pack.len() * 2 / 5;
     let mut stream = rig.push_started(&material, part);
@@ -209,7 +211,7 @@ fn a_push_whose_producer_pauses_past_the_stall_limit_between_calls_completes() {
 
 #[test]
 fn a_frozen_server_is_found_at_the_ceiling_plus_the_stall_limit_while_the_producer_is_away() {
-    let rig = Rig::new("producer-busy-frozen", true, CEILING_MS);
+    let rig = Rig::new("producer-busy-frozen", true, Some(CEILING_MS));
     let material = Material::new(&rig.fixture.temp.path().join("local"));
     let part = material.pack.len() * 2 / 5;
     let mut stream = rig.push_started(&material, part);
@@ -236,7 +238,7 @@ fn a_frozen_server_is_found_at_the_ceiling_plus_the_stall_limit_while_the_produc
 
 #[test]
 fn a_producer_that_never_returns_is_given_up_on_and_its_connection_released() {
-    let rig = Rig::new("producer-busy-hung", false, CEILING_MS);
+    let rig = Rig::new("producer-busy-hung", false, Some(CEILING_MS));
     let material = Material::new(&rig.fixture.temp.path().join("local"));
     let part = material.pack.len() * 2 / 5;
     let stream = rig.push_started(&material, part);
@@ -273,12 +275,34 @@ fn a_producer_that_never_returns_is_given_up_on_and_its_connection_released() {
     rig.finish();
 }
 
+#[test]
+fn a_push_open_on_a_runtime_nothing_configured_carries_the_shipped_ceiling() {
+    // No setter: the ceiling is the product's, ten minutes (decision D45).
+    let rig = Rig::new("producer-busy-default-ceiling", false, None);
+    let session = rig
+        .runtime
+        .0
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .local
+        .clone();
+    let material = Material::new(&rig.fixture.temp.path().join("local"));
+    let push = rig.push_started(&material, 0);
+    assert_eq!(session.producer_ceilings_for_test(), vec![600_000]);
+    assert_eq!(
+        crate::git::endpoint::stream_io::PRODUCER_CEILING_MS,
+        600_000
+    );
+    push.cancel();
+    rig.finish();
+}
+
 // The plumbing a push open takes (§2): the gate is the driver's, the endpoint's pump has the same one, a fetch
 // has none, and pool identity is as it was.
 
 #[test]
 fn only_a_push_open_carries_a_producer_gate() {
-    let rig = Rig::new("producer-busy-plumbing", false, 600_000);
+    let rig = Rig::new("producer-busy-plumbing", false, Some(600_000));
     let session = rig
         .runtime
         .0
@@ -299,7 +323,7 @@ fn only_a_push_open_carries_a_producer_gate() {
 
 #[test]
 fn a_push_open_reuses_the_connection_a_fetch_left_and_is_pooled_as_it_was() {
-    let rig = Rig::new("producer-busy-identity", false, 600_000);
+    let rig = Rig::new("producer-busy-identity", false, Some(600_000));
     let mut fetch = rig.open(GitService::UploadPack);
     read_advertisement(&mut fetch);
     fetch.write_all(b"0000").unwrap();
