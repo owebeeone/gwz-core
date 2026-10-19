@@ -26,15 +26,22 @@ LISTING = '\n'.join([
 class Cargo:
     """Answers a `--list` with the listing it is given and every other cargo command with `code`."""
 
-    def __init__(self, listing: str = LISTING, code: int = 0, list_code: int = 0):
+    def __init__(self, listing: str = LISTING, code: int = 0, list_code: int = 0, codes: list[int] | None = None):
         self.listing, self.code, self.list_code = listing, code, list_code
+        self.codes = list(codes) if codes is not None else None
         self.calls = []
 
     def __call__(self, command, **kwargs):
         self.calls.append((command, kwargs))
         listed = '--list' in command
         stdout = self.listing if listed else ''
-        return subprocess.CompletedProcess(command, self.list_code if listed else self.code, stdout=stdout)
+        if listed:
+            code = self.list_code
+        elif self.codes is not None and command[:2] == ['cargo', 'test']:
+            code = self.codes.pop(0)
+        else:
+            code = self.code
+        return subprocess.CompletedProcess(command, code, stdout=stdout)
 
     def runs(self):
         return [command for command, _ in self.calls if '--list' not in command]
@@ -93,6 +100,27 @@ class TestFilter(unittest.TestCase):
         cargo = Cargo(listing=''.join(f'{name}: test\n' for name in names), code=101)
         with patch.object(runner.subprocess, 'run', cargo):
             self.assertEqual(runner.run('real', ['--lib'], [], test_filter='recovery_protocol'), 101)
+
+    def test_any_failed_batch_fails_the_group_whichever_batch_it_is(self):
+        names = [f'module_{i:04}::recovery_protocol::{"x" * 80}' for i in range(600)]
+        listing = ''.join(f'{name}: test\n' for name in names)
+        for codes in ([101, 0, 0], [0, 101, 0], [0, 0, 101]):
+            cargo = Cargo(listing=listing, codes=codes)
+            with patch.object(runner.subprocess, 'run', cargo):
+                self.assertEqual(runner.run('real', ['--lib'], [], test_filter='recovery_protocol'), 101, codes)
+            self.assertEqual(len(cargo.runs()), 3, 'the selection is three batches')
+
+    def test_a_filter_that_matches_no_test_in_any_group_fails_the_run(self):
+        cargo = Cargo()
+        with patch.object(runner.subprocess, 'run', cargo), \
+                patch.object(runner, 'check_cfg_boundaries'), \
+                patch.object(runner, 'check_transport_process_globals'), \
+                patch.object(runner, 'check_transport_pin'):
+            with self.assertRaises(SystemExit) as exit:
+                runner.main(['--no-fail-fast', '--lib', '--test-filter', 'no_such_test'])
+        self.assertNotEqual(exit.exception.code, 0)
+        self.assertEqual(len(cargo.lists()), 4)
+        self.assertEqual([command for command in cargo.runs() if command[:2] == ['cargo', 'test']], [])
 
     def test_main_takes_the_filter_and_never_hands_cargo_a_bare_test_name(self):
         cargo = Cargo()

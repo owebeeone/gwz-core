@@ -72,6 +72,13 @@ NATIVE_CROSSCHECKS = (
 EXACT_COMMAND_BUDGET = 24_000
 
 
+class FilterTally:
+    """How many tests a `--test-filter` run selected across its groups: a run that selects none fails."""
+
+    def __init__(self) -> None:
+        self.matched = 0
+
+
 def run(
     mode: str,
     cargo_args: list[str],
@@ -79,6 +86,7 @@ def run(
     *,
     filesystem: str = "real",
     test_filter: str | None = None,
+    tally: FilterTally | None = None,
 ) -> int:
     env = {**os.environ, "GWZ_TEST_GIT": mode, "GWZ_TEST_FS": filesystem}
     if test_filter is None:
@@ -97,6 +105,8 @@ def run(
     if not names:
         print(f"Git backend: {mode}; filesystem: {filesystem}; no test of this group matches {test_filter!r}", flush=True)
         return 0
+    if tally is not None:
+        tally.matched += len(names)
     result = 0
     for batch in exact_batches(names):
         code = run_command(mode, filesystem, ["cargo", "test", "--locked", *cargo_args, "--", "--exact", *batch], env)
@@ -287,7 +297,8 @@ def main(argv: list[str] | None = None) -> None:
         help="run, in each group, only that group's tests whose path contains NAME",
     )
     options, cargo_args = parser.parse_known_args(argv)
-    narrow = {"test_filter": options.test_filter}
+    tally = FilterTally()
+    narrow = {"test_filter": options.test_filter, "tally": tally}
     library_args = ["--lib", *[arg for arg in cargo_args if arg != "--lib"]]
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_filesystem_boundary.py")], check=True)
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_process_globals.py")], check=True)
@@ -315,7 +326,12 @@ def main(argv: list[str] | None = None) -> None:
         skipped = MATRICES + MIGRATED_GROUPS
         real_result = run("real", cargo_args, [arg for name in skipped for arg in ("--skip", name)], **narrow)
         real_result = native_crosscheck_result or real_result
-    raise SystemExit(filesystem_result or fake_result or real_result)
+    result = filesystem_result or fake_result or real_result
+    if options.test_filter is not None and tally.matched == 0:
+        # A filter that selects nothing would otherwise pass having run no test.
+        print(f"--test-filter {options.test_filter!r} matches no test in any group", flush=True)
+        raise SystemExit(result or 1)
+    raise SystemExit(result)
 
 
 if __name__ == "__main__":
