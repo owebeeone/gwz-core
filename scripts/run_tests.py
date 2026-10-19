@@ -25,6 +25,11 @@ the other checked out.
 
 The candidate switch inventory check covers gwz-core alone: gwz-cli and gwz-py
 run it over themselves in their own tests (TR2.12).
+
+--test-filter NAME runs, in each group, only that group's tests whose path
+contains NAME. Do not pass a bare test name instead: Cargo hands it to libtest
+as one more filter, libtest ORs filters, and every group (the fake-filesystem
+ones included) would also run every matching test of the other groups.
 """
 from __future__ import annotations
 
@@ -63,9 +68,71 @@ NATIVE_CROSSCHECKS = (
 )
 
 
-def run(mode: str, cargo_args: list[str], test_args: list[str], *, filesystem: str = "real") -> int:
-    command = ["cargo", "test", "--locked", *cargo_args, "--", *test_args]
+# The characters of exact test names one filtered command carries; a Windows command line holds 32,767.
+EXACT_COMMAND_BUDGET = 24_000
+
+
+class FilterTally:
+    """How many tests a `--test-filter` run will execute across its groups (a run that executes none fails), and
+    how many groups could not be listed."""
+
+    def __init__(self) -> None:
+        self.matched = 0
+        self.listing_failures = 0
+
+
+def run(
+    mode: str,
+    cargo_args: list[str],
+    test_args: list[str],
+    *,
+    filesystem: str = "real",
+    test_filter: str | None = None,
+    tally: FilterTally | None = None,
+) -> int:
     env = {**os.environ, "GWZ_TEST_GIT": mode, "GWZ_TEST_FS": filesystem}
+    if test_filter is None:
+        return run_command(mode, filesystem, ["cargo", "test", "--locked", *cargo_args, "--", *test_args], env)
+    # libtest has no AND of filters: list the group, intersect here, and run the exact names.
+    # `--list` names #[ignore] tests too, and an exact run only reports them ignored: list those separately and
+    # leave them out, so a filter that matches only ignored tests counts as matching nothing.
+    listings = []
+    for extra in ([], ["--ignored"]):
+        listing = ["cargo", "test", "--locked", *cargo_args, "--", *test_args, *extra, "--list", "--format", "terse"]
+        listed = subprocess.run(listing, cwd=ROOT, env=env, check=False, stdout=subprocess.PIPE, text=True)
+        if listed.returncode:
+            print(f"Git backend {mode}: listing the group failed ({listed.returncode})", flush=True)
+            if tally is not None:
+                tally.listing_failures += 1
+            return listed.returncode
+        listings.append([line[: -len(": test")] for line in listed.stdout.splitlines() if line.endswith(": test")])
+    every, ignored = listings[0], set(listings[1])
+    names = [name for name in every if test_filter in name and name not in ignored]
+    if not names:
+        print(f"Git backend: {mode}; filesystem: {filesystem}; no test of this group matches {test_filter!r}", flush=True)
+        return 0
+    if tally is not None:
+        tally.matched += len(names)
+    result = 0
+    for batch in exact_batches(names):
+        code = run_command(mode, filesystem, ["cargo", "test", "--locked", *cargo_args, "--", "--exact", *batch], env)
+        result = result or code
+    return result
+
+
+def exact_batches(names: list[str]) -> list[list[str]]:
+    batches: list[list[str]] = [[]]
+    size = 0
+    for name in names:
+        if batches[-1] and size + len(name) + 1 > EXACT_COMMAND_BUDGET:
+            batches.append([])
+            size = 0
+        batches[-1].append(name)
+        size += len(name) + 1
+    return batches
+
+
+def run_command(mode: str, filesystem: str, command: list[str], env: dict[str, str]) -> int:
     print(f"Git backend: {mode}; filesystem: {filesystem}; {' '.join(command)}", flush=True)
     start = time.monotonic()
     result = subprocess.run(command, cwd=ROOT, env=env, check=False)
@@ -230,7 +297,14 @@ def main(argv: list[str] | None = None) -> None:
         help="skip the named sibling's conditional-compilation boundary check and print SKIPPED GATE "
         "for it; only for a CI job that has no checkout of it",
     )
+    parser.add_argument(
+        "--test-filter",
+        metavar="NAME",
+        help="run, in each group, only that group's tests whose path contains NAME",
+    )
     options, cargo_args = parser.parse_known_args(argv)
+    tally = FilterTally()
+    narrow = {"test_filter": options.test_filter, "tally": tally}
     library_args = ["--lib", *[arg for arg in cargo_args if arg != "--lib"]]
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_filesystem_boundary.py")], check=True)
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_process_globals.py")], check=True)
@@ -242,23 +316,33 @@ def main(argv: list[str] | None = None) -> None:
     check_transport_process_globals(options.skip_transport_globals)
     check_transport_pin(options.skip_transport_globals, options.allow_transport_pin_mismatch)
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_crate_versions.py")], check=True)
-    filesystem_result = run("fake", library_args, list(FILESYSTEM_CONTRACTS), filesystem="fake")
+    filesystem_result = run("fake", library_args, list(FILESYSTEM_CONTRACTS), filesystem="fake", **narrow)
     if filesystem_result and "--no-fail-fast" not in cargo_args:
         raise SystemExit(filesystem_result)
     migrated = CONTRACTS + MATRICES + MIGRATED_GROUPS
-    fake_result = run("fake", library_args, list(migrated), filesystem="fake")
+    fake_result = run("fake", library_args, list(migrated), filesystem="fake", **narrow)
     if fake_result and "--no-fail-fast" not in cargo_args:
         raise SystemExit(fake_result)
     if options.compare:
-        real_result = run("real", library_args, list(migrated + FILESYSTEM_CONTRACTS))
+        real_result = run("real", library_args, list(migrated + FILESYSTEM_CONTRACTS), **narrow)
     else:
-        native_crosscheck_result = run("real", library_args, list(NATIVE_CROSSCHECKS))
+        native_crosscheck_result = run("real", library_args, list(NATIVE_CROSSCHECKS), **narrow)
         if native_crosscheck_result and "--no-fail-fast" not in cargo_args:
             raise SystemExit(native_crosscheck_result)
         skipped = MATRICES + MIGRATED_GROUPS
-        real_result = run("real", cargo_args, [arg for name in skipped for arg in ("--skip", name)])
+        real_result = run("real", cargo_args, [arg for name in skipped for arg in ("--skip", name)], **narrow)
         real_result = native_crosscheck_result or real_result
-    raise SystemExit(filesystem_result or fake_result or real_result)
+    result = filesystem_result or fake_result or real_result
+    if options.test_filter is not None and tally.matched == 0:
+        # A filter that selects nothing would otherwise pass having run no test.
+        if tally.listing_failures:
+            print(f"--test-filter {options.test_filter!r}: no test ran because {tally.listing_failures} group "
+                  "listing failed", flush=True)
+        else:
+            print(f"--test-filter {options.test_filter!r} matches no test that runs in any group (ignored tests "
+                  "are not run)", flush=True)
+        raise SystemExit(result or 1)
+    raise SystemExit(result)
 
 
 if __name__ == "__main__":
