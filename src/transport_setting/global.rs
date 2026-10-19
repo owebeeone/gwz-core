@@ -23,7 +23,7 @@ pub(super) fn resolve(environment: &EnvironmentSnapshot) -> Result<Setting, Refu
             State::Readable => {
                 let found = last_value(&file).map_err(|error| Refusal::Unparsable {
                     file: file.clone(),
-                    cause: error.message().to_owned(),
+                    cause: super::parse_failure(error.message()),
                 })?;
                 if let Some(Found { included, value }) = found {
                     decided = Some((

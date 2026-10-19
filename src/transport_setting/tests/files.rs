@@ -566,3 +566,56 @@ cfg_if::cfg_if! {
         }
     }
 }
+
+/// D50 (the D43 review's P0-1): libgit2's message for a bad escape carries the rest of the line, and a gitconfig line can
+/// carry a proxy password. The refusal names the file and keeps the place libgit2 names, and never the line's text.
+#[test]
+fn an_unparsable_file_never_repeats_the_text_of_a_line() {
+    use crate::transport_setting::Driver;
+    let dir = TempDir::new("setting-unparsable-secret");
+    let gitconfig = dir.path().join(".gitconfig");
+    write(
+        &gitconfig,
+        "[gwz]\n\ttransport = native\n[http]\n\tproxy = http://CORP\\jdoe:hunter2@proxy.example:8080\n",
+    );
+    let Err(refusal @ Refusal::Unparsable { .. }) = resolve(None, &home(dir.path())) else {
+        panic!("not refused as unparsable");
+    };
+    let Refusal::Unparsable { file, cause } = &refusal else {
+        unreachable!();
+    };
+    assert_eq!(file, &gitconfig);
+    for text in [
+        cause.clone(),
+        refusal.message(Driver::Cli),
+        refusal.message(Driver::Python),
+    ] {
+        assert!(
+            !text.contains("hunter2") && !text.contains("jdoe"),
+            "{text}"
+        );
+    }
+    assert!(
+        refusal
+            .message(Driver::Cli)
+            .contains("git config --list --show-origin"),
+        "{}",
+        refusal.message(Driver::Cli)
+    );
+}
+
+/// A parse error whose reason is one of libgit2's fixed phrases keeps the phrase and the place.
+#[test]
+fn an_unparsable_file_with_a_fixed_reason_keeps_the_reason_and_the_place() {
+    let dir = TempDir::new("setting-unparsable-fixed");
+    let gitconfig = dir.path().join(".gitconfig");
+    write(&gitconfig, "[user]\n\tname = U\n[gwz\n");
+    let Err(Refusal::Unparsable { cause, .. }) = resolve(None, &home(dir.path())) else {
+        panic!("not refused as unparsable");
+    };
+    assert!(
+        cause.contains(&format!("{}:3", libgit2_text(&gitconfig))),
+        "{cause}"
+    );
+    assert!(cause.contains("missing"), "{cause}");
+}

@@ -178,11 +178,11 @@ fn each_refusal_takes_section_10s_words_in_each_driver() {
             },
             format!(
                 "could not parse {file}, or a file it includes, for gwz.transport: {cause}; fix the file and line \
-                 it names; --transport or GWZ_TRANSPORT decides without it"
+                 it names, or find them with `git config --list --show-origin`; --transport or GWZ_TRANSPORT decides without it"
             ),
             format!(
                 "could not parse {file}, or a file it includes, for gwz.transport: {cause}; fix the file and line \
-                 it names; GWZ_TRANSPORT decides without it"
+                 it names, or find them with `git config --list --show-origin`; GWZ_TRANSPORT decides without it"
             ),
         ),
     ];

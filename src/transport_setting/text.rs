@@ -39,7 +39,7 @@ impl Refusal {
             }
             Self::Unparsable { file, cause } => format!(
                 "could not parse {}, or a file it includes, for {KEY}: {}; fix the file and line it \
-                 names; {decides}",
+                 names, or find them with `git config --list --show-origin`; {decides}",
                 path_text(file),
                 escaped(cause)
             ),

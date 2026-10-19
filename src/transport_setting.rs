@@ -179,6 +179,46 @@ pub fn resolve(
     global::resolve(environment)
 }
 
+/// What of libgit2's parse error may be repeated (operator decision D50). Its message can hold the rest of a configuration
+/// line (`invalid escape at <text>`), and a line can hold a password, so only the two things libgit2 builds from fixed
+/// parts are kept: the reason, one of its fixed phrases, and the place, `<file>:<line>[, column <n>]`, as the message ends
+/// with them. Any other message is replaced by words that say why it is not repeated; `git config --list --show-origin`
+/// finds the line.
+pub(crate) fn parse_failure(message: &str) -> String {
+    /// The fixed reasons of libgit2's `config_parse.c` (`set_parse_error`).
+    const REASONS: &[&str] = &[
+        "missing quotation marks in section header",
+        "invalid section header, line too long",
+        "missing closing quotation mark in section header",
+        "unexpected end-of-line in section header",
+        "unexpected text after closing quotes",
+        "missing ']' in section header",
+        "unexpected character in header",
+        "unexpected end of file",
+        "invalid configuration key",
+    ];
+    let place = message
+        .strip_prefix("failed to parse config file: ")
+        .and_then(|rest| {
+            let at = rest.rfind(" (in ")?;
+            let reason = &rest[..at];
+            let place = rest[at + " (in ".len()..].strip_suffix(')')?;
+            let (_, tail) = place.rsplit_once(':')?;
+            let (line, column) = match tail.split_once(", column ") {
+                Some((line, column)) => (line, Some(column)),
+                None => (tail, None),
+            };
+            let digits = |text: &str| !text.is_empty() && text.bytes().all(|b| b.is_ascii_digit());
+            (REASONS.contains(&reason) && digits(line) && column.is_none_or(digits))
+                .then(|| format!("{reason} (in {place})"))
+        });
+    place.unwrap_or_else(|| {
+        "the text could not be parsed (libgit2's message is not repeated, because it can hold part of a line; \
+         `git config --list --show-origin` finds the line)"
+            .to_owned()
+    })
+}
+
 /// The variable's transport, or `None` when it is unset or empty (design
 /// §2).
 fn variable(environment: &EnvironmentSnapshot) -> Result<Option<Transport>, Refusal> {
