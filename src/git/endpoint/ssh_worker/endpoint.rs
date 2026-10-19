@@ -251,6 +251,10 @@ impl Endpoint {
             .handoff
             .take(&context.session_id, context.stream_id)
             .map(Arc::new);
+        let producer = self
+            .shared
+            .handoff
+            .take_producer(&context.session_id, context.stream_id);
         let request = OpenRequest {
             key,
             identity: Identity::Ambient,
@@ -261,6 +265,7 @@ impl Endpoint {
             selected,
             authority: None,
             url,
+            producer,
             progress: Progress::default(),
             setup_slot: Arc::default(),
             cancelled,

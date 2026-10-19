@@ -1,6 +1,7 @@
 use super::{
     git_turns::GitTurns,
     ssh_channel::{GitService, SshChannel},
+    stream_io::ProducerGate,
 };
 use gwz_transport::{
     protocol::{Disposition, Effect, Envelope, ErrorCode, Facts, Failure, MessageKind},
@@ -102,6 +103,20 @@ pub(crate) struct SshPump<C: ChannelIo> {
     facts: Facts,
     /// Whose turn the Git exchange is in, when the host asked to know.
     turns: GitTurns,
+    /// Whether the thread that owns the member's stream is producing, for a
+    /// push whose local side asked to be heard (GwzPushProducerBusyDesign).
+    producer: Option<ProducerGate>,
+    /// The latest time the host gave the pump, in its milliseconds.
+    now: u64,
+    /// When a byte last moved, in either direction, since the pack began:
+    /// where the producer's ceiling counts from.
+    last_byte: u64,
+    /// A push's client has sent its first byte. Read here, from the
+    /// messages delivered, and not from `turns`, which stops tracking
+    /// for reasons of its own.
+    pack_sent: bool,
+    /// A push's client has half-closed: its pack is complete.
+    client_ended: bool,
 }
 impl<C: ChannelIo> SshPump<C> {
     pub(crate) fn new(
@@ -137,6 +152,11 @@ impl<C: ChannelIo> SshPump<C> {
             invalidated: false,
             facts: Facts::default(),
             turns: GitTurns::untracked(),
+            producer: None,
+            now: 0,
+            last_byte: 0,
+            pack_sent: false,
+            client_ended: false,
         }
     }
     /// Say which Git service the exchange runs. The pump reads its pkt-line
@@ -147,6 +167,10 @@ impl<C: ChannelIo> SshPump<C> {
     pub(crate) fn set_service(&mut self, service: GitService) {
         self.turns = GitTurns::new(service);
         self.fetch = matches!(service, GitService::UploadPack);
+    }
+    /// The member's stream says, through `gate`, when its owner is producing.
+    pub(crate) fn set_producer(&mut self, gate: ProducerGate) {
+        self.producer = Some(gate);
     }
     /// The channel's close is complete: the connection can be reclaimed.
     pub(crate) fn finished(&self) -> bool {
@@ -180,11 +204,16 @@ impl<C: ChannelIo> SshPump<C> {
             return Err(PumpError::Stream);
         }
         if let Some(payload) = payload {
+            if !self.fetch && !payload.is_empty() && !self.pack_sent {
+                self.pack_sent = true;
+                self.last_byte = self.now;
+            }
             self.turns.client_bytes(&payload);
             self.forward.extend(payload);
         }
         if kind == MessageKind::EndWrite {
             self.turns.client_end();
+            self.client_ended = true;
         }
         if kind == MessageKind::Close {
             self.close_received = true;
@@ -199,7 +228,8 @@ impl<C: ChannelIo> SshPump<C> {
     }
     /// Advance before admitting messages as well as before backend I/O: an
     /// incoming Close must not suppress a network deadline already reached.
-    pub(crate) fn advance(&self, now: u64) {
+    pub(crate) fn advance(&mut self, now: u64) {
+        self.now = self.now.max(now);
         self.endpoint.advance(now);
     }
     pub(crate) fn tick(&mut self, cx: &mut Context<'_>, now: u64) -> Result<(), PumpError> {
@@ -450,7 +480,10 @@ impl<C: ChannelIo> SshPump<C> {
         }
         Ok(())
     }
-    fn record_progress(&self, count: usize) -> Result<(), PumpError> {
+    fn record_progress(&mut self, count: usize) -> Result<(), PumpError> {
+        if count > 0 {
+            self.last_byte = self.now;
+        }
         if !self.close_received {
             self.endpoint
                 .record_io_progress(count)
@@ -458,7 +491,7 @@ impl<C: ChannelIo> SshPump<C> {
         }
         Ok(())
     }
-    fn set_io_state(&self) -> Result<(), PumpError> {
+    fn set_io_state(&mut self) -> Result<(), PumpError> {
         // Close owns a distinct cleanup deadline and forbids active-I/O reports.
         if self.close_received {
             return Ok(());
@@ -482,6 +515,12 @@ impl<C: ChannelIo> SshPump<C> {
             // consumer's local work after the last byte (resolving deltas, writing the index), do not start the
             // stall clock.
             IoState::Idle
+        } else if self.producing() {
+            // A push's producer is between calls on its stream (libgit2 reading an object it is about to
+            // write), nothing is queued either way, and no byte has been quiet for the ceiling: the silence is
+            // the producer's, not the network's. Past the ceiling, `Network` resumes with the budget this
+            // pause kept. (When the server is done, the `Idle` arm above has it.)
+            IoState::Backpressure
         } else {
             IoState::Network
         };
@@ -489,6 +528,18 @@ impl<C: ChannelIo> SshPump<C> {
             .set_io_state(state)
             .map_err(|_| PumpError::Stream)?;
         Ok(())
+    }
+    /// A push whose pack has begun and whose client has not half-closed, with nothing queued toward the server
+    /// or owed by it, whose stream's owner is outside every call on it, and for less than the ceiling since a
+    /// byte last moved (GwzPushProducerBusyDesign §3).
+    fn producing(&self) -> bool {
+        self.pack_sent
+            && !self.client_ended
+            && self.forward.is_empty()
+            && self.reverse.is_empty()
+            && self.producer.as_ref().is_some_and(|gate| {
+                gate.busy() && self.now.saturating_sub(self.last_byte) < gate.ceiling_ms()
+            })
     }
     /// Backend output is the server's turn: it may end an `Idle` the tick
     /// began with, and its progress is only accepted in `Network`.

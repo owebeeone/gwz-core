@@ -9,7 +9,7 @@ use crate::git::endpoint::{
     ssh_handoff::{Handoff, UrlExtras},
     ssh_home::{Home, KnownHostsFile},
     ssh_worker::ThreadWake,
-    stream_io::BlockingStream,
+    stream_io::{BlockingStream, ProducerGate},
 };
 use gwz_transport::{
     mux::{self, Mux, Owner, Phase},
@@ -128,6 +128,8 @@ struct Entry {
     next: Option<NextMessage>,
     observe: Arc<dyn Fn(i64, &Opened) + Send + Sync>,
     facts: Arc<dyn Fn(&Facts) + Send + Sync>,
+    /// A push's producer gate, which the stream's owner and the endpoint's pump share (`ssh_handoff.rs`).
+    producer: Option<ProducerGate>,
 }
 struct Registration {
     operation: Option<String>,
@@ -173,6 +175,9 @@ struct State {
     /// driver refuses an https open with the setting's text before it asks the endpoint for anything, and words a failed
     /// direct connection.
     machine: MachineSetting,
+    /// How long a push's producer may stay outside every call on its stream with no byte moving, before the
+    /// pump charges the silence to the network again (decision D45; `PRODUCER_CEILING_MS`).
+    producer_ceiling_ms: u64,
 }
 struct Event {
     wakes: Mutex<BTreeMap<u64, Waker>>,
@@ -352,6 +357,20 @@ impl Session {
             .clone()
     }
     cfg_if::cfg_if! { if #[cfg(test)] {
+        /// How many open streams carry a producer gate.
+        pub(super) fn producer_gates_for_test(&self) -> usize {
+            let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.streams.values().filter(|entry| entry.producer.is_some()).count()
+        }
+        /// The ceilings of the open streams' producer gates.
+        pub(super) fn producer_ceilings_for_test(&self) -> Vec<u64> {
+            let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.streams.values().filter_map(|entry| entry.producer.as_ref()).map(ProducerGate::ceiling_ms).collect()
+        }
+        /// Has this driver's push opens carry a producer ceiling of `ms`, to keep a test short.
+        pub(super) fn set_producer_ceiling_ms_for_test(&self, ms: u64) {
+            self.state.lock().unwrap_or_else(|error| error.into_inner()).producer_ceiling_ms = ms;
+        }
         pub(super) fn capacity_for_test(&self) -> Option<pool::Capacity> {
             let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
             state.engine.as_ref().map(|engine| engine.pool().capacity())
@@ -480,6 +499,7 @@ impl Session {
             published_holds: BTreeSet::new(),
             home: None,
             machine: MachineSetting::default(),
+            producer_ceiling_ms: crate::git::endpoint::stream_io::PRODUCER_CEILING_MS,
         }
     }
     cfg_if::cfg_if! {

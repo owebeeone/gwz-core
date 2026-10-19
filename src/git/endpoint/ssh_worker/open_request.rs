@@ -15,6 +15,9 @@ pub(in crate::git::endpoint) struct OpenRequest {
     /// What the open's URL holds beyond its destination, which the setup of a
     /// connection opened for it uses (TR2.18).
     pub(in crate::git::endpoint) url: Option<Arc<UrlExtras>>,
+    /// A push's producer gate, which the driver's stream shares with the
+    /// pump this open starts (GwzPushProducerBusyDesign §2).
+    pub(in crate::git::endpoint) producer: Option<ProducerGate>,
     pub(in crate::git::endpoint) progress: Progress,
     pub(in crate::git::endpoint) setup_slot:
         Arc<Mutex<Option<Arc<ssh_setup_context::SetupContext>>>>,

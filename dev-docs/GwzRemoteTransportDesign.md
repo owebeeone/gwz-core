@@ -698,7 +698,8 @@ The host reports `IoState::Idle`, `Network`, `Backpressure` or `Interaction` via
 `set_io_state`. `Network` means at least one outstanding backend operation can
 make peer progress. `Backpressure` means all otherwise pending work is held by
 deliberate local/remote consumer pressure, bounded message queues or exhausted
-credit. `Interaction` is only a supported, visible and cancellable helper wait;
+credit, or, on a push after the client's first byte (its commands), by the client's own producer
+being demonstrably busy (below). `Interaction` is only a supported, visible and cancellable helper wait;
 the host cannot use it as a generic pause. `Idle` means no backend operation is
 pending. If one direction remains eligible for peer I/O, use `Network` even if
 the other direction is backpressured. A direction is eligible only if the
@@ -716,13 +717,23 @@ holds nothing, or `Backpressure` if bytes remain that it has not taken. Bytes
 queued toward a server that has ended stay `Network`: a write to an exited
 server must be able to time out. What the client does after the server's last
 byte (resolving deltas, writing the index, closing) is local work. On a push,
-once the client's first pack byte is sent the pump cannot tell a producer that
-has paused (compressing a large object, a slow disk) from a finished pack that
-is waiting for the server's report, so a pause of the client's own producer
-mid-pack is charged as `Network`; reporting `Backpressure` there would hide a
-dead server, and only a read-demand signal from the stream could separate the
-two. Application think time and an idle pooled connection do not start this
-clock.
+once the client's first byte (its commands) is sent, a pause of the client's own producer
+(libgit2 reads a whole object, which can be gigabytes, before it writes the
+object's first byte) is `Backpressure` while the stream's owner is outside every
+call on its stream, nothing is queued either way, the client has not
+half-closed, and less than the producer ceiling (600 s, decision D45) has passed
+since a byte last moved in either direction. The owner says so through a
+producer gate that the driver's stream and the endpoint's pump share in one
+process (GwzPushProducerBusyDesign). A producer inside a call (libgit2 waiting
+for the server's report), a pause past the ceiling, bytes queued toward the
+server, a fetch, and a stream with no gate are `Network`: the pump cannot tell
+a producer that has paused from a finished pack that is waiting for the server's
+report except by that signal, and reporting `Backpressure` without it would hide
+a dead server. The signal crosses no carrier, so an endpoint in another process
+(the Cli placement, 1.2.0) gets none and a push there keeps `Network`, which
+fails closed; carrying it is a 1.2.0 item with four constraints
+(GwzPushProducerBusyDesign section 5). Application think time and an idle pooled
+connection do not start this clock.
 
 The host initializes monotonic time with `advance` before beginning timed work
 and advances that same origin before recording subsequent state/progress events.
