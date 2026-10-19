@@ -5,6 +5,7 @@ groups then also ran every matching test written for the real filesystem, which 
 "open ambient artifact root: entity not found" on every host (2026-10-14-fixc, receipts -d and -f).
 """
 import importlib.util
+import io
 from pathlib import Path
 import subprocess
 import unittest
@@ -26,15 +27,16 @@ LISTING = '\n'.join([
 class Cargo:
     """Answers a `--list` with the listing it is given and every other cargo command with `code`."""
 
-    def __init__(self, listing: str = LISTING, code: int = 0, list_code: int = 0, codes: list[int] | None = None):
-        self.listing, self.code, self.list_code = listing, code, list_code
+    def __init__(self, listing: str = LISTING, code: int = 0, list_code: int = 0, codes: list[int] | None = None,
+                 ignored: str = ''):
+        self.listing, self.code, self.list_code, self.ignored = listing, code, list_code, ignored
         self.codes = list(codes) if codes is not None else None
         self.calls = []
 
     def __call__(self, command, **kwargs):
         self.calls.append((command, kwargs))
         listed = '--list' in command
-        stdout = self.listing if listed else ''
+        stdout = (self.ignored if '--ignored' in command else self.listing) if listed else ''
         if listed:
             code = self.list_code
         elif self.codes is not None and command[:2] == ['cargo', 'test']:
@@ -56,8 +58,9 @@ class TestFilter(unittest.TestCase):
         with patch.object(runner.subprocess, 'run', cargo):
             code = runner.run('fake', ['--lib'], ['filesystem::'], filesystem='fake', test_filter='recovery_protocol')
         self.assertEqual(code, 0)
-        [listing] = cargo.lists()
+        listing, ignored = cargo.lists()
         self.assertEqual(listing[listing.index('--'):], ['--', 'filesystem::', '--list', '--format', 'terse'])
+        self.assertEqual(ignored[ignored.index('--'):], ['--', 'filesystem::', '--ignored', '--list', '--format', 'terse'])
         [command] = cargo.runs()
         self.assertEqual(command[command.index('--'):], [
             '--', '--exact',
@@ -119,8 +122,44 @@ class TestFilter(unittest.TestCase):
             with self.assertRaises(SystemExit) as exit:
                 runner.main(['--no-fail-fast', '--lib', '--test-filter', 'no_such_test'])
         self.assertNotEqual(exit.exception.code, 0)
-        self.assertEqual(len(cargo.lists()), 4)
+        self.assertEqual(len(cargo.lists()), 8)
         self.assertEqual([command for command in cargo.runs() if command[:2] == ['cargo', 'test']], [])
+
+    def test_a_filter_that_matches_only_ignored_tests_fails_the_run(self):
+        names = [f'git::endpoint::ssh_fixture::port_stress::{case}' for case in 'abc']
+        listing = ''.join(f'{name}: test\n' for name in names)
+        cargo = Cargo(listing=listing, ignored=listing)
+        with patch.object(runner.subprocess, 'run', cargo), \
+                patch.object(runner, 'check_cfg_boundaries'), \
+                patch.object(runner, 'check_transport_process_globals'), \
+                patch.object(runner, 'check_transport_pin'), \
+                patch('sys.stdout', new_callable=io.StringIO) as out:
+            with self.assertRaises(SystemExit) as exit:
+                runner.main(['--no-fail-fast', '--lib', '--test-filter', 'port_stress'])
+        self.assertNotEqual(exit.exception.code, 0)
+        self.assertEqual([command for command in cargo.runs() if command[:2] == ['cargo', 'test']], [])
+        self.assertIn('matches no test that runs', out.getvalue())
+
+    def test_only_the_matched_tests_that_are_not_ignored_run(self):
+        listing = ''.join(f'{name}: test\n' for name in ('m::recovery_protocol::kept', 'm::recovery_protocol::stress'))
+        cargo = Cargo(listing=listing, ignored='m::recovery_protocol::stress: test\n')
+        with patch.object(runner.subprocess, 'run', cargo):
+            self.assertEqual(runner.run('real', ['--lib'], [], test_filter='recovery_protocol'), 0)
+        [command] = cargo.runs()
+        self.assertEqual(command[command.index('--exact') + 1:], ['m::recovery_protocol::kept'])
+
+    def test_a_run_whose_listings_failed_says_so_and_does_not_blame_the_filter(self):
+        cargo = Cargo(list_code=101)
+        with patch.object(runner.subprocess, 'run', cargo), \
+                patch.object(runner, 'check_cfg_boundaries'), \
+                patch.object(runner, 'check_transport_process_globals'), \
+                patch.object(runner, 'check_transport_pin'), \
+                patch('sys.stdout', new_callable=io.StringIO) as out:
+            with self.assertRaises(SystemExit) as exit:
+                runner.main(['--no-fail-fast', '--lib', '--test-filter', 'recovery_protocol'])
+        self.assertEqual(exit.exception.code, 101)
+        self.assertNotIn('matches no test', out.getvalue())
+        self.assertIn('listing failed', out.getvalue())
 
     def test_main_takes_the_filter_and_never_hands_cargo_a_bare_test_name(self):
         cargo = Cargo()
@@ -132,7 +171,7 @@ class TestFilter(unittest.TestCase):
                 runner.main(['--no-fail-fast', '--lib', '--test-filter', 'recovery_protocol'])
         self.assertEqual(exit.exception.code, 0)
         cargo_commands = [command for command, _ in cargo.calls if command[:2] == ['cargo', 'test']]
-        self.assertEqual(len(cargo.lists()), 4)
+        self.assertEqual(len(cargo.lists()), 8, 'each of the four groups lists its tests and its ignored tests')
         for command in cargo_commands:
             self.assertNotIn('recovery_protocol', command[:command.index('--')])
             self.assertNotIn('--test-filter', command)

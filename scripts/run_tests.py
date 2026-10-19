@@ -73,10 +73,12 @@ EXACT_COMMAND_BUDGET = 24_000
 
 
 class FilterTally:
-    """How many tests a `--test-filter` run selected across its groups: a run that selects none fails."""
+    """How many tests a `--test-filter` run will execute across its groups (a run that executes none fails), and
+    how many groups could not be listed."""
 
     def __init__(self) -> None:
         self.matched = 0
+        self.listing_failures = 0
 
 
 def run(
@@ -92,16 +94,20 @@ def run(
     if test_filter is None:
         return run_command(mode, filesystem, ["cargo", "test", "--locked", *cargo_args, "--", *test_args], env)
     # libtest has no AND of filters: list the group, intersect here, and run the exact names.
-    listing = ["cargo", "test", "--locked", *cargo_args, "--", *test_args, "--list", "--format", "terse"]
-    listed = subprocess.run(listing, cwd=ROOT, env=env, check=False, stdout=subprocess.PIPE, text=True)
-    if listed.returncode:
-        print(f"Git backend {mode}: listing the group failed ({listed.returncode})", flush=True)
-        return listed.returncode
-    names = [
-        line[: -len(": test")]
-        for line in listed.stdout.splitlines()
-        if line.endswith(": test") and test_filter in line[: -len(": test")]
-    ]
+    # `--list` names #[ignore] tests too, and an exact run only reports them ignored: list those separately and
+    # leave them out, so a filter that matches only ignored tests counts as matching nothing.
+    listings = []
+    for extra in ([], ["--ignored"]):
+        listing = ["cargo", "test", "--locked", *cargo_args, "--", *test_args, *extra, "--list", "--format", "terse"]
+        listed = subprocess.run(listing, cwd=ROOT, env=env, check=False, stdout=subprocess.PIPE, text=True)
+        if listed.returncode:
+            print(f"Git backend {mode}: listing the group failed ({listed.returncode})", flush=True)
+            if tally is not None:
+                tally.listing_failures += 1
+            return listed.returncode
+        listings.append([line[: -len(": test")] for line in listed.stdout.splitlines() if line.endswith(": test")])
+    every, ignored = listings[0], set(listings[1])
+    names = [name for name in every if test_filter in name and name not in ignored]
     if not names:
         print(f"Git backend: {mode}; filesystem: {filesystem}; no test of this group matches {test_filter!r}", flush=True)
         return 0
@@ -329,7 +335,12 @@ def main(argv: list[str] | None = None) -> None:
     result = filesystem_result or fake_result or real_result
     if options.test_filter is not None and tally.matched == 0:
         # A filter that selects nothing would otherwise pass having run no test.
-        print(f"--test-filter {options.test_filter!r} matches no test in any group", flush=True)
+        if tally.listing_failures:
+            print(f"--test-filter {options.test_filter!r}: no test ran because {tally.listing_failures} group "
+                  "listing failed", flush=True)
+        else:
+            print(f"--test-filter {options.test_filter!r} matches no test that runs in any group (ignored tests "
+                  "are not run)", flush=True)
         raise SystemExit(result or 1)
     raise SystemExit(result)
 
