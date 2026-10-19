@@ -89,7 +89,7 @@ fn l_coa_1_shipped_marker_groups_entries_read_from_git_histories() {
     drop(root_commit);
     drop(root_repository);
 
-    let entries = open_default_head_histories(fixture.workspace())
+    let entries = open_default_head_histories(fixture.workspace(), &SpawnGate::default())
         .unwrap()
         .iter()
         .map(|history| match history.messages().next().unwrap() {

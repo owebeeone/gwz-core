@@ -132,7 +132,8 @@ fn l4_attr_magic_current_cursor_exposes_worktree_context_gap() {
         (vec![":(attr:!gwz-path)src"], Vec::new(), vec![head, base]),
     ] {
         let request = log_request(&[], &pathspecs, false);
-        let opened = open_request_histories(fixture.path(), &request).unwrap();
+        let opened =
+            open_request_histories(fixture.path(), &request, &SpawnGate::default()).unwrap();
         let actual = entry_ids(&opened.histories()[0]);
         let expected = native_rev_list_ids(fixture.path(), &[], &pathspecs);
         assert_eq!(expected, expected_native, "native {pathspecs:?}");
@@ -148,7 +149,7 @@ fn l4_attr_magic_preserves_long_envelope_and_records_worktree_gap() {
 
     let pathspecs = [":(top,attr:gwz-path)src"];
     let request = log_request(&[], &pathspecs, false);
-    let opened = open_request_histories(fixture.path(), &request).unwrap();
+    let opened = open_request_histories(fixture.path(), &request, &SpawnGate::default()).unwrap();
     assert_eq!(target_ids(&opened), ["@root"]);
     assert_eq!(opened.histories()[0].pathspecs(), pathspecs);
     assert_ne!(
@@ -202,7 +203,7 @@ fn l4_ordered_merge_range_and_first_parent_match_native() {
         let mut request = log_request(operands, pathspecs, false);
         request.options = Some(options);
         let actual = entry_ids(
-            &open_request_histories(fixture.path(), &request)
+            &open_request_histories(fixture.path(), &request, &SpawnGate::default())
                 .unwrap()
                 .histories()[0],
         );
@@ -268,7 +269,8 @@ fn h_member_direct_attributes_match_native_and_current() {
 
     for (workspace_spec, repo_spec, native_expected, current_expected) in cases {
         let request = log_request(&[], &[workspace_spec], false);
-        let opened = open_request_histories(fixture.path(), &request).unwrap();
+        let opened =
+            open_request_histories(fixture.path(), &request, &SpawnGate::default()).unwrap();
         assert_eq!(target_ids(&opened), ["mem_app"], "{workspace_spec}");
         assert_eq!(
             opened.histories()[0].pathspecs(),
@@ -408,7 +410,7 @@ fn current_ids_or_refusal(
     request: &crate::LogRequest,
     repo_spec: &str,
 ) -> Result<Vec<Oid>, String> {
-    let opened = open_request_histories(workspace, request)
+    let opened = open_request_histories(workspace, request, &SpawnGate::default())
         .map_err(|error| format!("request refused: {:?}: {}", error.code, error.message))?;
     if target_ids(&opened) != ["mem_bare"] {
         return Err(format!("selected targets: {:?}", target_ids(&opened)));
