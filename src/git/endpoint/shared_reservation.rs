@@ -271,6 +271,13 @@ impl<C: Connector> Resource for ReservedResource<C> {
         }
     }
 
+    fn reuse_evidence(&self) -> Option<Arc<super::agent_auth::Evidence>> {
+        match &self.state {
+            Slot::Started { inner, .. } => inner.reuse_evidence(),
+            _ => None,
+        }
+    }
+
     fn waiting_locally(&self) -> bool {
         match &self.state {
             Slot::Waiting(_) => true,

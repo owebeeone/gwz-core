@@ -183,6 +183,182 @@ impl KeyType {
     }
 }
 
+/// What the agent's signature for a reuse proof shows about the key it was asked to sign with
+/// (dev-docs/GwzConnectionReuseDesign.md §4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Proof {
+    /// The signature verifies against the key over the signed data.
+    Valid,
+    /// It does not, or it is not a signature of the algorithm asked for.
+    Invalid,
+    /// The transport cannot check a signature of this key (P-521, DSA, RSA outside 2048 to 8192 bits): it proves
+    /// nothing, and the caller treats the key as one no other binding can prove.
+    Unsupported,
+}
+
+/// A key's public parts, as its blob (or its certificate's) carries them: Ed25519's point, ECDSA's point, RSA's
+/// exponent and modulus, and a security key's application.
+struct Material<'a> {
+    first: &'a [u8],
+    second: &'a [u8],
+    application: &'a [u8],
+}
+
+impl KeyType {
+    /// The signature algorithm a reuse proof asks the agent for: `rsa-sha2-512` for RSA (the design's choice), the
+    /// key's own for every other type. A certificate is signed for with its key's algorithm.
+    pub(crate) fn proof_algorithm(&self) -> &'static str {
+        if self.family == Family::Rsa {
+            "rsa-sha2-512"
+        } else {
+            self.name
+        }
+    }
+
+    /// Whether the transport can check a proof signature of this key at all, before the agent is asked for one.
+    pub(crate) fn provable(&self) -> bool {
+        !matches!(self.family, Family::Dsa | Family::Ecdsa(66))
+    }
+
+    /// Checks `reply`, the agent's signature blob, as a signature by the key `blob` over `data` with
+    /// [`Self::proof_algorithm`]. Nothing here is logged.
+    pub(crate) fn verify_proof(&self, blob: &[u8], data: &[u8], reply: &[u8]) -> Proof {
+        use ring::signature::{
+            ECDSA_P256_SHA256_FIXED, ECDSA_P384_SHA384_FIXED, ED25519, RSA_PKCS1_2048_8192_SHA512,
+            RsaPublicKeyComponents, UnparsedPublicKey,
+        };
+        if !self.provable() {
+            return Proof::Unsupported;
+        }
+        let Ok(material) = self.material(blob) else {
+            return Proof::Unsupported;
+        };
+        let mut input = reply;
+        let (Ok(named), Ok(raw)) = (field(&mut input), field(&mut input)) else {
+            return Proof::Invalid;
+        };
+        if named != self.proof_algorithm().as_bytes() {
+            return Proof::Invalid;
+        }
+        let sk = matches!(self.family, Family::SkEd25519 | Family::SkEcdsa);
+        if input.len() != if sk { 5 } else { 0 } {
+            return Proof::Invalid;
+        }
+        // A security key signs SHA-256(application) || flags || counter || SHA-256(data) (OpenSSH PROTOCOL.u2f).
+        let signed: Vec<u8> = if sk {
+            let mut signed = sha256(material.application).to_vec();
+            signed.extend_from_slice(input);
+            signed.extend_from_slice(&sha256(data));
+            signed
+        } else {
+            data.to_vec()
+        };
+        let verified = match self.family {
+            Family::Ed25519 | Family::SkEd25519 => {
+                UnparsedPublicKey::new(&ED25519, material.first).verify(&signed, raw)
+            }
+            Family::Ecdsa(32) | Family::SkEcdsa => match fixed_ecdsa(raw, 32) {
+                Some(fixed) => UnparsedPublicKey::new(&ECDSA_P256_SHA256_FIXED, material.first)
+                    .verify(&signed, &fixed),
+                None => return Proof::Invalid,
+            },
+            Family::Ecdsa(48) => match fixed_ecdsa(raw, 48) {
+                Some(fixed) => UnparsedPublicKey::new(&ECDSA_P384_SHA384_FIXED, material.first)
+                    .verify(&signed, &fixed),
+                None => return Proof::Invalid,
+            },
+            Family::Rsa => {
+                let e = unsigned(material.first);
+                let n = unsigned(material.second);
+                let bits = n.len() * 8 - n.first().map_or(8, |byte| byte.leading_zeros() as usize);
+                if !(2048..=8192).contains(&bits) || raw.len() > n.len() {
+                    return Proof::Unsupported;
+                }
+                // An agent may drop a signature's leading zero bytes; the check takes it at the modulus's length.
+                let mut signature = vec![0; n.len() - raw.len()];
+                signature.extend_from_slice(raw);
+                RsaPublicKeyComponents { n, e }.verify(
+                    &RSA_PKCS1_2048_8192_SHA512,
+                    &signed,
+                    &signature,
+                )
+            }
+            Family::Ecdsa(_) | Family::Dsa => return Proof::Unsupported,
+        };
+        if verified.is_ok() {
+            Proof::Valid
+        } else {
+            Proof::Invalid
+        }
+    }
+
+    /// The public parts of the key `blob`: after a certificate's nonce, its key's.
+    fn material<'a>(&self, blob: &'a [u8]) -> io::Result<Material<'a>> {
+        let mut input = blob;
+        field(&mut input)?;
+        if self.certificate {
+            field(&mut input)?; // nonce
+        }
+        let mut material = Material {
+            first: &[],
+            second: &[],
+            application: &[],
+        };
+        match self.family {
+            Family::Ed25519 | Family::SkEd25519 => material.first = field(&mut input)?,
+            Family::Ecdsa(_) | Family::SkEcdsa => {
+                field(&mut input)?; // curve, which `KeyType::key` checks
+                material.first = field(&mut input)?;
+            }
+            Family::Rsa => {
+                material.first = field(&mut input)?;
+                material.second = field(&mut input)?;
+            }
+            Family::Dsa => return Err(invalid()),
+        }
+        if matches!(self.family, Family::SkEd25519 | Family::SkEcdsa) {
+            material.application = field(&mut input)?;
+        }
+        // The rest of a plain key's blob must be empty; a certificate's is its signed body, which `KeyType::key`
+        // checks when the key is offered.
+        if !self.certificate && !input.is_empty() {
+            return Err(invalid());
+        }
+        Ok(material)
+    }
+}
+
+fn sha256(bytes: &[u8]) -> [u8; 32] {
+    let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
+    let mut out = [0; 32];
+    out.copy_from_slice(digest.as_ref());
+    out
+}
+
+/// An mpint's magnitude without its leading zero bytes.
+fn unsigned(value: &[u8]) -> &[u8] {
+    let start = value
+        .iter()
+        .position(|byte| *byte != 0)
+        .unwrap_or(value.len());
+    &value[start..]
+}
+
+/// An SSH ECDSA signature (two positive mpints) as the fixed `r || s` form, each `size` bytes, or `None` when either
+/// is longer than the field or the blob has anything else.
+fn fixed_ecdsa(mut raw: &[u8], size: usize) -> Option<Vec<u8>> {
+    let mut fixed = Vec::with_capacity(2 * size);
+    for _ in 0..2 {
+        let value = unsigned(field(&mut raw).ok()?);
+        if value.is_empty() || value.len() > size {
+            return None;
+        }
+        fixed.extend(std::iter::repeat_n(0, size - value.len()));
+        fixed.extend_from_slice(value);
+    }
+    raw.is_empty().then_some(fixed)
+}
+
 /// The agent's flags for `algorithm`: RFC 8332's SHA-2 requests for RSA.
 pub(crate) fn flags(algorithm: &str) -> u32 {
     match algorithm {

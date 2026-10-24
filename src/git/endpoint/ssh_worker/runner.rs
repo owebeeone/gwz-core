@@ -1,4 +1,9 @@
 use super::*;
+use crate::git::endpoint::{
+    agent_auth::{Authenticator, Check, Evidence, Possession, Verdict},
+    agent_job::{self as job, Job},
+    ssh_pool::{Lessee, Proofs},
+};
 pub(super) fn run<C>(
     receiver: Receiver<OpenRequest>,
     pool: Pool,
@@ -22,6 +27,10 @@ pub(super) fn run<C>(
     let mut pending = Vec::<Pending>::new();
     let mut deferred = Vec::<Deferred>::new();
     let mut active = Vec::<Active>::new();
+    // Leases another binding last used, waiting for this binding's reuse proof, and the proofs bindings have passed
+    // (reuse design §4).
+    let mut proving = Vec::<SharedProof>::new();
+    let mut proofs = Proofs::new();
     let mut serial = 0_i64;
     let mut passwords = 0_u64;
     let mut stopping_at = None;
@@ -35,6 +44,12 @@ pub(super) fn run<C>(
             }
             for item in deferred.drain(..) {
                 item.request.complete(Err(stopped()));
+            }
+            for shared in proving.drain(..) {
+                for waiter in shared.waiters {
+                    let _ = host.release(waiter.lease, Disposition::Discarded);
+                    waiter.request.complete(Err(stopped()));
+                }
             }
             active.clear(); // disconnect Git callers before waiting for physical disposal
             pool.shutdown();
@@ -231,21 +246,40 @@ pub(super) fn run<C>(
                 Poll::Ready(result) => {
                     let item = pending.swap_remove(index);
                     let unserved = match result {
-                        Ok(lease) => attach(
+                        Ok(lease) => match screen(
                             host,
+                            &mut proofs,
+                            &mut proving,
                             lease,
                             item.request,
                             item.policy,
-                            &session,
-                            now,
-                            &mut active,
-                        ),
+                        ) {
+                            Screened::Attach(lease, request, policy) => {
+                                attach(host, lease, request, policy, &session, now, &mut active)
+                            }
+                            Screened::Fresh(request, policy) => {
+                                Some(Unserved::Revoked(request, policy))
+                            }
+                            Screened::Waiting => None,
+                        },
                         Err(error) => Some(Unserved::Failed(item.request, io::Error::other(error))),
                     };
                     if let Some(unserved) = unserved {
                         unserved.settle(&pool, &mut pending);
                     }
                 }
+            }
+        }
+        for screened in settle_proofs(host, &mut proofs, &mut proving, &mut cx, now) {
+            let unserved = match screened {
+                Screened::Attach(lease, request, policy) => {
+                    attach(host, lease, request, policy, &session, now, &mut active)
+                }
+                Screened::Fresh(request, policy) => Some(Unserved::Revoked(request, policy)),
+                Screened::Waiting => None,
+            };
+            if let Some(unserved) = unserved {
+                unserved.settle(&pool, &mut pending);
             }
         }
         let mut index = 0;
@@ -306,6 +340,7 @@ pub(super) fn run<C>(
         // callers wake immediately, timers run independently, and idle pools sleep.
         let wait = if active.is_empty()
             && pending.is_empty()
+            && proving.is_empty()
             && deferred.is_empty()
             && admissions.is_empty()
             && stopping_at.is_none()
@@ -322,6 +357,12 @@ pub(super) fn run<C>(
     }
     for item in deferred {
         item.request.complete(Err(stopped()));
+    }
+    for shared in proving {
+        for waiter in shared.waiters {
+            let _ = host.release(waiter.lease, Disposition::Discarded);
+            waiter.request.complete(Err(stopped()));
+        }
     }
     drop(active);
     // Dropping receiver releases queued permits and wakes waiting opens.
@@ -351,4 +392,334 @@ fn claim_closing(
     closing.claimed = Some(claim);
     let wait = WAIT_FOR_CLOSE_MS.min(closing.deadline.saturating_sub(now));
     Some(now.saturating_add(wait))
+}
+
+/// What a lease does next, once its binding's reuse authority for it is known (reuse design §4).
+enum Screened {
+    /// It serves the open now.
+    Attach(Lease, OpenRequest, gwz_transport::pool::Request),
+    /// It cannot serve the open (it is back to idle, or retired): the open asks again for a new connection.
+    Fresh(OpenRequest, gwz_transport::pool::Request),
+    /// It waits for its binding's proof.
+    Waiting,
+}
+/// A lease waiting for its binding's reuse proof. While it waits the connection is that binding's lease.
+struct Waiter {
+    lease: Lease,
+    request: OpenRequest,
+    policy: gwz_transport::pool::Request,
+}
+/// One reuse proof a binding needs, which every lease of that binding needing the same proof shares (reuse design §4,
+/// "A shared job"). It runs under the latest deadline among its waiters when it started; a waiter whose own deadline
+/// passes leaves alone, and a job that ended on its deadline while a later waiter still has time starts again for it.
+struct SharedProof {
+    binding: String,
+    key: Option<Vec<u8>>,
+    host: Option<(String, u16, Vec<u8>)>,
+    evidence: Arc<Evidence>,
+    job: Job<Verdict>,
+    deadline: Option<u64>,
+    waiters: Vec<Waiter>,
+}
+
+/// The host names a trust check looks the host key up under: the key's host lowercased, as the pool keys it, and the
+/// host as the open's URL wrote it, as a new connection's check does (TR2.18).
+fn trust_names(request: &OpenRequest) -> Vec<String> {
+    let lowered = request.key.host.to_ascii_lowercase();
+    let mut names = vec![lowered.clone()];
+    if let Some(url) = &request.url
+        && url.host() != lowered
+        && url.host().eq_ignore_ascii_case(&lowered)
+    {
+        names.push(url.host().to_owned());
+    }
+    names
+}
+
+/// The latest deadline among `waiters`, or none when one of them has none.
+fn latest(waiters: &[Waiter]) -> Option<u64> {
+    waiters
+        .iter()
+        .map(|waiter| waiter.request.deadline)
+        .try_fold(0, |latest, deadline| deadline.map(|at| latest.max(at)))
+}
+
+/// Starts the proof `shared` describes for its waiters, under the latest of their deadlines and the stall of the
+/// open that asks first, as an authentication sign wait runs.
+fn start_proof(
+    evidence: &Arc<Evidence>,
+    names: Vec<String>,
+    key: &Option<Vec<u8>>,
+    host: &Option<(String, u16, Vec<u8>)>,
+    waiters: &[Waiter],
+) -> io::Result<(Job<Verdict>, Option<u64>)> {
+    let deadline = latest(waiters);
+    let stall = waiters.first().map_or(0, |waiter| {
+        waiter.request.context.deadlines.io_ms.max(0) as u64
+    });
+    let check = Check {
+        possession: key.clone(),
+        trust: host
+            .as_ref()
+            .map(|(_, port, host_key)| (names, *port, host_key.clone())),
+    };
+    Ok((evidence.authority.start(check, deadline, stall)?, deadline))
+}
+
+/// Decides what `lease` needs before it serves `request`, whose binding is its bridge's session (contract §7.1; reuse
+/// design §4). A lease the same binding last used, or a connection set up for this binding, serves at once; one
+/// another binding last used serves only after this binding has proved the connection's authority now, so it joins
+/// or starts the binding's proof. A connection that keeps no evidence (a password authenticated it) goes back to idle
+/// for the binding that used it, and the open asks again for a new connection.
+fn screen<C>(
+    host: &mut PoolHost<C>,
+    proofs: &mut Proofs,
+    proving: &mut Vec<SharedProof>,
+    lease: Lease,
+    request: OpenRequest,
+    policy: gwz_transport::pool::Request,
+) -> Screened
+where
+    C: Connector,
+    C::Resource: ChannelResource,
+{
+    let binding = request.context.session_id.clone();
+    // A connection found closed while idle is the attach path's to settle.
+    if host.lost(&lease).is_some() {
+        return Screened::Attach(lease, request, policy);
+    }
+    let Ok(lessee) = host.lessee(&lease, &binding) else {
+        return Screened::Attach(lease, request, policy);
+    };
+    let evidence = host.evidence(&lease);
+    let key = request.key.clone();
+    match lessee {
+        Lessee::Same => return Screened::Attach(lease, request, policy),
+        Lessee::First => {
+            host.record_lessee(&lease, &binding);
+            // The setup made for this binding's open is its proof of the key and host key it accepted.
+            if let Some(evidence) = &evidence {
+                if let Authenticator::Agent(accepted) = &evidence.authenticator {
+                    proofs.add_key(&binding, accepted);
+                }
+                proofs.add_host(&binding, &key.host, key.port, &evidence.host_key);
+            }
+            return Screened::Attach(lease, request, policy);
+        }
+        Lessee::Other => {}
+    }
+    let Some(evidence) = evidence else {
+        let _ = host.release(lease, Disposition::Reusable);
+        return Screened::Fresh(request, policy);
+    };
+    let possession = match &evidence.authenticator {
+        Authenticator::Agent(accepted) => {
+            (!proofs.has_key(&binding, accepted)).then(|| accepted.clone())
+        }
+        // The selected key was read again before this open was admitted, and its token names those exact bytes: the
+        // pool leases a connection only for an equal token, which this asserts (reuse design §4).
+        Authenticator::KeyFile(token) => {
+            let equal = request
+                .authority
+                .as_ref()
+                .is_some_and(|entry| entry.identity() == Identity::Explicit(token.clone()));
+            if !equal {
+                let _ = host.release(lease, Disposition::Discarded);
+                return Screened::Fresh(request, policy);
+            }
+            None
+        }
+    };
+    let trust = (!proofs.has_host(&binding, &key.host, key.port, &evidence.host_key))
+        .then(|| (key.host.clone(), key.port, evidence.host_key.clone()));
+    if possession.is_none() && trust.is_none() {
+        host.record_lessee(&lease, &binding);
+        return Screened::Attach(lease, request, policy);
+    }
+    let waiter = Waiter {
+        lease,
+        request,
+        policy,
+    };
+    if let Some(shared) = proving.iter_mut().find(|shared| {
+        shared.binding == binding && shared.key == possession && shared.host == trust
+    }) {
+        shared.waiters.push(waiter);
+        return Screened::Waiting;
+    }
+    let waiters = vec![waiter];
+    match start_proof(
+        &evidence,
+        trust_names(&waiters[0].request),
+        &possession,
+        &trust,
+        &waiters,
+    ) {
+        Ok((job, deadline)) => {
+            proving.push(SharedProof {
+                binding,
+                key: possession,
+                host: trust,
+                evidence,
+                job,
+                deadline,
+                waiters,
+            });
+            Screened::Waiting
+        }
+        Err(error) => {
+            // No proof job can start (a full job budget is WouldBlock): the connection goes back to idle and the open
+            // fails as a setup that cannot start does, with Capacity (reuse design §4's table).
+            for waiter in waiters {
+                let _ = host.release(waiter.lease, Disposition::Reusable);
+                waiter.request.complete(Err(io::Error::from(error.kind())));
+            }
+            Screened::Waiting
+        }
+    }
+}
+
+/// Polls the binding proofs, and returns what each finished one's waiters do next (reuse design §4's table): a passed
+/// proof is recorded for its binding and its leases serve; a failed one retires the connection and every idle
+/// connection with the same key (possession) or the same host and host key (trust), and its opens ask again for a
+/// new connection; a key no binding can prove sends its leases back to idle and its opens to a new connection. A
+/// waiter cancelled or past its deadline gives its connection back to idle and fails alone.
+fn settle_proofs<C>(
+    host: &mut PoolHost<C>,
+    proofs: &mut Proofs,
+    proving: &mut Vec<SharedProof>,
+    cx: &mut Context<'_>,
+    now: u64,
+) -> Vec<Screened>
+where
+    C: Connector,
+    C::Resource: ChannelResource,
+{
+    let mut next = Vec::new();
+    let mut index = 0;
+    while index < proving.len() {
+        let shared = &mut proving[index];
+        let mut kept = Vec::with_capacity(shared.waiters.len());
+        for waiter in shared.waiters.drain(..) {
+            if waiter.request.expired(now) {
+                let _ = host.release(waiter.lease, Disposition::Reusable);
+                waiter.request.complete_expired(io::ErrorKind::TimedOut);
+            } else {
+                kept.push(waiter);
+            }
+        }
+        shared.waiters = kept;
+        if shared.waiters.is_empty() {
+            // Nobody waits: dropping the job cancels it, and its supervisor retains it until it ends.
+            proving.swap_remove(index);
+            continue;
+        }
+        let verdict = match shared.job.poll_result(cx) {
+            Poll::Pending => {
+                index += 1;
+                continue;
+            }
+            Poll::Ready(result) => result,
+        };
+        let shared = proving.swap_remove(index);
+        let verdict = match verdict {
+            Ok(verdict) => verdict,
+            Err(error) => {
+                // The job ended on its own clocks or was cancelled. Waiters with time left past the job's deadline
+                // get a job of their own; the others fail as their deadline or cancellation says.
+                let restart = job::timeout_reason(&error) == Some(job::TimeoutReason::Aggregate)
+                    && shared.deadline.is_some_and(|ended| {
+                        shared
+                            .waiters
+                            .iter()
+                            .any(|waiter| waiter.request.deadline.is_none_or(|at| at > ended))
+                    });
+                if restart {
+                    let names = trust_names(&shared.waiters[0].request);
+                    match start_proof(
+                        &shared.evidence,
+                        names,
+                        &shared.key,
+                        &shared.host,
+                        &shared.waiters,
+                    ) {
+                        Ok((job, deadline)) => {
+                            proving.push(SharedProof {
+                                job,
+                                deadline,
+                                ..shared
+                            });
+                            continue;
+                        }
+                        Err(error) => fail_waiters(host, shared.waiters, error.kind()),
+                    }
+                } else {
+                    fail_waiters(host, shared.waiters, error.kind());
+                }
+                continue;
+            }
+        };
+        let refused = verdict.possession == Some(Possession::Refused);
+        let untrusted = verdict.trusted == Some(false);
+        let unprovable = verdict.possession == Some(Possession::Unprovable);
+        if refused || untrusted {
+            let key = shared.key.clone();
+            let trust = shared.host.clone();
+            for waiter in &shared.waiters {
+                host.retire_idle(&waiter.lease, |pool_key, resource| {
+                    resource.reuse_evidence().is_some_and(|evidence| {
+                        let same_key = refused
+                            && key.as_ref().is_some_and(|key| {
+                                evidence.authenticator == Authenticator::Agent(key.clone())
+                            });
+                        let same_host = untrusted
+                            && trust.as_ref().is_some_and(|(name, port, host_key)| {
+                                pool_key.host == *name
+                                    && pool_key.port == *port
+                                    && evidence.host_key == *host_key
+                            });
+                        same_key || same_host
+                    })
+                });
+            }
+            for waiter in shared.waiters {
+                let _ = host.release(waiter.lease, Disposition::Discarded);
+                next.push(Screened::Fresh(waiter.request, waiter.policy));
+            }
+            continue;
+        }
+        if unprovable {
+            for waiter in shared.waiters {
+                let _ = host.release(waiter.lease, Disposition::Reusable);
+                next.push(Screened::Fresh(waiter.request, waiter.policy));
+            }
+            continue;
+        }
+        if let Some(key) = &shared.key {
+            proofs.add_key(&shared.binding, key);
+        }
+        if let Some((name, port, host_key)) = &shared.host {
+            proofs.add_host(&shared.binding, name, *port, host_key);
+        }
+        for waiter in shared.waiters {
+            host.record_lessee(&waiter.lease, &shared.binding);
+            next.push(Screened::Attach(
+                waiter.lease,
+                waiter.request,
+                waiter.policy,
+            ));
+        }
+    }
+    next
+}
+
+/// Ends `waiters` whose proof could not finish: each connection back to idle, each open failed with `kind`.
+fn fail_waiters<C>(host: &mut PoolHost<C>, waiters: Vec<Waiter>, kind: io::ErrorKind)
+where
+    C: Connector,
+{
+    for waiter in waiters {
+        let _ = host.release(waiter.lease, Disposition::Reusable);
+        waiter.request.complete(Err(kind.into()));
+    }
 }

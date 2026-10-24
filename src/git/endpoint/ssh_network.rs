@@ -390,6 +390,45 @@ fn handshake(
     Err(HostKeyRefused::Changed { line }.into_error().into())
 }
 
+/// Checks `host_key` against `known_hosts` again, read now, for a connection another binding set up (reuse design §4):
+/// the same file, a regular file of at most 4 MiB, the same names and the same libssh2 match the setup's trust check
+/// made. `Ok` only on a match; a missing file, a host it does not list and a different key are the refusal
+/// [`HostKeyRefused`] names. Nothing is connected.
+pub(crate) fn recheck_trust(
+    known_hosts: &Path,
+    names: &[&str],
+    port: u16,
+    host_key: &[u8],
+    control: &Control,
+) -> io::Result<()> {
+    control.check()?;
+    let text = match read_regular(known_hosts, control) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Err(HostKeyRefused::NotListed.into_error());
+        }
+        loaded => loaded?,
+    };
+    validate_lines(&text, control)?;
+    let session = ssh2::Session::new().map_err(ssh)?;
+    let mut known = session.known_hosts().map_err(ssh)?;
+    load_known(&mut known, &text, None, control)?;
+    control.check()?;
+    let mut changed = false;
+    for name in names {
+        match known.check_port(name, port, host_key) {
+            CheckResult::Match => return Ok(()),
+            CheckResult::Mismatch => changed = true,
+            CheckResult::NotFound | CheckResult::Failure => {}
+        }
+    }
+    Err(if changed {
+        HostKeyRefused::Changed { line: None }
+    } else {
+        HostKeyRefused::NotListed
+    }
+    .into_error())
+}
+
 /// The first line (from 1) of `text` that lists one of `names` with a key other than `host_key`: each line is read
 /// into a set of its own and asked, as the whole file was. `None` when no line is found alone, as a line that only
 /// matches with its neighbours would be.

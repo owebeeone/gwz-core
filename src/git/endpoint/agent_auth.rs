@@ -1,11 +1,22 @@
 //! Private signing bridge for prepared, explicitly trusted sessions. It signs through the endpoint's own agent
 //! client on every platform; the signature buffer's allocator is the one libssh2 frees with, proved on Windows for
 //! plan step 3.4 (`allocate`).
+//!
+//! It also holds the reuse proof of plan step 1.6 (contract §7.1; dev-docs/GwzConnectionReuseDesign.md §4): before an
+//! idle connection another operation binding last used serves this one, the endpoint's agent signs OpenSSH SSHSIG
+//! signed data (PROTOCOL.sshsig) for a fresh nonce with the key the connection authenticated with, and only a
+//! signature that verifies against that key lets the lease proceed. The signed bytes are exactly
+//! `"SSHSIG" || string(namespace) || string("") || string("sha512") || string(SHA-512(nonce))`, each `string` a
+//! 32-bit big-endian length and its bytes, under the fixed namespace `gwz-connection-reuse-v1@owebeeone.github.io`
+//! ([`PROOF_NAMESPACE`]); RSA keys are asked for `rsa-sha2-512`. The 32-byte nonce is drawn from the operating
+//! system's random source inside the proof job, on that job's stack, and is never stored, logged, sent anywhere but
+//! (as its digest) to the agent, or put in an error.
 
 use super::{
     agent_client::{Agent, Channel},
-    agent_job::Control,
-    agent_keys::{self, KeyType, Signed},
+    agent_job::{self, Control, Job, Place, Supervisor},
+    agent_keys::{self, KeyType, Proof, Signed},
+    agent_source::AgentSource,
     ssh_connection::SshConnection,
     ssh_network,
 };
@@ -17,8 +28,10 @@ use std::{
     ffi::{CString, c_char, c_int, c_void},
     io,
     panic::{AssertUnwindSafe, catch_unwind},
+    path::PathBuf,
     ptr, slice,
     sync::Arc,
+    time::{Duration, Instant},
 };
 type Sign = unsafe extern "C" fn(
     *mut LIBSSH2_SESSION,
@@ -49,8 +62,30 @@ pub(crate) fn authenticate_reporting<C: Channel>(
     control: Arc<Control>,
     open: impl FnOnce() -> io::Result<Agent<C>>,
     offered: impl FnMut(),
-    mut rejected: impl FnMut(),
+    rejected: impl FnMut(),
 ) -> io::Result<SshConnection> {
+    authenticate_recorded(
+        connection,
+        user,
+        trusted_key,
+        control,
+        open,
+        offered,
+        rejected,
+    )
+    .map(|(connection, _)| connection)
+}
+/// [`authenticate_reporting`], with the public blob of the agent key the server accepted, which the connection keeps
+/// for its reuse by another binding (dev-docs/GwzConnectionReuseDesign.md §4 and C8).
+pub(crate) fn authenticate_recorded<C: Channel>(
+    connection: SshConnection,
+    user: &str,
+    trusted_key: &[u8],
+    control: Arc<Control>,
+    open: impl FnOnce() -> io::Result<Agent<C>>,
+    offered: impl FnMut(),
+    mut rejected: impl FnMut(),
+) -> io::Result<(SshConnection, Vec<u8>)> {
     authenticate_inner(
         connection,
         user,
@@ -73,7 +108,7 @@ fn authenticate_inner<C: Channel>(
     open: impl FnOnce() -> io::Result<Agent<C>>,
     mut observe: impl FnMut(&[u8], c_int),
     mut offered: impl FnMut(),
-) -> io::Result<SshConnection> {
+) -> io::Result<(SshConnection, Vec<u8>)> {
     control.check()?;
     let user = CString::new(user).map_err(|_| io::ErrorKind::InvalidInput)?;
     if user.as_bytes().is_empty() || user.as_bytes().len() > 1024 {
@@ -139,7 +174,7 @@ fn authenticate_inner<C: Channel>(
                 drop(agent); // Agent handle and callback state cannot cross the handoff.
                 control.complete_wait()?;
                 control.check()?;
-                return Ok(connection);
+                return Ok((connection, key.clone()));
             }
             if rc == LIBSSH2_ERROR_EAGAIN {
                 // A wait on the server's reply, which ends when the
@@ -176,6 +211,7 @@ cfg_if::cfg_if! {
             open: impl FnOnce() -> io::Result<Agent<C>>, observe: impl FnMut(&[u8], c_int),
         ) -> io::Result<SshConnection> {
             authenticate_inner(connection, user, trusted_key, control, open, observe, || {})
+                .map(|(connection, _)| connection)
         }
     }
 }
@@ -309,4 +345,188 @@ fn method<'a>(mut input: &'a [u8], user: &[u8], key: &[u8]) -> io::Result<&'a st
         return Err(io::ErrorKind::InvalidData.into());
     }
     Ok(method)
+}
+
+/// The SSHSIG namespace of gwz's reuse proof, in the `name@domain` form PROTOCOL.sshsig recommends for a private use.
+/// It is fixed: a signature made for it cannot verify under another namespace, and none made for another can stand in
+/// for this one.
+pub(crate) const PROOF_NAMESPACE: &str = "gwz-connection-reuse-v1@owebeeone.github.io";
+
+/// The data an agent signs for a reuse proof: OpenSSH's SSHSIG signed data (PROTOCOL.sshsig) for a message whose
+/// SHA-512 is `digest`: the `SSHSIG` preamble, the namespace, an empty reserved string, `sha512` and the digest. It
+/// begins with the six preamble bytes, where SSH user authentication data begins with the session identifier's length
+/// (`method`), so neither signature can stand for the other.
+pub(crate) fn proof_data(digest: &[u8; 64]) -> Vec<u8> {
+    let mut data = b"SSHSIG".to_vec();
+    for part in [PROOF_NAMESPACE.as_bytes(), b"", b"sha512", digest] {
+        data.extend_from_slice(&(part.len() as u32).to_be_bytes());
+        data.extend_from_slice(part);
+    }
+    data
+}
+
+/// What the agent showed of its possession of a key (dev-docs/GwzConnectionReuseDesign.md §4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Possession {
+    /// It signed a fresh nonce's proof data, and the signature verifies against the key.
+    Proven,
+    /// It refused, lacks the key, signed badly, or could not be reached.
+    Refused,
+    /// The transport cannot check a signature of this key: no other binding can prove it.
+    Unprovable,
+}
+
+/// Asks `agent` to sign the proof data of a fresh 32-byte nonce with `key`, and checks the signature against `key`.
+/// The nonce and the data live on this call's stack only: they are never stored, logged or put in an error. An error
+/// is the control's (a timeout or a cancellation) or the agent channel's; the caller decides which it was.
+pub(crate) fn prove_possession<C: Channel>(
+    agent: &mut Agent<C>,
+    key: &[u8],
+    control: &Control,
+) -> io::Result<Possession> {
+    use sha2::{Digest, Sha512};
+    let Some(kind) = KeyType::of(key) else {
+        return Ok(Possession::Unprovable);
+    };
+    if !kind.provable() {
+        return Ok(Possession::Unprovable);
+    }
+    let mut nonce = [0u8; 32];
+    getrandom::fill(&mut nonce).map_err(|_| io::Error::from(io::ErrorKind::Other))?;
+    let digest: [u8; 64] = Sha512::digest(nonce).into();
+    let data = proof_data(&digest);
+    control.begin_wait()?;
+    let reply = agent.sign(key, &data, agent_keys::flags(kind.proof_algorithm()))?;
+    control.complete_wait()?;
+    control.check()?;
+    Ok(match reply {
+        None => Possession::Refused,
+        Some(reply) => match kind.verify_proof(key, &data, &reply) {
+            Proof::Valid => Possession::Proven,
+            Proof::Invalid => Possession::Refused,
+            Proof::Unsupported => Possession::Unprovable,
+        },
+    })
+}
+
+/// What authenticated a connection, which it keeps for its reuse by another binding (contract §7.1; reuse design §4,
+/// C8). Public data only: a key's public blob, or the registry token of a selected key's exact bytes. A connection a
+/// password authenticated (a URL's or a helper's) keeps none: no other binding can prove it, so it serves only the
+/// binding that last used it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Authenticator {
+    /// The agent key the server accepted.
+    Agent(Vec<u8>),
+    /// A selected key file, by the token of the snapshot that authenticated it.
+    KeyFile(String),
+}
+
+/// What a connection keeps for its reuse by another binding: what authenticated it and the host key its trust check
+/// accepted, and the endpoint's own agent and `known_hosts` to prove them against.
+pub(crate) struct Evidence {
+    pub(crate) authenticator: Authenticator,
+    pub(crate) host_key: Vec<u8>,
+    pub(crate) authority: Arc<ReuseAuthority>,
+}
+
+/// The agent and `known_hosts` of one endpoint, which every binding it serves shares by configuration equality
+/// (reuse design §3), and the job budget its proofs run on.
+pub(crate) struct ReuseAuthority {
+    agent: AgentSource,
+    known_hosts: PathBuf,
+    supervisor: Supervisor,
+    origin: Instant,
+    cleanup: Duration,
+}
+
+/// The checks a lease by another binding needs: possession of the agent key `possession`, and trust of `host_key`
+/// for the host's `names` at `port`.
+pub(crate) struct Check {
+    pub(crate) possession: Option<Vec<u8>>,
+    pub(crate) trust: Option<(Vec<String>, u16, Vec<u8>)>,
+}
+
+/// The outcome of a [`Check`]: each part asked, as it ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Verdict {
+    pub(crate) possession: Option<Possession>,
+    pub(crate) trusted: Option<bool>,
+}
+
+impl ReuseAuthority {
+    pub(crate) fn new(
+        agent: AgentSource,
+        known_hosts: PathBuf,
+        supervisor: Supervisor,
+        origin: Instant,
+        cleanup: Duration,
+    ) -> Self {
+        Self {
+            agent,
+            known_hosts,
+            supervisor,
+            origin,
+            cleanup,
+        }
+    }
+
+    /// Starts `check` as a supervised job on the endpoint's job budget, under `deadline` (milliseconds on the
+    /// endpoint's clock) and the stall `stall_ms`, as an authentication sign wait runs (reuse design §4). A full
+    /// budget is `WouldBlock`.
+    pub(crate) fn start(
+        self: &Arc<Self>,
+        check: Check,
+        deadline: Option<u64>,
+        stall_ms: u64,
+    ) -> io::Result<Job<Verdict>> {
+        let authority = self.clone();
+        let aggregate = deadline.map(|at| self.origin + Duration::from_millis(at));
+        Job::start_timed(
+            Place::Take(&self.supervisor),
+            aggregate,
+            Duration::from_millis(stall_ms),
+            self.cleanup,
+            agent_job::wall_clock(),
+            move |control| authority.run(check, &control),
+        )
+    }
+
+    fn run(&self, check: Check, control: &Arc<Control>) -> io::Result<Verdict> {
+        // A failure of the control (a deadline, a stall, a cancellation) ends the job as that; any other failure of
+        // a part is that part's negative answer: an agent that cannot be reached holds no key for this binding.
+        let settle = |result: io::Result<()>| control.check().and(Ok(result.is_ok()));
+        let possession = match check.possession {
+            None => None,
+            Some(key) => Some(match self.agent.open(control.clone()) {
+                Ok(mut agent) => match prove_possession(&mut agent, &key, control) {
+                    Ok(possession) => possession,
+                    Err(error) => {
+                        settle(Err(error))?;
+                        Possession::Refused
+                    }
+                },
+                Err(error) => {
+                    settle(Err(error))?;
+                    Possession::Refused
+                }
+            }),
+        };
+        let trusted = match check.trust {
+            None => None,
+            Some((names, port, host_key)) => {
+                let names: Vec<&str> = names.iter().map(String::as_str).collect();
+                Some(settle(ssh_network::recheck_trust(
+                    &self.known_hosts,
+                    &names,
+                    port,
+                    &host_key,
+                    control,
+                ))?)
+            }
+        };
+        Ok(Verdict {
+            possession,
+            trusted,
+        })
+    }
 }

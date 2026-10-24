@@ -45,12 +45,15 @@ pub(super) enum Unserved {
     /// on a fresh connection. A fresh request never gets a reused one, so the
     /// retry cannot be Dead again.
     Dead(OpenRequest, gwz_transport::pool::Request),
+    /// A connection another binding last used, which this open's binding could not prove (reuse design §4): the open
+    /// asks once more, for a new connection, within its own deadlines.
+    Revoked(OpenRequest, gwz_transport::pool::Request),
     Failed(OpenRequest, io::Error),
 }
 impl Unserved {
     pub(super) fn settle(self, pool: &Pool, pending: &mut Vec<Pending>) {
         match self {
-            Unserved::Dead(request, mut policy) => {
+            Unserved::Dead(request, mut policy) | Unserved::Revoked(request, mut policy) => {
                 policy.fresh = true;
                 match pool.checkout_until(policy.clone(), request.deadline) {
                     Ok(checkout) => pending.push(Pending {

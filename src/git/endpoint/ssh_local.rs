@@ -2,6 +2,7 @@
 //! shared worker does no trust, key, environment or agent I/O on the caller.
 use super::shared_reservation::{Authority, ReservedConnector};
 use super::{
+    agent_auth::{Authenticator, Evidence, ReuseAuthority},
     agent_source::{AgentFault, AgentSource},
     ssh_handoff::Handoff,
     ssh_key_auth,
@@ -49,6 +50,15 @@ pub(crate) fn connect_with_helpers(
         config,
         Registry::with_supervisor(authority.supervisor().clone()),
         move |origin, registry| {
+            // The endpoint's agent and known_hosts, against which another binding proves a connection's authority
+            // before it reuses it (reuse design §4).
+            let reuse = std::sync::Arc::new(ReuseAuthority::new(
+                agent.clone(),
+                known_hosts.clone(),
+                registry.supervisor(),
+                origin,
+                cleanup,
+            ));
             ReservedConnector::new(
                 SetupConnector::reported(
                     origin,
@@ -88,6 +98,7 @@ pub(crate) fn connect_with_helpers(
                         let trust_log = trust_log.clone();
                         let agent = agent.clone();
                         let helpers = helpers.clone();
+                        let reuse = reuse.clone();
                         Ok(Box::new(move |control| {
                             let offered = |method| {
                                 let mut facts = progress.lock().unwrap_or_else(|e| e.into_inner());
@@ -142,7 +153,17 @@ pub(crate) fn connect_with_helpers(
                                     Password::Declined(declined) => connection = declined,
                                 }
                             }
+                            let proven = |authenticator| Evidence {
+                                authenticator,
+                                host_key: trusted.clone(),
+                                authority: reuse.clone(),
+                            };
                             if let Some(selected) = selected {
+                                let token = match selected.identity() {
+                                    Identity::Explicit(token) => token,
+                                    _ => return Err(io::ErrorKind::InvalidInput.into()),
+                                };
+                                let evidence = proven(Authenticator::KeyFile(token));
                                 let authenticated = ssh_key_auth::authenticate_reporting(
                                     connection,
                                     &trusted,
@@ -151,7 +172,8 @@ pub(crate) fn connect_with_helpers(
                                     || offered(AuthMethod::SshKey),
                                     rejected,
                                 )
-                                .and_then(Authenticated::selected)?;
+                                .and_then(Authenticated::selected)?
+                                .proven_by(evidence);
                                 return Ok(if password.is_some() || isolated {
                                     authenticated.under(requested)
                                 } else {
@@ -186,7 +208,7 @@ pub(crate) fn connect_with_helpers(
                                 progress.lock().unwrap_or_else(|e| e.into_inner()).method =
                                     AuthMethod::SshAgent;
                             }
-                            let connection = agent_authenticate(
+                            let (connection, accepted) = agent_authenticate(
                                 connection,
                                 user,
                                 &trusted,
@@ -204,7 +226,7 @@ pub(crate) fn connect_with_helpers(
                                 }
                                 error
                             })?;
-                            Authenticated::new(
+                            Ok(Authenticated::new(
                                 connection,
                                 requested,
                                 Facts {
@@ -213,7 +235,8 @@ pub(crate) fn connect_with_helpers(
                                     credential_offered: true,
                                     ..Facts::default()
                                 },
-                            )
+                            )?
+                            .proven_by(proven(Authenticator::Agent(accepted))))
                         }))
                     },
                 ),
@@ -226,7 +249,8 @@ pub(crate) fn connect_with_helpers(
 }
 
 /// The ambient agent step: the agent the endpoint was given, or a refusal when it has none. A source that cannot be
-/// used says why (`AgentFault`, worded by the host); the signing is `agent_auth`'s, on every platform.
+/// used says why (`AgentFault`, worded by the host); the signing is `agent_auth`'s, on every platform. It returns the
+/// public blob of the key the server accepted with the connection.
 fn agent_authenticate(
     connection: super::ssh_connection::SshConnection,
     user: &str,
@@ -235,11 +259,11 @@ fn agent_authenticate(
     agent: AgentSource,
     offered: impl FnMut(),
     rejected: impl FnMut(),
-) -> io::Result<super::ssh_connection::SshConnection> {
+) -> io::Result<(super::ssh_connection::SshConnection, Vec<u8>)> {
     if agent == AgentSource::None {
         return Err(io::ErrorKind::NotFound.into());
     }
-    super::agent_auth::authenticate_reporting(
+    super::agent_auth::authenticate_recorded(
         connection,
         user,
         trusted,
