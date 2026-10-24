@@ -1,0 +1,54 @@
+{
+ "about": "Public gwz-git capabilities that have no production caller in gwz-core today (convergence plan step 5.5, rule R9; read check_gwz_git_adoption.py's docstring). Each entry says which rows own it, why it is unconsumed, what ends the exception, and the date it was recorded. The list is a ratchet: an entry whose capability gains a caller, or names nothing, fails until it is deleted. A new public capability with no caller fails by name; recording it here is a reviewed act, not a default. Keys are Owner::name as the checker prints them.",
+ "unconsumed": [
+  {
+   "capability": "Repository::read_commit",
+   "rows": [
+    "G0",
+    "G7",
+    "G10"
+   ],
+   "reason": "G0 foundation (owned CommitRecord of one full-id commit). Core reads commits through its own rows still on a native handle (log, merge, preservation); no row that moved needs it.",
+   "exit": "first consumer is the row that moves commit reads (G7 history cursor or a G10 decision), or the capability is removed at that decision",
+   "dated": "2026-10-25"
+  },
+  {
+   "capability": "Repository::open_from_env",
+   "rows": [
+    "G1",
+    "G3"
+   ],
+   "reason": "A1. Native commit and tag open with it inside gwz-git; core opens with open_exact and never needs Git's variables to choose a repository's parts. The first core-side consumer would be G3 (stage, checkout) if it is moved.",
+   "exit": "the G3 decision: a core caller exists, or the method becomes crate-private",
+   "dated": "2026-10-25"
+  },
+  {
+   "capability": "Error::native",
+   "rows": [
+    "G9",
+    "G6"
+   ],
+   "reason": "Accessor for the libgit2 code, class and message of a failure. Core translates through Error::kind and Error::message; nothing branches on a native code yet.",
+   "exit": "step 5.4 (G5/G6) if the credential-helper classification reads the native code; otherwise removed or recorded as a decision",
+   "dated": "2026-10-25"
+  },
+  {
+   "capability": "ObjectId::format",
+   "rows": [
+    "G0"
+   ],
+   "reason": "Companion accessor of ObjectId. Core asks the repository (Repository::object_format) and builds ids from it.",
+   "exit": "first consumer in a later row, or removed at the Phase 6 API review",
+   "dated": "2026-10-25"
+  },
+  {
+   "capability": "RouteNotes::new",
+   "rows": [
+    "G1"
+   ],
+   "reason": "Consumed by a driver, not by core: gwz-cli builds the notes (gwz-cli/src/globalargs/dispatch.rs:43) through core's `git::RouteNotes` re-export and core only stores and forwards them. This check reads gwz-core alone, so it cannot see that caller.",
+   "exit": "when this check also reads the drivers, or the notes sink moves so that core constructs it",
+   "dated": "2026-10-25"
+  }
+ ]
+}

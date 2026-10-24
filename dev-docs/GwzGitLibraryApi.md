@@ -33,6 +33,10 @@ blob_at, is_ancestor, ahead_behind, merge_base, changed_paths, status, remotes}`
 the owned records `Head`, `AheadBehind`, `Status`, `FileStatus`, `StatusOptions`
 and `Remote`, and `ErrorKind::{InvalidPath, StateRead}` (section "A3: refs and
 reads" below). Read-only, local, synchronous; nothing else in this guide changes.
+Step 5.5 completes the row: `Repository::index_snapshot` with the owned records
+`IndexSnapshot` and `IndexEntry` (core's `repository_index`), and the storage
+locations (core's `repository_paths`), which need nothing new: `git_dir`,
+`common_dir` and `work_dir` are the calls.
 
 **Supersession (F2).** The operator decision of 2026-10-14 recorded in
 `history/parked/GwzNoFallbackPlan.md` §6 (quoted in core commit `8cefbe40`),
@@ -89,6 +93,7 @@ of reads is not a snapshot. Returned records own their memory. Read methods:
 impl Repository {
     pub fn open_exact(path: &Path) -> Result<Self, Error>;
     pub fn open_from_env(path: &Path) -> Result<Self, Error>; // A1
+    pub fn is_repository(path: &Path) -> Result<bool, Error>; // A2: open_exact; Ok(false) for NotARepository
     pub fn resolve(&self, revision: &str) -> Result<Option<ObjectId>, Error>; // A1
     pub fn git_dir(&self) -> &Path;
     pub fn common_dir(&self) -> &Path;
@@ -200,7 +205,8 @@ pub mod native_commit {
 
 Moved from gwz-core's `Git2Backend` (`head`, `status`, `status_with_options`,
 `tag_list`, `read_ref`, `commit_exists`, `read_file_at_commit`, `is_ancestor`,
-`ahead_behind`, `merge_base`, `changed_paths_between`, `remotes`). Each is a
+`ahead_behind`, `merge_base`, `changed_paths_between`, `remotes`; step 5.5 adds
+`repository_index` and `repository_paths`). Each is a
 method of `Repository` taking and returning owned values; none changes a ref, the
 index or the worktree, none reads the process environment or runs a process, and
 none touches the network. A handle from either open works.
@@ -217,6 +223,7 @@ impl Repository {
     pub fn changed_paths(&self, old: ObjectId, new: ObjectId) -> Result<Vec<String>, Error>;
     pub fn status(&self, options: &StatusOptions) -> Result<Status, Error>;
     pub fn remotes(&self) -> Result<Vec<Remote>, Error>;
+    pub fn index_snapshot(&self) -> Result<IndexSnapshot, Error>;    // step 5.5
 }
 
 #[non_exhaustive] pub struct Head { pub branch: Option<String>, pub commit: Option<ObjectId>, pub is_detached: bool }
@@ -226,6 +233,11 @@ impl Repository {
 #[non_exhaustive] pub struct FileStatus {
     pub path: String, pub index_status: char, pub worktree_status: char, pub original_path: Option<String>,
 }
+#[non_exhaustive] pub struct IndexEntry {          // step 5.5
+    pub path: Vec<u8>, pub id: ObjectId, pub mode: u32, pub flags: u16, pub flags_extended: u16,
+    pub ctime: (i32, u32), pub mtime: (i32, u32), pub stat: [u32; 5],   // stat: dev, ino, uid, gid, size
+}
+#[non_exhaustive] pub struct IndexSnapshot { pub path: Option<PathBuf>, pub entries: Vec<IndexEntry> }
 #[non_exhaustive] pub struct Status {
     pub is_dirty: bool, pub staged: usize, pub unstaged: usize, pub untracked: usize,
     pub ignored: usize, pub unresolved: usize, pub files: Vec<FileStatus>,
@@ -266,6 +278,19 @@ impl Repository {
 - **Remotes.** The configured remotes in configuration order, each with its URL
   and, when one is configured, its separate push URL. Resolving a remote's
   credentials or opening a connection is not part of this call.
+- **Index snapshot (step 5.5).** `index_snapshot` reads the index and returns every
+  entry in the index's order with the facts the index file stores, owned: the path
+  as bytes, the object id (in the repository's format), the mode, both flag words
+  (the stage of a conflicted entry is in `flags`), the change and modification
+  times as seconds and nanoseconds, and the stat words. It is what core's
+  `repository_index` built from the native index, and the same read: a bare
+  repository gives an empty snapshot, as it did. A failure to read the index is
+  `StateRead` with the native diagnostic. Core maps `id` to the raw bytes its model
+  carries.
+- **Storage locations (step 5.5).** Core's `repository_paths` (the worktree, Git
+  directory and common directory of a repository, a linked worktree included) is
+  the three accessors above (`work_dir`, `git_dir`, `common_dir`) copied into core's
+  owned record; no gwz-git API was added for it.
 - **Errors.** Failures keep the libgit2 diagnostic. `InvalidPath` and `StateRead`
   are new kinds (see Errors); object, reference and tree failures are
   `ObjectRead`. gwz-core translates every one with `model_error`:
@@ -279,7 +304,11 @@ step's evidence: ids are strict full hexadecimal text in the repository's format
 object); core now opens the repository before it parses an id or checks a
 committed path, so a bad id or path on a path that is not a repository reports
 the open error where it used to report the id or path problem first; and the
-unborn `HEAD` file read reports `StateRead` where core reported `IoError`.
+unborn `HEAD` file read reports `StateRead` where core reported `IoError`. In step 5.5
+the index snapshot carries the object id as an `ObjectId` where core's record held
+the raw bytes (core converts back, byte for byte), and an index read failure reports
+`StateRead` (code `GitCommandFailed`, the diagnostic text unchanged) as the old
+`git_error` translation did.
 
 ## IDs and commit data
 
@@ -345,7 +374,7 @@ text is diagnostic, not a stable match key. Display is diagnostic too.
 | NotARepository | A1: the path is not a repository: a plain directory, a nonexistent path, or a nested directory (no parent search). Native code `-3` (not found) |
 | Operation | A2: a native commit or tag operation was refused or failed; the message says why, native diagnostics present when libgit2 reported it |
 | InvalidPath | A3: a path argument is not normalized and relative (absolute, or with a `.`, `..` or root component); no native diagnostic, no native call was made |
-| StateRead | A3: reading repository state that is neither an object nor a reference failed: the worktree status (including a bare repository), the configured remotes, or the `HEAD` file of an unborn branch |
+| StateRead | A3: reading repository state that is neither an object nor a reference failed: the worktree status (including a bare repository), the configured remotes, the index (step 5.5), or the `HEAD` file of an unborn branch |
 | ObjectRead | Object, reference or revision lookup/type/parsing failed, including missing objects, since A1 a revision `resolve` cannot parse, and since A3 the reads of tag names, `HEAD`, the commit graph, trees and committed files |
 
 The first two kinds and `InvalidPath` have no native diagnostic; the read kinds

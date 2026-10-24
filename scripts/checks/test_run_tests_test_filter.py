@@ -119,7 +119,8 @@ class TestFilter(unittest.TestCase):
                 patch.object(runner, 'check_cfg_boundaries'), \
                 patch.object(runner, 'check_transport_process_globals'), \
                 patch.object(runner, 'check_transport_pin'), \
-                patch.object(runner, 'check_git_process_globals'):
+                patch.object(runner, 'check_git_process_globals'), \
+                patch.object(runner, 'check_git_adoption'):
             with self.assertRaises(SystemExit) as exit:
                 runner.main(['--no-fail-fast', '--lib', '--test-filter', 'no_such_test'])
         self.assertNotEqual(exit.exception.code, 0)
@@ -135,6 +136,7 @@ class TestFilter(unittest.TestCase):
                 patch.object(runner, 'check_transport_process_globals'), \
                 patch.object(runner, 'check_transport_pin'), \
                 patch.object(runner, 'check_git_process_globals'), \
+                patch.object(runner, 'check_git_adoption'), \
                 patch('sys.stdout', new_callable=io.StringIO) as out:
             with self.assertRaises(SystemExit) as exit:
                 runner.main(['--no-fail-fast', '--lib', '--test-filter', 'port_stress'])
@@ -157,6 +159,7 @@ class TestFilter(unittest.TestCase):
                 patch.object(runner, 'check_transport_process_globals'), \
                 patch.object(runner, 'check_transport_pin'), \
                 patch.object(runner, 'check_git_process_globals'), \
+                patch.object(runner, 'check_git_adoption'), \
                 patch('sys.stdout', new_callable=io.StringIO) as out:
             with self.assertRaises(SystemExit) as exit:
                 runner.main(['--no-fail-fast', '--lib', '--test-filter', 'recovery_protocol'])
@@ -170,7 +173,8 @@ class TestFilter(unittest.TestCase):
                 patch.object(runner, 'check_cfg_boundaries'), \
                 patch.object(runner, 'check_transport_process_globals'), \
                 patch.object(runner, 'check_transport_pin'), \
-                patch.object(runner, 'check_git_process_globals'):
+                patch.object(runner, 'check_git_process_globals'), \
+                patch.object(runner, 'check_git_adoption'):
             with self.assertRaises(SystemExit) as exit:
                 runner.main(['--no-fail-fast', '--lib', '--test-filter', 'recovery_protocol'])
         self.assertEqual(exit.exception.code, 0)

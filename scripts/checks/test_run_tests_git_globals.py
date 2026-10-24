@@ -129,6 +129,20 @@ class GitGlobals(unittest.TestCase):
         self.assertTrue(any(str(self.sibling) in command for command in commands), commands)
         self.assertFalse(any(OVERRIDE in command for command in commands if command[0] == 'cargo'))
 
+    def test_the_adoption_check_runs_over_the_same_checkout_and_main_runs_it_after_the_globals(self):
+        # Step 5.5: every public gwz-git capability has a gwz-core production caller.
+        self.sibling.mkdir()
+        with patch.object(runner, 'ROOT', self.core), patch.object(runner.subprocess, 'run') as run:
+            run.return_value.returncode = 0
+            runner.check_git_adoption()
+        (command,) = [[str(part) for part in call.args[0]] for call in run.call_args_list]
+        self.assertTrue(command[1].endswith('check_gwz_git_adoption.py'), command)
+        self.assertEqual(command[command.index('--gwz-git') + 1], str(self.sibling))
+        source = Path(runner.__file__).read_text(encoding='utf-8')
+        main = source[source.index('def main('):]
+        self.assertLess(main.index('check_git_process_globals('), main.index('check_git_adoption()'))
+        self.assertTrue(run.call_args.kwargs['check'])
+
 
 if __name__ == '__main__':
     unittest.main()
