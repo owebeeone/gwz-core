@@ -14,11 +14,12 @@ python protocol/regen.py --check
 python protocol/regen.py
 ```
 
+`protocol/gwz.taut.py` composes the transport owner's pinned export (`gwz-transport/protocol/transport.ir.json`, beside gwz-core), and the owner's declarations are generated as re-exports from `gwz_transport::protocol`; there is no vendored `src/cbor.rs`, the protocol shares `gwz_transport::cbor`.
+
 `protocol/regen.py` provisions a `uv` virtual environment, installs the released
 `taut-proto==0.8.1` interface-checkpoint release, and regenerates:
 
 - `src/protocol/generated.rs`;
-- `src/cbor.rs`;
 - `protocol/corpus/golden.json`;
 - `protocol/corpus/rust/vectors.rs`.
 

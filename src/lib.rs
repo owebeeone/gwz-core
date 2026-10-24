@@ -9,20 +9,9 @@
 
 extern crate alloc;
 
-cfg_if::cfg_if! {
-    // The session candidate's `RequestMeta.transport_message` is the transport's `Envelope`, so
-    // both share the transport's `Cbor` type (S7.1 (1.1.0) step C3a); nothing else mixes the two.
-    if #[cfg(gwz_session_candidate)] {
-        pub use gwz_transport::cbor;
-    } else {
-        #[rustfmt::skip]
-        #[path = "cbor.rs"]
-        // taut-generated runtime; not held to clippy style (cf. `#[allow(clippy::redundant_closure)]`
-        // on `pub mod generated`). The 0.6.0 float encoder uses a nested `if let { if .. }`.
-        #[allow(clippy::collapsible_if)]
-        pub mod cbor;
-    }
-}
+// `RequestMeta.transport_message` is the transport's `Envelope`, so the protocol shares the transport's
+// `Cbor` type: the taut runtime is gwz-transport's, and there is no second copy of it in this crate.
+pub use gwz_transport::cbor;
 
 pub mod artifact;
 mod checked_artifact;
@@ -105,14 +94,7 @@ pub fn version() -> &'static str {
 }
 
 cfg_if::cfg_if! {
-    if #[cfg(all(test, gwz_session_candidate))] {
-        // The session candidate schema's own corpus. Its added fields carry sample
-        // values, and taut's encoder writes every key (an absent one as null),
-        // so production's vectors cannot round-trip through candidate types.
-        #[rustfmt::skip]
-        #[path = "../protocol/candidate/corpus/rust/vectors.rs"]
-        mod protocol_corpus;
-    } else if #[cfg(test)] {
+    if #[cfg(test)] {
         #[rustfmt::skip]
         #[path = "../protocol/corpus/rust/vectors.rs"]
         mod protocol_corpus;

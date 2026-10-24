@@ -1,4 +1,9 @@
-"""Candidate schema compatibility fixtures across retained and new readers."""
+"""Compatibility fixtures across the retained old readers and the current ordinary schema.
+
+Plan step 2.2 made the placement projection part of the ordinary schema, `protocol/gwz.taut.py`, which composes
+the transport owner's export. "New" below is that schema; "old" is it with the members of S7.1 step C2.1 and
+step 2.2 removed (the repository's "measured additive" idiom), beside the retained decoders that never had them.
+"""
 
 import importlib.util
 import hashlib
@@ -15,9 +20,7 @@ sys.path.insert(0, str(TAUT_SOURCE))
 ROOT = Path(__file__).resolve().parents[1]
 CORE_SCHEMA = ROOT.parents[1] / "protocol" / "gwz.taut.py"
 OWNER_SCHEMA = ROOT.parents[2] / "gwz-transport" / "protocol" / "transport.ir.json"
-CANDIDATE_SCHEMA = ROOT.parents[1] / "protocol" / "candidate" / "candidate.taut.py"
 
-os.environ["GWZ_CORE_SCHEMA"] = str(CORE_SCHEMA)
 os.environ["GWZ_TRANSPORT_SCHEMA"] = str(OWNER_SCHEMA)
 
 from dataclasses import replace  # noqa: E402
@@ -38,9 +41,9 @@ retained_codec = importlib.util.module_from_spec(retained_spec)
 retained_spec.loader.exec_module(retained_codec)
 
 # S7.1 (1.1.0) step C2.1 moved `OperationPolicy.max_retries` and the four
-# `TransportObservation` receipts into the production schema, so the
-# production schema is no longer the old reader. The old reader is production
-# with exactly those five members removed (the repository's "measured
+# `TransportObservation` receipts into the ordinary schema, and plan step 2.2
+# moved the placement and attachment members there. The old reader is the
+# ordinary schema with exactly those members removed (the repository's "measured
 # additive" idiom); the Rust old reader is a checked-in file already.
 C2_ADDITIONS = {
     "OperationPolicy": {"max_retries": 9},
@@ -53,26 +56,43 @@ C2_ADDITIONS = {
 }
 
 
-def _without_c2_members(schema: Schema) -> Schema:
+PLACEMENT_ADDITIONS = {
+    "TransportOptions": {"placement": 4, "endpoint_path_base": 5},
+    "RequestMeta": {"transport_message": 10},
+    "ResponseMeta": {"transport_message": 9},
+    "TransportCapabilitiesResponse": {
+        "message_versions": 3,
+        "placements": 4,
+        "schemes": 5,
+        "auth_policies": 6,
+        "message_limits": 7,
+    },
+}
+
+
+def _without_members(schema: Schema, additions: dict, enums: tuple[str, ...] = ()) -> Schema:
     messages = dict(schema.messages)
-    for message_name, fields in C2_ADDITIONS.items():
+    for message_name, fields in additions.items():
         message = messages[message_name]
         kept = tuple(field for field in message.fields if field.name not in fields)
         assert len(kept) == len(message.fields) - len(fields), message_name
         messages[message_name] = replace(message, fields=kept)
     return Schema(
-        enums=dict(schema.enums),
+        enums={name: enum for name, enum in schema.enums.items() if name not in enums},
         messages=messages,
         services=dict(schema.services),
         extensions=schema.extensions,
     )
 
 
-NEW = load_schema(CANDIDATE_SCHEMA)
-PRODUCTION = load_schema(CORE_SCHEMA)
-OLD = _without_c2_members(PRODUCTION)
-# The transport owner's declarations, which the candidate composition imports
-# whole: they are the owner's schema, not the candidate's overlay.
+# The ordinary schema, which composes the transport owner's export.
+NEW = load_schema(CORE_SCHEMA)
+PRODUCTION = NEW
+# The ordinary schema as it was before plan step 2.2, and as an older reader had it before C2.1 too.
+BEFORE_PLACEMENT = _without_members(NEW, PLACEMENT_ADDITIONS, enums=("TransportPlacement",))
+OLD = _without_members(BEFORE_PLACEMENT, C2_ADDITIONS)
+# The transport owner's declarations, which the ordinary schema composes
+# whole: they are the owner's schema, not GWZ's.
 OWNER = schema_from_json(json.loads(OWNER_SCHEMA.read_text()))
 
 
@@ -133,39 +153,28 @@ def _old_request_meta():
     }
 
 
-def test_overlay_has_exact_additive_tags_and_missing_ok_contract():
-    expected = {
-        "TransportOptions": {"placement": 4, "endpoint_path_base": 5},
-        "RequestMeta": {"transport_message": 10},
-        "ResponseMeta": {"transport_message": 9},
-        "TransportCapabilitiesResponse": {
-            "message_versions": 3,
-            "placements": 4,
-            "schemes": 5,
-            "auth_policies": 6,
-            "message_limits": 7,
-        },
-    }
+def test_placement_members_have_exact_additive_tags_and_missing_ok_contract():
+    expected = PLACEMENT_ADDITIONS
     assert NEW.enums["TransportPlacement"].members == {"local": 1, "cli": 2}
-    # `expected` is the whole overlay: every field the candidate has and the
-    # production core schema lacks, outside the owner's declarations, and the
-    # one enum it adds. A field added, removed or renamed without it fails here.
-    # `max_retries` and the four receipts are production's since C2.1 and are
-    # pinned by `test_production_carries_the_1_1_0_fields_as_missing_ok`.
+    # `expected` is the whole of step 2.2's addition: every field the ordinary
+    # schema has and the schema before the step lacked, outside the owner's
+    # declarations, and the one enum it adds. A field added, removed or renamed
+    # without it fails here. `max_retries` and the four receipts are C2.1's and
+    # are pinned by `test_production_carries_the_1_1_0_fields_as_missing_ok`.
     added = {
         (message_name, field.name)
         for message_name, message in NEW.messages.items()
         if message_name not in OWNER.messages
         for field in message.fields
-        if message_name not in PRODUCTION.messages
-        or field.name not in {old.name for old in PRODUCTION.messages[message_name].fields}
+        if message_name not in BEFORE_PLACEMENT.messages
+        or field.name not in {old.name for old in BEFORE_PLACEMENT.messages[message_name].fields}
     }
     assert added == {
         (message_name, field_name)
         for message_name, fields in expected.items()
         for field_name in fields
     }
-    assert set(NEW.enums) - set(PRODUCTION.enums) - set(OWNER.enums) == {"TransportPlacement"}
+    assert set(NEW.enums) - set(BEFORE_PLACEMENT.enums) - set(OWNER.enums) == {"TransportPlacement"}
     for message_name, fields in expected.items():
         actual = {field.name: field for field in NEW.messages[message_name].fields}
         for field_name, tag in fields.items():
@@ -226,6 +235,14 @@ def test_retained_old_python_decoder_reads_local_and_explicit_cli_additive_fixtu
         )
         assert decoded["default_identity"] is None
         assert set(decoded["__unknown__"]) == {4, 5}
+
+
+def test_retained_old_rust_reader_is_the_pinned_checked_in_baseline():
+    # The Rust old reader is a checked-in pre-placement file, never regenerated; its digest is pinned here (it was
+    # the candidate generator's pin until plan step 2.2 retired that generator).
+    pin = json.loads((ROOT / "candidate" / "retained-reader.json").read_text())
+    retained = ROOT / "candidate" / "retained_old_generated.rs"
+    assert hashlib.sha256(retained.read_bytes()).hexdigest() == pin["retained-old-rust-sha256"]
 
 
 def test_retained_python_decoder_provenance_is_pinned():

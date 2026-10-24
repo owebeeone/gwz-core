@@ -435,7 +435,6 @@ impl<'a> EventEmitter<'a> {
 /// Build a standard `ResponseEnvelope` from request meta + an action. For **CLI-local** ops
 /// (e.g. `gwz forall`) that stamp their own envelope without a gwz-core handler — `gwz-core`
 /// itself never executes those, this just mints a consistent envelope.
-#[allow(clippy::needless_update, reason = "gwz_session_candidate adds fields")]
 pub fn response_envelope_for(
     meta: &crate::RequestMeta,
     action: ActionKind,

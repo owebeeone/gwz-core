@@ -61,7 +61,7 @@ as `TESTS`, and no allowlist entry waives it: move the file under `src/`. A
 `cfg_attr` path is production unless its predicate implies `test`, and the
 default file stays a route for the builds in which the predicate does not hold.
 Production means any build outside `cfg(test)`, the `gwz_transport_candidate`
-and `gwz_session_candidate` builds included; a feature counts as a test build
+build included; a feature counts as a test build
 only when the allowlist names it in `test_features`, as for the globals rule.
 
 An allowlist for another repository may record `reconciled_commit`: the full

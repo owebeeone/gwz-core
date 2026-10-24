@@ -1,8 +1,6 @@
 //! The Cli placement's lifecycle through the transport host: the client driver
 //! a runtime installs, the endpoint a client builds, the capabilities a runtime
-//! reports for them, and the requests the placement refuses. The Cli placement
-//! is the 1.2.0 session host's transport entry (S7.1 (1.1.0) step C3a), so these
-//! run in the session candidate only.
+//! reports for them, and the requests the placement refuses.
 use super::cli_driver_tests::CliHarness;
 use super::driver_tests::block_on;
 use super::tests::{config, wait};

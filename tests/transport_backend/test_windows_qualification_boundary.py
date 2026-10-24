@@ -87,11 +87,12 @@ class CoreBoundary(unittest.TestCase):
                     named.append(str(path.relative_to(CORE)))
         self.assertEqual(named, [], "the retired qualification switch is still named")
 
-    def test_build_script_declares_only_the_two_candidate_switches(self):
+    def test_build_script_declares_only_the_transport_candidate_switch(self):
+        # Plan step 2.2 retired gwz_session_candidate.
         text = (CORE / "build.rs").read_text(encoding="utf-8")
         self.assertIn("cfg(gwz_transport_candidate)", text)
-        self.assertIn("cfg(gwz_session_candidate)", text)
-        self.assertEqual(text.count("rustc-check-cfg"), 2)
+        self.assertNotIn("gwz_session_candidate", text)
+        self.assertEqual(text.count("rustc-check-cfg"), 1)
 
     def test_host_module_is_selected_by_platform_and_the_candidate_switch_alone(self):
         host = enclosing_predicate((CORE / "src/lib.rs").read_text(), "mod transport_host")

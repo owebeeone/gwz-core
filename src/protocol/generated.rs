@@ -1,6 +1,48 @@
 // GENERATED native Rust types + codec — do not edit.
 #![allow(dead_code)]
 use crate::cbor::{Cbor, DecodeError};
+pub use gwz_transport::protocol::AuthMethod as AuthMethod;
+pub use gwz_transport::protocol::AuthPolicy as AuthPolicy;
+pub use gwz_transport::protocol::Barrier as Barrier;
+pub use gwz_transport::protocol::Bind as Bind;
+pub use gwz_transport::protocol::Bound as Bound;
+pub use gwz_transport::protocol::Cancel as Cancel;
+pub use gwz_transport::protocol::CapacityCause as CapacityCause;
+pub use gwz_transport::protocol::CapacityDetail as CapacityDetail;
+pub use gwz_transport::protocol::CapacitySignal as CapacitySignal;
+pub use gwz_transport::protocol::CheckIdentity as CheckIdentity;
+pub use gwz_transport::protocol::Close as Close;
+pub use gwz_transport::protocol::Closed as Closed;
+pub use gwz_transport::protocol::Data as Data;
+pub use gwz_transport::protocol::Deadlines as Deadlines;
+pub use gwz_transport::protocol::Destination as Destination;
+pub use gwz_transport::protocol::Disposition as Disposition;
+pub use gwz_transport::protocol::Effect as Effect;
+pub use gwz_transport::protocol::EndWrite as EndWrite;
+pub use gwz_transport::protocol::EndpointRole as EndpointRole;
+pub use gwz_transport::protocol::Envelope as Envelope;
+pub use gwz_transport::protocol::ErrorCode as ErrorCode;
+pub use gwz_transport::protocol::Facts as Facts;
+pub use gwz_transport::protocol::Failure as Failure;
+pub use gwz_transport::protocol::FailureDetail as FailureDetail;
+pub use gwz_transport::protocol::GitService as GitService;
+pub use gwz_transport::protocol::HelperFailureCause as HelperFailureCause;
+pub use gwz_transport::protocol::Identity as Identity;
+pub use gwz_transport::protocol::IdentityChecked as IdentityChecked;
+pub use gwz_transport::protocol::IdentityMode as IdentityMode;
+pub use gwz_transport::protocol::Limits as Limits;
+pub use gwz_transport::protocol::MessageKind as MessageKind;
+pub use gwz_transport::protocol::NativeFacts as NativeFacts;
+pub use gwz_transport::protocol::NativeMechanism as NativeMechanism;
+pub use gwz_transport::protocol::NativeObservation as NativeObservation;
+pub use gwz_transport::protocol::NativeScheme as NativeScheme;
+pub use gwz_transport::protocol::NativeSource as NativeSource;
+pub use gwz_transport::protocol::Open as Open;
+pub use gwz_transport::protocol::Opened as Opened;
+pub use gwz_transport::protocol::RetryAttempt as RetryAttempt;
+pub use gwz_transport::protocol::Scheme as Scheme;
+pub use gwz_transport::protocol::SetupFailureCause as SetupFailureCause;
+pub use gwz_transport::protocol::Window as Window;
 
 // The file's bounds, for a decode rooted at a type that is not a message:
 // `cbor::try_decode_with(bytes, MAX_DEPTH, MAX_ENCODED_LEN)`.
@@ -2216,6 +2258,23 @@ impl UrlSchemeSource {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum TransportPlacement {
+    #[default] Local,
+    Cli,
+}
+impl TransportPlacement {
+    pub fn wire(self) -> i64 { match self {
+        Self::Local => 1,
+        Self::Cli => 2,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        1 => Self::Local,
+        2 => Self::Cli,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "TransportPlacement", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub enum FetchResult {
     #[default] Updated,
     Unchanged,
@@ -2641,6 +2700,11 @@ impl TransportCapabilitiesRequest {
 pub struct TransportCapabilitiesResponse {
     pub file_identity: bool,
     pub exact_agent_identity: bool,
+    pub message_versions: Option<Vec<i64>>,
+    pub placements: Option<Vec<TransportPlacement>>,
+    pub schemes: Option<Vec<Scheme>>,
+    pub auth_policies: Option<Vec<AuthPolicy>>,
+    pub message_limits: Option<Limits>,
 }
 impl TransportCapabilitiesResponse {
     pub const MAX_DEPTH: usize = 32;
@@ -2649,12 +2713,22 @@ impl TransportCapabilitiesResponse {
         Cbor::Map(vec![
             (1, Cbor::Bool(self.file_identity)),
             (2, Cbor::Bool(self.exact_agent_identity)),
+            (3, match &self.message_versions { Some(v) => Cbor::Array(v.iter().map(|x| Cbor::Int(*x)).collect()), None => Cbor::Null }),
+            (4, match &self.placements { Some(v) => Cbor::Array(v.iter().map(|x| Cbor::Int(x.wire())).collect()), None => Cbor::Null }),
+            (5, match &self.schemes { Some(v) => Cbor::Array(v.iter().map(|x| Cbor::Int(x.wire())).collect()), None => Cbor::Null }),
+            (6, match &self.auth_policies { Some(v) => Cbor::Array(v.iter().map(|x| Cbor::Int(x.wire())).collect()), None => Cbor::Null }),
+            (7, match &self.message_limits { Some(v) => v.to_cbor(), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
         Ok(Self {
             file_identity: c.try_get(1)?.try_bool()?,
             exact_agent_identity: c.try_get(2)?.try_bool()?,
+            message_versions: { let v = c.try_get_opt(3)?; match v { None => None, Some(v) => if v.is_null() { None } else { Some(v.try_array()?.iter().map(|x| Ok(x.try_int()?)).collect::<Result<Vec<_>, DecodeError>>()?) } } },
+            placements: { let v = c.try_get_opt(4)?; match v { None => None, Some(v) => if v.is_null() { None } else { Some(v.try_array()?.iter().map(|x| Ok(TransportPlacement::from_wire(x.try_int()?)?)).collect::<Result<Vec<_>, DecodeError>>()?) } } },
+            schemes: { let v = c.try_get_opt(5)?; match v { None => None, Some(v) => if v.is_null() { None } else { Some(v.try_array()?.iter().map(|x| Ok(Scheme::from_wire(x.try_int()?)?)).collect::<Result<Vec<_>, DecodeError>>()?) } } },
+            auth_policies: { let v = c.try_get_opt(6)?; match v { None => None, Some(v) => if v.is_null() { None } else { Some(v.try_array()?.iter().map(|x| Ok(AuthPolicy::from_wire(x.try_int()?)?)).collect::<Result<Vec<_>, DecodeError>>()?) } } },
+            message_limits: { let v = c.try_get_opt(7)?; match v { None => None, Some(v) => if v.is_null() { None } else { Some(Limits::from_cbor(v)?) } } },
         })
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
@@ -2759,6 +2833,8 @@ pub struct TransportOptions {
     pub default_identity: Option<String>,
     pub remote_identities: Vec<RemoteSshIdentity>,
     pub url_scheme: Option<UrlScheme>,
+    pub placement: Option<TransportPlacement>,
+    pub endpoint_path_base: Option<String>,
 }
 impl TransportOptions {
     pub const MAX_DEPTH: usize = 32;
@@ -2768,6 +2844,8 @@ impl TransportOptions {
             (1, match &self.default_identity { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
             (2, Cbor::Array(self.remote_identities.iter().map(|x| x.to_cbor()).collect())),
             (3, match &self.url_scheme { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (4, match &self.placement { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (5, match &self.endpoint_path_base { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -2775,6 +2853,8 @@ impl TransportOptions {
             default_identity: { let v = c.try_get(1)?; if v.is_null() { None } else { Some(v.try_text()?) } },
             remote_identities: c.try_get(2)?.try_array()?.iter().map(|x| RemoteSshIdentity::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?,
             url_scheme: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(UrlScheme::from_wire(v.try_int()?)?) } },
+            placement: { let v = c.try_get_opt(4)?; match v { None => None, Some(v) => if v.is_null() { None } else { Some(TransportPlacement::from_wire(v.try_int()?)?) } } },
+            endpoint_path_base: { let v = c.try_get_opt(5)?; match v { None => None, Some(v) => if v.is_null() { None } else { Some(v.try_text()?) } } },
         })
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
@@ -2815,6 +2895,7 @@ pub struct RequestMeta {
     pub attribution: Option<OperationAttribution>,
     pub transport: Option<TransportOptions>,
     pub invocation: Option<InvocationContext>,
+    pub transport_message: Option<Envelope>,
 }
 impl RequestMeta {
     pub const MAX_DEPTH: usize = 32;
@@ -2830,6 +2911,7 @@ impl RequestMeta {
             (7, match &self.attribution { Some(v) => v.to_cbor(), None => Cbor::Null }),
             (8, match &self.transport { Some(v) => v.to_cbor(), None => Cbor::Null }),
             (9, match &self.invocation { Some(v) => v.to_cbor(), None => Cbor::Null }),
+            (10, match &self.transport_message { Some(v) => v.to_cbor(), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -2843,6 +2925,7 @@ impl RequestMeta {
             attribution: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(OperationAttribution::from_cbor(v)?) } },
             transport: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(TransportOptions::from_cbor(v)?) } },
             invocation: { let v = c.try_get(9)?; if v.is_null() { None } else { Some(InvocationContext::from_cbor(v)?) } },
+            transport_message: { let v = c.try_get_opt(10)?; match v { None => None, Some(v) => if v.is_null() { None } else { Some(Envelope::from_cbor(v)?) } } },
         })
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
@@ -2860,6 +2943,7 @@ pub struct ResponseMeta {
     pub message: Option<String>,
     pub attribution: Option<OperationAttribution>,
     pub transport: Option<Vec<TransportObservation>>,
+    pub transport_message: Option<Envelope>,
 }
 impl ResponseMeta {
     pub const MAX_DEPTH: usize = 32;
@@ -2874,6 +2958,7 @@ impl ResponseMeta {
             (6, match &self.message { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
             (7, match &self.attribution { Some(v) => v.to_cbor(), None => Cbor::Null }),
             (8, match &self.transport { Some(v) => Cbor::Array(v.iter().map(|x| x.to_cbor()).collect()), None => Cbor::Null }),
+            (9, match &self.transport_message { Some(v) => v.to_cbor(), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
@@ -2886,6 +2971,7 @@ impl ResponseMeta {
             message: { let v = c.try_get(6)?; if v.is_null() { None } else { Some(v.try_text()?) } },
             attribution: { let v = c.try_get(7)?; if v.is_null() { None } else { Some(OperationAttribution::from_cbor(v)?) } },
             transport: { let v = c.try_get(8)?; if v.is_null() { None } else { Some(v.try_array()?.iter().map(|x| TransportObservation::from_cbor(x)).collect::<Result<Vec<_>, DecodeError>>()?) } },
+            transport_message: { let v = c.try_get_opt(9)?; match v { None => None, Some(v) => if v.is_null() { None } else { Some(Envelope::from_cbor(v)?) } } },
         })
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {

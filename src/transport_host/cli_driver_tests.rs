@@ -1,8 +1,6 @@
 //! The Cli placement's end-to-end host-scoped driver coverage: the harness that
 //! installs a Cli driver beside an endpoint of its own, and the tests that drive
-//! SSH and workspace commands over it. The Cli placement is the 1.2.0 session
-//! host's transport entry (S7.1 (1.1.0) step C3a), so these run in the session
-//! candidate only; the Local rows stay in `driver_tests`.
+//! SSH and workspace commands over it; the Local rows stay in `driver_tests`.
 
 use super::driver_tests::{block_on, commit, common, endpoint_home, fixture_url};
 use super::session::SshOpenFailure;

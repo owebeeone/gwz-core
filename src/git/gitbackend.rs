@@ -224,11 +224,20 @@ impl GitBackend for Git2Backend {
         options: Option<&crate::TransportOptions>,
     ) -> ModelResult<Option<Self>> {
         cfg_if::cfg_if! {
-            if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
+            if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
                 if options.is_some_and(|value| {
                     value.placement == Some(crate::TransportPlacement::Cli)
                         && !self.ssh.is_cli_context()
                 }) {
+                    return Err(ModelError::new(
+                        ErrorCode::UnsupportedOperation,
+                        "explicit cli placement requires an installed transport host context",
+                    ));
+                }
+            } else {
+                // The protocol carries `placement` in every build; a build without the transport has no client
+                // endpoint, so an explicit `cli` request is refused, never run on this machine's own credentials.
+                if options.is_some_and(|value| value.placement == Some(crate::TransportPlacement::Cli)) {
                     return Err(ModelError::new(
                         ErrorCode::UnsupportedOperation,
                         "explicit cli placement requires an installed transport host context",
@@ -470,5 +479,38 @@ cfg_if::cfg_if! {
     if #[cfg(test)] {
         mod gwz_git_tests;
         mod spawn_gate_tests;
+    }
+}
+
+#[cfg(test)]
+mod cli_placement_refusal_tests {
+    use super::*;
+
+    /// The wire carries `placement` in every build (plan step 2.2), so a build without a transport host context
+    /// must refuse an explicit `cli` request before any effect: the placement design's rule that a driver never
+    /// lets a core that cannot honour `cli` run the request locally.
+    #[test]
+    fn an_explicit_cli_placement_without_a_transport_host_context_is_refused() {
+        let backend = Git2Backend::new();
+        let cli = crate::TransportOptions {
+            placement: Some(crate::TransportPlacement::Cli),
+            endpoint_path_base: Some("/client/work".to_owned()),
+            ..Default::default()
+        };
+        let refused = backend
+            .with_transport(&std::env::temp_dir(), Some(&cli))
+            .expect_err("an explicit cli placement is refused");
+        assert_eq!(refused.code, ErrorCode::UnsupportedOperation);
+
+        let local = crate::TransportOptions {
+            placement: Some(crate::TransportPlacement::Local),
+            ..Default::default()
+        };
+        assert!(
+            backend
+                .with_transport(&std::env::temp_dir(), Some(&local))
+                .is_ok()
+        );
+        assert!(backend.with_transport(&std::env::temp_dir(), None).is_ok());
     }
 }

@@ -244,24 +244,20 @@ fn local_https_advertisement_and_clone_use_scoped_host_runtime() {
         let (_, offered) = endpoint.endpoint_offer_for_test();
         assert!(offered.schemes.contains(&Scheme::Https));
         assert!(offered.policies.contains(&AuthPolicy::Anonymous));
-        cfg_if::cfg_if! {
-            if #[cfg(gwz_session_candidate)] {
-                use crate::TransportCapabilitiesRequest;
-                // The session candidate reports what the endpoint offered.
-                let capabilities = transport
-                    .capabilities(TransportCapabilitiesRequest {
-                        schema_version: "gwz.protocol/v0".into(),
-                    })
-                    .unwrap();
-                assert!(capabilities.schemes.unwrap().contains(&Scheme::Https));
-                assert!(
-                    capabilities
-                        .auth_policies
-                        .unwrap()
-                        .contains(&AuthPolicy::Anonymous)
-                );
-            }
-        }
+        use crate::TransportCapabilitiesRequest;
+        // The runtime reports what the endpoint offered.
+        let capabilities = transport
+            .capabilities(TransportCapabilitiesRequest {
+                schema_version: "gwz.protocol/v0".into(),
+            })
+            .unwrap();
+        assert!(capabilities.schemes.unwrap().contains(&Scheme::Https));
+        assert!(
+            capabilities
+                .auth_policies
+                .unwrap()
+                .contains(&AuthPolicy::Anonymous)
+        );
 
         let request_meta = meta("https-local-clone");
         let request = transport

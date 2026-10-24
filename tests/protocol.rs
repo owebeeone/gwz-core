@@ -164,42 +164,201 @@ fn ordinary_operation_policy_and_observation_carry_the_1_1_0_fields() {
     assert!(OperationPolicy::from_cbor(&Cbor::Map(malformed)).is_err());
 }
 
-cfg_if::cfg_if! {
-    if #[cfg(not(gwz_session_candidate))] {
-        /// S7.1 (1.1.0) step C3a: the build without the session candidate, the
-        /// ordinary one and the transport switch alone, carries none of the
-        /// 1.2.0 projection. `TransportCapabilitiesResponse` is the static
-        /// answer's two fields (`transport_capabilities::handle` is untouched),
-        /// and the placement, the embedded message and the capability extras
-        /// have no slot on the wire.
-        #[test]
-        fn the_build_without_the_session_candidate_has_no_session_projection() {
-            use gwz_core::{Cbor, ResponseMeta, TransportCapabilitiesRequest, TransportCapabilitiesResponse, TransportOptions};
+/// Plan step 2.2: the ordinary protocol carries the `cli` placement and the
+/// embedded message, as optional slots an older writer's map may lack
+/// (MISSING_OK), and the capability extras that describe them. Built with no
+/// cfg: this is the ordinary build's additive-decoding gate (placement design
+/// section 3), the Rust half; gwz-py's `test_codec.py` is the Python half.
+#[test]
+fn ordinary_placement_and_attachment_fields_decode_when_the_writer_lacks_them() {
+    use gwz_core::{
+        AuthPolicy, Cbor, Envelope, Limits, MessageKind, ResponseMeta, Scheme,
+        TransportCapabilitiesResponse, TransportOptions, TransportPlacement,
+    };
 
-            // An exhaustive literal: a field the 1.2.0 projection adds fails this to compile.
-            let static_answer = TransportCapabilitiesResponse {
-                file_identity: true,
-                exact_agent_identity: false,
-            };
-            let answered = gwz_core::protocol::transport_capabilities::handle(TransportCapabilitiesRequest {
-                schema_version: "gwz.protocol/v0".to_owned(),
-            })
-            .expect("the static answer");
-            assert_eq!(answered, static_answer);
-            let Cbor::Map(entries) = static_answer.to_cbor() else {
-                panic!("a capabilities answer encodes as a map");
-            };
-            assert_eq!(entries.iter().map(|(tag, _)| *tag).collect::<Vec<i64>>(), vec![1, 2]);
+    let tags = |value: Cbor| match value {
+        Cbor::Map(entries) => entries.iter().map(|(tag, _)| *tag).collect::<Vec<i64>>(),
+        other => panic!("a record encodes as a map, not {other:?}"),
+    };
+    let envelope = Envelope {
+        version: 2,
+        session_id: "session-1".to_owned(),
+        stream_id: 0,
+        kind: MessageKind::Close,
+        ..Envelope::default()
+    };
 
-            let tags = |value: Cbor| match value {
-                Cbor::Map(entries) => entries.iter().map(|(tag, _)| *tag).collect::<Vec<i64>>(),
-                other => panic!("a record encodes as a map, not {other:?}"),
-            };
-            assert_eq!(tags(TransportOptions::default().to_cbor()), (1..=3).collect::<Vec<i64>>());
-            assert_eq!(tags(RequestMeta::default().to_cbor()), (1..=9).collect::<Vec<i64>>());
-            assert_eq!(tags(ResponseMeta::default().to_cbor()), (1..=8).collect::<Vec<i64>>());
-        }
-    }
+    // The new slots are written, null when unset: taut's encoder writes every declared key.
+    assert_eq!(
+        tags(TransportOptions::default().to_cbor()),
+        (1..=5).collect::<Vec<i64>>()
+    );
+    assert_eq!(
+        tags(RequestMeta::default().to_cbor()),
+        (1..=10).collect::<Vec<i64>>()
+    );
+    assert_eq!(
+        tags(ResponseMeta::default().to_cbor()),
+        (1..=9).collect::<Vec<i64>>()
+    );
+    assert_eq!(
+        tags(TransportCapabilitiesResponse::default().to_cbor()),
+        (1..=7).collect::<Vec<i64>>()
+    );
+    assert_eq!(TransportPlacement::default(), TransportPlacement::Local);
+    assert_eq!(
+        (
+            TransportPlacement::Local.wire(),
+            TransportPlacement::Cli.wire()
+        ),
+        (1, 2)
+    );
+
+    // Values round-trip.
+    let options = TransportOptions {
+        placement: Some(TransportPlacement::Cli),
+        endpoint_path_base: Some("/home/user/work".to_owned()),
+        ..TransportOptions::default()
+    };
+    assert_eq!(
+        round_trip(
+            &options,
+            TransportOptions::to_cbor,
+            TransportOptions::from_cbor
+        ),
+        options
+    );
+    let request = RequestMeta {
+        request_id: "request-1".to_owned(),
+        schema_version: "gwz.protocol/v0".to_owned(),
+        transport_message: Some(envelope.clone()),
+        ..RequestMeta::default()
+    };
+    assert_eq!(
+        round_trip(&request, RequestMeta::to_cbor, RequestMeta::from_cbor),
+        request
+    );
+    let response = ResponseMeta {
+        transport_message: Some(envelope),
+        ..ResponseMeta::default()
+    };
+    assert_eq!(
+        round_trip(&response, ResponseMeta::to_cbor, ResponseMeta::from_cbor),
+        response
+    );
+    let capabilities = TransportCapabilitiesResponse {
+        file_identity: true,
+        exact_agent_identity: false,
+        message_versions: Some(vec![2]),
+        placements: Some(vec![TransportPlacement::Local, TransportPlacement::Cli]),
+        schemes: Some(vec![Scheme::Ssh, Scheme::Https]),
+        auth_policies: Some(vec![AuthPolicy::SshAmbient, AuthPolicy::Gh]),
+        message_limits: Some(Limits::default()),
+    };
+    assert_eq!(
+        round_trip(
+            &capabilities,
+            TransportCapabilitiesResponse::to_cbor,
+            TransportCapabilitiesResponse::from_cbor,
+        ),
+        capabilities
+    );
+
+    // An older writer's map lacks the new keys: they read as absent, whatever the
+    // old fields hold, and null reads the same.
+    let nulls = |range: std::ops::RangeInclusive<i64>| -> Vec<(i64, Cbor)> {
+        range.map(|tag| (tag, Cbor::Null)).collect()
+    };
+    let mut old_options = vec![
+        (1, Cbor::Null),
+        (2, Cbor::Array(Vec::new())),
+        (3, Cbor::Null),
+    ];
+    let read = TransportOptions::from_cbor(&Cbor::Map(old_options.clone()))
+        .expect("an older options map decodes");
+    assert_eq!((read.placement, read.endpoint_path_base), (None, None));
+    old_options.extend(nulls(4..=5));
+    let read =
+        TransportOptions::from_cbor(&Cbor::Map(old_options)).expect("null new options decode");
+    assert_eq!((read.placement, read.endpoint_path_base), (None, None));
+
+    let read = RequestMeta::from_cbor(&Cbor::Map(
+        [
+            (1, Cbor::Text("request-1".to_owned())),
+            (2, Cbor::Text("v".to_owned())),
+        ]
+        .into_iter()
+        .chain(nulls(3..=9))
+        .collect(),
+    ))
+    .expect("an older request meta map decodes");
+    assert_eq!(read.request_id, "request-1");
+    assert_eq!(read.transport_message, None);
+
+    let old_response = |extra: Vec<(i64, Cbor)>| {
+        let mut entries = vec![
+            (1, Cbor::Text("request-1".to_owned())),
+            (2, Cbor::Text("v".to_owned())),
+            (3, Cbor::Int(ActionKind::Status.wire())),
+            (4, Cbor::Int(AggregateStatus::Ok.wire())),
+        ];
+        entries.extend(nulls(5..=8));
+        entries.extend(extra);
+        Cbor::Map(entries)
+    };
+    let read = ResponseMeta::from_cbor(&old_response(Vec::new()))
+        .expect("an older response meta map decodes");
+    assert_eq!(read.transport_message, None);
+    let read = ResponseMeta::from_cbor(&old_response(nulls(9..=9)))
+        .expect("a null embedded message decodes");
+    assert_eq!(read.transport_message, None);
+
+    let read = TransportCapabilitiesResponse::from_cbor(&Cbor::Map(vec![
+        (1, Cbor::Bool(true)),
+        (2, Cbor::Bool(false)),
+    ]))
+    .expect("an older capabilities map decodes");
+    assert_eq!(
+        (
+            read.message_versions,
+            read.placements,
+            read.schemes,
+            read.auth_policies,
+            read.message_limits
+        ),
+        (None, None, None, None, None)
+    );
+
+    // A present but malformed value is an error, not a silent default.
+    let options_with = |tag: i64, value: Cbor| {
+        let mut entries = vec![
+            (1, Cbor::Null),
+            (2, Cbor::Array(Vec::new())),
+            (3, Cbor::Null),
+        ];
+        entries.push((tag, value));
+        Cbor::Map(entries)
+    };
+    assert!(TransportOptions::from_cbor(&options_with(4, Cbor::Text("cli".to_owned()))).is_err());
+    assert!(TransportOptions::from_cbor(&options_with(4, Cbor::Int(3))).is_err());
+    assert!(TransportOptions::from_cbor(&options_with(5, Cbor::Int(1))).is_err());
+    let malformed_request = Cbor::Map(
+        [
+            (1, Cbor::Text("request-1".to_owned())),
+            (2, Cbor::Text("v".to_owned())),
+        ]
+        .into_iter()
+        .chain(nulls(3..=9))
+        .chain([(10, Cbor::Text("not an envelope".to_owned()))])
+        .collect(),
+    );
+    assert!(RequestMeta::from_cbor(&malformed_request).is_err());
+    let malformed_capabilities = Cbor::Map(vec![
+        (1, Cbor::Bool(true)),
+        (2, Cbor::Bool(false)),
+        (4, Cbor::Array(vec![Cbor::Int(9)])),
+    ]);
+    assert!(TransportCapabilitiesResponse::from_cbor(&malformed_capabilities).is_err());
 }
 
 #[test]
@@ -647,17 +806,12 @@ fn merge_request_and_response_round_trip_reserved_lifecycle_shape() {
     // aa and a trailing `0a f6` (slot 10 = null) is appended. MEASURED
     // additive: every pre-existing slot is byte-identical.
     //   was: a901a901697265715f6d65726765026667777a2e763003f604f605f606f607f608f609f602000369666561747572652f7804f6050006f607f608f609f6
-    cfg_if::cfg_if! {
-        if #[cfg(gwz_session_candidate)] {
-            // The session candidate's RequestMeta adds `transport_message`
-            // (tag 10). taut's encoder always writes a declared key, so absent
-            // it is `0a f6` (taut ir/model.py): RequestMeta's header grows from
-            // a9 to aa and every other byte is production's.
-            const EXPECTED: &str = "aa01aa01697265715f6d65726765026667777a2e763003f604f605f606f607f608f609f60af602000369666561747572652f7804f6050006f607f608f609f60af6";
-        } else {
-            const EXPECTED: &str = "aa01a901697265715f6d65726765026667777a2e763003f604f605f606f607f608f609f602000369666561747572652f7804f6050006f607f608f609f60af6";
-        }
-    }
+    // Moved by plan step 2.2: RequestMeta gained the optional `transport_message`
+    // in slot 10 (MISSING_OK). taut's encoder always writes a declared key, so
+    // absent it is `0a f6`: RequestMeta's header grows from a9 to aa and every
+    // other byte is the previous constant's. MEASURED additive.
+    //   was: aa01a901697265715f6d65726765026667777a2e763003f604f605f606f607f608f609f602000369666561747572652f7804f6050006f607f608f609f60af6
+    const EXPECTED: &str = "aa01aa01697265715f6d65726765026667777a2e763003f604f605f606f607f608f609f60af602000369666561747572652f7804f6050006f607f608f609f60af6";
     assert_eq!(hex, EXPECTED);
     let response = gwz_core::MergeResponse {
         response: response_envelope("req-merge", ActionKind::Merge),
@@ -1733,6 +1887,30 @@ fn generated_protocol_is_current() {
     let out_dir = std::env::temp_dir().join(format!("gwz-taut-gen-{}", std::process::id()));
     let _ = fs::remove_dir_all(&out_dir);
 
+    // The schema composes the transport owner's export, whose declarations core re-exports from gwz-transport
+    // rather than defining again; `protocol/regen.py` writes the same map. External types cannot be generated with
+    // the vendored runtime, so there is no `cbor.rs`: the protocol shares `gwz_transport::cbor`.
+    let owner: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(
+            root.parent()
+                .expect("gwz-core has a parent")
+                .join("gwz-transport/protocol/transport.ir.json"),
+        )
+        .expect("the transport owner's schema export"),
+    )
+    .expect("the owner export is JSON");
+    let external: serde_json::Map<String, serde_json::Value> = ["enums", "messages"]
+        .iter()
+        .flat_map(|kind| owner[kind].as_array().expect("declarations"))
+        .map(|item| item["name"].as_str().expect("a name").to_owned())
+        .map(|name| {
+            let path = format!("gwz_transport::protocol::{name}");
+            (name, serde_json::Value::String(path))
+        })
+        .collect();
+    let external_types = out_dir.with_extension("owner-types.json");
+    fs::write(&external_types, serde_json::to_string(&external).unwrap())
+        .expect("write external types");
     let status = taut_command(&root)
         .args([
             "gen",
@@ -1742,17 +1920,22 @@ fn generated_protocol_is_current() {
             "-l",
             "rust",
             "--api-only",
-            "--with-runtime",
+            "--rust-external-types",
+            external_types.to_str().expect("temp path is not utf-8"),
         ])
         .status()
         .expect("failed to run taut generator");
     assert!(status.success(), "taut generator failed");
+    let _ = fs::remove_file(&external_types);
 
     assert_same(
         &root.join("src/protocol/generated.rs"),
         &out_dir.join("rust/api.rs"),
     );
-    assert_same(&root.join("src/cbor.rs"), &out_dir.join("rust/cbor.rs"));
+    assert!(
+        !root.join("src/cbor.rs").exists(),
+        "core has no vendored taut runtime: it shares gwz_transport::cbor"
+    );
 
     let status = taut_command(&root)
         .args([

@@ -17,12 +17,24 @@ spec = importlib.util.spec_from_file_location('candidate_switches',
 checker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(checker)
 
-T, S = 'gwz_transport_candidate', 'gwz_session_candidate'
+T = 'gwz_transport_candidate'
+RETIRED = 'gwz_session_candidate'
+# The checker's mechanics are exercised with a second, synthetic switch: `gwz_session_candidate` is retired (plan step
+# 2.2 of dev-docs/GwzTransportReleaseConvergencePlan.md), so the real checker knows one switch.
+S = 'gwz_synthetic_candidate'
+
+
+class TwoSwitches(unittest.TestCase):
+    def setUp(self):
+        for name, value in (('SWITCHES', (T, S)), ('RETIRED', ())):
+            patcher = patch.object(checker, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
 WORKFLOW = checker.ROOT / '.github' / 'workflows' / 'transport-candidate.yml'
 DECLARATIONS = ''.join(f'println!("cargo:rustc-check-cfg=cfg({switch})");\n' for switch in (T, S))
 
 
-class Sites(unittest.TestCase):
+class Sites(TwoSwitches):
     def test_a_site_is_a_cfg_or_cfg_attr_attribute_or_cfg_macro_that_names_a_switch(self):
         source = f'''#![cfg(any(unix, {S}))]
 #[cfg({T})]
@@ -88,7 +100,7 @@ impl Backend {{
         ])
 
 
-class Inventory(unittest.TestCase):
+class Inventory(TwoSwitches):
     LIB = f'#[cfg({T})]\nmod a {{}}\nfn b() {{ cfg_if::cfg_if! {{ if #[cfg({S})] {{ let x = 1; }} }} }}\n'
     ROWS = [f'{S}  src/lib.rs  fn b', f'{T}  src/lib.rs  mod a']
 
@@ -131,6 +143,24 @@ class Inventory(unittest.TestCase):
             self.assertIn(f'NEW    {T}  src/lib.rs  mod a', stderr.getvalue())
 
 
+class Retired(unittest.TestCase):
+    """`gwz_session_candidate` is retired: no site may name it, and nothing declares it."""
+
+    def test_a_site_that_names_a_retired_switch_is_an_error_whatever_the_inventory_says(self):
+        lib = f'#[cfg({T})]\nmod a {{}}\n#[cfg({RETIRED})]\nmod b {{}}\n'
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for path, text in (('build.rs', f'println!("cargo:rustc-check-cfg=cfg({T})");\n'), ('src/lib.rs', lib),
+                               ('scripts/candidate_switch_inventory.txt', f'# h\n{T}  src/lib.rs  mod a\n')):
+                (root / path).parent.mkdir(parents=True, exist_ok=True)
+                (root / path).write_text(text, encoding='utf-8')
+            self.assertEqual(checker.check(root), [f'RETIRED {RETIRED}  src/lib.rs  mod b'])
+
+    def test_the_retired_switch_is_not_a_switch(self):
+        self.assertEqual(checker.SWITCHES, (T,))
+        self.assertEqual(checker.RETIRED, (RETIRED,))
+
+
 class Repository(unittest.TestCase):
     def test_core_switch_sites_equal_its_inventory(self):
         errors = checker.check(checker.ROOT)
@@ -154,18 +184,19 @@ class Repository(unittest.TestCase):
 
 
 class CandidateWorkflow(unittest.TestCase):
-    """Rule (a): until S7.1 (1.1.0) the candidate job keeps two shapes green, the transport switch alone and both
-    switches. S7.1 (1.1.0) removes gwz_transport_candidate and updates this test with the job."""
+    """Rule (a): until S7.1 removes gwz_transport_candidate the candidate job keeps the transport shape green; plan
+    step 2.2 retired the session leg. S7.1 updates this test with the job."""
 
-    def test_the_candidate_job_has_both_legs(self):
+    def test_the_candidate_job_has_one_leg(self):
         lines = WORKFLOW.read_text(encoding='utf-8').splitlines()
         start = lines.index('  candidate:')
         end = next((i for i in range(start + 1, len(lines)) if re.match(r'  [\w-]+:', lines[i])), len(lines))
         job = '\n'.join(lines[start:end])
-        self.assertEqual(re.findall(r'^ +(?:- )?rustflags: *(.+)$', job, re.M), [f'--cfg {T}', f'--cfg {T} --cfg {S}'])
-        # The suites build with the leg's flags, through the job's only RUSTFLAGS; one leg's failure cancels neither.
-        self.assertEqual(re.findall(r'^ +RUSTFLAGS: *(.+)$', job, re.M), ['${{ matrix.rustflags }}'])
-        self.assertIn('fail-fast: false', job)
+        self.assertEqual(re.findall(r'^ +(?:- )?rustflags: *(.+)$', job, re.M), [])
+        # The suites build with the transport switch, through the job's only RUSTFLAGS.
+        self.assertEqual(re.findall(r'^ +RUSTFLAGS: *(.+)$', job, re.M), [f'--cfg {T}'])
+        self.assertNotIn('matrix', job)
+        self.assertNotIn(f'--cfg {RETIRED}', WORKFLOW.read_text(encoding='utf-8'))
 
 
 class WindowsCandidateJob(unittest.TestCase):

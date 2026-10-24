@@ -4,7 +4,7 @@
 //! permit rechecks that owner while holding the same lock used by replacement
 //! and invalidation, and runs the send callback while the receiver is pinned.
 
-use crate::candidate_generated::{TransportCapabilitiesResponse, TransportPlacement};
+use crate::core_generated::{TransportCapabilitiesResponse, TransportPlacement};
 use gwz_transport::binding::EndpointConfig;
 use gwz_transport::protocol::{
     AuthPolicy, Bind, EndpointRole, Envelope, Limits, MessageKind, Scheme,

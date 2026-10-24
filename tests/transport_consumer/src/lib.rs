@@ -2,8 +2,9 @@
 pub use gwz_transport::cbor;
 #[path = "../candidate/admission.rs"]
 pub mod candidate_admission;
-#[path = "../../../src/protocol/candidate_generated.rs"]
-pub mod candidate_generated;
+// gwz-core's own protocol, which composes the owner's export: the module this proof reads the retained old reader against.
+#[path = "../../../src/protocol/generated.rs"]
+pub mod core_generated;
 pub mod generated;
 #[path = "../candidate/retained_old_generated.rs"]
 pub mod retained_old_generated;

@@ -13,7 +13,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 WORKSPACE = ROOT.parent
 PREPARE = Path(__file__).with_name("prepare.py")
-CANDIDATE = ROOT / "src" / "protocol" / "candidate_generated.rs"
 PRODUCTION = ROOT / "src" / "protocol" / "generated.rs"
 PROTOCOL_MOD = ROOT / "src" / "protocol" / "mod.rs"
 GUIDE = ROOT / "tests" / "transport_backend" / "guide_example.rs"
@@ -29,7 +28,7 @@ SWITCH_OPENSSL = f"cfg(all({SWITCH}, not({OTHER_THAN_PLATFORM_TLS})))"
 SWITCH_WINDOWS = f"cfg(all(windows, {SWITCH}))"
 # What the candidate shape adds to the ordinary dependency set, by the table that carries it.
 SWITCH_DEPENDENCIES = {
-    "gwz-transport", "gwz-sspi", "base64", "socket2", "ssh2", "libssh2-sys", "tokio", "tokio-util", "hyper",
+    "gwz-sspi", "base64", "socket2", "ssh2", "libssh2-sys", "tokio", "tokio-util", "hyper",
     "hyper-util", "http-body-util", "bytes",
 }
 SWITCH_DEV_DEPENDENCIES = {"pyo3", "rustls", "tokio-rustls", "russh"}
@@ -80,8 +79,7 @@ def test_prepare_selects_candidate_overlay_without_touching_production(tmp_path)
     metadata = json.loads((destination / "placement-candidate.json").read_text())
 
     assert not destination.resolve().is_relative_to(WORKSPACE.resolve())
-    assert metadata["candidate_source"] == str(CANDIDATE.resolve())
-    assert metadata["candidate_sha256"] == hashlib.sha256(CANDIDATE.read_bytes()).hexdigest()
+    assert "candidate_source" not in metadata
     assert metadata["production_source"] == str(PRODUCTION.resolve())
     # A prepared tree lives outside the workspace; tests/protocol.rs finds taut here.
     assert metadata["taut_source"] == str(WORKSPACE / "taut" / "src")
@@ -98,16 +96,17 @@ def _switch_tables(manifest: dict) -> dict:
 
 
 def test_prepare_manifest_keeps_candidate_dependency_outside_production(tmp_path):
-    # The transport and gwz-sspi are named in the core's own manifest, in the table that only the switch turns on; the
-    # prepared copy anchors their paths like any other.
-    assert _production()["target"][SWITCH_ALL]["dependencies"]["gwz-transport"] == {"path": "../gwz-transport"}
+    # gwz-sspi is named in the core's own manifest, in the table that only the switch turns on; the prepared copy
+    # anchors its path like any other. gwz-transport is an ordinary dependency since plan step 2.2: the protocol
+    # carries its `Envelope` and shares its taut runtime in every build, and the crate has no dependencies of its own.
     assert _production()["target"][SWITCH_ALL]["dependencies"]["gwz-sspi"] == {"path": "../gwz-sspi"}
-    assert "gwz-transport" not in _production()["dependencies"]
+    assert _production()["dependencies"]["gwz-transport"] == {"path": "../gwz-transport"}
+    assert "gwz-transport" not in _production()["target"][SWITCH_ALL]["dependencies"]
     destination = prepare(tmp_path / "backend")
     manifest = (destination / "Cargo.toml").read_text()
     prepared = tomllib.loads(manifest)["target"][SWITCH_ALL]["dependencies"]
 
-    assert prepared["gwz-transport"] == {"path": str(WORKSPACE / "gwz-transport")}
+    assert tomllib.loads(manifest)["dependencies"]["gwz-transport"] == {"path": str(WORKSPACE / "gwz-transport")}
     assert prepared["gwz-sspi"] == {"path": str(WORKSPACE / "gwz-sspi")}
     assert "cfg(gwz_transport_candidate)" in manifest
     # The candidate builds against the workspace's git2-rs fork with the fork's
@@ -157,15 +156,13 @@ def test_candidate_adds_the_windows_networking_features_the_endpoint_needs(tmp_p
     assert prepared[SWITCH_WINDOWS]["dependencies"]["windows-sys"] == added
 
 
-def test_protocol_module_has_explicit_candidate_boundary():
+def test_protocol_module_is_one_generated_module_in_every_build():
     source = PROTOCOL_MOD.read_text()
 
-    assert "cfg_if::cfg_if!" in source
-    # S7.1 (1.1.0) step C3a: only the session candidate selects the candidate protocol module; the transport
-    # switch alone is the ordinary protocol.
-    assert "gwz_session_candidate" in source
+    # Plan step 2.2: one generated protocol module, in every build; no switch selects it.
+    assert "gwz_session_candidate" not in source
     assert "gwz_transport_candidate" not in source
-    assert "candidate_generated.rs" in source
+    assert "candidate_generated.rs" not in source
     assert 'path = "generated.rs"' in source
 
 

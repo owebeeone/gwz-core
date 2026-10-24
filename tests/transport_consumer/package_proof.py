@@ -175,11 +175,11 @@ def main() -> int:
         bridge_copy.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(bridge, bridge_copy)
         print(f"core_bridge_sha256={digest(bridge_copy)}")
-        protocol = ROOT.parents[1] / "src/protocol/candidate_generated.rs"
-        protocol_copy = isolated / "core/src/protocol/candidate_generated.rs"
+        protocol = ROOT.parents[1] / "src/protocol/generated.rs"
+        protocol_copy = isolated / "core/src/protocol/generated.rs"
         protocol_copy.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(protocol, protocol_copy)
-        print(f"core_candidate_protocol_sha256={digest(protocol_copy)}")
+        print(f"core_protocol_sha256={digest(protocol_copy)}")
         cargo_dir = consumer_dir / ".cargo"
         cargo_dir.mkdir()
         (cargo_dir / "config.toml").write_text(

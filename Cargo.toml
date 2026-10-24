@@ -91,6 +91,10 @@ gwz-git = { path = "../gwz-git" }
 # (tests/native_libgit2.rs).
 git2 = { package = "gwz-git2", path = "../git2-rs", version = "=0.21.0", features = ["https", "ssh", "unstable-sha256", "vendored-libgit2"] }
 taut-shape = "0.10.0"
+# The transport owner's conversation types (`Envelope`, `Scheme`, `AuthPolicy`, `Limits`, ...) and its taut runtime. The protocol
+# carries them (`RequestMeta.transport_message`, the `transport_capabilities` extras), so every build links the crate, which
+# has no dependency, no I/O and no unsafe code (plan step 2.2); the transport build adds the dependencies that do the I/O below.
+gwz-transport = { path = "../gwz-transport" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 yaml-rust2 = { version = "0.11", default-features = false }
@@ -126,7 +130,6 @@ windows-sys = { version = "0.61", features = ["Win32_Graphics_Gdi", "Win32_Secur
 # checked out beside gwz-core as git2-rs is. tests/transport_backend/prepare.py used to write these tables into a copy
 # of this manifest; its remaining job is described there.
 [target.'cfg(gwz_transport_candidate)'.dependencies]
-gwz-transport = { path = "../gwz-transport" }
 gwz-connection = { path = "../gwz-transport/crates/gwz-connection" }
 gwz-sspi = { path = "../gwz-sspi" }
 base64 = "=0.22.1"

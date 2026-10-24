@@ -131,4 +131,4 @@ def test_isolated_tree_carries_every_core_source_the_consumer_loads(tmp_path, mo
     )
     assert PROOF.main() == 0
     assert "../../../src/git/endpoint/stream_io.rs" in loaded
-    assert "../../../src/protocol/candidate_generated.rs" in loaded
+    assert "../../../src/protocol/generated.rs" in loaded

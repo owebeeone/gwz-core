@@ -1,7 +1,7 @@
 # The gwz-transport commit the transport candidate job builds against
-# (.github/workflows/transport-candidate.yml). gwz-core's candidate and consumer
-# generators pin gwz-transport's IR export by digest (owner-schema-sha256 in
-# protocol/candidate/candidate-generator.json and
+# (.github/workflows/transport-candidate.yml). gwz-core's protocol schema and the
+# consumer generator pin gwz-transport's IR export by digest (_OWNER_SCHEMA_SHA256
+# in protocol/gwz.taut.py and owner-schema-sha256 in
 # tests/transport_consumer/protocol/generator.json), so this commit's
 # protocol/transport.ir.json must have that digest; the job's --check fails
 # otherwise. Bump rule: a gwz-core commit that moves those pins to a newer
