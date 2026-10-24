@@ -59,7 +59,7 @@ impl Git2Backend {
             environment: super::native_commit::GitEnvironment::process(),
             route_policy: Default::default(),
             route_notes: None,
-            spawn_gate: Default::default(),
+            spawn_gate: crate::git::spawn_gate::SpawnGate::ungated(),
         }
     }
 
@@ -82,7 +82,7 @@ impl Git2Backend {
             environment: super::native_commit::GitEnvironment::process(),
             route_policy: Default::default(),
             route_notes: None,
-            spawn_gate: Default::default(),
+            spawn_gate: crate::git::spawn_gate::SpawnGate::ungated(),
         }
     }
 

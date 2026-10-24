@@ -123,3 +123,66 @@ fn probe_command() -> Command {
         .stderr(std::process::Stdio::piped());
     command
 }
+
+/// The process's gate (operator decision D-E): any two of them are the same gate, wherever they were made, and a gate of
+/// any other kind is nobody else's.
+#[test]
+fn any_two_process_gates_are_the_same_gate_and_a_local_gate_is_nobody_elses() {
+    let first = SpawnGate::process();
+    let second = SpawnGate::process();
+    assert!(first.same_gate(&second) && second.same_gate(&first));
+    assert!(first.fault().is_none());
+    let local = SpawnGate::new();
+    assert!(!local.same_gate(&first) && !first.same_gate(&local));
+    assert!(local.same_gate(&local.clone()));
+    assert!(!local.same_gate(&SpawnGate::new()));
+    let ungated = SpawnGate::ungated();
+    assert!(!ungated.same_gate(&first) && !ungated.same_gate(&SpawnGate::ungated()));
+}
+
+/// Where a window needs a gate (Windows) the process gate excludes across independently made handles; elsewhere it
+/// never waits.
+#[test]
+fn the_process_gate_excludes_across_handles_where_a_window_needs_it() {
+    let first = SpawnGate::process();
+    let second = SpawnGate::process();
+    let held = first.hold();
+    assert_eq!(
+        second.try_hold().is_none(),
+        SpawnGate::PROCESS_EXCLUDES,
+        "a second handle of the process gate is excluded exactly where inheritance needs it"
+    );
+    drop(held);
+    assert!(second.try_hold().is_some());
+}
+
+/// A gate with no host excludes nothing and never waits.
+#[test]
+fn an_ungated_gate_never_waits() {
+    let gate = SpawnGate::ungated();
+    let first = gate.hold();
+    assert!(gate.try_hold().is_some());
+    drop(first);
+    assert!(gate.fault().is_none());
+}
+
+/// The fail-closed rule's gate-level half (contract 7.3): an unavailable process gate says why, and still serializes
+/// the plain spawns in its own handle, so only the launches that need a window refuse.
+#[test]
+fn an_unavailable_process_gate_says_why_and_holds_in_its_own_handle() {
+    for fault in [GateFault::NotCreated, GateFault::ForeignOwner] {
+        let gate = SpawnGate::faulted(fault);
+        assert_eq!(gate.fault(), Some(fault));
+        let first = gate.hold();
+        assert!(
+            gate.try_hold().is_none(),
+            "a second hold on the fallback lock"
+        );
+        drop(first);
+        assert!(gate.try_hold().is_some());
+        assert!(
+            gate.same_gate(&SpawnGate::process()),
+            "it is still a process gate"
+        );
+    }
+}

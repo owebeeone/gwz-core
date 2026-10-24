@@ -851,6 +851,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gwz-connection"
+version = "0.1.0"
+dependencies = [
+ "cfg-if",
+ "gwz-transport",
+]
+
+[[package]]
 name = "gwz-copy-contract"
 version = "0.0.8"
 
@@ -865,6 +873,7 @@ dependencies = [
  "cfg-if",
  "chrono",
  "getrandom 0.3.4",
+ "gwz-connection",
  "gwz-copy-contract",
  "gwz-family-model",
  "gwz-family-store",

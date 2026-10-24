@@ -1,6 +1,7 @@
 //! Candidate embedding ownership for endpoint placement. The host supplies message delivery.
 mod cancellable;
 mod cli_placement;
+pub(crate) mod composition;
 pub(crate) mod endpoint_environment;
 mod helper_failure;
 mod https_endpoint;
@@ -12,6 +13,7 @@ pub use crate::git::endpoint::setup_retry::NoteSink;
 pub use cancellable::with_cancellable_local_transport;
 pub use cancellable::with_cancellable_local_transport_native;
 pub use cancellable::with_cancellable_local_transport_native_noted;
+pub use composition::{ProcessGate, process_safety};
 pub use local_command::{
     with_local_transport, with_local_transport_native, with_local_transport_native_noted,
 };
@@ -295,11 +297,11 @@ impl TransportRuntime {
     ) -> ModelResult<Self> {
         let enabled = https.is_some();
         // The launches of this host's helpers hold the gate their slots carry, so the backends of its requests must
-        // hold that one.
+        // hold that one. A runtime with no HTTPS endpoint has no launch and takes the process's gate.
         let spawn_gate = https
             .as_ref()
             .map(|(_, slots)| slots.gate().clone())
-            .unwrap_or_default();
+            .unwrap_or_else(composition::spawn_gate);
         // What the machine proxy setting said (Windows), which the driver words an https failure with (D6, D7).
         let machine = https
             .as_ref()
@@ -441,9 +443,8 @@ impl TransportRuntime {
         } else {
             None
         };
-        let context = RequestContext::new(session, meta, operation_id, notes)?
-            .with_endpoint(endpoint_session)
-            .with_spawn_gate(spawn_gate);
+        let context = RequestContext::new(session, meta, operation_id, notes, spawn_gate)?
+            .with_endpoint(endpoint_session);
         let mut guard = TransportRequest::pending(context, client_guard);
         if let Some(token) = token {
             guard.attach(token)?;

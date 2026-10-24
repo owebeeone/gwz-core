@@ -136,8 +136,13 @@ use secret::{SecretBuffer, parse_secret};
 #[derive(Clone)]
 pub(crate) struct HelperSlots(pub(super) Arc<Semaphore>, SpawnGate);
 impl HelperSlots {
-    pub(crate) fn new() -> Self {
-        Self::with_gate(SpawnGate::new())
+    cfg_if::cfg_if! {
+        if #[cfg(test)] {
+            /// Slots on a gate of their own, for a test; the product builds them on the composition's gate.
+            pub(crate) fn new() -> Self {
+                Self::with_gate(SpawnGate::new())
+            }
+        }
     }
     /// Slots whose launches use `gate`, which the host's other spawns hold too.
     pub(crate) fn with_gate(gate: SpawnGate) -> Self {

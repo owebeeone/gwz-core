@@ -107,7 +107,7 @@ rustix = { version = "1", features = ["fs"] }
 [target.'cfg(windows)'.dependencies]
 # `agent_auth` hands libssh2 its signature buffer from the C runtime's `malloc` (plan step 3.4).
 libc = "0.2"
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Storage_FileSystem"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 # src/git/regular_file.rs creates a named pipe in a test, to show that a pipe handle is not a regular file. (The
@@ -124,6 +124,7 @@ windows-sys = { version = "0.61", features = ["Win32_Graphics_Gdi", "Win32_Secur
 # of this manifest; its remaining job is described there.
 [target.'cfg(gwz_transport_candidate)'.dependencies]
 gwz-transport = { path = "../gwz-transport" }
+gwz-connection = { path = "../gwz-transport/crates/gwz-connection" }
 gwz-sspi = { path = "../gwz-sspi" }
 base64 = "=0.22.1"
 socket2 = "=0.6.4"

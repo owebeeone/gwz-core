@@ -108,6 +108,8 @@ jobs:
           python scripts/checks/check_checked_artifact_boundaries.py
           python scripts/checks/check_filesystem_boundary.py
           python scripts/checks/check_process_globals.py
+          # Step 1.3a: no production constructor mints a spawn gate; the composition is the one site.
+          python scripts/checks/check_spawn_gate_minting.py
           # CS1.7: gwz-cli and gwz-py are not checked out here, so this job
           # checks gwz-core's conditional-compilation boundaries alone.
           python scripts/checks/check_cfg_boundaries.py --skip-repo gwz-cli --skip-repo gwz-py
@@ -116,7 +118,7 @@ jobs:
           # Windows-parity plan step 0.3: every Unix-only gate has an inventory entry.
           python scripts/checks/check_windows_parity.py
           python -m unittest scripts/checks/test_check_windows_parity.py scripts/test_windows_lane_check.py scripts/checks/test_check_windows_receipts.py tests/transport_backend/test_windows_qualification_boundary.py
-          python -m unittest scripts/checks/test_check_filesystem_boundary.py scripts/checks/test_run_tests_filesystem_mode.py scripts/checks/test_run_tests_test_filter.py scripts/checks/test_run_tests_transport_globals.py scripts/checks/test_run_tests_transport_pin.py scripts/checks/test_check_process_globals.py scripts/checks/test_check_cfg_boundaries.py scripts/checks/test_check_candidate_switches.py scripts/checks/test_run_boundary_job.py scripts/checks/test_consumer_bridge_standalone.py
+          python -m unittest scripts/checks/test_check_filesystem_boundary.py scripts/checks/test_run_tests_filesystem_mode.py scripts/checks/test_run_tests_test_filter.py scripts/checks/test_run_tests_transport_globals.py scripts/checks/test_run_tests_transport_pin.py scripts/checks/test_check_process_globals.py scripts/checks/test_check_spawn_gate_minting.py scripts/checks/test_check_cfg_boundaries.py scripts/checks/test_check_candidate_switches.py scripts/checks/test_run_boundary_job.py scripts/checks/test_consumer_bridge_standalone.py
           python -m unittest scripts/checks/test_release_boundary.py -v
           # The release script's internal-version bump (plan S1.5) and the
           # crates.io publisher the release workflow runs (S2.1). This job

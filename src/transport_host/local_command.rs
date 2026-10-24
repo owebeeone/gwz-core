@@ -1,7 +1,7 @@
 //! Candidate-only synchronous command embedding for the local alpha.
 use super::{
     CleanupReport, EndpointSettings, HelperSlots, HttpsEndpointConfig, NoteSink, TransportRequest,
-    TransportRuntime, endpoint_environment, unavailable,
+    TransportRuntime, composition, endpoint_environment, unavailable,
 };
 use crate::session_host::EnvironmentSnapshot;
 use crate::{RequestMeta, git::Git2Backend, model::ModelResult};
@@ -73,7 +73,11 @@ fn build_runtime(
     // once here and shared by the endpoints of the sessions it opens.
     let runtime = match native {
         Some(caller) => TransportRuntime::with_https_native(ssh, https, caller)?,
-        None => TransportRuntime::with_https(ssh, https, HelperSlots::new())?,
+        None => TransportRuntime::with_https(
+            ssh,
+            https,
+            HelperSlots::with_gate(composition::spawn_gate()),
+        )?,
     };
     if let Some(notes) = notes {
         runtime.set_notes(notes);
