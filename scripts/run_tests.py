@@ -392,6 +392,7 @@ def main(argv: list[str] | None = None) -> None:
     library_args = ["--lib", *[arg for arg in cargo_args if arg != "--lib"]]
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_filesystem_boundary.py")], check=True)
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_process_globals.py")], check=True)
+    subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_spawn_gate_minting.py")], check=True)
     check_cfg_boundaries(
         [name for name in CFG_SIBLINGS if options.skip_cfg_siblings or name in options.skip_cfg_sibling]
     )

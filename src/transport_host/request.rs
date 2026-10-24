@@ -32,11 +32,6 @@ pub(crate) struct RequestContext {
     spawn_gate: SpawnGate,
 }
 impl RequestContext {
-    /// The same context, whose backend holds `gate` around its spawns: the host's, the one its launches hold.
-    pub(super) fn with_spawn_gate(mut self, gate: SpawnGate) -> Self {
-        self.spawn_gate = gate;
-        self
-    }
     /// A handle to the host's spawn gate, for the backend this request builds.
     pub(crate) fn spawn_gate(&self) -> SpawnGate {
         self.spawn_gate.clone()
@@ -46,11 +41,14 @@ impl RequestContext {
         self.endpoint = endpoint;
         self
     }
+    /// `spawn_gate` is the host's, the one its launches hold: the request's backend holds it around its spawns (WH2
+    /// contract C9).
     pub(super) fn new(
         session: Arc<Session>,
         meta: RequestMeta,
         operation: String,
         notes: Option<NoteSink>,
+        spawn_gate: SpawnGate,
     ) -> ModelResult<Self> {
         session.register(&meta.request_id, Some(operation.clone()))?;
         session.set_max_retries(&meta.request_id, max_retries(&meta));
@@ -63,7 +61,7 @@ impl RequestContext {
             notes,
             warned: Arc::new(Mutex::new(std::collections::BTreeSet::new())),
             endpoint: None,
-            spawn_gate: SpawnGate::default(),
+            spawn_gate,
         })
     }
     /// Gives `line` as a warning, once per `key` for this operation. A warning is not a note: it is not gated by

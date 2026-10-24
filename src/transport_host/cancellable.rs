@@ -13,8 +13,8 @@
 //! | A panic in the action is caught first. Finish and shutdown then run outside the unwind, each under its own panic guard, and nothing finishes from a drop. The entry reports `internal_error` with cleanup unconfirmed | S6.1 "Library safety"; contract §5.2 "Panics" |
 
 use super::{
-    CleanupReport, HelperSlots, TransportRequest, TransportRuntime, endpoint_environment,
-    unavailable,
+    CleanupReport, HelperSlots, TransportRequest, TransportRuntime, composition,
+    endpoint_environment, unavailable,
 };
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::session_host::EnvironmentSnapshot;
@@ -232,7 +232,11 @@ impl Owned {
         // here and shared by the endpoints of the sessions it opens.
         let runtime = match native {
             Some(caller) => TransportRuntime::with_https_native(ssh, https, caller)?,
-            None => TransportRuntime::with_https(ssh, https, HelperSlots::new())?,
+            None => TransportRuntime::with_https(
+                ssh,
+                https,
+                HelperSlots::with_gate(composition::spawn_gate()),
+            )?,
         };
         if let Some(notes) = notes {
             runtime.set_notes(notes);

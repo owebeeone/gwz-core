@@ -26,10 +26,20 @@ pub struct NativeHost {
     gate: SpawnGate,
 }
 impl NativeHost {
-    /// The host's native route over `worker`, the installed worker's descriptor or why there is none. Where SSPI
-    /// is unavailable (other than Windows, or no worker) the callers are still made, refusing the native route.
+    /// The host's native route over `worker`, the installed worker's descriptor or why there is none, on the gate of the
+    /// process (the composition's: `transport_host::process_safety`). Where SSPI is unavailable (other than Windows, or
+    /// no worker) the callers are still made, refusing the native route.
     pub fn new(worker: Result<gwz_sspi::WorkerExecutable, gwz_sspi::ErrorKind>) -> Self {
-        Self::on_gate(SpawnGate::new(), |guard| {
+        Self::with_process_safety(worker, &crate::transport_host::process_safety())
+    }
+
+    /// `new` on the gate the composition supplies: every host built on the same gate shares it, so a creation window
+    /// held for one host's worker launch excludes every other host's spawn.
+    pub fn with_process_safety(
+        worker: Result<gwz_sspi::WorkerExecutable, gwz_sspi::ErrorKind>,
+        safety: &crate::transport_host::ProcessGate,
+    ) -> Self {
+        Self::on_gate(safety.gate().clone(), |guard| {
             worker.and_then(|worker| {
                 gwz_sspi::Supervisor::with_launch_guard(worker, gwz_sspi::Options::default(), guard)
                     .map(Arc::new)
@@ -38,14 +48,19 @@ impl NativeHost {
         })
     }
 
-    /// `new` over `gate`, with the supervisor made by `supervisor` from the guard that takes `gate`.
+    /// `with_process_safety` over `gate`, with the supervisor made by `supervisor` from the guard that takes `gate`. A
+    /// gate that is unavailable (the Windows object could not be made, or another account owns it) gives no window to a
+    /// launch, so the route refuses before any credential is read: fail closed (contract 7.3).
     pub(crate) fn on_gate(
         gate: SpawnGate,
         supervisor: impl FnOnce(
             gwz_sspi::LaunchGuard,
         ) -> Result<Arc<gwz_sspi::Supervisor>, gwz_sspi::ErrorKind>,
     ) -> Self {
-        let supervisor = supervisor(launch_guard(&gate));
+        let supervisor = match gate.fault() {
+            Some(_) => Err(gwz_sspi::ErrorKind::ContainmentFailed),
+            None => supervisor(launch_guard(&gate)),
+        };
         Self { supervisor, gate }
     }
 
