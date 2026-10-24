@@ -2,6 +2,8 @@
 mod cancellable;
 mod cli_placement;
 pub(crate) mod composition;
+mod connection_factory;
+mod connection_host;
 pub(crate) mod endpoint_environment;
 mod helper_failure;
 mod https_endpoint;
@@ -251,6 +253,9 @@ struct RuntimeState {
     /// The host's spawn gate: its helper slots' (the launches hold it), or one of its own for a runtime that has
     /// no HTTPS endpoint and so no launch. Every request's backend holds it around the spawns it makes.
     spawn_gate: SpawnGate,
+    /// The connection host (plan step 1.3b), built on the production factory; closed by `shutdown`. Requests do not
+    /// use it yet: they reach the endpoint session above until the consumers move onto it (plan phase 3).
+    connection: Option<connection_host::ConnectionHost>,
 }
 impl Drop for RuntimeState {
     fn drop(&mut self) {
@@ -309,6 +314,14 @@ impl TransportRuntime {
             .unwrap_or_default();
         let io_timeout_ms = local.io_timeout_ms;
         let connect_timeout_ms = local.pool.connect_timeout_ms;
+        let ssh_helpers = https.as_ref().and_then(|(https, slots)| {
+            https.auth.as_ref().map(|auth| {
+                Arc::new(crate::git::endpoint::ssh_password_helpers::Helpers::new(
+                    auth.clone(),
+                    slots.clone(),
+                ))
+            })
+        });
         let allocation_ms = local.pool.allocation_timeout_ms;
         let interaction_ms = local.pool.interaction_timeout_ms;
         // The home the endpoint reads under, for the driver to name the file when it words a host-key failure and to
@@ -326,6 +339,19 @@ impl TransportRuntime {
                 .map(|ssh| ssh.agent.clone())
                 .unwrap_or_default(),
         );
+        // The connection host's factory makes its SSH adapters from the same settings as the endpoint session's SSH
+        // endpoint (step 1.3b); its HTTPS half is step 1.3c's (`connection_factory.rs`).
+        let factory =
+            connection_factory::CoreFactory::new(local.ssh.as_ref().map(|ssh| {
+                ssh_factory_inputs(ssh, &local.pool, io_timeout_ms, &handoff, ssh_helpers)
+            }));
+        let ssh_keys = factory.registry();
+        let connection = connection_host::ConnectionHost::build(
+            Arc::new(factory),
+            ssh_keys,
+            Arc::new(composition::process_safety()),
+        )
+        .map_err(|_| unavailable("connection host construction failed"))?;
         let (endpoint, peer_port) =
             Session::endpoint_with_https_native(local, https, handoff.clone(), native)?;
         let (driver, core_port) = Session::driver_with_ssh_budgets(
@@ -346,8 +372,18 @@ impl TransportRuntime {
             closed: false,
             notes: None,
             spawn_gate,
+            connection: Some(connection),
         }))))
     }
+    cfg_if::cfg_if! { if #[cfg(test)] {
+        /// The runtime's connection host's handle, and the key registry its SSH adapters look selected keys up in.
+        pub(crate) fn connection_for_test(
+            &self,
+        ) -> Option<(gwz_connection::HostHandle, Option<crate::git::endpoint::ssh_key_snapshot::Registry>)> {
+            let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+            state.connection.as_ref().map(|connection| (connection.handle(), connection.ssh_keys()))
+        }
+    } }
     cfg_if::cfg_if! { if #[cfg(test)] {
         /// The SSH home the runtime's driver names and expands `~/` under.
         pub(crate) fn driver_home_for_test(&self) -> Option<Home> {
@@ -458,7 +494,7 @@ impl TransportRuntime {
         Ok(guard)
     }
     pub async fn shutdown(&self) -> CleanupReport {
-        let (local, endpoint, cli) = {
+        let (local, endpoint, cli, connection) = {
             let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
             state.closed = true;
             state.local_link.stop();
@@ -466,6 +502,7 @@ impl TransportRuntime {
                 state.local.clone(),
                 state.local_endpoint.clone(),
                 state.cli.take(),
+                state.connection.take(),
             )
         };
         local.close();
@@ -474,7 +511,41 @@ impl TransportRuntime {
         let mut report = endpoint.cleanup().await;
         report.pending_local_work += local.cleanup().await.pending_local_work;
         report.pending_local_work += cli.cleanup().await;
+        if let Some(mut connection) = connection
+            && !connection.close().await
+        {
+            report.pending_local_work += 1;
+        }
         report
+    }
+}
+/// The SSH half of the connection host's factory: the endpoint session's own SSH inputs (its home's known-hosts file,
+/// its agent, the SSH helpers), a shared reservation and a key registry of the host's own, and the pool's budgets.
+fn ssh_factory_inputs(
+    ssh: &SshSettings,
+    pool: &pool::Config,
+    io_timeout_ms: u64,
+    handoff: &crate::git::endpoint::ssh_handoff::Handoff,
+    helpers: Option<Arc<crate::git::endpoint::ssh_password_helpers::Helpers>>,
+) -> connection_factory::SshInputs {
+    use crate::git::endpoint::{shared_reservation::Authority, ssh_key_snapshot::Registry};
+    let authority = Authority::new(pool.total, pool.per_host);
+    connection_factory::SshInputs {
+        registry: Registry::with_supervisor(authority.supervisor().clone()),
+        native: crate::git::endpoint::ssh_local::NativeInputs {
+            cleanup: Duration::from_millis(pool.cleanup_timeout_ms),
+            known_hosts: ssh_home::KnownHostsFile::under(&ssh.home, ssh.home_source).path,
+            agent: ssh.agent.clone(),
+            authority,
+            trust_log: handoff.clone(),
+            helpers,
+        },
+        settings: crate::git::endpoint::ssh_adapter::AdapterSettings {
+            connect_timeout_ms: pool.connect_timeout_ms,
+            io_timeout_ms,
+            interaction_timeout_ms: pool.interaction_timeout_ms,
+            cleanup_timeout_ms: pool.cleanup_timeout_ms,
+        },
     }
 }
 fn invalid(message: &str) -> ModelError {
