@@ -1,60 +1,10 @@
 use super::repository_support::{
-    branch_ref_name, ensure_branch_at_commit, git_file_status, open_repo,
-    pin_creation_time_filter_neutralization,
+    branch_ref_name, ensure_branch_at_commit, open_repo, pin_creation_time_filter_neutralization,
 };
 use super::*;
 
 pub(super) fn is_repository(_backend: &Git2Backend, path: &Path) -> ModelResult<bool> {
     gwz_git::Repository::is_repository(path).map_err(crate::git::model_error)
-}
-
-pub(super) fn commit_exists(_backend: &Git2Backend, path: &Path, oid: &str) -> ModelResult<bool> {
-    let Ok(oid) = git2::Oid::from_str(oid) else {
-        return Ok(false);
-    };
-    let repo = open_repo(path)?;
-    let object = match repo.find_object(oid, None) {
-        Ok(object) => object,
-        Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(false),
-        Err(error) => return Err(git_error(error)),
-    };
-    Ok(object.peel_to_commit().is_ok())
-}
-
-pub(super) fn read_file_at_commit(
-    _backend: &Git2Backend,
-    path: &Path,
-    commit: &str,
-    relative_path: &str,
-) -> ModelResult<Option<Vec<u8>>> {
-    let relative = Path::new(relative_path);
-    if relative.is_absolute()
-        || relative
-            .components()
-            .any(|component| !matches!(component, std::path::Component::Normal(_)))
-    {
-        return Err(ModelError::new(
-            ErrorCode::InvalidRequest,
-            format!("committed file path must be normalized and relative: '{relative_path}'"),
-        ));
-    }
-    let repo = open_repo(path)?;
-    let oid = git2::Oid::from_str(commit).map_err(git_error)?;
-    let commit = repo.find_commit(oid).map_err(git_error)?;
-    let tree = commit.tree().map_err(git_error)?;
-    let entry = match tree.get_path(relative) {
-        Ok(entry) => entry,
-        Err(error) if error.code() == git2::ErrorCode::NotFound => return Ok(None),
-        Err(error) => return Err(git_error(error)),
-    };
-    let object = entry.to_object(&repo).map_err(git_error)?;
-    let blob = object.as_blob().ok_or_else(|| {
-        ModelError::new(
-            ErrorCode::GitCommandFailed,
-            format!("committed path '{relative_path}' is not a file"),
-        )
-    })?;
-    Ok(Some(blob.content().to_vec()))
 }
 
 pub(super) fn create_repo(_backend: &Git2Backend, path: &Path) -> ModelResult<GitCreateResult> {
@@ -146,56 +96,6 @@ pub(super) fn checkout_branch(
         updated: true,
         commit: Some(oid.to_string()),
     })
-}
-
-pub(super) fn status(backend: &Git2Backend, path: &Path) -> ModelResult<GitStatus> {
-    backend.status_with_options(path, GitStatusOptions::default())
-}
-
-pub(super) fn status_with_options(
-    _backend: &Git2Backend,
-    path: &Path,
-    options: GitStatusOptions,
-) -> ModelResult<GitStatus> {
-    let repo = open_repo(path)?;
-    let mut opts = git2::StatusOptions::new();
-    opts.include_untracked(true)
-        .include_ignored(options.include_ignored)
-        .recurse_untracked_dirs(true)
-        // F17: detect renames so a `git mv` reports `R` + original_path (the status
-        // model already carries `original_path`) instead of an unrelated delete+add.
-        .renames_head_to_index(true)
-        .renames_index_to_workdir(true);
-    let statuses = repo.statuses(Some(&mut opts)).map_err(git_error)?;
-    let mut out = GitStatus::default();
-    for entry in statuses.iter() {
-        let status = entry.status();
-        if status.intersects(staged_statuses()) {
-            out.staged += 1;
-        }
-        if status.intersects(unstaged_statuses()) {
-            out.unstaged += 1;
-        }
-        if status.contains(git2::Status::WT_NEW) {
-            out.untracked += 1;
-        }
-        if status.contains(git2::Status::IGNORED) {
-            out.ignored += 1;
-        }
-        if status.contains(git2::Status::CONFLICTED) {
-            out.unresolved += 1;
-        }
-        if let Some(file) = git_file_status(&entry) {
-            out.files.push(file);
-        }
-    }
-    out.is_dirty = out.staged > 0 || out.unstaged > 0 || out.untracked > 0 || out.unresolved > 0;
-    Ok(out)
-}
-
-pub(super) fn head(_backend: &Git2Backend, path: &Path) -> ModelResult<GitHeadState> {
-    let repo = open_repo(path)?;
-    repo_head(&repo)
 }
 
 pub(super) fn stage_paths(

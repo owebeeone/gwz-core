@@ -5,4 +5,4 @@
 # same commit, to a gwz-git commit that is already pushed (gwz-git's own
 # .github/git2-rs.commit then names the same fork commit as this repository's).
 # checkout-siblings.sh reads the first 40-hex line.
-a5a4a742b6f748e6e4cd51cbb9641073ac4f7c47
+e3bc2a41f6bf19c87b1cd2ab555ff97dfe6b732a

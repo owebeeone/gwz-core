@@ -35,7 +35,7 @@ Class: **A** local, can move alongside Phases 1-4; **B** local, after the named 
 | Row | Capability | Cls | P moved | T moved | Production caller (file:line) | Target gwz-git API (proposal) | Order |
 |---|---|---|---:|---:|---|---|---|
 | G9 | `git_error` translation, open modes, `is_repository` | A | ~50 | small | `git/verify_checkout_state.rs:132` (every row; also `diff/git_diff.rs`, `diff/render/patch.rs`, 3 files in `checked_artifact/`) | `Error` + additive `ErrorKind::{NotARepository, ..}`; `OpenMode::{Exact, Environment(&Env)}` | 1 |
-| G2 | Refs and reads: `head`, `read_ref`, `tag_list`, `commit_exists`, `read_file_at_commit`, `is_ancestor`, `ahead_behind`, `merge_base`, `changed_paths_between`, `status`, `remotes` | A | ~345 | ~1,700 mixed | `workspace_ops/handle_fetch.rs:429,437`, `status/status_member.rs:125-187`, `diff/classify.rs:206-228`, `diff/tagged.rs:63`, 40+ files for `head`/`status` | `Repository::{head, resolve, tag_names, commit_exists, blob_at, is_ancestor, ahead_behind, merge_base, changed_paths, status, remotes}`; owned records | 2 (G2a: `head`, `resolve`, `tag_names` first, G1 needs them) |
+| G2 | Refs and reads: `head`, `read_ref`, `tag_list`, `commit_exists`, `read_file_at_commit`, `is_ancestor`, `ahead_behind`, `merge_base`, `changed_paths_between`, `status`, `remotes` | A | ~345 | ~1,700 mixed | `workspace_ops/handle_fetch.rs:429,437`, `status/status_member.rs:125-187`, `diff/classify.rs:206-228`, `diff/tagged.rs:63`, 40+ files for `head`/`status` | `Repository::{head, resolve, tag_names, commit_exists, blob_at, is_ancestor, ahead_behind, merge_base, changed_paths, status, remotes}`; owned records | 2 (G2a: `head`, `resolve`, `tag_names` first, G1 needs them); **landed in step 5.3, §8** |
 | G1 | Native commit and tag (+ CLI fallbacks) | A | ~2,210 | ~4,360 | `workspace_ops/handle_commit.rs:186,260`; `handle_tag.rs:221,259` | `commit::commit`, `tag::{create,delete}` taking `&Services{environment, clock, process, ..}`; returns `Outcome{id, route}` | 3 (in 3 mechanical sub-steps, §2.1) |
 | G3 | Worktree, branch and index mutation: `stage_paths*`, `checkout_*`, `reset_hard`, `switch_branch`, `branch_*`, `fast_forward`, `create_repo` | B (G2) | ~480 | unsplit (`tests/g10.rs` 175 + parts of `g01`, `g12`) | `handle_stage.rs:139,198`, `handle_branch.rs:213-310`, `handle_materialize/apply.rs:131-143`, `pull_head_member_preflight/root_lock.rs:107-158` | `index::stage`, `branch::{list,create,delete,switch}`, `checkout`, `reset_hard`, `Repository::init` | 5, **outside plan §4's rows** |
 | G4a | Push planning: `prepare_push`, `last_known_ref` | B (G2) | 214 | ~31 + `g08` | `workspace_ops/push_member.rs:200`, `handle_tag.rs:122`, `push_state.rs:140` | `remote::plan_push`, `remote::last_known_ref` | 4 |
@@ -368,3 +368,41 @@ from `handle_commit`'s path, one platform, no upgrade).
 7. 5.5's guard can start now with G1 and G2 as `planned`, so the first migrated row is born under it.
 
 Open decisions for the operator: F2 (supersession line), F6 (DAG), G3/G7/G8 in or out of Phase 5, F10, and the G10 dispositions.
+
+## 8. Landing records
+
+### G2 refs and reads (step 5.3; macOS verified, Windows receipt in the commit trailer)
+
+- **Moved and live.** `Repository::{head, tag_names, commit_exists, blob_at, is_ancestor, ahead_behind, merge_base,
+  changed_paths, status, remotes}` and the existing `resolve` (A1) in gwz-git; the guide's section A3 is the contract.
+  Core's `Git2Backend` methods `head`, `status`, `status_with_options`, `tag_list`, `read_ref`, `commit_exists`,
+  `read_file_at_commit`, `is_ancestor`, `ahead_behind`, `merge_base`, `changed_paths_between`, `remotes` delegate through
+  `git/gitbackend/reads.rs` (the one file: the 12 backend methods and `head_at`, no `git2` token). Production callers are unchanged (the `GitBackend`
+  trait), e.g. `workspace_ops/handle_fetch.rs:429,437`, `status/status_member.rs:125-187`, `diff/classify.rs:206-228`,
+  `diff/tagged.rs:63`; the ratchet's `callers` for G2 is `git/gitbackend/reads.rs` itself, which is the only core file that
+  names the gwz-git methods.
+- **Retired (the seed for 5.5's `retired_paths` and `retired_symbols`).** Paths: `git/index_status_char.rs`,
+  `git/worktree_status_char.rs`, `git/tests/g05.rs`, `git/tests/g14.rs`. Symbols (no longer present in core): `fn tag_list(`,
+  `fn read_ref(`, `fn ahead_behind(`, `fn is_ancestor(` in `gitbackend/refs.rs`; `fn commit_exists(`, `fn read_file_at_commit(`,
+  `fn status(`, `fn status_with_options(`, `fn head(` in `gitbackend/repository.rs`; `fn merge_base(`,
+  `fn changed_paths_between(` in `gitbackend/comparison.rs`; `fn remotes(` in `gitbackend/transport.rs`; `git_file_status`,
+  `rename_delta`, `index_status_char`, `worktree_status_char`, `unborn_head`. The probe test
+  `refs_and_reads_live_in_gwz_git_and_core_keeps_no_copy` (`gitbackend/gwz_git_tests.rs`) asserts them today.
+- **Left in core on purpose, and why.** `verify_checkout_state.rs`'s `repo_head(&git2::Repository)` stays as a *delegation*
+  (`head_at(repo.path())`, so gwz-git reads HEAD) because rows still in core hold a native handle and call it: G3's
+  `branch_list`, `branch_create`, `branch_delete` and `switch_branch` (`refs.rs`), and G10's `recovery_support.rs:358` and
+  `merge_support.rs:42`. It dies with the last of them. `staged_statuses()` and `unstaged_statuses()` (two flag sets) stay
+  because `verify_checkout_state` (G3) uses them with its own status options; gwz-git holds its own private pair.
+  `open_repo` and `find_remote` stay: every G3/G4/G5/G10 caller uses them.
+- **Named by this map's §2.2 caller list but not in the row's function list, so not moved.** `repository_paths` (8 production
+  sites in 4 files) and `repository_index` (1 site, `checked_artifact/capability/pre_catalog/provider/retained.rs:199`) are
+  implemented inline in `gitbackend.rs` over `open_repo`. `repository_paths` needs no new gwz-git API
+  (`git_dir`, `common_dir`, `work_dir` exist); `repository_index` needs an owned index-snapshot record (path, entries with
+  mode, flags, times, stat words). Both are `git2` reads that a "reads" row would hold: a decision for the operator
+  (add them to G2's tail or give them a row), not taken here.
+- **Tests.** Eight core tests moved (5 from `tests/g01.rs`, the 2 of `g05.rs`, the 1 of `g14.rs`) into
+  `gwz-git/tests/refs_reads.rs`, which has 18 (the eight rewritten against the library API, ten new: typed-id and
+  object-format refusals, detached HEAD, tag names, merge base, changed paths, conflicts, remotes, bare repositories).
+  Composition tests that use a row still in core (`reads_and_adds_remotes`, the `g09` tag tests) stay in core. Core gained 2
+  delegation tests (projection onto the model, error translation) and the probe. `repository_contract_tests.rs` (fake
+  against native, through the trait) stays: it tests the trait, not a function.
