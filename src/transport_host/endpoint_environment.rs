@@ -22,9 +22,20 @@
 //! HTTPS remotes, and the agent probe (Pageant's window on Windows) runs once. On
 //! both platforms the credential helper is `git` with the snapshot as its environment
 //! (plan step 4.3).
+//!
+//! One capture gives an operation its connection-owner inputs too (step 1.5 of
+//! dev-docs/GwzTransportReleaseConvergencePlan.md; contract section 7): the
+//! `EndpointProfile`, whose canonical bytes are the reuse design's section 3 fields
+//! (home, agent, CA content, proxy and bypass, timeouts, build) and whose inputs are
+//! the endpoint settings an endpoint factory makes the adapter from; and the
+//! `AuthContext`, which holds the helper's executable and environment
+//! (`https_auth::OperationAuth`). The helper environment, and so every token and
+//! configuration file it names, is in the context alone: never in the profile's
+//! bytes or inputs, so never in an endpoint instance.
 
 use super::{EndpointSettings, HttpsEndpointConfig, apply_native_timeout, invalid, unsupported};
 use crate::git::endpoint::{ca_bundle, https_connection, ssh_home};
+use gwz_connection::{AuthContext, EndpointProfile};
 cfg_if::cfg_if! { if #[cfg(not(any(windows, target_vendor = "apple")))] {
     use crate::git::endpoint::{https_tls, verify_paths};
 } }
@@ -87,6 +98,45 @@ pub(super) fn endpoint_config_native(
     cwd: Option<&std::path::Path>,
     machine: Option<MachineProxy>,
 ) -> ModelResult<(EndpointSettings, HttpsEndpointConfig)> {
+    let capture = capture_operation(environment, cwd, machine)?;
+    // The runtime's endpoint is its operation's own, so its helper is the one the operation's context holds.
+    let auth = https_auth::OperationAuth::of(&capture.auth).map(|auth| auth.helper().clone());
+    let inputs = capture.inputs;
+    Ok((
+        inputs.local.clone(),
+        HttpsEndpointConfig {
+            tls: inputs.tls.clone(),
+            auth,
+        },
+    ))
+}
+
+/// What an endpoint factory makes an operation's adapter from: the endpoint settings and the TLS and proxy
+/// configuration, as the profile's validated inputs. It holds no helper, environment or credential.
+pub(crate) struct EndpointInputs {
+    pub(crate) local: EndpointSettings,
+    pub(crate) tls: https_connection::Config,
+}
+
+/// One operation's capture: its profile and its authentication context, and the inputs the profile carries.
+pub(crate) struct OperationCapture {
+    pub(crate) inputs: std::sync::Arc<EndpointInputs>,
+    #[allow(
+        dead_code,
+        reason = "the endpoint factory of steps 1.3b and 1.3c admits operations with it; tests do now"
+    )]
+    pub(crate) profile: EndpointProfile,
+    pub(crate) auth: AuthContext,
+}
+
+/// The endpoint settings, profile and authentication context of one operation, from `environment`, captured once on its
+/// original entry. The TLS and proxy settings are checked first, so an unusable CA file or proxy refuses the operation
+/// before any endpoint exists.
+pub(super) fn capture_operation(
+    environment: &EnvironmentSnapshot,
+    cwd: Option<&std::path::Path>,
+    machine: Option<MachineProxy>,
+) -> ModelResult<OperationCapture> {
     // Windows reads its proxy from the machine and never the environment, so an entry that did not capture the machine
     // setting has nothing to configure the endpoint's HTTPS connections from.
     if cfg!(windows) && machine.is_none() {
@@ -94,34 +144,183 @@ pub(super) fn endpoint_config_native(
             "the Windows machine proxy setting was not captured on the original entry",
         ));
     }
-    let tls = tls_config(environment, machine.as_ref())?;
+    let (tls, ca) = tls_config(environment, machine.as_ref())?;
     // The one home contract (plan step 3.1): `known_hosts` and `~/` identities resolve under the home chosen here,
     // once, from the snapshot and the current directory its driver captured.
     let home = ssh_home::resolve(ssh_home::PLATFORM, environment, cwd, &ssh_home::Disk)
         .map_err(|refusal| invalid(&refusal.to_string()))?;
-    let ssh = Some(SshSettings {
+    let ssh = SshSettings {
         home: home.path,
         home_source: home.source,
         agent: agent(environment),
-    });
+    };
     let timeout = crate::git::transport_timeout_ms();
     let mut pool = pool::Config::default();
     apply_native_timeout(&mut pool, timeout);
+    let canonical = profile::canonical(&profile::Fields {
+        ssh: &ssh,
+        ca: ca.as_ref(),
+        roots: [
+            value(environment, &["SSL_CERT_FILE"]),
+            value(environment, &["SSL_CERT_DIR"]),
+        ],
+        tls: &tls,
+        machine: machine.as_ref(),
+        timeout,
+        pool: &pool,
+    });
     let local = EndpointSettings {
-        ssh,
+        ssh: Some(ssh),
         pool,
         io_timeout_ms: timeout,
     };
     // The helper is spawned with exactly this snapshot as its environment, on either platform; Windows finds
     // `git.exe` on the snapshot's own `PATH` (`https_auth::executable`).
-    let auth = Some(https_auth::Config {
+    let auth = https_auth::OperationAuth::context(https_auth::Config {
         executable: PathBuf::from("git"),
         environment: environment
             .entries()
             .map(|(name, value)| (name.to_owned(), value.to_owned()))
             .collect(),
     });
-    Ok((local, HttpsEndpointConfig { tls, auth }))
+    let inputs = std::sync::Arc::new(EndpointInputs { local, tls });
+    let digest = profile::digest(&canonical);
+    let profile = EndpointProfile::with_inputs(canonical, digest, inputs.clone())
+        .map_err(|_| invalid("endpoint profile exceeds its bound"))?;
+    Ok(OperationCapture {
+        inputs,
+        profile,
+        auth,
+    })
+}
+
+/// The CA file the capture read: the variable's value and the SHA-256 of the bytes it held.
+pub(super) struct CaFile {
+    path: OsString,
+    digest: [u8; 32],
+}
+
+/// The canonical bytes of a profile (the reuse design's section 3 fields, in its order): each field a tag and a
+/// length-prefixed value, an absent value distinct from an empty one. Paths are compared as bytes (WTF-8 on Windows),
+/// lexically. Values with no byte form of their own (the home's source, the agent and machine proxy forms, the pool's
+/// clocks) are their `Debug` text, which names every field that selects them in this build; the Pageant pin's is its
+/// window and process, an address the reuse design treats as nothing more (possession is proven at lease, step 1.6).
+mod profile {
+    use super::{CaFile, MachineProxy, OsString, SshSettings, https_connection, pool};
+
+    /// What the format and the build are: a profile is never compared across either.
+    const FORMAT: &[u8] = b"gwz-endpoint-profile/1";
+
+    pub(super) struct Fields<'a> {
+        pub(super) ssh: &'a SshSettings,
+        pub(super) ca: Option<&'a CaFile>,
+        /// `SSL_CERT_FILE` and `SSL_CERT_DIR`, which choose OpenSSL's platform roots where that is the backend.
+        pub(super) roots: [Option<OsString>; 2],
+        pub(super) tls: &'a https_connection::Config,
+        pub(super) machine: Option<&'a MachineProxy>,
+        pub(super) timeout: u64,
+        pub(super) pool: &'a pool::Config,
+    }
+
+    struct Writer(Vec<u8>);
+    impl Writer {
+        fn field(&mut self, tag: u8, value: Option<&[u8]>) {
+            self.0.push(tag);
+            match value {
+                None => self.0.extend_from_slice(&u32::MAX.to_le_bytes()),
+                Some(bytes) => {
+                    let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX - 1);
+                    self.0.extend_from_slice(&len.to_le_bytes());
+                    self.0.extend_from_slice(bytes);
+                }
+            }
+        }
+    }
+
+    pub(super) fn canonical(fields: &Fields<'_>) -> Vec<u8> {
+        let mut out = Writer(Vec::new());
+        out.field(1, Some(FORMAT));
+        out.field(2, Some(env!("CARGO_PKG_VERSION").as_bytes()));
+        out.field(3, Some(fields.ssh.home.as_os_str().as_encoded_bytes()));
+        out.field(4, Some(format!("{:?}", fields.ssh.home_source).as_bytes()));
+        out.field(5, Some(format!("{:?}", fields.ssh.agent).as_bytes()));
+        out.field(6, fields.ca.map(|ca| ca.path.as_encoded_bytes()));
+        out.field(7, fields.ca.map(|ca| ca.digest.as_slice()));
+        for (tag, root) in [8, 9].into_iter().zip(&fields.roots) {
+            out.field(tag, root.as_ref().map(|value| value.as_encoded_bytes()));
+        }
+        let proxy = fields.tls.proxy.as_ref().map(|proxy| {
+            let mut bytes = proxy.host.as_bytes().to_vec();
+            bytes.extend_from_slice(&proxy.port.to_le_bytes());
+            bytes.push(u8::from(proxy.tls));
+            bytes
+        });
+        out.field(10, proxy.as_deref());
+        let mut bypass: Vec<String> = fields
+            .tls
+            .no_proxy
+            .iter()
+            .map(|host| host.to_ascii_lowercase())
+            .collect();
+        bypass.sort();
+        bypass.dedup();
+        out.field(11, Some(bypass.join("\0").as_bytes()));
+        let machine = fields.machine.map(|machine| format!("{machine:?}"));
+        out.field(12, machine.as_deref().map(str::as_bytes));
+        out.field(13, Some(&fields.timeout.to_le_bytes()));
+        out.field(14, Some(format!("{:?}", fields.pool).as_bytes()));
+        out.0
+    }
+
+    pub(super) fn digest(canonical: &[u8]) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(canonical).into()
+    }
+
+    cfg_if::cfg_if! {
+        if #[cfg(test)] {
+            use crate::git::endpoint::{agent_source::AgentSource, ssh_home::HomeSource};
+
+            /// The canonical bytes of a profile whose only varying inputs are the proxy and the bypass list.
+            fn with_proxy(proxy: Option<&str>, bypass: &[&str]) -> Vec<u8> {
+                let ssh = SshSettings {
+                    home: "home".into(),
+                    home_source: HomeSource::Home,
+                    agent: AgentSource::None,
+                };
+                let tls = https_connection::Config {
+                    proxy: proxy.map(|host| https_connection::Proxy {
+                        host: host.into(),
+                        port: 3128,
+                        tls: false,
+                        authorization: None,
+                    }),
+                    no_proxy: bypass.iter().map(|host| host.to_string()).collect(),
+                    ..https_connection::Config::default()
+                };
+                canonical(&Fields {
+                    ssh: &ssh,
+                    ca: None,
+                    roots: [None, None],
+                    tls: &tls,
+                    machine: None,
+                    timeout: 9_000,
+                    pool: &pool::Config::default(),
+                })
+            }
+
+            /// The proxy (the environment's on Unix, the machine's named proxy on Windows) and its bypass list are
+            /// profile fields, on every platform; the bypass list compares as a set of lower-cased hosts.
+            #[test]
+            fn the_proxy_and_bypass_list_are_profile_fields() {
+                let base = with_proxy(Some("proxy-a.example"), &["Internal.example", ".corp.example"]);
+                assert_ne!(base, with_proxy(Some("proxy-b.example"), &["internal.example", ".corp.example"]));
+                assert_ne!(base, with_proxy(None, &["internal.example", ".corp.example"]));
+                assert_ne!(base, with_proxy(Some("proxy-a.example"), &["internal.example"]));
+                assert_eq!(base, with_proxy(Some("proxy-a.example"), &[".corp.example", "internal.example"]));
+            }
+        }
+    }
 }
 
 /// The agent the snapshot's `SSH_AUTH_SOCK` selects: a socket path on Unix, and on Windows the one agent of TR1.8 §4
@@ -182,15 +381,16 @@ cfg_if::cfg_if! {
 fn tls_config(
     environment: &EnvironmentSnapshot,
     machine: Option<&MachineProxy>,
-) -> ModelResult<https_connection::Config> {
+) -> ModelResult<(https_connection::Config, Option<CaFile>)> {
     let mut config = https_connection::Config::default();
     if let Some(machine) = machine {
         machine.apply(&mut config);
     }
+    let mut ca = None;
     if let Some(path) = value(environment, CA_FILE_VARIABLES) {
         use std::io::Read;
         let file =
-            std::fs::File::open(path).map_err(|_| invalid("cannot read endpoint CA file"))?;
+            std::fs::File::open(&path).map_err(|_| invalid("cannot read endpoint CA file"))?;
         let mut bytes = Vec::new();
         file.take(1024 * 1024 + 1)
             .read_to_end(&mut bytes)
@@ -204,6 +404,11 @@ fn tls_config(
             }
             ca_bundle::Refusal::NoCertificate => invalid("endpoint CA file has no certificate"),
         })?;
+        // The profile compares what the file held when it was read, not its name alone.
+        ca = Some(CaFile {
+            path,
+            digest: profile::digest(&bytes),
+        });
     }
     cfg_if::cfg_if! { if #[cfg(not(any(windows, target_vendor = "apple")))] {
         config.platform_roots = Some(platform_roots(environment));
@@ -214,7 +419,7 @@ fn tls_config(
     config
         .validate()
         .map_err(|_| invalid("unsupported endpoint TLS/proxy configuration"))?;
-    Ok(config)
+    Ok((config, ca))
 }
 
 cfg_if::cfg_if! {
