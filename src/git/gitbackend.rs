@@ -12,13 +12,13 @@ use super::*;
 
 mod authority_backend;
 mod backend;
+mod commit_tag;
 mod comparison;
 mod contract;
 mod factory;
 mod merge_prepared;
 mod merge_recovery;
 mod merge_support;
-mod native_commit;
 mod preservation;
 mod preservation_image;
 mod preservation_root;
@@ -56,7 +56,7 @@ pub use contract::*;
 pub use factory::make_repository;
 #[cfg(test)]
 pub(crate) use factory::make_repository;
-pub use native_commit::RouteNotes;
+pub use gwz_git::native_commit::RouteNotes;
 pub use transport_observations::TransportObservations;
 pub(crate) use transport_support::identity::has_options as has_transport_options;
 pub(crate) use transport_support::identity::{
@@ -401,15 +401,15 @@ impl GitBackend for Git2Backend {
     delegate!(push_anonymous(path: &Path, url: &str, refspec: &str) -> ModelResult<GitPushResult> => transport::push_anonymous);
     delegate!(stage_paths(path: &Path, pathspecs: &[&str]) -> ModelResult<GitStageResult> => repository::stage_paths);
     delegate!(stage_paths_allowing_other_conflicts(path: &Path, pathspecs: &[&str],) -> ModelResult<GitStageResult> => repository::stage_paths_allowing_other_conflicts);
-    delegate!(commit(path: &Path, message: &str, all: bool) -> ModelResult<GitCommitResult> => native_commit::commit);
+    delegate!(commit(path: &Path, message: &str, all: bool) -> ModelResult<GitCommitResult> => commit_tag::commit);
     delegate!(commit_merge_resolution(path: &Path, message: &str) -> ModelResult<GitCommitResult> => merge_recovery::commit_merge_resolution);
     delegate!(commit_merge_resolution_checked(path: &Path, target_branch: &str, expected_before: &str, expected_merge_head: &str, message: &str, attribution: Option<&crate::model::OperationAttribution>,) -> ModelResult<GitCommitResult> => merge_recovery::commit_merge_resolution_checked);
     delegate!(prepare_merge_resolution_checked(path: &Path, target_branch: &str, expected_before: &str, expected_merge_head: &str, attribution: Option<&crate::model::OperationAttribution>,) -> ModelResult<GitPreparedCommit> => merge_recovery::prepare_merge_resolution_checked);
     delegate!(validate_prepared_merge_resolution_state(path: &Path, target_branch: &str, expected_before: &str, expected_merge_head: &str, prepared: &GitPreparedCommit,) -> ModelResult<()> => merge_recovery::validate_prepared_merge_resolution_state);
     delegate!(commit_prepared_merge_resolution_checked(path: &Path, target_branch: &str, expected_before: &str, expected_merge_head: &str, message: &str, prepared: &GitPreparedCommit,) -> ModelResult<GitCommitResult> => merge_recovery::commit_prepared_merge_resolution_checked);
-    delegate!(tag_create(path: &Path, name: &str, message: Option<&str>, signed: bool,) -> ModelResult<GitTagResult> => native_commit::tag_create);
+    delegate!(tag_create(path: &Path, name: &str, message: Option<&str>, signed: bool,) -> ModelResult<GitTagResult> => commit_tag::tag_create);
     delegate!(tag_list(path: &Path) -> ModelResult<Vec<String>> => refs::tag_list);
-    delegate!(tag_delete(path: &Path, name: &str) -> ModelResult<()> => native_commit::tag_delete);
+    delegate!(tag_delete(path: &Path, name: &str) -> ModelResult<()> => commit_tag::tag_delete);
     delegate!(read_ref(path: &Path, ref_spec: &str) -> ModelResult<Option<String>> => refs::read_ref);
     delegate!(is_ancestor(path: &Path, ancestor: &str, descendant: &str) -> ModelResult<bool> => refs::is_ancestor);
     delegate!(ahead_behind(path: &Path, local: &str, upstream: &str) -> ModelResult<GitAheadBehind> => refs::ahead_behind);
@@ -468,14 +468,5 @@ cfg_if::cfg_if! {
     if #[cfg(test)] {
         mod gwz_git_tests;
         mod spawn_gate_tests;
-    }
-}
-
-// Characterization remains outside the production backend.
-cfg_if::cfg_if! {
-    if #[cfg(test)] {
-        #[macro_use]
-        mod commit_tag_characterization;
-        mod commit_tag_identity_characterization;
     }
 }

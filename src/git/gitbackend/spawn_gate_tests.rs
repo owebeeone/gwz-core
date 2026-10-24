@@ -21,7 +21,11 @@ fn repository(gate: &SpawnGate) -> (tempfile::TempDir, Git2Backend) {
         .unwrap();
     let mut backend = Git2Backend::new();
     backend.spawn_gate = gate.clone();
-    (directory, backend)
+    // The route rule would serve most of these natively; force the Git CLI route, which gwz-git runs through the gate.
+    (
+        directory,
+        backend.with_route_policy(gwz_git::native_commit::RoutePolicy::CLI_ONLY),
+    )
 }
 
 /// Runs `site` on another thread while the test holds `gate`: it must not finish until the hold is dropped.
@@ -48,7 +52,9 @@ fn git_tag_waits_for_the_backends_gate() {
     let gate = SpawnGate::with_exclusion(true);
     let (directory, backend) = repository(&gate);
     blocked_until_released(&gate, "git tag", || {
-        refs::tag_create_cli(&backend, directory.path(), "gated", None, false).unwrap();
+        backend
+            .tag_create(directory.path(), "gated", None, false)
+            .unwrap();
     });
     assert!(
         backend
@@ -62,9 +68,11 @@ fn git_tag_waits_for_the_backends_gate() {
 fn git_tag_delete_waits_for_the_backends_gate() {
     let gate = SpawnGate::with_exclusion(true);
     let (directory, backend) = repository(&gate);
-    refs::tag_create_cli(&backend, directory.path(), "gated", None, false).unwrap();
+    backend
+        .tag_create(directory.path(), "gated", None, false)
+        .unwrap();
     blocked_until_released(&gate, "git tag -d", || {
-        refs::tag_delete_cli(&backend, directory.path(), "gated").unwrap();
+        backend.tag_delete(directory.path(), "gated").unwrap();
     });
     assert!(backend.tag_list(directory.path()).unwrap().is_empty());
 }
@@ -75,7 +83,7 @@ fn git_commit_waits_for_the_backends_gate() {
     let (directory, backend) = repository(&gate);
     blocked_until_released(&gate, "git commit", || {
         // Whether the commit succeeds depends on the machine's identity; the row is about when it starts.
-        let _ = repository::commit_cli(&backend, directory.path(), "two", true);
+        let _ = backend.commit(directory.path(), "two", true);
     });
 }
 

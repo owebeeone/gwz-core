@@ -137,6 +137,13 @@ impl SpawnGate {
     }
 }
 
+/// gwz-git launches the Git CLI route's child through the host's gate.
+impl gwz_git::native_commit::ProcessGate for SpawnGate {
+    fn output(&self, command: &mut Command) -> io::Result<Output> {
+        SpawnGate::output(self, command)
+    }
+}
+
 impl Default for SpawnGate {
     fn default() -> Self {
         Self::new()

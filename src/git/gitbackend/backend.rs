@@ -16,14 +16,21 @@ pub struct Git2Repository {
     pub(crate) ssh: super::transport_binding::Runtime,
     /// The `GIT_*` variables the native commit and tag route reads, captured
     /// when the backend is built.
-    pub(crate) environment: super::native_commit::GitEnvironment,
-    pub(crate) route_policy: super::native_commit::RoutePolicy,
+    pub(crate) environment: gwz_git::native_commit::GitEnvironment,
+    pub(crate) route_policy: gwz_git::native_commit::RoutePolicy,
     /// Where a commit or tag says why it ran the Git CLI, if the caller gave a reader.
-    pub(crate) route_notes: Option<super::native_commit::RouteNotes>,
+    pub(crate) route_notes: Option<gwz_git::native_commit::RouteNotes>,
     /// The spawn gate of the host this backend's operation runs under (WH2 contract C9): held by every spawn of the
     /// backend's that names no handle list, so none lands in a launch's inheritance window. A backend with no host
     /// has a gate of its own, which nothing else holds.
     pub(crate) spawn_gate: crate::git::spawn_gate::SpawnGate,
+}
+
+/// The process environment the native commit and tag route reads, captured once
+/// when a backend is built (the route decision never reads the live process
+/// environment at the point of use). gwz-git has no capture of its own.
+fn process_environment() -> gwz_git::native_commit::GitEnvironment {
+    gwz_git::native_commit::GitEnvironment::from_vars(std::env::vars_os())
 }
 
 /// Compatibility name for existing callers.
@@ -56,7 +63,7 @@ impl Git2Backend {
             identities: Default::default(),
             observations: Default::default(),
             ssh: Default::default(),
-            environment: super::native_commit::GitEnvironment::process(),
+            environment: process_environment(),
             route_policy: Default::default(),
             route_notes: None,
             spawn_gate: Default::default(),
@@ -65,10 +72,21 @@ impl Git2Backend {
 
     /// A copy of this backend that tells `notes` why a commit or tag ran the Git CLI
     /// (the CLI gives a reader for `--verbose` in human output).
-    pub fn with_route_notes(&self, notes: super::native_commit::RouteNotes) -> Self {
+    pub fn with_route_notes(&self, notes: gwz_git::native_commit::RouteNotes) -> Self {
         let mut backend = self.clone();
         backend.route_notes = Some(notes);
         backend
+    }
+
+    cfg_if::cfg_if! {
+        if #[cfg(test)] {
+            /// A copy of this backend that takes the given route policy.
+            pub(crate) fn with_route_policy(&self, policy: gwz_git::native_commit::RoutePolicy) -> Self {
+                let mut backend = self.clone();
+                backend.route_policy = policy;
+                backend
+            }
+        }
     }
 
     pub fn without_credential_helpers() -> Self {
@@ -79,7 +97,7 @@ impl Git2Backend {
             identities: Default::default(),
             observations: Default::default(),
             ssh: Default::default(),
-            environment: super::native_commit::GitEnvironment::process(),
+            environment: process_environment(),
             route_policy: Default::default(),
             route_notes: None,
             spawn_gate: Default::default(),

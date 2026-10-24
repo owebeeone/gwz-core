@@ -16,6 +16,15 @@ sibling can pass what CI cannot compile. --allow-transport-pin-mismatch lets a
 lane that develops gwz-core and gwz-transport at once run anyway; it prints
 both commits, and the pin must be moved before gwz-core is pushed.
 
+gwz-git, which gwz-core builds against by path (step 5.2 moved native commit and
+tag there), is checked the same way: its process-global check runs over the
+checkout that GWZ_GIT_CHECKOUT names, or else the one beside gwz-core, with the
+allowlist gwz-git carries (scripts/process_globals_allowlist.json), and the
+checkout must be at the first 40-hex line of .github/gwz-git.commit.
+--allow-git-pin-mismatch lets a lane that develops gwz-core and gwz-git at once
+run anyway, as the transport flag does. Every job that builds gwz-core has gwz-git
+beside it, so there is no skip flag.
+
 The conditional-compilation boundary check covers gwz-core and the gwz-cli and
 gwz-py checkouts beside it; with either missing, the run fails.
 --skip-cfg-siblings checks gwz-core alone and prints SKIPPED GATE for the two
@@ -266,6 +275,75 @@ def check_cfg_boundaries(skipped: list[str]) -> None:
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_cfg_boundaries.py"), *skips], check=True)
 
 
+GIT_CHECKOUT = "GWZ_GIT_CHECKOUT"
+GIT_PIN_FILE = ".github/gwz-git.commit"
+ALLOW_GIT_PIN_MISMATCH = "--allow-git-pin-mismatch"
+GIT_ALLOWLIST = "scripts/process_globals_allowlist.json"
+
+
+def git_checkout() -> Path:
+    """The gwz-git checkout that gwz-core builds against: GWZ_GIT_CHECKOUT, or else the one beside gwz-core.
+
+    A named checkout that is missing is an error, never a reason to look elsewhere, and so is finding neither.
+    """
+    sibling = ROOT.parent / "gwz-git"
+    ways = (
+        "gwz-git's process-global check needs a gwz-git checkout: "
+        f"set {GIT_CHECKOUT}=<path>, or check gwz-git out beside gwz-core at {sibling}"
+    )
+    named = os.environ.get(GIT_CHECKOUT)
+    if named:
+        checkout = Path(named)
+        if not checkout.is_dir():
+            raise SystemExit(f"{GIT_CHECKOUT} names {named}, which is not a directory. {ways}")
+        return checkout
+    if sibling.is_dir():
+        return sibling
+    raise SystemExit(f"no gwz-git checkout found. {ways}")
+
+
+def pinned_git_commit() -> str:
+    """The gwz-git commit CI builds against: the first 40-hex line of the pin file."""
+    path = ROOT / GIT_PIN_FILE
+    if not path.is_file():
+        raise SystemExit(f"{path} is missing: it pins the gwz-git commit CI builds against")
+    for line in path.read_text().splitlines():
+        if re.fullmatch(r"[0-9a-f]{40}", line.strip()):
+            return line.strip()
+    raise SystemExit(f"{path} names no gwz-git commit (a 40-hex line)")
+
+
+def check_git_process_globals(allow_pin_mismatch: bool) -> None:
+    """gwz-core, the consumer, checks the gwz-git it builds against, at the pin, with gwz-git's own allowlist."""
+    checkout = git_checkout()
+    pinned = pinned_git_commit()
+    head = transport_head(checkout)
+    if head != pinned:
+        if not allow_pin_mismatch:
+            raise SystemExit(
+                f"{checkout} is at {head}, but {GIT_PIN_FILE} pins {pinned}, the commit CI builds against. "
+                f"Check the pin out, or move the pin in the commit that needs the newer gwz-git; a lane "
+                f"developing both at once passes {ALLOW_GIT_PIN_MISMATCH}"
+            )
+        print(
+            f"PIN OVERRIDE ({ALLOW_GIT_PIN_MISMATCH}): {checkout} is at {head}, not the pin {pinned} "
+            f"({GIT_PIN_FILE}); move the pin before gwz-core is pushed",
+            flush=True,
+        )
+    print(f"gwz-git process-global check: {checkout}", flush=True)
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/checks/check_process_globals.py"),
+            "--repo",
+            str(checkout),
+            "--allowlist",
+            str(checkout / GIT_ALLOWLIST),
+        ],
+        check=True,
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     # No abbreviations: a prefix such as --skip must never turn a gate off.
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
@@ -281,6 +359,12 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="run although the gwz-transport checkout is not at .github/gwz-transport.commit; "
         "for a lane that develops gwz-core and gwz-transport at once; prints both commits",
+    )
+    parser.add_argument(
+        ALLOW_GIT_PIN_MISMATCH,
+        action="store_true",
+        help="run although the gwz-git checkout is not at .github/gwz-git.commit; "
+        "for a lane that develops gwz-core and gwz-git at once; prints both commits",
     )
     parser.add_argument(
         SKIP_CFG_SIBLINGS,
@@ -315,6 +399,7 @@ def main(argv: list[str] | None = None) -> None:
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_windows_parity.py")], check=True)
     check_transport_process_globals(options.skip_transport_globals)
     check_transport_pin(options.skip_transport_globals, options.allow_transport_pin_mismatch)
+    check_git_process_globals(options.allow_git_pin_mismatch)
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_crate_versions.py")], check=True)
     filesystem_result = run("fake", library_args, list(FILESYSTEM_CONTRACTS), filesystem="fake", **narrow)
     if filesystem_result and "--no-fail-fast" not in cargo_args:

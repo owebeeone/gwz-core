@@ -41,6 +41,9 @@ class TransportGlobals(unittest.TestCase):
         (self.core / '.github').mkdir(parents=True)
         (self.core / '.github' / 'gwz-transport.commit').write_text('a' * 40 + '\n')
         self.sibling = self.workspace / 'gwz-transport'
+        # main() also checks gwz-git, beside gwz-core at its pin (test_run_tests_git_globals.py).
+        (self.core / '.github' / 'gwz-git.commit').write_text('a' * 40 + '\n')
+        (self.workspace / 'gwz-git').mkdir()
 
     def run_main(self, argv, environ):
         """main() in a workspace without the real sibling, every subprocess green.

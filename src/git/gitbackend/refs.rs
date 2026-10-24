@@ -161,72 +161,6 @@ pub(super) fn switch_branch(
     })
 }
 
-/// The Git CLI route of `tag_create`: `git tag`, so hooks, signing and tagger
-/// configuration are honored. `native_commit` picks it when the route rule
-/// says libgit2 cannot reproduce Git exactly.
-pub(super) fn tag_create_cli(
-    backend: &Git2Backend,
-    path: &Path,
-    name: &str,
-    message: Option<&str>,
-    signed: bool,
-) -> ModelResult<GitTagResult> {
-    let mut command = std::process::Command::new("git");
-    // The child's directory is explicit: it never inherits the host's.
-    command.current_dir(path).arg("-C").arg(path).arg("tag");
-    if signed {
-        command.arg("-s");
-    } else if message.is_some() {
-        command.arg("-a");
-    }
-    if let Some(message) = message {
-        command.arg("-m").arg(message);
-    }
-    command.arg(name);
-    let output = backend.spawn_gate.output(&mut command).map_err(|err| {
-        ModelError::new(
-            ErrorCode::GitCommandFailed,
-            format!("failed to run git tag: {err}"),
-        )
-    })?;
-    if !output.status.success() {
-        return Err(ModelError::new(
-            ErrorCode::GitCommandFailed,
-            format!(
-                "git tag failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ),
-        ));
-    }
-    verify_tag_created(backend, path, name)
-}
-
-/// AD1 self-verify: the tag exists (read fresh) and resolves to a commit.
-pub(super) fn verify_tag_created(
-    backend: &Git2Backend,
-    path: &Path,
-    name: &str,
-) -> ModelResult<GitTagResult> {
-    if !backend.tag_list(path)?.iter().any(|tag| tag == name) {
-        return Err(ModelError::new(
-            ErrorCode::GitCommandFailed,
-            format!("tag '{name}' missing after creation"),
-        ));
-    }
-    let commit = backend
-        .read_ref(path, &format!("refs/tags/{name}^{{commit}}"))?
-        .ok_or_else(|| {
-            ModelError::new(
-                ErrorCode::GitCommandFailed,
-                format!("tag '{name}' did not resolve"),
-            )
-        })?;
-    Ok(GitTagResult {
-        name: name.to_owned(),
-        commit,
-    })
-}
-
 pub(super) fn tag_list(_backend: &Git2Backend, path: &Path) -> ModelResult<Vec<String>> {
     let repo = open_repo(path)?;
     let names = repo.tag_names(None).map_err(git_error)?;
@@ -238,49 +172,6 @@ pub(super) fn tag_list(_backend: &Git2Backend, path: &Path) -> ModelResult<Vec<S
     }
     tags.sort();
     Ok(tags)
-}
-
-/// The Git CLI route of `tag_delete`; see [`tag_create_cli`].
-pub(super) fn tag_delete_cli(backend: &Git2Backend, path: &Path, name: &str) -> ModelResult<()> {
-    let mut command = std::process::Command::new("git");
-    command
-        .current_dir(path)
-        .arg("-C")
-        .arg(path)
-        .arg("tag")
-        .arg("-d")
-        .arg(name);
-    let output = backend.spawn_gate.output(&mut command).map_err(|err| {
-        ModelError::new(
-            ErrorCode::GitCommandFailed,
-            format!("failed to run git tag -d: {err}"),
-        )
-    })?;
-    if !output.status.success() {
-        return Err(ModelError::new(
-            ErrorCode::GitCommandFailed,
-            format!(
-                "git tag -d failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ),
-        ));
-    }
-    verify_tag_deleted(backend, path, name)
-}
-
-/// AD1 self-verify: the tag is gone.
-pub(super) fn verify_tag_deleted(
-    backend: &Git2Backend,
-    path: &Path,
-    name: &str,
-) -> ModelResult<()> {
-    if backend.tag_list(path)?.iter().any(|tag| tag == name) {
-        return Err(ModelError::new(
-            ErrorCode::GitCommandFailed,
-            format!("tag '{name}' still present after delete"),
-        ));
-    }
-    Ok(())
 }
 
 pub(super) fn read_ref(

@@ -20,6 +20,13 @@ instead of `RepositoryOpen`. Library `gwz-git` implements them with tests;
 no consumer calls them yet, and the unpublished/platform-pending status above
 is unchanged.
 
+**Amendment A2 (2026-10-25, convergence plan step 5.2; D-G, D-K).** Error
+translation helpers and native commit and tag move to gwz-git: `Error::message`,
+`Repository::is_repository`, `ErrorKind::Operation` and the `native_commit`
+module (section "A2: native commit and tag" below). The "does not provide
+commit/tag" sentence above describes G0 and is superseded for those two
+operations; history, fetch and the remote adapter are still not provided.
+
 **Supersession (F2).** The operator decision of 2026-10-14 recorded in
 `history/parked/GwzNoFallbackPlan.md` §6 (quoted in core commit `8cefbe40`),
 that native commit and tag "stay a module of gwz-core", is superseded by
@@ -124,6 +131,64 @@ objects only: no fetch, no abbreviation setting, no helper, no mutation. It is
 a separate method from `read_commit`, which still takes a full id and does not
 resolve refs or peel tags.
 
+## A2: native commit and tag (step 5.2, row G1)
+
+Moved from gwz-core's `git/gitbackend/native_commit` with their characterization
+tests (133 tests run on macOS; the Windows count is in the step's evidence). Local Git only; no network, no credential, no history API.
+The decision of 2026-10-12 (libgit2 when nothing needs the Git CLI, the CLI
+otherwise) and of 2026-10-13 (`commit -a` always runs the CLI) move unchanged.
+
+```rust,ignore
+pub mod native_commit {
+    pub fn commit(services: &Services<'_>, path: &Path, message: &str, all: bool)
+        -> Result<CommitOutcome, Error>;
+    pub fn tag_create(services: &Services<'_>, path: &Path, name: &str,
+        message: Option<&str>, signed: bool) -> Result<TagOutcome, Error>;
+    pub fn tag_delete(services: &Services<'_>, path: &Path, name: &str)
+        -> Result<(), Error>;
+
+    #[non_exhaustive] pub struct Services<'a> {
+        pub environment: &'a GitEnvironment,
+        pub policy: RoutePolicy,
+        pub notes: Option<&'a RouteNotes>,
+        pub process: &'a dyn ProcessGate,
+    }                      // Services::new(env, process).with_policy(..).with_notes(..)
+    pub trait ProcessGate { fn output(&self, command: &mut Command) -> io::Result<Output>; }
+    pub struct GitEnvironment;   // from_vars(iter of (name, value)); no process() capture
+    pub struct RouteNotes;       // new(Fn(&str)): one line per "ran the Git CLI because ..."
+    pub struct RoutePolicy;      // AUTO (default), CLI_ONLY
+    #[non_exhaustive] pub struct CommitOutcome { pub id: ObjectId }
+    #[non_exhaustive] pub struct TagOutcome { pub name: String, pub commit: ObjectId }
+}
+```
+
+- **Route.** The route rule (`route.rs`) decides native or CLI before anything is
+  written; every refusal has a reason (`CliReason`, with its one-line text),
+  delivered to `Services::notes` and nowhere else. The reasons are produced by the
+  rule, so they live with it; what stays in gwz-core is the decision whether
+  anyone is told (`Git2Backend::with_route_notes`, re-exporting `RouteNotes` for
+  gwz-cli). The outcome carries no route.
+- **Captured inputs, no globals.** gwz-git never reads the process environment:
+  the caller captures `GitEnvironment` (gwz-core: once, when a backend is built)
+  and passes it. The Git CLI route's child is launched by the caller's
+  `ProcessGate`; gwz-core implements it with the host's `SpawnGate` (held for the
+  spawn, never for the wait). gwz-git's own `Command::new("git")` sites (three) are
+  the entries of its spawn allowlist, each `debt` (the child inherits the live
+  process environment; RemPlan-1, Safety P3-11).
+- **Self-verification (AD1).** After a native or CLI change gwz-git opens the
+  repository afresh and checks the result with `Repository::resolve`: HEAD is the
+  new commit; the tag exists and resolves to a commit; the tag is gone. No other
+  read API is needed, so G1 does not wait for the refs-and-reads row (G2).
+- **Errors.** Every failure is `ErrorKind::Operation`, with the native
+  diagnostics when libgit2 reported it, and `Error::message()` is the text
+  gwz-core copies into its `ModelError` (code `GitCommandFailed`, unchanged).
+  `Error::message()` and `Repository::is_repository(path)` (open as
+  `open_exact`; `Ok(false)` for `NotARepository`) also moved from gwz-core's
+  error translation and `is_repository` (row G9).
+- **Not moved.** Staging (`stage_paths`), repository creation and the scoped and
+  merge commits stay in gwz-core (rows G3 and G10). The native `-a` staging code
+  is kept, reachable only by a test-only policy, as decided on 2026-10-13.
+
 ## IDs and commit data
 
 `ObjectFormat` has `Sha1` and `Sha256` variants and is non-exhaustive. No implicit
@@ -186,13 +251,14 @@ text is diagnostic, not a stable match key. Display is diagnostic too.
 | ObjectFormatMismatch | Valid ID uses another repository format |
 | RepositoryOpen | Native opening failed for a reason other than "no repository" (for example an unsupported repository extension) |
 | NotARepository | A1: the path is not a repository: a plain directory, a nonexistent path, or a nested directory (no parent search). Native code `-3` (not found) |
+| Operation | A2: a native commit or tag operation was refused or failed; the message says why, native diagnostics present when libgit2 reported it |
 | ObjectRead | Object or revision lookup/type/parsing failed, including missing objects and, since A1, a revision `resolve` cannot parse |
 
-The first two kinds have no native diagnostic; the last three retain native
+The first two kinds have no native diagnostic; the three read kinds retain native
 code/class/message. Before A1, `RepositoryOpen` also covered nonexistent paths
 and plain directories; both now report `NotARepository`, so a caller that asks
 "is this a repository?" matches one kind and does not compare the native code.
 No consumer matched `RepositoryOpen` for that purpose when A1 was made. Future callers must handle unknown kinds. G0 reads do not
 retry, translate failures into EOF, execute helpers or mutate data to recover.
 Later operation APIs will add their own documented errors; no future mutation
-or cancellation behavior is implied by these five read-only categories.
+or cancellation behavior is implied by the read-only categories; `Operation` is the one mutation category.

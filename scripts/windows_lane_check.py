@@ -81,7 +81,8 @@ SHAPES = (('ordinary', ''), ('transport', CANDIDATE))
 # scope root of the Windows-parity inventory (so the two lists cannot drift apart) and the build inputs below.
 TRIGGER_EXTRA = ('Cargo.toml', 'Cargo.lock', 'tests/transport_backend/prepare.py', '.github/*.commit')
 SIBLING_PINS = (('gwz-transport', 'https://github.com/owebeeone/gwz-transport.git'),
-                ('gwz-sspi', 'https://github.com/owebeeone/gwz-sspi.git'))
+                ('gwz-sspi', 'https://github.com/owebeeone/gwz-sspi.git'),
+                ('gwz-git', 'https://github.com/owebeeone/gwz-git.git'))
 LABEL = re.compile(r'^[a-z][a-z0-9]*(-[a-z0-9]+)*$')
 DATE = re.compile(r'(^|-)20\d{6}(-|$)')
 # The host's Application Control policy sometimes refuses to run a build script that cargo has just written

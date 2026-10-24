@@ -120,6 +120,7 @@ class TransportPin(unittest.TestCase):
         stdout = io.StringIO()
         with patch.object(runner, 'ROOT', self.core), \
                 patch.object(runner, 'transport_head', return_value=head), \
+                patch.object(runner, 'check_git_process_globals'), \
                 patch.object(runner.subprocess, 'run') as run, \
                 contextlib.redirect_stdout(stdout), \
                 self.assertRaises(SystemExit) as raised:

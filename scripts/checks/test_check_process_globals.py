@@ -745,9 +745,13 @@ class Dispositions(unittest.TestCase):
         # OQ7 (a)) reads the process directory beside the environment, in
         # with_local_transport and in SshEndpointConfig::from_environment. All
         # three are env debt for the driver to capture and pass in (RemPlan B5).
+        # 18 -> 16 (2026-10-25): step 5.2 moved the Git CLI route of native commit
+        # and tag (`git commit`, `git tag`, `git tag -d`) to gwz-git, whose own
+        # allowlist (scripts/process_globals_allowlist.json in gwz-git) lists
+        # them; the environment capture stays here, now in backend.rs.
         for name in ('COUNT', 'CLEANUPS', 'HUB', 'INIT'):
             self.assertNotIn(('src/git/endpoint/agent_job.rs', 'static', name), core)
-        self.assertEqual(len(core), 18)
+        self.assertEqual(len(core), 16)
 
     def test_the_dead_https_helper_state_is_gone(self):
         # Transport release plan amendment 2's TR2.15: nothing read the orphaned
