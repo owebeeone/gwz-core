@@ -224,24 +224,6 @@ fn advertised_refs(
     Ok(refs)
 }
 
-pub(super) fn remotes(_backend: &Git2Backend, path: &Path) -> ModelResult<Vec<GitRemote>> {
-    let repo = open_repo(path)?;
-    let names = repo.remotes().map_err(git_error)?;
-    let mut remotes = Vec::new();
-    for name in names.iter() {
-        let Some(name) = name.map_err(git_error)? else {
-            continue;
-        };
-        let remote = find_remote(&repo, name)?;
-        remotes.push(GitRemote {
-            name: name.to_owned(),
-            url: Some(remote.url().map_err(git_error)?.to_owned()),
-            push_url: remote.pushurl().map_err(git_error)?.map(ToOwned::to_owned),
-        });
-    }
-    Ok(remotes)
-}
-
 pub(super) fn add_remote(
     _backend: &Git2Backend,
     path: &Path,

@@ -178,30 +178,6 @@ fn crlf_sentinel_unpinned_worktree_materializes_blob_exact() {
 }
 
 #[test]
-fn commit_exists_requires_a_local_object_that_peels_to_commit() {
-    let temp = TempDir::new("commit-exists");
-    let backend = Git2Backend::new();
-    let repo_path = temp.path().join("repo");
-    backend.create_repo(&repo_path).unwrap();
-    let commit = commit_file(&repo_path, "tracked.txt", "one", "initial", &[]).unwrap();
-    let repository = git2::Repository::open(&repo_path).unwrap();
-    let tree = repository
-        .find_commit(git2::Oid::from_str(&commit).unwrap())
-        .unwrap()
-        .tree_id()
-        .to_string();
-
-    assert!(backend.commit_exists(&repo_path, &commit).unwrap());
-    assert!(!backend.commit_exists(&repo_path, &tree).unwrap());
-    assert!(
-        !backend
-            .commit_exists(&repo_path, "0000000000000000000000000000000000000000")
-            .unwrap()
-    );
-    assert!(!backend.commit_exists(&repo_path, "not-an-oid").unwrap());
-}
-
-#[test]
 pub(crate) fn stage_paths_matches_porcelain_git_add() {
     // Seed two identical repos; stage one via the primitive and one via
     // porcelain `git add`. The resulting index must be byte-identical —
@@ -277,21 +253,6 @@ pub(crate) fn ls_files_stage(root: &Path) -> String {
 }
 
 #[test]
-pub(crate) fn empty_repository_head_reports_unborn_branch_without_commit() {
-    let temp = TempDir::new("empty-head");
-    let backend = Git2Backend::new();
-    let repo_path = temp.path().join("repo");
-    backend.create_repo(&repo_path).unwrap();
-
-    let head = backend.head(&repo_path).unwrap();
-
-    assert_eq!(head.branch, Some("main".to_owned()));
-    assert_eq!(head.commit, None);
-    assert!(!head.is_detached);
-    assert_eq!(backend.read_ref(&repo_path, "HEAD").unwrap(), None);
-}
-
-#[test]
 pub(crate) fn reads_and_adds_remotes() {
     let temp = TempDir::new("remotes");
     let backend = Git2Backend::new();
@@ -311,83 +272,6 @@ pub(crate) fn reads_and_adds_remotes() {
             push_url: None,
         }]
     );
-}
-
-#[test]
-pub(crate) fn reports_clean_untracked_unstaged_and_staged_status() {
-    let temp = TempDir::new("status");
-    let backend = Git2Backend::new();
-    let repo_path = temp.path().join("repo");
-    backend.create_repo(&repo_path).unwrap();
-    commit_file(&repo_path, "tracked.txt", "one", "initial", &[]).unwrap();
-
-    assert_eq!(backend.status(&repo_path).unwrap(), GitStatus::clean());
-
-    fs::write(repo_path.join("untracked.txt"), "new").unwrap();
-    let status = backend.status(&repo_path).unwrap();
-    assert!(status.is_dirty);
-    assert_eq!(status.untracked, 1);
-    fs::remove_file(repo_path.join("untracked.txt")).unwrap();
-
-    fs::write(repo_path.join("tracked.txt"), "two").unwrap();
-    let status = backend.status(&repo_path).unwrap();
-    assert!(status.is_dirty);
-    assert_eq!(status.unstaged, 1);
-    assert_eq!(status.staged, 0);
-
-    stage_path(&repo_path, "tracked.txt").unwrap();
-    let status = backend.status(&repo_path).unwrap();
-    assert!(status.is_dirty);
-    assert_eq!(status.staged, 1);
-    assert_eq!(status.unstaged, 0);
-}
-
-#[test]
-pub(crate) fn status_hides_ignored_files_unless_requested() {
-    let temp = TempDir::new("status-ignored");
-    let backend = Git2Backend::new();
-    let repo_path = temp.path().join("repo");
-    backend.create_repo(&repo_path).unwrap();
-    commit_file(&repo_path, ".gitignore", "ignored/\n", "ignore", &[]).unwrap();
-    fs::create_dir_all(repo_path.join("ignored")).unwrap();
-    fs::write(repo_path.join("ignored/cache.txt"), "cache").unwrap();
-
-    let default_status = backend.status(&repo_path).unwrap();
-    assert_eq!(default_status, GitStatus::clean());
-
-    let ignored_status = backend
-        .status_with_options(&repo_path, GitStatusOptions::include_ignored())
-        .unwrap();
-    assert!(!ignored_status.is_dirty);
-    assert_eq!(ignored_status.untracked, 0);
-    assert!(ignored_status.files.iter().any(|file| {
-        file.path == "ignored/" && file.index_status == " " && file.worktree_status == "!"
-    }));
-}
-
-#[test]
-pub(crate) fn status_detects_a_staged_rename_with_original_path() {
-    // F17: rename detection must be ON — a `git mv` should report one `R` entry with
-    // the original path, not an unrelated delete + add.
-    let temp = TempDir::new("status-rename");
-    let backend = Git2Backend::new();
-    let repo = temp.path().join("repo");
-    backend.create_repo(&repo).unwrap();
-    commit_file(&repo, "old.txt", "stable contents\n", "seed", &[]).unwrap();
-
-    run_git(&repo, &["mv", "old.txt", "new.txt"]);
-
-    let status = backend.status(&repo).unwrap();
-    assert!(status.is_dirty);
-    let rename = status
-        .files
-        .iter()
-        .find(|file| file.path == "new.txt")
-        .expect("renamed file present in status");
-    assert_eq!(rename.index_status, "R");
-    assert_eq!(rename.original_path.as_deref(), Some("old.txt"));
-    // The old path is not reported as a separate deletion.
-    assert!(status.files.iter().all(|file| file.path != "old.txt"));
 }
 
 #[test]

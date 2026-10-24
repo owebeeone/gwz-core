@@ -23,6 +23,7 @@ mod preservation;
 mod preservation_image;
 mod preservation_root;
 mod push_plan;
+mod reads;
 mod recovery_support;
 mod refs;
 mod repository;
@@ -75,6 +76,7 @@ cfg_if::cfg_if! {
 }
 pub use types::*;
 
+pub(crate) use reads::head_at;
 pub(crate) use repository_support::open_repo;
 
 #[cfg(test)]
@@ -286,8 +288,8 @@ impl GitBackend for Git2Backend {
         transport_support::identity::for_remote(self, repo.as_ref(), Some(remote), url).map(|_| ())
     }
     delegate!(is_repository(path: &Path) -> ModelResult<bool> => repository::is_repository);
-    delegate!(commit_exists(path: &Path, oid: &str) -> ModelResult<bool> => repository::commit_exists);
-    delegate!(read_file_at_commit(path: &Path, commit: &str, relative_path: &str,) -> ModelResult<Option<Vec<u8>>> => repository::read_file_at_commit);
+    delegate!(commit_exists(path: &Path, oid: &str) -> ModelResult<bool> => reads::commit_exists);
+    delegate!(read_file_at_commit(path: &Path, commit: &str, relative_path: &str,) -> ModelResult<Option<Vec<u8>>> => reads::read_file_at_commit);
     delegate!(commit_matches_merge(path: &Path, commit: &str, first_parent: &str, second_parent: &str, message: &str,) -> ModelResult<bool> => merge_prepared::commit_matches_merge);
     delegate!(commit_matches_prepared_merge(path: &Path, commit: &str, first_parent: &str, second_parent: &str, message: &str, prepared: &GitPreparedCommit,) -> ModelResult<bool> => merge_prepared::commit_matches_prepared_merge);
     delegate!(create_repo(path: &Path) -> ModelResult<GitCreateResult> => repository::create_repo);
@@ -388,10 +390,10 @@ impl GitBackend for Git2Backend {
     delegate!(stash_apply(path: &Path, target: &GitStashTarget, options: GitStashRestoreOptions,) -> ModelResult<()> => stash::stash_apply);
     delegate!(stash_pop(path: &Path, target: &GitStashTarget, options: GitStashRestoreOptions,) -> ModelResult<()> => stash::stash_pop);
     delegate!(stash_drop(path: &Path, target: &GitStashTarget) -> ModelResult<()> => stash::stash_drop);
-    delegate!(status(path: &Path) -> ModelResult<GitStatus> => repository::status);
-    delegate!(status_with_options(path: &Path, options: GitStatusOptions,) -> ModelResult<GitStatus> => repository::status_with_options);
-    delegate!(head(path: &Path) -> ModelResult<GitHeadState> => repository::head);
-    delegate!(remotes(path: &Path) -> ModelResult<Vec<GitRemote>> => transport::remotes);
+    delegate!(status(path: &Path) -> ModelResult<GitStatus> => reads::status);
+    delegate!(status_with_options(path: &Path, options: GitStatusOptions,) -> ModelResult<GitStatus> => reads::status_with_options);
+    delegate!(head(path: &Path) -> ModelResult<GitHeadState> => reads::head);
+    delegate!(remotes(path: &Path) -> ModelResult<Vec<GitRemote>> => reads::remotes);
     delegate!(add_remote(path: &Path, name: &str, url: &str) -> ModelResult<GitRemoteResult> => transport::add_remote);
     delegate!(push(path: &Path, remote: &str, refspec: &str) -> ModelResult<GitPushResult> => transport::push);
     delegate!(prepare_push(path: &Path, remote: &str, refspec: &str) -> ModelResult<GitPreparedPush> => push_plan::prepare);
@@ -408,13 +410,13 @@ impl GitBackend for Git2Backend {
     delegate!(validate_prepared_merge_resolution_state(path: &Path, target_branch: &str, expected_before: &str, expected_merge_head: &str, prepared: &GitPreparedCommit,) -> ModelResult<()> => merge_recovery::validate_prepared_merge_resolution_state);
     delegate!(commit_prepared_merge_resolution_checked(path: &Path, target_branch: &str, expected_before: &str, expected_merge_head: &str, message: &str, prepared: &GitPreparedCommit,) -> ModelResult<GitCommitResult> => merge_recovery::commit_prepared_merge_resolution_checked);
     delegate!(tag_create(path: &Path, name: &str, message: Option<&str>, signed: bool,) -> ModelResult<GitTagResult> => commit_tag::tag_create);
-    delegate!(tag_list(path: &Path) -> ModelResult<Vec<String>> => refs::tag_list);
+    delegate!(tag_list(path: &Path) -> ModelResult<Vec<String>> => reads::tag_list);
     delegate!(tag_delete(path: &Path, name: &str) -> ModelResult<()> => commit_tag::tag_delete);
-    delegate!(read_ref(path: &Path, ref_spec: &str) -> ModelResult<Option<String>> => refs::read_ref);
-    delegate!(is_ancestor(path: &Path, ancestor: &str, descendant: &str) -> ModelResult<bool> => refs::is_ancestor);
-    delegate!(ahead_behind(path: &Path, local: &str, upstream: &str) -> ModelResult<GitAheadBehind> => refs::ahead_behind);
-    delegate!(merge_base(path: &Path, left: &str, right: &str) -> ModelResult<Option<String>> => comparison::merge_base);
-    delegate!(changed_paths_between(path: &Path, old_commit: &str, new_commit: &str,) -> ModelResult<Vec<String>> => comparison::changed_paths_between);
+    delegate!(read_ref(path: &Path, ref_spec: &str) -> ModelResult<Option<String>> => reads::read_ref);
+    delegate!(is_ancestor(path: &Path, ancestor: &str, descendant: &str) -> ModelResult<bool> => reads::is_ancestor);
+    delegate!(ahead_behind(path: &Path, local: &str, upstream: &str) -> ModelResult<GitAheadBehind> => reads::ahead_behind);
+    delegate!(merge_base(path: &Path, left: &str, right: &str) -> ModelResult<Option<String>> => reads::merge_base);
+    delegate!(changed_paths_between(path: &Path, old_commit: &str, new_commit: &str,) -> ModelResult<Vec<String>> => reads::changed_paths_between);
     delegate!(diff_manifest(path: &Path, comparison: &crate::diff::RepoDiffComparison, options: &crate::diff::RepoDiffOptions,) -> ModelResult<crate::diff::RepoDiffManifest> => comparison::diff_manifest);
     delegate!(resolve_comparison(path: &Path, spec: &crate::diff::ComparisonSpec,) -> ModelResult<crate::diff::RepoDiffComparison> => comparison::resolve_comparison);
 }

@@ -27,6 +27,13 @@ module (section "A2: native commit and tag" below). The "does not provide
 commit/tag" sentence above describes G0 and is superseded for those two
 operations; history, fetch and the remote adapter are still not provided.
 
+**Amendment A3 (2026-10-25, convergence plan step 5.3; D-G, D-K).** The refs and
+reads of row G2 move to gwz-git: `Repository::{head, tag_names, commit_exists,
+blob_at, is_ancestor, ahead_behind, merge_base, changed_paths, status, remotes}`,
+the owned records `Head`, `AheadBehind`, `Status`, `FileStatus`, `StatusOptions`
+and `Remote`, and `ErrorKind::{InvalidPath, StateRead}` (section "A3: refs and
+reads" below). Read-only, local, synchronous; nothing else in this guide changes.
+
 **Supersession (F2).** The operator decision of 2026-10-14 recorded in
 `history/parked/GwzNoFallbackPlan.md` §6 (quoted in core commit `8cefbe40`),
 that native commit and tag "stay a module of gwz-core", is superseded by
@@ -189,6 +196,91 @@ pub mod native_commit {
   merge commits stay in gwz-core (rows G3 and G10). The native `-a` staging code
   is kept, reachable only by a test-only policy, as decided on 2026-10-13.
 
+## A3: refs and reads (step 5.3, row G2)
+
+Moved from gwz-core's `Git2Backend` (`head`, `status`, `status_with_options`,
+`tag_list`, `read_ref`, `commit_exists`, `read_file_at_commit`, `is_ancestor`,
+`ahead_behind`, `merge_base`, `changed_paths_between`, `remotes`). Each is a
+method of `Repository` taking and returning owned values; none changes a ref, the
+index or the worktree, none reads the process environment or runs a process, and
+none touches the network. A handle from either open works.
+
+```rust,ignore
+impl Repository {
+    pub fn head(&self) -> Result<Head, Error>;
+    pub fn tag_names(&self) -> Result<Vec<String>, Error>;           // sorted
+    pub fn commit_exists(&self, id: ObjectId) -> Result<bool, Error>;
+    pub fn blob_at(&self, commit: ObjectId, path: &str) -> Result<Option<Vec<u8>>, Error>;
+    pub fn is_ancestor(&self, ancestor: ObjectId, descendant: ObjectId) -> Result<bool, Error>;
+    pub fn ahead_behind(&self, local: ObjectId, upstream: ObjectId) -> Result<AheadBehind, Error>;
+    pub fn merge_base(&self, left: ObjectId, right: ObjectId) -> Result<Option<ObjectId>, Error>;
+    pub fn changed_paths(&self, old: ObjectId, new: ObjectId) -> Result<Vec<String>, Error>;
+    pub fn status(&self, options: &StatusOptions) -> Result<Status, Error>;
+    pub fn remotes(&self) -> Result<Vec<Remote>, Error>;
+}
+
+#[non_exhaustive] pub struct Head { pub branch: Option<String>, pub commit: Option<ObjectId>, pub is_detached: bool }
+#[non_exhaustive] pub struct AheadBehind { pub ahead: u64, pub behind: u64 }
+#[non_exhaustive] pub struct Remote { pub name: String, pub url: String, pub push_url: Option<String> }
+#[non_exhaustive] pub struct StatusOptions { pub include_ignored: bool }  // new(), with_ignored(bool)
+#[non_exhaustive] pub struct FileStatus {
+    pub path: String, pub index_status: char, pub worktree_status: char, pub original_path: Option<String>,
+}
+#[non_exhaustive] pub struct Status {
+    pub is_dirty: bool, pub staged: usize, pub unstaged: usize, pub untracked: usize,
+    pub ignored: usize, pub unresolved: usize, pub files: Vec<FileStatus>,
+}
+```
+
+- **Head.** `head()` reports the branch `HEAD` is on (short name; `None` when
+  detached) and its commit. An unborn branch is not an error: the branch comes
+  from the `HEAD` file and the commit is `None` (as `resolve("HEAD")` is
+  `Ok(None)`). `tag_names` lists `v1`, not `refs/tags/v1`, annotated tags included.
+  `read_ref` of core is `resolve` (A1).
+- **Typed ids.** The methods that name commits take `ObjectId`, so the text a
+  caller holds is parsed once, with `ObjectId::parse_hex` in the repository's
+  format: exactly 40 or 64 hexadecimal digits. An id of the other format fails
+  before any native lookup with `ObjectFormatMismatch`. `commit_exists` is
+  `Ok(false)` for a missing object and for one that does not peel to a commit
+  (a tree, a blob); an annotated tag of a commit is `true`.
+- **Committed content.** `blob_at` reads the tree of `commit`, never the index or
+  worktree. `path` is relative with `/` separators; an absolute path or one with a
+  `.`, `..` or root component is `InvalidPath` before any lookup. `Ok(None)` when
+  the tree has no such path; a path that names a directory is an `ObjectRead`
+  error ("not a file"), not a miss.
+- **Graph.** `is_ancestor` is the strict relation (a commit is not its own
+  ancestor). `ahead_behind(local, upstream)` counts the commits reachable from
+  one and not the other (zero both for the same commit). `merge_base` is the best
+  common ancestor, `Ok(None)` when the histories share none. `changed_paths`
+  lists both sides of every delta between the two trees, sorted, without repeats
+  (a rename names both paths); names that are not UTF-8 are converted lossily.
+- **Status.** Untracked files and directories are recursed; renames are detected
+  between `HEAD` and the index and between the index and the worktree, and a
+  rename is one entry with `original_path`. `index_status` is one of `A M D R T`
+  or a space and `worktree_status` one of `? ! M D R T` or a space (the
+  `git status --short` columns). The counts include every entry; `files` lists
+  those whose path is UTF-8 (a path that is not is counted, not listed).
+  `is_dirty` is any staged, unstaged, untracked or unresolved entry; ignored
+  entries are listed and counted only with `with_ignored(true)` and do not make
+  a status dirty. A bare repository has no worktree and reports `StateRead`.
+- **Remotes.** The configured remotes in configuration order, each with its URL
+  and, when one is configured, its separate push URL. Resolving a remote's
+  credentials or opening a connection is not part of this call.
+- **Errors.** Failures keep the libgit2 diagnostic. `InvalidPath` and `StateRead`
+  are new kinds (see Errors); object, reference and tree failures are
+  `ObjectRead`. gwz-core translates every one with `model_error`:
+  `InvalidPath` becomes `InvalidRequest` (core's code for a committed-file path
+  that is not normalized and relative), the rest `GitCommandFailed` with the
+  diagnostic text unchanged.
+
+Differences from the core implementations they replace, all recorded in the
+step's evidence: ids are strict full hexadecimal text in the repository's format
+(core's `Oid::from_str` also took shorter text, zero padded, which never named an
+object); core now opens the repository before it parses an id or checks a
+committed path, so a bad id or path on a path that is not a repository reports
+the open error where it used to report the id or path problem first; and the
+unborn `HEAD` file read reports `StateRead` where core reported `IoError`.
+
 ## IDs and commit data
 
 `ObjectFormat` has `Sha1` and `Sha256` variants and is non-exhaustive. No implicit
@@ -252,10 +344,12 @@ text is diagnostic, not a stable match key. Display is diagnostic too.
 | RepositoryOpen | Native opening failed for a reason other than "no repository" (for example an unsupported repository extension) |
 | NotARepository | A1: the path is not a repository: a plain directory, a nonexistent path, or a nested directory (no parent search). Native code `-3` (not found) |
 | Operation | A2: a native commit or tag operation was refused or failed; the message says why, native diagnostics present when libgit2 reported it |
-| ObjectRead | Object or revision lookup/type/parsing failed, including missing objects and, since A1, a revision `resolve` cannot parse |
+| InvalidPath | A3: a path argument is not normalized and relative (absolute, or with a `.`, `..` or root component); no native diagnostic, no native call was made |
+| StateRead | A3: reading repository state that is neither an object nor a reference failed: the worktree status (including a bare repository), the configured remotes, or the `HEAD` file of an unborn branch |
+| ObjectRead | Object, reference or revision lookup/type/parsing failed, including missing objects, since A1 a revision `resolve` cannot parse, and since A3 the reads of tag names, `HEAD`, the commit graph, trees and committed files |
 
-The first two kinds have no native diagnostic; the three read kinds retain native
-code/class/message. Before A1, `RepositoryOpen` also covered nonexistent paths
+The first two kinds and `InvalidPath` have no native diagnostic; the read kinds
+retain native code/class/message when libgit2 reported one. Before A1, `RepositoryOpen` also covered nonexistent paths
 and plain directories; both now report `NotARepository`, so a caller that asks
 "is this a repository?" matches one kind and does not compare the native code.
 No consumer matched `RepositoryOpen` for that purpose when A1 was made. Future callers must handle unknown kinds. G0 reads do not

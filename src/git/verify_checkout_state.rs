@@ -18,37 +18,11 @@ pub(crate) fn find_remote<'repo>(
     })
 }
 
+/// `HEAD` as a handle held by a row that is still in core sees it: gwz-git reads
+/// it (step 5.3, row G2), from the handle's Git directory, so core keeps no
+/// reading of its own.
 pub(crate) fn repo_head(repo: &git2::Repository) -> ModelResult<GitHeadState> {
-    let head = match repo.head() {
-        Ok(head) => head,
-        Err(err) if err.code() == git2::ErrorCode::UnbornBranch => {
-            return unborn_head(repo);
-        }
-        Err(err) => return Err(git_error(err)),
-    };
-    let branch = if head.is_branch() {
-        Some(head.shorthand().map_err(git_error)?.to_owned())
-    } else {
-        None
-    };
-    Ok(GitHeadState {
-        branch,
-        commit: head.target().map(|target| target.to_string()),
-        is_detached: !head.is_branch(),
-    })
-}
-
-pub(crate) fn unborn_head(repo: &git2::Repository) -> ModelResult<GitHeadState> {
-    let head = fs::read_to_string(repo.path().join("HEAD")).map_err(io_error)?;
-    let branch = head
-        .trim()
-        .strip_prefix("ref: refs/heads/")
-        .map(ToOwned::to_owned);
-    Ok(GitHeadState {
-        branch,
-        commit: None,
-        is_detached: false,
-    })
+    head_at(repo.path())
 }
 
 pub(crate) fn ensure_clone_target_is_empty(path: &Path) -> ModelResult<()> {
@@ -142,11 +116,17 @@ pub(crate) fn git_error(error: git2::Error) -> ModelError {
 
 /// The translation of an error gwz-git returns, beside [`git_error`] for the
 /// native ones core still holds. gwz-git keeps the diagnostic (kind, native
-/// code and class, message); the code here is core's choice, and the one
-/// every local Git failure has. The credential-helper codes `git_error`
-/// recognises come from HTTPS authentication, which no gwz-git call reaches.
+/// code and class, message); the code here is core's choice: `InvalidRequest`
+/// for a path argument gwz-git refused (`InvalidPath`, the committed-file
+/// read), and the one every other local Git failure has. The credential-helper
+/// codes `git_error` recognises come from HTTPS authentication, which no
+/// gwz-git call reaches.
 pub(crate) fn model_error(error: gwz_git::Error) -> ModelError {
-    ModelError::new(ErrorCode::GitCommandFailed, error.message())
+    let code = match error.kind() {
+        gwz_git::ErrorKind::InvalidPath => ErrorCode::InvalidRequest,
+        _ => ErrorCode::GitCommandFailed,
+    };
+    ModelError::new(code, error.message())
 }
 
 pub(crate) fn io_error(error: std::io::Error) -> ModelError {
