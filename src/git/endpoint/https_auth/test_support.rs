@@ -297,13 +297,22 @@ cfg_if::cfg_if! {
             }
 
             async fn quick_lookup(owner: &AuthOwner) -> Result<String, AuthError> {
+                quick_lookup_within(owner, Duration::from_secs(30)).await
+            }
+
+            /// How long a lookup that must find every slot held waits for one. Its answer is AllocationTimeout however
+            /// long it waits; a free slot would be taken at once, and its helper answers, so the bound only has to
+            /// outlast scheduling on a loaded host, not the 30 s a lookup that must succeed is given.
+            const HELD_SLOTS_WAIT: Duration = Duration::from_secs(5);
+
+            async fn quick_lookup_within(owner: &AuthOwner, budget: Duration) -> Result<String, AuthError> {
                 let (directory, config) = helper("printf 'username=alice\\npassword=secret\\n\\n'");
                 let destination = Destination::parse("https://example.com/owner/repo").unwrap();
                 let result = lookup_owned(
                     owner,
                     &config,
                     &destination,
-                    Instant::now() + Duration::from_secs(30),
+                    Instant::now() + budget,
                     &CancellationToken::new(),
                 )
                 .await
@@ -328,7 +337,7 @@ cfg_if::cfg_if! {
                 let busy = AuthOwner::new(host.clone());
                 let sibling = AuthOwner::new(host);
                 let (directory, tasks) = occupy_eight_slots(&busy).await;
-                let ninth = quick_lookup(&sibling).await;
+                let ninth = quick_lookup_within(&sibling, HELD_SLOTS_WAIT).await;
                 release(&busy, tasks).await;
                 let after = quick_lookup(&sibling).await;
                 assert_eq!(ninth, Err(AuthError::AllocationTimeout), "a ninth helper awaits the same host slots");

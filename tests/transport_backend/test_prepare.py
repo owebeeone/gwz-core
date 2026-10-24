@@ -367,3 +367,59 @@ def test_publish_workflow_reads_its_files_from_the_manifest_directory_not_throug
     assert 'include_str!("' not in source
     assert source.count('env!("CARGO_MANIFEST_DIR")') == 1
     assert source.count("core_file!(") >= 5
+
+
+def _prepare_result(*arguments: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [sys.executable, "-B", str(PREPARE), *arguments],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _prepared_entries(destination: Path) -> dict:
+    """What a prepared directory holds: each symlink's target, and each file's bytes."""
+    return {
+        entry.name: os.readlink(entry) if entry.is_symlink() else entry.read_bytes()
+        for entry in destination.iterdir()
+    }
+
+
+def test_an_existing_destination_is_refused_without_refresh(tmp_path):
+    destination = prepare(tmp_path / "backend")
+    refused = _prepare_result(str(destination))
+    assert refused.returncode != 0
+    assert "new directory" in refused.stderr
+
+
+def test_refresh_rewrites_a_prepared_destination_in_place(tmp_path):
+    # A stable prepared path keeps the candidate build's gwz-core artifacts and incremental state in its target
+    # directory: Cargo keys them by the package's path, so a fresh destination per run recompiles gwz-core whole.
+    destination = prepare(tmp_path / "backend")
+    fresh = _prepared_entries(prepare(tmp_path / "fresh"))
+    (destination / "Cargo.toml").write_text("stale manifest\n")
+    (destination / "Cargo.lock").write_text("pruned by cargo metadata\n")
+    (destination / "src").unlink()
+    refreshed = _prepare_result("--refresh", str(destination))
+    assert refreshed.returncode == 0, refreshed.stderr
+    assert _prepared_entries(destination) == fresh
+
+
+def test_refresh_refuses_a_directory_prepare_did_not_make(tmp_path):
+    destination = prepare(tmp_path / "backend")
+    (destination / "target").mkdir()
+    refused = _prepare_result("--refresh", str(destination))
+    assert refused.returncode != 0
+    assert "target" in refused.stderr
+    assert (destination / "target").is_dir()
+    assert (destination / "Cargo.toml").is_file()
+    missing = _prepare_result("--refresh", str(tmp_path / "missing"))
+    assert missing.returncode != 0
+    assert not (tmp_path / "missing").exists()
+
+
+def test_refresh_refuses_a_destination_inside_the_workspace():
+    refused = _prepare_result("--refresh", str(WORKSPACE / "gwz-core-candidate-refresh-probe"))
+    assert refused.returncode != 0
+    assert not (WORKSPACE / "gwz-core-candidate-refresh-probe").exists()

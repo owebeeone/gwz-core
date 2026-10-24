@@ -39,10 +39,19 @@ run it over themselves in their own tests (TR2.12).
 contains NAME. Do not pass a bare test name instead: Cargo hands it to libtest
 as one more filter, libtest ORs filters, and every group (the fake-filesystem
 ones included) would also run every matching test of the other groups.
+
+The source checks are read-only scans, so they are started side by side and
+judged in the order main() names them: the first that fails, in that order, is
+the failure the run reports, after the output of every check before it, and no
+Cargo command runs (scripts/checks/test_run_tests_parallel_checks.py). A notice
+the runner prints itself between checks (SKIPPED GATE, PIN OVERRIDE) can come
+before the output of a check started ahead of it. The gwz-git adoption check and
+the crate-version check run after the others have passed, one at a time.
 """
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import os
 from pathlib import Path
 import re
@@ -149,6 +158,63 @@ def run_command(mode: str, filesystem: str, command: list[str], env: dict[str, s
     return result.returncode
 
 
+def run_check(command: list[str], header: str | None = None) -> None:
+    """Runs one source check to its end; a check that fails raises CalledProcessError."""
+    if header is not None:
+        print(header, flush=True)
+    subprocess.run(command, check=True)
+
+
+class SourceChecks:
+    """The source checks of one run, started side by side and judged in the order they were started.
+
+    `start` has run_check's signature. `finish` prints each check's header and output in order and raises
+    CalledProcessError for the first check, in that order, that failed, as run_check would have raised it.
+    """
+
+    def __init__(self) -> None:
+        self.pool = concurrent.futures.ThreadPoolExecutor()
+        self.started: list[tuple[list[str], str | None, concurrent.futures.Future]] = []
+
+    def start(self, command: list[str], header: str | None = None) -> None:
+        captured = self.pool.submit(subprocess.run, command, check=False, capture_output=True, text=True)
+        self.started.append((command, header, captured))
+
+    def finish(self) -> None:
+        try:
+            for command, header, captured in self.started:
+                result = captured.result()
+                if header is not None:
+                    print(header, flush=True)
+                if isinstance(result.stdout, str):
+                    print(result.stdout, end="", flush=True)
+                if isinstance(result.stderr, str):
+                    print(result.stderr, end="", file=sys.stderr, flush=True)
+                if result.returncode:
+                    raise subprocess.CalledProcessError(result.returncode, command)
+        finally:
+            self.pool.shutdown(wait=True)
+
+
+def run_source_checks(steps) -> None:
+    """Runs `steps(start)`, which starts the source checks in order through `start`, then judges them.
+
+    A step that fails between checks (a checkout off its pin, or missing) ends the run only once every check
+    started before it has passed: one of those that failed is the failure the run reports, as it was when each
+    check ran to its end before the next step.
+    """
+    checks = SourceChecks()
+    try:
+        steps(checks.start)
+    except BaseException:
+        try:
+            checks.finish()
+        except subprocess.CalledProcessError as failed:
+            raise failed from None
+        raise
+    checks.finish()
+
+
 TRANSPORT_CHECKOUT = "GWZ_TRANSPORT_CHECKOUT"
 SKIP_TRANSPORT_GLOBALS = "--skip-transport-globals"
 
@@ -177,7 +243,7 @@ def transport_checkout() -> Path:
     raise SystemExit(f"no gwz-transport checkout found. {ways}")
 
 
-def check_transport_process_globals(skip: bool) -> None:
+def check_transport_process_globals(skip: bool, start=run_check) -> None:
     # gwz-core, the consumer, checks the gwz-transport it builds against;
     # gwz-transport's own CI carries no such gate (GwzCoreSessionDesign §5.7).
     if skip:
@@ -189,8 +255,7 @@ def check_transport_process_globals(skip: bool) -> None:
         )
         return
     transport = transport_checkout()
-    print(f"gwz-transport process-global check: {transport}", flush=True)
-    subprocess.run(
+    start(
         [
             sys.executable,
             str(ROOT / "scripts/checks/check_process_globals.py"),
@@ -199,7 +264,7 @@ def check_transport_process_globals(skip: bool) -> None:
             "--allowlist",
             str(ROOT / "scripts/checks/process_globals_allowlist_gwz_transport.json"),
         ],
-        check=True,
+        f"gwz-transport process-global check: {transport}",
     )
 
 
@@ -268,11 +333,11 @@ SKIP_CFG_SIBLING = "--skip-cfg-sibling"
 CFG_SIBLINGS = ("gwz-cli", "gwz-py")
 
 
-def check_cfg_boundaries(skipped: list[str]) -> None:
+def check_cfg_boundaries(skipped: list[str], start=run_check) -> None:
     # The checker fails when a sibling named in its allowlist is not checked
     # out; skipping one makes it print SKIPPED GATE instead.
     skips = [arg for name in skipped for arg in ("--skip-repo", name)]
-    subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_cfg_boundaries.py"), *skips], check=True)
+    start([sys.executable, str(ROOT / "scripts/checks/check_cfg_boundaries.py"), *skips])
 
 
 GIT_CHECKOUT = "GWZ_GIT_CHECKOUT"
@@ -313,7 +378,7 @@ def pinned_git_commit() -> str:
     raise SystemExit(f"{path} names no gwz-git commit (a 40-hex line)")
 
 
-def check_git_process_globals(allow_pin_mismatch: bool) -> None:
+def check_git_process_globals(allow_pin_mismatch: bool, start=run_check) -> None:
     """gwz-core, the consumer, checks the gwz-git it builds against, at the pin, with gwz-git's own allowlist."""
     checkout = git_checkout()
     pinned = pinned_git_commit()
@@ -330,8 +395,7 @@ def check_git_process_globals(allow_pin_mismatch: bool) -> None:
             f"({GIT_PIN_FILE}); move the pin before gwz-core is pushed",
             flush=True,
         )
-    print(f"gwz-git process-global check: {checkout}", flush=True)
-    subprocess.run(
+    start(
         [
             sys.executable,
             str(ROOT / "scripts/checks/check_process_globals.py"),
@@ -340,7 +404,7 @@ def check_git_process_globals(allow_pin_mismatch: bool) -> None:
             "--allowlist",
             str(checkout / GIT_ALLOWLIST),
         ],
-        check=True,
+        f"gwz-git process-global check: {checkout}",
     )
 
 
@@ -400,17 +464,24 @@ def main(argv: list[str] | None = None) -> None:
     tally = FilterTally()
     narrow = {"test_filter": options.test_filter, "tally": tally}
     library_args = ["--lib", *[arg for arg in cargo_args if arg != "--lib"]]
-    subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_filesystem_boundary.py")], check=True)
-    subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_process_globals.py")], check=True)
-    subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_spawn_gate_minting.py")], check=True)
-    check_cfg_boundaries(
-        [name for name in CFG_SIBLINGS if options.skip_cfg_siblings or name in options.skip_cfg_sibling]
-    )
-    subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_candidate_switches.py")], check=True)
-    subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_windows_parity.py")], check=True)
-    check_transport_process_globals(options.skip_transport_globals)
-    check_transport_pin(options.skip_transport_globals, options.allow_transport_pin_mismatch)
-    check_git_process_globals(options.allow_git_pin_mismatch)
+
+    def source_checks(start) -> None:
+        start([sys.executable, str(ROOT / "scripts/checks/check_filesystem_boundary.py")])
+        start([sys.executable, str(ROOT / "scripts/checks/check_process_globals.py")])
+        start([sys.executable, str(ROOT / "scripts/checks/check_spawn_gate_minting.py")])
+        check_cfg_boundaries(
+            [name for name in CFG_SIBLINGS if options.skip_cfg_siblings or name in options.skip_cfg_sibling],
+            start,
+        )
+        start([sys.executable, str(ROOT / "scripts/checks/check_candidate_switches.py")])
+        start([sys.executable, str(ROOT / "scripts/checks/check_windows_parity.py")])
+        check_transport_process_globals(options.skip_transport_globals, start)
+        check_transport_pin(options.skip_transport_globals, options.allow_transport_pin_mismatch)
+        check_git_process_globals(options.allow_git_pin_mismatch, start)
+
+    run_source_checks(source_checks)
+    # After every check above has passed, in the order the runner has always named them; these two run one at a
+    # time, so their output and failures keep that order too.
     check_git_adoption()
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_crate_versions.py")], check=True)
     filesystem_result = run("fake", library_args, list(FILESYSTEM_CONTRACTS), filesystem="fake", **narrow)

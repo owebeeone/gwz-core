@@ -14,6 +14,10 @@ RUSTFLAGS='--cfg gwz_transport_candidate' needs no generated manifest for them. 
   directory the protocol tests read from outside the workspace. The ordinary source already carries the fields 1.1.0
   needs (step C2); the candidate source is the session candidate's, which adds the 1.2.0 placement projection;
 - symlinks to the core's sources, tests, workflows and scripts, and a copy of Cargo.lock (step C4 retires the tree).
+
+--refresh rewrites a directory this script made, in place, instead of refusing it. Cargo keys gwz-core's artifacts and
+incremental state by the package's path, so a run that prepares a fresh directory each time compiles gwz-core whole; one
+that refreshes the same directory, with the same external target directory, rebuilds only what changed.
 """
 import argparse
 import hashlib
@@ -61,13 +65,44 @@ def anchor_dependency_paths(manifest: str, core: Path) -> str:
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("destination", type=Path)
+parser.add_argument(
+    "--refresh",
+    action="store_true",
+    help="rewrite a directory this script prepared, in place, instead of refusing an existing destination",
+)
 args = parser.parse_args()
 core = Path(__file__).resolve().parents[2]
 root = core.parent
 destination = args.destination.resolve()
-if destination.exists() or destination.is_relative_to(root):
+LINKED = ["src", "build.rs", "build_support", "protocol", "tests", ".github", "scripts", "README.md", "LICENSE"]
+WRITTEN = ["Cargo.toml", "Cargo.lock", "placement-candidate.json"]
+if destination.is_relative_to(root):
     raise SystemExit("use a new directory outside the workspace")
-destination.mkdir(parents=True)
+if args.refresh:
+    if not destination.is_dir():
+        raise SystemExit(f"--refresh needs a directory this script prepared: {destination} is not a directory")
+    # Only what this script writes may be replaced; anything else means the directory is not a prepared one.
+    foreign = sorted(
+        entry.name
+        for entry in destination.iterdir()
+        if not ((entry.name in LINKED and entry.is_symlink()) or (entry.name in WRITTEN and entry.is_file()))
+    )
+    if foreign or not (destination / "placement-candidate.json").is_file():
+        raise SystemExit(
+            f"--refresh refuses {destination}: it is not a directory this script prepared "
+            f"(unexpected entries: {', '.join(foreign) or 'none'}; placement-candidate.json is required)"
+        )
+    for name in LINKED + WRITTEN:
+        entry = destination / name
+        if entry.is_symlink() and entry.is_dir() and os.name == "nt":
+            # Windows removes a directory symlink as a directory.
+            entry.rmdir()
+        elif entry.is_symlink() or entry.exists():
+            entry.unlink()
+elif destination.exists():
+    raise SystemExit("use a new directory outside the workspace")
+else:
+    destination.mkdir(parents=True)
 candidate_source = core / "src" / "protocol" / "candidate_generated.rs"
 production_source = core / "src" / "protocol" / "generated.rs"
 if not candidate_source.is_file() or not production_source.is_file():
@@ -82,7 +117,7 @@ placement_metadata = {
     "taut_source": str(root / "taut" / "src"),
 }
 # `.github` and `scripts` are what tests/publish_workflow.rs reads, through CARGO_MANIFEST_DIR (step 5.4).
-for name in ["src", "build.rs", "build_support", "protocol", "tests", ".github", "scripts", "README.md", "LICENSE"]:
+for name in LINKED:
     (destination / name).symlink_to(core / name, target_is_directory=(core / name).is_dir())
 manifest = anchor_dependency_paths((core / "Cargo.toml").read_text(), core)
 # The libraries are path dependencies at their own location, not members here.

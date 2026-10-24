@@ -11,7 +11,7 @@ use gwz_transport::{
         IdentityMode, MessageKind, Open,
     },
 };
-use placement_endpoint::{EndpointError, PlacementEndpoint};
+use placement_endpoint::{EndpointError, Outbound, PlacementEndpoint};
 use ssh_key_snapshot::Registry;
 use ssh_pool::Connector;
 use ssh_worker::Endpoint;
@@ -190,6 +190,23 @@ fn check_identity_path_rejection_is_typed_and_has_no_facts() {
     assert!(failure.facts.is_none());
 }
 
+/// Steps `endpoint` (its clock held at 0, so no check deadline passes) until it queues a message, within the rows'
+/// 20 s readiness bound, and takes the first one. An answer stays queued, and counted by `pending()`, until it is
+/// taken, so a wait for `pending() == 0` ran to the whole bound before taking the same first message.
+fn first_answer(endpoint: &mut PlacementEndpoint, cx: &mut Context<'_>) -> Option<Outbound> {
+    let settle_until = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        endpoint.step(0, cx).unwrap();
+        if let Some(answer) = endpoint.take_outbound() {
+            return Some(answer);
+        }
+        if std::time::Instant::now() >= settle_until {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 fn check(path: String, stream_id: i64) -> Envelope {
     Envelope {
         version: 2,
@@ -230,15 +247,7 @@ fn check_identity_reads_regular_file_without_parsing_and_reports_missing_file() 
         .unwrap();
     let waker = Waker::noop();
     let mut cx = Context::from_waker(waker);
-    let settle_until = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    loop {
-        regular_endpoint.step(0, &mut cx).unwrap();
-        if regular_endpoint.pending() == 0 || std::time::Instant::now() >= settle_until {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    let checked = regular_endpoint.take_outbound().unwrap();
+    let checked = first_answer(&mut regular_endpoint, &mut cx).unwrap();
     gwz_transport::codec::admit(&checked.envelope).unwrap();
     assert_eq!(checked.envelope.kind, MessageKind::IdentityChecked);
     fs::remove_file(&path).unwrap();
@@ -256,15 +265,7 @@ fn check_identity_reads_regular_file_without_parsing_and_reports_missing_file() 
             check(path.to_string_lossy().into_owned(), 10),
         )
         .unwrap();
-    let settle_until = std::time::Instant::now() + std::time::Duration::from_secs(20);
-    loop {
-        endpoint.step(0, &mut cx).unwrap();
-        if endpoint.pending() == 0 || std::time::Instant::now() >= settle_until {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    let failed = endpoint.take_outbound().unwrap();
+    let failed = first_answer(&mut endpoint, &mut cx).unwrap();
     gwz_transport::codec::admit(&failed.envelope).unwrap();
     let failure = failed.envelope.identity_check_failed.unwrap();
     assert_eq!(
