@@ -32,6 +32,7 @@ pub(crate) mod ssh_worker;
 pub(crate) mod stream_io;
 
 pub(crate) mod ca_bundle;
+pub(crate) mod https_adapter;
 pub(crate) mod https_auth;
 pub(crate) mod https_backend;
 pub(crate) mod https_connection;

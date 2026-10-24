@@ -4,9 +4,14 @@ use super::*;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use hyper::header::{HeaderMap, WWW_AUTHENTICATE};
 
+// The connection host's HTTPS adapter's conversation on one connection (plan step 1.3c).
+mod connection;
 mod exchange;
 mod owners;
 mod sspi;
+pub(crate) use connection::{
+    NativeRetained, authenticate_connection, offers_basic, offers_logon_session,
+};
 
 /// The request rounds one operation's native exchanges may use (design 8).
 pub(super) const NATIVE_ROUNDS: usize = 8;
@@ -420,4 +425,4 @@ cfg_if::cfg_if! { if #[cfg(test)] {
         pub(crate) fn revoked_for_test(&self) -> bool { self.revoked.load(Ordering::Acquire) }
     }
 } }
-cfg_if::cfg_if! { if #[cfg(test)] { mod tests; } }
+cfg_if::cfg_if! { if #[cfg(test)] { pub(crate) mod tests; } }

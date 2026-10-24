@@ -11,7 +11,7 @@ mod rejection;
 mod retention;
 
 // Real Windows SSPI against an SSPI-accepting HTTPS fixture (plan step 4.8): a Windows-only module, not a skip.
-cfg_if::cfg_if! { if #[cfg(windows)] { mod real_sspi; } }
+cfg_if::cfg_if! { if #[cfg(windows)] { pub(crate) mod real_sspi; } }
 
 // Where the validator child runs as the leader of its own process group on Unix, and
 // what ends its tree when the 30 s bound passes. Windows has no process groups: the

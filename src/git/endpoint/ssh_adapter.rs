@@ -19,8 +19,10 @@
 //! host's. Its I/O runs on the adapter's own worker thread (`worker.rs`), started by the first `connect`, outside every
 //! connection-host lock; the methods here only queue commands and read completions. Nothing here is a global.
 //!
-//! HTTPS is not served: a connect for another scheme completes at once with `UnsupportedOperation` (step 1.3c's seam,
-//! see `transport_host/connection_factory.rs`).
+//! HTTPS is served by `https_adapter` (step 1.3c): the production factory's router (`transport_host/connection_factory.rs`)
+//! sends each connect to the adapter its key's scheme names, so a connect for another scheme that reaches this adapter
+//! still completes at once with `UnsupportedOperation`. Its outbox and exchange settlement (`Shared`, `Settle`) are the
+//! HTTPS adapter's too.
 use super::{
     ssh_channel::GitService as ChannelService,
     ssh_pool::Connector,
@@ -89,7 +91,7 @@ impl Shared {
     fn lock(&self) -> std::sync::MutexGuard<'_, Outbox> {
         self.outbox.lock().unwrap_or_else(|e| e.into_inner())
     }
-    fn push(&self, completion: Completion) {
+    pub(super) fn push(&self, completion: Completion) {
         let waker = {
             let mut outbox = self.lock();
             outbox.completions.push_back(completion);
@@ -99,7 +101,7 @@ impl Shared {
             waker.wake();
         }
     }
-    fn disposed(&self) {
+    pub(super) fn disposed(&self) {
         let wakers = {
             let mut outbox = self.lock();
             outbox.disposed = true;
@@ -108,6 +110,26 @@ impl Shared {
         for waker in wakers.into_iter().flatten() {
             waker.wake();
         }
+    }
+    /// The next completion, or `Pending` with the driver's waker registered (the HTTPS adapter shares this outbox).
+    pub(super) fn poll_completion(&self, cx: &mut Context<'_>) -> Poll<Completion> {
+        let mut outbox = self.lock();
+        match outbox.completions.pop_front() {
+            Some(completion) => Poll::Ready(completion),
+            None => {
+                outbox.waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+        }
+    }
+    /// `Ready` once the worker has confirmed disposal, or `Pending` with the disposal's waker registered.
+    pub(super) fn poll_disposed(&self, cx: &mut Context<'_>) -> Poll<()> {
+        let mut outbox = self.lock();
+        if outbox.disposed {
+            return Poll::Ready(());
+        }
+        outbox.dispose_waker = Some(cx.waker().clone());
+        Poll::Pending
     }
 }
 
@@ -144,7 +166,7 @@ impl Settle {
     pub(super) fn requested(&self) -> bool {
         self.lock().requested
     }
-    fn poll(&self, cx: &mut Context<'_>) -> Poll<Disposition> {
+    pub(super) fn poll(&self, cx: &mut Context<'_>) -> Poll<Disposition> {
         let mut state = self.lock();
         state.requested = true;
         match state.ended {
@@ -302,14 +324,7 @@ impl EndpointAdapter for SshAdapter {
         }))
     }
     fn poll_completion(&mut self, cx: &mut Context<'_>) -> Poll<Completion> {
-        let mut outbox = self.shared.lock();
-        match outbox.completions.pop_front() {
-            Some(completion) => Poll::Ready(completion),
-            None => {
-                outbox.waker = Some(cx.waker().clone());
-                Poll::Pending
-            }
-        }
+        self.shared.poll_completion(cx)
     }
     fn poll_dispose(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         if self.worker.is_none() {
@@ -320,12 +335,7 @@ impl EndpointAdapter for SshAdapter {
             self.dispose_sent = true;
             self.send(Command::Dispose);
         }
-        let mut outbox = self.shared.lock();
-        if outbox.disposed {
-            return Poll::Ready(());
-        }
-        outbox.dispose_waker = Some(cx.waker().clone());
-        Poll::Pending
+        self.shared.poll_disposed(cx)
     }
 }
 impl Drop for SshAdapter {

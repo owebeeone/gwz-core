@@ -339,12 +339,36 @@ impl TransportRuntime {
                 .map(|ssh| ssh.agent.clone())
                 .unwrap_or_default(),
         );
-        // The connection host's factory makes its SSH adapters from the same settings as the endpoint session's SSH
-        // endpoint (step 1.3b); its HTTPS half is step 1.3c's (`connection_factory.rs`).
-        let factory =
-            connection_factory::CoreFactory::new(local.ssh.as_ref().map(|ssh| {
-                ssh_factory_inputs(ssh, &local.pool, io_timeout_ms, &handoff, ssh_helpers)
-            }));
+        // The connection host's factory makes its adapters from the same settings as the endpoint session's endpoints
+        // (steps 1.3b and 1.3c, `connection_factory.rs`): its SSH half from the SSH settings, its HTTPS half from the
+        // `HttpsEndpointConfig` and `HelperSlots` (and the native caller) the session's HTTPS endpoint is built from.
+        // Both halves share one reservation of the host's own.
+        let authority = crate::git::endpoint::shared_reservation::Authority::new(
+            local.pool.total,
+            local.pool.per_host,
+        );
+        let factory = connection_factory::CoreFactory::new(
+            local.ssh.as_ref().map(|ssh| {
+                ssh_factory_inputs(
+                    ssh,
+                    &local.pool,
+                    io_timeout_ms,
+                    &handoff,
+                    ssh_helpers,
+                    authority.clone(),
+                )
+            }),
+            https.as_ref().map(|(config, slots)| {
+                https_factory_inputs(
+                    config,
+                    slots,
+                    native.as_ref(),
+                    &local.pool,
+                    io_timeout_ms,
+                    authority,
+                )
+            }),
+        );
         let ssh_keys = factory.registry();
         let connection = connection_host::ConnectionHost::build(
             Arc::new(factory),
@@ -527,9 +551,9 @@ fn ssh_factory_inputs(
     io_timeout_ms: u64,
     handoff: &crate::git::endpoint::ssh_handoff::Handoff,
     helpers: Option<Arc<crate::git::endpoint::ssh_password_helpers::Helpers>>,
+    authority: crate::git::endpoint::shared_reservation::Authority,
 ) -> connection_factory::SshInputs {
-    use crate::git::endpoint::{shared_reservation::Authority, ssh_key_snapshot::Registry};
-    let authority = Authority::new(pool.total, pool.per_host);
+    use crate::git::endpoint::ssh_key_snapshot::Registry;
     connection_factory::SshInputs {
         registry: Registry::with_supervisor(authority.supervisor().clone()),
         native: crate::git::endpoint::ssh_local::NativeInputs {
@@ -541,6 +565,31 @@ fn ssh_factory_inputs(
             helpers,
         },
         settings: crate::git::endpoint::ssh_adapter::AdapterSettings {
+            connect_timeout_ms: pool.connect_timeout_ms,
+            io_timeout_ms,
+            interaction_timeout_ms: pool.interaction_timeout_ms,
+            cleanup_timeout_ms: pool.cleanup_timeout_ms,
+        },
+    }
+}
+/// The HTTPS half of the connection host's factory: the endpoint session's HTTPS configuration and helper slots, the
+/// native caller of a native-route runtime, the host's shared reservation and the pool's budgets.
+fn https_factory_inputs(
+    https: &HttpsEndpointConfig,
+    slots: &HelperSlots,
+    native: Option<&NativeCaller>,
+    pool: &pool::Config,
+    io_timeout_ms: u64,
+    authority: crate::git::endpoint::shared_reservation::Authority,
+) -> crate::git::endpoint::https_adapter::HttpsInputs {
+    crate::git::endpoint::https_adapter::HttpsInputs {
+        tls: https.tls.clone(),
+        auth: https.auth.clone(),
+        helper_slots: slots.clone(),
+        native: native.cloned(),
+        authority,
+        settings: crate::git::endpoint::https_adapter::HttpsSettings {
+            allocation_timeout_ms: pool.allocation_timeout_ms,
             connect_timeout_ms: pool.connect_timeout_ms,
             io_timeout_ms,
             interaction_timeout_ms: pool.interaction_timeout_ms,
