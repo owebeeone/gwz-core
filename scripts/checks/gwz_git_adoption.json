@@ -18,8 +18,8 @@
     "G1",
     "G3"
    ],
-   "reason": "A1. Native commit and tag open with it inside gwz-git; core opens with open_exact and never needs Git's variables to choose a repository's parts. The first core-side consumer would be G3 (stage, checkout) if it is moved.",
-   "exit": "the G3 decision: a core caller exists, or the method becomes crate-private",
+   "reason": "A1. gwz-git's native commit and tag open through it (route::open delegates, round 1 remediation C-P3-3), so it has a consumer inside gwz-git; gwz-core has none, and R9 asks for a production consumer in core, which this is not. Core opens with open_exact and never needs Git's variables to choose a repository's parts; the first core-side consumer would be G3 (stage, checkout) if it is moved.",
+   "exit": "the G3 decision: a core caller exists, or the method becomes crate-private (native commit then opens through the crate-private form)",
    "dated": "2026-10-25"
   },
   {
@@ -48,6 +48,24 @@
    ],
    "reason": "Consumed by a driver, not by core: gwz-cli builds the notes (gwz-cli/src/globalargs/dispatch.rs:43) through core's `git::RouteNotes` re-export and core only stores and forwards them. This check reads gwz-core alone, so it cannot see that caller.",
    "exit": "when this check also reads the drivers, or the notes sink moves so that core constructs it",
+   "dated": "2026-10-25"
+  },
+  {
+   "capability": "RoutePolicy::CLI_ONLY",
+   "rows": [
+    "G1"
+   ],
+   "reason": "Test facility: forces the Git CLI route to compare it with the native one. Behind the gwz-git cargo feature `test-support`, which gwz-core enables in [dev-dependencies] only (round 1 remediation C-P3-4), so production gwz-core cannot force a route; its consumers are gwz-core's spawn-gate tests and gwz-git's own.",
+   "exit": "stays while the differential tests need it; it is not a production capability and leaves the public surface if gwz-git is published without the feature",
+   "dated": "2026-10-25"
+  },
+  {
+   "capability": "Services::with_policy",
+   "rows": [
+    "G1"
+   ],
+   "reason": "The builder that carries RoutePolicy::CLI_ONLY; same feature gate and same reason as that entry. Core's production code builds Services without it.",
+   "exit": "with RoutePolicy::CLI_ONLY",
    "dated": "2026-10-25"
   }
  ]

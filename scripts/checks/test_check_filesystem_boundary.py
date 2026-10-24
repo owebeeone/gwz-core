@@ -57,6 +57,9 @@ import json
 import tempfile
 
 
+PRODUCERS = ['open_repo', 'repo_head', 'find_remote', 'git_error']
+
+
 class GitBoundaryTests(unittest.TestCase):
     """Step 5.5: the migrated area of the gwz-git move imports no git2 directly."""
 
@@ -94,10 +97,10 @@ class GitBoundaryTests(unittest.TestCase):
         for name, text in files.items():
             (root / name).parent.mkdir(parents=True, exist_ok=True)
             (root / name).write_text(text)
-        return checker.git2_boundary_failures(root, config)
+        return checker.git2_boundary_failures(root, {'native_producers': PRODUCERS, **config})
 
-    def entry(self, path, count, **extra):
-        return {'path': path, 'git2': count, 'rows': ['G3'], 'responsibility': 'branch functions',
+    def entry(self, path, count, producers=0, **extra):
+        return {'path': path, 'git2': count, 'producers': producers, 'rows': ['G3'], 'responsibility': 'branch functions',
                 'exit': 'the G3 step', 'dated': '2026-10-25', **extra}
 
     def test_a_zero_tolerance_file_with_a_use_fails_and_is_named(self):
@@ -126,7 +129,7 @@ class GitBoundaryTests(unittest.TestCase):
         self.assertEqual(len(fewer), 1)
         self.assertIn('lower the entry', fewer[0])
         gone = self.tree({'src/refs.rs': 'fn f() {}\n'}, config)[0]
-        self.assertIn('delete it at zero', gone[0])
+        self.assertTrue(any('delete the entry' in f for f in gone), gone)
 
     def test_an_exception_for_a_missing_file_or_without_its_reasons_fails(self):
         self.assertIn('file that is gone', self.tree({}, {'zero': [], 'exceptions': [self.entry('src/x.rs', 1)]})[0][0])
@@ -145,6 +148,43 @@ class GitBoundaryTests(unittest.TestCase):
         self.assertTrue(any('zero-tolerance and also' in f for f in self.tree({'src/a.rs': 'use git2::Oid;'}, config)[0]))
         twice = {'zero': [], 'exceptions': [self.entry('src/a.rs', 1), self.entry('src/a.rs', 1)]}
         self.assertTrue(any('listed twice' in f for f in self.tree({'src/a.rs': 'use git2::Oid;'}, twice)[0]))
+
+    def test_a_native_handle_reached_through_a_core_producer_is_a_use_too(self):
+        sample = 'use super::*;\nfn f(p: &Path) { let repo = open_repo(p)?; repo.merge_base(a, b); }\n'
+        self.assertEqual(checker.git2_uses(sample), [])
+        self.assertEqual(checker.producer_uses(sample, set(PRODUCERS)), [2])
+        failures, _ = self.tree({'src/reads.rs': sample}, {'zero': ['src/reads.rs'], 'exceptions': []})
+        self.assertEqual(len(failures), 1)
+        self.assertTrue(failures[0].startswith('src/reads.rs:2:') and 'native-handle producer' in failures[0], failures)
+
+    def test_every_producer_counts_and_a_definition_or_member_does_not(self):
+        for name in PRODUCERS:
+            with self.subTest(name=name):
+                self.assertEqual(checker.producer_uses(f'let x = {name}(p)?;', set(PRODUCERS)), [1])
+                self.assertEqual(checker.producer_uses(f'.map_err({name})', set(PRODUCERS)), [1])
+                self.assertEqual(checker.producer_uses(f'fn {name}(p: &Path) {{}}', set(PRODUCERS)), [])
+                self.assertEqual(checker.producer_uses(f'x.{name}(p);', set(PRODUCERS)), [])
+        self.assertEqual(checker.producer_uses('// open_repo(p)\nlet s = "open_repo"; #[cfg(test)] fn t() { open_repo(p); }',
+                                               set(PRODUCERS)), [])
+
+    def test_an_exception_holds_its_producer_count_exactly(self):
+        config = {'zero': [], 'exceptions': [self.entry('src/cmp.rs', 0, 2)]}
+        two = 'fn f(p: &Path) { open_repo(p)?; open_repo(p)?; }\n'
+        self.assertEqual(self.tree({'src/cmp.rs': two}, config)[0], [])
+        more = self.tree({'src/cmp.rs': two + 'fn g(p: &Path) { repo_head(p); }\n'}, config)[0]
+        self.assertEqual(len(more), 1)
+        self.assertIn('3 native-handle producer uses, 2 recorded', more[0])
+        fewer = self.tree({'src/cmp.rs': 'fn f(p: &Path) { open_repo(p)?; }\n'}, config)[0]
+        self.assertIn('lower the entry', fewer[0])
+        gone = self.tree({'src/cmp.rs': 'fn f() {}\n'}, config)[0]
+        self.assertTrue(any('delete the entry' in f for f in gone), gone)
+
+    def test_comparison_is_an_exception_with_the_g8_row_not_a_zero_file(self):
+        config = json.loads((checker.ROOT / checker.GIT_BOUNDARY).read_text(encoding='utf-8'))
+        self.assertNotIn('src/git/gitbackend/comparison.rs', config['zero'])
+        (entry,) = [e for e in config['exceptions'] if e['path'] == 'src/git/gitbackend/comparison.rs']
+        self.assertEqual(entry['rows'], ['G8'])
+        self.assertGreater(entry['producers'], 0)
 
     def test_the_real_tree_is_green_under_the_real_config(self):
         config = json.loads((checker.ROOT / checker.GIT_BOUNDARY).read_text(encoding='utf-8'))

@@ -17,6 +17,7 @@ pub struct Repository;
 pub struct Flags;
 impl Repository {
     pub fn open(path: &str) -> Self { Self }
+    pub const LIMIT: u8 = 3;
     pub fn head(&self) -> u8 { 0 }
     pub fn status<'a, T>(&self, options: &'a T) -> u8 { 0 }
     pub(crate) fn hidden(&self) {}
@@ -43,7 +44,7 @@ mod tests { pub fn probe() {} }
 CORE = {
     'src/reads.rs': '''
 use gwz_git::{Flags, Repository};
-fn read(path: &str) { let repo = Repository::open(path); repo.head(); let _ = Flags::make(); repo.status(&1); }
+fn read(path: &str) { let repo = Repository::open(path); repo.head(); let _ = Repository::LIMIT; let _ = Flags::make(); repo.status(&1); }
 ''',
     'src/ops_user.rs': 'use gwz_git::ops; fn go() { ops::commit(); }\nstruct S;\nimpl gwz_git::ops::Gate for S { fn run(&self) {} }\n',
 }
@@ -57,7 +58,7 @@ impl Repository {
 }
 pub mod ops { pub fn commit(); }
 ```
-`Flags::make()` builds flags.
+`Flags::make()` builds flags. `Repository::LIMIT` is a limit.
 '''
 NONE = {'unconsumed': []}
 
@@ -90,14 +91,14 @@ class Adoption(unittest.TestCase):
             (Path(directory.name) / name).write_text(text)
         capabilities, exported, modules = adoption.surface(Path(directory.name))
         self.assertEqual(sorted(c.key for c in capabilities),
-                         ['Flags::make', 'Gate', 'Repository::head', 'Repository::open', 'Repository::status',
-                          'ops::commit'])
+                         ['Flags::make', 'Gate', 'Repository::LIMIT', 'Repository::head', 'Repository::open',
+                          'Repository::status', 'ops::commit'])
         self.assertEqual((exported, modules), ({'Repository', 'Flags'}, {'ops'}))
 
     def test_everything_consumed_and_documented_is_green(self):
         failures, stats = self.world()
         self.assertEqual(failures, [])
-        self.assertEqual(stats, (6, 6, 0))
+        self.assertEqual(stats, (7, 7, 0))
 
     def test_a_new_public_function_is_named_unconsumed_and_undocumented(self):
         git = {'src/repo.rs': GIT['src/repo.rs'].replace(
@@ -154,7 +155,7 @@ class Adoption(unittest.TestCase):
         core = {'src/ops_user.rs': 'impl gwz_git::ops::Gate for S {}\n'}
         failures, stats = self.world(core=core, config={'unconsumed': [entry('ops::commit')]})
         self.assertEqual(failures, [])
-        self.assertEqual(stats, (6, 5, 1))
+        self.assertEqual(stats, (7, 6, 1))
 
     def test_an_exception_for_a_capability_that_is_now_consumed_is_stale(self):
         failures, _ = self.world(config={'unconsumed': [entry('Repository::head')]})
@@ -196,6 +197,53 @@ class Adoption(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(SystemExit):
                 adoption.surface(Path(directory))
+
+
+    def test_a_git2_call_of_the_same_name_is_not_a_gwz_git_caller(self):
+        # `git2::Repository` + `repo.head()` + an import of gwz-git's Error: the file never takes Repository from gwz-git.
+        core = {'src/reads.rs': CORE['src/reads.rs'].replace('repo.head();', ''),
+                'src/native.rs': 'use gwz_git::Error;\nfn f(repo: git2::Repository) { repo.head(); let _: Error; }\n'}
+        failures, _ = self.world(core=core)
+        self.assertTrue(any(f.startswith('Repository::head has no production caller') for f in failures), failures)
+        # The same file written with the gwz-git path is a caller.
+        core['src/native.rs'] = 'fn f(repo: gwz_git::Repository) { repo.head(); }\n'
+        self.assertEqual(self.world(core=core)[0], [])
+
+    def test_a_file_reached_only_through_a_test_gated_mod_is_test_source(self):
+        helper = 'use gwz_git::Repository;\nfn t(r: Repository) { r.head(); }\n'
+        reads = CORE['src/reads.rs'].replace('repo.head();', '')
+        for lib in ('#[cfg(test)] mod helper;\n', 'cfg_if::cfg_if! { if #[cfg(test)] { mod helper; } }\n'):
+            for place in ('src/helper.rs', 'src/helper/mod.rs'):
+                with self.subTest(lib=lib, place=place):
+                    core = {'src/reads.rs': reads, 'src/lib.rs': lib + 'mod reads;\n', place: helper}
+                    failures, _ = self.world(core=core)
+                    self.assertTrue(any(f.startswith('Repository::head has no production caller') for f in failures),
+                                    failures)
+        # A module below a test-gated one is test source too; a live mod is not.
+        core = {'src/reads.rs': reads, 'src/lib.rs': '#[cfg(test)] mod helper;\n', 'src/helper.rs': 'mod deep;\n',
+                'src/helper/deep.rs': helper}
+        failures, _ = self.world(core=core)
+        self.assertTrue(any(f.startswith('Repository::head has no production caller') for f in failures), failures)
+        core = {'src/reads.rs': reads, 'src/lib.rs': 'mod helper;\n', 'src/helper.rs': helper}
+        self.assertEqual(self.world(core=core)[0], [])
+
+    def test_a_public_constant_is_a_capability_and_needs_a_caller(self):
+        core = {'src/reads.rs': CORE['src/reads.rs'].replace('let _ = Repository::LIMIT;', '')}
+        failures, _ = self.world(core=core)
+        self.assertTrue(any(f.startswith('Repository::LIMIT has no production caller') for f in failures), failures)
+        failures, _ = self.world(core=core, config={'unconsumed': [entry('Repository::LIMIT')]})
+        self.assertEqual(failures, [])
+        failures, _ = self.world(guide=GUIDE.replace('`Repository::LIMIT` is a limit.', ''))
+        self.assertTrue(any(f.startswith('Repository::LIMIT is public in gwz-git') for f in failures), failures)
+
+    def test_an_item_behind_a_cargo_feature_is_still_surface(self):
+        git = {'src/ops.rs': GIT['src/ops.rs'] + 'cfg_if::cfg_if! { if #[cfg(feature = "test-support")] '
+               '{ impl Flags2 {} } }\n'}
+        git['src/repo.rs'] = GIT['src/repo.rs'] + (
+            'cfg_if::cfg_if! { if #[cfg(any(test, feature = "test-support"))] { impl Repository { '
+            'pub fn forced(&self) {} } } }\n')
+        failures, _ = self.world(git=git)
+        self.assertTrue(any(f.startswith('Repository::forced has no production caller') for f in failures), failures)
 
     def test_the_real_trees_are_green_under_the_real_config(self):
         sibling = Path(os.environ.get('GWZ_GIT_CHECKOUT') or adoption.ROOT.parent / 'gwz-git')

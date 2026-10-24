@@ -434,3 +434,18 @@ Open decisions for the operator: F2 (supersession line), F6 (DAG), G3/G7/G8 in o
   `retired_paths` and `retired_symbols` stay with the probe tests in `gwz_git_tests.rs`; the zero list also covers the replaced paths.
 - **Wiring.** `run_tests.py` runs the adoption check after the gwz-git process-global check over the same pinned checkout; the boundary
   workflow runs it and the new unit tests in its check step and unittest list; `check_filesystem_boundary.py` was already in both.
+
+### Phase 5 review round 1 remediation (one patch; Code and State reports of 2026-10-25)
+
+- **S-P2-1.** `native_commit/verify.rs` tests tag existence by exact reference lookup (`Repository::tag_commit`, `tag_ref_exists`, both
+  crate-private, over `find_reference("refs/tags/<name>")`); `resolve("HEAD")` stays for the commit check. A `t-1-g<abbrev>` tag and a branch
+  `refs/tags/X` no longer stand in for a tag. S-P3-2: a verification read that fails after the write is an `Operation` error saying so.
+- **C-P2-1, C-P2-2.** Both `transport-candidate.yml` jobs fetch gwz-git at its pin (`checkout-siblings.sh`) and check it is on main;
+  `scripts/checks/test_workflow_siblings.py` holds every workflow job that builds gwz-core to every `path = "../X"` sibling. gwz-git's `ci.yml`
+  gained Linux (arm64) and macOS legs.
+- **C-P3-1.** The guard also counts core's native-handle producers (`open_repo`, `repo_head`, `find_remote`, `git_error`); `comparison.rs`
+  is an exception (G8) with its counts; every exception records its producer count.
+- **C-P3-2 = S-P3-1, C-P3-4.** The adoption check credits a call only when the file takes the owner from gwz-git, treats a test-gated `mod`'s
+  file as test source, and lists public associated constants. `RoutePolicy::CLI_ONLY` and `Services::with_policy` are behind the gwz-git
+  feature `test-support` (gwz-core `[dev-dependencies]` only); both are on the dated ratchet as unconsumed, with that reason.
+- **C-P3-3.** `route::open` delegates to `Repository::open_from_env`; `open_from_env` keeps its ratchet entry (no gwz-core caller), reason corrected.

@@ -10,20 +10,24 @@ guide `dev-docs/GwzGitLibraryApi.md` is the capability table.
 What it reads, with no build:
 
 - gwz-git's public surface. `src/lib.rs` names it: each `pub use` re-export and
-  each `pub mod`. A capability is a `pub fn` of an inherent `impl` of an exported
-  type (`Repository::head`, `Services::new`), a free `pub fn` of a public module
-  (`native_commit::commit`), or a public trait (`ProcessGate`). Test items, test
-  files and `pub(crate)` items are not surface.
+  each `pub mod`. A capability is a `pub fn` or a `pub const` of an inherent `impl`
+  of an exported type (`Repository::head`, `Services::new`, `RoutePolicy::AUTO`), a
+  free `pub fn` of a public module (`native_commit::commit`), or a public trait
+  (`ProcessGate`). Test items, test files and `pub(crate)` items are not surface; a
+  `pub` item behind a cargo feature is (the scan does not evaluate features).
 - the guide. Every capability must be documented there: the `Repository` methods
   and the free functions of public modules in a fenced code block (`fn name(`),
   the others by name; every exported name must appear; and every `pub fn` the
   guide's code blocks declare must exist (a stale guide fails too).
-- gwz-core's production code: `src/**/*.rs` without test files, `#[cfg(test)]`
-  items, comments and strings. A file is a caller when it names `gwz_git` and the
-  capability's owner (the type, the module or the trait): `.name(` or
-  `Owner::name` for a function, an `impl .. Trait for ..` for a trait. This is a
-  lexical match, like the map's own caller counts (section 0), not name
-  resolution; an alias of the owner is not followed.
+- gwz-core's production code: `src/**/*.rs` without test files, files reached only
+  through a test-gated `mod x;`, `#[cfg(test)]` items, comments and strings. A file
+  is a caller when it takes the capability's owner (the type, the module or the
+  trait) from gwz-git, by a `use gwz_git::..` that brings it in or a path
+  `gwz_git::..::Owner` (never `git2::Owner`: a same-named git2 type is not gwz-git),
+  and calls `.name(` or `Owner::name` for a function, `Owner::NAME` for a constant,
+  or has an `impl .. Trait for ..` for a trait. This is a lexical match, like the
+  map's own caller counts (section 0), not name resolution; an alias of the owner is
+  not followed.
 
 A capability with no caller fails by name. `gwz_git_adoption.json` lists the
 capabilities that are public and unconsumed today, each with rows, reason, exit and
@@ -196,6 +200,10 @@ def surface(git_root):
                 cursor += 1
             body_depth = level[cursor] + 1
             for k in range(cursor + 1, balanced(names, cursor, '{', '}')):
+                if level[k] == body_depth and names[k:k + 2] == ['pub', 'const'] \
+                        and names[k + 2] != 'fn' and IDENT.match(names[k + 2]):
+                    capabilities.append(Capability(owner, names[k + 2], 'const', path))
+                    continue
                 item = level[k] == body_depth and public_item(names, k)
                 if not item or item[0] != 'fn':
                     continue
@@ -213,13 +221,95 @@ def guide_text(core_root):
     return text, blocks
 
 
+MOD_DECL = re.compile(r'\bmod\s+([A-Za-z_][A-Za-z_0-9]*)\s*;')
+CFG_ATTR = re.compile(r'#\s*\[\s*cfg\s*\(((?:[^()\[\]]|\([^()]*\)|\((?:[^()]|\([^()]*\))*\))*)\)\s*\]\s*$', re.S)
+
+
+def requires_test(expression):
+    """Whether a cfg expression holds only when `test` does: `test`, or `all(..)` with a requiring arm, or `any(..)`
+    whose every arm requires it."""
+    names = [name for name, _ in tokens(expression)]
+    if names == ['test']:
+        return True
+    if len(names) < 3 or names[0] not in {'all', 'any'} or names[1] != '(':
+        return False
+    arms, current, depth = [], [], 0
+    for name in names[2:-1]:
+        if name == ',' and depth == 0:
+            arms.append(current)
+            current = []
+            continue
+        current.append(name)
+        depth += (name == '(') - (name == ')')
+    arms.append(current)
+    values = [requires_test(' '.join(arm)) for arm in arms if arm]
+    return any(values) if names[0] == 'all' else bool(values) and all(values)
+
+
+def gated_mods(text):
+    """Names of the `mod name;` declarations that exist only under test: a `#[cfg(test..)]` attribute right before
+    them, or before the `{` of a block they sit in (a `cfg_if!` arm). A lexical read of the raw text."""
+    gated = set()
+    for found in MOD_DECL.finditer(text):
+        position = found.start()
+        while position >= 0:
+            window_start = max(0, position - 400)
+            before = text[window_start:position].rstrip()
+            attribute = CFG_ATTR.search(before)
+            if attribute and requires_test(attribute.group(1)):
+                gated.add(found.group(1))
+                break
+            if attribute:  # another attribute may sit between this one and the item
+                position = window_start + attribute.start()
+                continue
+            # The innermost block that holds the declaration, then what is written before its brace.
+            depth, cursor = 0, position
+            while cursor > 0:
+                cursor -= 1
+                depth += (text[cursor] == '}') - (text[cursor] == '{')
+                if depth < 0:
+                    break
+            if depth >= 0:
+                break
+            position = cursor
+    return gated
+
+
+def test_only_modules(src):
+    """Source files reached only through a test-gated `mod name;`, and so test code (any file below one too).
+
+    A gated module's file, and the directory of modules beside it, are test source whatever they are called.
+    """
+    gated = set()
+    for path in sorted(src.rglob('*.rs')):
+        text = path.read_text(encoding='utf-8')
+        if 'test' not in text or not MOD_DECL.search(text):
+            continue
+        home = path.parent if path.stem in {'mod', 'lib', 'main'} else path.parent / path.stem
+        for module in gated_mods(text):
+            gated |= {home / f'{module}.rs', home / module / 'mod.rs'}
+    return gated
+
+
+def gated_roots(gated):
+    """The directories of the gated modules (a module `a/b.rs` owns `a/b/`; `a/b/mod.rs` owns `a/b/`)."""
+    return {module.parent if module.name == 'mod.rs' else module.with_suffix('') for module in gated}
+
+
+def below(path, gated, roots):
+    """Whether `path` is a gated module file or lies in the directory of one."""
+    return path in gated or any(parent in roots for parent in path.parents)
+
+
 def production_callers(core_root):
     """{relative path: token names} for each non-test gwz-core source file that names gwz_git."""
     result = {}
     src = core_root / 'src'
+    gated = test_only_modules(src)
+    roots = gated_roots(gated)
     for path in sorted(src.rglob('*.rs')):
         relative = path.relative_to(core_root)
-        if is_test_source(relative):
+        if is_test_source(relative) or below(path, gated, roots):
             continue
         if 'gwz_git' not in path.read_text(encoding='utf-8'):
             continue  # cheap prefilter: the token scan is quadratic in file size
@@ -243,10 +333,31 @@ def split_uses(names):
     return body, uses
 
 
+def names_owner(owner, body, uses):
+    """Whether the file takes `owner` from gwz-git: a `use gwz_git::..` that brings it in (a module, as a path
+    segment too), or a path `gwz_git::..::owner` in the code. `git2::Owner` is never gwz-git's."""
+    for statement in uses:
+        if 'gwz_git' in statement and (owner in use_leaves(statement)
+                                       or (owner[:1].islower() and owner in statement)):
+            return True
+    for index, name in enumerate(body):
+        if name != 'gwz_git':
+            continue
+        cursor = index
+        while cursor + 2 < len(body) and body[cursor + 1] == '::' and IDENT.match(body[cursor + 2]):
+            if body[cursor + 2] == owner:
+                return True
+            cursor += 2
+    return False
+
+
 def first_caller(capability, callers):
     """The first production file that calls `capability`, else None."""
     for relative, names in callers.items():
         if capability.owner not in names:
+            continue
+        body, uses = split_uses(names)
+        if not names_owner(capability.owner, body, uses):
             continue
         if capability.kind == 'trait':
             for index, name in enumerate(names):
@@ -255,7 +366,6 @@ def first_caller(capability, callers):
                     if capability.owner in head and 'for' in head[head.index(capability.owner):]:
                         return relative
             continue
-        body, uses = split_uses(names)
         # A function imported by name (`use gwz_git::ops::commit;`) is called bare.
         imported = (not capability.receiver and capability.owner[:1].islower()
                     and any(capability.owner in statement and capability.name in use_leaves(statement)
@@ -305,15 +415,15 @@ def check(core_root, git_root, config):
 
     surface_names = {capability.name for capability in capabilities if capability.kind == 'fn'}
     for capability in capabilities:
-        if capability.kind == 'fn':
-            strict = capability.owner == 'Repository' or capability.owner in modules
+        strict = capability.kind == 'fn' and (capability.owner == 'Repository' or capability.owner in modules)
+        if capability.kind in {'fn', 'const'}:
             documented = (re.search(rf'\bfn\s+{re.escape(capability.name)}\b', blocks) if strict
                           else re.search(rf'\b{re.escape(capability.name)}\b', text))
         else:
             documented = re.search(rf'\b{re.escape(capability.owner)}\b', text)
         if not documented:
             failures.append(f'{capability.key} is public in gwz-git but {GUIDE} does not document it'
-                            + (' in a code block' if capability.kind == 'fn' and strict else ''))
+                            + (' in a code block' if strict else ''))
     for declared in sorted(set(re.findall(r'\bpub\s+fn\s+([A-Za-z_][A-Za-z_0-9]*)', blocks)) - surface_names):
         failures.append(f'{GUIDE} declares pub fn {declared}, which gwz-git does not export')
 

@@ -10,9 +10,16 @@ use super::*;
 use crate::git::model_error;
 
 fn services(backend: &Git2Backend) -> Services<'_> {
-    Services::new(&backend.environment, &backend.spawn_gate)
-        .with_policy(backend.route_policy)
-        .with_notes(backend.route_notes.as_ref())
+    let services = Services::new(&backend.environment, &backend.spawn_gate)
+        .with_notes(backend.route_notes.as_ref());
+    // Forcing a route is a gwz-git test facility, which only gwz-core's tests enable.
+    cfg_if::cfg_if! {
+        if #[cfg(test)] {
+            services.with_policy(backend.route_policy)
+        } else {
+            services
+        }
+    }
 }
 
 pub(super) fn commit(

@@ -213,6 +213,9 @@ native-tls = "=0.2.18"
 tokio-native-tls = "=0.3.1"
 
 [dev-dependencies]
+# Round 1 remediation C-P3-4: forcing the Git CLI route (`RoutePolicy::CLI_ONLY`, `Services::with_policy`) is a gwz-git
+# test facility; only gwz-core's tests have it, so production gwz-core cannot force a route.
+gwz-git = { path = "../gwz-git", features = ["test-support"] }
 libgit2-sys = { package = "gwz-libgit2-sys", path = "../git2-rs/libgit2-sys", version = "=0.18.8" }
 serde_json = "1"
 # LCM1.1 (lane C wiring): the Tier B slices under src/local_clone/tests build

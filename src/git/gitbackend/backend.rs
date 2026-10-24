@@ -64,7 +64,7 @@ impl Git2Backend {
             observations: Default::default(),
             ssh: Default::default(),
             environment: process_environment(),
-            route_policy: Default::default(),
+            route_policy: gwz_git::native_commit::RoutePolicy::AUTO,
             route_notes: None,
             spawn_gate: Default::default(),
         }
@@ -98,7 +98,7 @@ impl Git2Backend {
             observations: Default::default(),
             ssh: Default::default(),
             environment: process_environment(),
-            route_policy: Default::default(),
+            route_policy: gwz_git::native_commit::RoutePolicy::AUTO,
             route_notes: None,
             spawn_gate: Default::default(),
         }

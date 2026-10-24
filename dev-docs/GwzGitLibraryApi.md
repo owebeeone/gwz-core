@@ -116,7 +116,8 @@ the variables the `git` program reads for a repository:
 (`common_dir()`), `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`,
 `GIT_INDEX_FILE`, `GIT_NAMESPACE`, and the configuration locations
 (`GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_NOSYSTEM`). It is the
-open native commit and tag use. The crate reads and sets no variable itself;
+open native commit and tag use inside gwz-git (they open through it); gwz-core
+has no caller of its own. The crate reads and sets no variable itself;
 the process environment is the native layer's input, so a caller that wants a
 hermetic open uses `open_exact` or runs in a controlled process. Two facts from
 the vendored libgit2 1.9.7 and tests (`tests/open_resolve.rs`): `GIT_DIR` is
@@ -161,14 +162,14 @@ pub mod native_commit {
 
     #[non_exhaustive] pub struct Services<'a> {
         pub environment: &'a GitEnvironment,
-        pub policy: RoutePolicy,
+        // policy: RoutePolicy      crate-private; set only by with_policy (test-support)
         pub notes: Option<&'a RouteNotes>,
         pub process: &'a dyn ProcessGate,
-    }                      // Services::new(env, process).with_policy(..).with_notes(..)
+    }                      // Services::new(env, process).with_notes(..); .with_policy(..) is test-support only
     pub trait ProcessGate { fn output(&self, command: &mut Command) -> io::Result<Output>; }
     pub struct GitEnvironment;   // from_vars(iter of (name, value)); no process() capture
     pub struct RouteNotes;       // new(Fn(&str)): one line per "ran the Git CLI because ..."
-    pub struct RoutePolicy;      // AUTO (default), CLI_ONLY
+    pub struct RoutePolicy;      // AUTO (default); CLI_ONLY exists only with the `test-support` feature
     #[non_exhaustive] pub struct CommitOutcome { pub id: ObjectId }
     #[non_exhaustive] pub struct TagOutcome { pub name: String, pub commit: ObjectId }
 }
@@ -188,18 +189,32 @@ pub mod native_commit {
   the entries of its spawn allowlist, each `debt` (the child inherits the live
   process environment; RemPlan-1, Safety P3-11).
 - **Self-verification (AD1).** After a native or CLI change gwz-git opens the
-  repository afresh and checks the result with `Repository::resolve`: HEAD is the
-  new commit; the tag exists and resolves to a commit; the tag is gone. No other
-  read API is needed, so G1 does not wait for the refs-and-reads row (G2).
-- **Errors.** Every failure is `ErrorKind::Operation`, with the native
-  diagnostics when libgit2 reported it, and `Error::message()` is the text
+  repository afresh and checks the result: HEAD is the new commit
+  (`Repository::resolve("HEAD")`); the tag exists, by an exact lookup of the
+  reference `refs/tags/<name>`, and peels to a commit; the tag is gone, by the
+  same lookup. Tag existence is never a revision lookup: the revision rules would
+  let a name shaped like `git describe` output (`t-1-g<abbrev>`) or a branch
+  named `refs/tags/<name>` stand in for a tag that is not there.
+- **Errors, by side of the write.** A refusal or failure of the operation
+  itself is `ErrorKind::Operation`, with the native diagnostics when libgit2
+  reported it. The reads that precede the write (the open for the route
+  decision, the CLI route's HEAD read before `git commit`) keep their own kinds
+  (`NotARepository`, `RepositoryOpen`, `ObjectRead`): nothing was written. A
+  verification read that fails after the write is also `Operation`, with a message
+  that states the write happened: `<what>: written; verification read failed:
+  <native message>`; the native diagnostics of the failed read are kept. A
+  consumer can therefore tell "nothing changed" from "written, not confirmed".
+  `Error::message()` is the text
   gwz-core copies into its `ModelError` (code `GitCommandFailed`, unchanged).
   `Error::message()` and `Repository::is_repository(path)` (open as
   `open_exact`; `Ok(false)` for `NotARepository`) also moved from gwz-core's
   error translation and `is_repository` (row G9).
 - **Not moved.** Staging (`stage_paths`), repository creation and the scoped and
   merge commits stay in gwz-core (rows G3 and G10). The native `-a` staging code
-  is kept, reachable only by a test-only policy, as decided on 2026-10-13.
+  is kept, reachable only by a test-only policy, as decided on 2026-10-13. Forcing a
+  route at all (`RoutePolicy::CLI_ONLY`, `Services::with_policy`) is behind the
+  non-default cargo feature `test-support`, which gwz-core enables in its
+  `[dev-dependencies]` only: production gwz-core cannot force the Git CLI route.
 
 ## A3: refs and reads (step 5.3, row G2)
 
@@ -372,7 +387,7 @@ text is diagnostic, not a stable match key. Display is diagnostic too.
 | ObjectFormatMismatch | Valid ID uses another repository format |
 | RepositoryOpen | Native opening failed for a reason other than "no repository" (for example an unsupported repository extension) |
 | NotARepository | A1: the path is not a repository: a plain directory, a nonexistent path, or a nested directory (no parent search). Native code `-3` (not found) |
-| Operation | A2: a native commit or tag operation was refused or failed; the message says why, native diagnostics present when libgit2 reported it |
+| Operation | A2: a native commit or tag operation was refused or failed, or a verification read after the write failed (the message says the write happened); the message says why, native diagnostics present when libgit2 reported it |
 | InvalidPath | A3: a path argument is not normalized and relative (absolute, or with a `.`, `..` or root component); no native diagnostic, no native call was made |
 | StateRead | A3: reading repository state that is neither an object nor a reference failed: the worktree status (including a bare repository), the configured remotes, the index (step 5.5), or the `HEAD` file of an unborn branch |
 | ObjectRead | Object, reference or revision lookup/type/parsing failed, including missing objects, since A1 a revision `resolve` cannot parse, and since A3 the reads of tag names, `HEAD`, the commit graph, trees and committed files |
