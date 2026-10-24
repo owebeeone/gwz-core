@@ -126,9 +126,15 @@ def test_candidate_adds_the_windows_networking_features_the_endpoint_needs(tmp_p
     # conditions hold, so the candidate adds to production's list and never replaces it. WinHttp for the HTTPS endpoint,
     # WinSock for the SSH endpoint's socket waits (GwzTransportWindowsParityPlan.md, step 1.2), the features the SSH test
     # fixtures use (step 1.1), Pageant's exchange (step 3.5: its mapping, descriptor and `WM_COPYDATA`; step 3.6's
-    # synthetic Pageant window class, `Win32_Graphics_Gdi`). Production names none of them. The switch's removal moves
-    # every one of them into production's list.
-    assert set(production["features"]).isdisjoint(added["features"])
+    # synthetic Pageant window class, `Win32_Graphics_Gdi`). Production names only the three that the process gate of step
+    # 1.3a needs in every build (`CreateSemaphoreW`, the owner check: Win32_Security, Win32_Security_Authorization,
+    # Win32_System_Threading); the switch's table repeats them, because the candidate's list is the complete set the
+    # endpoint needs and Cargo unifies the duplicates. The switch's removal moves the rest into production's list.
+    assert set(production["features"]) & set(added["features"]) == {
+        "Win32_Security",
+        "Win32_Security_Authorization",
+        "Win32_System_Threading",
+    }
     assert set(added["features"]) == {
         "Win32_Graphics_Gdi",
         "Win32_NetworkManagement_IpHelper",

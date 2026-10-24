@@ -26,7 +26,9 @@ fn a_gwz_git_error_translates_like_the_native_error_it_carries() {
 
 #[test]
 fn is_repository_asks_gwz_git_and_core_no_longer_opens_the_repository_for_it() {
-    let source = include_str!("repository.rs");
+    // A Windows checkout may convert the line endings, so the function's closing
+    // brace is found in the source with the ones the repository stores.
+    let source = include_str!("repository.rs").replace("\r\n", "\n");
     let body = source
         .split("fn is_repository")
         .nth(1)
