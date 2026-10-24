@@ -286,6 +286,11 @@ def hosted_like_script(label: str, git_root: str, test_filter: str | None) -> st
         f'{HOSTED_SUITE}{filter_word} --manifest-path={d}/candidate/Cargo.toml --target-dir={d}/target-test '
         f'> {d}/logs/hosted-like.log 2>&1',
         'status=$?',
+        # The library suite's own count, before the integration step adds its lines to the log: a library binary that never
+        # ran leaves only the integration targets' passes in the total, and the total alone cannot tell.
+        f"library=$(grep -a -E '^test result:' {d}/logs/hosted-like.log | sed -n -E 's/^test result: [A-Za-z]+\\. ([0-9]+) passed.*/\\1/p' "
+        "| awk '{s+=$1} END{print s+0}')",
+        'echo "HOSTED_LIKE_LIBRARY passed=$library"',
         *integration_lines(d, test_filter),
         # One line per fact, for the receipt: the last "test result:" of each test binary run adds up.
         f"passed=$(grep -a -E '^test result:' {d}/logs/hosted-like.log | sed -n -E 's/^test result: [A-Za-z]+\\. ([0-9]+) passed.*/\\1/p' "
@@ -312,6 +317,8 @@ def parse_hosted_like(text: str, test_filter: str | None) -> dict:
             facts['integration_exit'] = int(rest)
         elif word == 'HOSTED_LIKE_INTEGRATION_RESULTS':
             facts['integration_results'] = int(rest)
+        elif word == 'HOSTED_LIKE_LIBRARY':
+            facts['library_passed'] = int(rest.partition('=')[2])
         elif word == 'HOSTED_LIKE_FAILED':
             facts['tests']['failed_names'].append(rest)
         elif word == 'HOSTED_LIKE_RESULT':
@@ -361,13 +368,14 @@ def run_entry(host: Host, receipt: Receipt, name: str, flags: str, script: str, 
         # no failed test, so it passes only when it exited 0 or every target reported a result.
         integration_ran = (entry.get('integration_exit', 0) == 0
                            or entry.get('integration_results') == len(INTEGRATION_TARGETS))
-        entry['passed'] = result.returncode == 0 or bool(
-            entry['gaps'] and not entry['failures'] and entry['tests']['failed'] == len(entry['gaps']) and integration_ran)
+        # A suite that ran no library test passes nothing, whatever the integration targets did (a missing count is zero).
+        entry['passed'] = entry.get('library_passed', 0) > 0 and (result.returncode == 0 or bool(
+            entry['gaps'] and not entry['failures'] and entry['tests']['failed'] == len(entry['gaps']) and integration_ran))
     receipt.shapes.append(entry)
     detail = ''
     if name == 'hosted-like':
         detail = f', {entry["tests"]["passed"]} passed, {entry["tests"]["failed"]} failed'
-        detail += f' ({"PASS" if entry["passed"] else "FAIL"}; {len(entry["gaps"])} named host gaps)'
+        detail += f' ({"PASS" if entry["passed"] else "FAIL"}; {len(entry["gaps"])} named host gaps; {entry.get("library_passed", 0)} library tests passed)'
         for failed in entry['failures']:
             detail += f'\n  FAILED {failed}'
         for gap in entry['gaps']:

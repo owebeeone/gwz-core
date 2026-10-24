@@ -17,6 +17,7 @@ HOSTED_PASS = (
     'HOSTED_LIKE_TEMP C:\\Users\\gianni\\AppData\\Local\\Temp\\WINP0-~1\n'
     'HOSTED_LIKE_GIT git version 2.55.0.windows.3\n'
     'HOSTED_LIKE_SSHD OpenSSH_for_Windows_9.8p2\n'
+    'HOSTED_LIKE_LIBRARY passed=3433\n'
     'HOSTED_LIKE_RESULT passed=3501 failed=0\n')
 HOSTED_FAIL = (HOSTED_PASS.replace('failed=0', 'failed=2')
                + 'HOSTED_LIKE_FAILED git::endpoint::ssh_tests::background_close::a\n'
@@ -271,6 +272,14 @@ class HostedLike(unittest.TestCase):
         """A suite that died (exit 101, no test named: the first run's test binary that could not load) never passes."""
         code, receipt = self.go(FakeRun(hosted_exit=101, hosted_output=HOSTED_PASS), '--hosted-like')
         self.assertEqual((code, receipt['shapes'][-1]['passed']), (1, False))
+
+    def test_a_suite_that_ran_no_library_tests_is_a_failure_whatever_the_integration_targets_passed(self):
+        """Step 5.2's receipt printed PASS with 68 passed, all from the integration targets: the library binary never ran."""
+        for output in (HOSTED_PASS.replace('HOSTED_LIKE_LIBRARY passed=3433', 'HOSTED_LIKE_LIBRARY passed=0'),
+                       HOSTED_PASS.replace('HOSTED_LIKE_LIBRARY passed=3433\n', '')):
+            code, receipt = self.go(FakeRun(hosted_output=output.replace('passed=3501', 'passed=68')), '--hosted-like')
+            self.assertEqual((code, receipt['shapes'][-1]['passed'], receipt['passed']), (1, False, False))
+        self.assertIn('echo "HOSTED_LIKE_LIBRARY passed=$library"', gate.hosted_like_script('a-20261025', gate.DEFAULT_GIT_ROOT, None))
 
     def test_the_filter_must_be_a_test_path_fragment(self):
         for bad in ('a b', 'a;b', '$(x)', '', '"x"', '--exact'):
