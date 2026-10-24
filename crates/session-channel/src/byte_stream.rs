@@ -6,21 +6,32 @@
 //! (`taut-shape-tool`'s `framing.rs`). The size counts the tag byte and the
 //! body, and is at most 64 MiB.
 //!
+//! **Reading (operator decision D-N).** The end reads in a thread of its own and
+//! hands every frame it reads, as a tag and a body, to the [`FrameRouter`] that
+//! core gave it. The reader checks the length prefix, the tag and the size, as
+//! it always did, and never waits for a consumer: `route` never blocks, and core
+//! owns every per-class and per-binding queue. The end is a [`FrameSink`] only.
+//!
+//! **Writing (D-N).** `send` takes a [`FrameKey`], and senders that wait for the
+//! writer together take turns by the [`WriteQueue`] rule: the oldest control
+//! frame goes ahead of the ordinary frames before it, except ordinary frames of
+//! its own target and any `SessionCall`.
+//!
 //! A body can carry the environment snapshot (the server design's
-//! `SessionOpen`), so `recv` reads it into a guard, `Body`, that owns the
+//! `SessionOpen`), so the reader reads it into a guard, `Body`, that owns the
 //! buffer until the frame is delivered. The guard's drop overwrites the whole
 //! allocation with zeros, spare capacity included, without reallocating. So
 //! every exit of a read but delivery wipes the body:
 //! - a stream that ends inside the frame;
 //! - one that fails;
 //! - one that panics mid-read, whose unwinding drops the guard;
-//! - a frame read whole while the session was ending here, which `recv`
+//! - a frame read whole while the session was ending here, which the reader
 //!   discards.
 //!
 //! The wipe is safe code, since the crate forbids unsafe code. After the
 //! writes, `std::hint::black_box` is std's best-effort barrier against the
 //! compiler removing them, weaker than the volatile writes and fence with
-//! which gwz-core wipes its snapshot. A delivered body is the caller's: core's
+//! which gwz-core wipes its snapshot. A delivered body is the router's: core's
 //! decoder owns its wipe.
 
 // Ordinary stream I/O in a channel adapter: this crate is outside gwz-core's
@@ -31,76 +42,178 @@
 use std::fmt;
 use std::io::{self, ErrorKind, Read, Write};
 use std::mem;
-use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
+use std::panic::{self, AssertUnwindSafe};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, TryLockError};
+use std::thread;
 
-use gwz_session_contract::{Carrier, Closed, Frame, FrameSink, FrameSource, Lane, SendError};
+use crate::write_queue::WriteQueue;
+use gwz_session_contract::{
+    Carrier, Closed, Frame, FrameKey, FrameRouter, FrameSink, Lane, SendError,
+};
 
-/// One end of a byte-stream channel, reading frames from `read` and writing
-/// them to `write`. The other end is whoever holds the stream's far side,
-/// usually another process.
-pub fn byte_stream<R: Read, W: Write>(read: R, write: W) -> ByteStreamEnd<R, W> {
-    ByteStreamEnd {
-        reader: Mutex::new(Some(read)),
+/// One end of a byte-stream channel, writing frames to `write` and reading them from `read` in a thread of its own,
+/// which hands each to `router`. The other end is whoever holds the stream's far side, usually another process.
+///
+/// # Errors
+///
+/// The reader thread could not be started.
+pub fn byte_stream<R, W>(
+    read: R,
+    write: W,
+    router: Arc<dyn FrameRouter>,
+) -> io::Result<ByteStreamEnd<W>>
+where
+    R: Read + Send + 'static,
+    W: Write + Send + 'static,
+{
+    let shared = Arc::new(Shared {
         writer: Mutex::new(Some(write)),
         ended: Mutex::new(None),
-    }
+        router,
+        delivery: Mutex::new(()),
+    });
+    let reading = shared.clone();
+    thread::Builder::new()
+        .name("gwz-byte-stream-reader".into())
+        .spawn(move || read_loop(read, &reading))?;
+    Ok(ByteStreamEnd {
+        shared,
+        turns: Turns::default(),
+    })
+}
+
+/// What the end and its reader thread share.
+struct Shared<W> {
+    writer: Mutex<Option<W>>,
+    /// Why the session ended at this end; the first reason stands.
+    ended: Mutex<Option<Closed>>,
+    router: Arc<dyn FrameRouter>,
+    /// Held while a frame is routed and while the end is reported, so that `ended` follows the last `route`.
+    delivery: Mutex<()>,
 }
 
 /// One end of a byte-stream channel.
 ///
-/// - The carrier is [`Carrier::ByteStream`]: tags 1 to 8.
-/// - `recv` reads one frame. It checks the length prefix before it reads
-///   on: a prefix of zero, or over 64 MiB, ends the session before anything
-///   is allocated. It then checks the tag before it allocates or reads the
-///   body. A tag outside the registry ends the session too. The body's buffer
-///   is allocated once, at the size the prefix states, so no partial copy of
-///   a body is left behind, and it is wiped before it is freed on every path
-///   but delivery (the module's documentation).
+/// - The carrier is [`Carrier::ByteStream`]: tags 1 to 8, 16 and 17.
+/// - The reader checks the length prefix before it reads on: a prefix of
+///   zero, or over 64 MiB, ends the session before anything is allocated. It
+///   then checks the tag before it allocates or reads the body. A tag outside
+///   the registry ends the session too. The body's buffer is allocated once,
+///   at the size the prefix states, so no partial copy of a body is left
+///   behind, and it is wiped before it is freed on every path but delivery
+///   (the module's documentation).
 /// - End of stream between frames is [`Closed::Peer`]. Inside a frame, and
 ///   on any failure of the stream other than an interruption, the session
-///   ends with [`Closed::Stream`].
+///   ends with [`Closed::Stream`]. An error from the router ends it with the
+///   router's reason. The router is told once, with the reason that stands.
 /// - `send` writes the whole frame and flushes it, holding the writer so
 ///   that frames from several threads never interleave. It waits while the
-///   writer does. The lane is not used: a byte stream has no queue to bound,
-///   and it writes every frame in call order. A frame under a tag outside
-///   the registry, or over 64 MiB, ends the session unwritten.
+///   writer does. The lane bounds nothing: a byte stream has no queue of its
+///   own to bound. Senders that wait together take turns by the writer's
+///   rule (operator decision D-N, [`WriteQueue`]): the oldest control frame
+///   goes ahead of the ordinary frames before it, except ordinary frames of
+///   its own target and any `SessionCall`. A sender that never waits with
+///   another is written in call order. A frame under a tag outside the
+///   registry, or over 64 MiB, ends the session unwritten.
 /// - When the session ends at this end, by `close`, a protocol error or a
 ///   failed stream, the end drops its writer, so that the peer reads end of
-///   stream after the frames sent before, and it drops its reader. Neither
-///   is dropped while a call is using it: the call drops it on return.
+///   stream after the frames sent before. It is not dropped while a call is
+///   using it: the call drops it on return.
 ///
-/// A `send` or `recv` already waiting inside the stream stays there until the
-/// stream returns, which usually happens once the peer closes in turn. Only
-/// the stream's owner can force it, by shutting a socket down or killing a
-/// child. Dropping a half must end the peer's stream: a pipe's half does,
-/// but a cloned socket's half does not while its other clone lives, so its
-/// owner passes halves that shut the socket down when dropped.
+/// A `send` already waiting inside the stream, and the reader thread, stay
+/// there until the stream returns, which usually happens once the peer closes
+/// in turn. Only the stream's owner can force it, by shutting a socket down or
+/// killing a child. Dropping a half must end the peer's stream: a pipe's half
+/// does, but a cloned socket's half does not while its other clone lives, so
+/// its owner passes halves that shut the socket down when dropped.
 ///
-/// An end is `Send` and `Sync` when its halves are `Send`: one thread may wait
-/// in `recv` while others send. Dropping the end drops both halves.
-pub struct ByteStreamEnd<R, W> {
-    reader: Mutex<Option<R>>,
-    writer: Mutex<Option<W>>,
-    /// Why the session ended at this end; the first reason stands.
-    ended: Mutex<Option<Closed>>,
+/// An end is `Send` and `Sync` when its writer is `Send`. Dropping the end
+/// closes it.
+pub struct ByteStreamEnd<W> {
+    shared: Arc<Shared<W>>,
+    /// Senders waiting for the writer, in the order the writer takes them (operator decision D-N).
+    turns: Turns,
 }
 
-impl<R, W> ByteStreamEnd<R, W> {
+/// The senders waiting for the writer. The writer writes one frame at a time; the next is the one the
+/// [`WriteQueue`] rule picks among the frames waiting, so a control frame does not wait behind a queue of ordinary
+/// ones of other targets. Alone, a sender never waits and the order is the order of the calls.
+#[derive(Default)]
+struct Turns {
+    state: Mutex<TurnState>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct TurnState {
+    queue: WriteQueue<u64>,
+    next: u64,
+    busy: bool,
+}
+
+/// The writer's turn, held while a frame is written and given back on drop.
+struct Turn<'a>(&'a Turns);
+
+impl Drop for Turn<'_> {
+    fn drop(&mut self) {
+        self.0
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .busy = false;
+        self.0.changed.notify_all();
+    }
+}
+
+impl Turns {
+    fn wait(&self, tag: u8, key: FrameKey) -> Turn<'_> {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let ticket = state.next;
+        state.next += 1;
+        state.queue.push(ticket, tag, key);
+        loop {
+            if !state.busy && state.queue.peek() == Some(&ticket) {
+                state.queue.pop();
+                state.busy = true;
+                return Turn(self);
+            }
+            state = self
+                .changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+}
+
+impl<W> Shared<W> {
     fn ended(&self) -> Option<Closed> {
         *lock(&self.ended)
     }
 
-    /// Ends the session at this end if nothing has yet, and returns the
-    /// reason that stands.
+    /// Ends the session at this end if nothing has yet, tells the router, and returns the reason that stands.
     fn end(&self, reason: Closed) -> Closed {
-        *lock(&self.ended).get_or_insert(reason)
+        let (stands, first) = {
+            let mut ended = lock(&self.ended);
+            match *ended {
+                Some(stands) => (stands, false),
+                None => {
+                    *ended = Some(reason);
+                    (reason, true)
+                }
+            }
+        };
+        if first {
+            let _delivery = lock(&self.delivery);
+            // A router that panics has nothing more to learn; the end goes on.
+            let _ = panic::catch_unwind(AssertUnwindSafe(|| self.router.ended(stands)));
+        }
+        stands
     }
 
-    /// Locks a half of the stream. A call that panicked while holding it may
-    /// have left a frame half read or half written, so the stream's framing
-    /// is lost, and the session ends.
-    fn lock_half<'a, T>(&self, half: &'a Mutex<Option<T>>) -> MutexGuard<'a, Option<T>> {
-        match half.lock() {
+    /// Locks the writer. A call that panicked while holding it may have left a frame half written, so the stream's
+    /// framing is lost, and the session ends.
+    fn lock_writer(&self) -> MutexGuard<'_, Option<W>> {
+        match self.writer.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
                 self.end(Closed::Stream(ErrorKind::Other));
@@ -109,9 +222,8 @@ impl<R, W> ByteStreamEnd<R, W> {
         }
     }
 
-    /// Once the session has ended, drops each half no call is using. A call
-    /// using one checks again once it has released it, so a half is always
-    /// dropped by the last call to hold it, or here.
+    /// Once the session has ended, drops the writer if no call is using it. A call using it checks again once it has
+    /// released it, so it is always dropped by the last call to hold it, or here.
     fn release_if_ended(&self) {
         if self.ended().is_none() {
             return;
@@ -119,78 +231,109 @@ impl<R, W> ByteStreamEnd<R, W> {
         if let Some(mut writer) = try_lock(&self.writer) {
             writer.take();
         }
-        if let Some(mut reader) = try_lock(&self.reader) {
-            reader.take();
-        }
     }
 }
 
-impl<R: Read, W: Write> FrameSink for ByteStreamEnd<R, W> {
-    fn send(&self, frame: Frame, lane: Lane) -> Result<(), SendError> {
-        // A byte stream writes every lane's frames in call order.
+/// Reads frames until the stream or the session ends, handing each to the router.
+fn read_loop<R: Read, W>(mut stream: R, shared: &Shared<W>) {
+    loop {
+        // The body's only owner until the frame is delivered. On every other exit, unwinding included, it drops and
+        // wipes the body.
+        let mut body = Body::default();
+        let read = panic::catch_unwind(AssertUnwindSafe(|| read_frame(&mut stream, &mut body)));
+        let tag = match read {
+            Ok(Ok(tag)) => tag,
+            Ok(Err(reason)) => {
+                shared.end(reason);
+                break;
+            }
+            // A stream that panicked in the middle of a frame has lost its framing.
+            Err(_) => {
+                shared.end(Closed::Stream(ErrorKind::Other));
+                break;
+            }
+        };
+        // A frame read while the session was ending here is not delivered: its body stays in the guard, which wipes it.
+        let routed = {
+            let _delivery = lock(&shared.delivery);
+            if shared.ended().is_some() {
+                break;
+            }
+            let frame = Frame {
+                tag,
+                body: body.into_inner(),
+            };
+            panic::catch_unwind(AssertUnwindSafe(|| shared.router.route(frame)))
+        };
+        match routed {
+            Ok(Ok(())) => {}
+            Ok(Err(reason)) => {
+                shared.end(reason);
+                break;
+            }
+            Err(_) => {
+                shared.end(Closed::Stream(ErrorKind::Other));
+                break;
+            }
+        }
+    }
+    shared.release_if_ended();
+}
+
+impl<W: Write> FrameSink for ByteStreamEnd<W> {
+    /// The lane bounds nothing on a byte stream; the key orders the write among the senders waiting with this one.
+    fn send(&self, frame: Frame, lane: Lane, key: FrameKey) -> Result<(), SendError> {
         let _ = lane;
-        let mut writer = self.lock_half(&self.writer);
-        let sent = match (self.ended(), writer.as_mut()) {
+        let _turn = self.turns.wait(frame.tag, key);
+        let mut writer = self.shared.lock_writer();
+        let sent = match (self.shared.ended(), writer.as_mut()) {
             (Some(closed), _) => Err(closed),
             // The writer goes only once the session has ended.
-            (None, None) => Err(self.end(Closed::Local)),
+            (None, None) => Err(self.shared.end(Closed::Local)),
             (None, Some(stream)) => match frame.check(Carrier::ByteStream) {
-                Err(error) => Err(self.end(Closed::Protocol(error))),
+                Err(error) => Err(self.shared.end(Closed::Protocol(error))),
                 Ok(_) => write_frame(stream, &frame)
-                    .map_err(|error| self.end(Closed::Stream(error.kind()))),
+                    .map_err(|error| self.shared.end(Closed::Stream(error.kind()))),
             },
         };
-        if self.ended().is_some() {
+        if self.shared.ended().is_some() {
             writer.take();
         }
         drop(writer);
-        self.release_if_ended();
+        self.shared.release_if_ended();
         sent.map_err(|closed| SendError::Closed(frame, closed))
     }
 
     fn close(&self) {
-        self.end(Closed::Local);
-        self.release_if_ended();
+        self.shared.end(Closed::Local);
+        self.shared.release_if_ended();
     }
 }
 
-impl<R: Read, W: Write> FrameSource for ByteStreamEnd<R, W> {
-    fn recv(&self) -> Result<Frame, Closed> {
-        let mut reader = self.lock_half(&self.reader);
-        // The body's only owner until the frame is delivered. On every other
-        // exit, unwinding included, it drops here and wipes the body.
-        let mut body = Body::default();
-        let received = match (self.ended(), reader.as_mut()) {
-            (Some(closed), _) => Err(closed),
-            // The reader goes only once the session has ended.
-            (None, None) => Err(self.end(Closed::Local)),
-            (None, Some(stream)) => {
-                read_frame(stream, &mut body).map_err(|reason| self.end(reason))
-            }
-        };
-        // A frame read while the session was ending here is not delivered: its
-        // body stays in the guard, which wipes it.
-        let received = match (received, self.ended()) {
-            (Ok(tag), None) => Ok(Frame {
-                tag,
-                body: body.into_inner(),
-            }),
-            (Ok(_), Some(closed)) | (Err(closed), _) => Err(closed),
-        };
-        if self.ended().is_some() {
-            reader.take();
-        }
-        drop(reader);
-        self.release_if_ended();
-        received
+impl<W> ByteStreamEnd<W> {
+    /// Senders waiting for the writer, the one writing included.
+    pub fn waiting_senders(&self) -> usize {
+        let state = self
+            .turns
+            .state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        state.queue.len() + usize::from(state.busy)
     }
 }
 
-impl<R, W> fmt::Debug for ByteStreamEnd<R, W> {
+impl<W> Drop for ByteStreamEnd<W> {
+    fn drop(&mut self) {
+        self.shared.end(Closed::Local);
+        self.shared.release_if_ended();
+    }
+}
+
+impl<W> fmt::Debug for ByteStreamEnd<W> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("ByteStreamEnd")
-            .field("ended", &self.ended())
+            .field("ended", &self.shared.ended())
             .finish_non_exhaustive()
     }
 }
@@ -279,8 +422,8 @@ fn write_frame<W: Write>(stream: &mut W, frame: &Frame) -> io::Result<()> {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    // Only the ending's reason uses this lock, and nothing that holds it can
-    // panic, so it is never poisoned in practice.
+    // Only the ending's reason and the delivery fence use these locks, and nothing that holds them can panic past a
+    // catch, so they are never poisoned in practice.
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -294,5 +437,6 @@ fn try_lock<T>(mutex: &Mutex<T>) -> Option<MutexGuard<'_, T>> {
     }
 }
 
+mod priority_tests;
 mod tests;
 mod wipe_tests;

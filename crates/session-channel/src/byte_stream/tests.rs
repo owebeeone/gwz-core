@@ -35,13 +35,17 @@
 //! the tests live in the library, so that the Tier A command,
 //! `cargo test -p gwz-session-channel --lib`, runs them.
 
-use std::io::{self, ErrorKind, Read, Write};
+use std::io::{self, Cursor, ErrorKind, Read, Write};
 use std::panic::{self, AssertUnwindSafe};
+use std::sync::{Arc, Mutex};
 
-use crate::byte_stream;
+use crate::test_router::{open, read_all};
 use gwz_session_contract::{
-    Closed, Frame, FrameError, FrameSink, FrameSource, Lane, MAX_FRAME_BYTES, SendError, Tag,
+    Closed, Frame, FrameError, FrameKey, FrameSink, Lane, MAX_FRAME_BYTES, SendError, Tag, Target,
 };
+
+/// Every frame these tests send has this key: one target, so nothing is reordered.
+const KEY: FrameKey = FrameKey::ordinary(Target::new(1));
 
 const TOOL_CLIENT_READ: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -138,42 +142,50 @@ fn session_tag_frames() -> Vec<Frame> {
     ]
 }
 
-/// Every frame an end reads from `bytes`, and the closure that ends them.
-fn read_all(bytes: impl Read) -> (Vec<Frame>, Closed) {
-    let end = byte_stream(bytes, io::sink());
-    let mut frames = Vec::new();
-    loop {
-        match end.recv() {
-            Ok(frame) => frames.push(frame),
-            Err(closed) => {
-                assert_eq!(end.recv(), Err(closed), "the closure is reported again");
-                return (frames, closed);
-            }
-        }
+/// A writer whose bytes the test reads afterwards.
+#[derive(Clone, Default)]
+struct SharedBuf(Arc<Mutex<Vec<u8>>>);
+
+impl Write for SharedBuf {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
     }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// A reader that waits: the far end of a pipe whose writer the caller keeps. An end whose reader ended would be closed
+/// by it, so the rows that write use this.
+fn idle() -> (io::PipeReader, io::PipeWriter) {
+    io::pipe().expect("an OS pipe")
 }
 
 /// The bytes an end writes for `frames`.
 fn write_all(frames: &[Frame]) -> Vec<u8> {
-    let mut written = Vec::new();
+    let written = SharedBuf::default();
     {
-        let end = byte_stream(io::empty(), &mut written);
+        let (reads, _peer) = idle();
+        let (end, _router) = open(reads, written.clone());
         for (index, frame) in frames.iter().enumerate() {
             let lane = if index % 2 == 0 {
                 Lane::Call
             } else {
                 Lane::Control
             };
-            end.send(frame.clone(), lane)
+            end.send(frame.clone(), lane, KEY)
                 .expect("a Vec takes every frame");
         }
     }
-    written
+    let bytes = written.0.lock().unwrap().clone();
+    bytes
 }
 
 #[track_caller]
 fn assert_round_trip(vector: &[u8], expected: &[Frame]) {
-    let (frames, closed) = read_all(vector);
+    let (frames, closed) = read_all(Cursor::new(vector.to_vec()));
     assert_eq!(frames, expected, "the frames read");
     assert_eq!(closed, Closed::Peer, "the vector ends between frames");
     assert!(write_all(expected) == vector, "the bytes written");
@@ -218,24 +230,24 @@ fn a_frame_is_its_little_endian_length_its_tag_and_its_body() {
 fn a_tool_frame_under_a_tag_outside_the_registry_ends_the_session() {
     // The tool's push frame carries the log shape's tag 0, which the session's
     // registry does not hold; its seal frame after it is never read.
-    let (frames, closed) = read_all(TOOL_CLIENT_PUSH);
+    let (frames, closed) = read_all(Cursor::new(TOOL_CLIENT_PUSH.to_vec()));
     assert_eq!(frames, [tool_read_request()]);
     assert_eq!(closed, Closed::Protocol(FrameError::UnknownTag(0)));
 }
 
 /// Serves `bytes`, then fails the test if it is read again: the adapter must
 /// stop at the point the test names.
-struct ThenStop<'a> {
-    bytes: &'a [u8],
+struct ThenStop {
+    bytes: Vec<u8>,
     what: &'static str,
 }
 
-impl Read for ThenStop<'_> {
+impl Read for ThenStop {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         assert!(!self.bytes.is_empty(), "the adapter read {}", self.what);
         let length = buffer.len().min(self.bytes.len());
         buffer[..length].copy_from_slice(&self.bytes[..length]);
-        self.bytes = &self.bytes[length..];
+        self.bytes.drain(..length);
         Ok(length)
     }
 }
@@ -246,19 +258,19 @@ fn a_length_prefix_over_64_mib_ends_the_session_before_anything_is_allocated() {
     // exists only after the check. Here the check is seen to come first: the
     // reader serves the prefix and fails the test if the adapter reads on.
     for size in [MAX_FRAME_BYTES as u32 + 1, u32::MAX] {
-        let prefix = size.to_le_bytes();
         let reader = ThenStop {
-            bytes: &prefix,
+            bytes: size.to_le_bytes().to_vec(),
             what: "past an over-cap length prefix",
         };
-        let end = byte_stream(reader, io::sink());
+        let (end, router) = open(reader, io::sink());
         let error = FrameError::TooLarge {
             size: size as usize,
         };
-        assert_eq!(end.recv(), Err(Closed::Protocol(error)), "prefix {size}");
-        assert_eq!(end.recv(), Err(Closed::Protocol(error)));
+        assert_eq!(router.recv(), Err(Closed::Protocol(error)), "prefix {size}");
+        assert_eq!(router.recv(), Err(Closed::Protocol(error)));
+        assert_eq!(router.ends_told(), 1, "the end is reported once");
         let refused = frame(1, vec![0xa0]);
-        match end.send(refused.clone(), Lane::Call) {
+        match end.send(refused.clone(), Lane::Call, KEY) {
             Err(SendError::Closed(returned, Closed::Protocol(reported))) => {
                 assert_eq!(returned, refused);
                 assert_eq!(reported, error);
@@ -274,29 +286,28 @@ fn a_length_prefix_of_exactly_64_mib_is_read_whole() {
     bytes.extend((MAX_FRAME_BYTES as u32).to_le_bytes());
     bytes.push(Tag::SessionReply.byte());
     bytes.resize(4 + MAX_FRAME_BYTES, 0x5a);
-    let end = byte_stream(&bytes[..], io::sink());
-    let received = end.recv().expect("a 64 MiB frame is accepted");
+    let (_end, router) = open(Cursor::new(bytes.clone()), io::sink());
+    let received = router.recv().expect("a 64 MiB frame is accepted");
     assert_eq!(received.tag, 2);
     assert_eq!(received.size(), MAX_FRAME_BYTES);
     assert!(received.body == bytes[5..], "the body arrives whole");
-    assert_eq!(end.recv(), Err(Closed::Peer));
+    assert_eq!(router.recv(), Err(Closed::Peer));
 }
 
 #[test]
 fn a_zero_length_prefix_ends_the_session() {
-    let (frames, closed) = read_all(&[0u8, 0, 0, 0, 1, 0xa0][..]);
+    let (frames, closed) = read_all(Cursor::new(vec![0u8, 0, 0, 0, 1, 0xa0]));
     assert!(frames.is_empty());
     assert_eq!(closed, Closed::Protocol(FrameError::Empty));
 }
 
 #[test]
 fn a_tag_outside_the_registry_ends_the_session_before_its_body_is_read() {
-    for tag in [0, 9, 15, 16, 24, 31, 32, 255] {
+    for tag in [0, 9, 15, 18, 24, 31, 32, 255] {
         let expected = Tag::from_byte(tag).expect_err("outside the registry");
         let good = write_all(&[frame(1, vec![0xa0])]);
-        let bad_head = [5, 0, 0, 0, tag];
-        let reader = good.as_slice().chain(ThenStop {
-            bytes: &bad_head,
+        let reader = Cursor::new(good).chain(ThenStop {
+            bytes: vec![5, 0, 0, 0, tag],
             what: "the body of a frame whose tag ends the session",
         });
         let (frames, closed) = read_all(reader);
@@ -310,7 +321,7 @@ fn end_of_stream_between_frames_is_the_peers_closure_and_inside_one_a_truncation
     let whole = write_all(&[frame(1, vec![1, 2, 3])]);
     assert_eq!(whole.len(), 8);
     for cut in 0..whole.len() {
-        let (frames, closed) = read_all(&whole[..cut]);
+        let (frames, closed) = read_all(Cursor::new(whole[..cut].to_vec()));
         assert!(frames.is_empty(), "cut at {cut}");
         let expected = if cut == 0 {
             Closed::Peer
@@ -319,7 +330,7 @@ fn end_of_stream_between_frames_is_the_peers_closure_and_inside_one_a_truncation
         };
         assert_eq!(closed, expected, "cut at {cut}");
     }
-    let (frames, closed) = read_all(&whole[..]);
+    let (frames, closed) = read_all(Cursor::new(whole.clone()));
     assert_eq!(frames, [frame(1, vec![1, 2, 3])]);
     assert_eq!(closed, Closed::Peer);
 }
@@ -377,11 +388,12 @@ fn a_failing_stream_ends_the_session_and_an_interrupted_one_does_not() {
         error: ErrorKind::BrokenPipe,
         bytes: &[],
     };
-    let end = byte_stream(io::empty(), writer);
+    let (reads, _peer) = idle();
+    let (end, router) = open(reads, writer);
     let sent = frame(1, vec![0xa0]);
     let broken = Closed::Stream(ErrorKind::BrokenPipe);
     for _ in 0..2 {
-        match end.send(sent.clone(), Lane::Call) {
+        match end.send(sent.clone(), Lane::Call, KEY) {
             Err(SendError::Closed(returned, reported)) => {
                 assert_eq!(returned, sent);
                 assert_eq!(reported, broken);
@@ -389,7 +401,7 @@ fn a_failing_stream_ends_the_session_and_an_interrupted_one_does_not() {
             result => panic!("a broken stream ends the session, got {result:?}"),
         }
     }
-    assert_eq!(end.recv(), Err(broken));
+    assert_eq!(router.recv(), Err(broken));
 }
 
 /// Serves the first two bytes of a length prefix, then panics; as a writer,
@@ -420,20 +432,20 @@ impl Write for PanicsMidFrame {
 #[test]
 fn a_stream_that_panics_mid_frame_ends_the_session_instead_of_losing_its_framing() {
     let lost = Closed::Stream(ErrorKind::Other);
-    let reading = byte_stream(PanicsMidFrame { served: false }, io::sink());
-    let panicked = panic::catch_unwind(AssertUnwindSafe(|| reading.recv()));
-    assert!(panicked.is_err(), "the stream's panic reaches the caller");
-    assert_eq!(
-        reading.recv(),
-        Err(lost),
-        "the half-read prefix is never resumed"
-    );
+    // The reader thread catches the stream's panic: the session ends, and the half-read prefix is never resumed.
+    let (_reading, router) = open(PanicsMidFrame { served: false }, io::sink());
+    assert_eq!(router.recv(), Err(lost));
+    assert_eq!(router.recv(), Err(lost));
 
-    let writing = byte_stream(io::empty(), PanicsMidFrame { served: false });
+    // A sender's own thread meets the panic of the stream it writes to.
+    let (reads, _peer) = idle();
+    let (writing, _router) = open(reads, PanicsMidFrame { served: false });
     let sent = frame(1, vec![0xa0]);
-    let panicked = panic::catch_unwind(AssertUnwindSafe(|| writing.send(sent.clone(), Lane::Call)));
+    let panicked = panic::catch_unwind(AssertUnwindSafe(|| {
+        writing.send(sent.clone(), Lane::Call, KEY)
+    }));
     assert!(panicked.is_err(), "the stream's panic reaches the caller");
-    match writing.send(sent.clone(), Lane::Call) {
+    match writing.send(sent.clone(), Lane::Call, KEY) {
         Err(SendError::Closed(returned, reported)) => {
             assert_eq!(returned, sent);
             assert_eq!(reported, lost, "the half-written frame is never continued");
@@ -447,9 +459,9 @@ fn closing_an_end_ends_the_peers_stream_after_what_it_sent() {
     for drop_instead in [false, true] {
         let (mut peer_reads, end_writes) = io::pipe().expect("an OS pipe");
         let (end_reads, _peer_writes) = io::pipe().expect("an OS pipe");
-        let end = byte_stream(end_reads, end_writes);
+        let (end, _router) = open(end_reads, end_writes);
         let sent = frame(2, vec![0xa0]);
-        end.send(sent.clone(), Lane::Call)
+        end.send(sent.clone(), Lane::Call, KEY)
             .expect("the pipe takes a frame");
         if drop_instead {
             drop(end);
@@ -460,5 +472,86 @@ fn closing_an_end_ends_the_peers_stream_after_what_it_sent() {
         let mut bytes = Vec::new();
         peer_reads.read_to_end(&mut bytes).expect("the stream ends");
         assert_eq!(bytes, write_all(&[sent]));
+    }
+}
+
+/// A router that refuses the frame after `accept` frames, with a reason of its own.
+struct Refusing {
+    accept: usize,
+    seen: Mutex<Vec<Frame>>,
+    ended: Mutex<Vec<Closed>>,
+}
+
+impl gwz_session_contract::FrameRouter for Refusing {
+    fn route(&self, frame: Frame) -> Result<(), Closed> {
+        let mut seen = self.seen.lock().unwrap();
+        if seen.len() >= self.accept {
+            return Err(Closed::Stream(ErrorKind::InvalidData));
+        }
+        seen.push(frame);
+        Ok(())
+    }
+
+    fn ended(&self, reason: Closed) {
+        self.ended.lock().unwrap().push(reason);
+    }
+}
+
+#[test]
+fn an_error_from_the_router_ends_the_session_with_its_reason_and_the_router_is_told_once() {
+    let router = Arc::new(Refusing {
+        accept: 1,
+        seen: Mutex::default(),
+        ended: Mutex::default(),
+    });
+    let stream = write_all(&[frame(1, vec![1]), frame(1, vec![2]), frame(1, vec![3])]);
+    let end = crate::byte_stream(Cursor::new(stream), io::sink(), router.clone()).unwrap();
+    let reason = Closed::Stream(ErrorKind::InvalidData);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while router.ended.lock().unwrap().is_empty() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the router was never told"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(*router.ended.lock().unwrap(), [reason]);
+    // The first frame was routed; the second was refused; the third was never read.
+    assert_eq!(router.seen.lock().unwrap().len(), 1);
+    // The sending side of the ended session says why.
+    let refused = frame(1, vec![9]);
+    match end.send(refused.clone(), Lane::Call, KEY) {
+        Err(SendError::Closed(returned, reported)) => {
+            assert_eq!(returned, refused);
+            assert_eq!(reported, reason);
+        }
+        other => panic!("{other:?}"),
+    }
+    drop(end);
+    assert_eq!(router.ended.lock().unwrap().len(), 1, "told once");
+}
+
+#[test]
+fn a_router_that_panics_ends_the_session_and_does_not_take_the_reader_down_silently() {
+    struct Panics;
+    impl gwz_session_contract::FrameRouter for Panics {
+        fn route(&self, _: Frame) -> Result<(), Closed> {
+            panic!("the router fails");
+        }
+        fn ended(&self, _: Closed) {}
+    }
+    let stream = write_all(&[frame(1, vec![1])]);
+    let end = crate::byte_stream(Cursor::new(stream), io::sink(), Arc::new(Panics)).unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    loop {
+        match end.send(frame(1, vec![2]), Lane::Call, KEY) {
+            Err(SendError::Closed(_, reason)) => {
+                assert_eq!(reason, Closed::Stream(ErrorKind::Other));
+                break;
+            }
+            Ok(()) | Err(SendError::Full(_)) => {}
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(2));
     }
 }

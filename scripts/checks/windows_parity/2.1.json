@@ -1,0 +1,366 @@
+{
+ "done": false,
+ "entries": [
+  {
+   "path": "src/transport_host/carrier/local/mod.rs",
+   "kind": "gate",
+   "gate": "all(test, unix)",
+   "target": "arm: use unix::{SOCKET_NAME_BYTES, SUN_PATH_MAX, socket_path}",
+   "state": "paired",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: the Unix arm of the local carrier; the Windows named pipe is local/windows.rs, the sibling arm of local/mod.rs's cfg_if (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/mod.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: use unix::{LocalAddress, LocalListener, RuntimeDir, connect, own_identity}",
+   "state": "paired",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: the Unix arm of the local carrier; the Windows named pipe is local/windows.rs, the sibling arm of local/mod.rs's cfg_if (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/mod.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "mod unix",
+   "state": "paired",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: the Unix arm of the local carrier; the Windows named pipe is local/windows.rs, the sibling arm of local/mod.rs's cfg_if (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "gate",
+   "gate": "any(target_os = \"linux\", target_os = \"android\")",
+   "target": "arm: fn peer_of",
+   "state": "paired",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: the Unix arm of the local carrier; the Windows named pipe is local/windows.rs, the sibling arm of local/mod.rs's cfg_if (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "gate",
+   "gate": "target_vendor = \"apple\"",
+   "target": "arm: fn user_parent",
+   "state": "paired",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: the Unix arm of the local carrier; the Windows named pipe is local/windows.rs, the sibling arm of local/mod.rs's cfg_if (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::LOCAL_PEERPID",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::PATH_MAX",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::SOL_LOCAL",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::SOL_SOCKET",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::SO_PEERCRED",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::_CS_DARWIN_USER_TEMP_DIR",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::confstr",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::geteuid",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::getpeereid",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::getsockopt",
+   "target": "",
+   "count": 2,
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::gid_t",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::pid_t",
+   "target": "",
+   "count": 2,
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::sockaddr_un",
+   "target": "",
+   "count": 2,
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::socklen_t",
+   "target": "",
+   "count": 2,
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::ucred",
+   "target": "",
+   "count": 2,
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::uid_t",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/local_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: stmt let guard = tempfile::Builder::new",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/local_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "mod unix",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/local_rows.rs",
+   "kind": "os",
+   "gate": "libc::AF_UNIX",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/local_rows.rs",
+   "kind": "os",
+   "gate": "libc::getsockname",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/local_rows.rs",
+   "kind": "os",
+   "gate": "libc::sockaddr_storage",
+   "target": "",
+   "count": 2,
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/local_rows.rs",
+   "kind": "os",
+   "gate": "libc::sockaddr_un",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/local_rows.rs",
+   "kind": "os",
+   "gate": "libc::socklen_t",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/local_rows.rs",
+   "kind": "os",
+   "gate": "os::unix::fs::PermissionsExt::from_mode",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/local_rows.rs",
+   "kind": "os",
+   "gate": "os::unix::fs::symlink",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+  }
+ ]
+}

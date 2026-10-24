@@ -13,13 +13,15 @@ byte-stream tags, and the core session crate map's §2 and §7.
 | Item | What it is |
 | --- | --- |
 | `Frame { tag: u8, body: Vec<u8> }` | One frame. `Frame::new(Tag, body)`; `size()`, its tag byte plus its body; `check(Carrier) -> Result<Tag, FrameError>`; `Frame::check_size(usize)`. `Debug` never shows a body, which can carry the environment snapshot. |
-| `Tag` | The registry: `SessionCall` 1, `SessionReply` 2, `SessionError` 3, and, for byte streams only, `SessionOpen` 4, `SessionOpened` 5, `SessionHello` 6, `ServerControl` 7 and `ServerState` 8. `from_byte`, `byte`, `byte_stream_only`, `ALL`. |
-| `Carrier` | `InProcess` (tags 1 to 3) or `ByteStream` (tags 1 to 8). `tag(byte)` is the carrier's answer for a tag byte. |
-| `MAX_FRAME_BYTES`, `RESERVED_TAGS` | 64 MiB, counting the tag byte and the body; tags 16 to 31, reserved for a transport lane. |
+| `Tag` | The registry: `SessionCall` 1, `SessionReply` 2, `SessionError` 3, for byte streams only `SessionOpen` 4, `SessionOpened` 5, `SessionHello` 6, `ServerControl` 7 and `ServerState` 8, and the transport lane's `TransportData` 16 and `TransportControl` 17 on both. `from_byte`, `byte`, `byte_stream_only`, `ALL`. |
+| `Carrier` | `InProcess` (tags 1 to 3, 16 and 17) or `ByteStream` (tags 1 to 8, 16 and 17). `tag(byte)` is the carrier's answer for a tag byte. |
+| `MAX_FRAME_BYTES`, `RESERVED_TAGS` | 64 MiB, counting the tag byte and the body; tags 18 to 31, still reserved. |
 | `FrameError` | The protocol errors a frame can carry: `UnknownTag`, `ReservedTag`, `ByteStreamOnly`, `TooLarge { size }` and `Empty`. |
 | `Lane` | `Call` or `Control`. A reply travels on the lane of the call it answers. |
 | `Limits`, `LimitsError` | The outstanding-call limit, the call lane's room, and the control reserve, the control lane's: 1024 and 64 by default. `Limits::new` refuses zero and overflow, so a `Limits` is always valid. |
-| `FrameSink` | `send(&self, Frame, Lane) -> Result<(), SendError>` and `close(&self)`. |
+| `FrameSink` | `send(&self, Frame, Lane, FrameKey) -> Result<(), SendError>` and `close(&self)`. The in-process adapter uses the lane and ignores the key; a byte stream ignores the lane and orders its writes by the key. |
+| `FrameKey { class, target }`, `Class`, `Target` | How a byte stream's writer orders a frame (operator decision D-N): `Class::Control` or `Ordinary`, and an opaque `Target` that is compared for equality only. Core derives them from the body; this crate holds no GWZ or Taut type. `FrameKey::IN_PROCESS` is the key a sender states where it is ignored. |
+| `FrameRouter` | `route(&self, Frame) -> Result<(), Closed>`, which never blocks, and `ended(&self, Closed)`, called once: where a byte-stream end delivers what it reads. A byte-stream end is a `FrameSink` only. |
 | `FrameSource` | `recv(&self) -> Result<Frame, Closed>`. |
 | `SendError` | `Full(Frame)` or `Closed(Frame, Closed)`: the frame always comes back. |
 | `Closed` | Why a channel ended, as one end sees it: `Local`, `Peer`, `Protocol(FrameError)` or `Stream(io::ErrorKind)`. |
@@ -28,7 +30,10 @@ byte-stream tags, and the core session crate map's §2 and §7.
 ## What every adapter guarantees
 
 - Frames arrive in the order they were sent, whatever their lanes, each once
-  and whole.
+  and whole. The one exception is a byte stream's writer (operator decision
+  D-N): the oldest control frame may be written ahead of ordinary frames of
+  other targets that wait with it, never ahead of a frame of its own target
+  or of a `SessionCall`.
 - A frame whose tag its carrier does not carry, or over 64 MiB, is a protocol
   error. It ends the session at both ends, and it comes back to its sender.
 - Where an adapter bounds its lanes, as the in-process one does, a full lane

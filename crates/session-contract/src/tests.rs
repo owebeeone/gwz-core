@@ -8,8 +8,8 @@
 use std::io;
 
 use crate::{
-    Carrier, Closed, Frame, FrameError, Lane, Limits, LimitsError, MAX_FRAME_BYTES, RESERVED_TAGS,
-    SendError, Tag,
+    Carrier, Class, Closed, Frame, FrameError, FrameKey, Lane, Limits, LimitsError,
+    MAX_FRAME_BYTES, RESERVED_TAGS, SendError, Tag, Target,
 };
 
 #[test]
@@ -18,9 +18,9 @@ fn the_frame_limit_is_64_mib() {
 }
 
 #[test]
-fn the_registry_holds_tags_1_to_8_in_byte_order() {
+fn the_registry_holds_tags_1_to_8_then_the_transport_lanes_16_and_17_in_byte_order() {
     let bytes: Vec<u8> = Tag::ALL.iter().map(|tag| tag.byte()).collect();
-    assert_eq!(bytes, (1..=8).collect::<Vec<u8>>());
+    assert_eq!(bytes, [1, 2, 3, 4, 5, 6, 7, 8, 16, 17]);
     let named = [
         (Tag::SessionCall, 1),
         (Tag::SessionReply, 2),
@@ -30,6 +30,8 @@ fn the_registry_holds_tags_1_to_8_in_byte_order() {
         (Tag::SessionHello, 6),
         (Tag::ServerControl, 7),
         (Tag::ServerState, 8),
+        (Tag::TransportData, 16),
+        (Tag::TransportControl, 17),
     ];
     for (tag, byte) in named {
         assert_eq!(tag.byte(), byte);
@@ -39,11 +41,13 @@ fn the_registry_holds_tags_1_to_8_in_byte_order() {
 
 #[test]
 fn every_byte_has_exactly_one_registry_answer() {
-    assert_eq!(RESERVED_TAGS, 16..=31);
+    assert_eq!(RESERVED_TAGS, 18..=31);
     for byte in 0..=u8::MAX {
         let expected = match byte {
             1..=8 => Ok(Tag::ALL[usize::from(byte - 1)]),
-            16..=31 => Err(FrameError::ReservedTag(byte)),
+            16 => Ok(Tag::TransportData),
+            17 => Ok(Tag::TransportControl),
+            18..=31 => Err(FrameError::ReservedTag(byte)),
             _ => Err(FrameError::UnknownTag(byte)),
         };
         assert_eq!(Tag::from_byte(byte), expected, "byte {byte}");
@@ -65,7 +69,7 @@ fn only_byte_streams_carry_the_handshake_and_control_tags() {
         assert_eq!(Carrier::InProcess.tag(tag.byte()), in_process, "{tag:?}");
     }
     // Outside the registry, the in-process answer is the registry's own.
-    for byte in [0, 9, 15, 16, 31, 32, 255] {
+    for byte in [0, 9, 15, 18, 31, 32, 255] {
         assert_eq!(Carrier::InProcess.tag(byte), Tag::from_byte(byte));
     }
 }
@@ -125,12 +129,12 @@ fn a_frame_is_checked_for_its_size_before_its_tag() {
         );
     }
     let small = Frame {
-        tag: 16,
+        tag: 18,
         body: Vec::new(),
     };
     assert_eq!(
         small.check(Carrier::ByteStream),
-        Err(FrameError::ReservedTag(16))
+        Err(FrameError::ReservedTag(18))
     );
     let handshake = Frame::new(Tag::SessionHello, Vec::new());
     assert_eq!(
@@ -175,8 +179,8 @@ fn errors_say_what_happened() {
             "frame tag 9 is not in the session's tag registry",
         ),
         (
-            FrameError::ReservedTag(16).to_string(),
-            "frame tag 16 is reserved for a transport lane",
+            FrameError::ReservedTag(18).to_string(),
+            "frame tag 18 is reserved",
         ),
         (
             FrameError::ByteStreamOnly(4).to_string(),
@@ -252,4 +256,24 @@ fn limits_refuse_what_would_leave_a_lane_no_room_or_overflow_a_queue() {
         LimitsError::Overflow.to_string(),
         "session limits outstanding_calls plus control_reserve overflow a channel queue"
     );
+}
+
+#[test]
+fn a_transport_tag_is_carried_by_both_adapters() {
+    for tag in [Tag::TransportData, Tag::TransportControl] {
+        assert!(!tag.byte_stream_only());
+        assert_eq!(Carrier::InProcess.tag(tag.byte()), Ok(tag));
+        assert_eq!(Carrier::ByteStream.tag(tag.byte()), Ok(tag));
+    }
+}
+
+#[test]
+fn a_key_is_a_class_and_an_opaque_target() {
+    let target = Target::new(7);
+    assert_eq!(target.value(), 7);
+    assert_eq!(FrameKey::control(target).class, Class::Control);
+    assert_eq!(FrameKey::ordinary(target).class, Class::Ordinary);
+    assert_eq!(FrameKey::ordinary(target).target, target);
+    assert_ne!(FrameKey::control(target), FrameKey::ordinary(target));
+    assert_eq!(FrameKey::IN_PROCESS.class, Class::Ordinary);
 }

@@ -9,9 +9,10 @@ use std::ops::RangeInclusive;
 /// and its body, which are the bytes a byte stream's length prefix counts.
 pub const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
-/// The tags reserved for a transport lane (client placement). The contract
-/// uses none of them, so a frame there is a protocol error (§3).
-pub const RESERVED_TAGS: RangeInclusive<u8> = 16..=31;
+/// The tags still reserved: 18 to 31. Tags 16 and 17 are the transport lane's
+/// (client placement, operator decision D-N); a frame under a reserved tag is a
+/// protocol error (§3).
+pub const RESERVED_TAGS: RangeInclusive<u8> = 18..=31;
 
 /// One frame: a tag byte and a body (§3).
 ///
@@ -93,7 +94,9 @@ impl fmt::Debug for Frame {
 /// | 6 | `SessionHello` | byte streams |
 /// | 7 | `ServerControl` | byte streams |
 /// | 8 | `ServerState` | byte streams |
-/// | 16 to 31 | reserved for a transport lane | neither: a protocol error |
+/// | 16 | transport data: `data`, `open`, `check_identity` | both adapters |
+/// | 17 | transport control: every other transport kind | both adapters |
+/// | 18 to 31 | reserved | neither: a protocol error |
 /// | any other | none | neither: a protocol error |
 ///
 /// The registry says which tags a carrier carries. Which party may send a
@@ -118,11 +121,17 @@ pub enum Tag {
     ServerControl = 7,
     /// Its answer, `ServerState` (server design §3).
     ServerState = 8,
+    /// A transport-lane frame of the data class: `data`, `open` and
+    /// `check_identity` (`GwzSplitCommandChannel.md` §3.3).
+    TransportData = 16,
+    /// A transport-lane frame of the control class: every other transport
+    /// kind (`GwzSplitCommandChannel.md` §3.3).
+    TransportControl = 17,
 }
 
 impl Tag {
     /// Every tag in the registry, in byte order.
-    pub const ALL: [Tag; 8] = [
+    pub const ALL: [Tag; 10] = [
         Tag::SessionCall,
         Tag::SessionReply,
         Tag::SessionError,
@@ -131,6 +140,8 @@ impl Tag {
         Tag::SessionHello,
         Tag::ServerControl,
         Tag::ServerState,
+        Tag::TransportData,
+        Tag::TransportControl,
     ];
 
     /// The tag's byte.
@@ -151,7 +162,9 @@ impl Tag {
             6 => Ok(Tag::SessionHello),
             7 => Ok(Tag::ServerControl),
             8 => Ok(Tag::ServerState),
-            16..=31 => Err(FrameError::ReservedTag(byte)),
+            16 => Ok(Tag::TransportData),
+            17 => Ok(Tag::TransportControl),
+            18..=31 => Err(FrameError::ReservedTag(byte)),
             _ => Err(FrameError::UnknownTag(byte)),
         }
     }
@@ -172,12 +185,14 @@ impl Tag {
 }
 
 /// The two adapters of §3. Both carry the same frames, under different parts
-/// of the registry.
+/// of the registry: tags 1 to 3 and the transport lane's 16 and 17 on both,
+/// the handshake and control tags 4 to 8 on byte streams only.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Carrier {
-    /// Two queues inside one process: tags 1 to 3.
+    /// Two queues inside one process: tags 1 to 3, 16 and 17.
     InProcess,
-    /// A byte stream, such as standard streams, a socket or SSH: tags 1 to 8.
+    /// A byte stream, such as standard streams, a socket or SSH: tags 1 to 8,
+    /// 16 and 17.
     ByteStream,
 }
 
@@ -201,7 +216,8 @@ pub enum FrameError {
     /// A tag outside the registry and the reserved range: "any other tag"
     /// (§3).
     UnknownTag(u8),
-    /// A tag in [`RESERVED_TAGS`], which the contract does not use (§3).
+    /// A tag in [`RESERVED_TAGS`] (18 to 31), which the contract does not use
+    /// (§3).
     ReservedTag(u8),
     /// A byte-stream tag, 4 to 8, on the in-process adapter (server design
     /// §8).
@@ -227,10 +243,7 @@ impl fmt::Display for FrameError {
                 )
             }
             FrameError::ReservedTag(tag) => {
-                write!(
-                    formatter,
-                    "frame tag {tag} is reserved for a transport lane"
-                )
+                write!(formatter, "frame tag {tag} is reserved")
             }
             FrameError::ByteStreamOnly(tag) => {
                 write!(formatter, "frame tag {tag} is carried only by byte streams")
