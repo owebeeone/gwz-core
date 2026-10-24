@@ -17,8 +17,11 @@ on:
 # suites, the candidate and consumer generators' checks, the candidate's Python
 # tests and the consumer's archive proof on every change, against the
 # gwz-transport, gwz-py and gwz-sspi commits .github/gwz-transport.commit,
-# .github/gwz-py.commit and .github/gwz-sspi.commit pin, and the taut-proto
-# release the candidate generator pins (installed, and checked out at its tag).
+# .github/gwz-py.commit and .github/gwz-sspi.commit pin, the gwz-git commit
+# .github/gwz-git.commit pins (gwz-core's Cargo.toml names `../gwz-git`
+# unconditionally, so every cargo, prepare.py and run_tests.py job needs it;
+# checkout-siblings.sh puts it there), and the taut-proto release the candidate
+# generator pins (installed, and checked out at its tag).
 # The second job, candidate-windows, builds and tests the same candidate on
 # Windows (TR4.6).
 jobs:
@@ -53,11 +56,12 @@ jobs:
         # `gwz-git2`), at the commit gwz-core's .github/git2-rs.commit pins.
         run: bash .github/checkout-git2-rs.sh
       - id: pins
-        name: Read the gwz-transport, gwz-py and gwz-sspi commits and the taut release the candidate builds against
+        name: Read the gwz-transport, gwz-py, gwz-sspi and gwz-git commits and the taut release the candidate builds against
         run: |
           echo "gwz-transport=$(grep -m1 -E '^[0-9a-f]{40}$' .github/gwz-transport.commit)" >> "$GITHUB_OUTPUT"
           echo "gwz-py=$(grep -m1 -E '^[0-9a-f]{40}$' .github/gwz-py.commit)" >> "$GITHUB_OUTPUT"
           echo "gwz-sspi=$(grep -m1 -E '^[0-9a-f]{40}$' .github/gwz-sspi.commit)" >> "$GITHUB_OUTPUT"
+          echo "gwz-git=$(grep -m1 -E '^[0-9a-f]{40}$' .github/gwz-git.commit)" >> "$GITHUB_OUTPUT"
           release="$(jq -r '."taut-proto"' protocol/candidate/candidate-generator.json)"
           echo "taut-proto=$release" >> "$GITHUB_OUTPUT"
           echo "taut=v$release" >> "$GITHUB_OUTPUT"
@@ -100,14 +104,23 @@ jobs:
           ref: ${{ steps.pins.outputs.taut }}
           path: taut
           persist-credentials: false
+      - name: Check out gwz-git at its pin, beside gwz-core
+        # gwz-core's Cargo.toml names gwz-git by path (`../gwz-git`), always, and
+        # cargo, prepare.py and run_tests.py all read it. checkout-siblings.sh
+        # leaves the siblings checked out above alone and clones gwz-git at the
+        # commit .github/gwz-git.commit pins (a depth-1 clone, deepened below
+        # for the check that the pin is on main).
+        run: bash .github/checkout-siblings.sh
       - name: The pinned commits are on their repositories' main
         env:
           TRANSPORT_PIN: ${{ steps.pins.outputs.gwz-transport }}
           PY_PIN: ${{ steps.pins.outputs.gwz-py }}
           SSPI_PIN: ${{ steps.pins.outputs.gwz-sspi }}
+          GIT_PIN: ${{ steps.pins.outputs.gwz-git }}
         run: |
+          git -C ../gwz-git fetch -q --unshallow origin '+refs/heads/main:refs/remotes/origin/main'
           status=0
-          for pinned in "gwz-transport $TRANSPORT_PIN" "gwz-py $PY_PIN" "gwz-sspi $SSPI_PIN"; do
+          for pinned in "gwz-transport $TRANSPORT_PIN" "gwz-py $PY_PIN" "gwz-sspi $SSPI_PIN" "gwz-git $GIT_PIN"; do
             set -- $pinned
             if ! git -C "../$1" merge-base --is-ancestor "$2" origin/main; then
               echo "::error::.github/$1.commit $2 is not on $1's main; push $1 first"
@@ -238,13 +251,14 @@ jobs:
         with:
           python-version: "3.12"
       - id: pins
-        name: Read the gwz-transport, gwz-py and gwz-sspi commits and the taut release the candidate builds against
+        name: Read the gwz-transport, gwz-py, gwz-sspi and gwz-git commits and the taut release the candidate builds against
         # tr -d '\r': Python prints CRLF on Windows, and bash keeps the CR.
         run: |
           pin() { grep -m1 -E '^[0-9a-f]{40}$' ".github/$1.commit" | tr -d '\r'; }
           echo "gwz-transport=$(pin gwz-transport)" >> "$GITHUB_OUTPUT"
           echo "gwz-py=$(pin gwz-py)" >> "$GITHUB_OUTPUT"
           echo "gwz-sspi=$(pin gwz-sspi)" >> "$GITHUB_OUTPUT"
+          echo "gwz-git=$(pin gwz-git)" >> "$GITHUB_OUTPUT"
           release="$(python -c "import json; print(json.load(open('protocol/candidate/candidate-generator.json'))['taut-proto'])" | tr -d '\r')"
           echo "taut-proto=$release" >> "$GITHUB_OUTPUT"
           echo "taut=v$release" >> "$GITHUB_OUTPUT"
@@ -279,14 +293,23 @@ jobs:
           ref: ${{ steps.pins.outputs.taut }}
           path: taut
           persist-credentials: false
+      - name: Check out gwz-git at its pin, beside gwz-core
+        # gwz-core's Cargo.toml names gwz-git by path (`../gwz-git`), always, and
+        # cargo, prepare.py and run_tests.py all read it. checkout-siblings.sh
+        # leaves the siblings checked out above alone and clones gwz-git at the
+        # commit .github/gwz-git.commit pins (a depth-1 clone, deepened below
+        # for the check that the pin is on main).
+        run: bash .github/checkout-siblings.sh
       - name: The pinned commits are on their repositories' main
         env:
           TRANSPORT_PIN: ${{ steps.pins.outputs.gwz-transport }}
           PY_PIN: ${{ steps.pins.outputs.gwz-py }}
           SSPI_PIN: ${{ steps.pins.outputs.gwz-sspi }}
+          GIT_PIN: ${{ steps.pins.outputs.gwz-git }}
         run: |
+          git -C ../gwz-git fetch -q --unshallow origin '+refs/heads/main:refs/remotes/origin/main'
           status=0
-          for pinned in "gwz-transport $TRANSPORT_PIN" "gwz-py $PY_PIN" "gwz-sspi $SSPI_PIN"; do
+          for pinned in "gwz-transport $TRANSPORT_PIN" "gwz-py $PY_PIN" "gwz-sspi $SSPI_PIN" "gwz-git $GIT_PIN"; do
             set -- $pinned
             if ! git -C "../$1" merge-base --is-ancestor "$2" origin/main; then
               echo "::error::.github/$1.commit $2 is not on $1's main; push $1 first"

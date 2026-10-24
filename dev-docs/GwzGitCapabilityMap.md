@@ -399,10 +399,53 @@ Open decisions for the operator: F2 (supersession line), F6 (DAG), G3/G7/G8 in o
   implemented inline in `gitbackend.rs` over `open_repo`. `repository_paths` needs no new gwz-git API
   (`git_dir`, `common_dir`, `work_dir` exist); `repository_index` needs an owned index-snapshot record (path, entries with
   mode, flags, times, stat words). Both are `git2` reads that a "reads" row would hold: a decision for the operator
-  (add them to G2's tail or give them a row), not taken here.
+  (add them to G2's tail or give them a row), not taken here. **Taken in step 5.5** (they became G2's tail; record below).
 - **Tests.** Eight core tests moved (5 from `tests/g01.rs`, the 2 of `g05.rs`, the 1 of `g14.rs`) into
   `gwz-git/tests/refs_reads.rs`, which has 18 (the eight rewritten against the library API, ten new: typed-id and
   object-format refusals, detached HEAD, tag names, merge base, changed paths, conflicts, remotes, bare repositories).
   Composition tests that use a row still in core (`reads_and_adds_remotes`, the `g09` tag tests) stay in core. Core gained 2
   delegation tests (projection onto the model, error translation) and the probe. `repository_contract_tests.rs` (fake
   against native, through the trait) stays: it tests the trait, not a function.
+
+### G2 tail and the boundary guard (step 5.5; macOS verified, Windows receipt in the commit trailer)
+
+- **`repository_paths` and `repository_index` moved** (the lane owner's decision on the 5.3 finding; the two reads §8 above
+  left inline in `gitbackend.rs`). `repository_index` is `Repository::index_snapshot` with the owned records `IndexSnapshot` and
+  `IndexEntry` (guide A3); `repository_paths` needed no gwz-git API: core's `reads.rs` builds its record from `git_dir`,
+  `common_dir` and `work_dir`. Both delegate through `reads.rs`, which still holds no `git2` token. The `GitBackend` trait and
+  its callers (`checked_artifact/`, `preservation_root/files.rs`) are unchanged. With them, `reads.rs` is the one file that
+  names the gwz-git reads.
+- **The guard** extends `scripts/checks/check_filesystem_boundary.py` (the existing check whose job is "this migrated area does not
+  import the native thing directly"; the process-globals and cfg checks police state and conditional compilation, not imports) with
+  the migrated area of `scripts/checks/gwz_git_boundary.json`: `zero` (no production `git2` token) holds `commit_tag.rs`, `reads.rs`,
+  `backend.rs`, `comparison.rs`, `spawn_gate.rs` and the replaced `native_commit` tree, `index_status_char.rs` and
+  `worktree_status_char.rs`; `exceptions` holds the six files the moves rewrote that still serve a row in core, with an exact token
+  count, rows, responsibility, exit and the date 2026-10-25: `verify_checkout_state.rs` (18: `repo_head` for G3/G10 callers, `git_error`,
+  G3's self-verify), `repository_support.rs` (17), `repository.rs` (11, G3), `refs.rs` (8, G3), `transport.rs` (26, G4/G5/G6),
+  `gitbackend.rs` (2, G6). A count may fall (the entry must then be lowered, deleted at zero) and never rise. G7 and G8 uses sit in
+  `operation/commit_log/` and `diff/`, outside the area, so they are not entries; they enter the area, and the list, when a step
+  migrates them. The proposal of §6 item 2 (a register of every `git2` file) was narrowed to the migrated area as the lane owner
+  directed: no unrelated file is banned.
+- **The adoption check** is `scripts/checks/check_gwz_git_adoption.py` (new; there was no adoption-style check to extend): it reads
+  gwz-git's `src/lib.rs` re-exports and the `pub fn` of the exported types and public modules, requires each to be in the guide and to
+  have a production caller in gwz-core (a non-test file that names `gwz_git` and the owner, outside `use` lines), and keeps
+  `gwz_git_adoption.json`, a dated list of the public capabilities that have none today: `Repository::read_commit`,
+  `Repository::open_from_env`, `Error::native`, `ObjectId::format` and `RouteNotes::new` (consumed by gwz-cli only). §6 item 1's
+  `retired_paths` and `retired_symbols` stay with the probe tests in `gwz_git_tests.rs`; the zero list also covers the replaced paths.
+- **Wiring.** `run_tests.py` runs the adoption check after the gwz-git process-global check over the same pinned checkout; the boundary
+  workflow runs it and the new unit tests in its check step and unittest list; `check_filesystem_boundary.py` was already in both.
+
+### Phase 5 review round 1 remediation (one patch; Code and State reports of 2026-10-25)
+
+- **S-P2-1.** `native_commit/verify.rs` tests tag existence by exact reference lookup (`Repository::tag_commit`, `tag_ref_exists`, both
+  crate-private, over `find_reference("refs/tags/<name>")`); `resolve("HEAD")` stays for the commit check. A `t-1-g<abbrev>` tag and a branch
+  `refs/tags/X` no longer stand in for a tag. S-P3-2: a verification read that fails after the write is an `Operation` error saying so.
+- **C-P2-1, C-P2-2.** Both `transport-candidate.yml` jobs fetch gwz-git at its pin (`checkout-siblings.sh`) and check it is on main;
+  `scripts/checks/test_workflow_siblings.py` holds every workflow job that builds gwz-core to every `path = "../X"` sibling. gwz-git's `ci.yml`
+  gained Linux (arm64) and macOS legs.
+- **C-P3-1.** The guard also counts core's native-handle producers (`open_repo`, `repo_head`, `find_remote`, `git_error`); `comparison.rs`
+  is an exception (G8) with its counts; every exception records its producer count.
+- **C-P3-2 = S-P3-1, C-P3-4.** The adoption check credits a call only when the file takes the owner from gwz-git, treats a test-gated `mod`'s
+  file as test source, and lists public associated constants. `RoutePolicy::CLI_ONLY` and `Services::with_policy` are behind the gwz-git
+  feature `test-support` (gwz-core `[dev-dependencies]` only); both are on the dated ratchet as unconsumed, with that reason.
+- **C-P3-3.** `route::open` delegates to `Repository::open_from_env`; `open_from_env` keeps its ratchet entry (no gwz-core caller), reason corrected.

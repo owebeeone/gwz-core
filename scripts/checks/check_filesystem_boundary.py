@@ -5,9 +5,30 @@ This token scan is deliberately conservative, not Rust name/type resolution.
 Native I/O is permitted only in filesystem/native.rs and filesystem/native/.
 Pass additional migrated files/directories as positional arguments. Legacy
 modules are not claimed to be protected until migrated and registered here.
+
+Step 5.5 (Git boundary plan D-G, section 6; convergence plan R9) adds the same
+kind of guard for the single-repository Git work that moved to gwz-git: the
+migrated area, named in `gwz_git_boundary.json`, imports no `git2` directly.
+Two lists make it up. `zero` names files and directories the moves created or
+replaced (`commit_tag.rs`, `reads.rs`, the retired `native_commit` tree): no
+production `git2` token may appear in them. `exceptions` names the files the
+moves rewrote that still hold `git2` for a row that has not moved (G3, G4, G5,
+G10), each with the exact number of tokens, the rows, the reason, the exit and
+the date the entry was recorded. A count that grows is a new direct use; a count
+that shrinks makes the entry stale and fails until it is lowered (zero: removed),
+so the list can only shrink as rows move. Nothing outside those two lists is
+banned: this is a ratchet over the migrated area, not a rule about `git2`.
+The scan counts the identifier `git2` outside comments, strings and test-only
+items (a `use git2::..`, a `git2::` path, `extern crate git2`, an alias import);
+like the rest of this file it is a token scan, not name resolution. Native
+handles also reach a file without that token, through core's producers
+(`open_repo`, `repo_head`, `find_remote`, `git_error`, named in the config as
+`native_producers`, brought in by a `use super::*;`): their uses are counted the
+same way, zero in a `zero` file and exact in an exception (round 1 remediation C-P3-1).
 """
 from pathlib import Path
 import argparse
+import json
 import re
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -249,6 +270,114 @@ def violations(source):
     return [(source.count('\n', 0, offset)+1, message) for offset, message in sorted(found.items())]
 
 
+GIT_BOUNDARY = 'scripts/checks/gwz_git_boundary.json'
+GIT_BOUNDARY_FIELDS = ('path', 'git2', 'producers', 'rows', 'responsibility', 'exit', 'dated')
+
+
+def is_test_source(path):
+    """Test directories, `*_tests.rs`, `tests*.rs` and `test_support.rs` are not production."""
+    return (any(part in {'tests', 'interface_tests'} or part.endswith('_tests') for part in path.parts)
+            or path.stem.startswith('tests') or path.stem.endswith('_tests')
+            or path.stem == 'test_support')
+
+
+def git2_uses(source):
+    """Lines of the production `git2` tokens in `source`: each identifier `git2` that starts a path.
+
+    Comments, string literals and test-only items are not code. A `git2` inside another path (`a::git2`) or after
+    a `.` is a member name, not the crate; a leading `::git2::` is the crate.
+    """
+    ts = tokens(production_source(source))
+
+    def member(index):
+        if not index:
+            return False
+        if ts[index - 1][0] == '.':
+            return True
+        # `a::git2` names something inside `a`; a leading `::git2::` is the crate itself.
+        return ts[index - 1][0] == '::' and index > 1 and re.match(r'[A-Za-z_]', ts[index - 2][0]) is not None
+
+    return [source.count('\n', 0, offset) + 1
+            for index, (name, offset) in enumerate(ts)
+            if name == 'git2' and not member(index)]
+
+
+def producer_uses(source, producers):
+    """Lines of the uses of core's native-handle producers (`open_repo`, `repo_head`, `find_remote`, `git_error`):
+    a file that calls one holds a libgit2 handle or error without naming `git2` (a `use super::*;` brings them in).
+    A definition (`fn name`) is not a use."""
+    ts = tokens(production_source(source))
+    return [source.count('\n', 0, offset) + 1
+            for index, (name, offset) in enumerate(ts)
+            if name in producers and not (index and ts[index - 1][0] in {'fn', '.'})]
+
+
+def rust_files(entry):
+    return sorted(entry.rglob('*.rs')) if entry.is_dir() else [entry]
+
+
+def git2_boundary_failures(root, config):
+    """Failures of the migrated area against `config` (the parsed `gwz_git_boundary.json`) under `root`.
+
+    Returns (failures, scanned) where scanned counts the zero-tolerance files and the exception files.
+    """
+    failures, zero_files, exception_files = [], 0, 0
+    exceptions = {}
+    producers = set(config['native_producers'])
+    for entry in config['exceptions']:
+        missing = [name for name in GIT_BOUNDARY_FIELDS if name not in entry]
+        if missing:
+            failures.append(f"{GIT_BOUNDARY}: exception {entry.get('path', '?')} lacks {', '.join(missing)}")
+            continue
+        if not re.fullmatch(r'\d{4}-\d{2}-\d{2}', entry['dated']):
+            failures.append(f"{GIT_BOUNDARY}: {entry['path']}: dated must be YYYY-MM-DD, not {entry['dated']!r}")
+        if not entry['responsibility'].strip() or not entry['exit'].strip() or not entry['rows']:
+            failures.append(f"{GIT_BOUNDARY}: {entry['path']}: rows, responsibility and exit must say something")
+        if entry['path'] in exceptions:
+            failures.append(f"{GIT_BOUNDARY}: {entry['path']} is listed twice")
+        exceptions[entry['path']] = entry
+    zero = list(config['zero'])
+    for name in zero:
+        if any(name == other or other.startswith(name.rstrip('/') + '/') for other in exceptions):
+            failures.append(f'{GIT_BOUNDARY}: {name} is zero-tolerance and also holds an exception')
+    for name in zero:
+        entry = root / name
+        if not entry.exists():
+            continue  # a retired path stays retired; the probe tests in gwz-core assert it is gone
+        for path in rust_files(entry):
+            if is_test_source(path.relative_to(root)):
+                continue
+            zero_files += 1
+            text = path.read_text(encoding='utf-8')
+            for line in git2_uses(text):
+                failures.append(f'{path.relative_to(root).as_posix()}:{line}: direct git2 use in the migrated area '
+                                f'(gwz-git owns it; step 5.5 guard, {GIT_BOUNDARY})')
+            for line in producer_uses(text, producers):
+                failures.append(f'{path.relative_to(root).as_posix()}:{line}: use of a core native-handle producer '
+                                f'({", ".join(sorted(producers))}) in the migrated area; ask gwz-git ({GIT_BOUNDARY})')
+    for name, entry in sorted(exceptions.items()):
+        path = root / name
+        if not path.is_file():
+            failures.append(f'{name}: exception for a file that is gone; delete the entry from {GIT_BOUNDARY}')
+            continue
+        exception_files += 1
+        text = path.read_text(encoding='utf-8')
+        found = {'git2': git2_uses(text), 'producers': producer_uses(text, producers)}
+        words = {'git2': 'direct git2 uses', 'producers': 'native-handle producer uses'}
+        for key in ('git2', 'producers'):
+            lines, recorded = found[key], entry[key]
+            if len(lines) > recorded:
+                failures.append(f"{name}: {len(lines)} {words[key]}, {recorded} recorded (rows "
+                                f"{', '.join(entry['rows'])}, {entry['dated']}); lines {', '.join(map(str, lines))}. "
+                                f'Call gwz-git; a new exception is a reviewed act')
+            elif len(lines) < recorded:
+                failures.append(f"{name}: {len(lines)} {words[key]}, {recorded} recorded: lower the entry in "
+                                f'{GIT_BOUNDARY} to {len(lines)}')
+        if not found['git2'] and not found['producers']:
+            failures.append(f'{name}: no direct git2 or producer uses left; delete the entry from {GIT_BOUNDARY}')
+    return failures, (zero_files, exception_files)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('paths', nargs='*', type=Path)
@@ -285,9 +414,18 @@ def main():
                     continue
                 for line, message in context_violations(production_source(path.read_text())):
                     failures.append(f'{path}:{line}: {message}')
+    if not args.paths:
+        config = json.loads((ROOT / GIT_BOUNDARY).read_text(encoding='utf-8'))
+        git_failures, (zero_files, exception_files) = git2_boundary_failures(ROOT, config)
+        failures += git_failures
     if failures:
         print('\n'.join(failures)); return 1
     print('Filesystem source boundary passed for migrated scope.')
+    if not args.paths:
+        recorded = sum(entry['git2'] for entry in config['exceptions'])
+        recorded_producers = sum(entry['producers'] for entry in config['exceptions'])
+        print(f'gwz-git source boundary: {zero_files} zero-tolerance files, {exception_files} files with '
+              f'{recorded} dated exceptional git2 uses and {recorded_producers} native-handle producer uses; nothing new')
     return 0
 
 

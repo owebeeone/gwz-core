@@ -344,6 +344,16 @@ def check_git_process_globals(allow_pin_mismatch: bool) -> None:
     )
 
 
+GIT_ADOPTION = "scripts/checks/check_gwz_git_adoption.py"
+
+
+def check_git_adoption() -> None:
+    """Every public capability of the gwz-git checkout (the one check_git_process_globals pinned) has a gwz-core caller."""
+    checkout = git_checkout()
+    print(f"gwz-git adoption check: {checkout}", flush=True)
+    subprocess.run([sys.executable, str(ROOT / GIT_ADOPTION), "--gwz-git", str(checkout)], check=True)
+
+
 def main(argv: list[str] | None = None) -> None:
     # No abbreviations: a prefix such as --skip must never turn a gate off.
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
@@ -401,6 +411,7 @@ def main(argv: list[str] | None = None) -> None:
     check_transport_process_globals(options.skip_transport_globals)
     check_transport_pin(options.skip_transport_globals, options.allow_transport_pin_mismatch)
     check_git_process_globals(options.allow_git_pin_mismatch)
+    check_git_adoption()
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_crate_versions.py")], check=True)
     filesystem_result = run("fake", library_args, list(FILESYSTEM_CONTRACTS), filesystem="fake", **narrow)
     if filesystem_result and "--no-fail-fast" not in cargo_args:

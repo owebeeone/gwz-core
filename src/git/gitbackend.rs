@@ -105,34 +105,8 @@ macro_rules! delegate {
 }
 
 impl GitBackend for Git2Backend {
-    fn repository_index(&self, path: &Path) -> ModelResult<GitIndexSnapshot> {
-        let repo = open_repo(path)?;
-        let index = repo.index().map_err(git_error)?;
-        Ok(GitIndexSnapshot {
-            path: index.path().map(Path::to_path_buf),
-            entries: index
-                .iter()
-                .map(|e| GitIndexEntry {
-                    path: e.path,
-                    object_id: e.id.as_bytes().to_vec(),
-                    mode: e.mode,
-                    flags: e.flags,
-                    flags_extended: e.flags_extended,
-                    ctime: (e.ctime.seconds(), e.ctime.nanoseconds()),
-                    mtime: (e.mtime.seconds(), e.mtime.nanoseconds()),
-                    stat: [e.dev, e.ino, e.uid, e.gid, e.file_size],
-                })
-                .collect(),
-        })
-    }
-    fn repository_paths(&self, path: &Path) -> ModelResult<GitRepositoryPaths> {
-        let repo = open_repo(path)?;
-        Ok(GitRepositoryPaths {
-            worktree: repo.workdir().map(Path::to_path_buf),
-            git_dir: repo.path().to_path_buf(),
-            common_dir: repo.commondir().to_path_buf(),
-        })
-    }
+    delegate!(repository_index(path: &Path) -> ModelResult<GitIndexSnapshot> => reads::repository_index);
+    delegate!(repository_paths(path: &Path) -> ModelResult<GitRepositoryPaths> => reads::repository_paths);
 
     fn root_preservation_image(
         &self,

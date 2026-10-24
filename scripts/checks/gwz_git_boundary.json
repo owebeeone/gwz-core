@@ -1,0 +1,105 @@
+{
+ "about": "The migrated area of the gwz-git boundary guard (convergence plan step 5.5; Git boundary plan D-G section 6; read check_filesystem_boundary.py's docstring). `zero`: files and directories the moves of steps 5.2 and 5.3 created, rewrote clean or replaced; no production git2 token may appear in them (a path that no longer exists stays retired). `exceptions`: files those moves rewrote that still hold git2 for a row that has not moved, each with the exact count of git2 tokens, the rows, what the uses are, when the entry can go, and the date it was recorded. A count may fall (lower the entry, delete it at zero) and never rise; a new exception is a reviewed act. Paths are relative to gwz-core. `native_producers` are core's helpers that return a libgit2 handle or error (round 1 remediation C-P3-1): their uses are counted like git2 tokens, zero in `zero` files and exact in exceptions. Counts are the checker's token counts (comments, strings and test-only items excluded), not grep lines.",
+ "zero": [
+  "src/git/gitbackend/commit_tag.rs",
+  "src/git/gitbackend/reads.rs",
+  "src/git/gitbackend/backend.rs",
+  "src/git/spawn_gate.rs",
+  "src/git/gitbackend/native_commit.rs",
+  "src/git/gitbackend/native_commit",
+  "src/git/index_status_char.rs",
+  "src/git/worktree_status_char.rs"
+ ],
+ "exceptions": [
+  {
+   "path": "src/git/verify_checkout_state.rs",
+   "git2": 18,
+   "rows": [
+    "G3",
+    "G9",
+    "G10"
+   ],
+   "responsibility": "repo_head(&git2::Repository), kept as a delegation to gwz-git's head for callers that hold a native handle: G3 branch_list, branch_create, branch_delete and switch_branch (gitbackend/refs.rs), G10 recovery_support.rs:358 and merge_support.rs:42; find_remote; staged_statuses and unstaged_statuses and verify_checkout_state (G3's self-verify with its own status flags); git_error, core's translation of a git2::Error for the rows still in core",
+   "exit": "repo_head dies with the last of its G3 and G10 callers; the rest leaves with G3 (stage, checkout, branch) and G10 (merge, recovery)",
+   "dated": "2026-10-25",
+   "producers": 4
+  },
+  {
+   "path": "src/git/gitbackend/repository_support.rs",
+   "git2": 17,
+   "rows": [
+    "G3",
+    "G4",
+    "G5",
+    "G10"
+   ],
+   "responsibility": "open_repo (-> git2::Repository) and the helpers over a native handle that G3, G4a, G4b, G5 and G10 callers use: creation-time filter pinning, commit oid resolve and parse in the repository's format, the integration-state check, merge-result verification, ensure_branch_at_commit and the branch record",
+   "exit": "shrinks with each of G3, G4, G5 and G10; open_repo goes with the last native-handle caller",
+   "dated": "2026-10-25",
+   "producers": 14
+  },
+  {
+   "path": "src/git/gitbackend/repository.rs",
+   "git2": 11,
+   "rows": [
+    "G3"
+   ],
+   "responsibility": "create_repo, reset_hard, checkout_commit, checkout_branch, stage_paths and stage_paths_allowing_other_conflicts",
+   "exit": "step that moves G3 (capability map section 2.4; not in plan section 4)",
+   "dated": "2026-10-25",
+   "producers": 31
+  },
+  {
+   "path": "src/git/gitbackend/refs.rs",
+   "git2": 8,
+   "rows": [
+    "G3"
+   ],
+   "responsibility": "fast_forward and the branch functions: branch_list, branch_create, branch_delete, switch_branch",
+   "exit": "step that moves G3",
+   "dated": "2026-10-25",
+   "producers": 30
+  },
+  {
+   "path": "src/git/gitbackend/transport.rs",
+   "git2": 26,
+   "rows": [
+    "G4",
+    "G5",
+    "G6"
+   ],
+   "responsibility": "local-peer transfer (fetch_anonymous, push_anonymous, local push remote, tracking refs), fetch, push, ls-remote, clone and read_remote_file over libgit2 remotes",
+   "exit": "G4b with its step, G5 and G6 with step 5.4 after Phase 4.2",
+   "dated": "2026-10-25",
+   "producers": 53
+  },
+  {
+   "path": "src/git/gitbackend.rs",
+   "git2": 2,
+   "rows": [
+    "G6"
+   ],
+   "responsibility": "credential_helper_unavailable and credential_helper_timeout, two wrappers over a git2::Error for the transport binding",
+   "exit": "with G6 (transport binding) in step 5.4",
+   "dated": "2026-10-25",
+   "producers": 7
+  },
+  {
+   "path": "src/git/gitbackend/comparison.rs",
+   "git2": 0,
+   "producers": 3,
+   "rows": [
+    "G8"
+   ],
+   "responsibility": "the single-repository diff comparison and manifest (resolve_comparison, diff_manifest) still open a native handle through open_repo; its merge_base and changed_paths_between went to gwz-git in step 5.3",
+   "exit": "step that moves G8 (capability map section 2.7; not in plan section 4)",
+   "dated": "2026-10-25"
+  }
+ ],
+ "native_producers": [
+  "open_repo",
+  "repo_head",
+  "find_remote",
+  "git_error"
+ ]
+}

@@ -280,3 +280,120 @@ fn a_read_of_a_path_that_is_not_a_repository_translates_like_the_native_open_did
         assert_eq!(error.message, native.message);
     }
 }
+
+#[test]
+fn repository_paths_and_index_live_in_gwz_git_and_core_keeps_no_copy() {
+    // Step 5.5 moved the last two reads of row G2 that were still inline in
+    // `gitbackend.rs`: the storage locations and the index snapshot.
+    let backend = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/git/gitbackend.rs"),
+    )
+    .unwrap();
+    for forbidden in [
+        "repo.index()",
+        "repo.commondir()",
+        "repo.workdir()",
+        "index.iter()",
+    ] {
+        assert!(
+            !backend.contains(forbidden),
+            "gitbackend.rs still has {forbidden}"
+        );
+    }
+    let reads = std::fs::read_to_string(source_file("reads.rs")).unwrap();
+    for needed in [
+        "fn repository_paths(",
+        "fn repository_index(",
+        ".index_snapshot()",
+        ".git_dir()",
+        ".common_dir()",
+        ".work_dir()",
+    ] {
+        assert!(reads.contains(needed), "reads.rs does not contain {needed}");
+    }
+    assert!(!reads.contains("git2::"), "reads.rs names git2");
+}
+
+#[test]
+fn repository_paths_and_index_delegate_to_gwz_git_and_match_the_native_values() {
+    use crate::git::GitBackend;
+    use crate::git::tests::commit_file;
+
+    let dir = tempfile::TempDir::new().unwrap();
+    let path = dir.path().join("repo");
+    let backend = crate::git::Git2Backend::new();
+    backend.create_repo(&path).unwrap();
+    let first = commit_file(&path, "a.txt", "one", "first", &[]).unwrap();
+    std::fs::write(path.join("staged.txt"), "staged\n").unwrap();
+    let native = git2::Repository::open(&path).unwrap();
+    let mut index = native.index().unwrap();
+    index.add_path(std::path::Path::new("staged.txt")).unwrap();
+    index.write().unwrap();
+
+    // Storage locations: the main worktree, then a linked worktree whose
+    // common directory is the main repository's.
+    let paths = backend.repository_paths(&path).unwrap();
+    assert_eq!(paths.worktree.as_deref(), native.workdir());
+    assert_eq!(paths.git_dir, native.path());
+    assert_eq!(paths.common_dir, native.commondir());
+    let linked_path = dir.path().join("linked");
+    let object = native
+        .find_commit(git2::Oid::from_str(&first).unwrap())
+        .unwrap();
+    let branch = native.branch("side", &object, false).unwrap();
+    let mut options = git2::WorktreeAddOptions::new();
+    options.reference(Some(branch.get()));
+    native
+        .worktree("side", &linked_path, Some(&options))
+        .unwrap();
+    let linked = backend.repository_paths(&linked_path).unwrap();
+    let linked_native = git2::Repository::open(&linked_path).unwrap();
+    assert_eq!(linked.git_dir, linked_native.path());
+    assert_eq!(linked.common_dir, native.commondir());
+    assert_ne!(linked.git_dir, linked.common_dir);
+    let bare_path = dir.path().join("bare.git");
+    git2::Repository::init_bare(&bare_path).unwrap();
+    assert_eq!(backend.repository_paths(&bare_path).unwrap().worktree, None);
+
+    // The index: every entry the native index holds, ids as raw bytes.
+    let snapshot = backend.repository_index(&path).unwrap();
+    let native_index = native.index().unwrap();
+    assert_eq!(snapshot.path.as_deref(), native_index.path());
+    assert_eq!(snapshot.entries.len(), 2);
+    for (entry, expected) in snapshot.entries.iter().zip(native_index.iter()) {
+        assert_eq!(entry.path, expected.path);
+        assert_eq!(entry.object_id, expected.id.as_bytes());
+        assert_eq!(entry.mode, expected.mode);
+        assert_eq!(entry.flags, expected.flags);
+        assert_eq!(entry.flags_extended, expected.flags_extended);
+        assert_eq!(
+            entry.ctime,
+            (expected.ctime.seconds(), expected.ctime.nanoseconds())
+        );
+        assert_eq!(
+            entry.mtime,
+            (expected.mtime.seconds(), expected.mtime.nanoseconds())
+        );
+        assert_eq!(
+            entry.stat,
+            [
+                expected.dev,
+                expected.ino,
+                expected.uid,
+                expected.gid,
+                expected.file_size
+            ]
+        );
+    }
+
+    // A path that is not a repository translates like the native open did.
+    let missing = dir.path().join("missing");
+    let expected = git_error(git2::Repository::open(&missing).err().unwrap());
+    for error in [
+        backend.repository_paths(&missing).unwrap_err(),
+        backend.repository_index(&missing).unwrap_err(),
+    ] {
+        assert_eq!(error.code, expected.code);
+        assert_eq!(error.message, expected.message);
+    }
+}

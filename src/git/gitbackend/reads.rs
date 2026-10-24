@@ -1,6 +1,7 @@
 //! The refs and reads of `Git2Backend`: head, status, tag names, ref and
 //! revision reads, commit existence, committed file content, the commit-graph
-//! reads and the configured remotes. Step 5.3 (row G2) moved their
+//! reads, the configured remotes, and (step 5.5) the storage locations and the
+//! index snapshot. Step 5.3 (row G2) moved their
 //! implementations to gwz-git; this file is core's thin delegation. It opens the
 //! repository exactly as before (no parent search, no environment), parses the
 //! caller's full object ids in the repository's format, projects gwz-git's
@@ -167,4 +168,40 @@ pub(super) fn remotes(_backend: &Git2Backend, path: &Path) -> ModelResult<Vec<Gi
             push_url: remote.push_url,
         })
         .collect())
+}
+
+pub(super) fn repository_paths(
+    _backend: &Git2Backend,
+    path: &Path,
+) -> ModelResult<GitRepositoryPaths> {
+    let repo = open(path)?;
+    Ok(GitRepositoryPaths {
+        worktree: repo.work_dir().map(Path::to_path_buf),
+        git_dir: repo.git_dir().to_path_buf(),
+        common_dir: repo.common_dir().to_path_buf(),
+    })
+}
+
+pub(super) fn repository_index(
+    _backend: &Git2Backend,
+    path: &Path,
+) -> ModelResult<GitIndexSnapshot> {
+    let snapshot = open(path)?.index_snapshot().map_err(model_error)?;
+    Ok(GitIndexSnapshot {
+        path: snapshot.path,
+        entries: snapshot
+            .entries
+            .into_iter()
+            .map(|entry| GitIndexEntry {
+                path: entry.path,
+                object_id: entry.id.as_bytes().to_vec(),
+                mode: entry.mode,
+                flags: entry.flags,
+                flags_extended: entry.flags_extended,
+                ctime: entry.ctime,
+                mtime: entry.mtime,
+                stat: entry.stat,
+            })
+            .collect(),
+    })
 }
