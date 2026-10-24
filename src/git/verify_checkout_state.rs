@@ -140,6 +140,15 @@ pub(crate) fn git_error(error: git2::Error) -> ModelError {
     ModelError::new(code, error.message())
 }
 
+/// The translation of an error gwz-git returns, beside [`git_error`] for the
+/// native ones core still holds. gwz-git keeps the diagnostic (kind, native
+/// code and class, message); the code here is core's choice, and the one
+/// every local Git failure has. The credential-helper codes `git_error`
+/// recognises come from HTTPS authentication, which no gwz-git call reaches.
+pub(crate) fn model_error(error: gwz_git::Error) -> ModelError {
+    ModelError::new(ErrorCode::GitCommandFailed, error.message())
+}
+
 pub(crate) fn io_error(error: std::io::Error) -> ModelError {
     ModelError::new(ErrorCode::IoError, error.to_string())
 }

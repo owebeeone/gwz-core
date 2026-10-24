@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Check out gwz-transport and gwz-sspi beside gwz-core at the commits that
-# .github/gwz-transport.commit and .github/gwz-sspi.commit pin. gwz-core's
-# Cargo.toml names both by path (`../gwz-transport`, `../gwz-sspi`) in tables
-# behind gwz_transport_candidate. Cargo reads the manifest of a path
+# Check out gwz-transport, gwz-sspi and gwz-git beside gwz-core at the commits that
+# .github/gwz-transport.commit, .github/gwz-sspi.commit and .github/gwz-git.commit pin. gwz-core's
+# Cargo.toml names the first two by path (`../gwz-transport`, `../gwz-sspi`) in
+# tables behind gwz_transport_candidate, and gwz-git (`../gwz-git`) always. Cargo reads the manifest of a path
 # dependency whatever its condition, so every job that runs cargo on gwz-core,
 # or on a crate that depends on it by path, needs them there, ordinary builds
 # included, as it needs git2-rs (checkout-git2-rs.sh).
 #
 # Usage: checkout-siblings.sh [DIR]
-# Clones into DIR/gwz-transport and DIR/gwz-sspi. DIR defaults to the directory
+# Clones into DIR/gwz-transport, DIR/gwz-sspi and DIR/gwz-git. DIR defaults to the directory
 # that holds the gwz-core checkout this script lives in, which is `..` from
 # gwz-core's root in either CI layout (gwz-core at the workspace root, or beside
 # gwz-cli or gwz-py). A sibling that is already there is left as it is: a job
@@ -18,7 +18,7 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 core="$(dirname "$here")"
 parent="${1:-$(dirname "$core")}"
-for name in gwz-transport gwz-sspi; do
+for name in gwz-transport gwz-sspi gwz-git; do
   dest="$parent/$name"
   if [ -e "$dest" ]; then
     echo "checkout-siblings: $dest already exists; not touching it"

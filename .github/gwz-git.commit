@@ -1,0 +1,8 @@
+# The gwz-git commit CI builds gwz-core against. gwz-core depends on it by path
+# (`../gwz-git`, Cargo.toml) from step 5.2 of the transport convergence plan, so
+# every job that runs cargo on gwz-core needs it beside the checkout, as it needs
+# git2-rs. A gwz-core commit that needs newer gwz-git code moves this pin in the
+# same commit, to a gwz-git commit that is already pushed (gwz-git's own
+# .github/git2-rs.commit then names the same fork commit as this repository's).
+# checkout-siblings.sh reads the first 40-hex line.
+0b9d2be4b1b9bc2c544e54ed8f62f30c93744663

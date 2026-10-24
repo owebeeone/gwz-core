@@ -869,6 +869,7 @@ dependencies = [
  "gwz-family-model",
  "gwz-family-store",
  "gwz-family-store-contract",
+ "gwz-git",
  "gwz-git2",
  "gwz-history-check",
  "gwz-ids",
@@ -940,6 +941,14 @@ name = "gwz-family-store-contract"
 version = "0.0.8"
 dependencies = [
  "gwz-family-model",
+]
+
+[[package]]
+name = "gwz-git"
+version = "0.1.0"
+dependencies = [
+ "cfg-if",
+ "gwz-git2",
 ]
 
 [[package]]

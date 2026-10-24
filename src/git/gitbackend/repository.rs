@@ -5,11 +5,7 @@ use super::repository_support::{
 use super::*;
 
 pub(super) fn is_repository(_backend: &Git2Backend, path: &Path) -> ModelResult<bool> {
-    match git2::Repository::open(path) {
-        Ok(_) => Ok(true),
-        Err(err) if err.code() == git2::ErrorCode::NotFound => Ok(false),
-        Err(err) => Err(git_error(err)),
-    }
+    gwz_git::Repository::is_repository(path).map_err(crate::git::model_error)
 }
 
 pub(super) fn commit_exists(_backend: &Git2Backend, path: &Path, oid: &str) -> ModelResult<bool> {

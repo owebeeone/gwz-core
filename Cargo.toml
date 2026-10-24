@@ -80,6 +80,9 @@ gwz-session-host = { path = "crates/session-host", version = "0.0.8" }
 cap-fs-ext = "4"
 cap-std = "4"
 cfg-if = "1"
+# Single-repository Git behaviour (GwzGitLibraryApi.md). Beside gwz-core like git2-rs; the same fork backs both, so
+# there is one libgit2 in the build. Step 5.2 (G9, G1) moves error translation, `is_repository` and native commit/tag there.
+gwz-git = { path = "../gwz-git" }
 # `vendored-libgit2` links the fork's own libgit2, which carries the local-fetch
 # correction the family import now relies on alone (no `git fetch` fallback).
 # Without it, the fork's build script links a system `libgit2-experimental`
