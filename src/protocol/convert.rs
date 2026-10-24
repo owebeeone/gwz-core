@@ -85,8 +85,10 @@ impl From<model::ErrorCode> for generated::GwzErrorCode {
             model::ErrorCode::Capacity => Self::Capacity,
             // Native-session bridge errors do not enter an OperationResult.
             model::ErrorCode::TransportCapacityConflict => Self::IoError,
-            model::ErrorCode::TransportSessionFull => Self::IoError,
-            model::ErrorCode::OperationExpired => Self::IoError,
+            // The core session's own codes (gwz-dev dev-docs/GwzCoreSessionDesign.md
+            // §4.2; numbered 77 and 78 by GwzSplitCommandChannel.md §1).
+            model::ErrorCode::TransportSessionFull => Self::TransportSessionFull,
+            model::ErrorCode::OperationExpired => Self::OperationExpired,
             // A network operation cancelled through its token does: gwz-py's
             // submitted operations record it (1.1.0 S6.2).
             model::ErrorCode::Cancelled => Self::Cancelled,

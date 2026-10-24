@@ -11,14 +11,16 @@
 //! | The operation gate ([`CallControls`], [`OperationGate`], [`GateView`], [`GateScope`], [`CancellationToken`], [`HandlerContext`]) | Controls and gate created at receipt; one holder for cancelling and revoking and one for crossing; live, cancelled and revoked states; nesting stopped by capabilities, with a per-gate thread record as the backstop | O7, O8, §5.3, §5.6, §8 step 5; map §2 "Nesting without a thread-local" |
 //! | The session limits ([`Limits`], [`MAX_READ_WAIT`], [`validate_limits`]) | The §1 defaults and `open`'s validation, and the channel's two limits for gwz-session-channel's `pair` | §1, §3, §9 |
 //! | The supervisor ([`Supervisor`], [`SupervisedJob`]) | One thread per host context; quarantine; `shutdown(bound)` | §5.6; reuse design §7 |
+//! | The operation service ([`Service`], over core's [`HostPorts`]) | Records at receipt; admission in receipt order; classes R, N and W; the §1 limits; cancel; events; results; release; close | §4.1, §4.2, §5.1–§5.4, §6, §8; `GwzSplitCommandChannel.md` §3.2 (step 2.2b) |
+//! | The detached-worker record ([`DetachedWorkers`]) | Shared by a host's sessions; a write or push beside a detached worker is refused | §8 step 5; `GwzSplitCommandChannel.md` §1, §3.2 |
 //!
 //! Core's per-session data is the type parameter `S`: a gate holds it
 //! weakly and a crossing hands the closure a reference, and nothing here
 //! looks inside it. The environment snapshot, the host context and `open`
 //! therefore stay in gwz-core, which re-exports [`Limits`] and
-//! [`MAX_READ_WAIT`] at their frozen `gwz_core::session_host` paths. Phase 2
-//! of the session plan adds the host itself here: `serve` and the
-//! `HostPorts` that core implements.
+//! [`MAX_READ_WAIT`] at their frozen `gwz_core::session_host` paths. Step 2.2b
+//! adds the operation service, which core drives through the [`HostPorts`]
+//! it implements.
 //!
 //! Bytes only, and no GWZ protocol: nothing here encodes or decodes a
 //! message, and no error here is core's. gwz-core maps [`Refused`] to
@@ -32,13 +34,26 @@
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+mod detached;
 mod gate;
+mod lane;
 mod limits;
+mod service;
 mod supervisor;
 mod token;
 
+pub use detached::{DetachedWorkers, WorkerAlive};
 pub use gate::{CallControls, GateScope, GateState, GateView, HandlerContext, OperationGate};
+pub use lane::{
+    CallLane, LaneError, LaneFrame, LaneKind, Lanes, Routed, StreamTarget, TRANSPORT_CONTROL,
+    TRANSPORT_DATA, lane_tag, route_frame,
+};
 pub use limits::{InvalidLimits, Limits, MAX_READ_WAIT, validate_limits};
+pub use service::{
+    Call, CancelTarget, Class, Cleanup, Code, Ending, EventsBatch, EventsCall, EventsRead,
+    HostError, HostPorts, Mode, Outcome, ProtocolError, ReplySink, Request, Resolved, Service,
+    Terminal, Verb, Worker,
+};
 pub use supervisor::{SuperviseError, SupervisedJob, Supervisor};
 pub use token::{CancelRegistration, CancellationToken, Refused};
 

@@ -53,6 +53,157 @@ fn the_capacity_code_is_76_and_the_model_code_converts_to_it() {
     );
 }
 
+/// Step 2.2b (gwz-dev dev-docs/GwzSplitCommandChannel.md §1): the session
+/// and server codes are appended at the schema's tail, after `capacity` (76).
+/// Their names are the identity; this step assigns the numbers.
+#[test]
+fn the_session_and_server_codes_take_77_to_86_after_capacity() {
+    for (code, wire) in [
+        (GwzErrorCode::TransportSessionFull, 77),
+        (GwzErrorCode::OperationExpired, 78),
+        (GwzErrorCode::ServerUnavailable, 79),
+        (GwzErrorCode::ServerVersionMismatch, 80),
+        (GwzErrorCode::ServerEnvironmentMismatch, 81),
+        (GwzErrorCode::ServerPeerRefused, 82),
+        (GwzErrorCode::ServerAddressRefused, 83),
+        (GwzErrorCode::ServerListenerRefused, 84),
+        (GwzErrorCode::ServerSessionClosed, 85),
+        (GwzErrorCode::ServerDestinationRefused, 86),
+    ] {
+        assert_eq!(code.wire(), wire, "{code:?}");
+        assert_eq!(GwzErrorCode::from_wire(wire).unwrap(), code);
+    }
+    assert!(GwzErrorCode::from_wire(87).is_err());
+    // Session design §4.2: the model's codes reach their own wire members,
+    // no longer `io_error`.
+    for (model, wire) in [
+        (
+            gwz_core::model::ErrorCode::TransportSessionFull,
+            GwzErrorCode::TransportSessionFull,
+        ),
+        (
+            gwz_core::model::ErrorCode::OperationExpired,
+            GwzErrorCode::OperationExpired,
+        ),
+        (
+            gwz_core::model::ErrorCode::Cancelled,
+            GwzErrorCode::Cancelled,
+        ),
+    ] {
+        assert_eq!(GwzErrorCode::from(model), wire);
+    }
+}
+
+#[test]
+fn the_tail_code_check_refuses_a_number_already_taken() {
+    // The appending step's collision check (2.0 §1): a code another change
+    // already took, or one not at the schema's tail, fails the additive check.
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let script = r#"
+import sys
+sys.path.insert(0, "protocol")
+import check_log_additive as check
+members = dict(check.PRE_SESSION_CODES)
+members.update(check.SESSION_CODES)
+check.check_appended_codes(members)
+taken = dict(members)
+taken["someone_else"] = 80
+taken.pop("server_version_mismatch")
+try:
+    check.check_appended_codes(taken)
+    sys.exit(3)
+except ValueError as error:
+    if "already taken" not in str(error):
+        sys.exit(4)
+# Without `capacity` (76) the session codes would leave a gap after 75.
+gap = dict(members)
+gap.pop("capacity")
+try:
+    check.check_appended_codes(gap)
+    sys.exit(5)
+except ValueError as error:
+    sys.exit(0 if "tail" in str(error) else 6)
+"#;
+    let status = taut_python_command(&root)
+        .args(["-c", script])
+        .status()
+        .expect("failed to run the tail code check");
+    assert!(
+        status.success(),
+        "the tail code check must refuse a taken or misplaced number: {status}"
+    );
+}
+
+/// Session design §4.1 and §13: the frame bodies and the request messages of
+/// the methods declared with scalar parameters.
+#[test]
+fn session_frame_bodies_round_trip() {
+    use gwz_core::{
+        CleanupReport, LogVerb, OperationCancelRequest, SessionCall, SessionError, SessionMode,
+        SessionReply, TransportCapabilitiesResponse,
+    };
+    let call = SessionCall {
+        call_id: 7,
+        method: "fetch".to_owned(),
+        mode: Some(SessionMode::Submit),
+        request: vec![0xA0],
+        log_verb: Some(LogVerb::EndStream),
+    };
+    assert_eq!(
+        round_trip(&call, SessionCall::to_cbor, SessionCall::from_cbor),
+        call
+    );
+    let reply = SessionReply {
+        call_id: 7,
+        response: vec![1, 2, 3],
+    };
+    assert_eq!(
+        round_trip(&reply, SessionReply::to_cbor, SessionReply::from_cbor),
+        reply
+    );
+    let error = SessionError {
+        call_id: 7,
+        error: GwzError {
+            code: GwzErrorCode::OperationExpired,
+            message: "expired".to_owned(),
+            ..GwzError::default()
+        },
+        response_meta: None,
+    };
+    assert_eq!(
+        round_trip(&error, SessionError::to_cbor, SessionError::from_cbor),
+        error
+    );
+    let cancel = OperationCancelRequest {
+        call_id: Some(7),
+        operation_id: None,
+    };
+    assert_eq!(
+        round_trip(
+            &cancel,
+            OperationCancelRequest::to_cbor,
+            OperationCancelRequest::from_cbor
+        ),
+        cancel
+    );
+    let report = CleanupReport {
+        pending_local_work: 1,
+        peer_cleanup_confirmed: false,
+    };
+    assert_eq!(
+        round_trip(&report, CleanupReport::to_cbor, CleanupReport::from_cbor),
+        report
+    );
+    // `cancellation` (8) is MISSING_OK: an older writer's map without it reads
+    // as absent, which means unsupported (§5.8).
+    let older = gwz_core::Cbor::Map(vec![
+        (1, gwz_core::Cbor::Bool(true)),
+        (2, gwz_core::Cbor::Bool(false)),
+    ]);
+    let capabilities = TransportCapabilitiesResponse::from_cbor(&older).unwrap();
+    assert_eq!(capabilities.cancellation, None);
+}
+
 fn round_trip<T>(
     value: &T,
     to_cbor: impl Fn(&T) -> gwz_core::Cbor,
@@ -177,9 +328,12 @@ cfg_if::cfg_if! {
             use gwz_core::{Cbor, ResponseMeta, TransportCapabilitiesRequest, TransportCapabilitiesResponse, TransportOptions};
 
             // An exhaustive literal: a field the 1.2.0 projection adds fails this to compile.
+            // Step 2.2b appends the ordinary `cancellation` (8, MISSING_OK), absent
+            // here: unsupported (session design §5.8, §13).
             let static_answer = TransportCapabilitiesResponse {
                 file_identity: true,
                 exact_agent_identity: false,
+                cancellation: None,
             };
             let answered = gwz_core::protocol::transport_capabilities::handle(TransportCapabilitiesRequest {
                 schema_version: "gwz.protocol/v0".to_owned(),
@@ -189,7 +343,7 @@ cfg_if::cfg_if! {
             let Cbor::Map(entries) = static_answer.to_cbor() else {
                 panic!("a capabilities answer encodes as a map");
             };
-            assert_eq!(entries.iter().map(|(tag, _)| *tag).collect::<Vec<i64>>(), vec![1, 2]);
+            assert_eq!(entries.iter().map(|(tag, _)| *tag).collect::<Vec<i64>>(), vec![1, 2, 8]);
 
             let tags = |value: Cbor| match value {
                 Cbor::Map(entries) => entries.iter().map(|(tag, _)| *tag).collect::<Vec<i64>>(),

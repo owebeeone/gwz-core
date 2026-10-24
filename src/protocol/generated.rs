@@ -1600,6 +1600,16 @@ pub enum GwzErrorCode {
     TransportRecordLimit,
     CredentialHelperTimeout,
     Capacity,
+    TransportSessionFull,
+    OperationExpired,
+    ServerUnavailable,
+    ServerVersionMismatch,
+    ServerEnvironmentMismatch,
+    ServerPeerRefused,
+    ServerAddressRefused,
+    ServerListenerRefused,
+    ServerSessionClosed,
+    ServerDestinationRefused,
 }
 impl GwzErrorCode {
     pub fn wire(self) -> i64 { match self {
@@ -1680,6 +1690,16 @@ impl GwzErrorCode {
         Self::TransportRecordLimit => 74,
         Self::CredentialHelperTimeout => 75,
         Self::Capacity => 76,
+        Self::TransportSessionFull => 77,
+        Self::OperationExpired => 78,
+        Self::ServerUnavailable => 79,
+        Self::ServerVersionMismatch => 80,
+        Self::ServerEnvironmentMismatch => 81,
+        Self::ServerPeerRefused => 82,
+        Self::ServerAddressRefused => 83,
+        Self::ServerListenerRefused => 84,
+        Self::ServerSessionClosed => 85,
+        Self::ServerDestinationRefused => 86,
     } }
     pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
         0 => Self::Ok,
@@ -1759,6 +1779,16 @@ impl GwzErrorCode {
         74 => Self::TransportRecordLimit,
         75 => Self::CredentialHelperTimeout,
         76 => Self::Capacity,
+        77 => Self::TransportSessionFull,
+        78 => Self::OperationExpired,
+        79 => Self::ServerUnavailable,
+        80 => Self::ServerVersionMismatch,
+        81 => Self::ServerEnvironmentMismatch,
+        82 => Self::ServerPeerRefused,
+        83 => Self::ServerAddressRefused,
+        84 => Self::ServerListenerRefused,
+        85 => Self::ServerSessionClosed,
+        86 => Self::ServerDestinationRefused,
         _ => return Err(DecodeError::UnknownEnum { enum_name: "GwzErrorCode", value: v }),
     }) }
 }
@@ -2258,6 +2288,40 @@ impl RemoteCheck {
     }) }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum SessionMode {
+    #[default] Unary,
+    Submit,
+}
+impl SessionMode {
+    pub fn wire(self) -> i64 { match self {
+        Self::Unary => 0,
+        Self::Submit => 1,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Unary,
+        1 => Self::Submit,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "SessionMode", value: v }),
+    }) }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub enum LogVerb {
+    #[default] Read,
+    EndStream,
+}
+impl LogVerb {
+    pub fn wire(self) -> i64 { match self {
+        Self::Read => 0,
+        Self::EndStream => 1,
+    } }
+    pub fn from_wire(v: i64) -> Result<Self, DecodeError> { Ok(match v {
+        0 => Self::Read,
+        1 => Self::EndStream,
+        _ => return Err(DecodeError::UnknownEnum { enum_name: "LogVerb", value: v }),
+    }) }
+}
+
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct WorkspaceRef {
     pub root: Option<String>,
@@ -2641,6 +2705,7 @@ impl TransportCapabilitiesRequest {
 pub struct TransportCapabilitiesResponse {
     pub file_identity: bool,
     pub exact_agent_identity: bool,
+    pub cancellation: Option<bool>,
 }
 impl TransportCapabilitiesResponse {
     pub const MAX_DEPTH: usize = 32;
@@ -2649,12 +2714,14 @@ impl TransportCapabilitiesResponse {
         Cbor::Map(vec![
             (1, Cbor::Bool(self.file_identity)),
             (2, Cbor::Bool(self.exact_agent_identity)),
+            (8, match &self.cancellation { Some(v) => Cbor::Bool(*v), None => Cbor::Null }),
         ])
     }
     pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
         Ok(Self {
             file_identity: c.try_get(1)?.try_bool()?,
             exact_agent_identity: c.try_get(2)?.try_bool()?,
+            cancellation: { let v = c.try_get_opt(8)?; match v { None => None, Some(v) => if v.is_null() { None } else { Some(v.try_bool()?) } } },
         })
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
@@ -7440,6 +7507,249 @@ impl LogResponse {
         Ok(Self {
             response: ResponseEnvelope::from_cbor(c.try_get(1)?)?,
             output: LogOutputLogRef::from_cbor(c.try_get(2)?)?,
+        })
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct SessionCall {
+    pub call_id: i64,
+    pub method: String,
+    pub mode: Option<SessionMode>,
+    pub request: Vec<u8>,
+    pub log_verb: Option<LogVerb>,
+}
+impl SessionCall {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.call_id)),
+            (2, Cbor::Text(self.method.clone())),
+            (3, match &self.mode { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+            (4, Cbor::Bytes(self.request.clone())),
+            (5, match &self.log_verb { Some(v) => Cbor::Int(v.wire()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            call_id: c.try_get(1)?.try_int()?,
+            method: c.try_get(2)?.try_text()?,
+            mode: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(SessionMode::from_wire(v.try_int()?)?) } },
+            request: c.try_get(4)?.try_bytes()?,
+            log_verb: { let v = c.try_get(5)?; if v.is_null() { None } else { Some(LogVerb::from_wire(v.try_int()?)?) } },
+        })
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct SessionReply {
+    pub call_id: i64,
+    pub response: Vec<u8>,
+}
+impl SessionReply {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.call_id)),
+            (2, Cbor::Bytes(self.response.clone())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            call_id: c.try_get(1)?.try_int()?,
+            response: c.try_get(2)?.try_bytes()?,
+        })
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct SessionError {
+    pub call_id: i64,
+    pub error: GwzError,
+    pub response_meta: Option<ResponseMeta>,
+}
+impl SessionError {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.call_id)),
+            (2, self.error.to_cbor()),
+            (3, match &self.response_meta { Some(v) => v.to_cbor(), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            call_id: c.try_get(1)?.try_int()?,
+            error: GwzError::from_cbor(c.try_get(2)?)?,
+            response_meta: { let v = c.try_get(3)?; if v.is_null() { None } else { Some(ResponseMeta::from_cbor(v)?) } },
+        })
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct OperationResultRequest {
+    pub operation_id: String,
+}
+impl OperationResultRequest {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.operation_id.clone())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            operation_id: c.try_get(1)?.try_text()?,
+        })
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct OperationResponseRequest {
+    pub operation_id: String,
+}
+impl OperationResponseRequest {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.operation_id.clone())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            operation_id: c.try_get(1)?.try_text()?,
+        })
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct OperationCancelRequest {
+    pub call_id: Option<i64>,
+    pub operation_id: Option<String>,
+}
+impl OperationCancelRequest {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, match &self.call_id { Some(v) => Cbor::Int(*v), None => Cbor::Null }),
+            (2, match &self.operation_id { Some(v) => Cbor::Text(v.clone()), None => Cbor::Null }),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            call_id: { let v = c.try_get(1)?; if v.is_null() { None } else { Some(v.try_int()?) } },
+            operation_id: { let v = c.try_get(2)?; if v.is_null() { None } else { Some(v.try_text()?) } },
+        })
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct OperationReleaseRequest {
+    pub operation_id: String,
+}
+impl OperationReleaseRequest {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Text(self.operation_id.clone())),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            operation_id: c.try_get(1)?.try_text()?,
+        })
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct SessionCloseRequest {
+}
+impl SessionCloseRequest {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        if !c.is_map() { return Err(DecodeError::WrongType { expected: "map" }); }
+        Ok(Self {
+        })
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct CleanupReport {
+    pub pending_local_work: i64,
+    pub peer_cleanup_confirmed: bool,
+}
+impl CleanupReport {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.pending_local_work)),
+            (2, Cbor::Bool(self.peer_cleanup_confirmed)),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            pending_local_work: c.try_get(1)?.try_int()?,
+            peer_cleanup_confirmed: c.try_get(2)?.try_bool()?,
+        })
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct OperationReleaseResponse {
+}
+impl OperationReleaseResponse {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        if !c.is_map() { return Err(DecodeError::WrongType { expected: "map" }); }
+        Ok(Self {
         })
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {

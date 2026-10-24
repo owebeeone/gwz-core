@@ -33,7 +33,9 @@ use std::time::Duration;
 
 use gwz_session_channel::{InProcessEnd, pair};
 use gwz_session_contract::{Closed, Frame, FrameSink, FrameSource, Lane, SendError};
-use gwz_session_host::{Limits, SuperviseError, SupervisedJob, Supervisor, validate_limits};
+use gwz_session_host::{
+    DetachedWorkers, Limits, SuperviseError, SupervisedJob, Supervisor, validate_limits,
+};
 
 use super::environment::EnvironmentSnapshot;
 use crate::model::{ErrorCode, ModelError, ModelResult};
@@ -61,6 +63,9 @@ struct HostShared {
     /// The first `shutdown`'s report, which later calls return. That call
     /// holds the lock while it disposes, so a concurrent call waits for it.
     report: Mutex<Option<ShutdownReport>>,
+    /// The workers detached at a session's close bound, which every session
+    /// of this host context shares (`GwzSplitCommandChannel.md` §1, §3.2).
+    detached: DetachedWorkers,
 }
 
 /// The cleanup bound within which `shutdown` disposes the host context's
@@ -99,6 +104,7 @@ impl HostContext {
                 supervisor: Supervisor::new(),
                 shut_down: AtomicBool::new(false),
                 report: Mutex::new(None),
+                detached: DetachedWorkers::new(),
             }),
         }
     }
@@ -117,6 +123,17 @@ impl HostContext {
     /// `shutdown`, the drop disposes nothing more.
     pub fn shutdown(&self) -> ShutdownReport {
         self.shared.shutdown(CLEANUP_BOUND)
+    }
+
+    /// The record of workers detached at a session's close bound, which
+    /// every session of this host context shares.
+    pub(crate) fn detached(&self) -> DetachedWorkers {
+        self.shared.detached.clone()
+    }
+
+    /// Whether `shutdown` has begun, after which no session opens.
+    pub(crate) fn is_shut_down(&self) -> bool {
+        self.shared.shut_down.load(Ordering::Acquire)
     }
 
     /// Hands `job` to the supervisor, starting its thread with the first job.

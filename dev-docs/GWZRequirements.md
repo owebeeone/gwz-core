@@ -113,7 +113,7 @@ The accepted [server design](../../dev-docs/GwzCoreServerDesign.md) adds these r
 - The SSH remote form MUST send no environment, and its session MUST use the remote process's own environment. `ssh` MUST be resolved through `PATH` alone and run directly, never through a shell, with `--` before the destination and a fixed remote command. The form MUST come from `--server` only, never from `GWZ_SERVER`, the library or a configuration file (design §16).
 - A client's wait for a socket server or a stdio child MUST be bounded: its handshake, the connect included, MUST end within the design's bound with `server_unavailable` naming the process, so a server that stops answering cannot hang a command or a `server` subcommand (design §3).
 - A server's log MUST NOT contain environment values, request bodies, credentials, remote URLs or repository names (design §6).
-- Additions to the GWZ Taut schema MUST be append-only: the handshake and control frames at tags 4 to 8, and error codes 77 to 83 after `operation_expired` (76) (design §9).
+- Additions to the GWZ Taut schema MUST be append-only: the handshake and control frames at tags 4 to 8, and error codes 79 to 85 after `operation_expired` (design §9). The gwz-dev `GwzSplitCommandChannel.md` §1 renumbers them to the schema's tail, which step 2.2b appended after `capacity` (76): `transport_session_full` (77), `operation_expired` (78), the design's seven at 79 to 85, and `server_destination_refused` (86).
 
 ## Transport setting amendment (2026-10-02; implementation pending)
 

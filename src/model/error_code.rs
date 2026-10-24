@@ -134,10 +134,13 @@ pub enum ErrorCode {
     /// policy before consuming the caller request ID. This is a bridge error,
     /// not a terminal GWZ operation result.
     TransportCapacityConflict,
-    /// Native Python Client exhausted its bounded operation/ledger admission.
+    /// Native Python Client exhausted its bounded operation/ledger admission,
+    /// or a core session limit refused a call before any effect (wire
+    /// `transport_session_full` = 77).
     TransportSessionFull,
     /// A session-issued public operation ID whose retained record was released
-    /// or reached its retention deadline.
+    /// or reached its retention deadline, or a unary call already answered
+    /// (wire `operation_expired` = 78).
     OperationExpired,
     /// A native Python operation cancelled before core registration.
     Cancelled,

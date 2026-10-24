@@ -21,9 +21,6 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from taut.ir.export import schema_json
-from taut.ir.load import load_schema
-
 
 # Moved deliberately on 2026-09-03 by DR-1 ship (1) W1
 # (dev-docs/GwzM5-8DR1-WarnOrRefuse-Charter.md §3.7): the charter adds
@@ -198,8 +195,81 @@ from taut.ir.load import load_schema
 # and reused (12), each MISSING_OK. MEASURED additive, not assumed: removing
 # exactly those five field objects from the new IR reproduced the pin below
 # (4d377a49...) exactly; the unprojected new IR fingerprints as cbfdfbcb....
+# Step 2.2b (2026-10-25; gwz-dev dev-docs/GwzSplitCommandChannel.md §1,
+# GwzCoreSessionDesign.md §4.1, §4.2, §13) appends the core session's surface:
+# the methods operation.response, operation.cancel, operation.release and
+# session.close; the enums SessionMode and LogVerb (LogVerb leaves with the
+# `Log` prefix rule below); the messages SessionCall, SessionReply,
+# SessionError, OperationResultRequest, OperationResponseRequest,
+# OperationCancelRequest, OperationReleaseRequest, SessionCloseRequest,
+# CleanupReport and OperationReleaseResponse; the MISSING_OK
+# TransportCapabilitiesResponse.cancellation (tag 8); and GwzErrorCode 77 to 86
+# at the tail (SESSION_CODES). MEASURED additive, not assumed: removing exactly
+# those objects from the new IR reproduced the pin below exactly.
 PRE_LOG_WIRE_SHA256 = "4d377a496c8905293b5e9b53392b70867cf6dafccbb623841a623dbd2d555f14"
 LOG_METHODS = {"log", "log.output"}
+SESSION_METHODS = {"operation.response", "operation.cancel", "operation.release", "session.close"}
+SESSION_ENUMS = {"SessionMode"}
+SESSION_MESSAGES = {
+    "SessionCall",
+    "SessionReply",
+    "SessionError",
+    "OperationResultRequest",
+    "OperationResponseRequest",
+    "OperationCancelRequest",
+    "OperationReleaseRequest",
+    "SessionCloseRequest",
+    "CleanupReport",
+    "OperationReleaseResponse",
+}
+# The codes the schema held before step 2.2b appended its own, whose last is
+# `capacity` (76): the tail the session codes must follow.
+PRE_SESSION_CODES = (
+    ("cancelled", 73),
+    ("transport_record_limit", 74),
+    ("credential_helper_timeout", 75),
+    ("capacity", 76),
+)
+# GwzSplitCommandChannel.md §1's names, in its order, with the numbers this
+# step assigns at the schema's tail. The names are the identity.
+SESSION_CODES = (
+    ("transport_session_full", 77),
+    ("operation_expired", 78),
+    ("server_unavailable", 79),
+    ("server_version_mismatch", 80),
+    ("server_environment_mismatch", 81),
+    ("server_peer_refused", 82),
+    ("server_address_refused", 83),
+    ("server_listener_refused", 84),
+    ("server_session_closed", 85),
+    ("server_destination_refused", 86),
+)
+
+
+def check_appended_codes(members: dict[str, int]) -> None:
+    """The collision check of the appending step (2.0 §1).
+
+    Fails when a number SESSION_CODES assigns is already taken by another
+    member, when a session code is missing or sits elsewhere, or when the
+    session codes are not the consecutive tail after every other code.
+    """
+    appended = dict(SESSION_CODES)
+    for name, value in SESSION_CODES:
+        holders = sorted(other for other, number in members.items() if number == value and other != name)
+        if holders:
+            raise ValueError(
+                f"GwzErrorCode {value} is already taken by {', '.join(holders)}; "
+                f"{name} must be appended at the schema's tail"
+            )
+        if members.get(name) != value:
+            raise ValueError(f"GwzErrorCode.{name} must occupy slot {value}, got {members.get(name)!r}")
+    earlier = [number for name, number in members.items() if name not in appended]
+    expected = list(range(max(earlier) + 1, max(earlier) + 1 + len(SESSION_CODES)))
+    if [value for _, value in SESSION_CODES] != expected:
+        raise ValueError(
+            "GwzErrorCode's session codes must be the consecutive tail after "
+            f"{max(earlier)}: expected {expected}"
+        )
 
 
 def pre_log_projection(schema_ir: dict[str, Any]) -> dict[str, Any]:
@@ -218,9 +288,32 @@ def pre_log_projection(schema_ir: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"ActionKind.log must use the next additive slot 26, got {log_slot}")
 
     service = next(service for service in projected["services"] if service["name"] == "GwzCore")
+    session_methods = {m["name"] for m in service["methods"]} & SESSION_METHODS
+    if session_methods != SESSION_METHODS:
+        raise ValueError(f"GwzCore must declare the session methods {sorted(SESSION_METHODS)}")
     service["methods"] = [
-        method for method in service["methods"] if method["name"] not in LOG_METHODS
+        method
+        for method in service["methods"]
+        if method["name"] not in LOG_METHODS | SESSION_METHODS
     ]
+    # Step 2.2b's session surface: whole new enums and messages, removed by
+    # name after checking every one is there.
+    for kind, names in (("enums", SESSION_ENUMS), ("messages", SESSION_MESSAGES)):
+        present = {item["name"] for item in projected[kind]} & names
+        if present != names:
+            raise ValueError(f"the schema must declare the session {kind} {sorted(names - present)}")
+        projected[kind] = [item for item in projected[kind] if item["name"] not in names]
+    capabilities = next(
+        message for message in projected["messages"]
+        if message["name"] == "TransportCapabilitiesResponse"
+    )
+    added = [field for field in capabilities["fields"] if field["name"] == "cancellation"]
+    expected = {"name": "cancellation", "tag": 8,
+                "type": {"k": "scalar", "scalar": "bool"},
+                "optional": "missing_ok", "transient": False, "merge": None}
+    if added != [expected]:
+        raise ValueError("TransportCapabilitiesResponse.cancellation must be the MISSING_OK bool at tag 8")
+    capabilities["fields"].remove(added[0])
     # 2026-09-10 private-member policy adds exactly these optional booleans.
     # Removing them must reproduce the unchanged historical projection hash.
     for name, tag in (("MemberSpec", 8), ("RepoSyncRequest", 2)):
@@ -281,8 +374,10 @@ def pre_log_projection(schema_ir: dict[str, Any]) -> dict[str, Any]:
     # (operator decision 2026-10-13) append only the named terminal codes.
     # Remove these exact members, retaining the old pin.
     error_codes = next(enum for enum in projected["enums"] if enum["name"] == "GwzErrorCode")
-    for name, value in (("cancelled", 73), ("transport_record_limit", 74),
-                        ("credential_helper_timeout", 75), ("capacity", 76)):
+    check_appended_codes(error_codes["members"])
+    for name, _ in SESSION_CODES:
+        error_codes["members"].pop(name)
+    for name, value in PRE_SESSION_CODES:
         actual = error_codes["members"].pop(name, None)
         if actual != value:
             raise ValueError(f"GwzErrorCode.{name} must occupy additive slot {value}")
@@ -360,6 +455,12 @@ def fingerprint(value: dict[str, Any]) -> str:
 
 def main() -> int:
     schema_path = Path(sys.argv[1] if len(sys.argv) > 1 else "protocol/gwz.taut.py")
+    # taut is imported here, not at module level, so the tail-code check
+    # (`check_appended_codes`) imports and runs where taut is not installed,
+    # such as the Windows receipt host.
+    from taut.ir.export import schema_json
+    from taut.ir.load import load_schema
+
     schema_ir = ir_version_1(schema_json(load_schema(schema_path)))
     actual = fingerprint(pre_log_projection(schema_ir))
     if actual != PRE_LOG_WIRE_SHA256:

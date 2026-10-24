@@ -123,8 +123,11 @@ def test_retained_reader_is_pinned_checked_in_baseline():
     # receipts. Was 76455b404d2d3396af6bd0f5b6bf2cc69d78d73013b875472b1c8a47598e22c5.
     # The C2 addendum reworded a receipts comment in the schema (the IR is the same),
     # which moved the file digest from a7866259f7557d9f147b42e46ed1964dc015c83fa817a9e15c8400942adb107d.
+    # Step 2.2b (gwz-dev dev-docs/GwzSplitCommandChannel.md §1, GwzCoreSessionDesign.md §13)
+    # appended the core session's surface and codes 77-86, which moved it from
+    # 3209bbd7e5b7becb736f2919216eecd15094d706c7d9c30faa6294fd77494bcb.
     assert metadata["current-core-schema-sha256"] == (
-        "3209bbd7e5b7becb736f2919216eecd15094d706c7d9c30faa6294fd77494bcb"
+        "7332f22a10364d8b4f65f0141b485e220909abff6c8ab1dd6fff2f70c9d0fdb3"
     )
 
 

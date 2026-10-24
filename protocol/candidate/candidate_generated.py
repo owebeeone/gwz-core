@@ -624,6 +624,16 @@ class GwzErrorCode(Enum):
     transport_record_limit = 74
     credential_helper_timeout = 75
     capacity = 76
+    transport_session_full = 77
+    operation_expired = 78
+    server_unavailable = 79
+    server_version_mismatch = 80
+    server_environment_mismatch = 81
+    server_peer_refused = 82
+    server_address_refused = 83
+    server_listener_refused = 84
+    server_session_closed = 85
+    server_destination_refused = 86
 
 class MergeRecordRequiredWave(Enum):
     a1 = 0
@@ -754,6 +764,14 @@ class FetchResult(Enum):
 class RemoteCheck(Enum):
     changed = 0
     always = 1
+
+class SessionMode(Enum):
+    unary = 0
+    submit = 1
+
+class LogVerb(Enum):
+    read = 0
+    end_stream = 1
 
 @dataclass(slots=True)
 class NativeFacts:
@@ -1039,6 +1057,7 @@ class TransportCapabilitiesRequest:
 class TransportCapabilitiesResponse:
     file_identity: bool
     exact_agent_identity: bool
+    cancellation: bool | None
     message_versions: list[int] | None
     placements: list[TransportPlacement] | None
     schemes: list[Scheme] | None
@@ -2173,4 +2192,58 @@ class LogOutputLogRef:
 class LogResponse:
     response: ResponseEnvelope
     output: LogOutputLogRef
+
+@dataclass(slots=True)
+class SessionCall:
+    call_id: int
+    method: str
+    mode: SessionMode | None
+    request: bytes
+    log_verb: LogVerb | None
+
+@dataclass(slots=True)
+class SessionReply:
+    call_id: int
+    response: bytes
+
+@dataclass(slots=True)
+class SessionError:
+    call_id: int
+    error: GwzError
+    response_meta: ResponseMeta | None
+
+@dataclass(slots=True)
+class OperationResultRequest:
+    operation_id: str
+
+@dataclass(slots=True)
+class OperationResponseRequest:
+    operation_id: str
+
+@dataclass(slots=True)
+class OperationCancelRequest:
+    call_id: int | None
+    operation_id: str | None
+
+@dataclass(slots=True)
+class OperationReleaseRequest:
+    operation_id: str
+
+@dataclass(slots=True)
+class SessionCloseRequest:
+    pass
+
+@dataclass(slots=True)
+class CleanupReport:
+    pending_local_work: int
+    peer_cleanup_confirmed: bool
+
+@dataclass(slots=True)
+class OperationReleaseResponse:
+    pass
+
+@dataclass(slots=True)
+class TransportLaneFrame:
+    request_id: str
+    envelope: Envelope
 

@@ -31,6 +31,7 @@ gwz_session_candidate  src/git/gitbackend/transport_support/identity.rs  fn vali
 gwz_session_candidate  src/lib.rs  mod protocol_corpus
 gwz_session_candidate  src/lib.rs  use gwz_transport::cbor
 gwz_session_candidate  src/protocol/mod.rs  mod generated
+gwz_session_candidate  src/session_host/served.rs  mod lane
 gwz_session_candidate  src/transport_host/cli_placement.rs  struct CliSlot
 gwz_session_candidate  src/transport_host/https_tests.rs  fn local_https_advertisement_and_clone_use_scoped_host_runtime
 gwz_session_candidate  src/transport_host/mod.rs  fn open_request
@@ -76,6 +77,7 @@ gwz_transport_candidate  src/git/gitbackend/transport_support/identity.rs  fn va
 gwz_transport_candidate  src/git/mod.rs  mod endpoint
 gwz_transport_candidate  src/lib.rs  mod transport_host
 gwz_transport_candidate  src/lib.rs  mod transport_setting
+gwz_transport_candidate  src/session_host/served.rs  mod lane
 gwz_transport_candidate  src/transport_host/cli_placement.rs  struct CliSlot
 gwz_transport_candidate  src/transport_host/mod.rs  fn open_request
 gwz_transport_candidate  src/transport_host/mod.rs  fn open_request

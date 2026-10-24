@@ -104,6 +104,20 @@ def compose(core_path: Path, owner_path: Path) -> Schema:
             FieldDef("message_limits", 7, MsgRef("Limits"), optional, False, None),
         ),
     )
+    # The transport lane's frame body (gwz-dev dev-docs/GwzSplitCommandChannel.md
+    # §3.3, appended by step 2.2b): frame tags 16 (transport data) and 17
+    # (transport control) each carry one owner `Envelope` for the live call
+    # whose `request_id` bound it. It needs the owner's `Envelope`, so it lives
+    # in this projection with `RequestMeta.transport_message`.
+    if "TransportLaneFrame" in messages:
+        raise ValueError("candidate message collision: TransportLaneFrame")
+    messages["TransportLaneFrame"] = MessageDef(
+        "TransportLaneFrame",
+        (
+            FieldDef("request_id", 1, Scalar("str"), False, False, None),
+            FieldDef("envelope", 2, MsgRef("Envelope"), False, False, None),
+        ),
+    )
     # `OperationPolicy.max_retries` and the four `TransportObservation`
     # receipts are production's since S7.1 (1.1.0) step C2.1, so they are not
     # overlaid here.
