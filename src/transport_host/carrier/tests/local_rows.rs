@@ -8,7 +8,7 @@ use super::super::{
     ProtocolFault, SessionOpenRefusal, Side, StreamCarrier,
     local::{
         Integrity, LocalAddress, LocalListener, LocalRefusal, PeerIdentity, PeerPolicy,
-        PeerRefusal, Principal, Relation, RuntimeDir, connect,
+        PeerRefusal, Principal, Relation, RuntimeDir, RuntimeEnv, connect,
     },
 };
 use super::{support::*, wire_rows::*};
@@ -31,7 +31,7 @@ pub(super) fn dir() -> Dir {
             let runtime = RuntimeDir::at(guard.path()).expect("a private directory");
             Dir { runtime, _guard: Some(guard) }
         } else {
-            Dir { runtime: RuntimeDir::for_current_user().expect("runtime"), _guard: None }
+            Dir { runtime: RuntimeDir::for_current_user(&RuntimeEnv::default()).expect("runtime"), _guard: None }
         }
     }
 }
@@ -78,12 +78,12 @@ pub(super) fn listener(dir: &Dir) -> LocalListener {
 
 /// A policy for a user the host does not have: the accounts' names differ, nothing else does.
 pub(super) fn other_user_policy() -> PeerPolicy {
-    let mut policy = PeerPolicy::current_user().unwrap();
-    policy.own.principal = match &policy.own.principal {
+    let mut own = PeerPolicy::current_user().unwrap().own().clone();
+    own.principal = match &own.principal {
         Principal::Uid(uid) => Principal::Uid(uid.wrapping_add(1)),
         Principal::Sid(sid) => Principal::Sid(format!("{sid}-1")),
     };
-    policy
+    PeerPolicy::from_identity(own)
 }
 
 #[test]
@@ -96,7 +96,7 @@ fn a_frame_set_round_trips_over_a_real_local_carrier_between_two_threads() {
         let mut seen = Vec::new();
         for _ in 0..3 {
             seen.push(eventually("a frame", || {
-                core.recv_frame_timeout(SHORT).unwrap()
+                core.recv_registry_timeout(SHORT).unwrap()
             }));
         }
         for _ in 0..4 {
@@ -245,9 +245,17 @@ fn an_other_user_client_is_refused_at_accept_and_gets_nothing() {
     .unwrap();
     let refused = accepting.join().unwrap().err().expect("refused at accept");
     assert_eq!(refused, LocalRefusal::Peer(PeerRefusal::OtherPrincipal));
-    // Nothing was written to the refused client before it was closed.
+    // The refused client is owed exactly one answer: a `SessionError` for call 0 with `server_peer_refused` (82,
+    // provisional), naming the cause, and then the end of the stream. Nothing else was written to it.
+    let answer = eventually("the answer", || {
+        client.recv_registry_timeout(SHORT).unwrap()
+    });
+    let (call_id, code, message) = decode_session_error(&answer);
+    assert_eq!((call_id, code), (0, 82));
+    assert!(message.contains("another user"), "{message}");
     let closed = eventually("the closure", || client.try_recv().err());
     assert_eq!(closed.reason, CloseReason::PeerGone);
+    assert!(client.recv_registry_timeout(SHORT).is_err());
 }
 
 fn identity(principal: Principal, integrity: Option<Integrity>) -> PeerIdentity {
@@ -260,11 +268,48 @@ fn identity(principal: Principal, integrity: Option<Integrity>) -> PeerIdentity 
 }
 
 #[test]
+fn a_process_below_medium_integrity_reaches_nothing_and_is_reached_by_nothing() {
+    // The sandbox rule's one platform check that is a comparison (parked server design §4): integrity below Medium is
+    // sandboxed, absolutely, in both relations and whoever the other side is, so two Low processes of one user do not
+    // reach each other either.
+    let me = Principal::Sid("S-1-5-21-1".into());
+    let levels = [
+        Integrity::Untrusted,
+        Integrity::Low,
+        Integrity::Medium,
+        Integrity::High,
+        Integrity::System,
+    ];
+    for own in levels {
+        let policy = PeerPolicy::from_identity(identity(me.clone(), Some(own)));
+        for theirs in levels {
+            for relation in [
+                Relation::ListenerChecksClient,
+                Relation::ClientChecksListener,
+            ] {
+                let verdict = policy.verify(&identity(me.clone(), Some(theirs)), relation);
+                if own < Integrity::Medium || theirs < Integrity::Medium {
+                    assert_eq!(
+                        verdict,
+                        Err(PeerRefusal::Integrity),
+                        "{own:?} {theirs:?} {relation:?}"
+                    );
+                } else if (relation == Relation::ClientChecksListener && own != theirs)
+                    || (relation == Relation::ListenerChecksClient && theirs < own)
+                {
+                    assert_eq!(verdict, Err(PeerRefusal::Integrity));
+                } else {
+                    assert_eq!(verdict, Ok(()), "{own:?} {theirs:?} {relation:?}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn the_peer_rule_is_one_function_of_two_identities() {
     let me = Principal::Sid("S-1-5-21-1".into());
-    let policy = PeerPolicy {
-        own: identity(me.clone(), Some(Integrity::Medium)),
-    };
+    let policy = PeerPolicy::from_identity(identity(me.clone(), Some(Integrity::Medium)));
     let listener_sees = |who: PeerIdentity| policy.verify(&who, Relation::ListenerChecksClient);
     let client_sees = |who: PeerIdentity| policy.verify(&who, Relation::ClientChecksListener);
 
@@ -323,9 +368,7 @@ fn the_peer_rule_is_one_function_of_two_identities() {
         Err(PeerRefusal::Unreadable(_))
     ));
     // Unix identities carry no level and compare on the user alone.
-    let unix = PeerPolicy {
-        own: identity(Principal::Uid(501), None),
-    };
+    let unix = PeerPolicy::from_identity(identity(Principal::Uid(501), None));
     assert_eq!(
         unix.verify(
             &identity(Principal::Uid(501), None),
@@ -393,7 +436,7 @@ fn a_session_open_with_an_environment_never_crosses_a_local_carrier() {
     );
     assert!(refused.is_err());
     // The core sees the carrier end with the client's reason or its disappearance, and never a frame.
-    let seen = eventually("the end", || match core.recv_frame_timeout(SHORT) {
+    let seen = eventually("the end", || match core.recv_registry_timeout(SHORT) {
         Ok(Some(frame)) => panic!("a frame crossed: tag {}", frame.tag),
         Ok(None) => None,
         Err(closed) => Some(closed),
@@ -501,10 +544,11 @@ mod unix {
             Some(LocalRefusal::Directory(DirectoryFault::Link))
         ));
         // `at` never creates; `for_current_user` makes the user's directory with mode 0700 and accepts it again.
-        let own = RuntimeDir::for_current_user().expect("the user's directory");
+        let own =
+            RuntimeDir::for_current_user(&RuntimeEnv::default()).expect("the user's directory");
         let mode = std::fs::metadata(own.path()).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o700);
-        assert!(RuntimeDir::for_current_user().is_ok());
+        assert!(RuntimeDir::for_current_user(&RuntimeEnv::default()).is_ok());
     }
 
     #[test]

@@ -5,7 +5,10 @@
 //! so that the change that lets it finish wakes the thread. The thread parks only when no pump moved anything.
 //! Arrivals pass through the end's binding first: a message that did not arrive on the connection the pump was bound
 //! to is discarded without touching the port.
-use super::{Carrier, CarrierBinding, CarrierLimits, CloseCode, SendRefused, in_process};
+use super::{
+    Carrier, CarrierBinding, CarrierClosed, CarrierLimits, CloseCode, CloseReason, SendRefused,
+    in_process,
+};
 use crate::{
     git::endpoint::ssh_worker::ThreadWake,
     model::ModelResult,
@@ -15,7 +18,7 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        Arc,
+        Arc, Mutex, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
     task::{Context, Poll, Waker},
@@ -32,11 +35,55 @@ const PER_PASS: usize = 64;
 type Take = Pin<Box<dyn Future<Output = ModelResult<Option<Attachment>>>>>;
 type Give = Pin<Box<dyn Future<Output = ModelResult<()>>>>;
 
+/// Why a link stopped.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LinkEnd {
+    /// The owner stopped the link, or dropped it.
+    Stopped,
+    /// A port finished: its session closed in order.
+    PortClosed,
+    /// A port failed to take or give a message.
+    PortFailed,
+    /// A carrier end ended, with its own reason.
+    Carrier(CarrierClosed),
+}
+
+impl LinkEnd {
+    /// The code the surviving carrier ends close with: `Normal` for an orderly end and never for a failure.
+    pub(crate) fn code(self) -> CloseCode {
+        match self {
+            LinkEnd::Stopped | LinkEnd::PortClosed => CloseCode::Normal,
+            LinkEnd::PortFailed => CloseCode::ProtocolFault,
+            LinkEnd::Carrier(closed) => match closed.reason {
+                CloseReason::Local(code) => code,
+                CloseReason::Peer(CloseCode::Normal) => CloseCode::Normal,
+                CloseReason::Peer(CloseCode::Dropped | CloseCode::Cancelled) => {
+                    CloseCode::Cancelled
+                }
+                CloseReason::Peer(CloseCode::ProtocolFault)
+                | CloseReason::PeerGone
+                | CloseReason::Stream(_)
+                | CloseReason::Stalled
+                | CloseReason::Protocol(_) => CloseCode::ProtocolFault,
+            },
+        }
+    }
+}
+
+/// A port, the carrier end it talks through, and the binding (if the end has bindings) whose arrivals are the port's.
+pub(crate) struct Join {
+    pub(crate) port: TransportPort,
+    pub(crate) end: Arc<dyn Carrier>,
+    pub(crate) binding: Option<String>,
+}
+
 /// One port joined to one carrier end.
 struct PortPump {
     port: TransportPort,
     end: Arc<dyn Carrier>,
     bound: CarrierBinding,
+    /// The binding whose arrivals this pump takes; the end's whole stream when `None`.
+    scope: Option<String>,
     /// The port's next outgoing message, being awaited.
     take: Option<Take>,
     /// A message taken from the port that the carrier refused as full; sent first on the next pass.
@@ -46,12 +93,18 @@ struct PortPump {
 }
 
 impl PortPump {
-    fn new(port: TransportPort, end: Arc<dyn Carrier>) -> Self {
+    fn new(join: Join) -> Self {
+        let Join {
+            port,
+            end,
+            binding: scope,
+        } = join;
         let bound = end.binding();
         Self {
             port,
             end,
             bound,
+            scope,
             take: None,
             held: None,
             give: None,
@@ -59,14 +112,14 @@ impl PortPump {
     }
 
     /// Moves what is ready in both directions; `Err` once either side has closed.
-    fn pump(&mut self, cx: &mut Context<'_>) -> Result<bool, ()> {
+    fn pump(&mut self, cx: &mut Context<'_>) -> Result<bool, LinkEnd> {
         let outbound = self.outbound(cx)?;
         let inbound = self.inbound(cx)?;
         Ok(outbound || inbound)
     }
 
     /// Port to carrier.
-    fn outbound(&mut self, cx: &mut Context<'_>) -> Result<bool, ()> {
+    fn outbound(&mut self, cx: &mut Context<'_>) -> Result<bool, LinkEnd> {
         let mut moved = false;
         for _ in 0..PER_PASS {
             if let Some(message) = self.held.take() {
@@ -76,7 +129,7 @@ impl PortPump {
                         self.held = Some(*message);
                         return Ok(moved);
                     }
-                    Err(SendRefused::Closed(..)) => return Err(()),
+                    Err(SendRefused::Closed(_, closed)) => return Err(LinkEnd::Carrier(closed)),
                 }
             }
             let port = &self.port;
@@ -89,7 +142,8 @@ impl PortPump {
                     self.take = None;
                     self.held = Some(message);
                 }
-                Poll::Ready(_) => return Err(()),
+                Poll::Ready(Ok(None)) => return Err(LinkEnd::PortClosed),
+                Poll::Ready(Err(_)) => return Err(LinkEnd::PortFailed),
                 Poll::Pending => return Ok(moved),
             }
         }
@@ -97,7 +151,7 @@ impl PortPump {
     }
 
     /// Carrier to port.
-    fn inbound(&mut self, cx: &mut Context<'_>) -> Result<bool, ()> {
+    fn inbound(&mut self, cx: &mut Context<'_>) -> Result<bool, LinkEnd> {
         let mut moved = false;
         for _ in 0..PER_PASS {
             if let Some(give) = self.give.as_mut() {
@@ -106,11 +160,15 @@ impl PortPump {
                         self.give = None;
                         moved = true;
                     }
-                    Poll::Ready(Err(_)) => return Err(()),
+                    Poll::Ready(Err(_)) => return Err(LinkEnd::PortFailed),
                     Poll::Pending => return Ok(moved),
                 }
             }
-            match self.end.try_recv() {
+            let arrival = match &self.scope {
+                Some(binding) => self.end.try_recv_binding(binding),
+                None => self.end.try_recv(),
+            };
+            match arrival {
                 Ok(Some(arrival)) => {
                     moved = true;
                     // Only what arrived on the connection this pump is bound to reaches the port.
@@ -120,7 +178,7 @@ impl PortPump {
                     }
                 }
                 Ok(None) => return Ok(moved),
-                Err(_) => return Err(()),
+                Err(closed) => return Err(LinkEnd::Carrier(closed)),
             }
         }
         Ok(moved)
@@ -131,6 +189,7 @@ impl PortPump {
 pub(crate) struct CarrierLink {
     stop: Arc<AtomicBool>,
     thread: thread::Thread,
+    ended: Arc<Mutex<Option<LinkEnd>>>,
 }
 
 impl CarrierLink {
@@ -145,8 +204,25 @@ impl CarrierLink {
 
     /// Starts the pumping thread over `joins`, each a port and the carrier end it talks through.
     pub(crate) fn start(joins: Vec<(TransportPort, Arc<dyn Carrier>)>) -> ModelResult<Self> {
+        Self::start_joined(
+            joins
+                .into_iter()
+                .map(|(port, end)| Join {
+                    port,
+                    end,
+                    binding: None,
+                })
+                .collect(),
+        )
+    }
+
+    /// Starts the pumping thread over `joins`, each a port, a carrier end and, where the end has bindings, the binding
+    /// whose arrivals are the port's.
+    pub(crate) fn start_joined(joins: Vec<Join>) -> ModelResult<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
+        let ended = Arc::new(Mutex::new(None));
+        let record = ended.clone();
         let link = thread::Builder::new()
             .name("gwz-placement-local".into())
             .spawn(move || {
@@ -154,19 +230,21 @@ impl CarrierLink {
                 // message arrives or room appears; the timeout only covers a wake that never comes.
                 let waker = Waker::from(Arc::new(ThreadWake(thread::current())));
                 let mut cx = Context::from_waker(&waker);
-                let mut pumps: Vec<PortPump> = joins
-                    .into_iter()
-                    .map(|(port, end)| PortPump::new(port, end))
-                    .collect();
+                let mut pumps: Vec<PortPump> = joins.into_iter().map(PortPump::new).collect();
                 for pump in &pumps {
                     pump.end.register(&waker);
+                    if let Some(binding) = &pump.scope {
+                        pump.end.register_binding(binding, &waker);
+                    }
                 }
+                let mut why = LinkEnd::Stopped;
                 while !stopped.load(Ordering::Acquire) {
                     let mut moved = false;
                     for pump in &mut pumps {
                         match pump.pump(&mut cx) {
                             Ok(progress) => moved |= progress,
-                            Err(()) => {
+                            Err(end) => {
+                                why = end;
                                 stopped.store(true, Ordering::Release);
                                 break;
                             }
@@ -176,8 +254,9 @@ impl CarrierLink {
                         thread::park_timeout(PARK);
                     }
                 }
+                *record.lock().unwrap_or_else(PoisonError::into_inner) = Some(why);
                 for pump in pumps {
-                    pump.end.close(CloseCode::Normal);
+                    pump.end.close(why.code());
                     let port = pump.port.clone();
                     drop(pump);
                     port.disconnect();
@@ -187,7 +266,13 @@ impl CarrierLink {
         Ok(Self {
             stop,
             thread: link.thread().clone(),
+            ended,
         })
+    }
+
+    /// Why the link stopped, once it has.
+    pub(crate) fn ended(&self) -> Option<LinkEnd> {
+        *self.ended.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     pub(crate) fn stop(&self) {

@@ -383,25 +383,59 @@ fn a_failing_stream_ends_the_session_and_an_interrupted_one_does_not() {
     assert_eq!(frames, [frame(1, vec![0xa0])], "interruptions are retried");
     assert_eq!(closed, Closed::Stream(ErrorKind::ConnectionReset));
 
+    // A writer failure that is the end's own trouble ends the session.
     let writer = Failing {
         interrupted: 3,
-        error: ErrorKind::BrokenPipe,
+        error: ErrorKind::PermissionDenied,
         bytes: &[],
     };
     let (reads, _peer) = idle();
     let (end, router) = open(reads, writer);
     let sent = frame(1, vec![0xa0]);
-    let broken = Closed::Stream(ErrorKind::BrokenPipe);
+    let denied = Closed::Stream(ErrorKind::PermissionDenied);
     for _ in 0..2 {
         match end.send(sent.clone(), Lane::Call, KEY) {
             Err(SendError::Closed(returned, reported)) => {
                 assert_eq!(returned, sent);
-                assert_eq!(reported, broken);
+                assert_eq!(reported, denied);
             }
-            result => panic!("a broken stream ends the session, got {result:?}"),
+            result => panic!("a failed stream ends the session, got {result:?}"),
         }
     }
-    assert_eq!(router.recv(), Err(broken));
+    assert_eq!(router.recv(), Err(denied));
+}
+
+#[test]
+fn a_writer_that_meets_the_peers_departure_does_not_end_the_session_or_lose_what_the_peer_sent() {
+    // The peer sent three frames and stopped listening: our write breaks the pipe, but the three frames are still
+    // delivered, then the stream's end is the session's one reason.
+    let sent_by_peer = write_all(&[frame(1, vec![1]), frame(1, vec![2]), frame(1, vec![3])]);
+    let writer = Failing {
+        interrupted: 0,
+        error: ErrorKind::BrokenPipe,
+        bytes: &[],
+    };
+    let (end, router) = open(Cursor::new(sent_by_peer), writer);
+    let broken = Closed::Stream(ErrorKind::BrokenPipe);
+    for _ in 0..2 {
+        match end.send(frame(1, vec![0]), Lane::Call, KEY) {
+            Err(SendError::Closed(_, reported)) => assert_eq!(reported, broken),
+            result => panic!("{result:?}"),
+        }
+    }
+    let mut seen = Vec::new();
+    let closed = loop {
+        match router.recv() {
+            Ok(frame) => seen.push(frame),
+            Err(closed) => break closed,
+        }
+    };
+    assert_eq!(
+        seen,
+        [frame(1, vec![1]), frame(1, vec![2]), frame(1, vec![3])]
+    );
+    assert_eq!(closed, Closed::Peer);
+    assert_eq!(router.ends_told(), 1);
 }
 
 /// Serves the first two bytes of a length prefix, then panics; as a writer,

@@ -57,6 +57,26 @@ class PeerRuleTests(unittest.TestCase):
         root = tree(**{'local/unix.rs': CLEAN['local/unix.rs'] + 'fn f() { let p = PeerPolicy { own: 1 }; }\n'})
         self.assertTrue(any('outside peer.rs' in line for line in checker.violations(root)))
 
+    def test_assigning_the_policys_own_field_fails(self):
+        for source in ['fn f(mut policy: PeerPolicy, peer: X) { policy.own = peer; }\n',
+                       'fn f(policy: &mut PeerPolicy, peer: X) { policy.own.principal = peer; }\n',
+                       'fn f(policy: &PeerPolicy) { let _ = &policy.own; }\n']:
+            with self.subTest(source=source):
+                root = tree(**{'local/unix.rs': CLEAN['local/unix.rs'] + source})
+                self.assertTrue(any('own field' in line for line in checker.violations(root)), source)
+
+    def test_the_own_accessor_call_is_allowed(self):
+        root = tree(**{'local/unix.rs': CLEAN['local/unix.rs'] + 'fn f(policy: &PeerPolicy) { let _ = policy.own().clone(); }\n'})
+        self.assertEqual(checker.violations(root), [])
+
+    def test_the_test_build_constructor_named_outside_peer_rs_fails(self):
+        root = tree(**{'local/unix.rs': CLEAN['local/unix.rs'] + 'fn f() { let p = PeerPolicy::from_identity(x); }\n'})
+        self.assertTrue(any('constructor outside peer.rs' in line for line in checker.violations(root)))
+
+    def test_peer_rs_may_define_its_test_constructor_under_cfg_test(self):
+        peer = CLEAN['local/peer.rs'] + 'cfg_if::cfg_if! { if #[cfg(test)] { impl PeerPolicy { pub fn from_identity(own: u8) -> Self { Self { own } } } } }\n'
+        self.assertEqual(checker.violations(tree(**{'local/peer.rs': peer})), [])
+
     def test_a_second_verify_fails(self):
         root = tree(**{'local/unix.rs': CLEAN['local/unix.rs'] + 'fn verify() {}\n'})
         self.assertTrue(any('second verify' in line for line in checker.violations(root)))

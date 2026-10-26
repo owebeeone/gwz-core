@@ -5,22 +5,29 @@
 //! handle serializes its callers: a thread blocked in `ReadFile` would keep `WriteFile` from running on the same
 //! handle. Each call waits for its own completion, so the `OVERLAPPED` it uses can live on its stack. A caller that
 //! must stop a waiting call cancels with `CancelIoEx`, and the call returns once the kernel has completed the request.
-use super::super::{CarrierBinding, CarrierId, CarrierLimits, Peer, Side};
+use super::super::{
+    CarrierBinding, CarrierId, CarrierLimits, Peer, Side,
+    wire::{SERVER_PEER_REFUSED, session_error_frame},
+};
 use super::{
     Accepted, Integrity, LocalRefusal, PeerIdentity, PeerPolicy, PeerRefusal, Principal, Relation,
     StreamCarrier,
 };
+use gwz_session_channel::write_frame;
 use std::{
     io::{self, Read, Write},
     path::Path,
     ptr, slice,
     sync::{Arc, Mutex, PoisonError},
+    thread,
+    time::{Duration, Instant},
 };
 use windows_sys::Win32::{
     Foundation::{
         CloseHandle, ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_IO_PENDING, ERROR_NO_DATA,
         ERROR_OPERATION_ABORTED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, ERROR_PIPE_NOT_CONNECTED,
-        GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE, LocalFree,
+        FILETIME, GENERIC_READ, GENERIC_WRITE, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
+        LocalFree, WAIT_TIMEOUT,
     },
     Security::{
         ACCESS_ALLOWED_ACE, ACL, ACL_SIZE_INFORMATION, AclSizeInformation,
@@ -34,18 +41,19 @@ use windows_sys::Win32::{
     },
     Storage::FileSystem::{
         CreateFileW, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_FLAG_OVERLAPPED, OPEN_EXISTING,
-        PIPE_ACCESS_DUPLEX, ReadFile, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT, WriteFile,
+        PIPE_ACCESS_DUPLEX, ReadFile, SECURITY_IDENTIFICATION, SECURITY_SQOS_PRESENT, SYNCHRONIZE,
+        WriteFile,
     },
     System::{
         IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
         Pipes::{
             ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
             GetNamedPipeServerProcessId, PIPE_READMODE_BYTE, PIPE_REJECT_REMOTE_CLIENTS,
-            PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, WaitNamedPipeW,
+            PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, PeekNamedPipe, WaitNamedPipeW,
         },
         Threading::{
-            CreateEventW, GetCurrentProcess, GetCurrentProcessId, OpenProcess, OpenProcessToken,
-            PROCESS_QUERY_LIMITED_INFORMATION, ResetEvent,
+            CreateEventW, GetCurrentProcess, GetCurrentProcessId, GetProcessTimes, OpenProcess,
+            OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION, ResetEvent, WaitForSingleObject,
         },
     },
 };
@@ -174,22 +182,82 @@ fn token_identity(token: HANDLE, pid: u32) -> Result<PeerIdentity, LocalRefusal>
     })
 }
 
-/// The identity of the process `pid`, read through a query-only handle on it and its token. A process that cannot be
-/// opened (it has gone, or runs at a level this one may not query) is an error: the check cannot be made.
-fn process_identity(pid: u32) -> Result<PeerIdentity, LocalRefusal> {
-    // SAFETY: opens a query-only handle, closed by its guard.
-    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
-    if process.is_null() {
-        return Err(os("OpenProcess"));
+/// A hold on the peer's process: a handle that keeps its identity from being reused, its creation time, and the
+/// identity read through it. A process ID alone can name another process by the time it is read.
+pub(crate) struct ProcessHold {
+    process: Owned,
+    created: u64,
+    identity: PeerIdentity,
+}
+
+fn creation_time(process: HANDLE) -> Result<u64, LocalRefusal> {
+    let zero = FILETIME {
+        dwLowDateTime: 0,
+        dwHighDateTime: 0,
+    };
+    let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+    // SAFETY: a live process handle with query access; the out-parameters are valid for writes.
+    if unsafe { GetProcessTimes(process, &mut created, &mut exited, &mut kernel, &mut user) } == 0 {
+        return Err(os("GetProcessTimes"));
     }
-    let process = Owned(process);
-    let mut token: HANDLE = ptr::null_mut();
-    // SAFETY: `process` is a live handle; the token is closed by its guard.
-    if unsafe { OpenProcessToken(process.0, TOKEN_QUERY, &mut token) } == 0 {
-        return Err(os("OpenProcessToken"));
+    Ok((u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+}
+
+/// Whether the process behind `process` has not exited.
+fn still_running(process: HANDLE) -> bool {
+    // SAFETY: a live process handle with synchronize access; a zero wait only polls.
+    unsafe { WaitForSingleObject(process, 0) == WAIT_TIMEOUT }
+}
+
+impl ProcessHold {
+    /// Opens the process `pid` and reads its token. A process that cannot be opened (it has gone, or runs at a level
+    /// this one may not query), or that has exited, is an error: the check cannot be made.
+    pub(crate) fn take(pid: u32) -> Result<Self, LocalRefusal> {
+        // SAFETY: opens a handle to query and to wait on, closed by its guard.
+        let process =
+            unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, 0, pid) };
+        if process.is_null() {
+            return Err(os("OpenProcess"));
+        }
+        let process = Owned(process);
+        if !still_running(process.0) {
+            return Err(LocalRefusal::Peer(PeerRefusal::Unreadable(
+                "a live peer process",
+            )));
+        }
+        let created = creation_time(process.0)?;
+        let mut token: HANDLE = ptr::null_mut();
+        // SAFETY: `process` is a live handle; the token is closed by its guard.
+        if unsafe { OpenProcessToken(process.0, TOKEN_QUERY, &mut token) } == 0 {
+            return Err(os("OpenProcessToken"));
+        }
+        let token = Owned(token);
+        let identity = token_identity(token.0, pid)?;
+        Ok(Self {
+            process,
+            created,
+            identity,
+        })
     }
-    let token = Owned(token);
-    token_identity(token.0, pid)
+
+    /// The same process, still running, after the rule was applied.
+    pub(crate) fn confirm(&self) -> Result<(), PeerRefusal> {
+        let same = creation_time(self.process.0).is_ok_and(|created| created == self.created);
+        (same && still_running(self.process.0))
+            .then_some(())
+            .ok_or(PeerRefusal::Unreadable("a live peer process"))
+    }
+}
+
+/// Reads the process `pid` through a hold, applies the rule, and confirms the hold.
+fn judge(pid: u32, policy: &PeerPolicy, relation: Relation) -> Result<PeerIdentity, PeerRefusal> {
+    let hold = ProcessHold::take(pid).map_err(|error| match error {
+        LocalRefusal::Peer(refusal) => refusal,
+        _ => PeerRefusal::Unreadable("the peer's process"),
+    })?;
+    policy.verify(&hold.identity, relation)?;
+    hold.confirm()?;
+    Ok(hold.identity)
 }
 
 pub(crate) fn own_identity() -> Result<PeerIdentity, LocalRefusal> {
@@ -219,7 +287,18 @@ fn create_instance(name: &str, first: bool) -> Result<PipeInstance, LocalRefusal
     let Principal::Sid(sid) = own_identity()?.principal else {
         return Err(LocalRefusal::Peer(PeerRefusal::Unreadable("a user SID")));
     };
-    let sddl = wide(&pipe_sddl(&sid));
+    create_instance_with(name, first, &pipe_sddl(&sid), PIPE_MODE)
+}
+
+/// [`create_instance`] with the descriptor and pipe mode stated: the production values are the ones above, and the rows
+/// state others to show which of the protections refuses a remote client.
+fn create_instance_with(
+    name: &str,
+    first: bool,
+    sddl: &str,
+    pipe_mode: u32,
+) -> Result<PipeInstance, LocalRefusal> {
+    let sddl = wide(sddl);
     let mut descriptor = ptr::null_mut();
     // SAFETY: `sddl` is NUL-terminated; the descriptor is a system allocation freed below.
     if unsafe {
@@ -249,7 +328,7 @@ fn create_instance(name: &str, first: bool) -> Result<PipeInstance, LocalRefusal
         CreateNamedPipeW(
             name.as_ptr(),
             open_mode,
-            PIPE_MODE,
+            pipe_mode,
             PIPE_UNLIMITED_INSTANCES,
             BUFFER,
             BUFFER,
@@ -280,6 +359,20 @@ fn create_instance(name: &str, first: bool) -> Result<PipeInstance, LocalRefusal
 /// The first instance of a pipe name (a squatter that holds the name makes this fail with `NameTaken`).
 pub(crate) fn create_first_instance(name: &str) -> Result<PipeInstance, LocalRefusal> {
     create_instance(name, true)
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        /// The first instance of a pipe name with a stated descriptor and mode (the rows' way to the variants that show
+        /// which protection refuses what). Test builds only.
+        pub(crate) fn create_first_instance_with(
+            name: &str,
+            sddl: &str,
+            pipe_mode: u32,
+        ) -> Result<PipeInstance, LocalRefusal> {
+            create_instance_with(name, true, sddl, pipe_mode)
+        }
+    }
 }
 
 /// The user SIDs the DACL of `pipe` grants access to: one entry for each access-allowed ACE.
@@ -328,7 +421,7 @@ pub(crate) fn created_pipe_dacl_sids(pipe: &PipeInstance) -> Vec<String> {
 pub(crate) struct RuntimeDir;
 
 impl RuntimeDir {
-    pub(crate) fn for_current_user() -> Result<Self, LocalRefusal> {
+    pub(crate) fn for_current_user(_: &super::RuntimeEnv) -> Result<Self, LocalRefusal> {
         Ok(Self)
     }
 
@@ -358,9 +451,24 @@ impl std::fmt::Display for LocalAddress {
     }
 }
 
+/// What a pipe's callers share: the handle until it is closed, how many requests are in the kernel, and whether the
+/// pipe has been aborted.
+struct PipeState {
+    handle: Option<Owned>,
+    active: usize,
+    aborted: bool,
+}
+
 /// One overlapped pipe handle used by one reader and one writer at a time.
+///
+/// **Abort.** [`Pipe::abort`] makes the peer see the end of the stream whoever else holds the pipe: it refuses new
+/// requests, cancels the ones in the kernel until their callers have returned (so a reader that was between reads cannot
+/// start a read that nobody cancels), disconnects a server instance (the client reads a broken pipe) and closes the
+/// handle (a server reads a broken pipe). The handle is closed here and nowhere else once the pipe is aborted, after the
+/// last request has returned, so no thread uses a closed or reused handle.
 struct Pipe {
-    handle: Owned,
+    state: Mutex<PipeState>,
+    server: bool,
     read: Mutex<Event>,
     write: Mutex<Event>,
 }
@@ -379,23 +487,66 @@ impl Event {
 }
 
 impl Pipe {
-    fn new(handle: Owned) -> io::Result<Arc<Self>> {
+    fn new(handle: Owned, server: bool) -> io::Result<Arc<Self>> {
         Ok(Arc::new(Self {
-            handle,
+            state: Mutex::new(PipeState {
+                handle: Some(handle),
+                active: 0,
+                aborted: false,
+            }),
+            server,
             read: Mutex::new(Event::new()?),
             write: Mutex::new(Event::new()?),
         }))
     }
 
+    fn state(&self) -> std::sync::MutexGuard<'_, PipeState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Starts a request: the handle, or an error once the pipe is aborted.
+    fn enter(&self) -> io::Result<HANDLE> {
+        let mut state = self.state();
+        match (&state.handle, state.aborted) {
+            (Some(handle), false) => {
+                let raw = handle.0;
+                state.active += 1;
+                Ok(raw)
+            }
+            _ => Err(io::ErrorKind::ConnectionAborted.into()),
+        }
+    }
+
+    fn leave(&self) {
+        self.state().active -= 1;
+    }
+
     /// Runs one overlapped request and waits for the kernel to finish it, however it ends.
-    fn run(&self, event: &Event, issue: impl FnOnce(*mut OVERLAPPED) -> i32) -> io::Result<usize> {
+    fn run(
+        &self,
+        event: &Event,
+        issue: impl FnOnce(HANDLE, *mut OVERLAPPED) -> i32,
+    ) -> io::Result<usize> {
+        let handle = self.enter()?;
+        let result = self.run_entered(handle, event, issue);
+        self.leave();
+        result
+    }
+
+    fn run_entered(
+        &self,
+        handle: HANDLE,
+        event: &Event,
+        issue: impl FnOnce(HANDLE, *mut OVERLAPPED) -> i32,
+    ) -> io::Result<usize> {
         // SAFETY: the event is this call's alone (its mutex is held); the request lives on this stack and is waited for
-        // below whatever happens, so the kernel never writes to it after the call returns.
+        // below whatever happens, so the kernel never writes to it after the call returns. The handle stays open while
+        // the request is counted active.
         unsafe {
             ResetEvent((event.0).0);
             let mut overlapped: OVERLAPPED = std::mem::zeroed();
             overlapped.hEvent = (event.0).0;
-            let started = issue(&mut overlapped);
+            let started = issue(handle, &mut overlapped);
             if started == 0 {
                 match GetLastError() {
                     ERROR_IO_PENDING => {}
@@ -404,7 +555,7 @@ impl Pipe {
                 }
             }
             let mut moved = 0u32;
-            if GetOverlappedResult(self.handle.0, &overlapped, &mut moved, 1) == 0 {
+            if GetOverlappedResult(handle, &overlapped, &mut moved, 1) == 0 {
                 return match GetLastError() {
                     ERROR_BROKEN_PIPE | ERROR_PIPE_NOT_CONNECTED | ERROR_NO_DATA => Ok(0),
                     ERROR_OPERATION_ABORTED => Err(io::ErrorKind::ConnectionAborted.into()),
@@ -418,11 +569,11 @@ impl Pipe {
     fn read(&self, buffer: &mut [u8]) -> io::Result<usize> {
         let event = self.read.lock().unwrap_or_else(PoisonError::into_inner);
         let length = u32::try_from(buffer.len()).unwrap_or(u32::MAX);
-        self.run(&event, |overlapped| {
+        self.run(&event, |handle, overlapped| {
             // SAFETY: the buffer outlives the request, which `run` waits for.
             unsafe {
                 ReadFile(
-                    self.handle.0,
+                    handle,
                     buffer.as_mut_ptr().cast(),
                     length,
                     ptr::null_mut(),
@@ -435,11 +586,11 @@ impl Pipe {
     fn write(&self, bytes: &[u8]) -> io::Result<usize> {
         let event = self.write.lock().unwrap_or_else(PoisonError::into_inner);
         let length = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
-        let moved = self.run(&event, |overlapped| {
+        let moved = self.run(&event, |handle, overlapped| {
             // SAFETY: the bytes outlive the request, which `run` waits for.
             unsafe {
                 WriteFile(
-                    self.handle.0,
+                    handle,
                     bytes.as_ptr().cast(),
                     length,
                     ptr::null_mut(),
@@ -453,10 +604,42 @@ impl Pipe {
         Ok(moved)
     }
 
-    /// Cancels the requests waiting on the pipe, so that their callers return.
-    fn cancel(&self) {
-        // SAFETY: cancels all of this process's outstanding requests on a live handle.
-        unsafe { CancelIoEx(self.handle.0, ptr::null()) };
+    /// Ends the pipe for everyone: no new request starts, the ones in the kernel are cancelled until their callers have
+    /// returned, a server instance is disconnected and the handle is closed. Returns once the peer will read the end.
+    fn abort(&self) {
+        let raw = {
+            let mut state = self.state();
+            if state.aborted {
+                return;
+            }
+            state.aborted = true;
+            match &state.handle {
+                Some(handle) => handle.0,
+                None => return,
+            }
+        };
+        // A caller that passed `enter` before the flag was set may issue its request after a first cancel, so cancel
+        // until none is left; none can start after the flag. Each cancelled request completes at once.
+        let give_up = Instant::now() + Duration::from_secs(5);
+        loop {
+            // SAFETY: the handle is open: only this function closes it once the pipe is aborted, and only after the
+            // last request has returned.
+            unsafe { CancelIoEx(raw, ptr::null()) };
+            if self.state().active == 0 || Instant::now() >= give_up {
+                break;
+            }
+            thread::sleep(Duration::from_millis(1));
+        }
+        if self.server {
+            // SAFETY: a live server instance; the client reads a broken pipe.
+            unsafe { DisconnectNamedPipe(raw) };
+        }
+        // The last request has returned (or the bound passed with a request the kernel will not give back, in which
+        // case the handle is left to its owner rather than closed under it).
+        let mut state = self.state();
+        if state.active == 0 {
+            state.handle.take();
+        }
     }
 }
 
@@ -479,19 +662,62 @@ impl Write for WriteHalf {
     }
 }
 
-fn carrier_over(pipe: Owned, side: Side, peer: PeerIdentity, limits: CarrierLimits) -> Accepted {
+fn carrier_over(
+    pipe: Owned,
+    server: bool,
+    side: Side,
+    peer: PeerIdentity,
+    limits: CarrierLimits,
+) -> Accepted {
     let spawn = |error: io::Error| LocalRefusal::os("spawn", &error);
-    let pipe = Pipe::new(pipe).map_err(spawn)?;
+    let pipe = Pipe::new(pipe, server).map_err(spawn)?;
     let id = CarrierId::random().map_err(spawn)?;
     let killer = pipe.clone();
     StreamCarrier::new(
         Box::new(ReadHalf(pipe.clone())),
         Box::new(WriteHalf(pipe)),
-        Box::new(move || killer.cancel()),
+        Box::new(move || killer.abort()),
         CarrierBinding::new(id, side, Peer::Verified(peer)),
         limits,
     )
     .map_err(spawn)
+}
+
+/// A refused client of a listener is owed one answer (parked server design §4): a `SessionError` for call ID 0 with
+/// `server_peer_refused`, naming the cause, and then the end of the stream. Nothing of the client was read before the
+/// check. The answer is given time to be read (until the client closes its end, up to a second) before the instance is
+/// closed, since closing a server instance does not take back what the client has not read yet.
+fn turn_away(instance: Owned, refusal: &PeerRefusal) {
+    let Ok(pipe) = Pipe::new(instance, true) else {
+        return;
+    };
+    let frame = session_error_frame(SERVER_PEER_REFUSED, &format!("peer refused: {refusal}"));
+    let _ = write_frame(&mut WriteHalf(pipe.clone()), &frame);
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline {
+        let Ok(handle) = pipe.enter() else {
+            break;
+        };
+        let mut available = 0u32;
+        // SAFETY: a live server instance; only the number of bytes the client has written is asked for.
+        let peeked = unsafe {
+            PeekNamedPipe(
+                handle,
+                ptr::null_mut(),
+                0,
+                ptr::null_mut(),
+                &mut available,
+                ptr::null_mut(),
+            )
+        };
+        pipe.leave();
+        if peeked == 0 {
+            // The client has closed its end, which it does after reading the answer.
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    pipe.abort();
 }
 
 /// A listening pipe: the instance waiting for the next client, and the rule applied to whoever connects.
@@ -575,23 +801,21 @@ impl LocalListener {
         // The next client may connect to a fresh instance while this one is judged.
         *waiting = Some(create_instance(self.address.pipe_name(), false)?);
         drop(waiting);
-        let refuse = |refusal| {
-            // SAFETY: a live server instance; the client reads a broken pipe.
-            unsafe { DisconnectNamedPipe(handle) };
-            LocalRefusal::Peer(refusal)
-        };
+        let PipeInstance(owned) = instance;
         let mut pid = 0u32;
         // SAFETY: a live, connected server instance.
         if unsafe { GetNamedPipeClientProcessId(handle, &mut pid) } == 0 {
-            return Err(refuse(PeerRefusal::Unreadable("the client's process id")));
+            let refusal = PeerRefusal::Unreadable("the client's process id");
+            turn_away(owned, &refusal);
+            return Err(LocalRefusal::Peer(refusal));
         }
-        let peer = process_identity(pid)
-            .map_err(|_| refuse(PeerRefusal::Unreadable("the client's token")))?;
-        self.policy
-            .verify(&peer, Relation::ListenerChecksClient)
-            .map_err(refuse)?;
-        let PipeInstance(owned) = instance;
-        carrier_over(owned, Side::Core, peer, self.limits)
+        match judge(pid, &self.policy, Relation::ListenerChecksClient) {
+            Ok(peer) => carrier_over(owned, true, Side::Core, peer, self.limits),
+            Err(refusal) => {
+                turn_away(owned, &refusal);
+                Err(LocalRefusal::Peer(refusal))
+            }
+        }
     }
 }
 
@@ -634,16 +858,14 @@ pub(crate) fn connect(
         // SAFETY: waits for an instance of a name this process has just seen busy.
         unsafe { WaitNamedPipeW(name.as_ptr(), BUSY_WAIT_MS) };
     };
-    let refuse = |refusal| LocalRefusal::Peer(refusal);
     let mut pid = 0u32;
     // SAFETY: a live client handle.
     if unsafe { GetNamedPipeServerProcessId(handle.0, &mut pid) } == 0 {
-        return Err(refuse(PeerRefusal::Unreadable("the server's process id")));
+        return Err(LocalRefusal::Peer(PeerRefusal::Unreadable(
+            "the server's process id",
+        )));
     }
-    let peer =
-        process_identity(pid).map_err(|_| refuse(PeerRefusal::Unreadable("the server's token")))?;
-    policy
-        .verify(&peer, Relation::ClientChecksListener)
-        .map_err(refuse)?;
-    carrier_over(handle, Side::Client, peer, limits)
+    // A client that refuses its listener sends nothing; the handle closes with this scope.
+    let peer = judge(pid, policy, Relation::ClientChecksListener).map_err(LocalRefusal::Peer)?;
+    carrier_over(handle, false, Side::Client, peer, limits)
 }

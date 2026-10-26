@@ -107,6 +107,9 @@ mod cbor {
     pub fn bytes(b: &[u8]) -> Vec<u8> {
         [head(2, b.len() as u64), b.to_vec()].concat()
     }
+    pub fn boolean(value: bool) -> Vec<u8> {
+        vec![if value { 0xf5 } else { 0xf4 }]
+    }
     pub fn array(items: &[Vec<u8>]) -> Vec<u8> {
         [head(4, items.len() as u64), items.concat()].concat()
     }
@@ -139,58 +142,149 @@ pub(super) fn environment_with_canary() -> Vec<u8> {
     ])])
 }
 
-/// A `SessionOpen` of the client placement: protocol and client name, no environment.
+/// A `SessionOpen` of the client placement, in the shape `GwzSplitCommandChannel.md` §3.1 freezes: protocol and client
+/// name, no environment, `attributes` with `umask` and `openssl` absent, `host_environment` true.
 pub(super) fn session_open_without_environment() -> Vec<u8> {
-    cbor::map(&[(1, cbor::uint(1)), (2, cbor::text("gwz 1.1.0"))])
+    frozen_with(&[])
+}
+
+/// The frozen shape with `extra` entries added (keys not already in it).
+fn frozen_with(extra: &[(u64, Vec<u8>)]) -> Vec<u8> {
+    let mut entries = vec![
+        (1, cbor::uint(1)),
+        (2, cbor::text("gwz 1.1.0")),
+        (5, cbor::map(&[])),
+        (6, cbor::boolean(true)),
+    ];
+    entries.extend(extra.iter().cloned());
+    entries.sort_by_key(|(key, _)| *key);
+    cbor::map(&entries)
+}
+
+/// The frozen shape with the entry at `key` replaced (or removed, for `None`).
+fn frozen_changed(key: u64, value: Option<Vec<u8>>) -> Vec<u8> {
+    let mut entries = vec![
+        (1, cbor::uint(1)),
+        (2, cbor::text("gwz 1.1.0")),
+        (5, cbor::map(&[])),
+        (6, cbor::boolean(true)),
+    ];
+    entries.retain(|(k, _)| *k != key);
+    entries.extend(value.map(|value| (key, value)));
+    entries.sort_by_key(|(key, _)| *key);
+    cbor::map(&entries)
+}
+
+/// Every shape of `SessionOpen` the frozen one is not, named: each must be refused wherever the shape is checked.
+pub(super) fn refused_session_opens() -> Vec<(&'static str, Vec<u8>)> {
+    let umask = cbor::map(&[(1, cbor::uint(0o22))]);
+    let openssl = cbor::map(&[(3, cbor::text("OpenSSL 3.0"))]);
+    let off_true = cbor::map(&[(2, cbor::boolean(true))]);
+    vec![
+        (
+            "the old shape",
+            cbor::map(&[(1, cbor::uint(1)), (2, cbor::text("gwz"))]),
+        ),
+        ("no attributes", frozen_changed(5, None)),
+        ("no marker", frozen_changed(6, None)),
+        (
+            "marker false",
+            frozen_changed(6, Some(cbor::boolean(false))),
+        ),
+        ("umask", frozen_changed(5, Some(umask))),
+        ("openssl", frozen_changed(5, Some(openssl))),
+        ("transport_off true", frozen_changed(5, Some(off_true))),
+        ("an environment", session_open_with_environment()),
+        ("an unknown key", frozen_with(&[(7, cbor::uint(1))])),
+    ]
+}
+
+/// The frames on a raw wire, as `(tag, body)`.
+pub(super) fn frames_of(mut bytes: &[u8]) -> Vec<(u8, Vec<u8>)> {
+    let mut frames = Vec::new();
+    while bytes.len() >= 5 {
+        let size = u32::from_le_bytes(bytes[..4].try_into().unwrap()) as usize;
+        frames.push((bytes[4], bytes[5..4 + size].to_vec()));
+        bytes = &bytes[4 + size..];
+    }
+    assert!(bytes.is_empty(), "a whole number of frames");
+    frames
 }
 
 pub(super) fn session_open_with_environment() -> Vec<u8> {
-    cbor::map(&[
-        (1, cbor::uint(1)),
-        (2, cbor::text("gwz 1.1.0")),
-        (3, environment_with_canary()),
-    ])
+    frozen_with(&[(3, environment_with_canary())])
 }
 
 #[test]
-fn a_session_open_with_no_environment_is_accepted() {
+fn the_frozen_session_open_is_accepted() {
     assert_eq!(
         validate_session_open(&session_open_without_environment()),
         Ok(())
     );
     // The optional session limits (key 4) are not the environment.
-    let with_limits = cbor::map(&[
-        (1, cbor::uint(1)),
-        (2, cbor::text("gwz-py 1.1.0")),
-        (4, cbor::map(&[(1, cbor::uint(8))])),
-    ]);
+    let with_limits = frozen_with(&[(4, cbor::map(&[(1, cbor::uint(8))]))]);
     assert_eq!(validate_session_open(&with_limits), Ok(()));
+    // `transport_off` may be present when it is false.
+    let off_false = frozen_changed(5, Some(cbor::map(&[(2, cbor::boolean(false))])));
+    assert_eq!(validate_session_open(&off_false), Ok(()));
 }
 
 #[test]
-fn a_session_open_carrying_any_environment_field_is_refused() {
-    let base = [(1, cbor::uint(1)), (2, cbor::text("gwz"))];
-    let with = |extra: (u64, Vec<u8>)| cbor::map(&[base[0].clone(), base[1].clone(), extra]);
-    // 3 is the environment; 5 the process attributes (umask, OpenSSL, off switch), the client's process facts; 6 the
-    // host-environment marker.
-    for key in [3u64, 5, 6] {
+fn every_other_combination_of_the_session_open_is_refused() {
+    use SessionOpenRefusal::*;
+    // The old shape, without `attributes` and the marker, is not the frozen one.
+    assert_eq!(
+        validate_session_open(&cbor::map(&[(1, cbor::uint(1)), (2, cbor::text("gwz"))])),
+        Err(MissingField(5))
+    );
+    assert_eq!(
+        validate_session_open(&frozen_changed(5, None)),
+        Err(MissingField(5))
+    );
+    assert_eq!(
+        validate_session_open(&frozen_changed(6, None)),
+        Err(MissingField(6))
+    );
+    // The marker must be `true`, and a boolean.
+    for marker in [cbor::boolean(false), cbor::uint(1), cbor::text("true")] {
         assert_eq!(
-            validate_session_open(&with((key, cbor::uint(1)))),
-            Err(SessionOpenRefusal::ForbiddenField(key)),
-            "key {key}"
+            validate_session_open(&frozen_changed(6, Some(marker))),
+            Err(ForbiddenValue(6))
         );
     }
-    // Any key the shape does not name is refused, so a field added later is not carried by accident.
-    for key in [0u64, 7, 99, 1 << 40] {
+    // `attributes` is a map that names nothing but a false `transport_off`.
+    let umask = cbor::map(&[(1, cbor::uint(0o22))]);
+    let openssl = cbor::map(&[(3, cbor::text("OpenSSL 3.0"))]);
+    let off_true = cbor::map(&[(2, cbor::boolean(true))]);
+    let unknown = cbor::map(&[(9, cbor::boolean(false))]);
+    let off_not_bool = cbor::map(&[(2, cbor::uint(0))]);
+    let both = cbor::map(&[(1, cbor::uint(0o22)), (2, cbor::boolean(false))]);
+    for attributes in [
+        umask,
+        openssl,
+        off_true,
+        unknown,
+        off_not_bool,
+        both,
+        cbor::uint(0),
+        cbor::array(&[]),
+    ] {
         assert_eq!(
-            validate_session_open(&with((key, cbor::uint(1)))),
-            Err(SessionOpenRefusal::ForbiddenField(key)),
+            validate_session_open(&frozen_changed(5, Some(attributes))),
+            Err(ForbiddenValue(5))
+        );
+    }
+    // The environment (3) and any key the shape does not name are refused.
+    for key in [3u64, 0, 7, 99, 1 << 40] {
+        assert_eq!(
+            validate_session_open(&frozen_with(&[(key, cbor::uint(1))])),
+            Err(ForbiddenField(key)),
             "key {key}"
         );
     }
     assert_eq!(
         validate_session_open(&session_open_with_environment()),
-        Err(SessionOpenRefusal::ForbiddenField(3))
+        Err(ForbiddenField(3))
     );
 }
 

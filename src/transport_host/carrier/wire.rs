@@ -11,16 +11,19 @@
 //! **A transport message** is a one-byte request-name length, the name, and the transport's own CBOR encoding of the
 //! envelope, which the transport's codec admits against its limits before it allocates a decoded tree.
 //!
-//! **The `SessionOpen` of the client placement** carries no environment. The parked schema is
-//! `{protocol (1), client (2), environment (3, optional), limits (4, optional), attributes (5), host_environment (6,
-//! optional)}`; the client placement's shape keeps keys 1, 2 and 4 and nothing else. Key 3 is the environment
-//! snapshot, 6 its marker, and 5 the client's process attributes (umask, OpenSSL identity, the off switch), which are
-//! facts about the client's process that the core must not adopt. Any other key is refused too, so a field added to
-//! the schema later does not start to cross by accident. Both ends check it: the sender before a byte is written, and
-//! the receiver before the frame is delivered.
+//! **The `SessionOpen` of the client placement** carries no environment, in the one shape `GwzSplitCommandChannel.md`
+//! §3.1 freezes. The parked schema is `{protocol (1), client (2), environment (3, optional), limits (4, optional),
+//! attributes (5), host_environment (6, optional)}`, and its `ProcessAttributes` is `{umask (1), transport_off (2),
+//! openssl (3)}`. The placement accepts exactly: keys 1 and 2; key 4 if present; key 5 present, a map with at most
+//! `transport_off` (2) set to false, never `umask` or `openssl` (facts about the client's process the core must not
+//! adopt); key 6 present and `true` (the core's own environment is used). Key 3, the environment snapshot, and any
+//! other key are refused, so a field added to the schema later does not start to cross by accident. A missing 5 or 6,
+//! and any other value of either, is refused. Both ends check it: the sender before a byte of the frame is written,
+//! and the receiver before the frame is delivered; a receiver answers a refusal with one `SessionError`
+//! ([`session_error_frame`]) and closes.
 use super::{Attachment, CloseCode, Lane, ProtocolFault};
 use gwz_session_contract::{Frame, FrameKey, Tag, Target};
-use gwz_transport::codec;
+use gwz_transport::{codec, protocol::Envelope};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 pub(super) const DATA_TAG: u8 = Tag::TransportData.byte();
@@ -37,8 +40,11 @@ pub(crate) enum SessionOpenRefusal {
     NotAMap,
     /// The body is not well-formed deterministic CBOR of the shape, or has bytes after it.
     Malformed,
-    /// A key outside the shape: the environment (3), the client's process attributes (5), the marker (6) or any other.
+    /// A key outside the shape: the environment (3) or any other.
     ForbiddenField(u64),
+    /// A key the shape allows, with a value it does not: `attributes` (5) carrying `umask`, `openssl`, a set
+    /// `transport_off` or anything but a map, or `host_environment` (6) other than `true`.
+    ForbiddenValue(u64),
     /// A key the shape requires is absent.
     MissingField(u64),
     /// A key appears twice.
@@ -89,18 +95,25 @@ pub(super) fn tag_of(lane: Lane) -> u8 {
 }
 
 pub(super) fn decode_attachment(frame: &Frame) -> Result<Attachment, ProtocolFault> {
-    let message = decode_attachment_any_class(frame)?;
+    let parts = split_lane(frame)?;
+    let envelope = decode_envelope(parts.encoded)?;
     // The class is the tag's: a message under the other class's tag would be counted against, and ordered with, the
     // wrong lane.
-    if tag_of(Lane::of(message.1.kind)) != frame.tag {
+    if tag_of(Lane::of(envelope.kind)) != frame.tag {
         return Err(ProtocolFault::Message);
     }
-    Ok(message)
+    Ok((parts.name.to_owned(), envelope))
 }
 
-/// [`decode_attachment`] without the check that the kind is under its own class's tag, for a router that judges it
-/// against the message's binding (a wrong class faults that binding, not the session).
-pub(super) fn decode_attachment_any_class(frame: &Frame) -> Result<Attachment, ProtocolFault> {
+/// A transport frame's body, split at the request name: the framing, before any CBOR is read.
+pub(super) struct LaneParts<'a> {
+    pub(super) name: &'a str,
+    pub(super) encoded: &'a [u8],
+}
+
+/// The request-name framing of a transport frame. A fault here means the frame has no recognisable shape, which ends
+/// the session: nothing in it can be attributed to a binding.
+pub(super) fn split_lane(frame: &Frame) -> Result<LaneParts<'_>, ProtocolFault> {
     if frame.tag != DATA_TAG && frame.tag != CONTROL_TAG {
         return Err(ProtocolFault::Unexpected);
     }
@@ -114,8 +127,45 @@ pub(super) fn decode_attachment_any_class(frame: &Frame) -> Result<Attachment, P
     if !request_name_ok(name) {
         return Err(ProtocolFault::Message);
     }
-    let envelope = codec::decode(encoded).map_err(|_| ProtocolFault::Message)?;
-    Ok((name.to_owned(), envelope))
+    Ok(LaneParts { name, encoded })
+}
+
+/// The transport's own decode of an envelope, with its validation.
+pub(super) fn decode_envelope(encoded: &[u8]) -> Result<Envelope, ProtocolFault> {
+    codec::decode(encoded).map_err(|_| ProtocolFault::Message)
+}
+
+/// The envelope's `session_id` (key 2) by a shallow walk of the CBOR map: no tree is built and nothing is validated
+/// beyond the structure up to that key, so a frame that fails the transport's own decode can still be attributed to
+/// the binding it names. `Ok(None)` when the map has no text `session_id` before its end. A body that is not a map, or
+/// whose structure breaks before the key is found, has no attribution: a session fault.
+pub(super) fn envelope_session_id(encoded: &[u8]) -> Result<Option<&str>, ProtocolFault> {
+    const SESSION_ID_KEY: u64 = 2;
+    let fault = |_: CborFault| ProtocolFault::Message;
+    let mut reader = Reader {
+        bytes: encoded,
+        at: 0,
+    };
+    let (major, entries) = reader.head().map_err(fault)?;
+    if major != 5 || entries > encoded.len() as u64 {
+        return Err(ProtocolFault::Message);
+    }
+    for _ in 0..entries {
+        let (key_major, key) = reader.head().map_err(fault)?;
+        if key_major != 0 {
+            return Err(ProtocolFault::Message);
+        }
+        if key == SESSION_ID_KEY {
+            let (value_major, length) = reader.head().map_err(fault)?;
+            if value_major != 3 {
+                return Ok(None);
+            }
+            let text = reader.take(length).map_err(fault)?;
+            return Ok(std::str::from_utf8(text).ok());
+        }
+        reader.skip(0).map_err(fault)?;
+    }
+    Ok(None)
 }
 
 /// The close announcement: a control frame whose request-name length is zero, then the code.
@@ -138,13 +188,13 @@ pub(super) fn parse_close(frame: &Frame) -> Result<CloseCode, ProtocolFault> {
     }
 }
 
-/// Checks that `body`, a `SessionOpen`, is of the client placement's shape. It reads the CBOR structure and nothing
-/// else: no value is decoded, and nothing is allocated for it.
+/// Checks that `body`, a `SessionOpen`, is of the client placement's frozen shape (the module documentation). It reads
+/// the CBOR structure and the few values the shape fixes, and nothing else: nothing is decoded or allocated for it.
 pub(crate) fn validate_session_open(body: &[u8]) -> Result<(), SessionOpenRefusal> {
-    const ALLOWED: [u64; 3] = [1, 2, 4];
-    const REQUIRED: [u64; 2] = [1, 2];
+    const REQUIRED: [u64; 4] = [1, 2, 5, 6];
+    let malformed = |_: CborFault| SessionOpenRefusal::Malformed;
     let mut reader = Reader { bytes: body, at: 0 };
-    let (major, entries) = reader.head()?;
+    let (major, entries) = reader.head().map_err(malformed)?;
     if major != 5 {
         return Err(SessionOpenRefusal::NotAMap);
     }
@@ -153,18 +203,25 @@ pub(crate) fn validate_session_open(body: &[u8]) -> Result<(), SessionOpenRefusa
     }
     let mut seen = Vec::new();
     for _ in 0..entries {
-        let (key_major, key) = reader.head()?;
+        let (key_major, key) = reader.head().map_err(malformed)?;
         if key_major != 0 {
             return Err(SessionOpenRefusal::Malformed);
         }
         if seen.contains(&key) {
             return Err(SessionOpenRefusal::DuplicateField(key));
         }
-        if !ALLOWED.contains(&key) {
-            return Err(SessionOpenRefusal::ForbiddenField(key));
-        }
         seen.push(key);
-        reader.skip(0)?;
+        match key {
+            1 | 2 | 4 => reader.skip(0).map_err(malformed)?,
+            5 => check_attributes(&mut reader)?,
+            6 => {
+                // `true` is the single byte 0xf5.
+                if reader.take(1).map_err(malformed)? != [0xf5] {
+                    return Err(SessionOpenRefusal::ForbiddenValue(6));
+                }
+            }
+            _ => return Err(SessionOpenRefusal::ForbiddenField(key)),
+        }
     }
     if reader.at != body.len() {
         return Err(SessionOpenRefusal::Malformed);
@@ -175,32 +232,85 @@ pub(crate) fn validate_session_open(body: &[u8]) -> Result<(), SessionOpenRefusa
     }
 }
 
+/// `ProcessAttributes` as the shape fixes it: a map with at most `transport_off` (2), and that false.
+fn check_attributes(reader: &mut Reader<'_>) -> Result<(), SessionOpenRefusal> {
+    const TRANSPORT_OFF: u64 = 2;
+    let malformed = |_: CborFault| SessionOpenRefusal::Malformed;
+    let (major, entries) = reader.head().map_err(malformed)?;
+    if major != 5 || entries > 1 {
+        return Err(SessionOpenRefusal::ForbiddenValue(5));
+    }
+    if entries == 1 {
+        let (key_major, key) = reader.head().map_err(malformed)?;
+        // `false` is the single byte 0xf4.
+        if key_major != 0 || key != TRANSPORT_OFF || reader.take(1).map_err(malformed)? != [0xf4] {
+            return Err(SessionOpenRefusal::ForbiddenValue(5));
+        }
+    }
+    Ok(())
+}
+
+/// Error code `invalid_request` of `GwzErrorCode`.
+pub(crate) const INVALID_REQUEST: u64 = 1;
+/// Error code `server_peer_refused` of `GwzErrorCode` (provisional: the schema step 2.2b appends the names).
+pub(crate) const SERVER_PEER_REFUSED: u64 = 82;
+
+/// A `SessionError` frame (tag 3) for `call_id` 0 carrying `code` and a fixed short `message` and nothing else: the one
+/// frame a host writes to a peer it refuses. The message never repeats anything the peer sent.
+pub(crate) fn session_error_frame(code: u64, message: &str) -> Frame {
+    let mut body = Vec::new();
+    // SessionError { call_id (1): 0, error (2): GwzError { code (1), message (2) } }
+    body.extend(put_head(5, 2));
+    body.extend(put_head(0, 1));
+    body.extend(put_head(0, 0));
+    body.extend(put_head(0, 2));
+    body.extend(put_head(5, 2));
+    body.extend(put_head(0, 1));
+    body.extend(put_head(0, code));
+    body.extend(put_head(0, 2));
+    body.extend(put_head(3, message.len() as u64));
+    body.extend_from_slice(message.as_bytes());
+    Frame::new(Tag::SessionError, body)
+}
+
+/// The head of a CBOR item of `major` type with `argument`, in its shortest form.
+fn put_head(major: u8, argument: u64) -> Vec<u8> {
+    let major = major << 5;
+    match argument {
+        0..=23 => vec![major | argument as u8],
+        24..=0xff => vec![major | 24, argument as u8],
+        0x100..=0xffff => [vec![major | 25], (argument as u16).to_be_bytes().to_vec()].concat(),
+        0x1_0000..=0xffff_ffff => {
+            [vec![major | 26], (argument as u32).to_be_bytes().to_vec()].concat()
+        }
+        _ => [vec![major | 27], argument.to_be_bytes().to_vec()].concat(),
+    }
+}
+
+/// The CBOR structure was broken: a truncated item, a reserved or indefinite form, or too deep.
+#[derive(Clone, Copy, Debug)]
+struct CborFault;
+
 /// A walk over definite-length CBOR.
 struct Reader<'a> {
     bytes: &'a [u8],
     at: usize,
 }
 
-impl Reader<'_> {
+impl<'a> Reader<'a> {
     const MAX_DEPTH: u32 = 16;
 
-    fn take(&mut self, count: u64) -> Result<&[u8], SessionOpenRefusal> {
-        let count = usize::try_from(count).map_err(|_| SessionOpenRefusal::Malformed)?;
-        let end = self
-            .at
-            .checked_add(count)
-            .ok_or(SessionOpenRefusal::Malformed)?;
-        let slice = self
-            .bytes
-            .get(self.at..end)
-            .ok_or(SessionOpenRefusal::Malformed)?;
+    fn take(&mut self, count: u64) -> Result<&'a [u8], CborFault> {
+        let count = usize::try_from(count).map_err(|_| CborFault)?;
+        let end = self.at.checked_add(count).ok_or(CborFault)?;
+        let slice = self.bytes.get(self.at..end).ok_or(CborFault)?;
         self.at = end;
         Ok(slice)
     }
 
     /// The major type and argument of the next item's head. Indefinite lengths and reserved forms are malformed:
     /// the encoding is deterministic.
-    fn head(&mut self) -> Result<(u8, u64), SessionOpenRefusal> {
+    fn head(&mut self) -> Result<(u8, u64), CborFault> {
         let first = self.take(1)?[0];
         let major = first >> 5;
         let argument = match first & 0x1f {
@@ -213,15 +323,15 @@ impl Reader<'_> {
                 self.take(4)?.try_into().expect("four bytes"),
             )),
             27 => u64::from_be_bytes(self.take(8)?.try_into().expect("eight bytes")),
-            _ => return Err(SessionOpenRefusal::Malformed),
+            _ => return Err(CborFault),
         };
         Ok((major, argument))
     }
 
     /// Steps over one item and everything inside it.
-    fn skip(&mut self, depth: u32) -> Result<(), SessionOpenRefusal> {
+    fn skip(&mut self, depth: u32) -> Result<(), CborFault> {
         if depth > Self::MAX_DEPTH {
-            return Err(SessionOpenRefusal::Malformed);
+            return Err(CborFault);
         }
         let (major, argument) = self.head()?;
         let remaining = (self.bytes.len() - self.at) as u64;
@@ -235,7 +345,7 @@ impl Reader<'_> {
                     Some(argument)
                 };
                 let items = items.filter(|items| *items <= remaining);
-                for _ in 0..items.ok_or(SessionOpenRefusal::Malformed)? {
+                for _ in 0..items.ok_or(CborFault)? {
                     self.skip(depth + 1)?;
                 }
                 Ok(())

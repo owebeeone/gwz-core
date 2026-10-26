@@ -52,7 +52,7 @@ fn a_frame_set_round_trips_between_two_threads() {
     });
     // The registry frames come first, then the messages, as sent.
     for expected in &expected_registry {
-        let frame = eventually("a frame", || client.recv_frame_timeout(SHORT).unwrap());
+        let frame = eventually("a frame", || client.recv_registry_timeout(SHORT).unwrap());
         assert_eq!(&frame, expected);
     }
     for expected in &expected_messages {
@@ -186,6 +186,42 @@ fn a_session_open_with_an_environment_is_refused_on_send_and_the_canary_never_cr
 }
 
 #[test]
+fn every_refused_variant_of_the_session_open_is_refused_on_send_before_a_byte_of_it() {
+    for (name, body) in refused_session_opens() {
+        let (carrier, from_carrier, _to_carrier) = against_raw(limits(8, 4));
+        let refused = carrier
+            .send_frame(Frame { tag: 4, body }, Lane::Data, ZERO_KEY)
+            .unwrap_err();
+        let FrameRefused::Closed(_, closed) = refused else {
+            panic!("{name}: a refused shape must end the carrier");
+        };
+        assert!(
+            matches!(
+                closed.reason,
+                CloseReason::Protocol(ProtocolFault::SessionOpen(_))
+            ),
+            "{name}: {closed:?}"
+        );
+        // Nothing of the frame crossed: the wire holds the close announcement and no `SessionOpen`.
+        let crossed = frames_of(&read_to_end(from_carrier));
+        assert!(crossed.iter().all(|(tag, _)| *tag != 4), "{name}");
+    }
+    // The frozen shape goes through.
+    let (carrier, mut from_carrier, _to_carrier) = against_raw(limits(8, 4));
+    carrier
+        .send_frame(
+            Frame {
+                tag: 4,
+                body: session_open_without_environment(),
+            },
+            Lane::Data,
+            ZERO_KEY,
+        )
+        .unwrap();
+    assert_eq!(read_wire_frame(&mut from_carrier).0, 4);
+}
+
+#[test]
 fn a_session_open_with_an_environment_from_a_raw_peer_is_refused_and_not_delivered() {
     let (carrier, _from_carrier, mut to_carrier) = against_raw(limits(8, 4));
     // A peer that does not use this carrier's sender: the receiving side refuses by itself.
@@ -193,14 +229,14 @@ fn a_session_open_with_an_environment_from_a_raw_peer_is_refused_and_not_deliver
         &mut to_carrier,
         &wire_frame(4, &session_open_with_environment()),
     );
-    let closed = eventually("the refusal", || carrier.recv_frame_timeout(SHORT).err());
+    let closed = eventually("the refusal", || carrier.recv_registry_timeout(SHORT).err());
     assert_eq!(
         closed.reason,
         CloseReason::Protocol(ProtocolFault::SessionOpen(
             SessionOpenRefusal::ForbiddenField(3)
         ))
     );
-    assert_eq!(carrier.recv_frame_timeout(SHORT).unwrap_err(), closed);
+    assert_eq!(carrier.recv_registry_timeout(SHORT).unwrap_err(), closed);
 }
 
 /// Fills a carrier's writer: large data frames on stream 2 until the data lane answers `Full`. The far end reads
@@ -351,7 +387,7 @@ fn decode_attachment_kind(frame: &Frame, kind: MessageKind) -> bool {
 fn small_registry() -> CarrierLimits {
     limits(8, 4).with_inbound(InboundLimits {
         registry_frames: 2,
-        bytes: 4 * 1024 * 1024,
+        registry_bytes: 4 * 1024 * 1024,
         max_bindings: 4,
     })
 }
@@ -379,7 +415,7 @@ fn the_reader_does_not_wait_for_a_consumer() {
         write_all(&mut to_carrier, &wire_frame(2, &index.to_le_bytes()));
     }
     for index in 0..1000u32 {
-        let frame = eventually("a frame", || carrier.recv_frame_timeout(SHORT).unwrap());
+        let frame = eventually("a frame", || carrier.recv_registry_timeout(SHORT).unwrap());
         assert_eq!(frame.body, index.to_le_bytes());
     }
 }

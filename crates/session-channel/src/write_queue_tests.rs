@@ -119,3 +119,27 @@ fn the_queue_counts_its_frames() {
     queue.clear();
     assert!(queue.is_empty());
 }
+
+#[test]
+fn a_blocked_control_frame_does_not_hold_back_another_streams_cancel() {
+    // Stream 1's close waits for its own data; the cancel of stream 2, queued after both, is the oldest control frame
+    // that nothing ahead of it must stay ahead of, so it goes first.
+    let mut queue = WriteQueue::new();
+    queue.push("a1", DATA, ordinary(1));
+    queue.push("a2", DATA, ordinary(1));
+    queue.push("close-a", CONTROL, control(1));
+    queue.push("c1", DATA, ordinary(3));
+    queue.push("cancel-b", CONTROL, control(2));
+    assert_eq!(drain(queue), ["cancel-b", "a1", "a2", "close-a", "c1"]);
+}
+
+#[test]
+fn control_frames_of_one_target_hold_each_other_back() {
+    let mut queue = WriteQueue::new();
+    queue.push("d", DATA, ordinary(3));
+    queue.push("window-a", CONTROL, control(1));
+    queue.push("close-a", CONTROL, control(1));
+    queue.push("cancel-b", CONTROL, control(2));
+    // window-a and cancel-b are unblocked; close-a is behind window-a.
+    assert_eq!(drain(queue), ["window-a", "close-a", "cancel-b", "d"]);
+}

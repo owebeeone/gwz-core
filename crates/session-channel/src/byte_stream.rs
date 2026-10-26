@@ -68,6 +68,7 @@ where
 {
     let shared = Arc::new(Shared {
         writer: Mutex::new(Some(write)),
+        write_failed: Mutex::new(None),
         ended: Mutex::new(None),
         router,
         delivery: Mutex::new(()),
@@ -85,6 +86,9 @@ where
 /// What the end and its reader thread share.
 struct Shared<W> {
     writer: Mutex<Option<W>>,
+    /// A failure of the stream's far side that the writer met (a broken pipe, a reset): later sends fail with it, but the
+    /// session is not over, because the reader still has what the peer sent before it stopped listening to read.
+    write_failed: Mutex<Option<ErrorKind>>,
     /// Why the session ended at this end; the first reason stands.
     ended: Mutex<Option<Closed>>,
     router: Arc<dyn FrameRouter>,
@@ -286,14 +290,23 @@ impl<W: Write> FrameSink for ByteStreamEnd<W> {
         let _ = lane;
         let _turn = self.turns.wait(frame.tag, key);
         let mut writer = self.shared.lock_writer();
-        let sent = match (self.shared.ended(), writer.as_mut()) {
-            (Some(closed), _) => Err(closed),
+        let failed = *lock(&self.shared.write_failed);
+        let sent = match (self.shared.ended(), writer.as_mut(), failed) {
+            (Some(closed), _, _) => Err(closed),
+            (None, _, Some(kind)) => Err(Closed::Stream(kind)),
             // The writer goes only once the session has ended.
-            (None, None) => Err(self.shared.end(Closed::Local)),
-            (None, Some(stream)) => match frame.check(Carrier::ByteStream) {
+            (None, None, None) => Err(self.shared.end(Closed::Local)),
+            (None, Some(stream), None) => match frame.check(Carrier::ByteStream) {
                 Err(error) => Err(self.shared.end(Closed::Protocol(error))),
-                Ok(_) => write_frame(stream, &frame)
-                    .map_err(|error| self.shared.end(Closed::Stream(error.kind()))),
+                Ok(_) => match write_frame(stream, &frame) {
+                    Ok(()) => Ok(()),
+                    // The far side stopped listening. The session goes on reading until the stream ends.
+                    Err(error) if peer_side_failure(error.kind()) => {
+                        *lock(&self.shared.write_failed) = Some(error.kind());
+                        Err(Closed::Stream(error.kind()))
+                    }
+                    Err(error) => Err(self.shared.end(Closed::Stream(error.kind()))),
+                },
             },
         };
         if self.shared.ended().is_some() {
@@ -407,12 +420,29 @@ fn fill<R: Read>(stream: &mut R, buffer: &mut [u8]) -> Result<usize, Closed> {
     Ok(filled)
 }
 
+/// Whether an I/O failure is the far side of the stream going away (a broken pipe, a reset, a stream that ended inside
+/// a frame), as opposed to this end's own trouble. A byte-stream end does not end its session on such a failure of its
+/// writer, and its owner treats the same failure of the reader as the peer's departure.
+pub fn peer_side_failure(kind: ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::BrokenPipe
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::NotConnected
+            | ErrorKind::UnexpectedEof
+    )
+}
+
 fn truncated() -> Closed {
     Closed::Stream(ErrorKind::UnexpectedEof)
 }
 
-/// Writes a checked frame: its size, its tag byte and its body, then flushes.
-fn write_frame<W: Write>(stream: &mut W, frame: &Frame) -> io::Result<()> {
+/// Writes a checked frame: its size, its tag byte and its body, then flushes. For a caller that owns a raw stream and has
+/// one frame to put on it before any end exists (the refusal a listener owes a peer it turned away); a frame past the
+/// 64 MiB limit is refused as invalid input.
+pub fn write_frame<W: Write>(stream: &mut W, frame: &Frame) -> io::Result<()> {
+    Frame::check_size(frame.size()).map_err(|_| io::Error::from(ErrorKind::InvalidInput))?;
     // A checked frame's size is at most 64 MiB, so it fits a `u32`.
     let size = u32::try_from(frame.size()).map_err(|_| io::Error::from(ErrorKind::InvalidInput))?;
     let [a, b, c, d] = size.to_le_bytes();

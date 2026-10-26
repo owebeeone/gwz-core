@@ -157,3 +157,35 @@ fn the_registered_waker_is_woken_by_arrival_by_room_and_by_close() {
     core.close(CloseCode::Normal);
     assert!(wakes.count() > before, "a close must wake the peer");
 }
+
+#[test]
+fn a_links_end_closes_the_surviving_carriers_with_a_code_that_never_calls_a_failure_normal() {
+    use super::super::LinkEnd;
+    let closed = |reason| LinkEnd::Carrier(CarrierClosed { reason });
+    // Orderly ends close in order.
+    assert_eq!(LinkEnd::Stopped.code(), CloseCode::Normal);
+    assert_eq!(LinkEnd::PortClosed.code(), CloseCode::Normal);
+    assert_eq!(
+        closed(CloseReason::Peer(CloseCode::Normal)).code(),
+        CloseCode::Normal
+    );
+    assert_eq!(
+        closed(CloseReason::Local(CloseCode::Cancelled)).code(),
+        CloseCode::Cancelled
+    );
+    // Every failure closes with a failure code, whichever way it arrived.
+    for end in [
+        LinkEnd::PortFailed,
+        closed(CloseReason::PeerGone),
+        closed(CloseReason::Stalled),
+        closed(CloseReason::Stream(std::io::ErrorKind::BrokenPipe)),
+        closed(CloseReason::Protocol(super::super::ProtocolFault::Message)),
+        closed(CloseReason::Peer(CloseCode::ProtocolFault)),
+    ] {
+        assert_eq!(end.code(), CloseCode::ProtocolFault, "{end:?}");
+    }
+    assert_eq!(
+        closed(CloseReason::Peer(CloseCode::Dropped)).code(),
+        CloseCode::Cancelled
+    );
+}

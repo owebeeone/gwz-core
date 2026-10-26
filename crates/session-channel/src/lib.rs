@@ -23,7 +23,7 @@ mod byte_stream;
 mod in_process;
 mod write_queue;
 
-pub use byte_stream::{ByteStreamEnd, byte_stream};
+pub use byte_stream::{ByteStreamEnd, byte_stream, peer_side_failure, write_frame};
 pub use in_process::{InProcessEnd, pair};
 pub use write_queue::WriteQueue;
 

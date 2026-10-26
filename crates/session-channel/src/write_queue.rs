@@ -1,8 +1,10 @@
 //! The byte-stream writer's order (operator decision D-N).
 //!
 //! A byte stream carries one frame at a time, so frames wait for the writer. The writer picks the next frame at each
-//! frame boundary by one rule: **the oldest control frame goes ahead of the ordinary frames before it, except the
-//! ordinary frames of its own target and any `SessionCall`, which it never overtakes.** Everything else leaves in the
+//! frame boundary by one rule: **the oldest unblocked control frame goes ahead of the ordinary frames before it, except
+//! the ordinary frames of its own target and any `SessionCall`, which it never overtakes.** A control frame is blocked
+//! while a frame of its own target (or a `SessionCall`) is ahead of it; the next control frame of another target then
+//! goes first. Everything else leaves in the
 //! order it arrived. So a `Cancel`, a `Window` or a terminal frame is not held behind megabytes of an in-band spool of
 //! another call or stream, while the order the protocol depends on is kept: a stream's frames in the order sent, a
 //! call's frames in the order sent, and the calls in increasing call-ID order.
@@ -65,24 +67,21 @@ impl<T> WriteQueue<T> {
         self.entries.is_empty()
     }
 
-    /// Where the next frame sits: the oldest control frame if nothing before it must stay ahead of it, else the
-    /// oldest frame, which nothing precedes.
+    /// Where the next frame sits: the oldest control frame that nothing before it must stay ahead of, else the oldest
+    /// frame, which nothing precedes. A control frame is held back by an earlier `SessionCall` or by an earlier frame of
+    /// its own target (control frames of one target hold each other back); it is not held back by other targets'
+    /// frames, so a control frame waiting behind its own stream's data does not hold up another stream's cancel.
     fn next_index(&self) -> Option<usize> {
         if self.entries.is_empty() {
             return None;
         }
-        let Some((index, control)) = self
-            .entries
-            .iter()
-            .enumerate()
-            .find(|(_, entry)| entry.control())
-        else {
-            return Some(0);
-        };
-        let blocked = self.entries.iter().take(index).any(|before| {
-            before.tag == SESSION_CALL_TAG || before.key.target == control.key.target
+        let unblocked = self.entries.iter().enumerate().find(|(index, entry)| {
+            entry.control()
+                && !self.entries.iter().take(*index).any(|before| {
+                    before.tag == SESSION_CALL_TAG || before.key.target == entry.key.target
+                })
         });
-        Some(if blocked { 0 } else { index })
+        Some(unblocked.map_or(0, |(index, _)| index))
     }
 
     /// The frame the writer takes next, without taking it.

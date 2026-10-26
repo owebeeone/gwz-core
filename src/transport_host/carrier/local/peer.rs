@@ -4,9 +4,23 @@
 //! here ([`PeerPolicy::verify`]) is a pure function of two identities, so its refusals are tested on every platform
 //! with identities no single-user host can produce. There is one rule and one way to a policy: [`PeerPolicy::current_user`]
 //! reads this process's own identity. No setting, argument or build variant changes what it accepts (a source check,
-//! `scripts/checks/check_carrier_peer_rule.py`, fails the build on a hook that would).
+//! `scripts/checks/check_carrier_peer_rule.py`, fails the build on a hook that would, and on a field of the policy
+//! written outside this file). The one other constructor exists in test builds only, in this file, for the rows that need
+//! a policy for a user the host does not have.
 use super::LocalRefusal;
 use std::fmt;
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        impl PeerPolicy {
+            /// A policy for an identity the host may not have: the rows' way to a user or an integrity level that no
+            /// single-user host can produce. Test builds only.
+            pub(crate) fn from_identity(own: PeerIdentity) -> Self {
+                Self { own }
+            }
+        }
+    }
+}
 
 /// The account a process runs as.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -89,15 +103,22 @@ impl fmt::Display for PeerRefusal {
 /// The rule: who may be on the other end. Built once from this process's own identity.
 #[derive(Clone, Debug)]
 pub(crate) struct PeerPolicy {
-    // Visible to the carrier's own tests, which build a policy for a user the host does not have; production code
-    // reaches a policy only through `current_user`.
-    pub(in super::super) own: PeerIdentity,
+    own: PeerIdentity,
 }
 
 impl PeerPolicy {
-    /// The policy of this process: the same user, from outside any AppContainer, at the integrity this process has.
+    /// The policy of this process: the same user, from outside any AppContainer, at the integrity this process has. The
+    /// caller is held to the rule it applies to its peer: a process below Medium integrity is itself sandboxed (parked
+    /// server design §4, "Sandboxed callers"), and gets no policy.
     pub(crate) fn current_user() -> Result<Self, LocalRefusal> {
-        super::own_identity().map(|own| Self { own })
+        let own = super::own_identity()?;
+        if own.app_container {
+            return Err(LocalRefusal::Peer(PeerRefusal::AppContainer));
+        }
+        if own.integrity.is_some_and(|level| level < Integrity::Medium) {
+            return Err(LocalRefusal::Peer(PeerRefusal::Integrity));
+        }
+        Ok(Self { own })
     }
 
     pub(crate) fn own(&self) -> &PeerIdentity {
@@ -119,6 +140,11 @@ impl PeerPolicy {
         match (self.own.integrity, observed.integrity) {
             (None, None) => Ok(()),
             (Some(own), Some(theirs)) => {
+                // A process below Medium integrity is sandboxed, whatever the other side's level: no two of them
+                // reach each other through a carrier.
+                if own < Integrity::Medium || theirs < Integrity::Medium {
+                    return Err(PeerRefusal::Integrity);
+                }
                 let acceptable = match relation {
                     Relation::ListenerChecksClient => theirs >= own,
                     Relation::ClientChecksListener => theirs == own,

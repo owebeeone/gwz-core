@@ -225,3 +225,71 @@ pub(super) fn wire_message(message: &Attachment) -> Vec<u8> {
     let frame = super::super::wire::encode_attachment(message).expect("encodes");
     wire_frame(frame.tag, &frame.body)
 }
+
+/// A `SessionError` frame's `(call_id, error code, message)`, decoded from the exact shape the carrier writes:
+/// `{1: call_id, 2: {1: code, 2: message}}`. Anything else fails the row.
+pub(super) fn decode_session_error(frame: &gwz_session_contract::Frame) -> (u64, u64, String) {
+    assert_eq!(frame.tag, 3, "a SessionError is tag 3");
+    fn head(bytes: &[u8], at: &mut usize) -> (u8, u64) {
+        let first = bytes[*at];
+        *at += 1;
+        let argument = match first & 0x1f {
+            small @ 0..=23 => u64::from(small),
+            24 => {
+                *at += 1;
+                u64::from(bytes[*at - 1])
+            }
+            25 => {
+                *at += 2;
+                u64::from(u16::from_be_bytes([bytes[*at - 2], bytes[*at - 1]]))
+            }
+            other => panic!("unexpected head {other}"),
+        };
+        (first >> 5, argument)
+    }
+    let bytes = &frame.body;
+    let mut at = 0;
+    assert_eq!(head(bytes, &mut at), (5, 2));
+    assert_eq!(head(bytes, &mut at), (0, 1));
+    let (_, call_id) = head(bytes, &mut at);
+    assert_eq!(head(bytes, &mut at), (0, 2));
+    assert_eq!(head(bytes, &mut at), (5, 2));
+    assert_eq!(head(bytes, &mut at), (0, 1));
+    let (_, code) = head(bytes, &mut at);
+    assert_eq!(head(bytes, &mut at), (0, 2));
+    let (major, length) = head(bytes, &mut at);
+    assert_eq!(major, 3);
+    let message = String::from_utf8(bytes[at..at + length as usize].to_vec()).unwrap();
+    assert_eq!(
+        at + length as usize,
+        bytes.len(),
+        "nothing after the message"
+    );
+    (call_id, code, message)
+}
+
+/// A message addressed to `session` (the binding it belongs to), as the bytes a peer writes to the wire.
+pub(super) fn wire_for(session: &str, message: Attachment) -> Vec<u8> {
+    let mut message = message;
+    message.1.session_id = session.into();
+    wire_message(&message)
+}
+
+/// A transport frame as a peer writes it, built from raw CBOR for an envelope: `tag`, the request `name` and `cbor`
+/// are the lane body as the carrier's wire adapter frames it. For envelopes the transport's encoder would refuse.
+pub(super) fn wire_lane_raw(tag: u8, name: &str, cbor: &[u8]) -> Vec<u8> {
+    let body = [&[name.len() as u8][..], name.as_bytes(), cbor].concat();
+    wire_frame(tag, &body)
+}
+
+/// CBOR of a data envelope for `session` that the transport's own decode refuses (a stream-0 data message): it is
+/// well-formed enough to name its binding and not valid.
+pub(super) fn undecodable_envelope(session: &str) -> Vec<u8> {
+    let mut message = envelope(MessageKind::Data, 0);
+    message.session_id = session.into();
+    message.data = Some(Data {
+        offset: 0,
+        payload: vec![1],
+    });
+    gwz_transport::cbor::encode(&message.to_cbor())
+}

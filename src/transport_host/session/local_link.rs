@@ -16,6 +16,15 @@ use super::*;
 #[path = "../carrier/mod.rs"]
 pub(in crate::transport_host) mod carrier;
 
+// The one place the local carrier's per-user directory reads the environment (`XDG_RUNTIME_DIR`, `TMPDIR`); declared
+// here for the same reason as the carrier, and with it in the trunk patch.
+#[allow(
+    dead_code,
+    reason = "first production caller: plan step 2.3, the server command"
+)]
+#[path = "../runtime_env.rs"]
+pub(in crate::transport_host) mod runtime_env;
+
 /// The in-process link between a driver session's port and an endpoint session's port: the default carrier, joined to
 /// both ports by one pumping thread. `LocalLink::new(core, peer)` keeps the signature `build_native` calls; where the
 /// composition chooses another carrier it builds a `carrier::CarrierLink` over the carrier's end instead (the trunk's

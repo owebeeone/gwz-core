@@ -745,9 +745,12 @@ class Dispositions(unittest.TestCase):
         # OQ7 (a)) reads the process directory beside the environment, in
         # with_local_transport and in SshEndpointConfig::from_environment. All
         # three are env debt for the driver to capture and pass in (RemPlan B5).
+        # 18 -> 19 (2026-10-25): the local carrier's per-user directory takes XDG_RUNTIME_DIR
+        # and TMPDIR from one capture at the process boundary, transport_host/runtime_env.rs
+        # (convergence plan 2.1, remediation round 1, C-P2-4); the carrier reads no environment.
         for name in ('COUNT', 'CLEANUPS', 'HUB', 'INIT'):
             self.assertNotIn(('src/git/endpoint/agent_job.rs', 'static', name), core)
-        self.assertEqual(len(core), 18)
+        self.assertEqual(len(core), 19)
 
     def test_the_dead_https_helper_state_is_gone(self):
         # Transport release plan amendment 2's TR2.15: nothing read the orphaned

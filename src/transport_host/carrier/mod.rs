@@ -11,27 +11,36 @@
 //! | [`StreamCarrier`] | `session-channel` frames over a byte stream | another process, after the peer check |
 //! | the local carrier ([`local`]) | a `StreamCarrier` over a Unix domain socket or a Windows named pipe | same user, same machine |
 //!
-//! **Lanes.** A message is `Data` or `Control` by its kind, by the mux's own rule ([`Lane::of`]). The queue of one
-//! direction is one FIFO (frames arrive in the order they were sent, whatever their lanes) with a capacity per lane:
-//! a full `Data` lane refuses a data message, giving it back, and never refuses a control message while the control
-//! reserve has room. So a flood of data cannot keep `Window`, `Cancel` or a terminal message from being accepted. A
-//! control message does not overtake the data queued before it: the transport's terminal rules need that order.
+//! **Lanes.** A message is `Data` or `Control` by its kind, by the mux's own rule ([`Lane::of`]). Each lane has its
+//! own capacity: a full `Data` lane refuses a data message, giving it back, and never refuses a control message while
+//! the control reserve has room. So a flood of data cannot keep `Window`, `Cancel` or a terminal message from being
+//! accepted. **Order differs by end.** The in-process carrier is one FIFO per direction: frames arrive in the order
+//! they were sent, whatever their lanes, and a control message does not overtake the data queued before it. The
+//! stream carrier's writer applies the D-N rule instead (operator decision D-N): the oldest unblocked control frame
+//! goes ahead of ordinary frames of other targets, never ahead of ordinary frames of its own stream or call, and
+//! never ahead of a `SessionCall`, so order is kept per stream and per call, not across them. The transport's terminal
+//! rules need per-stream order only, which both give.
 //!
 //! **Binding.** [`CarrierBinding`] is the capability a carrier end hands the composition, which hands it to a session.
 //! Every [`Arrival`] carries the binding of the end it arrived on, and a session admits a message only when its own
-//! binding [`admits`](CarrierBinding::admits) the arrival. A binding is valid only on the carrier connection that
-//! bound it: a message that arrived on another connection is discarded with no state created (contract §6).
+//! binding [`admits`](CarrierBinding::admits) the arrival. The id is **per end**: the in-process pair shares one id
+//! between its two ends, but the ends of a stream or local carrier each draw their own, because nothing in 2.1 puts
+//! the id on the wire. A connection-level identity that both ends can name needs a handshake field, which plan step
+//! 2.2c owns. `admits` therefore tells a pump that an arrival came in on its own end, and nothing about the peer's.
 //!
 //! **Close.** An end closes with a [`CloseCode`]. Its peer reads the code in [`CloseReason::Peer`], after the messages
 //! sent before the close. A dropped end closes with `Dropped`. A stream that ends without the announcement reads as
 //! [`CloseReason::PeerGone`], a failed one as [`CloseReason::Stream`], and a frame the carrier refuses as
-//! [`CloseReason::Protocol`]. Nothing waits on a timeout to learn that the other end has gone.
+//! [`CloseReason::Protocol`]. A peer that stops listening or reading is not waited for forever: a stream carrier
+//! ends with [`CloseReason::Stalled`] when frames are queued and no byte has moved for the [`StallBounds`], and a
+//! closing end that cannot flush within the close bound shuts the stream anyway. Otherwise nothing waits on a timeout
+//! to learn that the other end has gone.
 //!
 //! Bytes: the stream carrier owns the framing of `session-channel` (length prefix, size cap) and adds the tags of the
 //! transport lane ([`wire`]). It writes no framing of its own.
 use crate::transport_host::Attachment;
 use gwz_transport::protocol::MessageKind;
-use std::{fmt, io, task::Waker};
+use std::{fmt, io, task::Waker, time::Duration};
 
 mod binding;
 mod in_process;
@@ -49,7 +58,7 @@ cfg_if::cfg_if! { if #[cfg(test)] { mod tests; } }
 
 pub(crate) use binding::{CarrierBinding, CarrierId, Peer, Side};
 pub(crate) use in_process::{InProcessCarrier, in_process};
-pub(crate) use link::CarrierLink;
+pub(crate) use link::{CarrierLink, Join, LinkEnd};
 pub(crate) use stream::{BindingRefused, FrameRefused, StreamCarrier};
 pub(crate) use wire::{SessionOpenRefusal, validate_session_open};
 
@@ -81,6 +90,7 @@ pub(crate) struct CarrierLimits {
     data_frames: usize,
     control_reserve: usize,
     inbound: InboundLimits,
+    stall: StallBounds,
 }
 
 impl CarrierLimits {
@@ -90,6 +100,7 @@ impl CarrierLimits {
         data_frames: 64,
         control_reserve: 16,
         inbound: InboundLimits::DEFAULT,
+        stall: StallBounds::DEFAULT,
     };
 
     /// `None` when either lane would have no room, or the capacity would overflow.
@@ -101,6 +112,7 @@ impl CarrierLimits {
             data_frames,
             control_reserve,
             inbound: InboundLimits::DEFAULT,
+            stall: StallBounds::DEFAULT,
         })
     }
 
@@ -111,6 +123,15 @@ impl CarrierLimits {
 
     pub(crate) fn inbound(self) -> InboundLimits {
         self.inbound
+    }
+
+    /// These limits with other stall bounds: the composition sets them from the session's policy (plan step 2.3).
+    pub(crate) fn with_stall(self, stall: StallBounds) -> Self {
+        Self { stall, ..self }
+    }
+
+    pub(crate) fn stall(self) -> StallBounds {
+        self.stall
     }
 
     pub(crate) fn capacity(self, lane: Lane) -> usize {
@@ -129,16 +150,19 @@ impl Default for CarrierLimits {
 
 /// What a carrier end keeps for what its peer sends, with no consumer needed: the reader of a byte stream hands every
 /// frame to a router that never blocks (operator decision D-N). A peer must keep within these bounds, which the
-/// composition sets from the limits of the session the carrier serves. The session registry's class is a frame count,
-/// the call limit and the control reserve of the session; the transport lane is not: its state is per binding and per
-/// stream ([`BindingLimits`]). A session-class overrun ends the carrier; a binding's faults only that binding.
+/// composition sets from the limits of the session the carrier serves. The registry class (tags 1 to 8) has its own
+/// frame and byte caps, the call limit and control reserve of the session; an overrun of either ends the carrier. The
+/// transport class has no carrier-wide pool: its state is per binding and per stream, bounded by the windows this end
+/// granted and the slots per kind ([`BindingLimits`]), and an overrun faults that binding alone. A frame's charge
+/// stays against its class and binding until its own consumer takes it, so a consumer that is not ready holds back its
+/// own class or binding and nothing else.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct InboundLimits {
     /// Frames under tags 1 to 8 queued for the consumer: the session's outstanding calls and control reserve.
     pub(crate) registry_frames: usize,
-    /// Bytes queued for the consumer across all classes, one frame larger than this aside when the queue is empty. A
-    /// transport frame past it faults its binding; a registry frame ends the carrier.
-    pub(crate) bytes: usize,
+    /// Bytes of registry frames queued for the consumer, one frame larger than this aside when the queue is empty. A
+    /// registry frame past it ends the carrier.
+    pub(crate) registry_bytes: usize,
     /// Bindings open at once on the carrier.
     pub(crate) max_bindings: usize,
 }
@@ -148,8 +172,27 @@ impl InboundLimits {
     /// class, and for 2 MiB-frames of two full queues in bytes.
     pub(crate) const DEFAULT: InboundLimits = InboundLimits {
         registry_frames: 1024 + 64,
-        bytes: 2 * gwz_session_contract::MAX_FRAME_BYTES,
+        registry_bytes: 2 * gwz_session_contract::MAX_FRAME_BYTES,
         max_bindings: 1024,
+    };
+}
+
+/// How long a stream carrier waits for a peer that has stopped taking bytes (`GwzSplitCommandChannel.md` §4.3, "Stuck
+/// peers"). The carrier supplies the mechanism and the composition the policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct StallBounds {
+    /// With frames queued for the writer, how long no byte may be accepted before the carrier ends as
+    /// [`CloseReason::Stalled`] and shuts the stream.
+    pub(crate) no_progress: Duration,
+    /// How long a closing end flushes what it has queued and its announcement, before it shuts the stream anyway.
+    pub(crate) close: Duration,
+}
+
+impl StallBounds {
+    /// The 60 seconds of §4.3; the close bound is the carrier's own until the session host's is wired (plan step 2.3).
+    pub(crate) const DEFAULT: StallBounds = StallBounds {
+        no_progress: Duration::from_secs(60),
+        close: Duration::from_secs(10),
     };
 }
 
@@ -266,6 +309,8 @@ pub(crate) enum CloseReason {
     PeerGone,
     /// The byte stream failed.
     Stream(io::ErrorKind),
+    /// Frames were queued and the stream accepted no byte for the stall bound: the peer has stopped reading.
+    Stalled,
     /// A fault in what the peer sent, or in what this end was asked to send.
     Protocol(ProtocolFault),
 }
@@ -283,6 +328,7 @@ impl fmt::Display for CarrierClosed {
             CloseReason::Peer(code) => write!(f, "the peer closed the carrier ({code:?})"),
             CloseReason::PeerGone => f.write_str("the peer's end of the carrier is gone"),
             CloseReason::Stream(kind) => write!(f, "the carrier's stream failed: {kind}"),
+            CloseReason::Stalled => f.write_str("the peer stopped taking bytes"),
             CloseReason::Protocol(fault) => {
                 write!(f, "the carrier met a protocol fault: {fault:?}")
             }
@@ -326,9 +372,23 @@ pub(crate) trait Carrier: Send + Sync {
     /// arrived. After the peer's close, the messages it sent before still arrive, then the closure.
     fn try_recv(&self) -> Result<Option<Arrival>, CarrierClosed>;
 
+    /// The next message of one binding (the transport messages whose envelope names `binding`), in the order they were
+    /// sent, whatever else is queued for the end. A binding that is not open has none. An end with no bindings of its
+    /// own (the in-process carrier) has one stream of messages, which this takes.
+    fn try_recv_binding(&self, binding: &str) -> Result<Option<Arrival>, CarrierClosed> {
+        let _ = binding;
+        self.try_recv()
+    }
+
     /// Wakes `waker` when a message arrives, a full lane gets room, or the carrier ends. One waker per end: a later
     /// registration replaces the earlier.
     fn register(&self, waker: &Waker);
+
+    /// Wakes `waker` when a message for `binding` arrives or the carrier ends. One waker per binding.
+    fn register_binding(&self, binding: &str, waker: &Waker) {
+        let _ = binding;
+        self.register(waker);
+    }
 
     /// Ends the carrier at this end with `code`. This end sends and receives nothing more; the peer receives what was
     /// sent before, then the code. Closing again changes nothing.

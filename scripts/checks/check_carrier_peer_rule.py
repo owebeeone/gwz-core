@@ -11,6 +11,9 @@ test-only or configurable override:
   platform items for the rows, so no build variant has a different rule;
 - an identifier that names a bypass (`skip_peer`, `insecure`, `accept_any`, `for_tests`, `test_only`, ...);
 - a `PeerPolicy { .. }` struct literal outside peer.rs, where the one constructor lives;
+- a use of the policy's `own` field outside peer.rs (an assignment such as `policy.own = ...` would replace the identity
+  the rule compares against): the field is private, the accessor `own()` is a call, and any other `.own` fails;
+- the test-build constructor `from_identity` named outside peer.rs, where it is defined under `cfg(test)`;
 - a `verify` function outside peer.rs, or a platform module (unix.rs, windows.rs) that does not call `.verify(` with both
   relations (the listener's check of its client, and the client's check of its listener).
 
@@ -36,6 +39,8 @@ CFG = re.compile(r'cfg\s*\(([^\n]*?)\)\s*[\]{]')
 # Exactly these switches may appear, in these files.
 ALLOWED_CFG = {
     'mod.rs': ['test'],
+    'local/peer.rs': ['test'],
+    'local/windows.rs': ['test'],
     'local/mod.rs': ['unix', 'windows', 'all(test, unix)', 'all(test, windows)'],
 }
 # Platform items (not switches on the peer rule) in the platform file that picks an OS call.
@@ -112,6 +117,10 @@ def violations(root: Path) -> list[str]:
                 found.append(f'{rel}:{number}: names a bypass ({match.group(0)}): {line.strip()}')
             if rel != 'local/peer.rs' and re.search(r'(?<!struct )(?<!impl )\bPeerPolicy\s*\{', line):
                 found.append(f'{rel}:{number}: builds a PeerPolicy outside peer.rs: {line.strip()}')
+            if rel != 'local/peer.rs' and re.search(r'\.own\b(?!\s*\()', line):
+                found.append(f'{rel}:{number}: uses the policy\'s own field outside peer.rs: {line.strip()}')
+            if rel != 'local/peer.rs' and re.search(r'\bfrom_identity\b', line):
+                found.append(f'{rel}:{number}: names the test-build policy constructor outside peer.rs: {line.strip()}')
             if rel != 'local/peer.rs' and re.search(r'\bfn\s+verify\b', line):
                 found.append(f'{rel}:{number}: a second verify function: {line.strip()}')
         allowed = ALLOWED_CFG.get(rel, []) + PLATFORM_CFG_FILES.get(rel, [])
