@@ -51,6 +51,27 @@ use std::path::PathBuf;
 cfg_if::cfg_if! {
     if #[cfg(any(windows, test))] {
         pub(crate) use super::machine_proxy::MachineProxy;
+
+        /// The machine setting as canonical bytes, from its parsed, bounded inputs (plan step 1.5, remediation C-P2-3):
+        /// the setting (its kind, and the named proxy's port and host or the refusal's text), the bypass rules as the
+        /// parser read them, and this machine's own addresses as octets. No `Debug` layout.
+        pub(super) fn machine_canonical(machine: &MachineProxy) -> [Vec<u8>; 3] {
+            match machine {
+                MachineProxy::Direct => [vec![0], Vec::new(), Vec::new()],
+                MachineProxy::Named(named) => {
+                    let mut setting = vec![1];
+                    setting.extend_from_slice(&named.proxy.port.to_le_bytes());
+                    setting.extend_from_slice(named.proxy.host.as_bytes());
+                    let (rules, own) = named.bypass.canonical();
+                    [setting, rules, own]
+                }
+                MachineProxy::Refused(text) => {
+                    let mut setting = vec![2];
+                    setting.extend_from_slice(text.as_bytes());
+                    [setting, Vec::new(), Vec::new()]
+                }
+            }
+        }
     } else {
         /// Unix takes its proxy from the environment, so it never captures a machine proxy.
         #[derive(Clone, Debug)]
@@ -60,6 +81,11 @@ cfg_if::cfg_if! {
             pub(crate) fn apply(&self, _: &mut https_connection::Config) {
                 match *self {}
             }
+        }
+
+        /// Unix captures no machine setting, so there is none to encode.
+        pub(super) fn machine_canonical(machine: &MachineProxy) -> [Vec<u8>; 3] {
+            match *machine {}
         }
     }
 }
@@ -144,7 +170,8 @@ pub(super) fn capture_operation(
             "the Windows machine proxy setting was not captured on the original entry",
         ));
     }
-    let (tls, ca) = tls_config(environment, machine.as_ref())?;
+    let (tls, trust) = tls_config(environment, machine.as_ref())?;
+    profile::refuse_proxy_authorization(&tls)?;
     // The one home contract (plan step 3.1): `known_hosts` and `~/` identities resolve under the home chosen here,
     // once, from the snapshot and the current directory its driver captured.
     let home = ssh_home::resolve(ssh_home::PLATFORM, environment, cwd, &ssh_home::Disk)
@@ -159,7 +186,8 @@ pub(super) fn capture_operation(
     apply_native_timeout(&mut pool, timeout);
     let canonical = profile::canonical(&profile::Fields {
         ssh: &ssh,
-        ca: ca.as_ref(),
+        ca: trust.ca.as_ref(),
+        platform: trust.platform,
         roots: [
             value(environment, &["SSL_CERT_FILE"]),
             value(environment, &["SSL_CERT_DIR"]),
@@ -185,8 +213,15 @@ pub(super) fn capture_operation(
     });
     let inputs = std::sync::Arc::new(EndpointInputs { local, tls });
     let digest = profile::digest(&canonical);
-    let profile = EndpointProfile::with_inputs(canonical, digest, inputs.clone())
-        .map_err(|_| invalid("endpoint profile exceeds its bound"))?;
+    let length = canonical.len();
+    // The encoding's field maxima sum to less than the bound (`profile::the_field_maxima_fit_the_profile_bound`), so
+    // this refusal names a broken encoder, not a configuration.
+    let profile = EndpointProfile::with_inputs(canonical, digest, inputs.clone()).map_err(|_| {
+        invalid(&format!(
+            "endpoint profile of {length} bytes exceeds the connection host's bound of {} bytes",
+            gwz_connection::MAX_PROFILE_BYTES
+        ))
+    })?;
     Ok(OperationCapture {
         inputs,
         profile,
@@ -200,20 +235,64 @@ pub(super) struct CaFile {
     digest: [u8; 32],
 }
 
+/// The trust content a capture read: the CA file's, and on OpenSSL builds the platform roots' (the SHA-256 of their
+/// certificates, read once here, which the instance then trusts exactly).
+pub(super) struct Trust {
+    ca: Option<CaFile>,
+    platform: Option<[u8; 32]>,
+}
+
 /// The canonical bytes of a profile (the reuse design's section 3 fields, in its order): each field a tag and a
-/// length-prefixed value, an absent value distinct from an empty one. Paths are compared as bytes (WTF-8 on Windows),
-/// lexically. Values with no byte form of their own (the home's source, the agent and machine proxy forms, the pool's
-/// clocks) are their `Debug` text, which names every field that selects them in this build; the Pageant pin's is its
-/// window and process, an address the reuse design treats as nothing more (possession is proven at lease, step 1.6).
+/// length-prefixed value, an absent value distinct from an empty one. Every field has a maximum: a value within it is
+/// kept as its bytes, a longer one as its SHA-256 (a marker byte tells which), so a capture the grammars accept always
+/// fits `gwz_connection::MAX_PROFILE_BYTES` (remediation C-P2-3). Paths are compared as bytes (WTF-8 on Windows),
+/// lexically. The home's source, the agent form and the pool's clocks are their `Debug` text, which names every field
+/// that selects them in this build and is bounded (the agent's by field 5's maximum); the Pageant pin's is its window
+/// and process, an address the reuse design treats as nothing more (possession is proven at lease, step 1.6). The
+/// machine setting is encoded from its parsed inputs (`machine_canonical`), never from its `Debug`.
 mod profile {
-    use super::{CaFile, MachineProxy, OsString, SshSettings, https_connection, pool};
+    use super::{CaFile, MachineProxy, OsString, SshSettings, https_connection, invalid, pool};
+    use crate::model::ModelResult;
 
     /// What the format and the build are: a profile is never compared across either.
-    const FORMAT: &[u8] = b"gwz-endpoint-profile/1";
+    const FORMAT: &[u8] = b"gwz-endpoint-profile/2";
+    /// The longest a path or an address may be and still be kept as its bytes.
+    const PATH: usize = 4096;
+    /// Each field's tag and the most bytes its value is kept as; a longer value is kept as its SHA-256.
+    pub(super) const FIELDS: [(u8, usize); 17] = [
+        (1, 64),    // format
+        (2, 64),    // build
+        (3, PATH),  // SSH home
+        (4, 64),    // home source
+        (5, PATH),  // agent
+        (6, PATH),  // CA file path
+        (7, 32),    // CA file content digest
+        (8, PATH),  // SSL_CERT_FILE
+        (9, PATH),  // SSL_CERT_DIR
+        (10, 512),  // proxy host, port and TLS flag
+        (11, 8192), // bypass list (no_proxy), normalized
+        (12, 4200), // machine setting: kind, and the named proxy (string grammar 4096) or the refusal's text
+        (13, 8),    // timeout
+        (14, 1024), // pool clocks
+        (15, 8192), // machine bypass rules (list grammar 8192)
+        (16, PATH), // this machine's own addresses
+        (17, 32),   // OpenSSL platform roots content digest
+    ];
+    /// A field's framing: its tag, its length and the marker byte.
+    const FRAMING: usize = 1 + 4 + 1;
+
+    fn maximum(tag: u8) -> usize {
+        FIELDS
+            .iter()
+            .find(|(field, _)| *field == tag)
+            .map_or(0, |(_, maximum)| *maximum)
+    }
 
     pub(super) struct Fields<'a> {
         pub(super) ssh: &'a SshSettings,
         pub(super) ca: Option<&'a CaFile>,
+        /// The SHA-256 of the OpenSSL platform roots the capture read, where that is the backend.
+        pub(super) platform: Option<[u8; 32]>,
         /// `SSL_CERT_FILE` and `SSL_CERT_DIR`, which choose OpenSSL's platform roots where that is the backend.
         pub(super) roots: [Option<OsString>; 2],
         pub(super) tls: &'a https_connection::Config,
@@ -226,15 +305,37 @@ mod profile {
     impl Writer {
         fn field(&mut self, tag: u8, value: Option<&[u8]>) {
             self.0.push(tag);
-            match value {
-                None => self.0.extend_from_slice(&u32::MAX.to_le_bytes()),
-                Some(bytes) => {
-                    let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX - 1);
-                    self.0.extend_from_slice(&len.to_le_bytes());
-                    self.0.extend_from_slice(bytes);
-                }
-            }
+            let Some(bytes) = value else {
+                self.0.extend_from_slice(&u32::MAX.to_le_bytes());
+                return;
+            };
+            let digested;
+            let (marker, kept) = if bytes.len() > maximum(tag) {
+                digested = digest(bytes);
+                (1u8, digested.as_slice())
+            } else {
+                (0u8, bytes)
+            };
+            let len = u32::try_from(kept.len() + 1).unwrap_or(u32::MAX - 1);
+            self.0.extend_from_slice(&len.to_le_bytes());
+            self.0.push(marker);
+            self.0.extend_from_slice(kept);
         }
+    }
+
+    /// A shared endpoint never holds a proxy credential: equal canonical bytes would hand one client's to another
+    /// (reuse design section 3; remediation S-P3-1). Today's parsers never set one; this refuses if one ever does.
+    pub(super) fn refuse_proxy_authorization(tls: &https_connection::Config) -> ModelResult<()> {
+        if tls
+            .proxy
+            .as_ref()
+            .is_some_and(|proxy| proxy.authorization.is_some())
+        {
+            return Err(invalid(
+                "an endpoint proxy with authorization cannot be shared between operations",
+            ));
+        }
+        Ok(())
     }
 
     pub(super) fn canonical(fields: &Fields<'_>) -> Vec<u8> {
@@ -250,9 +351,9 @@ mod profile {
             out.field(tag, root.as_ref().map(|value| value.as_encoded_bytes()));
         }
         let proxy = fields.tls.proxy.as_ref().map(|proxy| {
-            let mut bytes = proxy.host.as_bytes().to_vec();
-            bytes.extend_from_slice(&proxy.port.to_le_bytes());
+            let mut bytes = proxy.port.to_le_bytes().to_vec();
             bytes.push(u8::from(proxy.tls));
+            bytes.extend_from_slice(proxy.host.as_bytes());
             bytes
         });
         out.field(10, proxy.as_deref());
@@ -265,10 +366,16 @@ mod profile {
         bypass.sort();
         bypass.dedup();
         out.field(11, Some(bypass.join("\0").as_bytes()));
-        let machine = fields.machine.map(|machine| format!("{machine:?}"));
-        out.field(12, machine.as_deref().map(str::as_bytes));
+        let machine = fields.machine.map(super::machine_canonical);
+        out.field(
+            12,
+            machine.as_ref().map(|[setting, _, _]| setting.as_slice()),
+        );
         out.field(13, Some(&fields.timeout.to_le_bytes()));
         out.field(14, Some(format!("{:?}", fields.pool).as_bytes()));
+        out.field(15, machine.as_ref().map(|[_, rules, _]| rules.as_slice()));
+        out.field(16, machine.as_ref().map(|[_, _, own]| own.as_slice()));
+        out.field(17, fields.platform.as_ref().map(|digest| digest.as_slice()));
         out.0
     }
 
@@ -301,6 +408,7 @@ mod profile {
                 canonical(&Fields {
                     ssh: &ssh,
                     ca: None,
+                    platform: None,
                     roots: [None, None],
                     tls: &tls,
                     machine: None,
@@ -318,6 +426,53 @@ mod profile {
                 assert_ne!(base, with_proxy(None, &["internal.example", ".corp.example"]));
                 assert_ne!(base, with_proxy(Some("proxy-a.example"), &["internal.example"]));
                 assert_eq!(base, with_proxy(Some("proxy-a.example"), &[".corp.example", "internal.example"]));
+            }
+
+            /// The sum of the field maxima, each with its framing (and a digest's 32 bytes where that is longer), is
+            /// under the connection host's bound: no capture the grammars accept is refused for its size (C-P2-3).
+            #[test]
+            fn the_field_maxima_fit_the_profile_bound() {
+                let total: usize = FIELDS
+                    .iter()
+                    .map(|(_, maximum)| FRAMING + (*maximum).max(32))
+                    .sum();
+                assert!(total <= gwz_connection::MAX_PROFILE_BYTES, "{total} bytes of fields");
+                let tags: std::collections::BTreeSet<u8> = FIELDS.iter().map(|(tag, _)| *tag).collect();
+                assert_eq!(tags.len(), FIELDS.len(), "one maximum per tag");
+            }
+
+            /// A 16 KiB `NO_PROXY` is kept as its digest, so it fits, and one changed host is another profile.
+            #[test]
+            fn a_long_bypass_list_fits_and_one_host_changes_the_profile() {
+                let hosts: Vec<String> = (0..1024).map(|n| format!("h{n:05}.corp.example")).collect();
+                let long: Vec<&str> = hosts.iter().map(String::as_str).collect();
+                assert!(long.iter().map(|host| host.len() + 1).sum::<usize>() >= 16 * 1024);
+                let first = with_proxy(Some("proxy-a.example"), &long);
+                // Kept as its 32-byte digest: the whole profile stays far smaller than the list.
+                assert!(first.len() < 2048, "{} bytes", first.len());
+                assert!(first.len() <= gwz_connection::MAX_PROFILE_BYTES);
+                let mut changed = long.clone();
+                changed[512] = "other.corp.example";
+                assert_ne!(first, with_proxy(Some("proxy-a.example"), &changed));
+            }
+
+            /// A proxy that carries authorization is refused before it can become a shared endpoint's (S-P3-1).
+            #[test]
+            fn a_proxy_with_authorization_is_refused() {
+                let mut tls = https_connection::Config {
+                    proxy: Some(https_connection::Proxy {
+                        host: "proxy.example".into(),
+                        port: 3128,
+                        tls: false,
+                        authorization: None,
+                    }),
+                    ..https_connection::Config::default()
+                };
+                assert!(refuse_proxy_authorization(&tls).is_ok());
+                if let Some(proxy) = tls.proxy.as_mut() {
+                    proxy.authorization = Some("Basic dXNlcjpwYXNz".into());
+                }
+                assert!(refuse_proxy_authorization(&tls).is_err());
             }
         }
     }
@@ -351,13 +506,30 @@ cfg_if::cfg_if! {
         /// `SSL_CERT_DIR` and the standard locations give them, and nothing
         /// else (`verify_paths`). The backend's own roots are left out, so that
         /// setting either variable narrows trust as it does in gwz 1.0.17.
-        fn platform_roots(environment: &EnvironmentSnapshot) -> https_tls::RootsLoader {
+        ///
+        /// They are read once, here, at capture (plan step 1.5, remediation
+        /// S-P2-3): `config`'s loader returns exactly those certificates, so the
+        /// instance trusts what the profile names, and the SHA-256 of their DER
+        /// is the profile's field 17.
+        fn platform_trust(
+            environment: &EnvironmentSnapshot,
+            config: &mut https_connection::Config,
+        ) -> Option<[u8; 32]> {
+            use sha2::{Digest, Sha256};
             let file = value(environment, &["SSL_CERT_FILE"]);
             let dir = value(environment, &["SSL_CERT_DIR"]);
-            std::sync::Arc::new(move || {
-                verify_paths::Paths::resolve(file.as_deref(), dir.as_deref(), standard_paths)
-                    .roots()
-            })
+            let roots = verify_paths::Paths::resolve(file.as_deref(), dir.as_deref(), standard_paths)
+                .roots();
+            let mut digest = Sha256::new();
+            for root in &roots {
+                let der = root.to_der().unwrap_or_default();
+                digest.update((der.len() as u64).to_le_bytes());
+                digest.update(&der);
+            }
+            let roots = std::sync::Arc::new(roots);
+            let loader: https_tls::RootsLoader = std::sync::Arc::new(move || roots.as_ref().clone());
+            config.platform_roots = Some(loader);
+            Some(digest.finalize().into())
         }
 
         /// The locations a start of libgit2's host finds for the variables that
@@ -372,6 +544,15 @@ cfg_if::cfg_if! {
     } else {
         /// The CA file the snapshot names for the endpoint.
         const CA_FILE_VARIABLES: &[&str] = &["GIT_SSL_CAINFO", "SSL_CERT_FILE"];
+
+        /// The platform's own store answers every handshake here (Security.framework, Schannel): no snapshot of it is
+        /// taken, so no stale one can be shared, and the CA file is the trust content the profile names.
+        fn platform_trust(
+            _: &EnvironmentSnapshot,
+            _: &mut https_connection::Config,
+        ) -> Option<[u8; 32]> {
+            None
+        }
     }
 }
 
@@ -381,7 +562,7 @@ cfg_if::cfg_if! {
 fn tls_config(
     environment: &EnvironmentSnapshot,
     machine: Option<&MachineProxy>,
-) -> ModelResult<(https_connection::Config, Option<CaFile>)> {
+) -> ModelResult<(https_connection::Config, Trust)> {
     let mut config = https_connection::Config::default();
     if let Some(machine) = machine {
         machine.apply(&mut config);
@@ -410,16 +591,14 @@ fn tls_config(
             digest: profile::digest(&bytes),
         });
     }
-    cfg_if::cfg_if! { if #[cfg(not(any(windows, target_vendor = "apple")))] {
-        config.platform_roots = Some(platform_roots(environment));
-    } }
+    let platform = platform_trust(environment, &mut config);
     if machine.is_none() {
         platform::proxy(environment, &mut config)?;
     }
     config
         .validate()
         .map_err(|_| invalid("unsupported endpoint TLS/proxy configuration"))?;
-    Ok((config, ca))
+    Ok((config, Trust { ca, platform }))
 }
 
 cfg_if::cfg_if! {
