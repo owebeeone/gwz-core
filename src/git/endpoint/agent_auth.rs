@@ -388,7 +388,7 @@ pub(crate) fn prove_possession<C: Channel>(
     let Some(kind) = KeyType::of(key) else {
         return Ok(Possession::Unprovable);
     };
-    if !kind.provable() {
+    if !kind.provable(key) {
         return Ok(Possession::Unprovable);
     }
     let mut nonce = [0u8; 32];

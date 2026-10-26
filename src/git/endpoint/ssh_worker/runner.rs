@@ -509,8 +509,9 @@ where
         Lessee::Other => {}
     }
     let Some(evidence) = evidence else {
-        let _ = host.release(lease, Disposition::Reusable);
-        return Screened::Fresh(request, policy);
+        let bounced = lease.connection().ok();
+        let _ = host.release_unused(lease);
+        return Screened::Fresh(request, excluding(policy, bounced));
     };
     let possession = match &evidence.authenticator {
         Authenticator::Agent(accepted) => {
@@ -524,8 +525,9 @@ where
                 .as_ref()
                 .is_some_and(|entry| entry.identity() == Identity::Explicit(token.clone()));
             if !equal {
+                let bounced = lease.connection().ok();
                 let _ = host.release(lease, Disposition::Discarded);
-                return Screened::Fresh(request, policy);
+                return Screened::Fresh(request, excluding(policy, bounced));
             }
             None
         }
@@ -571,7 +573,7 @@ where
             // No proof job can start (a full job budget is WouldBlock): the connection goes back to idle and the open
             // fails as a setup that cannot start does, with Capacity (reuse design §4's table).
             for waiter in waiters {
-                let _ = host.release(waiter.lease, Disposition::Reusable);
+                let _ = host.release_unused(waiter.lease);
                 waiter.request.complete(Err(io::Error::from(error.kind())));
             }
             Screened::Waiting
@@ -602,7 +604,7 @@ where
         let mut kept = Vec::with_capacity(shared.waiters.len());
         for waiter in shared.waiters.drain(..) {
             if waiter.request.expired(now) {
-                let _ = host.release(waiter.lease, Disposition::Reusable);
+                let _ = host.release_unused(waiter.lease);
                 waiter.request.complete_expired(io::ErrorKind::TimedOut);
             } else {
                 kept.push(waiter);
@@ -610,8 +612,19 @@ where
         }
         shared.waiters = kept;
         if shared.waiters.is_empty() {
-            // Nobody waits: dropping the job cancels it, and its supervisor retains it until it ends.
-            proving.swap_remove(index);
+            // Nobody waits now, but the proof is the binding's (contract section 7.1: only the binding's end cancels
+            // it): the job runs on under the deadline it started with, and a proof that passes is recorded for the
+            // binding, so its next lease asks nothing (reuse design section 4; step 1.6 remediation, C-P3-5).
+            let Poll::Ready(result) = shared.job.poll_result(cx) else {
+                index += 1;
+                continue;
+            };
+            let shared = proving.swap_remove(index);
+            if let Ok(verdict) = result
+                && passed(&verdict)
+            {
+                record(proofs, &shared);
+            }
             continue;
         }
         let verdict = match shared.job.poll_result(cx) {
@@ -683,24 +696,27 @@ where
                 });
             }
             for waiter in shared.waiters {
+                let bounced = waiter.lease.connection().ok();
                 let _ = host.release(waiter.lease, Disposition::Discarded);
-                next.push(Screened::Fresh(waiter.request, waiter.policy));
+                next.push(Screened::Fresh(
+                    waiter.request,
+                    excluding(waiter.policy, bounced),
+                ));
             }
             continue;
         }
         if unprovable {
             for waiter in shared.waiters {
-                let _ = host.release(waiter.lease, Disposition::Reusable);
-                next.push(Screened::Fresh(waiter.request, waiter.policy));
+                let bounced = waiter.lease.connection().ok();
+                let _ = host.release_unused(waiter.lease);
+                next.push(Screened::Fresh(
+                    waiter.request,
+                    excluding(waiter.policy, bounced),
+                ));
             }
             continue;
         }
-        if let Some(key) = &shared.key {
-            proofs.add_key(&shared.binding, key);
-        }
-        if let Some((name, port, host_key)) = &shared.host {
-            proofs.add_host(&shared.binding, name, *port, host_key);
-        }
+        record(proofs, &shared);
         for waiter in shared.waiters {
             host.record_lessee(&waiter.lease, &shared.binding);
             next.push(Screened::Attach(
@@ -719,7 +735,39 @@ where
     C: Connector,
 {
     for waiter in waiters {
-        let _ = host.release(waiter.lease, Disposition::Reusable);
+        let _ = host.release_unused(waiter.lease);
         waiter.request.complete(Err(kind.into()));
     }
+}
+
+/// Whether a proof's verdict lets its binding reuse: every part asked passed.
+fn passed(verdict: &Verdict) -> bool {
+    verdict
+        .possession
+        .is_none_or(|possession| possession == Possession::Proven)
+        && verdict.trusted.is_none_or(|trusted| trusted)
+}
+
+/// Records a passed proof for its binding.
+fn record(proofs: &mut Proofs, shared: &SharedProof) {
+    if let Some(key) = &shared.key {
+        proofs.add_key(&shared.binding, key);
+    }
+    if let Some((name, port, host_key)) = &shared.host {
+        proofs.add_host(&shared.binding, name, *port, host_key);
+    }
+}
+
+/// `policy` asking again with the connection `bounced` excluded (step 1.6 remediation, S-P2-2): the next compatible
+/// idle connection, the binding's own among them, or a new one, is offered instead of the one that could not serve it.
+fn excluding(
+    mut policy: gwz_transport::pool::Request,
+    bounced: Option<gwz_transport::pool::ConnectionId>,
+) -> gwz_transport::pool::Request {
+    if let Some(bounced) = bounced
+        && !policy.exclude.contains(&bounced)
+    {
+        policy.exclude.push(bounced);
+    }
+    policy
 }

@@ -215,9 +215,20 @@ impl KeyType {
         }
     }
 
-    /// Whether the transport can check a proof signature of this key at all, before the agent is asked for one.
-    pub(crate) fn provable(&self) -> bool {
-        !matches!(self.family, Family::Dsa | Family::Ecdsa(66))
+    /// Whether the transport can check a proof signature of the key `blob` at all, before the agent is asked for one:
+    /// not DSA, not P-521, and for RSA a modulus of 2048 to 8192 bits (step 1.6 remediation, C-P3-2).
+    pub(crate) fn provable(&self, blob: &[u8]) -> bool {
+        if matches!(self.family, Family::Dsa | Family::Ecdsa(66)) {
+            return false;
+        }
+        if self.family != Family::Rsa {
+            return true;
+        }
+        self.material(blob).is_ok_and(|material| {
+            let n = unsigned(material.second);
+            let bits = n.len() * 8 - n.first().map_or(8, |byte| byte.leading_zeros() as usize);
+            (2048..=8192).contains(&bits)
+        })
     }
 
     /// Checks `reply`, the agent's signature blob, as a signature by the key `blob` over `data` with
@@ -227,7 +238,7 @@ impl KeyType {
             ECDSA_P256_SHA256_FIXED, ECDSA_P384_SHA384_FIXED, ED25519, RSA_PKCS1_2048_8192_SHA512,
             RsaPublicKeyComponents, UnparsedPublicKey,
         };
-        if !self.provable() {
+        if !self.provable(blob) {
             return Proof::Unsupported;
         }
         let Ok(material) = self.material(blob) else {
@@ -237,6 +248,11 @@ impl KeyType {
         let (Ok(named), Ok(raw)) = (field(&mut input), field(&mut input)) else {
             return Proof::Invalid;
         };
+        // An agent that answers the `rsa-sha2-512` request with an `ssh-rsa` (SHA-1) signature, as some agents do,
+        // shows nothing the transport can check: no proof, and no revocation (step 1.6 remediation, C-P3-1).
+        if self.family == Family::Rsa && named == b"ssh-rsa" {
+            return Proof::Unsupported;
+        }
         if named != self.proof_algorithm().as_bytes() {
             return Proof::Invalid;
         }

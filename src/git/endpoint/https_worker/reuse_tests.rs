@@ -74,10 +74,10 @@ fn token_git(directory: &std::path::Path, token: &std::path::Path) -> https_auth
     config
 }
 
-/// Red row of step 1.6: binding A's helper token authenticated a connection; the token then expired (the
-/// helper now answers another), and binding B's request must not go on A's authenticated connection.
-#[tokio::test]
-async fn p1_6_an_expired_helper_tokens_connection_is_not_reused_by_another_binding() {
+/// Binding A's helper token authenticates a connection; the token then expires (the helper now answers another) and
+/// binding B, of the same operation name, sends its request. What the server saw of each: its Authorization value and
+/// its connection.
+async fn helper_token_bindings() -> ((Option<String>, usize), (Option<String>, usize)) {
     let seen: Seen = Arc::default();
     let server = Server::start(recording(&seen, None)).await;
     let dir = tempfile::tempdir().unwrap();
@@ -118,25 +118,38 @@ async fn p1_6_an_expired_helper_tokens_connection_is_not_reused_by_another_bindi
         .unwrap();
     finish(prepared).await;
     let records = seen.lock().unwrap().clone();
-    let (a_auth, a_connection) = records.first().cloned().unwrap();
-    let (b_auth, b_connection) = records.last().cloned().unwrap();
+    endpoint.client.finish_operation("operation");
+    assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
+    (
+        records.first().cloned().unwrap(),
+        records.last().cloned().unwrap(),
+    )
+}
+
+/// Red row of step 1.6, the connection leg: binding B's request must not go on binding A's token-authenticated
+/// connection. The route leg (which token B sends) is the known defect the second assertion names.
+#[tokio::test]
+async fn p1_6_an_expired_helper_tokens_connection_is_not_reused_by_another_binding() {
+    let ((a_auth, a_connection), (b_auth, b_connection)) = helper_token_bindings().await;
     assert!(a_auth.is_some() && b_auth.is_some());
     assert_ne!(
         a_connection, b_connection,
         "binding B leased binding A's token-authenticated connection"
     );
-    // Recorded for the step's finding (routes keyed by operation name share a route's answer): whether B's
-    // request carried A's token or its own.
-    eprintln!(
-        "p1-6 finding probe: binding B's request carried {} token",
-        if a_auth == b_auth {
-            "binding A's"
-        } else {
-            "its own"
-        }
+    assert_eq!(
+        a_auth, b_auth,
+        "OPEN: routes keyed by operation name; owner 1.3c/C2(b). Binding B sends binding A's cached helper answer; \
+         when routes are per binding this assertion fails and the ignored row below becomes the row"
     );
-    endpoint.client.finish_operation("operation");
-    assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
+}
+
+/// The desired route leg, for the step that keys routes per binding (1.3c/C2(b)): binding B's request carries the
+/// token B's own helper answered.
+#[tokio::test]
+#[ignore = "OPEN: routes keyed by operation name; owner 1.3c/C2(b)"]
+async fn p1_6_open_another_binding_sends_its_own_helper_token() {
+    let ((a_auth, _), (b_auth, _)) = helper_token_bindings().await;
+    assert_ne!(a_auth, b_auth);
 }
 
 /// Red row of step 1.6 for the logon session (amendment 2 §3.18): binding A authenticated a connection with the logon

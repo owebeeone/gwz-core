@@ -490,6 +490,29 @@ impl<C: Connector> PoolHost<C> {
         retired
     }
 
+    /// Gives back a lease that served no exchange (a reuse its binding could not authorize: step 1.6 remediation,
+    /// S-P2-2): back to idle with the idle time it had, so bouncing it never keeps it alive. A connection found lost
+    /// is discarded, as `release` does.
+    pub(crate) fn release_unused(&mut self, lease: Lease) -> Result<(), Error> {
+        let lost = self
+            .entries
+            .get(&lease.connection()?)
+            .ok_or(Error::Stale)?
+            .phase
+            .is_lost();
+        let released = if lost {
+            lease.release(Disposition::Discarded)
+        } else if self.resource(&lease)?.reusable() {
+            lease.release_unused()
+        } else {
+            lease.release(Disposition::Discarded)
+        };
+        if let Some(caller) = &self.caller {
+            caller.wake_by_ref();
+        }
+        released
+    }
+
     /// Ends `lease`, and wakes the caller of the turns: what the release leaves
     /// (a Close for a discarded connection, the discard a refused reuse
     /// schedules) is the next turn's to take, and a caller asleep between

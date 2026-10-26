@@ -83,6 +83,8 @@ pub(crate) enum Fault {
     /// The next sign request is refused, as an agent that no longer holds the key refuses it (step 1.6's reuse rows;
     /// the agent's keys are fixed when it starts).
     Refuse,
+    /// The next sign request is answered after this many milliseconds, as a slow agent (or a confirmation) answers it.
+    Delay(u64),
 }
 
 /// How the agent answers a sign request for one listed key.
@@ -401,6 +403,7 @@ fn answer(body: &[u8], shared: &Shared) -> Option<Reply> {
                 Some(Fault::Stall) => return Some(Reply::Stall),
                 Some(Fault::Vanish) => return Some(Reply::Vanish),
                 Some(Fault::Refuse) => return Some(wrap(vec![5])),
+                Some(Fault::Delay(ms)) => thread::sleep(Duration::from_millis(ms)),
                 _ => {}
             }
             let (identity, behavior) = &shared.entries[index];

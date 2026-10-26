@@ -34,7 +34,7 @@ cfg_if::cfg_if! {
         use std::os::unix::net::{UnixListener, UnixStream};
         use std::{
             process::{Child, Stdio},
-            sync::atomic::{AtomicUsize, Ordering},
+            sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
         };
 
         /// A private `ssh-agent` holding the row's keys, and a proxy socket in front of it that counts sign requests
@@ -44,7 +44,8 @@ cfg_if::cfg_if! {
             real: PathBuf,
             path: PathBuf,
             signs: Arc<AtomicUsize>,
-            forge: Arc<AtomicBool>,
+            forge: Arc<AtomicU8>,
+            delay: Arc<AtomicU64>,
             stop: Arc<AtomicBool>,
             accept: Option<thread::JoinHandle<()>>,
         }
@@ -70,16 +71,19 @@ cfg_if::cfg_if! {
                 let listener = UnixListener::bind(&path).unwrap();
                 listener.set_nonblocking(true).unwrap();
                 let signs = Arc::new(AtomicUsize::new(0));
-                let forge = Arc::new(AtomicBool::new(false));
+                let forge = Arc::new(AtomicU8::new(0));
+                let delay = Arc::new(AtomicU64::new(0));
                 let stop = Arc::new(AtomicBool::new(false));
                 let accept = {
-                    let (real, signs, forge, stop) = (real.clone(), signs.clone(), forge.clone(), stop.clone());
+                    let (real, signs, forge, delay, stop) =
+                        (real.clone(), signs.clone(), forge.clone(), delay.clone(), stop.clone());
                     thread::spawn(move || {
                         while !stop.load(Ordering::SeqCst) {
                             match listener.accept() {
                                 Ok((peer, _)) => {
-                                    let (real, signs, forge) = (real.clone(), signs.clone(), forge.clone());
-                                    thread::spawn(move || relay(peer, &real, &signs, &forge));
+                                    let (real, signs, forge, delay) =
+                                        (real.clone(), signs.clone(), forge.clone(), delay.clone());
+                                    thread::spawn(move || relay(peer, &real, &signs, &forge, &delay));
                                 }
                                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                                     thread::sleep(Duration::from_millis(2));
@@ -89,7 +93,7 @@ cfg_if::cfg_if! {
                         }
                     })
                 };
-                let agent = Self { child, real, path, signs, forge, stop, accept: Some(accept) };
+                let agent = Self { child, real, path, signs, forge, delay, stop, accept: Some(accept) };
                 for key in keys {
                     agent.ssh_add(&[key.as_os_str()]);
                 }
@@ -113,7 +117,16 @@ cfg_if::cfg_if! {
             }
             /// The next signature the agent returns no longer verifies.
             fn forge_next(&self) {
-                self.forge.store(true, Ordering::SeqCst);
+                self.forge.store(1, Ordering::SeqCst);
+            }
+            /// The next signature the agent returns is named `ssh-rsa`, as an agent that answers a `rsa-sha2-512`
+            /// request with a SHA-1 signature does.
+            fn downgrade_next(&self) {
+                self.forge.store(2, Ordering::SeqCst);
+            }
+            /// The agent answers the next sign request only after `ms`.
+            fn delay_next(&self, ms: u64) {
+                self.delay.store(ms, Ordering::SeqCst);
             }
             fn signs(&self) -> usize {
                 self.signs.load(Ordering::SeqCst)
@@ -143,7 +156,7 @@ cfg_if::cfg_if! {
             stream.write_all(&(body.len() as u32).to_be_bytes())?;
             stream.write_all(body)
         }
-        fn relay(mut peer: UnixStream, real: &Path, signs: &AtomicUsize, forge: &AtomicBool) {
+        fn relay(mut peer: UnixStream, real: &Path, signs: &AtomicUsize, forge: &AtomicU8, delay: &AtomicU64) {
             // An accepted socket inherits the listener's non-blocking mode on macOS.
             if peer.set_nonblocking(false).is_err() {
                 return;
@@ -162,10 +175,34 @@ cfg_if::cfg_if! {
                 let Some(mut response) = frame(&mut upstream) else {
                     return;
                 };
-                if signing && response[0] == 14 && forge.swap(false, Ordering::SeqCst) {
-                    // The signature's last byte: a well-formed reply that no longer verifies.
-                    let last = response.len() - 1;
-                    response[last] ^= 0x01;
+                if signing {
+                    let ms = delay.swap(0, Ordering::SeqCst);
+                    if ms > 0 {
+                        thread::sleep(Duration::from_millis(ms));
+                    }
+                }
+                if signing && response[0] == 14 {
+                    match forge.swap(0, Ordering::SeqCst) {
+                        // The signature's last byte: a well-formed reply that no longer verifies.
+                        1 => {
+                            let last = response.len() - 1;
+                            response[last] ^= 0x01;
+                        }
+                        // The signature renamed `ssh-rsa`, its bytes kept.
+                        2 => {
+                            let blob = &response[5..];
+                            let name = u32::from_be_bytes(blob[..4].try_into().unwrap()) as usize;
+                            let raw = blob[4 + name..].to_vec();
+                            let mut signature = Vec::new();
+                            signature.extend_from_slice(&7u32.to_be_bytes());
+                            signature.extend_from_slice(b"ssh-rsa");
+                            signature.extend_from_slice(&raw);
+                            response = vec![14];
+                            response.extend_from_slice(&(signature.len() as u32).to_be_bytes());
+                            response.extend_from_slice(&signature);
+                        }
+                        _ => {}
+                    }
                 }
                 if send(&mut peer, &response).is_err() {
                     return;
@@ -206,6 +243,15 @@ cfg_if::cfg_if! {
             fn forge_next(&self) {
                 self.agent.script(Fault::Damage(Damage::WrongAlgorithm));
             }
+            /// The next signature the agent returns is named `ssh-rsa` (the pipe agent's `OneByteRsa`), as an agent
+            /// that answers a `rsa-sha2-512` request with a SHA-1 signature names it.
+            fn downgrade_next(&self) {
+                self.agent.script(Fault::Damage(Damage::OneByteRsa));
+            }
+            /// The agent answers the next sign request only after `ms`.
+            fn delay_next(&self, ms: u64) {
+                self.agent.script(Fault::Delay(ms));
+            }
             fn signs(&self) -> usize {
                 self.agent
                     .requests()
@@ -230,9 +276,6 @@ fn keygen_kind(path: &Path, kind: &[&str]) {
             .arg(path),
     );
 }
-fn keygen(path: &Path) {
-    keygen_kind(path, ROW_KEY);
-}
 
 /// A server that accepts two fresh agent keys, and the agent holding both, the first added first, so the server
 /// accepts the first.
@@ -254,17 +297,24 @@ fn config() -> Config {
 }
 impl Rig {
     fn new() -> Self {
+        Self::with_keys(ROW_KEY)
+    }
+    /// The rig with agent keys of the type `kind` names.
+    fn with_keys(kind: &[&str]) -> Self {
+        Self::with_config(kind, config())
+    }
+    /// The rig with agent keys of the type `kind` names and the pool `config`.
+    fn with_config(kind: &[&str], pool: Config) -> Self {
         let ssh = SshdFixture::with_config("");
         let first = ssh.temp.path().join("reuse_first");
         let second = ssh.temp.path().join("reuse_second");
-        keygen(&first);
-        keygen(&second);
+        keygen_kind(&first, kind);
+        keygen_kind(&second, kind);
         let mut authorized = fs::read_to_string(first.with_extension("pub")).unwrap();
         authorized.push_str(&fs::read_to_string(second.with_extension("pub")).unwrap());
         fs::write(ssh.temp.path().join("authorized_keys"), authorized).unwrap();
         let agent = Agent::start(ssh.temp.path(), &[&first, &second]);
-        let endpoint =
-            local_endpoint::connect(config(), ssh.known_hosts.clone(), agent.source(), 3000);
+        let endpoint = local_endpoint::connect(pool, ssh.known_hosts.clone(), agent.source(), 3000);
         Self {
             ssh,
             agent,
@@ -647,6 +697,12 @@ fn p1_6_the_agent_proves_possession_of_each_key_type_it_holds_and_not_of_one_it_
             "ecdsa521",
             Possession::Unprovable,
         ),
+        // C-P3-2: an RSA key outside 2048 to 8192 bits is never sent to the agent.
+        (
+            &["-t", "rsa", "-b", "1024", "-m", "PEM"],
+            "rsa1024",
+            Possession::Unprovable,
+        ),
         (&["-t", "ed25519"], "forged", Possession::Refused),
     ];
     let keys: Vec<PathBuf> = cases
@@ -699,4 +755,118 @@ fn p1_6_the_agent_proves_possession_of_each_key_type_it_holds_and_not_of_one_it_
             );
         }
     }
+}
+
+// Step 1.6 remediation round 1 (dev-docs/GwzConnectionApiContract-Step1.6-RemPlan.md).
+
+impl Rig {
+    /// An open of `binding` submitted with a cancellation flag the row sets.
+    fn start_cancellable(
+        &self,
+        binding: &str,
+    ) -> (
+        crate::git::endpoint::ssh_worker::PendingOpen,
+        Arc<AtomicBool>,
+    ) {
+        let context = BridgeContext {
+            session_id: binding.into(),
+            stream_id: 1,
+            version: 2,
+            limits: gwz_transport::binding::default_limits(),
+            deadlines: attachment::deadlines(&config(), 3000),
+            waker: None,
+        };
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let pending = self
+            .endpoint
+            .start_endpoint_open(
+                self.key(),
+                None,
+                GitService::UploadPack,
+                self.ssh.repository.to_str().unwrap(),
+                context,
+                cancelled.clone(),
+            )
+            .unwrap();
+        (pending, cancelled)
+    }
+}
+
+#[test]
+fn p1_6_rem_a_bounced_connection_expires_from_its_last_real_release() {
+    // S-P2-2: A's connection authenticated with a P-521 agent key, which no other binding can prove. Bouncing it off
+    // B's open (B gets a connection of its own) never restarts its idle clock: it expires the idle time after A
+    // released it, while B's, released later, is still idle.
+    let idle = Duration::from_millis(3000);
+    let rig = Rig::with_config(
+        &["-t", "ecdsa", "-b", "521"],
+        Config {
+            idle_timeout_ms: idle.as_millis() as u64,
+            ..config()
+        },
+    );
+    let a = rig.exchange("binding-a").unwrap();
+    let released = Instant::now();
+    thread::sleep(Duration::from_millis(1000));
+    let b = rig.exchange("binding-b").unwrap();
+    assert!(!b.reused);
+    assert_ne!(a.connection_id, b.connection_id);
+    // Past A's idle time from its release, before it from the bounce.
+    let check = released + idle + Duration::from_millis(400);
+    thread::sleep(check.saturating_duration_since(Instant::now()));
+    let counts = rig.endpoint.pool().counts();
+    assert_eq!(
+        (counts.idle, counts.total()),
+        (1, 1),
+        "A's connection expired from its last real release; B's is idle ({counts:?})"
+    );
+}
+
+#[test]
+fn p1_6_rem_an_agent_that_answers_ssh_rsa_is_unprovable_and_keeps_the_connections() {
+    // C-P3-1: the agent answers B's `rsa-sha2-512` proof request with an `ssh-rsa` signature. That proves nothing, and
+    // revokes nothing: A's connection survives and B gets its own.
+    let rig = Rig::with_keys(&["-t", "rsa", "-b", "2048", "-m", "PEM"]);
+    let a = rig.exchange("binding-a").unwrap();
+    rig.agent.downgrade_next();
+    let b = rig.exchange("binding-b").unwrap();
+    assert!(!b.reused);
+    assert_ne!(a.connection_id, b.connection_id);
+    rig.wait_counts("A's connection survives beside B's", |counts| {
+        counts.idle == 2 && counts.total() == 2
+    });
+}
+
+#[test]
+fn p1_6_rem_a_proof_outlives_its_cancelled_waiter_and_is_kept_for_the_binding() {
+    // C-P3-5 = S-P3-2: B's only waiter is cancelled while the agent is still answering B's proof. The job runs on,
+    // passes, and is recorded for B: B's next lease of A's connection asks the agent nothing.
+    let rig = Rig::new();
+    let a = rig.exchange("binding-a").unwrap();
+    let signs = rig.agent.signs();
+    rig.agent.delay_next(800);
+    let (pending, cancelled) = rig.start_cancellable("binding-b");
+    let until = Instant::now() + Duration::from_secs(10);
+    while rig.agent.signs() == signs {
+        assert!(Instant::now() < until, "B's proof never reached the agent");
+        thread::sleep(Duration::from_millis(2));
+    }
+    cancelled.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        attachment::finish(&pending).is_err(),
+        "B's cancelled open fails"
+    );
+    // The proof's answer arrives after the cancellation.
+    thread::sleep(Duration::from_millis(1200));
+    let b = rig.exchange("binding-b").unwrap();
+    assert!(
+        b.reused,
+        "B reuses A's connection on the proof its cancelled open started"
+    );
+    assert_eq!(b.connection_id, a.connection_id);
+    assert_eq!(
+        rig.agent.signs(),
+        signs + 1,
+        "one sign for B: the proof that outlived its waiter"
+    );
 }
