@@ -250,7 +250,7 @@ impl Drop for StopOnExit {
     }
 }
 /// The configuration of one end of an open's bridged stream.
-fn stream_config(context: &BridgeContext, side: Side) -> StreamConfig {
+pub(super) fn stream_config(context: &BridgeContext, side: Side) -> StreamConfig {
     let mut config = StreamConfig::new(&context.session_id, context.stream_id, side);
     config.profile_version = 2;
     let limits = &context.limits;

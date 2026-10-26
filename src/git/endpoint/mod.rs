@@ -10,6 +10,8 @@ pub(crate) mod placement_endpoint;
 pub(crate) mod setup_retry;
 pub(crate) mod socket_wait;
 pub(crate) mod ssh_admission;
+// Plan step 1.3b: the connection host's SSH adapter, at the Connector/Resource level.
+pub(crate) mod ssh_adapter;
 pub(crate) mod ssh_channel;
 pub(crate) mod ssh_connection;
 pub(crate) mod ssh_destination;
@@ -30,6 +32,7 @@ pub(crate) mod ssh_worker;
 pub(crate) mod stream_io;
 
 pub(crate) mod ca_bundle;
+pub(crate) mod https_adapter;
 pub(crate) mod https_auth;
 pub(crate) mod https_backend;
 pub(crate) mod https_connection;

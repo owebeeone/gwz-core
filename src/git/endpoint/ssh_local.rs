@@ -42,186 +42,213 @@ pub(crate) fn connect_with_helpers(
     handoff: Handoff,
     helpers: Option<std::sync::Arc<super::ssh_password_helpers::Helpers>>,
 ) -> io::Result<Endpoint> {
-    let cleanup = Duration::from_millis(config.cleanup_timeout_ms);
-    // The finding of a refused host key goes to the driver's words through the handoff (decision D12).
-    let trust_log = handoff.clone();
+    let inputs = NativeInputs {
+        cleanup: Duration::from_millis(config.cleanup_timeout_ms),
+        known_hosts,
+        agent,
+        authority: authority.clone(),
+        // The finding of a refused host key goes to the driver's words through the handoff (decision D12).
+        trust_log: handoff.clone(),
+        helpers,
+    };
     Endpoint::with_handoff(
         config,
         Registry::with_supervisor(authority.supervisor().clone()),
-        move |origin, registry| {
-            ReservedConnector::new(
-                SetupConnector::reported(
-                    origin,
-                    cleanup,
-                    registry.supervisor(),
-                    move |key: &Key, identity: &Identity, opening: Opening| -> io::Result<Setup> {
-                        let helper_opening = opening.clone();
-                        let Opening {
-                            progress,
-                            url,
-                            identity: selection,
-                            selected: pinned,
-                            ..
-                        } = opening;
-                        let selection = selection.as_ref().unwrap_or(identity);
-                        let helpers_allowed = url.as_ref().is_none_or(|url| url.helpers_allowed());
-                        // A URL password's open has an identity of its own and
-                        // brings its own selected key, if any (TR2.18). Any
-                        // other selected key is found by its identity: lookup
-                        // pins the already admitted snapshot without file
-                        // access, and the path is never reopened during setup.
-                        let password = url.clone().filter(|url| url.password().is_some());
-                        let selected = match (selection, &password) {
-                            (Identity::Explicit(_), Some(_)) => pinned,
-                            (Identity::Explicit(_), None) => Some(registry.lookup(key, selection)?),
-                            (Identity::Ambient, None) => None,
-                            _ => return Err(io::ErrorKind::InvalidInput.into()),
-                        };
-                        let requested = identity.clone();
-                        let isolated = identity != selection;
-                        let key = key.clone();
-                        // The host as the open's URL wrote it, for a hashed
-                        // known_hosts name (TR2.18); else the key's own.
-                        let written =
-                            url.map_or_else(|| key.host.clone(), |url| url.host().to_owned());
-                        let known_hosts = known_hosts.clone();
-                        let trust_log = trust_log.clone();
-                        let agent = agent.clone();
-                        let helpers = helpers.clone();
-                        Ok(Box::new(move |control| {
-                            let offered = |method| {
-                                let mut facts = progress.lock().unwrap_or_else(|e| e.into_inner());
-                                facts.method = method;
-                                facts.credential_offered = true;
-                                facts.authenticated = None;
-                            };
-                            let rejected = || {
-                                progress
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .authenticated = Some(false);
-                            };
-                            let (mut connection, trusted) = ssh_network::establish_written(
-                                &key,
-                                &written,
-                                &known_hosts,
-                                &control,
-                                // The key exchange is retried only while the open's facts show no credential offered.
-                                &|| {
-                                    progress
-                                        .lock()
-                                        .unwrap_or_else(|e| e.into_inner())
-                                        .credential_offered
-                                },
-                            )
-                            .inspect_err(|error| {
-                                trust_log.note_trust(&key.host, key.port, error)
-                            })?;
-                            let user =
-                                key.username.as_deref().ok_or(io::ErrorKind::InvalidInput)?;
-                            // libgit2 offers a URL's password before any key,
-                            // when the server offers password authentication.
-                            if let Some(secret) = password.as_ref().and_then(|url| url.password()) {
-                                match ssh_password::authenticate(
-                                    connection,
-                                    user,
-                                    secret,
-                                    &trusted,
-                                    &control,
-                                    || offered(AuthMethod::None),
-                                    rejected,
-                                )? {
-                                    Password::Accepted(accepted) => {
-                                        let mut facts = progress
-                                            .lock()
-                                            .unwrap_or_else(|e| e.into_inner())
-                                            .clone();
-                                        facts.authenticated = Some(true);
-                                        return Authenticated::new(accepted, requested, facts);
-                                    }
-                                    Password::Declined(declined) => connection = declined,
-                                }
-                            }
-                            if let Some(selected) = selected {
-                                let authenticated = ssh_key_auth::authenticate_reporting(
-                                    connection,
-                                    &trusted,
-                                    selected,
-                                    control,
-                                    || offered(AuthMethod::SshKey),
-                                    rejected,
-                                )
-                                .and_then(Authenticated::selected)?;
-                                return Ok(if password.is_some() || isolated {
-                                    authenticated.under(requested)
-                                } else {
-                                    authenticated
-                                });
-                            }
-                            if helpers_allowed
-                                && let Some(helpers) = helpers
-                                && ssh_password::password_only(&mut connection, user, &control)?
-                            {
-                                progress.lock().unwrap_or_else(|e| e.into_inner()).method =
-                                    AuthMethod::Gh;
-                                let mut secret = helpers.lookup(&key, &helper_opening, &control)?;
-                                let accepted = ssh_password::authenticate_helper(
-                                    connection,
-                                    &mut secret,
-                                    &trusted,
-                                    &control,
-                                    || offered(AuthMethod::Gh),
-                                    rejected,
-                                )?;
+        move |origin, registry| native_connector(origin, registry, inputs),
+        io_timeout_ms,
+        handoff,
+    )
+}
+
+/// What a local endpoint's SSH connector is made from, besides its clock and key registry: the host-key file, the
+/// agent, the shared reservation, where a refused host key is noted, and the SSH helpers.
+#[derive(Clone)]
+pub(crate) struct NativeInputs {
+    pub(crate) cleanup: Duration,
+    pub(crate) known_hosts: PathBuf,
+    pub(crate) agent: AgentSource,
+    pub(crate) authority: Authority,
+    pub(crate) trust_log: Handoff,
+    pub(crate) helpers: Option<std::sync::Arc<super::ssh_password_helpers::Helpers>>,
+}
+
+/// The SSH connector of a local endpoint: trust, then the URL's password, a selected key, the helpers or the agent,
+/// over the shared reservation. The worker's endpoint and the connection host's SSH adapter (plan step 1.3b) are both
+/// made over it; neither the connector nor its resources hold a pool.
+pub(crate) fn native_connector(
+    origin: std::time::Instant,
+    registry: Registry,
+    inputs: NativeInputs,
+) -> ReservedConnector<SetupConnector> {
+    let NativeInputs {
+        cleanup,
+        known_hosts,
+        agent,
+        authority,
+        trust_log,
+        helpers,
+    } = inputs;
+    ReservedConnector::new(
+        SetupConnector::reported(
+            origin,
+            cleanup,
+            registry.supervisor(),
+            move |key: &Key, identity: &Identity, opening: Opening| -> io::Result<Setup> {
+                let helper_opening = opening.clone();
+                let Opening {
+                    progress,
+                    url,
+                    identity: selection,
+                    selected: pinned,
+                    ..
+                } = opening;
+                let selection = selection.as_ref().unwrap_or(identity);
+                let helpers_allowed = url.as_ref().is_none_or(|url| url.helpers_allowed());
+                // A URL password's open has an identity of its own and
+                // brings its own selected key, if any (TR2.18). Any
+                // other selected key is found by its identity: lookup
+                // pins the already admitted snapshot without file
+                // access, and the path is never reopened during setup.
+                let password = url.clone().filter(|url| url.password().is_some());
+                let selected = match (selection, &password) {
+                    (Identity::Explicit(_), Some(_)) => pinned,
+                    (Identity::Explicit(_), None) => Some(registry.lookup(key, selection)?),
+                    (Identity::Ambient, None) => None,
+                    _ => return Err(io::ErrorKind::InvalidInput.into()),
+                };
+                let requested = identity.clone();
+                let isolated = identity != selection;
+                let key = key.clone();
+                // The host as the open's URL wrote it, for a hashed
+                // known_hosts name (TR2.18); else the key's own.
+                let written = url.map_or_else(|| key.host.clone(), |url| url.host().to_owned());
+                let known_hosts = known_hosts.clone();
+                let trust_log = trust_log.clone();
+                let agent = agent.clone();
+                let helpers = helpers.clone();
+                Ok(Box::new(move |control| {
+                    let offered = |method| {
+                        let mut facts = progress.lock().unwrap_or_else(|e| e.into_inner());
+                        facts.method = method;
+                        facts.credential_offered = true;
+                        facts.authenticated = None;
+                    };
+                    let rejected = || {
+                        progress
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .authenticated = Some(false);
+                    };
+                    let (mut connection, trusted) = ssh_network::establish_written(
+                        &key,
+                        &written,
+                        &known_hosts,
+                        &control,
+                        // The key exchange is retried only while the open's facts show no credential offered.
+                        &|| {
+                            progress
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .credential_offered
+                        },
+                    )
+                    .inspect_err(|error| trust_log.note_trust(&key.host, key.port, error))?;
+                    let user = key.username.as_deref().ok_or(io::ErrorKind::InvalidInput)?;
+                    // libgit2 offers a URL's password before any key,
+                    // when the server offers password authentication.
+                    if let Some(secret) = password.as_ref().and_then(|url| url.password()) {
+                        match ssh_password::authenticate(
+                            connection,
+                            user,
+                            secret,
+                            &trusted,
+                            &control,
+                            || offered(AuthMethod::None),
+                            rejected,
+                        )? {
+                            Password::Accepted(accepted) => {
                                 let mut facts =
                                     progress.lock().unwrap_or_else(|e| e.into_inner()).clone();
                                 facts.authenticated = Some(true);
                                 return Authenticated::new(accepted, requested, facts);
                             }
-                            // The agent step's failures are worded by the host from the step they ended in: the step is
-                            // marked before the first request, so that a request that times out (Pageant, plan step
-                            // 3.6), or a list with no usable key or keys that the server rejected (any agent, the
-                            // ambient route's words), is known as the agent's. No credential is offered by the mark.
-                            if agent != AgentSource::None {
-                                progress.lock().unwrap_or_else(|e| e.into_inner()).method =
-                                    AuthMethod::SshAgent;
-                            }
-                            let connection = agent_authenticate(
-                                connection,
-                                user,
-                                &trusted,
-                                &control,
-                                agent,
-                                || offered(AuthMethod::SshAgent),
-                                rejected,
-                            )
-                            .map_err(|error| {
-                                // The agent step could not start: the failure says it was the agent, which the host
-                                // words from the source it chose. No credential was offered.
-                                if AgentFault::of_error(&error).is_some() {
-                                    progress.lock().unwrap_or_else(|e| e.into_inner()).method =
-                                        AuthMethod::SshAgent;
-                                }
-                                error
-                            })?;
-                            Authenticated::new(
-                                connection,
-                                requested,
-                                Facts {
-                                    method: AuthMethod::SshAgent,
-                                    authenticated: Some(true),
-                                    credential_offered: true,
-                                    ..Facts::default()
-                                },
-                            )
-                        }))
-                    },
-                ),
-                authority.clone(),
-            )
-        },
-        io_timeout_ms,
-        handoff,
+                            Password::Declined(declined) => connection = declined,
+                        }
+                    }
+                    if let Some(selected) = selected {
+                        let authenticated = ssh_key_auth::authenticate_reporting(
+                            connection,
+                            &trusted,
+                            selected,
+                            control,
+                            || offered(AuthMethod::SshKey),
+                            rejected,
+                        )
+                        .and_then(Authenticated::selected)?;
+                        return Ok(if password.is_some() || isolated {
+                            authenticated.under(requested)
+                        } else {
+                            authenticated
+                        });
+                    }
+                    if helpers_allowed
+                        && let Some(helpers) = helpers
+                        && ssh_password::password_only(&mut connection, user, &control)?
+                    {
+                        progress.lock().unwrap_or_else(|e| e.into_inner()).method = AuthMethod::Gh;
+                        let mut secret = helpers.lookup(&key, &helper_opening, &control)?;
+                        let accepted = ssh_password::authenticate_helper(
+                            connection,
+                            &mut secret,
+                            &trusted,
+                            &control,
+                            || offered(AuthMethod::Gh),
+                            rejected,
+                        )?;
+                        let mut facts = progress.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                        facts.authenticated = Some(true);
+                        return Authenticated::new(accepted, requested, facts);
+                    }
+                    // The agent step's failures are worded by the host from the step they ended in: the step is
+                    // marked before the first request, so that a request that times out (Pageant, plan step
+                    // 3.6), or a list with no usable key or keys that the server rejected (any agent, the
+                    // ambient route's words), is known as the agent's. No credential is offered by the mark.
+                    if agent != AgentSource::None {
+                        progress.lock().unwrap_or_else(|e| e.into_inner()).method =
+                            AuthMethod::SshAgent;
+                    }
+                    let connection = agent_authenticate(
+                        connection,
+                        user,
+                        &trusted,
+                        &control,
+                        agent,
+                        || offered(AuthMethod::SshAgent),
+                        rejected,
+                    )
+                    .map_err(|error| {
+                        // The agent step could not start: the failure says it was the agent, which the host
+                        // words from the source it chose. No credential was offered.
+                        if AgentFault::of_error(&error).is_some() {
+                            progress.lock().unwrap_or_else(|e| e.into_inner()).method =
+                                AuthMethod::SshAgent;
+                        }
+                        error
+                    })?;
+                    Authenticated::new(
+                        connection,
+                        requested,
+                        Facts {
+                            method: AuthMethod::SshAgent,
+                            authenticated: Some(true),
+                            credential_offered: true,
+                            ..Facts::default()
+                        },
+                    )
+                }))
+            },
+        ),
+        authority,
     )
 }
 

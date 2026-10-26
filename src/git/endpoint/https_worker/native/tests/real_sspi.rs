@@ -162,7 +162,7 @@ impl Drop for Acceptor {
 
 /// How the server's binding relates to the connection's own.
 #[derive(Clone, Copy, Debug)]
-enum Expects {
+pub(crate) enum Expects {
     /// The `tls-server-end-point` digest of the fixture's certificate: what an enforcing server requires.
     Right,
     /// Other bytes: the control that must be refused.
@@ -171,7 +171,7 @@ enum Expects {
 
 /// An HTTPS handler that authenticates `scheme` (`NTLM` or `Negotiate`) with SSPI, one acceptor per connection, and
 /// answers every other request 401 with the `offers` it names. `statuses` records each `AcceptSecurityContext` status.
-fn acceptor_handler(
+pub(crate) fn acceptor_handler(
     offers: &'static str,
     scheme: &'static str,
     expects: Expects,
@@ -239,7 +239,7 @@ fn acceptor_handler(
 
 /// The product's native caller over the production worker, built from the sibling `gwz-sspi` checkout with the
 /// synthetic fingerprint its own native tests use, and the supervisor to settle at the end.
-fn real_caller() -> (NativeCaller, Arc<gwz_sspi::Supervisor>) {
+pub(crate) fn real_caller() -> (NativeCaller, Arc<gwz_sspi::Supervisor>) {
     let source = std::fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("src")).unwrap();
     let manifest = source
         .parent()
@@ -312,7 +312,7 @@ async fn settle(mut endpoint: Endpoint, result: Result<Prepared, Failure>) {
 }
 
 /// The worker process is gone and nothing it owned is outstanding once the supervisor is shut down.
-async fn settle_worker(supervisor: Arc<gwz_sspi::Supervisor>) {
+pub(crate) async fn settle_worker(supervisor: Arc<gwz_sspi::Supervisor>) {
     let outcome = supervisor
         .shutdown(gwz_sspi::Deadline::new(
             std::time::Instant::now() + Duration::from_secs(20),
