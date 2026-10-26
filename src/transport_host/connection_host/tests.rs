@@ -159,7 +159,9 @@ impl Case {
             Key::ssh(&self.fixture.user, "127.0.0.1", self.fixture.port),
             Identity::Ambient,
             GitService::UploadPackExchange,
-            &server_path(&self.fixture.repository),
+            // The URL-path form (a junction on Windows: the repository's own name holds a single quote, which the
+            // Windows server's POSIX shell does not convert to the Windows form Git needs; `fixture_host`).
+            &server_path(&self.fixture.url_repository),
         )
         .unwrap()
     }
@@ -188,6 +190,15 @@ pub(super) fn operation(handle: &HostHandle, name: &str) -> Operation {
         .register()
 }
 
+/// Whether `bytes` is a pkt-line advertisement: a first line whose four hex digits give its length (more than 255 when
+/// the server's capability list is long, as Git for Windows' agent string makes it), ending with a flush.
+pub(super) fn is_advertisement(bytes: &[u8]) -> bool {
+    let length = bytes
+        .get(..4)
+        .and_then(|digits| std::str::from_utf8(digits).ok())
+        .and_then(|digits| usize::from_str_radix(digits, 16).ok());
+    length.is_some_and(|length| (4..=bytes.len()).contains(&length)) && bytes.ends_with(b"0000")
+}
 /// The advertisement of one upload-pack exchange, which then ends with a flush: the server's EOF follows.
 pub(super) fn advertisement(exchange: &mut Exchange) -> Result<Vec<u8>, StreamError> {
     let deadline = Instant::now() + WITHIN;
@@ -221,7 +232,11 @@ fn finish_a_then_b_reuses_the_idle_ssh_connection_through_the_host() {
         let operation = case.operation(name);
         let mut exchange = case.exchange(&operation);
         let advertised = advertisement(&mut exchange).unwrap();
-        assert!(advertised.starts_with(b"00"), "a pkt-line advertisement");
+        assert!(
+            is_advertisement(&advertised),
+            "a pkt-line advertisement, not {:?}",
+            String::from_utf8_lossy(&advertised)
+        );
         assert_eq!(
             block_on(exchange.finish()).disposition,
             Disposition::Reusable
@@ -414,11 +429,16 @@ fn the_runtime_builds_its_ssh_adapters_through_the_production_factory() {
         key,
         entry.identity(),
         GitService::UploadPackAdvertisement,
-        &server_path(&fixture.repository),
+        &server_path(&fixture.url_repository),
     )
     .unwrap();
     let mut exchange = block_on(operation.open(spec).unwrap().wait()).unwrap();
-    assert!(advertisement(&mut exchange).unwrap().starts_with(b"00"));
+    let advertised = advertisement(&mut exchange).unwrap();
+    assert!(
+        is_advertisement(&advertised),
+        "a pkt-line advertisement, not {:?}",
+        String::from_utf8_lossy(&advertised)
+    );
     assert_eq!(
         block_on(exchange.finish()).disposition,
         Disposition::Reusable
