@@ -370,12 +370,14 @@ const PUBLISH_OR_FETCH: &str = "publish the member, or fetch its advertised hist
 /// own push, so `--check-remotes` can publish the member.
 const PUBLISH_FETCH_OR_CHECK_REMOTES: &str = "publish the member by pushing a branch that contains the commit, fetch its advertised history and retry, or run gwz push --check-remotes, which re-checks the members and pushes those whose remote lacks their branch's commit";
 
-/// What a refused root proof asks of the operator when the member does not
-/// hold an object the comparison needs: an object the remote advertises, or the
-/// locked commit itself. Only a fetch supplies it, and the remote already has
-/// the history, so publishing the member or re-checking remotes would not help.
-/// If the retry is still refused, it names the remedies of a missing dependency.
-const FETCH_FIRST: &str = "fetch its advertised history and retry; the member does not hold every object needed to compare with it";
+/// What a refused root proof asks first when only a fetch can tell whether the
+/// remote has the locked commit: the member lacks it, and the remote advertises
+/// an object the member also lacks, so the commit may be under that object. A
+/// fetch can bring that object in, but it cannot bring in a commit the remote
+/// never had (one published nowhere, or under an object no fetch fetches), so
+/// the refusal continues with the remedies of a missing dependency for a retry
+/// that is still refused.
+const FETCH_FIRST: &str = "fetch its advertised history and retry; if the retry is still refused, ";
 
 /// The root proof after the member transfers: the frozen root request, and, in
 /// lock order, the dependencies that no accepted push and no kept advertisement
@@ -434,8 +436,8 @@ impl RootProof {
                 Availability::Proven => {
                     continue;
                 }
-                Availability::Unproven => remedy,
-                Availability::Unheld => FETCH_FIRST,
+                Availability::Unproven => remedy.to_owned(),
+                Availability::Unheld => format!("{FETCH_FIRST}{remedy}"),
             };
             // Name the URL that was read when it is not the committed one.
             let read_through = if dependency.read_url == dependency.url {
@@ -457,21 +459,23 @@ impl RootProof {
 enum Availability {
     /// The commit is available at the remote.
     Proven,
-    /// Nothing shown proves it, and every object compared was held.
+    /// Nothing shown proves it.
     Unproven,
-    /// Nothing shown proves it, and the member lacked an object the
-    /// comparison needed, so a fetch could still prove it ([`FETCH_FIRST`]).
+    /// Nothing shown proves it, the member lacks the locked commit, and the
+    /// remote advertises an object the member also lacks, so a fetch is the
+    /// first thing to try ([`FETCH_FIRST`]).
     Unheld,
 }
 
 /// Whether an advertisement proves the dependency's commit available: the
 /// commit is advertised, or, for a materialized member, is an ancestor of an
 /// advertised object. An advertised commit proves it without asking ancestry.
-/// An object the member does not hold, advertised or the locked commit itself,
-/// proves nothing here ([`descends_from_advertised`]), and a fetch can repair
-/// it. An ancestry query that fails otherwise is a local Git error, not a
-/// disproof, so it is reported when nothing else proves the commit: none of
-/// the remedies a publication refusal names would repair a shallow history.
+/// An object the member does not hold proves nothing here
+/// ([`descends_from_advertised`]); a fetch is named first only when it could
+/// bring in the locked commit. An ancestry query that fails otherwise is a
+/// local Git error, not a disproof, so it is reported when nothing else proves
+/// the commit: none of the remedies a publication refusal names would repair a
+/// shallow history.
 fn available<B: GitBackend>(
     backend: &B,
     dependency: &PublicationDependency,
@@ -515,23 +519,34 @@ fn available<B: GitBackend>(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Ancestry {
     Descends,
-    /// The member holds what was compared, and the commit is not an ancestor.
+    /// The commit is not shown to be an ancestor, and a fetch is not what would
+    /// show it: the member holds both commits, or lacks only the advertised
+    /// object (which proves nothing), or lacks only the locked commit (so it
+    /// is not in the history of an object the member holds), or the advertised
+    /// object is a held object that is no commit.
     Diverges,
-    /// The member lacks the locked commit or the advertised object.
+    /// The member lacks both the locked commit and the advertised object: the
+    /// commit may be under that object, which only a fetch can show.
     Unheld,
 }
 
 /// Whether the dependency's commit is an ancestor of an advertised `object`,
 /// asked of the member's repository. A remote advertises objects this
 /// repository may not hold: a commit another clone pushed that was never
-/// fetched here, or the tag object of an annotated tag; and the locked commit
-/// itself may be one the member never fetched. Ancestry fails in Git for any of
-/// them, which is not a local failure, so a failed query is classified before
-/// it is reported. A locked commit or an object the repository does not hold as
-/// a commit is [`Ancestry::Unheld`]: it proves nothing here, and only a fetch,
-/// which the refusal names, can make it a proof. A held object that is not a
-/// commit (an annotated tag) proves nothing either: libgit2 advertises the
-/// commit it peels to as a `^{}` row of its own, which [`available`] compares.
+/// fetched here, an object no fetch brings in (`refs/pull/*`), or the tag
+/// object of an annotated tag; and the locked commit itself may be one the
+/// member does not hold. Ancestry fails in Git for any of them, which is not a
+/// local failure, so a failed query is classified before it is reported.
+/// - The member lacks both the locked commit and `object`: [`Ancestry::Unheld`],
+///   because a fetch of `object` may bring in history that holds the commit.
+/// - The member lacks only `object`: it proves nothing, [`Ancestry::Diverges`].
+/// - The member lacks only the locked commit: `object` and its history are
+///   held and do not contain it, so [`Ancestry::Diverges`]; the commit is on no
+///   advertised history the member has, and a fetch would not change that.
+/// - Both are held and `object` is not a commit (an annotated tag):
+///   [`Ancestry::Diverges`], since libgit2 advertises the commit it peels to as
+///   a `^{}` row of its own, which [`available`] compares.
+///
 /// Any other failure, or a classification that itself fails, is the query's own
 /// failure. Classification only ever refuses; it never proves.
 fn descends_from_advertised<B: GitBackend>(
@@ -548,15 +563,19 @@ fn descends_from_advertised<B: GitBackend>(
         }
         Err(failure) => failure,
     };
-    for held in [dependency.commit.as_str(), object] {
-        match backend.commit_exists(&dependency.path, held) {
-            Ok(false) => {
-                return Ok(Ancestry::Unheld);
-            }
-            Ok(true) => {}
-            Err(_) => {
-                return Err(failure);
-            }
+    let (Ok(commit_held), Ok(object_held)) = (
+        backend.commit_exists(&dependency.path, &dependency.commit),
+        backend.commit_exists(&dependency.path, object),
+    ) else {
+        return Err(failure);
+    };
+    match (commit_held, object_held) {
+        (false, false) => {
+            return Ok(Ancestry::Unheld);
+        }
+        (true, true) => {}
+        (false, true) | (true, false) => {
+            return Ok(Ancestry::Diverges);
         }
     }
     match backend.read_ref(&dependency.path, &format!("{object}^{{commit}}")) {

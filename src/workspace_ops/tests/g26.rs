@@ -551,44 +551,49 @@ fn an_ancestry_error_between_held_commits_is_reported_when_the_double_classifies
     assert!(fixture.backend.prepared_pushes().is_empty());
 }
 
-/// Hotfix 1.0.18: a remote advertises an object the member does not hold, or
-/// the member lacks the locked commit itself. Git fails the ancestry query for
-/// either, which is the member's missing history and not a disproof, and only
-/// a fetch can repair it: the refusal names the fetch alone. Publishing the
-/// member, or re-checking remotes, would not help (the remote already has it).
+/// Hotfix 1.0.18: Git fails an ancestry query for an object the member does not
+/// hold. A fetch can supply the locked commit only when the member lacks it and
+/// the remote advertises an object the member also lacks (the commit may be
+/// under it), so only then is the fetch named first, with the full remedies for
+/// a retry still refused. A missing advertised object with the locked commit
+/// held proves nothing, and a missing locked commit with every advertised
+/// object held is on no advertised history: both leave the publish remedies.
 #[test]
-fn a_missing_object_refuses_the_root_naming_only_the_fetch() {
-    for (lacking, ancestor, descendant) in [
-        // The advertised object is the one the member never fetched.
-        (APP_BASE, APP_HEAD, APP_BASE),
-        // The locked commit is the one the member never fetched.
-        (APP_HEAD, APP_HEAD, APP_BASE),
+fn a_missing_object_names_the_fetch_first_only_when_a_fetch_could_supply_the_commit() {
+    let publish_first = "; publish the member by pushing a branch";
+    let fetch_first = "; fetch its advertised history and retry; if the retry is still refused, publish the member";
+    for (lacking, expected) in [
+        // An advertised object the member lacks, the locked commit held.
+        (&[APP_BASE][..], publish_first),
+        // The locked commit the member lacks, every advertised object held.
+        (&[APP_HEAD][..], publish_first),
+        // Both: a fetch may bring the commit in.
+        (&[APP_HEAD, APP_BASE][..], fetch_first),
     ] {
         let fixture = PublicationFixture::new(ROOT_SSH, APP_SSH, LIB_SSH);
-        fixture.backend.lack_commits(&[lacking]);
+        fixture.backend.lack_commits(lacking);
         fixture
             .backend
-            .set_ancestry(ancestor, descendant, Err("object not found"));
+            .set_ancestry(APP_HEAD, APP_BASE, Err("object not found"));
 
         let response = fixture.push(root_only());
 
         let row = response.response.members.single();
-        assert_eq!(row.status, crate::MemberStatus::Rejected, "{lacking}");
+        assert_eq!(row.status, crate::MemberStatus::Rejected, "{lacking:?}");
         let error = row.error.as_ref().unwrap();
-        assert_eq!(error.code, crate::GwzErrorCode::RemoteRejected, "{lacking}");
+        assert_eq!(
+            error.code,
+            crate::GwzErrorCode::RemoteRejected,
+            "{lacking:?}"
+        );
         let message = &error.message;
         assert!(
             message.contains(&format!(
-                "cannot prove member mem_app commit {APP_HEAD} is available"
+                "cannot prove member mem_app commit {APP_HEAD} is available at its committed fetch remote origin{expected}"
             )),
-            "{message}"
+            "{lacking:?}: {message}"
         );
-        assert!(
-            message.contains("fetch its advertised history and retry"),
-            "{message}"
-        );
-        assert!(!message.contains("publish the member"), "{message}");
-        assert!(!message.contains("--check-remotes"), "{message}");
+        assert!(message.contains("--check-remotes"), "{message}");
         assert!(fixture.backend.prepared_pushes().is_empty());
     }
 }
