@@ -142,6 +142,12 @@ hyper = { version = "=1.11.1", features = ["client", "server", "http1"] }
 hyper-util = { version = "=0.1.20", features = ["tokio"] }
 http-body-util = "=0.1.5"
 bytes = "=1.11.1"
+# The SSH reuse proof's signature check (plan step 1.6; dev-docs/GwzConnectionReuseDesign.md §4 and C9): a connection
+# last used by another binding is leased only after the agent's signature over a fresh nonce verifies against the key the
+# connection authenticated with. ring verifies Ed25519, ECDSA P-256 and P-384, and RSA (2048 to 8192 bits) PKCS#1 with
+# SHA-512; it is the version the test fixtures' rustls already builds on all three platforms. A key it cannot check
+# (P-521, DSA, a shorter RSA key) proves nothing, and its connection is never reused across bindings.
+ring = "=0.17.14"
 
 [target.'cfg(gwz_transport_candidate)'.dev-dependencies]
 pyo3 = { version = "=0.28.3", features = ["auto-initialize"] }

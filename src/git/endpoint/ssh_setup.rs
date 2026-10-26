@@ -1,5 +1,6 @@
 //! Bounded setup ownership for one authenticated SSH connection.
 use super::{
+    agent_auth::Evidence,
     agent_job::{self, Job, Place, Supervisor, TimeoutReason, timeout_reason},
     idle_watch::{IdleReactor, IdleSocket},
     ssh_channel::{GitService, SshChannel},
@@ -32,6 +33,8 @@ pub(crate) struct Authenticated {
     identity: Identity,
     facts: Facts,
     authority: Option<Arc<Entry>>,
+    /// What another binding must prove to reuse the connection (reuse design §4); none, and it never does.
+    evidence: Option<Arc<Evidence>>,
 }
 impl Authenticated {
     pub(crate) fn selected(verified: Verified) -> io::Result<Self> {
@@ -46,6 +49,7 @@ impl Authenticated {
                 ..Facts::default()
             },
             authority: Some(entry),
+            evidence: None,
         })
     }
 
@@ -53,6 +57,12 @@ impl Authenticated {
     /// own identity, whichever credential authenticated it (TR2.18).
     pub(crate) fn under(mut self, identity: Identity) -> Self {
         self.identity = identity;
+        self
+    }
+
+    /// The same connection, with what another binding must prove to reuse it.
+    pub(crate) fn proven_by(mut self, evidence: Evidence) -> Self {
+        self.evidence = Some(Arc::new(evidence));
         self
     }
 
@@ -70,6 +80,7 @@ impl Authenticated {
             identity,
             facts,
             authority: None,
+            evidence: None,
         })
     }
 }
@@ -181,6 +192,7 @@ impl Connector for SetupConnector {
             waited: false,
             deadline,
             authority: None,
+            evidence: None,
             progress,
             setup_context,
             idle,
@@ -227,6 +239,8 @@ pub(crate) struct NativeResource {
     network_budget: Option<Duration>,
     waited: bool,
     authority: Option<Arc<Entry>>,
+    /// What the setup recorded for the connection's reuse by another binding; kept across its exchanges.
+    evidence: Option<Arc<Evidence>>,
     progress: Progress,
     setup_context: Option<Arc<SetupContext>>,
     idle: Arc<IdleReactor>,
@@ -331,6 +345,7 @@ impl Resource for NativeResource {
                         *self.progress.lock().unwrap_or_else(|e| e.into_inner()) =
                             authenticated.facts.clone();
                         self.authority = authenticated.authority.take();
+                        self.evidence = authenticated.evidence.take();
                         let identity = authenticated.identity.clone();
                         self.state = State::Idle(authenticated);
                         Poll::Ready(Ok(Some(identity)))
@@ -417,6 +432,9 @@ impl Resource for NativeResource {
     fn reusable(&self) -> bool {
         matches!(self.state, State::Idle(_))
     }
+    fn reuse_evidence(&self) -> Option<Arc<Evidence>> {
+        self.evidence.clone()
+    }
     fn poll_idle_lost(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         let State::Idle(authenticated) = &self.state else {
             self.watch = None;
@@ -454,6 +472,7 @@ impl ChannelResource for NativeResource {
                     identity,
                     facts,
                     authority: _,
+                    evidence: _,
                 } = authenticated;
                 let channel = SshChannel::new(connection, service, path)?;
                 let mut pump = SshPump::new(stream, endpoint, channel, 65_536, 65_536);
@@ -503,6 +522,7 @@ impl ChannelResource for NativeResource {
                         identity,
                         facts,
                         authority: None,
+                        evidence: None,
                     });
                     true
                 }

@@ -45,23 +45,42 @@ pub(super) enum Unserved {
     /// on a fresh connection. A fresh request never gets a reused one, so the
     /// retry cannot be Dead again.
     Dead(OpenRequest, gwz_transport::pool::Request),
+    /// A connection another binding last used, which this open's binding could not prove (reuse design §4): the open
+    /// asks again, within its own deadlines, with that connection excluded.
+    Revoked(OpenRequest, gwz_transport::pool::Request),
     Failed(OpenRequest, io::Error),
 }
 impl Unserved {
     pub(super) fn settle(self, pool: &Pool, pending: &mut Vec<Pending>) {
-        match self {
+        let (request, policy) = match self {
+            // A dead connection is replaced by a new one.
             Unserved::Dead(request, mut policy) => {
                 policy.fresh = true;
-                match pool.checkout_until(policy.clone(), request.deadline) {
-                    Ok(checkout) => pending.push(Pending {
-                        checkout,
-                        request,
-                        policy,
-                    }),
-                    Err(error) => request.complete(Err(io::Error::other(error))),
-                }
+                policy.exclude.clear();
+                (request, policy)
             }
-            Unserved::Failed(request, error) => request.complete(Err(error)),
+            // A connection the binding could not prove is excluded (step 1.6 remediation, S-P2-2), so the binding's
+            // own idle connection, or a new one, is offered next; past the pool's exclusion bound the open asks for a
+            // new connection.
+            Unserved::Revoked(request, mut policy) => {
+                if policy.exclude.len() > gwz_transport::pool::MAX_EXCLUDED {
+                    policy.fresh = true;
+                    policy.exclude.clear();
+                }
+                (request, policy)
+            }
+            Unserved::Failed(request, error) => {
+                request.complete(Err(error));
+                return;
+            }
+        };
+        match pool.checkout_until(policy.clone(), request.deadline) {
+            Ok(checkout) => pending.push(Pending {
+                checkout,
+                request,
+                policy,
+            }),
+            Err(error) => request.complete(Err(io::Error::other(error))),
         }
     }
 }

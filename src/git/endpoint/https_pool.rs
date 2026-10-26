@@ -5,7 +5,7 @@ use super::{
     https_wake::PoolWake,
     setup_retry::{self, Conn, Governor, Phase},
     shared_reservation::{Authority, ReservedConnector},
-    ssh_pool::{PoolHost, Resource},
+    ssh_pool::{Lessee, PoolHost, Resource},
 };
 use gwz_transport::{
     pool::{self, Identity, Key, Lease, Owner, Request},
@@ -232,6 +232,19 @@ impl HttpsPool {
         request.fresh = fresh;
         request.tag = tag;
         let lease = self.lease(request.clone(), cancel).await?;
+        let lease = match self.serves_binding(lease, &request)? {
+            Some(lease) => lease,
+            None => {
+                // A scoped connection another binding last used went back to idle for it; this binding asks once more,
+                // for a connection of its own, which a fresh request is (step 1.6). It is not the open's one retry.
+                request.fresh = true;
+                let remaining = allocation_ms.saturating_sub(started.elapsed().as_millis() as u64);
+                request.allocation_timeout_ms = Some(remaining.max(1));
+                let lease = self.lease(request.clone(), cancel).await?;
+                self.serves_binding(lease, &request)?
+                    .ok_or_else(|| other_failure(https_connection::failure(ErrorCode::Io)))?
+            }
+        };
         match self.adopt(lease, started)? {
             Adopted::Lease(mut lease) => {
                 lease.retried = fresh;
@@ -295,6 +308,38 @@ impl HttpsPool {
             }),
             _ = cancel.cancelled() => Err(other(https_connection::failure(ErrorCode::Cancelled))),
         }
+    }
+    /// Whether the lease's connection may serve the binding `request` is for (its owner's session), which it then
+    /// records as the connection's last lessee (plan step 1.6; contract §7.2). A connection a helper's token or the logon
+    /// session authenticated is scoped to that authentication (`Identity::HttpsScoped`) and is per-exchange
+    /// authority: it is never leased to a binding other than the one that last used it, so such a lease is released
+    /// back to idle (still that binding's) and `None` returned. An account-free TLS connection (`Identity::Https`)
+    /// carries no authorization and serves any binding of its endpoint. A connection found lost is the adoption's to
+    /// settle.
+    fn serves_binding(
+        &self,
+        lease: Lease,
+        request: &Request,
+    ) -> Result<Option<Lease>, (Failure, Phase)> {
+        let mut host = self.host.lock().unwrap_or_else(|e| e.into_inner());
+        if host.lost(&lease).is_some() {
+            return Ok(Some(lease));
+        }
+        let binding = &request.owner.session;
+        let lessee = host
+            .lessee(&lease, binding)
+            .map_err(pool_failure)
+            .map_err(other_failure)?;
+        if lessee != Lessee::Other || !matches!(request.identity, Identity::HttpsScoped(_)) {
+            host.record_lessee(&lease, binding);
+            return Ok(Some(lease));
+        }
+        host.release(lease, Disposition::Reusable)
+            .map_err(pool_failure)
+            .map_err(other_failure)?;
+        drop(host);
+        self.wake.poke();
+        Ok(None)
     }
     /// Takes `lease`'s connection for one exchange, unless it was reused and
     /// is already dead: then it is released and the caller asks again, fresh.
@@ -388,6 +433,10 @@ impl HttpsPool {
             retried: false,
         }))
     }
+}
+/// A failure of no setup phase.
+fn other_failure(failure: Failure) -> (Failure, Phase) {
+    (failure, Phase::Other)
 }
 /// What a lease turned out to be (`HttpsPool::adopt`).
 pub(crate) enum Adopted {

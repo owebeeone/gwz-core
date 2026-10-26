@@ -1,5 +1,6 @@
 //! Physical ownership behind the transport pool's exclusive lease ledger.
 //! One endpoint worker drives this host and its timer independently of Git calls.
+use super::agent_auth::Evidence;
 use super::setup_retry::{LocalBudget, LocalWait};
 use super::ssh_setup_context::SetupContext;
 use super::{ssh_handoff::UrlExtras, ssh_key_snapshot::Entry as Selected};
@@ -8,7 +9,7 @@ use gwz_transport::{
     protocol::{Disposition, Effect, ErrorCode, Facts, Failure},
 };
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     future::Future,
     io,
     panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
@@ -135,6 +136,12 @@ pub(crate) trait Resource {
     fn poll_dispose(&mut self, cx: &mut Context<'_>, force: bool) -> Poll<io::Result<()>>;
     /// True only for an idle authenticated session after complete channel cleanup.
     fn reusable(&self) -> bool;
+    /// What a binding other than the one that last used this connection must prove before it is leased the
+    /// connection (contract §7.1; reuse design §4). `None`, the default, is a connection no other binding can prove,
+    /// which therefore serves only the binding that last used it.
+    fn reuse_evidence(&self) -> Option<Arc<Evidence>> {
+        None
+    }
     /// Ready when the peer has closed, reset, or sent unsolicited bytes on
     /// this connection while it is idle; Pending registers `cx`. Never
     /// consumes bytes, and is Pending whenever an exchange owns the I/O
@@ -162,6 +169,102 @@ pub(crate) trait Resource {
     }
 }
 
+/// Who leased a connection before the lease being made (`PoolHost::lessee`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Lessee {
+    /// Nobody: the binding the connection was set up for. Its setup is its proof.
+    First,
+    /// The same binding: reuse within one operation, as before.
+    Same,
+    /// Another binding: the lease must prove the connection's authority for this one first.
+    Other,
+}
+
+/// The reuse proofs a binding has passed, for its own life (reuse design §4, "Per-binding proofs"): possession of an
+/// agent key, and trust of a host key for a host and port. A connection the binding set up itself counts as its proof
+/// of both. Public data only. Bounded: the oldest binding's record goes first, and a binding whose record went proves
+/// again, which costs a local agent round trip and a file read, never a wrong lease.
+pub(crate) struct Proofs {
+    bindings: VecDeque<(String, Proven)>,
+}
+#[derive(Default)]
+struct Proven {
+    keys: Vec<Vec<u8>>,
+    hosts: Vec<(String, u16, Vec<u8>)>,
+}
+/// How many bindings' proofs an endpoint keeps.
+const PROOF_BINDINGS: usize = 256;
+/// How many keys and host keys one binding's record keeps of each.
+const PROOFS_PER_BINDING: usize = 64;
+impl Default for Proofs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl Proofs {
+    pub(crate) fn new() -> Self {
+        Self {
+            bindings: VecDeque::new(),
+        }
+    }
+    fn record(&mut self, binding: &str) -> &mut Proven {
+        if let Some(at) = self.bindings.iter().position(|(name, _)| name == binding) {
+            let entry = self.bindings.remove(at).expect("found");
+            self.bindings.push_back(entry);
+        } else {
+            if self.bindings.len() >= PROOF_BINDINGS {
+                self.bindings.pop_front();
+            }
+            self.bindings
+                .push_back((binding.to_owned(), Proven::default()));
+        }
+        &mut self.bindings.back_mut().expect("just pushed").1
+    }
+    fn find(&self, binding: &str) -> Option<&Proven> {
+        self.bindings
+            .iter()
+            .find_map(|(name, proven)| (name == binding).then_some(proven))
+    }
+    /// Whether `binding` has proved possession of the agent key `key`.
+    pub(crate) fn has_key(&self, binding: &str, key: &[u8]) -> bool {
+        self.find(binding)
+            .is_some_and(|proven| proven.keys.iter().any(|known| known == key))
+    }
+    /// Whether `binding` has found `host_key` trusted for `host` at `port`.
+    pub(crate) fn has_host(&self, binding: &str, host: &str, port: u16, host_key: &[u8]) -> bool {
+        self.find(binding).is_some_and(|proven| {
+            proven
+                .hosts
+                .iter()
+                .any(|(name, at, known)| name == host && *at == port && known == host_key)
+        })
+    }
+    pub(crate) fn add_key(&mut self, binding: &str, key: &[u8]) {
+        let proven = self.record(binding);
+        if !proven.keys.iter().any(|known| known == key) {
+            if proven.keys.len() >= PROOFS_PER_BINDING {
+                proven.keys.remove(0);
+            }
+            proven.keys.push(key.to_vec());
+        }
+    }
+    pub(crate) fn add_host(&mut self, binding: &str, host: &str, port: u16, host_key: &[u8]) {
+        let proven = self.record(binding);
+        if !proven
+            .hosts
+            .iter()
+            .any(|(name, at, known)| name == host && *at == port && known == host_key)
+        {
+            if proven.hosts.len() >= PROOFS_PER_BINDING {
+                proven.hosts.remove(0);
+            }
+            proven
+                .hosts
+                .push((host.to_owned(), port, host_key.to_vec()));
+        }
+    }
+}
+
 /// Tells `observer`, if there is one, what the host saw.
 fn notify(
     observer: &Option<Arc<dyn Observer>>,
@@ -183,6 +286,9 @@ enum Phase {
         force: bool,
         /// The peer closed it while idle: report `idle_closed`, not `closed`.
         idle_lost: bool,
+        /// The host retired it while idle, because another binding's reuse proof for it failed (`retire_idle`): also
+        /// `idle_closed`, but the server closed nothing, and the observer is told of a disposal.
+        revoked: bool,
     },
     /// Disposed after idle loss, but a checkout had already leased it: kept
     /// until the lease is released and the pool's Close arrives.
@@ -206,6 +312,9 @@ struct Entry<R> {
     resource: R,
     phase: Phase,
     used: bool,
+    /// The binding (its session identifier) that last leased the connection: last-lessee metadata, kept apart from
+    /// the pool's owner, which an idle entry does not have (contract §8; reuse design §14 T3).
+    lessee: Option<String>,
     /// Whether the pool has been told that the resource waits locally.
     waiting: bool,
     /// The local budget the resource waits on and when it first waited, kept
@@ -309,6 +418,101 @@ impl<C: Connector> PoolHost<C> {
         Ok(std::mem::replace(&mut entry.used, true))
     }
 
+    /// Who leased `lease`'s connection before, as seen by `binding` (the session identifier of the operation binding
+    /// the lease would serve): nobody, the same binding, or another binding, whose lease must first prove the
+    /// connection's authority for this one (contract §7.1). Binding identifiers are never reused within a host's life,
+    /// so equality is sameness. It records nothing: a lease that does not serve `binding` leaves the connection its
+    /// last lessee's ([`Self::record_lessee`]).
+    pub(crate) fn lessee(&self, lease: &Lease, binding: &str) -> Result<Lessee, Error> {
+        let entry = self.entries.get(&lease.connection()?).ok_or(Error::Stale)?;
+        if !matches!(entry.phase, Phase::Ready) {
+            return Err(Error::WrongState);
+        }
+        Ok(match &entry.lessee {
+            None => Lessee::First,
+            Some(previous) if previous == binding => Lessee::Same,
+            Some(_) => Lessee::Other,
+        })
+    }
+
+    /// Records `binding` as the last lessee of `lease`'s connection, once the lease serves it (last-lessee metadata,
+    /// kept apart from the pool's owner, which an idle entry does not have: contract §8; reuse design §14 T3).
+    pub(crate) fn record_lessee(&mut self, lease: &Lease, binding: &str) {
+        if let Some(entry) = lease
+            .connection()
+            .ok()
+            .and_then(|connection| self.entries.get_mut(&connection))
+        {
+            entry.lessee = Some(binding.to_owned());
+        }
+    }
+
+    /// The reuse evidence of `lease`'s connection.
+    pub(crate) fn evidence(&self, lease: &Lease) -> Option<Arc<Evidence>> {
+        let entry = self.entries.get(&lease.connection().ok()?)?;
+        matches!(entry.phase, Phase::Ready)
+            .then(|| entry.resource.reuse_evidence())
+            .flatten()
+    }
+
+    /// Retires every idle connection but `except` whose resource `matches`, as a reuse proof that failed for one of
+    /// them requires (contract §7.1: the connection and matching idle entries): each is disposed of as an idle loss
+    /// is, so a checkout that has already leased one finds it lost and asks again, fresh. Returns how many it retired.
+    pub(crate) fn retire_idle(
+        &mut self,
+        except: &Lease,
+        matches: impl Fn(&Key, &C::Resource) -> bool,
+    ) -> usize {
+        let except = except.connection().ok();
+        let mut retired = 0;
+        for (id, entry) in &mut self.entries {
+            if Some(*id) != except
+                && matches!(entry.phase, Phase::Ready)
+                && entry.resource.reusable()
+                && matches(&entry.key, &entry.resource)
+            {
+                entry.phase = Phase::Disposing {
+                    connect_failure: None,
+                    force: false,
+                    idle_lost: true,
+                    revoked: true,
+                };
+                notify(&self.observer, self.now, &entry.key, *id, Seen::Closing);
+                retired += 1;
+            }
+        }
+        if retired > 0 {
+            self.progressed = true;
+            if let Some(caller) = &self.caller {
+                caller.wake_by_ref();
+            }
+        }
+        retired
+    }
+
+    /// Gives back a lease that served no exchange (a reuse its binding could not authorize: step 1.6 remediation,
+    /// S-P2-2): back to idle with the idle time it had, so bouncing it never keeps it alive. A connection found lost
+    /// is discarded, as `release` does.
+    pub(crate) fn release_unused(&mut self, lease: Lease) -> Result<(), Error> {
+        let lost = self
+            .entries
+            .get(&lease.connection()?)
+            .ok_or(Error::Stale)?
+            .phase
+            .is_lost();
+        let released = if lost {
+            lease.release(Disposition::Discarded)
+        } else if self.resource(&lease)?.reusable() {
+            lease.release_unused()
+        } else {
+            lease.release(Disposition::Discarded)
+        };
+        if let Some(caller) = &self.caller {
+            caller.wake_by_ref();
+        }
+        released
+    }
+
     /// Ends `lease`, and wakes the caller of the turns: what the release leaves
     /// (a Close for a discarded connection, the discard a refused reuse
     /// schedules) is the next turn's to take, and a caller asleep between
@@ -386,6 +590,7 @@ impl<C: Connector> PoolHost<C> {
                     connect_failure: None,
                     force: false,
                     idle_lost: true,
+                    revoked: false,
                 };
                 self.progressed = true;
             }
@@ -445,6 +650,7 @@ impl<C: Connector> PoolHost<C> {
                                 connect_failure: Some(failure),
                                 force: false,
                                 idle_lost: false,
+                                revoked: false,
                             };
                             self.progressed = true;
                         }
@@ -455,9 +661,15 @@ impl<C: Connector> PoolHost<C> {
                     connect_failure,
                     force,
                     idle_lost,
+                    revoked,
                 } => {
                     match entry.resource.poll_dispose(cx, *force) {
                         Poll::Ready(Ok(())) if *idle_lost => {
+                            let seen = if *revoked {
+                                Seen::Disposed
+                            } else {
+                                Seen::ServerClosed
+                            };
                             self.progressed = true;
                             // Destruction precedes the capacity acknowledgement.
                             // A checkout that won keeps the lease: its exchange
@@ -471,7 +683,7 @@ impl<C: Connector> PoolHost<C> {
                                 Err(Error::WrongState) => entry.phase = Phase::Lost,
                                 Err(error) => return Err(error),
                             }
-                            notify(&self.observer, self.now, &key, id, Seen::ServerClosed);
+                            notify(&self.observer, self.now, &key, id, seen);
                         }
                         Poll::Ready(Ok(())) => {
                             self.progressed = true;
@@ -590,6 +802,7 @@ impl<C: Connector> PoolHost<C> {
                                     resource,
                                     phase: Phase::Connecting,
                                     used: false,
+                                    lessee: None,
                                     waiting: false,
                                     local: None,
                                     tcp_reported: false,
@@ -635,6 +848,7 @@ impl<C: Connector> PoolHost<C> {
                                 }),
                                 force,
                                 idle_lost: false,
+                                revoked: false,
                             };
                         }
                     }
@@ -655,6 +869,7 @@ impl<C: Connector> PoolHost<C> {
                         connect_failure: None,
                         force,
                         idle_lost: false,
+                        revoked: false,
                     };
                 }
             }

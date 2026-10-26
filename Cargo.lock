@@ -907,6 +907,7 @@ dependencies = [
  "openssl-probe 0.1.6",
  "pyo3",
  "regex",
+ "ring",
  "russh",
  "rustix",
  "rustls",

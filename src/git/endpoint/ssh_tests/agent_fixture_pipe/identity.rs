@@ -49,7 +49,8 @@ enum Backing {
     },
     /// An `ssh-dss` key the agent made.
     Dsa(Arc<DsaKey>),
-    /// A key the agent lists and cannot sign for: a security key whose device is absent, or a type no key backs.
+    /// A key the agent lists and cannot sign for: a security key whose device is absent, a type no key backs, or an RSA
+    /// key the signer refuses (under 2048 bits).
     Unbacked,
 }
 
@@ -94,8 +95,18 @@ impl Identity {
             "the fixture signs an RSA key from a traditional PEM file, which ssh-keygen -m PEM writes"
         );
         let der = STANDARD.decode(body).unwrap();
-        let signer =
-            any_supported_type(&PrivateKeyDer::Pkcs1(PrivatePkcs1KeyDer::from(der))).unwrap();
+        let signer = match any_supported_type(&PrivateKeyDer::Pkcs1(PrivatePkcs1KeyDer::from(der)))
+        {
+            Ok(signer) => signer,
+            Err(_) => {
+                // The signer refuses RSA under 2048 bits. The rows that load such a key assert that the agent is
+                // never asked to sign with it, so the fixture lists it and refuses any signature.
+                return Self {
+                    blob,
+                    backing: Backing::Unbacked,
+                };
+            }
+        };
         let public_der = public_key_der(&blob);
         Self {
             blob,

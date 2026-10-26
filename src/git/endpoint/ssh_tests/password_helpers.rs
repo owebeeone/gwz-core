@@ -551,3 +551,77 @@ fn x6_a_password_only_server_with_no_git_on_the_path_runs_no_helper_and_is_refus
             .any(|attempt| attempt.starts_with("password:"))
     );
 }
+
+/// Step 1.6 remediation (S-P2-2): a helper-password connection keeps no reuse evidence, so no other binding can prove
+/// it. Binding B's first open is bounced off binding A's idle connection to one of its own; B's second open is offered
+/// A's again first, and must then get B's own, not a third connection.
+#[test]
+fn p1_6_rem_a_binding_reuses_its_own_helper_connection_beside_another_bindings() {
+    let temp = tempfile::tempdir().unwrap();
+    let server = PasswordSshd::start(
+        &temp.path().join("server"),
+        "fixture-password",
+        &["password"],
+        &[],
+    );
+    let known = temp.path().join("known_hosts");
+    fs::write(&known, server.known_host("127.0.0.1")).unwrap();
+    let repo = temp.path().join("repository.git");
+    git2::Repository::init_bare(&repo).unwrap();
+    let marker = temp.path().join("helper-ran");
+    let helper = fake_helper(temp.path(), &marker, Delay::None, "fixture-password");
+    let slots = https_auth::HelperSlots::new();
+    let helpers = Arc::new(Helpers::new(helper, slots));
+    let config = Config {
+        connect_timeout_ms: CONNECT_MS * 8,
+        interaction_timeout_ms: INTERACTION_MS,
+        ..Config::default()
+    };
+    let endpoint = ssh_local::connect_with_helpers(
+        config.clone(),
+        known,
+        crate::git::endpoint::agent_source::AgentSource::None,
+        2000,
+        Authority::new(config.total, config.per_host),
+        Default::default(),
+        Some(helpers),
+    )
+    .unwrap();
+    let key = Key::ssh("git", "127.0.0.1", server.port);
+    let exchange = |binding: &str| {
+        let mut context = attachment::context(attachment::deadlines(&config, 2000));
+        context.session_id = binding.into();
+        let open = endpoint
+            .start_endpoint_open(
+                key.clone(),
+                None,
+                GitService::UploadPack,
+                repo.to_str().unwrap(),
+                context.clone(),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+        let (attached, opened) = attachment::finish(&open).unwrap();
+        let mut stream = attachment::drive(attached, &context);
+        stream.write_all(b"0000").unwrap();
+        stream.end_write().unwrap();
+        let mut bytes = Vec::new();
+        stream.read_to_end(&mut bytes).unwrap();
+        stream.close().unwrap();
+        opened
+    };
+    let a = exchange("binding-a");
+    let b1 = exchange("binding-b");
+    assert!(!b1.reused);
+    assert_ne!(a.connection_id, b1.connection_id);
+    let b2 = exchange("binding-b");
+    assert!(b2.reused, "B's second open reuses B's own connection");
+    assert_eq!(b2.connection_id, b1.connection_id);
+    let counts = endpoint.pool().counts();
+    assert_eq!(
+        counts.total(),
+        2,
+        "A's and B's: no third connection ({counts:?})"
+    );
+    endpoint.shutdown();
+}

@@ -421,3 +421,74 @@ fn a_server_that_expects_other_binding_bytes_refuses_the_logon_identity_b16_cont
         settle_worker(supervisor).await;
     });
 }
+
+/// Step 1.6 (plan §4; contract §7.2; amendment 2 §3.18): a connection the logon session authenticated serves only the
+/// operation binding that authenticated it. Binding A authenticates the advertisement with the real logon session;
+/// binding B, of the same operation name (which shares A's route, the step's finding), sends its service request
+/// under the logon-session policy. None of B's requests may reach A's authenticated connection: B is refused instead,
+/// or served on a connection of its own.
+#[test]
+fn p1_6_a_logon_session_connection_is_not_reused_by_another_binding_real_sspi() {
+    run(async {
+        let (caller, supervisor) = real_caller();
+        let statuses = Arc::new(Mutex::new(Vec::new()));
+        let seen: Arc<Mutex<Vec<usize>>> = Arc::new(Mutex::new(Vec::new()));
+        let inner = acceptor_handler("NTLM", "NTLM", Expects::Right, statuses.clone());
+        let records = seen.clone();
+        let handler: Handler = Arc::new(move |request| {
+            let connection = request
+                .extensions()
+                .get::<ConnectionId>()
+                .map_or(0, |id| id.0);
+            records.lock().unwrap().push(connection);
+            inner(request)
+        });
+        let server = Server::start(handler).await;
+        let mut endpoint = Endpoint::new(server.config(), None, pool::Config::default()).unwrap();
+        endpoint.client.set_native(caller.clone());
+        let mut a = input(&server, GitService::UploadPackAdvertisement);
+        a.policy = AuthPolicy::WindowsDefault;
+        a.session = "binding-a".into();
+        let (prepared, _) = endpoint
+            .client
+            .prepare_attempt(
+                a,
+                &CancellationToken::new(),
+                &mut endpoint.client.budget(),
+                &mut None,
+            )
+            .await;
+        let prepared = prepared.unwrap_or_else(|failure| panic!("binding A: {failure:?}"));
+        assert_eq!(prepared.opened.facts.authenticated, Some(true));
+        // A's exchange ends in order, so its authenticated connection goes back to idle, A's.
+        let (stream, task) = crate::git::endpoint::https_fixture::attach(prepared);
+        stream.end_write().await.unwrap();
+        let mut bytes = [0; 64];
+        while stream.read(&mut bytes).await.unwrap() != 0 {}
+        stream.close().await.unwrap();
+        task.await.unwrap();
+        let authenticated_on = *seen.lock().unwrap().last().unwrap();
+        let before = seen.lock().unwrap().len();
+        let mut b = input(&server, GitService::UploadPackExchange);
+        b.policy = AuthPolicy::WindowsDefault;
+        b.session = "binding-b".into();
+        let (result, _) = endpoint
+            .client
+            .prepare_attempt(
+                b,
+                &CancellationToken::new(),
+                &mut endpoint.client.budget(),
+                &mut None,
+            )
+            .await;
+        let after = seen.lock().unwrap()[before..].to_vec();
+        assert!(
+            after
+                .iter()
+                .all(|connection| *connection != authenticated_on),
+            "binding B's request reached binding A's logon-session connection {authenticated_on}: {after:?}"
+        );
+        settle(endpoint, result).await;
+        settle_worker(supervisor).await;
+    });
+}
