@@ -48,12 +48,12 @@ impl Certificate {
         X509::from_der(der).map(Self)
     }
 
-    cfg_if::cfg_if! { if #[cfg(test)] {
-        /// The certificate as DER.
-        pub(crate) fn to_der(&self) -> Result<Vec<u8>, ErrorStack> {
-            self.0.to_der()
-        }
-    } }
+    /// The certificate as DER. The profile's platform-trust digest
+    /// (`transport_host::endpoint_environment`) hashes these bytes in every
+    /// build, so this is not a test-only accessor.
+    pub(crate) fn to_der(&self) -> Result<Vec<u8>, ErrorStack> {
+        self.0.to_der()
+    }
 }
 
 /// The ciphers `SslConnector` offers.
