@@ -12,6 +12,7 @@ use crate::git::endpoint::{
     ssh_fixture::{DialRetries, SshdFixture, server_path},
     ssh_key_snapshot::Registry,
     ssh_setup::{Authenticated, Setup, SetupConnector},
+    ssh_tests::reuse_agent::{Agent, ROW_KEY, keygen_kind},
 };
 use gwz_connection::{
     AuthContext, AuthScope, CleanupStatus, EndpointAdapter, EndpointFactory, EndpointProfile,
@@ -123,7 +124,30 @@ impl EndpointFactory for FixtureFactory {
     }
 }
 
+/// What a case's connections keep for another binding's reuse proof (plan step 1.6).
+#[derive(Clone)]
+struct Kept {
+    /// `known_hosts` lists the evidence's host key.
+    trusted: bool,
+    /// The public blob of the agent key the connections' evidence names, and the agent holding it. None: an explicit
+    /// key's evidence, which needs no possession proof.
+    agent: Option<(Vec<u8>, AgentSource)>,
+    /// The host as the pool keys it (lowercased) and as the URL wrote it. Some: the connections are keyed by the first,
+    /// the evidence records the second, and `known_hosts` lists the fixture's own host key under the second, hashed.
+    named: Option<(String, String)>,
+}
+impl Kept {
+    fn trusted() -> Self {
+        Self {
+            trusted: true,
+            agent: None,
+            named: None,
+        }
+    }
+}
 struct Case {
+    /// The host the spec's key names.
+    spec_host: String,
     fixture: SshdFixture,
     proxy: Arc<CutProxy>,
     retries: DialRetries,
@@ -139,38 +163,71 @@ impl Case {
     fn new() -> Self {
         Self::build(None)
     }
+    /// A case whose connections keep the evidence `kept` describes.
+    fn keeping(kept: Kept) -> Self {
+        Self::build(Some(kept))
+    }
     /// A case whose connections keep reuse evidence (an explicit key's), against a `known_hosts` file that lists the
     /// evidence's host key when `trusted` and lists nothing otherwise.
     fn with_evidence(trusted: bool) -> Self {
-        Self::build(Some(trusted))
+        Self::build(Some(Kept {
+            trusted,
+            ..Kept::trusted()
+        }))
     }
-    fn build(evidence: Option<bool>) -> Self {
+    fn build(kept: Option<Kept>) -> Self {
+        use base64::Engine as _;
         let fixture = SshdFixture::new();
-        let dir = evidence.map(|_| tempfile::tempdir().unwrap());
-        let evidence_for = evidence.map(|trusted| {
+        let dir = kept.as_ref().map(|_| tempfile::tempdir().unwrap());
+        let named = kept.as_ref().and_then(|kept| kept.named.clone());
+        let pooled_host = named
+            .as_ref()
+            .map_or_else(|| "127.0.0.1".to_owned(), |(pooled, _)| pooled.clone());
+        let evidence_for = kept.map(|kept| {
             let dir = dir.as_ref().unwrap();
             let known_hosts = dir.path().join("known_hosts");
-            let line = if trusted {
-                use base64::Engine as _;
-                format!(
-                    "[127.0.0.1]:{} ssh-ed25519 {}\n",
-                    fixture.port,
-                    base64::engine::general_purpose::STANDARD.encode(EVIDENCE_HOST_KEY)
-                )
-            } else {
-                String::new()
+            let (host_key, written, line) = match &kept.named {
+                // The fixture's own host key, listed hashed under the host as written.
+                Some((_, written)) => {
+                    let listed = fixture.known_host(written, fixture.port, true);
+                    let blob = listed.split_whitespace().nth(2).unwrap();
+                    let blob = base64::engine::general_purpose::STANDARD
+                        .decode(blob)
+                        .unwrap();
+                    (blob, written.clone(), format!("{}\n", listed.trim_end()))
+                }
+                None => {
+                    let line = format!(
+                        "[127.0.0.1]:{} ssh-ed25519 {}\n",
+                        fixture.port,
+                        base64::engine::general_purpose::STANDARD.encode(EVIDENCE_HOST_KEY)
+                    );
+                    (EVIDENCE_HOST_KEY.to_vec(), pooled_host.clone(), line)
+                }
             };
-            std::fs::write(&known_hosts, line).unwrap();
+            std::fs::write(
+                &known_hosts,
+                if kept.trusted { line } else { String::new() },
+            )
+            .unwrap();
+            let (authenticator, source) = match kept.agent {
+                Some((blob, source)) => (Authenticator::Agent(blob), source),
+                None => (
+                    Authenticator::KeyFile("fixture-key".into()),
+                    AgentSource::None,
+                ),
+            };
             let authority = Arc::new(ReuseAuthority::new(
-                AgentSource::None,
+                source,
                 known_hosts,
                 Supervisor::new(),
                 Instant::now(),
                 Duration::from_millis(500),
             ));
             Arc::new(move || Evidence {
-                authenticator: Authenticator::KeyFile("fixture-key".into()),
-                host_key: EVIDENCE_HOST_KEY.to_vec(),
+                authenticator: authenticator.clone(),
+                host_key: host_key.clone(),
+                written_host: written.clone(),
                 authority: authority.clone(),
             }) as Arc<dyn Fn() -> Evidence + Send + Sync>
         });
@@ -190,6 +247,7 @@ impl Case {
         .unwrap();
         let handle = host.handle();
         Self {
+            spec_host: pooled_host,
             fixture,
             proxy,
             retries,
@@ -208,7 +266,7 @@ impl Case {
     }
     fn spec(&self) -> ExchangeSpec {
         ExchangeSpec::git(
-            Key::ssh(&self.fixture.user, "127.0.0.1", self.fixture.port),
+            Key::ssh(&self.fixture.user, &self.spec_host, self.fixture.port),
             Identity::Ambient,
             GitService::UploadPackExchange,
             // The URL-path form (a junction on Windows: the repository's own name holds a single quote, which the
@@ -581,4 +639,248 @@ fn the_runtime_builds_its_ssh_adapters_through_the_production_factory() {
     assert_eq!(handle.snapshot().connections.idle, 1);
     assert_eq!(block_on(runtime.shutdown()).pending_local_work, 0);
     assert_eq!(handle.snapshot().phase, HostPhase::Closed);
+}
+
+// Phase 1 integration fix-up, round 1 (dev-docs/GwzPhase1Integration-RemPlan.md): the SSH adapter's proof jobs, against
+// the platform's private agent (`reuse_agent`: Unix `ssh-agent` on a private socket, the pipe agent on Windows).
+
+/// A private agent holding one fresh key, and the key's public blob (what a connection's evidence names).
+struct AgentKey {
+    _dir: tempfile::TempDir,
+    agent: Agent,
+    key: std::path::PathBuf,
+    blob: Vec<u8>,
+}
+impl AgentKey {
+    fn new() -> Self {
+        use base64::Engine as _;
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("agent_key");
+        keygen_kind(&key, ROW_KEY);
+        let public = std::fs::read_to_string(key.with_extension("pub")).unwrap();
+        let blob = base64::engine::general_purpose::STANDARD
+            .decode(public.split_whitespace().nth(1).unwrap())
+            .unwrap();
+        let agent = Agent::start(dir.path(), &[&key]);
+        Self {
+            _dir: dir,
+            agent,
+            key,
+            blob,
+        }
+    }
+    /// A case whose connections keep this key's evidence and a trusted host key.
+    fn case(&self) -> Case {
+        Case::keeping(Kept {
+            agent: Some((self.blob.clone(), self.agent.source())),
+            ..Kept::trusted()
+        })
+    }
+}
+
+/// `count` exchanges of `operation` open at once on as many connections, each run to its clean end.
+fn serve_together(case: &Case, operation: &Operation, count: usize) {
+    let waits: Vec<_> = (0..count)
+        .map(|_| operation.open(case.spec()).unwrap().wait())
+        .collect();
+    let exchanges: Vec<_> = waits
+        .into_iter()
+        .map(|wait| block_on(wait).unwrap())
+        .collect();
+    for mut exchange in exchanges {
+        let advertised = advertisement(&mut exchange).unwrap();
+        assert!(is_advertisement(&advertised), "{advertised:?}");
+        assert_eq!(
+            block_on(exchange.finish()).disposition,
+            Disposition::Reusable
+        );
+    }
+}
+/// A's `count` connections, left idle.
+fn idle_after_a(case: &Case, count: usize) {
+    let a = case.operation("op-a");
+    serve_together(case, &a, count);
+    block_on(a.finish());
+    case.wait("A's connections are idle", |counts| {
+        (counts.idle, counts.leased) == (count, 0)
+    });
+    assert_eq!(case.sessions(), count);
+}
+
+#[test]
+fn p1_int_rem_concurrent_leases_of_one_binding_share_one_proof_job() {
+    // Code P2-2 = State P3-1: A leaves three idle connections; B opens three at once. One proof job signs once (the
+    // agent holds the first answer back, so every lease is waiting when it ends) and all three are Authorized: B is
+    // served by A's three connections, no new one.
+    let agent = AgentKey::new();
+    let case = agent.case();
+    idle_after_a(&case, 3);
+    agent.agent.delay_next(400);
+    let b = case.operation("op-b");
+    serve_together(&case, &b, 3);
+    assert_eq!(agent.agent.signs(), 1, "one sign request for three leases");
+    assert_eq!(case.sessions(), 3, "A's connections served B");
+    block_on(b.finish());
+    assert!(case.close());
+}
+
+#[test]
+fn p1_int_rem_a_cancelled_waiter_leaves_the_shared_proof_running_for_the_rest() {
+    let agent = AgentKey::new();
+    let case = agent.case();
+    idle_after_a(&case, 2);
+    agent.agent.delay_next(400);
+    let b = case.operation("op-b");
+    let first = b.open(case.spec()).unwrap().wait();
+    let second = b.open(case.spec()).unwrap().wait();
+    wait_for("B's proof reached the agent", || agent.agent.signs() >= 1);
+    drop(first);
+    let mut exchange = block_on(second).unwrap();
+    assert!(is_advertisement(&advertisement(&mut exchange).unwrap()));
+    block_on(exchange.finish());
+    assert_eq!(agent.agent.signs(), 1);
+    assert_eq!(
+        case.sessions(),
+        2,
+        "the surviving waiter was served by A's connection"
+    );
+    block_on(b.finish());
+    assert!(case.close());
+}
+
+#[test]
+fn p1_int_rem_a_proof_outlives_its_only_cancelled_waiter_and_is_kept_for_the_binding() {
+    let agent = AgentKey::new();
+    let case = agent.case();
+    idle_after_a(&case, 1);
+    agent.agent.delay_next(400);
+    let b = case.operation("op-b");
+    let wait = b.open(case.spec()).unwrap().wait();
+    wait_for("B's proof reached the agent", || agent.agent.signs() == 1);
+    drop(wait);
+    // The proof's answer arrives after the cancellation, and is kept for B.
+    thread::sleep(Duration::from_millis(900));
+    let mut exchange = case.exchange(&b);
+    assert!(is_advertisement(&advertisement(&mut exchange).unwrap()));
+    block_on(exchange.finish());
+    assert_eq!(
+        agent.agent.signs(),
+        1,
+        "B's second lease asked the agent nothing"
+    );
+    assert_eq!(case.sessions(), 1, "A's connection served B");
+    block_on(b.finish());
+    assert!(case.close());
+}
+
+#[test]
+fn p1_int_rem_a_key_withdrawn_from_the_agent_revokes_the_connection_and_its_siblings() {
+    // Code P3-3: the possession leg on the live path. B's proof signs once and the agent has withdrawn the key: the
+    // verdict is Revoked, A's two connections are retired, and B has a connection of its own. With possession forced to
+    // none the trust leg alone would authorize B and this row would see two connections, not three.
+    let agent = AgentKey::new();
+    let case = agent.case();
+    idle_after_a(&case, 2);
+    agent.agent.withdraw(&agent.key);
+    let b = case.operation("op-b");
+    let mut exchange = case.exchange(&b);
+    assert!(is_advertisement(&advertisement(&mut exchange).unwrap()));
+    block_on(exchange.finish());
+    assert_eq!(agent.agent.signs(), 1, "B's proof asked the agent once");
+    block_on(b.finish());
+    case.wait("only B's connection is left", |counts| {
+        (counts.idle, counts.leased, counts.total()) == (1, 0, 1)
+    });
+    assert_eq!(case.sessions(), 3, "B's connection is a third one");
+    assert!(case.close());
+}
+
+#[test]
+fn p1_int_rem_the_agent_proof_authorizes_a_held_key_once() {
+    let agent = AgentKey::new();
+    let case = agent.case();
+    idle_after_a(&case, 1);
+    let b = case.operation("op-b");
+    for _ in 0..2 {
+        let mut exchange = case.exchange(&b);
+        assert!(is_advertisement(&advertisement(&mut exchange).unwrap()));
+        block_on(exchange.finish());
+    }
+    assert_eq!(agent.agent.signs(), 1, "the proof is kept for the binding");
+    assert_eq!(case.sessions(), 1);
+    block_on(b.finish());
+    assert!(case.close());
+}
+
+#[test]
+fn p1_int_rem_trust_is_rechecked_under_the_host_as_the_url_wrote_it() {
+    // Code P3-1 = State P3-3: `known_hosts` lists the host hashed, in the case the URL wrote. B's re-check names both
+    // spellings, as the setup's did, so B is Authorized and A's connection is reused.
+    let case = Case::keeping(Kept {
+        named: Some(("githost.example".into(), "GitHost.Example".into())),
+        ..Kept::trusted()
+    });
+    for name in ["op-a", "op-b"] {
+        let operation = case.operation(name);
+        let mut exchange = case.exchange(&operation);
+        assert!(is_advertisement(&advertisement(&mut exchange).unwrap()));
+        block_on(exchange.finish());
+        block_on(operation.finish());
+        case.wait("the connection is idle", |counts| {
+            (counts.idle, counts.leased) == (1, 0)
+        });
+    }
+    assert_eq!(case.sessions(), 1, "one SSH connection served A and B");
+    assert!(case.close());
+}
+
+#[test]
+fn p1_int_rem_a_failed_proof_retires_no_sibling_whose_own_proof_is_running() {
+    // Code P3-2 = State P3-2: A leaves S1 and S2. B leases one and its proof signs, the answer held back; the agent then
+    // withdraws the key and C's proof of the other is refused, which retires the idle connections of that key. The one
+    // B's proof is running on is not retired: B's proof passes and B is served by it, C by a connection of its own.
+    let agent = AgentKey::new();
+    let case = agent.case();
+    idle_after_a(&case, 2);
+    agent.agent.delay_next(1500);
+    let b = case.operation("op-b");
+    let wait_b = b.open(case.spec()).unwrap().wait();
+    wait_for("B's proof reached the agent", || agent.agent.signs() == 1);
+    // B's request has been answered by the agent; only the proxy holds the reply back.
+    thread::sleep(Duration::from_millis(150));
+    agent.agent.withdraw(&agent.key);
+    let c = case.operation("op-c");
+    let mut exchange_c = case.exchange(&c);
+    assert!(is_advertisement(&advertisement(&mut exchange_c).unwrap()));
+    block_on(exchange_c.finish());
+    let mut exchange_b = block_on(wait_b).unwrap();
+    assert!(is_advertisement(&advertisement(&mut exchange_b).unwrap()));
+    block_on(exchange_b.finish());
+    assert_eq!(case.sessions(), 3, "A's two, and C's own");
+    block_on(b.finish());
+    block_on(c.finish());
+    assert!(case.close());
+}
+
+#[test]
+fn p1_int_rem_a_proof_that_passes_on_a_connection_lost_meanwhile_is_unprovable() {
+    // Code P3-2 = State P3-2: B's proof of A's connection is running (the agent holds the answer back) when the peer
+    // cuts the connection and the adapter disposes of it. The proof passes, but the connection is gone: B is not told
+    // `Authorized` (which would fail its exchange) but `Unprovable`, and is served by a connection of its own.
+    let agent = AgentKey::new();
+    let case = agent.case();
+    idle_after_a(&case, 1);
+    agent.agent.delay_next(1000);
+    let b = case.operation("op-b");
+    let wait = b.open(case.spec()).unwrap().wait();
+    wait_for("B's proof reached the agent", || agent.agent.signs() >= 1);
+    case.proxy.cut_all();
+    // The idle watch notices within a few of the worker's passes; the agent's answer is still held back.
+    thread::sleep(Duration::from_millis(400));
+    let mut exchange = block_on(wait).unwrap();
+    assert!(is_advertisement(&advertisement(&mut exchange).unwrap()));
+    block_on(exchange.finish());
+    assert_eq!(case.sessions(), 2, "B has a connection of its own");
+    block_on(b.finish());
+    assert!(case.close());
 }

@@ -189,6 +189,7 @@ pub(crate) fn native_connector(
                     let proven = |authenticator| Evidence {
                         authenticator,
                         host_key: trusted.clone(),
+                        written_host: written.clone(),
                         authority: reuse.clone(),
                     };
                     if let Some(selected) = selected {

@@ -209,6 +209,8 @@ where
     }
     fn start(&mut self, connection: ConnectionId, mut exchange: Exchange) {
         let now = self.now();
+        // The host's lease is taken up: from here the connection is not idle, so no retirement is held off by it.
+        self.shared.claims.begun(connection);
         let (Some(entry), Some((stream, endpoint))) =
             (self.entries.get_mut(&connection), exchange.channel.take())
         else {
@@ -310,6 +312,7 @@ where
             let Some(entry) = self.entries.remove(&id) else {
                 continue;
             };
+            self.shared.claims.forget(id);
             let Phase::Disposing { report, .. } = entry.phase else {
                 continue;
             };

@@ -51,6 +51,7 @@ use std::{
     time::Instant,
 };
 
+mod claims;
 mod worker;
 
 /// The budgets of the adapter's connections and exchanges, from the endpoint's pool policy.
@@ -87,6 +88,9 @@ struct Outbox {
 #[derive(Default)]
 pub(super) struct Shared {
     outbox: Mutex<Outbox>,
+    /// Which connections the host has leased and which the worker has retired (the SSH adapter's; the HTTPS adapter
+    /// shares the outbox and leaves this empty).
+    claims: claims::Claims,
 }
 impl Shared {
     fn lock(&self) -> std::sync::MutexGuard<'_, Outbox> {
@@ -291,6 +295,14 @@ impl EndpointAdapter for SshAdapter {
         let worker = self.worker.clone().ok_or_else(|| {
             io::Error::new(io::ErrorKind::NotConnected, "SSH adapter has no worker")
         })?;
+        // A connection the worker retired (a failed reuse proof) is refused here, before anything is queued: the host
+        // takes `NotConnected` as a lost lease and asks again for a new connection. One this leases is not retired.
+        if !self.shared.claims.lease(connection) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "the connection was retired",
+            ));
+        }
         let context = BridgeContext {
             session_id: "gwz-ssh-adapter".into(),
             stream_id: 1,

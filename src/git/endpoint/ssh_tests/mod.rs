@@ -75,6 +75,7 @@ mod release_wake;
 mod remote_bridge;
 mod retry;
 // Step 1.6: a connection another binding last used is leased only after this binding's reuse proof.
+pub(crate) mod reuse_agent;
 mod reuse_auth;
 mod rsa_sha1;
 mod selected_key;

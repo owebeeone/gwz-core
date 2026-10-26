@@ -426,6 +426,9 @@ pub(crate) enum Authenticator {
 pub(crate) struct Evidence {
     pub(crate) authenticator: Authenticator,
     pub(crate) host_key: Vec<u8>,
+    /// The host as the open's URL wrote it, which the setup's trust check looked up beside the key's lowercased host
+    /// (TR2.18): a hashed `known_hosts` name hashes the host as written, so a re-check names it too.
+    pub(crate) written_host: String,
     pub(crate) authority: Arc<ReuseAuthority>,
 }
 
