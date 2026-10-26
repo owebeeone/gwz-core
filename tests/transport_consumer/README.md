@@ -11,11 +11,10 @@ registry resolution is intentionally deferred to the explicit archive proof.
 
 Run these commands from the workspace root. Install Python 3.10 or newer with
 venv/pip, Git, and Rust through rustup. The consumer's own regeneration uses Rust
-1.96.0's rustfmt, and the placement candidate's uses gwz-core's pinned 1.95.0
-(each exact formatter version is pinned in its generator manifest); the Rust
-package supports 1.95.0 or newer. Both generators use the taut-proto release
-their generator manifests pin: `protocol/generator.json` within this consumer,
-and `gwz-core/protocol/candidate/candidate-generator.json` for the candidate.
+1.96.0's rustfmt (its exact formatter version is pinned in its generator
+manifest); the Rust package supports 1.95.0 or newer. The consumer's generator
+uses the taut-proto release `protocol/generator.json` pins within this consumer,
+and gwz-core's own generator, `gwz-core/protocol/regen.py`, the release it pins.
 
 Create the interpreter used by the commands below once:
 
@@ -50,28 +49,21 @@ gwz-core/protocol/.regen-venv/bin/python \
   --owner-schema gwz-transport/protocol/transport.ir.json --check
 ```
 
-The placement candidate uses a separate composition and output path. It loads
-the production core schema plus the explicit owner export, adds the accepted
-placement fields, and emits `gwz-core/src/protocol/candidate_generated.rs`,
-`gwz-core/protocol/candidate/candidate_generated.py` and the candidate's
-conformance corpus in `gwz-core/protocol/candidate/corpus/` (what `tautc corpus`
-writes: `golden.json` and the Rust parity harness `rust/vectors.rs`, which the
-candidate build's `corpus_byte_parity` runs). Owner Rust declarations are imported as
-external types, so the candidate has one `Envelope` definition. The retained
-Rust reader is a pinned checked-in pre-placement baseline and is verified by
-the command rather than regenerated. Its rustfmt pin is gwz-core's own
-toolchain's (`gwz-core/rust-toolchain.toml`), which the command selects itself,
-whatever the working directory or `RUSTUP_TOOLCHAIN`. This command never writes
-production protocol artifacts or Cargo manifests:
+gwz-core's own protocol composes the owner export (plan step 2.2; it was the
+placement candidate until then). `gwz-core/protocol/gwz.taut.py` loads the
+explicit owner export, pinned by digest, and adds the accepted placement fields
+to GWZ's own messages; `gwz-core/protocol/regen.py` emits
+`gwz-core/src/protocol/generated.rs` from it, with the owner's Rust declarations
+imported as external types, so core has one `Envelope` definition, and the
+conformance corpus in `gwz-core/protocol/corpus/`. The retained Rust reader is a
+pinned checked-in pre-placement baseline (`candidate/retained-reader.json`) that
+`candidate/test_candidate.py` verifies rather than regenerates:
 
 ```sh
-gwz-core/protocol/.regen-venv/bin/python \
-  gwz-core/protocol/candidate/candidate-regenerator.py \
-  --core-schema gwz-core/protocol/gwz.taut.py \
-  --owner-schema gwz-transport/protocol/transport.ir.json --check
+gwz-core/protocol/.regen-venv/bin/python gwz-core/protocol/regen.py --check
 ```
 
-Candidate fixtures cover old/new Rust and Python readers, absent versus null
+Compatibility fixtures cover old/new Rust and Python readers, absent versus null
 new fields, malformed present values, default-local placement, capability
 gating, and stale receiver generations. The host guard shares receiver state
 across admission clones, validates usable limits and SSH policy, and executes
@@ -91,7 +83,7 @@ for the first published release.
 
 For the current unpublished source, first create an archive and then run the
 isolated, offline proof. It copies this consumer, the core blocking-adapter source identified below,
-the core candidate protocol (`src/protocol/candidate_generated.rs`)
+the core protocol (`src/protocol/generated.rs`)
 and the supplied archive into temporary paths, and uses a temporary Cargo patch; no sibling checkout is
 needed:
 

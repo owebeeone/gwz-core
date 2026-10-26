@@ -1,7 +1,7 @@
 use gwz_transport::protocol::{AuthPolicy, Limits, Scheme};
 use gwz_transport_consumer_proof::{
     candidate_admission::{AdmissionError, ReceiverAdmission, ReceiverGeneration},
-    candidate_generated as new, cbor, retained_old_generated as old,
+    core_generated as new, cbor, retained_old_generated as old,
 };
 
 fn limits() -> Limits {

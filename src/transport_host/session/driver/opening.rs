@@ -357,55 +357,51 @@ impl Session {
         thread::park_timeout(limit.min(Duration::from_millis(10)));
     }
     // Only the Cli placement checks a path on its endpoint: the in-process endpoint is the driver's own process.
-    cfg_if::cfg_if! {
-        if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
-            pub(in crate::transport_host) fn check(
-                &self,
-                request: &str,
-                identity: Identity,
-            ) -> ModelResult<()> {
-                let result = Wait::new();
-                // As for an open, a full mux makes the check wait for a stream to end.
-                let admit_until = Instant::now() + ADMISSION;
-                loop {
-                    let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-                    if state.closed {
-                        return Err(unavailable("endpoint identity check unavailable"));
-                    }
-                    let owner = state
-                        .owner
-                        .as_ref()
-                        .ok_or_else(|| unavailable("endpoint not bound"))?;
-                    let id = match owner.check_identity(request, identity.clone(), CHECK_MS) {
-                        Ok(id) => id,
-                        Err(error @ (mux::Error::Capacity | mux::Error::WouldBlock)) => {
-                            drop(state);
-                            if Instant::now() >= admit_until {
-                                return Err(mux_error(error));
-                            }
-                            self.wait_for_change(admit_until.saturating_duration_since(Instant::now()));
-                            continue;
-                        }
-                        Err(error) => return Err(mux_error(error)),
-                    };
-                    state.checks.insert(id, request, result.clone());
-                    break;
-                }
-                result.get().map_err(|failure| match failure.code {
-                    gwz_transport::protocol::ErrorCode::InvalidRequest => {
-                        invalid("invalid endpoint identity path")
-                    }
-                    gwz_transport::protocol::ErrorCode::UnsupportedOperation => {
-                        unsupported("endpoint identity unsupported")
-                    }
-                    gwz_transport::protocol::ErrorCode::Authentication
-                    | gwz_transport::protocol::ErrorCode::Unavailable => ModelError::new(
-                        crate::model::ErrorCode::PermissionDenied,
-                        "selected endpoint identity unavailable; no agent fallback",
-                    ),
-                    _ => unavailable("endpoint identity check failed"),
-                })
+    pub(in crate::transport_host) fn check(
+        &self,
+        request: &str,
+        identity: Identity,
+    ) -> ModelResult<()> {
+        let result = Wait::new();
+        // As for an open, a full mux makes the check wait for a stream to end.
+        let admit_until = Instant::now() + ADMISSION;
+        loop {
+            let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            if state.closed {
+                return Err(unavailable("endpoint identity check unavailable"));
             }
+            let owner = state
+                .owner
+                .as_ref()
+                .ok_or_else(|| unavailable("endpoint not bound"))?;
+            let id = match owner.check_identity(request, identity.clone(), CHECK_MS) {
+                Ok(id) => id,
+                Err(error @ (mux::Error::Capacity | mux::Error::WouldBlock)) => {
+                    drop(state);
+                    if Instant::now() >= admit_until {
+                        return Err(mux_error(error));
+                    }
+                    self.wait_for_change(admit_until.saturating_duration_since(Instant::now()));
+                    continue;
+                }
+                Err(error) => return Err(mux_error(error)),
+            };
+            state.checks.insert(id, request, result.clone());
+            break;
         }
+        result.get().map_err(|failure| match failure.code {
+            gwz_transport::protocol::ErrorCode::InvalidRequest => {
+                invalid("invalid endpoint identity path")
+            }
+            gwz_transport::protocol::ErrorCode::UnsupportedOperation => {
+                unsupported("endpoint identity unsupported")
+            }
+            gwz_transport::protocol::ErrorCode::Authentication
+            | gwz_transport::protocol::ErrorCode::Unavailable => ModelError::new(
+                crate::model::ErrorCode::PermissionDenied,
+                "selected endpoint identity unavailable; no agent fallback",
+            ),
+            _ => unavailable("endpoint identity check failed"),
+        })
     }
 }

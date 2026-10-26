@@ -575,7 +575,7 @@ fn oversized_open_deadlines_fail_through_bound_session_without_stopping_progress
     wait_future(host.deliver(wait_future(client.next_message()).unwrap().unwrap())).unwrap();
     refused_oversized_open(&driver, &host, &client, "oversize");
     // Another request is serviced on the same binding after the policy rejection: a second open is refused the same
-    // way (the Cli identity check this probe once used is the session candidate's).
+    // way (the Cli identity check this probe once used belongs to the Cli placement).
     driver.register("after", Some("operation".into())).unwrap();
     endpoint.register("after", None).unwrap();
     refused_oversized_open(&driver, &host, &client, "after");

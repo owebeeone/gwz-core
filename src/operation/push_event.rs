@@ -142,11 +142,45 @@ impl OperationRequest {
 }
 
 impl OperationContext {
+    /// Refuse the request-side transport fields a core cannot honour, in every build (plan step 2.2 review, C-P3-2): a
+    /// present `transport_message` (an embedded message is the session host's; the in-process core carries none) and an
+    /// `endpoint_path_base` that is not the `cli` placement's, empty, over 16 KiB or holding a NUL. The protocol carries
+    /// both fields in every build, so a core that ignored them would hide a caller's error.
+    pub(crate) fn refuse_unhonoured_transport_fields(
+        meta: &crate::RequestMeta,
+    ) -> model::ModelResult<()> {
+        if meta.transport_message.is_some() {
+            return Err(model::ModelError::new(
+                model::ErrorCode::InvalidRequest,
+                "invalid transport request context",
+            ));
+        }
+        if let Some(base) = meta
+            .transport
+            .as_ref()
+            .and_then(|options| options.endpoint_path_base.as_deref())
+        {
+            let cli = meta
+                .transport
+                .as_ref()
+                .and_then(|options| options.placement)
+                == Some(crate::TransportPlacement::Cli);
+            if !cli || base.is_empty() || base.len() > 16384 || base.contains('\0') {
+                return Err(model::ModelError::new(
+                    model::ErrorCode::InvalidRequest,
+                    "invalid endpoint path context",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn from_meta(
         operation_id: String,
         action: ActionKind,
         meta: &crate::RequestMeta,
     ) -> model::ModelResult<Self> {
+        Self::refuse_unhonoured_transport_fields(meta)?;
         if crate::git::has_transport_options(meta.transport.as_ref())
             && !matches!(
                 action,
@@ -435,7 +469,6 @@ impl<'a> EventEmitter<'a> {
 /// Build a standard `ResponseEnvelope` from request meta + an action. For **CLI-local** ops
 /// (e.g. `gwz forall`) that stamp their own envelope without a gwz-core handler — `gwz-core`
 /// itself never executes those, this just mints a consistent envelope.
-#[allow(clippy::needless_update, reason = "gwz_session_candidate adds fields")]
 pub fn response_envelope_for(
     meta: &crate::RequestMeta,
     action: ActionKind,

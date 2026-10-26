@@ -75,14 +75,17 @@ def _load_owner(path: Path, pin: dict, schema_from_json):
     name, version = _package_identity(manifest)
     if name != pin["owner-name"] or version != pin["owner-version"]:
         raise SystemExit(f"owner manifest identity mismatch: {name!r} {version!r}")
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    # The digest is of the export's content: a Windows checkout (core.autocrlf=true) has it with CRLF endings, as
+    # gwz-core's protocol/gwz.taut.py also allows.
+    raw = path.read_bytes().replace(b"\r\n", b"\n")
+    digest = hashlib.sha256(raw).hexdigest()
     expected = pin["owner-schema-sha256"]
     if digest != expected:
         raise SystemExit(
             f"owner schema digest mismatch: expected {expected}, got {digest}; "
             "update the pin only with an intentional schema revision"
         )
-    owner = schema_from_json(json.loads(path.read_text()))
+    owner = schema_from_json(json.loads(raw))
     return owner
 
 

@@ -91,6 +91,186 @@ has no service method and no handler that executes commands.
 
 ## Enums
 
+### MessageKind
+
+| Member | Wire |
+| --- | --- |
+| bind | 1 |
+| bind_rejected | 3 |
+| bound | 2 |
+| cancel | 14 |
+| check_identity | 16 |
+| close | 12 |
+| closed | 13 |
+| data | 7 |
+| end_write | 11 |
+| failed | 15 |
+| flush | 9 |
+| flushed | 10 |
+| identity_check_failed | 18 |
+| identity_checked | 17 |
+| open | 4 |
+| open_failed | 6 |
+| opened | 5 |
+| window | 8 |
+
+### EndpointRole
+
+| Member | Wire |
+| --- | --- |
+| driver | 2 |
+| local | 1 |
+
+### Scheme
+
+| Member | Wire |
+| --- | --- |
+| https | 2 |
+| ssh | 1 |
+
+### AuthPolicy
+
+| Member | Wire |
+| --- | --- |
+| anonymous | 3 |
+| gh | 4 |
+| ssh_ambient | 1 |
+| ssh_explicit | 2 |
+| windows_configured | 5 |
+| windows_default | 6 |
+
+### GitService
+
+| Member | Wire |
+| --- | --- |
+| receive_pack_advertisement | 3 |
+| receive_pack_exchange | 4 |
+| upload_pack_advertisement | 1 |
+| upload_pack_exchange | 2 |
+
+### IdentityMode
+
+| Member | Wire |
+| --- | --- |
+| ambient | 1 |
+| credentials_disabled | 3 |
+| explicit_key | 2 |
+
+### ErrorCode
+
+| Member | Wire |
+| --- | --- |
+| authentication | 8 |
+| cancelled | 7 |
+| capacity | 5 |
+| carrier_lost | 12 |
+| invalid_request | 4 |
+| io | 10 |
+| protocol | 11 |
+| repository_refused | 13 |
+| timeout | 6 |
+| trust | 9 |
+| unavailable | 3 |
+| unsupported_operation | 2 |
+| unsupported_version | 1 |
+
+### SetupFailureCause
+
+| Member | Wire |
+| --- | --- |
+| address_not_available | 7 |
+| aggregate | 2 |
+| allocation | 4 |
+| connection_refused | 5 |
+| interaction | 3 |
+| not_found | 6 |
+| stall | 1 |
+
+### HelperFailureCause
+
+| Member | Wire |
+| --- | --- |
+| configuration_refused | 11 |
+| control_character | 3 |
+| declined | 10 |
+| malformed_output | 8 |
+| missing_field | 7 |
+| missing_newline | 6 |
+| no_helper | 9 |
+| not_utf8 | 5 |
+| output_limit | 2 |
+| pipe_failure | 1 |
+| username_colon | 4 |
+
+### CapacityCause
+
+| Member | Wire |
+| --- | --- |
+| local | 3 |
+| server_retry_after | 2 |
+| server_throttle | 1 |
+
+### CapacitySignal
+
+| Member | Wire |
+| --- | --- |
+| http_429 | 1 |
+| http_503 | 2 |
+
+### Effect
+
+| Member | Wire |
+| --- | --- |
+| none | 1 |
+| possible | 2 |
+
+### Disposition
+
+| Member | Wire |
+| --- | --- |
+| discarded | 2 |
+| reusable | 1 |
+
+### AuthMethod
+
+| Member | Wire |
+| --- | --- |
+| gh | 4 |
+| none | 1 |
+| ssh_agent | 2 |
+| ssh_key | 3 |
+| sspi | 5 |
+
+### NativeSource
+
+| Member | Wire |
+| --- | --- |
+| configured | 1 |
+| current_logon | 2 |
+
+### NativeScheme
+
+| Member | Wire |
+| --- | --- |
+| digest | 3 |
+| negotiate | 1 |
+| ntlm | 2 |
+
+### NativeObservation
+
+| Member | Wire |
+| --- | --- |
+| not_started | 1 |
+| selected | 3 |
+| unresolved | 2 |
+
+### NativeMechanism
+
+| Member | Wire |
+| --- | --- |
+| kerberos | 1 |
+| ntlm | 2 |
+
 ### ActionKind
 
 | Member | Wire |
@@ -927,6 +1107,13 @@ has no service method and no handler that executes commands.
 | request | 1 |
 | workspace | 2 |
 
+### TransportPlacement
+
+| Member | Wire |
+| --- | --- |
+| local | 1 |
+| cli | 2 |
+
 ### FetchResult
 
 | Member | Wire |
@@ -949,6 +1136,250 @@ has no service method and no handler that executes commands.
 Optional column: `no` = the key is required and the value is not null; `yes` = the key is
 required and the value may be null (an absent key is a `MissingKey` error); `yes (absent ok)` =
 the value may be null and an absent key also decodes as null (`MISSING_OK`).
+
+### NativeFacts
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| source | 1 | NativeSource | no | no | - |
+| scheme | 2 | NativeScheme | no | no | - |
+| observation | 3 | NativeObservation | no | no | - |
+| mechanism | 4 | NativeMechanism | yes | no | - |
+| authoritative | 5 | bool | no | no | - |
+
+### Limits
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| encoded_frame | 1 | int | no | no | - |
+| data_payload | 2 | int | no | no | - |
+| metadata_bytes | 3 | int | no | no | - |
+| nesting | 4 | int | no | no | - |
+| collection_entries | 5 | int | no | no | - |
+| decode_allocation | 6 | int | no | no | - |
+| queued_bytes | 7 | int | no | no | - |
+| queued_frames | 8 | int | no | no | - |
+| receive_window | 9 | int | no | no | - |
+| control_reserve_bytes | 10 | int | no | no | - |
+| control_reserve_frames | 11 | int | no | no | - |
+
+### Bind
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| versions | 1 | List<int> | no | no | - |
+| role | 2 | EndpointRole | no | no | - |
+| schemes | 3 | List<Scheme> | no | no | - |
+| policies | 4 | List<AuthPolicy> | no | no | - |
+| receive_limits | 5 | Limits | no | no | - |
+
+### Bound
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| version | 1 | int | no | no | - |
+| endpoint_id | 2 | str | no | no | - |
+| role | 3 | EndpointRole | no | no | - |
+| schemes | 4 | List<Scheme> | no | no | - |
+| policies | 5 | List<AuthPolicy> | no | no | - |
+| receive_limits | 6 | Limits | no | no | - |
+| trust_owner | 7 | str | no | no | - |
+
+### RetryAttempt
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| attempt | 1 | int | no | no | - |
+| attempts | 2 | int | no | no | - |
+
+### CapacityDetail
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| cause | 1 | CapacityCause | no | no | - |
+| scheme | 2 | Scheme | yes (absent ok) | no | - |
+| host | 3 | str | yes (absent ok) | no | - |
+| port | 4 | int | yes (absent ok) | no | - |
+| limit_applied | 5 | int | yes (absent ok) | no | - |
+| max_per_host | 6 | int | yes (absent ok) | no | - |
+| elapsed_ms | 7 | int | yes (absent ok) | no | - |
+| last_signal | 8 | CapacitySignal | yes (absent ok) | no | - |
+| retry_after_ms | 9 | int | yes (absent ok) | no | - |
+
+### FailureDetail
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| helper_cause | 1 | HelperFailureCause | yes (absent ok) | no | - |
+| pipe_kind | 2 | str | yes (absent ok) | no | - |
+| schemes | 3 | List<str> | yes (absent ok) | no | - |
+| retry_attempt | 4 | RetryAttempt | yes (absent ok) | no | - |
+| helper_budget_ms | 5 | int | yes (absent ok) | no | - |
+| capacity | 6 | CapacityDetail | yes (absent ok) | no | - |
+
+### Failure
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| code | 1 | ErrorCode | no | no | - |
+| effect | 2 | Effect | no | no | - |
+| facts | 3 | Facts | yes (absent ok) | no | - |
+| setup_cause | 4 | SetupFailureCause | yes (absent ok) | no | - |
+| detail | 5 | FailureDetail | yes (absent ok) | no | - |
+
+### Destination
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| scheme | 1 | Scheme | no | no | - |
+| host | 2 | str | no | no | - |
+| port | 3 | int | no | no | - |
+| path | 4 | str | no | no | - |
+| ssh_username | 5 | str | yes | no | - |
+| https_username | 6 | str | yes (absent ok) | no | - |
+
+### Identity
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| mode | 1 | IdentityMode | no | no | - |
+| key_path | 2 | str | yes | no | - |
+| path_base | 3 | str | yes | no | - |
+
+### Deadlines
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| allocation_ms | 1 | int | no | no | - |
+| connect_ms | 2 | int | no | no | - |
+| io_ms | 3 | int | no | no | - |
+| interaction_ms | 4 | int | no | no | - |
+| cleanup_ms | 5 | int | no | no | - |
+
+### Open
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| endpoint_id | 1 | str | no | no | - |
+| operation_id | 2 | str | no | no | - |
+| destination | 3 | Destination | no | no | - |
+| service | 4 | GitService | no | no | - |
+| identity | 5 | Identity | no | no | - |
+| policy | 6 | AuthPolicy | no | no | - |
+| deadlines | 7 | Deadlines | no | no | - |
+| receive_limits | 8 | Limits | no | no | - |
+
+### CheckIdentity
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| endpoint_id | 1 | str | no | no | - |
+| operation_id | 2 | str | no | no | - |
+| identity | 3 | Identity | no | no | - |
+| timeout_ms | 4 | int | no | no | - |
+
+### IdentityChecked
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+
+### Facts
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| method | 1 | AuthMethod | no | no | - |
+| credential_offered | 2 | bool | no | no | - |
+| authenticated | 3 | bool | yes | no | - |
+| key_fingerprint | 4 | str | yes | no | - |
+| http_status | 5 | int | yes | no | - |
+| ssh_exit_status | 6 | int | yes | no | - |
+| native | 7 | NativeFacts | yes (absent ok) | no | - |
+
+### Opened
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| connection_id | 1 | str | no | no | - |
+| reused | 2 | bool | no | no | - |
+| endpoint_id | 3 | str | no | no | - |
+| trust_owner | 4 | str | no | no | - |
+| facts | 5 | Facts | no | no | - |
+| receive_limits | 6 | Limits | no | no | - |
+
+### Data
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| offset | 1 | int | no | no | - |
+| payload | 2 | bytes | no | no | - |
+
+### Window
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| max_offset | 1 | int | no | no | - |
+
+### Barrier
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| barrier_id | 1 | int | no | no | - |
+| offset | 2 | int | no | no | - |
+
+### EndWrite
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| final_offset | 1 | int | no | no | - |
+
+### Close
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| final_offset | 1 | int | no | no | - |
+
+### Closed
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| disposition | 1 | Disposition | no | no | - |
+| unread_response_discarded | 2 | bool | no | no | - |
+| facts | 3 | Facts | no | no | - |
+| failure | 4 | Failure | yes | no | - |
+
+### Cancel
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| reason | 1 | ErrorCode | no | no | - |
+
+### Envelope
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| version | 1 | int | no | no | - |
+| session_id | 2 | str | no | no | - |
+| stream_id | 3 | int | no | no | - |
+| kind | 4 | MessageKind | no | no | - |
+| message_seq | 5 | int | yes (absent ok) | no | - |
+| bind | 10 | Bind | yes | no | - |
+| bound | 11 | Bound | yes | no | - |
+| bind_rejected | 12 | Failure | yes | no | - |
+| open | 13 | Open | yes | no | - |
+| opened | 14 | Opened | yes | no | - |
+| open_failed | 15 | Failure | yes | no | - |
+| data | 16 | Data | yes | no | - |
+| window | 17 | Window | yes | no | - |
+| flush | 18 | Barrier | yes | no | - |
+| flushed | 19 | Barrier | yes | no | - |
+| end_write | 20 | EndWrite | yes | no | - |
+| close | 21 | Close | yes | no | - |
+| closed | 22 | Closed | yes | no | - |
+| cancel | 23 | Cancel | yes | no | - |
+| failed | 24 | Failure | yes | no | - |
+| check_identity | 25 | CheckIdentity | yes (absent ok) | no | - |
+| identity_checked | 26 | IdentityChecked | yes (absent ok) | no | - |
+| identity_check_failed | 27 | Failure | yes (absent ok) | no | - |
 
 ### WorkspaceRef
 
@@ -1065,6 +1496,11 @@ the value may be null and an absent key also decodes as null (`MISSING_OK`).
 | --- | --- | --- | --- | --- | --- |
 | file_identity | 1 | bool | no | no | - |
 | exact_agent_identity | 2 | bool | no | no | - |
+| message_versions | 3 | List<int> | yes (absent ok) | no | - |
+| placements | 4 | List<TransportPlacement> | yes (absent ok) | no | - |
+| schemes | 5 | List<Scheme> | yes (absent ok) | no | - |
+| auth_policies | 6 | List<AuthPolicy> | yes (absent ok) | no | - |
+| message_limits | 7 | Limits | yes (absent ok) | no | - |
 
 ### TransportObservation
 
@@ -1101,6 +1537,8 @@ the value may be null and an absent key also decodes as null (`MISSING_OK`).
 | default_identity | 1 | str | yes | no | - |
 | remote_identities | 2 | List<RemoteSshIdentity> | no | no | - |
 | url_scheme | 3 | UrlScheme | yes | no | - |
+| placement | 4 | TransportPlacement | yes (absent ok) | no | - |
+| endpoint_path_base | 5 | str | yes (absent ok) | no | - |
 
 ### InvocationContext
 
@@ -1121,6 +1559,7 @@ the value may be null and an absent key also decodes as null (`MISSING_OK`).
 | attribution | 7 | OperationAttribution | yes | no | - |
 | transport | 8 | TransportOptions | yes | no | - |
 | invocation | 9 | InvocationContext | yes | no | - |
+| transport_message | 10 | Envelope | yes (absent ok) | no | - |
 
 ### ResponseMeta
 
@@ -1134,6 +1573,7 @@ the value may be null and an absent key also decodes as null (`MISSING_OK`).
 | message | 6 | str | yes | no | - |
 | attribution | 7 | OperationAttribution | yes | no | - |
 | transport | 8 | List<TransportObservation> | yes | no | - |
+| transport_message | 9 | Envelope | yes (absent ok) | no | - |
 
 ### MergeRecordCompatibilityContext
 
@@ -2477,6 +2917,6 @@ the value may be null and an absent key also decodes as null (`MISSING_OK`).
 
 - Field tags are stable wire identifiers. Do not reuse retired tags or names.
 - Additive optional fields are the normal compatibility path.
-- Regenerate `src/protocol/generated.rs`, `src/cbor.rs`, and `protocol/corpus/` after schema edits.
+- Regenerate `src/protocol/generated.rs` and `protocol/corpus/` after schema edits.
 - Regenerate this catalog after schema edits and review the request/response matrix for new handlers.
 - Keep CLI-local values clearly marked until taut module support lets the CLI own its own IR.

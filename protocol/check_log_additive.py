@@ -198,8 +198,35 @@ from taut.ir.load import load_schema
 # and reused (12), each MISSING_OK. MEASURED additive, not assumed: removing
 # exactly those five field objects from the new IR reproduced the pin below
 # (4d377a49...) exactly; the unprojected new IR fingerprints as cbfdfbcb....
+# Plan step 2.2 (2026-10-25) adds the `cli` placement and the embedded message to
+# the ordinary schema, each MISSING_OK: enum TransportPlacement (local=1, cli=2),
+# TransportOptions.placement (tag 4) and .endpoint_path_base (5),
+# RequestMeta.transport_message (10), ResponseMeta.transport_message (9), the five
+# TransportCapabilitiesResponse extras (message_versions 3, placements 4, schemes 5,
+# auth_policies 6, message_limits 7), and the transport owner's 42 declarations
+# (the 18 enums and 24 messages of gwz-transport's export, which gwz.taut.py
+# composes whole and the new fields name). MEASURED additive, not assumed:
+# removing exactly those declarations and fields from the new IR reproduced the
+# pin below (4d377a49...) exactly; the unprojected new IR fingerprints as 1001a0b8....
 PRE_LOG_WIRE_SHA256 = "4d377a496c8905293b5e9b53392b70867cf6dafccbb623841a623dbd2d555f14"
 LOG_METHODS = {"log", "log.output"}
+
+# What gwz.taut.py composes from gwz-transport's export (its `_with_owner`): the
+# owner's declarations, none of them GWZ's own. The projection removes exactly
+# these, so a change to the owner's schema moves this list and the owner pin in
+# gwz.taut.py together, in the change that regenerates the code.
+OWNER_ENUMS = (
+    "MessageKind", "EndpointRole", "Scheme", "AuthPolicy", "GitService", "IdentityMode",
+    "ErrorCode", "SetupFailureCause", "HelperFailureCause", "CapacityCause", "CapacitySignal",
+    "Effect", "Disposition", "AuthMethod", "NativeSource", "NativeScheme", "NativeObservation",
+    "NativeMechanism",
+)
+OWNER_MESSAGES = (
+    "NativeFacts", "Limits", "Bind", "Bound", "RetryAttempt", "CapacityDetail", "FailureDetail",
+    "Failure", "Destination", "Identity", "Deadlines", "Open", "CheckIdentity", "IdentityChecked",
+    "Facts", "Opened", "Data", "Window", "Barrier", "EndWrite", "Close", "Closed", "Cancel",
+    "Envelope",
+)
 
 
 def pre_log_projection(schema_ir: dict[str, Any]) -> dict[str, Any]:
@@ -313,6 +340,44 @@ def pre_log_projection(schema_ir: dict[str, Any]) -> dict[str, Any]:
                     f"{message_name}.{name} must be the MISSING_OK {scalar} at tag {tag}"
                 )
             message["fields"].remove(added[0])
+    # Plan step 2.2 appends the `cli` placement and the embedded message, all
+    # MISSING_OK, and composes the transport owner's declarations. Require the exact
+    # members, then remove only them to retain the historical pin.
+    list_of_enum = lambda name: {"k": "list", "elem": {"k": "enum", "name": name}}  # noqa: E731
+    placement_additions = {
+        "TransportOptions": (
+            ("placement", 4, {"k": "enum", "name": "TransportPlacement"}),
+            ("endpoint_path_base", 5, {"k": "scalar", "scalar": "str"}),
+        ),
+        "RequestMeta": (("transport_message", 10, {"k": "msg", "name": "Envelope"}),),
+        "ResponseMeta": (("transport_message", 9, {"k": "msg", "name": "Envelope"}),),
+        "TransportCapabilitiesResponse": (
+            ("message_versions", 3, {"k": "list", "elem": {"k": "scalar", "scalar": "int"}}),
+            ("placements", 4, list_of_enum("TransportPlacement")),
+            ("schemes", 5, list_of_enum("Scheme")),
+            ("auth_policies", 6, list_of_enum("AuthPolicy")),
+            ("message_limits", 7, {"k": "msg", "name": "Limits"}),
+        ),
+    }
+    for message_name, additions in placement_additions.items():
+        message = next(m for m in projected["messages"] if m["name"] == message_name)
+        for name, tag, type_ in additions:
+            expected = {"name": name, "tag": tag, "type": type_,
+                        "optional": "missing_ok", "transient": False, "merge": None}
+            added = [f for f in message["fields"] if f["name"] == name]
+            if added != [expected]:
+                raise ValueError(f"{message_name}.{name} must be the MISSING_OK field at tag {tag}")
+            message["fields"].remove(added[0])
+    placement = next((e for e in projected["enums"] if e["name"] == "TransportPlacement"), None)
+    if placement is None or placement["members"] != {"local": 1, "cli": 2}:
+        raise ValueError("TransportPlacement must be local=1, cli=2")
+    removed_enums = {*OWNER_ENUMS, "TransportPlacement"}
+    removed_messages = set(OWNER_MESSAGES)
+    for kind, names in (("enums", removed_enums), ("messages", removed_messages)):
+        present = {item["name"] for item in projected[kind]}
+        if not names <= present:
+            raise ValueError(f"the composed owner declarations are missing {sorted(names - present)}")
+        projected[kind] = [item for item in projected[kind] if item["name"] not in names]
     return projected
 
 

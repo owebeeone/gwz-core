@@ -16,12 +16,15 @@ Why PyPI and not the vendored ``taut/src``:
     the git tag is left untouched.
 
 Artifacts (all paths relative to the gwz-core crate root; commands run from there):
-    tautc gen    protocol/gwz.taut.py -o <tmp> -l rust --api-only --with-runtime
+    tautc gen    protocol/gwz.taut.py -o <tmp> -l rust --api-only --rust-external-types <owner-types.json>
         <tmp>/rust/api.rs  -> src/protocol/generated.rs
-        <tmp>/rust/cbor.rs -> src/cbor.rs
-        (<tmp>/rust/ext.rs is emitted but intentionally NOT vendored -- gwz-core
-         does not use the forward-compat extension runtime; copying it would add
-         an untracked, unverified file the build never references.)
+        The schema composes the transport owner's pinned export (gwz.taut.py's
+        `_with_owner`), and <owner-types.json> maps each of the owner's
+        declarations to its Rust path in `gwz-transport` (`gwz_transport::protocol::
+        <Name>`), so core re-exports the owner's types and has one `Envelope`, not a
+        copy. External types cannot be generated with the vendored runtime
+        (`--with-runtime`): the generated code shares `gwz_transport::cbor`, which
+        `src/lib.rs` re-exports as `cbor`, and there is no `src/cbor.rs`.
     tautc corpus protocol/gwz.taut.py -o protocol/corpus -l rust
         writes protocol/corpus/golden.json and protocol/corpus/rust/vectors.rs in place
     tautc gen protocol/checked_artifact.taut.py ... --api-only
@@ -41,6 +44,7 @@ from __future__ import annotations
 
 import argparse
 import filecmp
+import json
 import os
 import shutil
 import subprocess
@@ -57,13 +61,15 @@ CHECKED_ARTIFACT_CORPUS_DIR = "protocol/checked_artifact-corpus"
 # tautc emits these into <out>/rust/; map each to its destination under GWZ_CORE.
 GEN_COPIES = [
     ("api.rs", "src/protocol/generated.rs"),
-    ("cbor.rs", "src/cbor.rs"),
-    # "ext.rs" is emitted by --with-runtime but deliberately not vendored (see module docstring).
 ]
 CHECKED_ARTIFACT_GEN_COPY = (
     "api.rs",
     "src/checked_artifact/protocol/generated.rs",
 )
+# The transport owner's export, which gwz.taut.py composes (see its `_with_owner`, which also pins the
+# export's digest); GWZ_TRANSPORT_SCHEMA names another copy, as it does for gwz.taut.py.
+OWNER_SCHEMA = GWZ_CORE.parent / "gwz-transport" / "protocol" / "transport.ir.json"
+OWNER_RUST_MODULE = "gwz_transport::protocol"
 DEFAULT_VENV = GWZ_CORE / "protocol" / ".regen-venv"
 TAUT_GENERATOR_VERSION = "0.10.0"
 
@@ -144,10 +150,23 @@ def tautc(venv: Path) -> list:
     return [venv_exe(venv, "python"), "-m", "taut.cli"]
 
 
-def gen_into(venv: Path, schema: str, out_dir: Path, with_runtime: bool) -> None:
+def owner_schema_path() -> Path:
+    named = os.environ.get("GWZ_TRANSPORT_SCHEMA")
+    return Path(named).resolve() if named else OWNER_SCHEMA
+
+
+def write_owner_types(path: Path) -> None:
+    """The owner's declarations, each mapped to the Rust path core re-exports it from."""
+    owner = json.loads(owner_schema_path().read_text(encoding="utf-8"))
+    names = sorted([*(e["name"] for e in owner["enums"]), *(m["name"] for m in owner["messages"])])
+    mapping = {name: f"{OWNER_RUST_MODULE}::{name}" for name in names}
+    path.write_text(json.dumps(mapping, indent=2) + "\n", encoding="utf-8")
+
+
+def gen_into(venv: Path, schema: str, out_dir: Path, external_types: Path | None = None) -> None:
     cmd = tautc(venv) + ["gen", schema, "-o", out_dir, "-l", "rust", "--api-only"]
-    if with_runtime:
-        cmd.append("--with-runtime")
+    if external_types is not None:
+        cmd += ["--rust-external-types", external_types]
     if run(cmd, cwd=GWZ_CORE, env=taut_env()).returncode != 0:
         fail("tautc gen failed")
 
@@ -175,7 +194,9 @@ def do_write(venv: Path) -> list:
     changed = []
     tmp = Path(tempfile.mkdtemp(prefix="gwz-taut-gen-"))
     try:
-        gen_into(venv, SCHEMA, tmp, with_runtime=True)
+        owner_types = tmp / "owner-types.json"
+        write_owner_types(owner_types)
+        gen_into(venv, SCHEMA, tmp, owner_types)
         for name, dest in GEN_COPIES:
             src = _emitted(tmp, name)
             dest_path = GWZ_CORE / dest
@@ -188,7 +209,7 @@ def do_write(venv: Path) -> list:
 
     tmp = Path(tempfile.mkdtemp(prefix="gwz-checked-artifact-taut-gen-"))
     try:
-        gen_into(venv, CHECKED_ARTIFACT_SCHEMA, tmp, with_runtime=False)
+        gen_into(venv, CHECKED_ARTIFACT_SCHEMA, tmp)
         name, dest = CHECKED_ARTIFACT_GEN_COPY
         src = _emitted(tmp, name)
         dest_path = GWZ_CORE / dest
@@ -221,7 +242,9 @@ def do_check(venv: Path) -> int:
     drift = []
     tmp = Path(tempfile.mkdtemp(prefix="gwz-taut-check-"))
     try:
-        gen_into(venv, SCHEMA, tmp, with_runtime=True)
+        owner_types = tmp / "owner-types.json"
+        write_owner_types(owner_types)
+        gen_into(venv, SCHEMA, tmp, owner_types)
         for name, dest in GEN_COPIES:
             src = _emitted(tmp, name)
             dest_path = GWZ_CORE / dest
@@ -231,7 +254,7 @@ def do_check(venv: Path) -> int:
         shutil.rmtree(tmp, ignore_errors=True)
     tmp = Path(tempfile.mkdtemp(prefix="gwz-checked-artifact-taut-check-"))
     try:
-        gen_into(venv, CHECKED_ARTIFACT_SCHEMA, tmp, with_runtime=False)
+        gen_into(venv, CHECKED_ARTIFACT_SCHEMA, tmp)
         name, dest = CHECKED_ARTIFACT_GEN_COPY
         src = _emitted(tmp, name)
         dest_path = GWZ_CORE / dest

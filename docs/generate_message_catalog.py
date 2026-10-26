@@ -226,7 +226,7 @@ def render_catalog(schema) -> str:
             "",
             "- Field tags are stable wire identifiers. Do not reuse retired tags or names.",
             "- Additive optional fields are the normal compatibility path.",
-            "- Regenerate `src/protocol/generated.rs`, `src/cbor.rs`, and `protocol/corpus/` after schema edits.",
+            "- Regenerate `src/protocol/generated.rs` and `protocol/corpus/` after schema edits.",
             "- Regenerate this catalog after schema edits and review the request/response matrix for new handlers.",
             "- Keep CLI-local values clearly marked until taut module support lets the CLI own its own IR.",
             "",

@@ -113,6 +113,7 @@ fn product_probe(
         } else {
             vec![]
         },
+        ..Default::default()
     };
     let scoped = base.with_transport(&path, Some(&options));
     let (authenticated, observations) = match scoped {

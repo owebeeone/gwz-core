@@ -27,7 +27,7 @@ Requires a clean working tree — land feature work first. If the protocol schem
 (`protocol/gwz.taut.py`) changed, regenerate and commit **before** running the script:
 
 ```bash
-python protocol/regen.py    # writes src/protocol/generated.rs, src/cbor.rs, protocol/corpus/
+python protocol/regen.py    # writes src/protocol/generated.rs, protocol/corpus/
 python protocol/regen.py --check   # CI-style: verify only, no writes
 ```
 

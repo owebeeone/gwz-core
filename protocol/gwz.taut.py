@@ -1,9 +1,24 @@
-"""GWZ v0 taut protocol schema."""
+"""GWZ v0 taut protocol schema.
+
+GWZ authors its own messages here. The transport owner's conversation types (the
+embedded `Envelope`, `Scheme`, `AuthPolicy`, `Limits` and the rest) are authored
+once, in the `gwz-transport` repository, and composed in at the end of this file
+from the owner's pinned export, never copied (placement design section 3).
+"""
+
+import hashlib
+import json
+import os
+from pathlib import Path
 
 from taut.ir.dsl import BOOL, BYTES, INT, STR, Enum, F, List, Msg, Params, Ref, method, schema, service
-from taut.ir.model import MISSING_OK
+from taut.ir.load import schema_from_json
+from taut.ir.model import MISSING_OK, Schema
+# The owner's enums are not in this file's own enum names, so `Ref.<Name>` would resolve them as messages: they are
+# named as enum references explicitly.
+from taut.ir.model import EnumRef as owner_enum
 
-SCHEMA = schema(
+_CORE = schema(
     # ---- service ----------------------------------------------------------
     service("GwzCore",
         method("configure_transport_runtime", role="in",
@@ -1088,7 +1103,16 @@ SCHEMA = schema(
         schema_version=F(1, STR)),
     TransportCapabilitiesResponse=Msg(
         file_identity=F(1, BOOL),
-        exact_agent_identity=F(2, BOOL)),
+        exact_agent_identity=F(2, BOOL),
+        # What a core advertises for the `cli` placement (placement design section
+        # 3; plan step 2.2). Absent means the core has no message placement
+        # support, so an old core's answer, which lacks all five keys, still
+        # decodes (MISSING_OK) and a driver refuses `cli` locally.
+        message_versions=F(3, List(INT), optional=MISSING_OK),
+        placements=F(4, List(Ref.TransportPlacement), optional=MISSING_OK),
+        schemes=F(5, List(owner_enum("Scheme")), optional=MISSING_OK),
+        auth_policies=F(6, List(owner_enum("AuthPolicy")), optional=MISSING_OK),
+        message_limits=F(7, Ref.Limits, optional=MISSING_OK)),
     TransportCredentialMethod=Enum(unknown=0, file=1, agent=2, helper=3),
     TransportSelectionSource=Enum(ambient=0, invocation_remote=1, invocation_default=2, local_configuration=3),
     TransportOperation=Enum(clone=0, fetch=1, push=2, read_advertisement=3),
@@ -1125,12 +1149,20 @@ SCHEMA = schema(
         source=F(4, Ref.UrlSchemeSource),
         derived=F(5, BOOL),
         host_known=F(6, BOOL)),
+    # Where the endpoint of a request's connections runs: `local` is the core's
+    # own process, `cli` the client's. Absent means `local`.
+    TransportPlacement=Enum(local=1, cli=2),
     TransportOptions=Msg(
         default_identity=F(1, STR, optional=True),
         remote_identities=F(2, List(Ref.RemoteSshIdentity)),
         # Requested URL scheme; the key is always present and carries Null when
         # unset, which means the workspace preference, then manifest.
-        url_scheme=F(3, Ref.UrlScheme, optional=True)),
+        url_scheme=F(3, Ref.UrlScheme, optional=True),
+        # Plan step 2.2, both MISSING_OK so a map from an older writer, which
+        # lacks the keys, still decodes. Absent `placement` is `local`; absent
+        # `endpoint_path_base` is no supplied client-relative path context.
+        placement=F(4, Ref.TransportPlacement, optional=MISSING_OK),
+        endpoint_path_base=F(5, STR, optional=MISSING_OK)),
 
     # The caller filesystem context captured before this request is serialized.
     # It is an absolute path in the execution filesystem; receivers never infer
@@ -1151,7 +1183,10 @@ SCHEMA = schema(
         dry_run=F(6, BOOL, optional=True),
         attribution=F(7, Ref.OperationAttribution, optional=True),
         transport=F(8, Ref.TransportOptions, optional=True),
-        invocation=F(9, Ref.InvocationContext, optional=True)),
+        invocation=F(9, Ref.InvocationContext, optional=True),
+        # An embedded transport conversation message (plan step 2.2; MISSING_OK
+        # so an older writer's map decodes). Absent means no attachment.
+        transport_message=F(10, Ref.Envelope, optional=MISSING_OK)),
 
     # Common operation metadata returned by responses.
     ResponseMeta=Msg(
@@ -1166,7 +1201,9 @@ SCHEMA = schema(
         # Human-readable summary, not a machine contract.
         message=F(6, STR, optional=True),
         attribution=F(7, Ref.OperationAttribution, optional=True),
-        transport=F(8, List(Ref.TransportObservation), optional=True)),
+        transport=F(8, List(Ref.TransportObservation), optional=True),
+        # As RequestMeta.transport_message, for the reply direction.
+        transport_message=F(9, Ref.Envelope, optional=MISSING_OK)),
 
     # Durable merge-record header context for compatibility and recovery errors.
     MergeRecordCompatibilityContext=Msg(
@@ -2610,3 +2647,43 @@ SCHEMA = schema(
         response=F(1, Ref.ResponseEnvelope),
         output=F(2, Ref.LogOutputLogRef)),
 )
+
+
+# The transport owner's export, composed whole and never changed here. The digest
+# pins it: a changed owner schema is a wire change in GWZ too, so it moves this
+# pin in the same change as the regenerated code, never silently.
+_OWNER_SCHEMA_SHA256 = "48837b7eb183acf99a4361ec1827ccd282e3eef832e422668f840dc72cbb1fe1"
+
+
+def _owner_schema_path() -> Path:
+    named = os.environ.get("GWZ_TRANSPORT_SCHEMA")
+    if named:
+        return Path(named).resolve()
+    return Path(__file__).resolve().parents[2] / "gwz-transport" / "protocol" / "transport.ir.json"
+
+
+def _with_owner(core: Schema) -> Schema:
+    path = _owner_schema_path()
+    if not path.is_file():
+        raise RuntimeError(
+            f"the transport owner's schema export is missing: {path} "
+            "(set GWZ_TRANSPORT_SCHEMA to it, or check out gwz-transport beside gwz-core)"
+        )
+    # The digest is of the export's content, not of a checkout's line endings: a Windows checkout of gwz-transport
+    # (`core.autocrlf=true`) has the same file with CRLF, and the pin must hold there and still refuse a real change.
+    raw = path.read_bytes().replace(b"\r\n", b"\n")
+    if hashlib.sha256(raw).hexdigest() != _OWNER_SCHEMA_SHA256:
+        raise RuntimeError(f"the transport owner's schema export is not the pinned one: {path}")
+    owner = schema_from_json(json.loads(raw))
+    overlaps = (set(core.enums) | set(core.messages)) & (set(owner.enums) | set(owner.messages))
+    if overlaps:
+        raise ValueError(f"core/owner declaration collision: {sorted(overlaps)}")
+    return Schema(
+        enums={**owner.enums, **core.enums},
+        messages={**owner.messages, **core.messages},
+        services=dict(core.services),
+        extensions=core.extensions,
+    )
+
+
+SCHEMA = _with_owner(_CORE)

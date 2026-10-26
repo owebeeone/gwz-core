@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
 """Rule (a)'s source test: each candidate switch's sites equal the repository's inventory file.
 
-Rule (a) of dev-docs/GwzTransportReleasePlanAmendment-2.md §3.13 (TR2.12) names
-two switches: `gwz_transport_candidate`, until S7.1 (1.1.0) removes it, and
-`gwz_session_candidate`, until S7.1 (1.2.0) removes it. Each product repository
+Rule (a) of dev-docs/GwzTransportReleasePlanAmendment-2.md §3.13 (TR2.12) named
+two switches: `gwz_transport_candidate`, until S7.1 removes it, and
+`gwz_session_candidate`, which plan step 2.2 of
+dev-docs/GwzTransportReleaseConvergencePlan.md retired: the Cli placement and the
+placement projection of the protocol are ordinary code. A retired switch is never
+declared and never listed, and a site that names it is an error (RETIRED), so it
+cannot come back unnoticed. Each product repository
 (gwz-core, gwz-cli, gwz-py) keeps `scripts/candidate_switch_inventory.txt`: a
 `#` header, then one line per site in sorted order, the switch, the file and the
 symbol, which any run of whitespace separates (`--list` writes two spaces). The
@@ -24,7 +28,7 @@ on, and a `use`, an `impl` or an `extern` block by its rendered text.
 The check fails on a site the inventory does not list (NEW), on a listed line
 that is no site (STALE), on lines out of order (ORDER), and on a switch that
 neither the repository's `build.rs` nor its `Cargo.toml` declares in
-check-cfg (UNDECLARED). `--list` prints the sites in the inventory's form. The
+check-cfg (UNDECLARED), and on a site that names a retired switch (RETIRED). `--list` prints the sites in the inventory's form. The
 scan is lexical, reuses check_cfg_boundaries.py's lexer and file walk, and
 inspects every platform branch without compiling any of them.
 """
@@ -37,7 +41,8 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[2]
 INVENTORY = Path('scripts') / 'candidate_switch_inventory.txt'
-SWITCHES = ('gwz_transport_candidate', 'gwz_session_candidate')
+SWITCHES = ('gwz_transport_candidate',)
+RETIRED = ('gwz_session_candidate',)
 NAMED = {'fn', 'mod', 'struct', 'enum', 'union', 'trait', 'type', 'const', 'static'}
 
 _spec = importlib.util.spec_from_file_location('check_cfg_boundaries',
@@ -128,7 +133,7 @@ def sites(source: str) -> list[tuple[str, str]]:
         else:
             continue
         named = {a.text(k) for k in span if a.kind(k) == 'id'}
-        found += [(switch, symbol(a, i)) for switch in SWITCHES if switch in named]
+        found += [(switch, symbol(a, i)) for switch in (*SWITCHES, *RETIRED) if switch in named]
     return found
 
 
@@ -137,7 +142,7 @@ def scan(repo: Path) -> list[str]:
     rows = []
     for path in cfgb.rust_files(repo, ['.']):
         source = path.read_text(encoding='utf-8')
-        if any(switch in source for switch in SWITCHES):
+        if any(switch in source for switch in (*SWITCHES, *RETIRED)):
             rows += [f'{switch}  {path.relative_to(repo).as_posix()}  {symbol}' for switch, symbol in sites(source)]
     return sorted(rows)
 
@@ -167,6 +172,8 @@ def check(repo: Path, inventory: Path | None = None) -> list[str]:
     listed_rows, found, names = listed(inventory), scan(repo), declared(repo)
     errors = [f'UNDECLARED {switch}: neither build.rs nor Cargo.toml declares it in check-cfg'
               for switch in SWITCHES if switch not in names]
+    errors += [f'RETIRED {row}' for row in found if row.split()[0] in RETIRED]
+    found = [row for row in found if row.split()[0] not in RETIRED]
     errors += [f'NEW    {row}' for row in sorted((Counter(found) - Counter(listed_rows)).elements())]
     errors += [f'STALE  {row}' for row in sorted((Counter(listed_rows) - Counter(found)).elements())]
     if not errors and listed_rows != found:
@@ -194,8 +201,8 @@ def main(argv: list[str] | None = None) -> int:
         print('Every site where a candidate switch appears in a cfg is an inventory line, and every line a site: '
               'update the inventory in the change that moves a site (rule (a), TR2.12).', file=sys.stderr)
         return 1
-    print(f'candidate switch inventory: the {len(listed(inventory))} sites in {repo} match {inventory}, and both '
-          'switches are declared')
+    print(f'candidate switch inventory: the {len(listed(inventory))} sites in {repo} match {inventory}, and the '
+          'switch is declared')
     return 0
 
 

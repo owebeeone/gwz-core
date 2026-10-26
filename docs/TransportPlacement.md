@@ -1,17 +1,26 @@
 # Choosing where Git connections run
 
-**Session candidate API: available only in the isolated integration harness
-built with `--cfg gwz_transport_candidate --cfg gwz_session_candidate`, not in
-the 1.1.0 transport build, default builds or released builds.** The Cli
-placement, its endpoint and the capability extras this document uses belong to
-the 1.2.0 session host. The implementation follows the accepted
+**Transport-build API: the Rust interface below exists only in a build with
+`--cfg gwz_transport_candidate`, the transport build, until the transport
+switch is retired at activation.** The wire fields this document uses are not
+behind a switch: `TransportOptions.placement` and `endpoint_path_base`,
+`RequestMeta.transport_message` and `ResponseMeta.transport_message`, and the
+`transport_capabilities` extras (`message_versions`, `placements`, `schemes`,
+`auth_policies`, `message_limits`) are part of the ordinary protocol in every
+build, as optional fields: a writer or reader that predates them still decodes
+the message and reads them as absent. The implementation follows the accepted
 endpoint-placement contract. Existing CLI commands and the default
 `Git2Backend::new()` usage remain unchanged.
 
 An endpoint opens Git-host connections and owns SSH credentials, host trust and
 connection pools. Repository work stays in gwz-core. `local` means the core
 machine; `cli` means the client endpoint supplied by your host application.
-There is no new CLI command, server address or hosting service to configure.
+This guide describes the in-process embedding, in which the client endpoint and
+the core share a process and the host supplies the delivery between them. A
+separate-process carrier and a command that serves a core to a client are
+later steps of the split-command design
+([`GwzSplitCommandChannel.md`](../../dev-docs/GwzSplitCommandChannel.md)), and
+are not described or promised here.
 
 ## Default: connections on the core machine
 
@@ -22,7 +31,8 @@ Do not set `endpoint_path_base` for local placement.
 
 ## Use a client endpoint
 
-This is an embedding lifecycle, not a command-line walkthrough. A host must
+This is an embedding lifecycle, not a command-line walkthrough: no command,
+server address or hosting service selects `cli` today. A host must
 provide asynchronous bidirectional message delivery that continues during a
 running Git operation. One-way progress events and the final operation response
 are insufficient. The concrete connection mechanism is the host's responsibility.
@@ -54,8 +64,8 @@ are insufficient. The concrete connection mechanism is the host's responsibility
    Explicit bounded runtime shutdown releases pooled resources. Last-owner drop
    initiates cleanup too. A new runtime/session is required to reconnect later.
 
-The candidate signatures and complete lifecycle example appear below. The exact
-example is compiled by the full-core candidate tests; it is not a released API.
+The signatures and complete lifecycle example appear below. The exact
+example is compiled by the transport build's guide test; it is not a released API.
 
 ## Options and defaults
 
@@ -112,20 +122,28 @@ accepted; authenticated remains unknown without independent proof. This HTTPS
 behavior is specified for the candidate and is not advertised by current builds.
 Private-member omission follows existing core policy.
 
-This interface remains a candidate. The next integration gate proves transport
-attachments inside existing CLI/core and gwz-py/core messages in the same process.
-The serializable messages must retain a plausible future wire mapping, but physical
-wire and separate-process testing, including iroh integration, are deferred outside
-this development cycle. Production availability retains its applicable activation
-and qualification checks; a new physical connection is not this gate's prerequisite.
+The embedding is proved inside existing CLI/core and gwz-py/core messages in the
+same process. The attachment fields are ordinary protocol fields, so they cross a
+process boundary wherever the host carries `RequestMeta` and `ResponseMeta`; the
+separate-process carrier that does so is a later step of the split-command design
+([`GwzSplitCommandChannel.md`](../../dev-docs/GwzSplitCommandChannel.md) §3), not
+part of this interface. Availability of the Rust interface below retains its
+applicable activation and qualification checks.
 
-## Candidate Rust interface
+## Transport-build Rust interface
 
-These names and signatures are implemented in `gwz_core::transport_host` under
-the isolated Unix candidate configuration. The production manifest does not enable
-that configuration. See [the integration harness](../tests/transport_backend/README.md)
+These names and signatures are implemented in `gwz_core::transport_host` in the
+transport build (`--cfg gwz_transport_candidate`, on Unix and Windows). The
+default manifest does not enable that configuration. See
+[the integration harness](../tests/transport_backend/README.md)
 for preparation and tests; the example below is an exact-text compile fixture.
 `ModelResult<T>` and generated request/response types retain their existing meanings.
+
+`CliEndpoint::new(SshEndpointConfig)` is transitional, and so is `TransportRuntime::install_cli`: step 3.1 of the
+transport release plan ([`GwzTransportReleaseConvergencePlan.md`](../../dev-docs/GwzTransportReleaseConvergencePlan.md))
+replaces them with the client owner's `HostHandle` form, once the owner's production endpoint factory has landed
+(steps 1.3 and 2.2c). The signatures below describe today's in-process embedding, and the guide test keeps compiling
+their example.
 
 ```rust
 pub struct SshEndpointConfig { /* private */ }
@@ -184,7 +202,7 @@ pub fn require_cli_ssh(
 
 `from_environment` captures the endpoint's own home, agent socket and existing
 startup timeout/pool policy; it performs no key/trust-file reads or connections.
-The candidate facade uses a 64 KiB receive window and the shared profile's other
+The facade uses a 64 KiB receive window and the shared profile's other
 message limits. Each binding admits at most 256 distinct request IDs over its
 lifetime and 64 concurrent streams. IDs are not recycled; replace an exhausted
 CLI binding with `remove_cli`/`install_cli` and a new endpoint, or create a new
@@ -194,7 +212,7 @@ Bootstrap and explicit cleanup waits are bounded to five seconds; endpoint ident
 checks allow up to 120 seconds. Network timing uses the core's startup timeout
 (default three seconds); disabling it does not disable bounded cleanup.
 
-Configuration is immutable after construction. Unsupported candidate/platform
+Configuration is immutable after construction. Unsupported platform
 support returns UnsupportedOperation. `new` starts bounded local supervisors;
 resources belong to the returned owner, not the caller's executor. Physical
 work and delivery progress do not run on the thread blocked inside a Git handler.
@@ -242,7 +260,7 @@ it does not add a serialized wrapper. Owner message profile version `2` is
 independent of the outer request schema version `gwz.protocol/v0`.
 The in-memory executable direction fixture is
 [`mux_async.rs`](../../gwz-transport/tests/mux_async.rs). It tests the lower-level
-ports; the full facade is exercised by the core candidate lifecycle/command tests.
+ports; the full facade is exercised by the core transport build's lifecycle/command tests.
 
 Port calls support cancellation of the waiting future. `next_message` transfers
 one admitted outbound item, returning None after closure; dropping a pending
@@ -270,7 +288,7 @@ boundary reports peer_cleanup_confirmed=false. It is not a Git success result.
 
 ## Example: configure, fetch once, remove
 
-This example is compiled unchanged in the candidate harness. `connect` is supplied by the embedding:
+This example is compiled unchanged in the transport build's guide test. `connect` is supplied by the embedding:
 it installs two independently progressing forwarding loops using the port methods
 above and returns their owner. It is intentionally not a GWZ carrier API. In a
 split deployment the two ports live in different processes; the example puts both

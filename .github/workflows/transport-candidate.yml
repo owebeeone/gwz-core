@@ -14,32 +14,26 @@ on:
 # gwz-sspi and the transport's third-party crates behind that switch, and
 # tests/transport_backend/prepare.py makes the isolated tree the suites run
 # against (with the placement guide target). This job runs that build's
-# suites, the candidate and consumer generators' checks, the candidate's Python
+# suites, the protocol and consumer generators' checks, the candidate's Python
 # tests and the consumer's archive proof on every change, against the
 # gwz-transport, gwz-py and gwz-sspi commits .github/gwz-transport.commit,
 # .github/gwz-py.commit and .github/gwz-sspi.commit pin, the gwz-git commit
 # .github/gwz-git.commit pins (gwz-core's Cargo.toml names `../gwz-git`
 # unconditionally, so every cargo, prepare.py and run_tests.py job needs it;
-# checkout-siblings.sh puts it there), and the taut-proto release the candidate
-# generator pins (installed, and checked out at its tag).
+# checkout-siblings.sh puts it there), and the taut-proto release
+# protocol/regen.py pins (installed, and checked out at its tag).
 # The second job, candidate-windows, builds and tests the same candidate on
 # Windows (TR4.6).
 jobs:
   candidate:
     name: Candidate build suites
     runs-on: ubuntu-24.04
-    strategy:
-      # Rule (a) of dev-docs/GwzTransportReleasePlanAmendment-2.md §3.13 (TR2.12):
-      # until S7.1 (1.1.0) removes gwz_transport_candidate, two candidate shapes
-      # stay green, the transport switch alone and both switches, one leg each.
-      # scripts/checks/test_check_candidate_switches.py holds the job to both.
-      fail-fast: false
-      matrix:
-        include:
-          - leg: transport
-            rustflags: --cfg gwz_transport_candidate
-          - leg: transport-and-session
-            rustflags: --cfg gwz_transport_candidate --cfg gwz_session_candidate
+    # Rule (a) of dev-docs/GwzTransportReleasePlanAmendment-2.md §3.13 (TR2.12):
+    # until S7.1 removes gwz_transport_candidate, the candidate shape stays green.
+    # gwz_session_candidate is retired (plan step 2.2 of
+    # dev-docs/GwzTransportReleaseConvergencePlan.md): the Cli placement and the
+    # placement projection are ordinary code, so there is one leg.
+    # scripts/checks/test_check_candidate_switches.py holds the job to it.
     defaults:
       run:
         # gwz-core, gwz-transport, gwz-py, gwz-sspi, taut and git2-rs are checked
@@ -62,7 +56,7 @@ jobs:
           echo "gwz-py=$(grep -m1 -E '^[0-9a-f]{40}$' .github/gwz-py.commit)" >> "$GITHUB_OUTPUT"
           echo "gwz-sspi=$(grep -m1 -E '^[0-9a-f]{40}$' .github/gwz-sspi.commit)" >> "$GITHUB_OUTPUT"
           echo "gwz-git=$(grep -m1 -E '^[0-9a-f]{40}$' .github/gwz-git.commit)" >> "$GITHUB_OUTPUT"
-          release="$(jq -r '."taut-proto"' protocol/candidate/candidate-generator.json)"
+          release="$(grep -oE 'TAUT_GENERATOR_VERSION = "[0-9]+\.[0-9]+\.[0-9]+"' protocol/regen.py | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
           echo "taut-proto=$release" >> "$GITHUB_OUTPUT"
           echo "taut=v$release" >> "$GITHUB_OUTPUT"
       - name: Check out gwz-transport at its pin, beside gwz-core
@@ -137,18 +131,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install taut-proto and pytest
-        # The generators accept only the pinned release, from this interpreter's
-        # site-packages.
+      - name: Install taut-proto, uv and pytest
+        # The consumer generator accepts only the pinned release, from this
+        # interpreter's site-packages; protocol/regen.py provisions its own
+        # environment with uv.
         env:
           RELEASE: ${{ steps.pins.outputs.taut-proto }}
-        run: python -m pip install --upgrade pip "taut-proto==$RELEASE" pytest
-      - name: Candidate and consumer generators match their checked-in artifacts
+        run: python -m pip install --upgrade pip "taut-proto==$RELEASE" pytest uv
+      - name: Protocol and consumer generators match their checked-in artifacts
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: |
-          python protocol/candidate/candidate-regenerator.py --core-schema protocol/gwz.taut.py --owner-schema ../gwz-transport/protocol/transport.ir.json --check
-          python -m pytest -q -p no:cacheprovider protocol/candidate/test_candidate_regen.py
+          python protocol/regen.py --check --venv "$RUNNER_TEMP/regen-venv"
           cd ..
           RUSTUP_TOOLCHAIN=1.96.0 python gwz-core/tests/transport_consumer/protocol/regen.py --owner-schema gwz-transport/protocol/transport.ir.json --check
           RUSTUP_TOOLCHAIN=1.96.0 python -m pytest -q -p no:cacheprovider gwz-core/tests/transport_consumer/protocol/test_regen.py
@@ -175,8 +169,7 @@ jobs:
         with:
           workspaces: gwz-core -> ../candidate-target
           cache-on-failure: true
-          # Each leg's flags build different artifacts; its own key keeps the legs from evicting each other.
-          key: ${{ matrix.leg }}
+          key: transport
       - id: suites
         name: Run the candidate build's suites
         # gwz-cli is not checked out, so the conditional-compilation check
@@ -184,7 +177,7 @@ jobs:
         # gwz-transport's process-global check runs over the checkout beside
         # gwz-core.
         env:
-          RUSTFLAGS: ${{ matrix.rustflags }}
+          RUSTFLAGS: --cfg gwz_transport_candidate
           # Only places the tests' nested gwz-sspi validator build outside every
           # checkout: src/git/endpoint/https_worker/native/tests.rs requires an
           # external CARGO_TARGET_DIR and builds ../gwz-sspi in its parent's
@@ -259,7 +252,7 @@ jobs:
           echo "gwz-py=$(pin gwz-py)" >> "$GITHUB_OUTPUT"
           echo "gwz-sspi=$(pin gwz-sspi)" >> "$GITHUB_OUTPUT"
           echo "gwz-git=$(pin gwz-git)" >> "$GITHUB_OUTPUT"
-          release="$(python -c "import json; print(json.load(open('protocol/candidate/candidate-generator.json'))['taut-proto'])" | tr -d '\r')"
+          release="$(grep -oE 'TAUT_GENERATOR_VERSION = "[0-9]+\.[0-9]+\.[0-9]+"' protocol/regen.py | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | tr -d '\r')"
           echo "taut-proto=$release" >> "$GITHUB_OUTPUT"
           echo "taut=v$release" >> "$GITHUB_OUTPUT"
       - name: Check out gwz-transport at its pin, beside gwz-core

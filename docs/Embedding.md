@@ -103,8 +103,9 @@ and member statuses.
 
 See [ErrorCatalog](ErrorCatalog.md) and [OperationModel](OperationModel.md).
 
-## Candidate endpoint placement
+## Endpoint placement
 
-The candidate [endpoint placement API](TransportPlacement.md) describes how an
+The [endpoint placement guide](TransportPlacement.md) describes how an
 embedding can keep repository work in core while a supplied client endpoint owns
-Git connections. It is a candidate interface, not a released capability.
+Git connections. Its wire fields are part of the protocol; its Rust interface is
+in the transport build only, and is not a released capability.

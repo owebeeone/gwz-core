@@ -12,6 +12,14 @@ macro_rules! repository_contract_transport {
     where
         Self: Sized,
     {
+        // The wire carries an explicit `cli` placement in every build; a backend with no client endpoint refuses it
+        // rather than running the request on its own credentials (plan step 2.2 review, S-P3-2).
+        if options.is_some_and(|value| value.placement == Some(crate::TransportPlacement::Cli)) {
+            return Err(ModelError::new(
+                ErrorCode::UnsupportedOperation,
+                "explicit cli placement requires an installed transport host context",
+            ));
+        }
         if super::transport_support::identity::has_options(options) {
             return Err(ModelError::new(
                 ErrorCode::UnsupportedOperation,

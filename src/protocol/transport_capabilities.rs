@@ -2,7 +2,6 @@ use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::{TransportCapabilitiesRequest, TransportCapabilitiesResponse};
 
 /// Capabilities of the native backend shipped with this core, without opening a repository.
-#[allow(clippy::needless_update, reason = "gwz_session_candidate adds fields")]
 pub fn handle(request: TransportCapabilitiesRequest) -> ModelResult<TransportCapabilitiesResponse> {
     if request.schema_version != "gwz.protocol/v0" {
         return Err(ModelError::new(

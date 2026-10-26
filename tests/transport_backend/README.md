@@ -27,8 +27,8 @@ RUSTFLAGS='--cfg gwz_transport_candidate' cargo +1.95.0 test --lib --locked --ta
 ```
 
 `prepare.py` is kept for what the manifest cannot say: the `transport_placement_guide` test target
-(no cfg gates a `[[test]]` in a manifest; the guide documents the Cli placement, so its test is empty unless
-`gwz_session_candidate` is set), the protocol pair's `placement-candidate.json`, and an isolated
+(no cfg gates a `[[test]]` in a manifest; the guide documents the Cli placement through the transport build's facade,
+so its test is empty without the transport switch), `placement-candidate.json` (the taut source `tests/protocol.rs` reads), and an isolated
 tree for callers that build away from the workspace (`windows_lane_check.py`, gwz-py's
 `build_candidate_extension.py`, the CI jobs). Steps C3b and C4 of `dev-docs/GwzV110RemainingPlan.md` retire the rest.
 
@@ -106,16 +106,15 @@ calls are bounded.
 ## Endpoint placement candidate
 
 The same prepared manifest also adds the `transport_placement_guide` test target.
-With `--cfg gwz_session_candidate` too, the build selects the session candidate's
-generated schema (`src/protocol/candidate_generated.rs`) and the Cli placement of the
-`transport_host` facade (S7.1 (1.1.0) step C3a moved both off the transport switch).
+The Cli placement of the `transport_host` facade and the placement fields of the protocol are
+ordinary code since plan step 2.2 (the facade is in the transport build, the fields in every build).
 Run the complete host/CLI-endpoint integration suite and compile the guide's example:
 
 ```sh
-RUSTFLAGS='--cfg gwz_transport_candidate --cfg gwz_session_candidate' cargo +1.95.0 test \
+RUSTFLAGS='--cfg gwz_transport_candidate' cargo +1.95.0 test \
   --manifest-path /tmp/gwz-backend-new/Cargo.toml --locked --offline \
   --target-dir /tmp/gwz-backend-new-target --lib transport_host -- --test-threads=1
-RUSTFLAGS='--cfg gwz_transport_candidate --cfg gwz_session_candidate' cargo +1.95.0 test \
+RUSTFLAGS='--cfg gwz_transport_candidate' cargo +1.95.0 test \
   --manifest-path /tmp/gwz-backend-new/Cargo.toml --locked --offline \
   --target-dir /tmp/gwz-backend-new-target --test transport_placement_guide
 python3 -B -m pytest -q gwz-core/tests/transport_backend/test_prepare.py

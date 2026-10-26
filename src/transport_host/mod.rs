@@ -51,11 +51,10 @@ cfg_if::cfg_if! {
 // Step 3.2b: the agent step's refusals, worded from the runtime's agent source.
 cfg_if::cfg_if! { if #[cfg(test)] { mod agent_source_tests; } }
 
-// S7.1 (1.1.0) step C3a: the Cli placement is the 1.2.0 session host's transport entry, so the tests that drive it
-// (the Cli harness, the embedded messages, the workspace commands and the fetch preflight over it) belong to the
-// session candidate.
+// The tests that drive the Cli placement: the Cli harness, the embedded messages, the workspace commands and the
+// fetch preflight over it.
 cfg_if::cfg_if! {
-    if #[cfg(all(test, gwz_session_candidate))] {
+    if #[cfg(test)] {
         mod cli_driver_tests;
         mod cli_placement_tests;
         mod command_tests;
@@ -114,16 +113,11 @@ pub use request::{ClientRequest, TransportCancellation, TransportRequest};
 pub fn validate_request_context(meta: &RequestMeta, operation_id: &str) -> ModelResult<()> {
     request::validate_meta(meta, operation_id)
 }
+pub use cli_placement::{CliEndpoint, require_cli_ssh};
 pub(crate) use request::{HttpsAttemptReceipt, HttpsOpenFailure, RequestContext, policy_words};
 use session::Session;
 pub(crate) use session::{AgentFailure, SshLimitFailure, SshOpenFailure};
 pub use session::{Attachment, TransportPort};
-// S7.1 (1.1.0) step C3a: the Cli placement's public surface is the session candidate's (1.2.0).
-cfg_if::cfg_if! {
-    if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
-        pub use cli_placement::{CliEndpoint, require_cli_ssh};
-    }
-}
 use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -243,7 +237,7 @@ struct RuntimeState {
     local: Arc<Session>,
     local_endpoint: Arc<Session>,
     local_link: session::LocalLink,
-    /// The Cli placement's driver session and the budgets it is built with: nothing without the session candidate.
+    /// The Cli placement's driver session and the budgets it is built with.
     cli: cli_placement::CliSlot,
     closed: bool,
     /// Where the command's warnings and notes go, if it gave a reader.
@@ -391,31 +385,14 @@ impl TransportRuntime {
         token: Option<&CancellationToken>,
     ) -> ModelResult<TransportRequest> {
         request::validate_meta(&meta, &operation_id)?;
-        cfg_if::cfg_if! {
-            if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
-                cli_placement::refuse_budget_for_cli(&meta)?;
-            }
-        }
+        cli_placement::refuse_budget_for_cli(&meta)?;
         let (session, local_endpoint, notes, spawn_gate) = {
             let state = self.0.lock().unwrap_or_else(|e| e.into_inner());
             if state.closed {
                 return Err(unavailable("transport runtime is closed"));
             }
-            cfg_if::cfg_if! {
-                if #[cfg(all(gwz_transport_candidate, gwz_session_candidate, any(unix, windows)))] {
-                    {
-                        let (session, local_endpoint, notes) = state.route(&meta)?;
-                        (session, local_endpoint, notes, state.spawn_gate.clone())
-                    }
-                } else {
-                    (
-                        state.local.clone(),
-                        Some(state.local_endpoint.clone()),
-                        state.notes.clone(),
-                        state.spawn_gate.clone(),
-                    )
-                }
-            }
+            let (session, local_endpoint, notes) = state.route(&meta)?;
+            (session, local_endpoint, notes, state.spawn_gate.clone())
         };
         // The in-process endpoint's session, which the request asks for the words its failures cannot carry (T5).
         let endpoint_session = local_endpoint.clone();

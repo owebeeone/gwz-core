@@ -66,16 +66,7 @@ APPROVED_RUST_PATH_EDGES = {
     ("checked_artifact/tests.rs", "tests/recovery_protocol.rs"),
     ("checked_artifact/tests.rs", "tests/removal_recovery.rs"),
     ("checked_artifact/tests.rs", "tests/staging_recovery.rs"),
-    # 2026-09-29: the candidate build's conformance corpus, the `cfg_if!` sibling
-    # of the edge below. The candidate regenerator writes and pins it beside its
-    # schema, and the candidate build's `corpus_byte_parity` runs it.
-    ("lib.rs", "../protocol/candidate/corpus/rust/vectors.rs"),
     ("lib.rs", "../protocol/corpus/rust/vectors.rs"),
-    ("lib.rs", "cbor.rs"),
-    # 2026-09-29: the candidate build's `protocol::generated`, the `cfg_if!` sibling
-    # of the edge below. It moved here from `tests/transport_consumer/candidate/`
-    # because tests/ holds no production code (`check_process_globals.py` enforces it).
-    ("protocol/mod.rs", "candidate_generated.rs"),
     ("protocol/mod.rs", "generated.rs"),
     (
         "workspace_ops/merge/participant_semantics/continue_eligibility.rs",
