@@ -4,6 +4,9 @@
 //! counts its connections and can cut them from the server's side.
 use super::ConnectionHost;
 use crate::git::endpoint::{
+    agent_auth::{Authenticator, Evidence, ReuseAuthority},
+    agent_job::Supervisor,
+    agent_source::AgentSource,
     cut_proxy::CutProxy,
     ssh_adapter::{AdapterSettings, SshAdapter},
     ssh_fixture::{DialRetries, SshdFixture, server_path},
@@ -11,9 +14,9 @@ use crate::git::endpoint::{
     ssh_setup::{Authenticated, Setup, SetupConnector},
 };
 use gwz_connection::{
-    AuthContext, CleanupStatus, EndpointAdapter, EndpointFactory, EndpointProfile, EndpointRoute,
-    EndpointSpec, Exchange, ExchangeSpec, FactoryEnv, FactoryError, GitService, HostHandle,
-    HostPhase, OpenFailure, Operation, OperationPolicy, PreparedOperation, StreamError,
+    AuthContext, AuthScope, CleanupStatus, EndpointAdapter, EndpointFactory, EndpointProfile,
+    EndpointRoute, EndpointSpec, Exchange, ExchangeSpec, FactoryEnv, FactoryError, GitService,
+    HostHandle, HostPhase, OpenFailure, Operation, OperationPolicy, PreparedOperation, StreamError,
     TerminalReason,
 };
 use gwz_transport::{
@@ -77,6 +80,8 @@ struct FixtureFactory {
         Arc<dyn Fn() -> io::Result<crate::git::endpoint::ssh_fixture::SshConnection> + Send + Sync>,
     /// While set, a setup waits (cancellably) before it dials.
     hold: Arc<AtomicBool>,
+    /// What each setup keeps for another binding's reuse (plan step 1.6): none, as a password's connection keeps none.
+    evidence: Option<Arc<dyn Fn() -> Evidence + Send + Sync>>,
 }
 impl EndpointFactory for FixtureFactory {
     fn create(
@@ -85,16 +90,17 @@ impl EndpointFactory for FixtureFactory {
         _env: &FactoryEnv<'_>,
     ) -> Result<Box<dyn EndpointAdapter>, FactoryError> {
         let (dial, hold) = (self.dial.clone(), self.hold.clone());
+        let evidence = self.evidence.clone();
         Ok(Box::new(SshAdapter::new(
             move |origin| {
                 SetupConnector::isolated(origin, Duration::from_millis(500), move |_, _, _| {
-                    let (dial, hold) = (dial.clone(), hold.clone());
+                    let (dial, hold, evidence) = (dial.clone(), hold.clone(), evidence.clone());
                     let setup: Setup = Box::new(move |control| {
                         while hold.load(Ordering::SeqCst) {
                             control.check()?;
                             thread::sleep(Duration::from_millis(5));
                         }
-                        Authenticated::new(
+                        let authenticated = Authenticated::new(
                             dial()?,
                             Identity::Ambient,
                             Facts {
@@ -103,7 +109,11 @@ impl EndpointFactory for FixtureFactory {
                                 credential_offered: true,
                                 ..Facts::default()
                             },
-                        )
+                        )?;
+                        Ok(match &evidence {
+                            Some(evidence) => authenticated.proven_by(evidence()),
+                            None => authenticated,
+                        })
                     });
                     Ok(setup)
                 })
@@ -120,16 +130,57 @@ struct Case {
     hold: Arc<AtomicBool>,
     host: Mutex<ConnectionHost>,
     handle: HostHandle,
+    /// The `known_hosts` file the connections' reuse proofs read, when they keep evidence.
+    _known_hosts: Option<tempfile::TempDir>,
 }
+/// The host key the fixture connections' evidence names (a stand-in blob: only its equality is checked).
+const EVIDENCE_HOST_KEY: &[u8] = b"fixture-host-key-blob";
 impl Case {
     fn new() -> Self {
+        Self::build(None)
+    }
+    /// A case whose connections keep reuse evidence (an explicit key's), against a `known_hosts` file that lists the
+    /// evidence's host key when `trusted` and lists nothing otherwise.
+    fn with_evidence(trusted: bool) -> Self {
+        Self::build(Some(trusted))
+    }
+    fn build(evidence: Option<bool>) -> Self {
         let fixture = SshdFixture::new();
+        let dir = evidence.map(|_| tempfile::tempdir().unwrap());
+        let evidence_for = evidence.map(|trusted| {
+            let dir = dir.as_ref().unwrap();
+            let known_hosts = dir.path().join("known_hosts");
+            let line = if trusted {
+                use base64::Engine as _;
+                format!(
+                    "[127.0.0.1]:{} ssh-ed25519 {}\n",
+                    fixture.port,
+                    base64::engine::general_purpose::STANDARD.encode(EVIDENCE_HOST_KEY)
+                )
+            } else {
+                String::new()
+            };
+            std::fs::write(&known_hosts, line).unwrap();
+            let authority = Arc::new(ReuseAuthority::new(
+                AgentSource::None,
+                known_hosts,
+                Supervisor::new(),
+                Instant::now(),
+                Duration::from_millis(500),
+            ));
+            Arc::new(move || Evidence {
+                authenticator: Authenticator::KeyFile("fixture-key".into()),
+                host_key: EVIDENCE_HOST_KEY.to_vec(),
+                authority: authority.clone(),
+            }) as Arc<dyn Fn() -> Evidence + Send + Sync>
+        });
         let proxy = Arc::new(CutProxy::start(fixture.port));
         let retries = DialRetries::default();
         let hold = Arc::new(AtomicBool::new(false));
         let factory = FixtureFactory {
             dial: Arc::new(fixture.dialer_counting(proxy.port, retries.clone())),
             hold: hold.clone(),
+            evidence: evidence_for,
         };
         let host = ConnectionHost::build(
             Arc::new(factory),
@@ -145,6 +196,7 @@ impl Case {
             hold,
             host: Mutex::new(host),
             handle,
+            _known_hosts: dir,
         }
     }
     /// Sessions the proxy carried (less the connections a dial abandoned and replaced).
@@ -177,11 +229,19 @@ impl Case {
 }
 
 pub(super) fn operation(handle: &HostHandle, name: &str) -> Operation {
+    operation_with(handle, name, Arc::new(()))
+}
+/// An operation whose authentication context holds `provider`: the adapter's retention of the context is its count.
+pub(super) fn operation_with(
+    handle: &HostHandle,
+    name: &str,
+    provider: Arc<dyn std::any::Any + Send + Sync>,
+) -> Operation {
     let input = PreparedOperation::new(
         name,
         EndpointRoute::ssh_and_https(),
         EndpointProfile::new(b"fixture-sshd".to_vec(), [7; 32]).unwrap(),
-        AuthContext::new(64, Arc::new(())),
+        AuthContext::new(64, AuthScope::new([0; 32]), provider),
         OperationPolicy::new(4, 32, 3).unwrap(),
     )
     .unwrap();
@@ -227,7 +287,8 @@ pub(super) fn advertisement(exchange: &mut Exchange) -> Result<Vec<u8>, StreamEr
 
 #[test]
 fn finish_a_then_b_reuses_the_idle_ssh_connection_through_the_host() {
-    let case = Case::new();
+    // B proves A's connection (plan step 1.6): its host key is listed in `known_hosts` now, so B is leased it.
+    let case = Case::with_evidence(true);
     for name in ["op-a", "op-b"] {
         let operation = case.operation(name);
         let mut exchange = case.exchange(&operation);
@@ -247,6 +308,79 @@ fn finish_a_then_b_reuses_the_idle_ssh_connection_through_the_host() {
         });
     }
     assert_eq!(case.sessions(), 1, "one SSH connection served A and B");
+    assert!(case.close());
+}
+
+#[test]
+fn a_connection_that_keeps_no_evidence_serves_only_the_binding_that_used_it() {
+    // A password's or a helper's connection can be proved by no other binding (contract 7.1): B opens its own, and A's
+    // stays idle for A.
+    let case = Case::new();
+    for name in ["op-a", "op-b"] {
+        let operation = case.operation(name);
+        let mut exchange = case.exchange(&operation);
+        advertisement(&mut exchange).unwrap();
+        block_on(exchange.finish());
+        block_on(operation.finish());
+    }
+    case.wait("both connections idle", |counts| {
+        (counts.idle, counts.leased) == (2, 0)
+    });
+    assert_eq!(case.sessions(), 2);
+    assert!(case.close());
+}
+
+#[test]
+fn a_host_key_that_is_no_longer_trusted_revokes_the_connection_and_its_idle_siblings() {
+    // Two idle connections with one host key, A's. `known_hosts` lists nothing now: B's proof of the first fails, both
+    // are retired, and B is served by a connection of its own, which the next proof of nobody can reach.
+    let case = Case::with_evidence(false);
+    let a = case.operation("op-a");
+    let mut first = case.exchange(&a);
+    let mut second = case.exchange(&a);
+    advertisement(&mut first).unwrap();
+    advertisement(&mut second).unwrap();
+    block_on(first.finish());
+    block_on(second.finish());
+    block_on(a.finish());
+    case.wait("both connections idle", |counts| {
+        (counts.idle, counts.leased) == (2, 0)
+    });
+    let b = case.operation("op-b");
+    let mut exchange = case.exchange(&b);
+    advertisement(&mut exchange).unwrap();
+    assert_eq!(
+        block_on(exchange.finish()).disposition,
+        Disposition::Reusable
+    );
+    block_on(b.finish());
+    case.wait("only B's connection is left", |counts| {
+        (counts.idle, counts.leased, counts.total()) == (1, 0, 1)
+    });
+    assert_eq!(case.sessions(), 3, "B's connection is a third one");
+    assert!(case.close());
+}
+
+#[test]
+fn the_adapter_keeps_nothing_of_a_connects_context_once_the_connect_completes() {
+    // Contract 7 (step 1.5 retention rule): the context given with a connect is dropped when the connect completes,
+    // and nothing of it stays on the idle connection.
+    let case = Case::new();
+    let provider = Arc::new(());
+    let a = operation_with(&case.handle, "op-a", provider.clone());
+    let held = Arc::strong_count(&provider);
+    let mut exchange = case.exchange(&a);
+    advertisement(&mut exchange).unwrap();
+    block_on(exchange.finish());
+    case.wait("the connection is idle", |counts| {
+        (counts.idle, counts.leased) == (1, 0)
+    });
+    assert_eq!(
+        Arc::strong_count(&provider),
+        held,
+        "the idle connection holds none of the operation's context"
+    );
+    block_on(a.finish());
     assert!(case.close());
 }
 

@@ -48,6 +48,11 @@ pub(super) enum Unserved {
     /// A connection another binding last used, which this open's binding could not prove (reuse design §4): the open
     /// asks again, within its own deadlines, with that connection excluded.
     Revoked(OpenRequest, gwz_transport::pool::Request),
+    /// This open's binding's proof of a connection failed (the key was refused or the host key is no longer trusted),
+    /// so the connection and its idle siblings are retired: the open asks again for a new connection, with no
+    /// exclusion, and takes no idle one, whether or not the siblings' retirement has been seen yet (reuse design §4's
+    /// table; step 1.6 State N-P3-1).
+    Denied(OpenRequest, gwz_transport::pool::Request),
     Failed(OpenRequest, io::Error),
 }
 impl Unserved {
@@ -69,6 +74,7 @@ impl Unserved {
                 }
                 (request, policy)
             }
+            Unserved::Denied(request, policy) => (request, denied(policy)),
             Unserved::Failed(request, error) => {
                 request.complete(Err(error));
                 return;
@@ -81,6 +87,30 @@ impl Unserved {
                 policy,
             }),
             Err(error) => request.complete(Err(io::Error::other(error))),
+        }
+    }
+}
+
+/// `policy` asking again after its binding's proof was denied: for a new connection, with no exclusion.
+pub(super) fn denied(mut policy: gwz_transport::pool::Request) -> gwz_transport::pool::Request {
+    policy.fresh = true;
+    policy.exclude.clear();
+    policy
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        #[test]
+        fn a_denied_proofs_retry_asks_for_a_new_connection() {
+            use gwz_transport::pool::{Identity, Key, Owner, Request};
+            let policy = Request::new(
+                Key::ssh("git", "example.invalid", 22),
+                Identity::Ambient,
+                Owner::new("session", "operation"),
+            );
+            assert!(!policy.fresh);
+            let retry = denied(policy);
+            assert!(retry.fresh && retry.exclude.is_empty());
         }
     }
 }

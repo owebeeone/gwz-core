@@ -18,8 +18,9 @@
 //!   native route **fails closed** (contract 7.3, step 1.3a): when the composition's `ProcessSafety` is unavailable, or
 //!   the caller's gate gave its supervisor no window, it refuses before any credential is read or token sent.
 //! - Per-exchange scoping (contract 7.2): each connection's [`ConnectionScope`] records which authentication bound
-//!   it; a helper token or the logon session marks it per-exchange scoped. The adapter decides no reuse by it: the
-//!   reuse-authorization predicate is step 1.6's, which reads this record.
+//!   it; a helper token or the logon session marks it per-exchange scoped. The adapter's reuse
+//!   authorization (`authorize_reuse`, plan step 1.6) reads this record: a connection nothing authenticated is
+//!   leased to another binding at once, and one a helper token or the logon session authenticated never is.
 //! - Idle liveness: an idle connection whose peer closes it, resets it or sends unasked bytes (Hyper's driver ends) is
 //!   disposed and reported `Completion::IdleClosed`.
 //! - Fault scope: a failed request, response or stream ends that exchange only (`Discarded`; the host's pool closes
@@ -37,7 +38,8 @@ use super::{
     ssh_adapter::{Settle, Shared},
 };
 use gwz_connection::{
-    Completion, ConnectCommand, EndpointAdapter, ExchangeIo, ExchangeSpec, SharedProcessSafety,
+    AuthContext, Completion, ConnectCommand, EndpointAdapter, ExchangeIo, ExchangeSpec,
+    ReuseCommand, ReuseVerdict, SharedProcessSafety,
 };
 use gwz_transport::{
     pool::ConnectionId,
@@ -117,10 +119,6 @@ impl Scopes {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
     /// The record of `connection`, while it lives.
-    #[allow(
-        dead_code,
-        reason = "the reuse authorization of plan step 1.6 reads the records; step 1.3c's rows read them all"
-    )]
     pub(crate) fn of(&self, connection: ConnectionId) -> Option<ConnectionScope> {
         self.lock().get(&connection).copied()
     }
@@ -226,11 +224,8 @@ impl HttpsAdapter {
             dispose_sent: false,
         }
     }
-    /// The adapter's scope records (for the reuse authorization of plan step 1.6).
-    #[allow(
-        dead_code,
-        reason = "the reuse authorization of plan step 1.6 reads the records; step 1.3c's rows read them now"
-    )]
+    /// The adapter's scope records, which its own `authorize_reuse` reads.
+    #[allow(dead_code, reason = "the rows read the records through the adapter")]
     pub(crate) fn scopes(&self) -> Scopes {
         self.scopes.clone()
     }
@@ -265,6 +260,9 @@ impl EndpointAdapter for HttpsAdapter {
         &mut self,
         connection: ConnectionId,
         spec: &ExchangeSpec,
+        // The exchange's helper is still the instance's (`HttpsInputs::auth`): reading the operation's own helper from
+        // this context is the route naming of plan step 1.3c/C2(b). Nothing of the context is kept.
+        _auth: &AuthContext,
     ) -> io::Result<Box<dyn ExchangeIo>> {
         if !self.running {
             return Err(io::Error::new(
@@ -279,6 +277,24 @@ impl EndpointAdapter for HttpsAdapter {
             work: Box::new(work),
         });
         Ok(Box::new(client))
+    }
+    fn authorize_reuse(&mut self, command: ReuseCommand) -> bool {
+        // Contract 7.2: a connection a helper token or the logon session authenticated is per-exchange scoped and
+        // serves only the binding that last used it (`Unprovable`: no proof is started). One nothing authenticated
+        // carries no one's credential, and the endpoint's TLS and proxy configuration, which every binding of this
+        // instance shares, bound it: it serves any binding at once.
+        let anonymous = self
+            .scopes
+            .of(command.connection)
+            .is_some_and(|scope| !scope.binding.per_exchange());
+        if anonymous {
+            self.shared.push(Completion::Reuse {
+                connection: command.connection,
+                proof: command.proof,
+                verdict: ReuseVerdict::Authorized,
+            });
+        }
+        anonymous
     }
     fn poll_completion(&mut self, cx: &mut Context<'_>) -> Poll<Completion> {
         self.shared.poll_completion(cx)

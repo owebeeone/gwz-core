@@ -29,7 +29,8 @@ use super::{
     ssh_worker::{BridgeContext, ChannelResource, stream_config},
 };
 use gwz_connection::{
-    Completion, ConnectCommand, EndpointAdapter, ExchangeIo, ExchangeSpec, GitService,
+    AuthContext, Completion, ConnectCommand, EndpointAdapter, ExchangeIo, ExchangeSpec, GitService,
+    ProofId, ReuseCommand,
 };
 use gwz_transport::{
     pool::ConnectionId,
@@ -188,6 +189,9 @@ pub(super) enum Command {
         connection: ConnectionId,
         exchange: Box<Exchange>,
     },
+    /// Prove an idle connection another binding last used for the binding (plan step 1.6).
+    Reuse(ReuseCommand),
+    CancelReuse(ProofId),
     Dispose,
 }
 /// One exchange's worker half: the endpoint side of its streams (for the channel pump), the client's message endpoint
@@ -280,6 +284,9 @@ impl EndpointAdapter for SshAdapter {
         &mut self,
         connection: ConnectionId,
         spec: &ExchangeSpec,
+        // An SSH exchange authenticates with the connection's own setup (the endpoint's agent, keys and helpers), so
+        // the operation's context is not read here; nothing of it is kept.
+        _auth: &AuthContext,
     ) -> io::Result<Box<dyn ExchangeIo>> {
         let worker = self.worker.clone().ok_or_else(|| {
             io::Error::new(io::ErrorKind::NotConnected, "SSH adapter has no worker")
@@ -322,6 +329,19 @@ impl EndpointAdapter for SshAdapter {
             closing: None,
             closed: false,
         }))
+    }
+    fn authorize_reuse(&mut self, command: ReuseCommand) -> bool {
+        // No worker holds no connection: nothing to prove. Otherwise the worker answers with `Completion::Reuse`.
+        if self.worker.is_none() {
+            return false;
+        }
+        self.send(Command::Reuse(command));
+        true
+    }
+    fn cancel_reuse(&mut self, proof: ProofId) {
+        if self.worker.is_some() {
+            self.send(Command::CancelReuse(proof));
+        }
     }
     fn poll_completion(&mut self, cx: &mut Context<'_>) -> Poll<Completion> {
         self.shared.poll_completion(cx)

@@ -22,8 +22,9 @@ use crate::git::endpoint::{
     ssh_local::{self, NativeInputs},
 };
 use gwz_connection::{
-    CleanupStatus, Completion, ConnectCommand, EndpointAdapter, EndpointFactory, EndpointSpec,
-    ExchangeIo, ExchangeSpec, FactoryEnv, FactoryError, FactoryReason,
+    AuthContext, CleanupStatus, Completion, ConnectCommand, EndpointAdapter, EndpointFactory,
+    EndpointSpec, ExchangeIo, ExchangeSpec, FactoryEnv, FactoryError, FactoryReason, ProofId,
+    ReuseCommand,
 };
 use gwz_transport::{
     pool::ConnectionId,
@@ -183,13 +184,27 @@ impl EndpointAdapter for SchemeRouter {
         &mut self,
         connection: ConnectionId,
         spec: &ExchangeSpec,
+        auth: &AuthContext,
     ) -> io::Result<Box<dyn ExchangeIo>> {
         match self.routed(connection) {
-            Some(half) => half.start_exchange(connection, spec),
+            Some(half) => half.start_exchange(connection, spec, auth),
             None => Err(io::Error::new(
                 io::ErrorKind::NotConnected,
                 "no adapter holds the connection",
             )),
+        }
+    }
+    fn authorize_reuse(&mut self, command: ReuseCommand) -> bool {
+        // A connection no half holds has nothing to prove: the host takes `false` as `Unprovable`.
+        self.routed(command.connection)
+            .is_some_and(|half| half.authorize_reuse(command))
+    }
+    fn cancel_reuse(&mut self, proof: ProofId) {
+        // The router does not know which half runs the proof: both are told, and the one that does not stops nothing.
+        for scheme in [Scheme::Ssh, Scheme::Https] {
+            if let Some(half) = self.half(scheme) {
+                half.cancel_reuse(proof);
+            }
         }
     }
     fn poll_completion(&mut self, cx: &mut Context<'_>) -> Poll<Completion> {

@@ -117,6 +117,7 @@ impl EndpointAdapter for Adapter {
     fn authorize_reuse(&mut self, command: gwz_connection::ReuseCommand) -> bool {
         self.completions.push_back(Completion::Reuse {
             connection: command.connection,
+            proof: command.proof,
             verdict: gwz_connection::ReuseVerdict::Authorized,
         });
         true

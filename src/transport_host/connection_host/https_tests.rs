@@ -219,7 +219,7 @@ impl Case {
         assert_eq!(scopes.len(), 1, "one endpoint instance");
         scopes[0].all()
     }
-    fn accepted(&self) -> usize {
+    pub(super) fn accepted(&self) -> usize {
         self.server.connections.load(Ordering::SeqCst)
     }
     pub(super) fn close(&self) -> bool {

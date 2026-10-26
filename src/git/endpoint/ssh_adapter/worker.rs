@@ -9,7 +9,7 @@ use crate::git::endpoint::{
 };
 use gwz_connection::{Completion, ConnectCommand};
 use gwz_transport::{
-    pool::ConnectionId,
+    pool::{ConnectionId, Key},
     protocol::{Disposition, Effect, ErrorCode, Failure, Scheme},
 };
 use std::{
@@ -25,6 +25,8 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+
+mod reuse;
 
 /// The longest a parked worker waits before a pass of its own (a safety net; every wake source unparks it).
 const PARK: Duration = Duration::from_millis(50);
@@ -68,6 +70,8 @@ struct Running {
 struct Entry<R> {
     resource: R,
     phase: Phase,
+    /// The pool key the connection was made for (its host and port are what a reuse proof checks the host key of).
+    key: Key,
 }
 
 struct Worker<C: Connector> {
@@ -77,6 +81,8 @@ struct Worker<C: Connector> {
     settings: AdapterSettings,
     entries: BTreeMap<ConnectionId, Entry<C::Resource>>,
     disposing: bool,
+    /// The reuse proofs running, and the bindings' passed proofs (plan step 1.6).
+    reuse: reuse::Proving,
 }
 
 pub(super) fn run<C>(
@@ -96,6 +102,7 @@ pub(super) fn run<C>(
         settings,
         entries: BTreeMap::new(),
         disposing: false,
+        reuse: reuse::Proving::default(),
     };
     let waker = Waker::from(Arc::new(ThreadWake(thread::current())));
     let mut cx = Context::from_waker(&waker);
@@ -158,6 +165,8 @@ where
                 connection,
                 exchange,
             } => self.start(connection, *exchange),
+            Command::Reuse(command) => self.authorize(command, now),
+            Command::CancelReuse(proof) => self.reuse.cancel(proof),
             Command::Dispose => self.dispose_all(false),
         }
     }
@@ -186,6 +195,7 @@ where
                     Entry {
                         resource,
                         phase: Phase::Connecting,
+                        key: command.key.clone(),
                     },
                 );
             }
@@ -229,6 +239,7 @@ where
     }
     fn dispose_all(&mut self, force: bool) {
         self.disposing = true;
+        self.reuse.clear();
         let now = self.now();
         for entry in self.entries.values_mut() {
             let ended = end_exchange(&mut entry.phase);
@@ -248,6 +259,7 @@ where
     /// One bounded pass over every connection.
     fn pass(&mut self, cx: &mut Context<'_>) {
         let now = self.now();
+        self.settle_proofs(cx, now);
         let mut done = Vec::new();
         for (id, entry) in &mut self.entries {
             match &mut entry.phase {

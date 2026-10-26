@@ -68,6 +68,30 @@ fn a_helper_token_authenticated_connection_is_marked_per_exchange_scoped() {
 }
 
 #[test]
+fn a_helper_token_connection_is_never_leased_to_another_binding() {
+    // Contract 7.2 and step 1.6: the connection a helper token authenticated serves only the binding that used it, so
+    // B opens a connection of its own (and is challenged on it).
+    let case = Case::with(
+        |seen| challenging(seen, "Basic realm=\"fixture\""),
+        Behaviour::default(),
+        |directory| (Some(helper(directory)), None),
+        None,
+    );
+    for name in ["op-a", "op-b"] {
+        let operation = operation(&case.handle, name);
+        let mut exchange = case.exchange(&operation, true);
+        assert_eq!(body(&mut exchange).unwrap(), ADVERTISEMENT);
+        assert_eq!(
+            block_on(exchange.finish()).disposition,
+            Disposition::Reusable
+        );
+        block_on(operation.finish());
+    }
+    assert_eq!(case.accepted(), 2, "B did not reuse A's connection");
+    assert!(case.close());
+}
+
+#[test]
 fn the_logon_session_route_marks_its_connection_per_exchange_scoped() {
     // A logon session whose provider completes at once (the native module's fake port), against a server that
     // challenges with NTLM: the connection the session authenticated is bound to it.

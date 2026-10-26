@@ -260,6 +260,9 @@ pub(super) fn run<C>(
                             Screened::Fresh(request, policy) => {
                                 Some(Unserved::Revoked(request, policy))
                             }
+                            Screened::Denied(request, policy) => {
+                                Some(Unserved::Denied(request, policy))
+                            }
                             Screened::Waiting => None,
                         },
                         Err(error) => Some(Unserved::Failed(item.request, io::Error::other(error))),
@@ -276,6 +279,7 @@ pub(super) fn run<C>(
                     attach(host, lease, request, policy, &session, now, &mut active)
                 }
                 Screened::Fresh(request, policy) => Some(Unserved::Revoked(request, policy)),
+                Screened::Denied(request, policy) => Some(Unserved::Denied(request, policy)),
                 Screened::Waiting => None,
             };
             if let Some(unserved) = unserved {
@@ -400,6 +404,8 @@ enum Screened {
     Attach(Lease, OpenRequest, gwz_transport::pool::Request),
     /// It cannot serve the open (it is back to idle, or retired): the open asks again for a new connection.
     Fresh(OpenRequest, gwz_transport::pool::Request),
+    /// The proof of it failed and it is retired: the open asks again for a new connection, and takes no idle one.
+    Denied(OpenRequest, gwz_transport::pool::Request),
     /// It waits for its binding's proof.
     Waiting,
 }
@@ -696,12 +702,8 @@ where
                 });
             }
             for waiter in shared.waiters {
-                let bounced = waiter.lease.connection().ok();
                 let _ = host.release(waiter.lease, Disposition::Discarded);
-                next.push(Screened::Fresh(
-                    waiter.request,
-                    excluding(waiter.policy, bounced),
-                ));
+                next.push(Screened::Denied(waiter.request, waiter.policy));
             }
             continue;
         }
