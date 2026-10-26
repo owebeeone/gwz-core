@@ -370,6 +370,13 @@ const PUBLISH_OR_FETCH: &str = "publish the member, or fetch its advertised hist
 /// own push, so `--check-remotes` can publish the member.
 const PUBLISH_FETCH_OR_CHECK_REMOTES: &str = "publish the member by pushing a branch that contains the commit, fetch its advertised history and retry, or run gwz push --check-remotes, which re-checks the members and pushes those whose remote lacks their branch's commit";
 
+/// What a refused root proof asks of the operator when the member does not
+/// hold an object the comparison needs: an object the remote advertises, or the
+/// locked commit itself. Only a fetch supplies it, and the remote already has
+/// the history, so publishing the member or re-checking remotes would not help.
+/// If the retry is still refused, it names the remedies of a missing dependency.
+const FETCH_FIRST: &str = "fetch its advertised history and retry; the member does not hold every object needed to compare with it";
+
 /// The root proof after the member transfers: the frozen root request, and, in
 /// lock order, the dependencies that no accepted push and no kept advertisement
 /// proves.
@@ -399,7 +406,9 @@ impl RootProof {
                     &dependency.remote,
                     &dependency.read_url,
                 ) {
-                    Some(advertised) => available(backend, &dependency, advertised)?,
+                    Some(advertised) => {
+                        available(backend, &dependency, advertised)? == Availability::Proven
+                    }
                     None => false,
                 }
             };
@@ -421,52 +430,73 @@ impl RootProof {
     ) -> ModelResult<crate::PushRequest> {
         for (index, dependency) in self.unproven.iter().enumerate() {
             let advertised = advertisement(index, dependency)?;
-            if !available(backend, dependency, &advertised)? {
-                // Name the URL that was read when it is not the committed one.
-                let read_through = if dependency.read_url == dependency.url {
-                    String::new()
-                } else {
-                    format!(" (read through {})", dependency.read_url)
-                };
-                return Err(refused(format!(
-                    "root publication blocked: cannot prove member {} commit {} is available at its committed fetch remote {}{read_through}; {remedy}",
-                    dependency.member_id, dependency.commit, dependency.remote
-                )));
-            }
+            let remedy = match available(backend, dependency, &advertised)? {
+                Availability::Proven => {
+                    continue;
+                }
+                Availability::Unproven => remedy,
+                Availability::Unheld => FETCH_FIRST,
+            };
+            // Name the URL that was read when it is not the committed one.
+            let read_through = if dependency.read_url == dependency.url {
+                String::new()
+            } else {
+                format!(" (read through {})", dependency.read_url)
+            };
+            return Err(refused(format!(
+                "root publication blocked: cannot prove member {} commit {} is available at its committed fetch remote {}{read_through}; {remedy}",
+                dependency.member_id, dependency.commit, dependency.remote
+            )));
         }
         Ok(self.pinned)
     }
 }
 
+/// What an advertisement shows of a dependency's commit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Availability {
+    /// The commit is available at the remote.
+    Proven,
+    /// Nothing shown proves it, and every object compared was held.
+    Unproven,
+    /// Nothing shown proves it, and the member lacked an object the
+    /// comparison needed, so a fetch could still prove it ([`FETCH_FIRST`]).
+    Unheld,
+}
+
 /// Whether an advertisement proves the dependency's commit available: the
 /// commit is advertised, or, for a materialized member, is an ancestor of an
 /// advertised object. An advertised commit proves it without asking ancestry.
-/// An advertised object the member does not hold as a commit proves nothing
-/// ([`descends_from_advertised`]). An ancestry query that fails otherwise is a
-/// local Git error, not a disproof, so it is reported when nothing else proves
-/// the commit: none of the remedies a publication refusal names would repair a
-/// missing or shallow object.
+/// An object the member does not hold, advertised or the locked commit itself,
+/// proves nothing here ([`descends_from_advertised`]), and a fetch can repair
+/// it. An ancestry query that fails otherwise is a local Git error, not a
+/// disproof, so it is reported when nothing else proves the commit: none of
+/// the remedies a publication refusal names would repair a shallow history.
 fn available<B: GitBackend>(
     backend: &B,
     dependency: &PublicationDependency,
     advertised: &[GitRemoteRef],
-) -> ModelResult<bool> {
+) -> ModelResult<Availability> {
     if advertised
         .iter()
         .any(|reference| reference.target == dependency.commit)
     {
-        return Ok(true);
+        return Ok(Availability::Proven);
     }
     if dependency.identity_repo().is_none() {
-        return Ok(false);
+        return Ok(Availability::Unproven);
     }
     let mut failure = None;
+    let mut unheld = false;
     for reference in advertised {
         match descends_from_advertised(backend, dependency, &reference.target) {
-            Ok(true) => {
-                return Ok(true);
+            Ok(Ancestry::Descends) => {
+                return Ok(Availability::Proven);
             }
-            Ok(false) => {}
+            Ok(Ancestry::Diverges) => {}
+            Ok(Ancestry::Unheld) => {
+                unheld = true;
+            }
             Err(error) => {
                 if failure.is_none() {
                     failure = Some(error);
@@ -476,44 +506,61 @@ fn available<B: GitBackend>(
     }
     match failure {
         Some(error) => Err(error),
-        None => Ok(false),
+        None if unheld => Ok(Availability::Unheld),
+        None => Ok(Availability::Unproven),
     }
+}
+
+/// The answer of [`descends_from_advertised`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ancestry {
+    Descends,
+    /// The member holds what was compared, and the commit is not an ancestor.
+    Diverges,
+    /// The member lacks the locked commit or the advertised object.
+    Unheld,
 }
 
 /// Whether the dependency's commit is an ancestor of an advertised `object`,
 /// asked of the member's repository. A remote advertises objects this
 /// repository may not hold: a commit another clone pushed that was never
-/// fetched here, or the tag object of an annotated tag. Ancestry of either
-/// fails in Git, which is not a local failure, so a failed query is classified
-/// before it is reported. An object the repository does not hold as a commit
-/// answers `false`: it proves nothing here, and only a fetch, which the
-/// refusal names, can make it a proof. An annotated tag answers through the
-/// commit it peels to. Any other failure, or a classification that itself
-/// fails, is the query's own failure.
+/// fetched here, or the tag object of an annotated tag; and the locked commit
+/// itself may be one the member never fetched. Ancestry fails in Git for any of
+/// them, which is not a local failure, so a failed query is classified before
+/// it is reported. A locked commit or an object the repository does not hold as
+/// a commit is [`Ancestry::Unheld`]: it proves nothing here, and only a fetch,
+/// which the refusal names, can make it a proof. A held object that is not a
+/// commit (an annotated tag) proves nothing either: libgit2 advertises the
+/// commit it peels to as a `^{}` row of its own, which [`available`] compares.
+/// Any other failure, or a classification that itself fails, is the query's own
+/// failure. Classification only ever refuses; it never proves.
 fn descends_from_advertised<B: GitBackend>(
     backend: &B,
     dependency: &PublicationDependency,
     object: &str,
-) -> ModelResult<bool> {
+) -> ModelResult<Ancestry> {
     let failure = match backend.is_ancestor(&dependency.path, &dependency.commit, object) {
-        Ok(answer) => {
-            return Ok(answer);
+        Ok(true) => {
+            return Ok(Ancestry::Descends);
+        }
+        Ok(false) => {
+            return Ok(Ancestry::Diverges);
         }
         Err(failure) => failure,
     };
-    match backend.commit_exists(&dependency.path, object) {
-        Ok(false) => {
-            return Ok(false);
-        }
-        Ok(true) => {}
-        Err(_) => {
-            return Err(failure);
+    for held in [dependency.commit.as_str(), object] {
+        match backend.commit_exists(&dependency.path, held) {
+            Ok(false) => {
+                return Ok(Ancestry::Unheld);
+            }
+            Ok(true) => {}
+            Err(_) => {
+                return Err(failure);
+            }
         }
     }
     match backend.read_ref(&dependency.path, &format!("{object}^{{commit}}")) {
-        Ok(Some(commit)) if commit != object => {
-            backend.is_ancestor(&dependency.path, &dependency.commit, &commit)
-        }
+        Ok(Some(commit)) if commit != object => Ok(Ancestry::Diverges),
         _ => Err(failure),
     }
 }
@@ -565,7 +612,7 @@ pub(super) fn dependency_was_published<B: GitBackend>(
     }
     let mut failure = None;
     for source in ancestry {
-        match backend.is_ancestor(&dependency.path, &dependency.commit, source) {
+        match pushed_source_descends(backend, dependency, source) {
             Ok(true) => {
                 return Ok(true);
             }
@@ -580,6 +627,41 @@ pub(super) fn dependency_was_published<B: GitBackend>(
     match failure {
         Some(error) => Err(error),
         None => Ok(false),
+    }
+}
+
+/// Whether the dependency's commit is the commit of, or an ancestor of, a
+/// pushed `source` the remote accepted. The member holds what it pushed, but
+/// the source of an annotated-tag push is the tag object, which is not a
+/// commit: Git fails the ancestry query for it ("object is no commit object").
+/// A failed query is therefore retried against the commit the source peels to,
+/// which the accepted push put on the remote with its history. Nothing else is
+/// read as a proof: a source that is already a commit, that does not peel, or
+/// that the repository cannot show it holds keeps the query's own failure. Git
+/// answers false for a commit and itself, so the peeled commit is compared
+/// directly first.
+fn pushed_source_descends<B: GitBackend>(
+    backend: &B,
+    dependency: &PublicationDependency,
+    source: &str,
+) -> ModelResult<bool> {
+    let failure = match backend.is_ancestor(&dependency.path, &dependency.commit, source) {
+        Ok(answer) => {
+            return Ok(answer);
+        }
+        Err(failure) => failure,
+    };
+    if !matches!(backend.commit_exists(&dependency.path, source), Ok(true)) {
+        return Err(failure);
+    }
+    match backend.read_ref(&dependency.path, &format!("{source}^{{commit}}")) {
+        Ok(Some(commit)) if commit != source => {
+            if commit == dependency.commit {
+                return Ok(true);
+            }
+            backend.is_ancestor(&dependency.path, &dependency.commit, &commit)
+        }
+        _ => Err(failure),
     }
 }
 

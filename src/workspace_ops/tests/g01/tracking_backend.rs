@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -245,6 +245,14 @@ impl TrackingBackend {
         );
     }
 
+    /// Have the double classify objects, as a repository does: `commit_exists`
+    /// answers true for every commit but `oids`, which no repository here
+    /// holds. Until this is called the double does not implement
+    /// `commit_exists`, as the trait default does not.
+    pub(crate) fn lack_commits(&self, oids: &[&str]) {
+        self.model().lacking = Some(oids.iter().map(|oid| (*oid).to_owned()).collect());
+    }
+
     /// Serve one advertisement store at every URL in `urls`, so one repository
     /// can be reached through several spellings: a push through any of them
     /// moves what all of them advertise.
@@ -308,6 +316,8 @@ struct Model {
     repositories: BTreeMap<PathBuf, ConfiguredRepository>,
     committed: BTreeMap<(PathBuf, String), BTreeMap<String, Vec<u8>>>,
     ancestry: BTreeMap<(String, String), Result<bool, String>>,
+    /// The objects `commit_exists` denies, once the double classifies.
+    lacking: Option<BTreeSet<String>>,
     stores: Vec<BTreeMap<String, String>>,
     served: BTreeMap<String, usize>,
     /// URLs whose reads fail, each with its failure detail.
@@ -1006,6 +1016,16 @@ impl GitBackend for TrackingBackend {
             remote: url.to_owned(),
             refspec: refspec.to_owned(),
         })
+    }
+
+    fn commit_exists(&self, _path: &Path, oid: &str) -> ModelResult<bool> {
+        match &self.model().lacking {
+            Some(lacking) => Ok(!lacking.contains(oid)),
+            None => Err(ModelError::new(
+                ErrorCode::UnsupportedOperation,
+                "commit_exists is not implemented by this GitBackend",
+            )),
+        }
     }
 
     fn read_ref(&self, path: &Path, ref_spec: &str) -> ModelResult<Option<String>> {
