@@ -459,10 +459,8 @@ pub(super) fn validate_meta(meta: &RequestMeta, operation: &str) -> ModelResult<
     if !identifier(&meta.request_id) || !identifier(operation) {
         return Err(invalid("invalid transport request context"));
     }
-    // An embedded message is the session host's; the in-process transport carries none.
-    if meta.transport_message.is_some() {
-        return Err(invalid("invalid transport request context"));
-    }
+    // An embedded message and a stray endpoint path base: refused in every build, by the one place that knows how.
+    crate::operation::OperationContext::refuse_unhonoured_transport_fields(meta)?;
     if meta.schema_version != "gwz.protocol/v0" {
         return Err(unsupported("unsupported request version"));
     }
@@ -483,15 +481,6 @@ pub(super) fn validate_meta(meta: &RequestMeta, operation: &str) -> ModelResult<
         .is_some_and(|value| value > i64::from(u32::MAX))
     {
         return Err(invalid("max_retries exceeds the supported range"));
-    }
-    if let Some(base) = meta
-        .transport
-        .as_ref()
-        .and_then(|t| t.endpoint_path_base.as_deref())
-    {
-        if !is_cli(meta) || base.is_empty() || base.len() > 16384 || base.contains('\0') {
-            return Err(invalid("invalid endpoint path context"));
-        }
     }
     Ok(())
 }

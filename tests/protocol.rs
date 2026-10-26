@@ -1891,12 +1891,7 @@ fn generated_protocol_is_current() {
     // rather than defining again; `protocol/regen.py` writes the same map. External types cannot be generated with
     // the vendored runtime, so there is no `cbor.rs`: the protocol shares `gwz_transport::cbor`.
     let owner: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(
-            root.parent()
-                .expect("gwz-core has a parent")
-                .join("gwz-transport/protocol/transport.ir.json"),
-        )
-        .expect("the transport owner's schema export"),
+        &fs::read_to_string(owner_export(&root)).expect("the transport owner's schema export"),
     )
     .expect("the owner export is JSON");
     let external: serde_json::Map<String, serde_json::Value> = ["enums", "messages"]
@@ -1952,6 +1947,68 @@ fn generated_protocol_is_current() {
     assert!(status.success(), "taut corpus is stale");
 
     fs::remove_dir_all(&out_dir).expect("failed to clean generated protocol temp dir");
+}
+
+/// The schema pins the transport owner's export by digest, and a Windows checkout of gwz-transport (`core.autocrlf=true`) has
+/// the same export with CRLF line endings: the pin must see through that and still refuse a real change. Loading the schema
+/// is what `tautc gen` does first, so a generation that succeeds proves the pin held.
+#[test]
+fn the_owner_pin_survives_a_crlf_checkout_and_refuses_a_changed_export() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let export = owner_export(&root);
+    let text = fs::read_to_string(&export).expect("the transport owner's schema export");
+    let scratch = std::env::temp_dir().join(format!("gwz-owner-pin-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    fs::create_dir_all(&scratch).expect("scratch directory");
+
+    let generate = |export: &Path, name: &str| {
+        let out_dir = scratch.join(name);
+        taut_command(&root)
+            .args([
+                "gen",
+                "protocol/gwz.taut.py",
+                "-o",
+                out_dir.to_str().expect("temp path is not utf-8"),
+                "-l",
+                "rust",
+                "--api-only",
+            ])
+            .env("GWZ_TRANSPORT_SCHEMA", export)
+            .output()
+            .expect("failed to run taut generator")
+    };
+
+    // The export as a checkout with CRLF endings has it (normalized first, so a file already CRLF is not doubled).
+    let crlf = scratch.join("crlf.ir.json");
+    fs::write(&crlf, text.replace("\r\n", "\n").replace('\n', "\r\n")).expect("write CRLF copy");
+    let loaded = generate(&crlf, "crlf");
+    assert!(
+        loaded.status.success(),
+        "a CRLF copy of the pinned export must load: {}",
+        String::from_utf8_lossy(&loaded.stderr)
+    );
+
+    // One real change (a tag of Limits) is refused, in either line-ending style.
+    let changed = text.replacen("\"tag\": 2,", "\"tag\": 22,", 1);
+    assert_ne!(changed, text, "the probe must change the export");
+    for (name, body) in [
+        ("changed-lf", changed.replace("\r\n", "\n")),
+        (
+            "changed-crlf",
+            changed.replace("\r\n", "\n").replace('\n', "\r\n"),
+        ),
+    ] {
+        let path = scratch.join(format!("{name}.ir.json"));
+        fs::write(&path, body).expect("write changed copy");
+        let refused = generate(&path, name);
+        assert!(!refused.status.success(), "{name} must be refused");
+        assert!(
+            String::from_utf8_lossy(&refused.stderr).contains("is not the pinned one"),
+            "{name} must fail on the pin: {}",
+            String::from_utf8_lossy(&refused.stderr)
+        );
+    }
+    fs::remove_dir_all(&scratch).expect("failed to clean the owner pin scratch directory");
 }
 
 #[test]
@@ -2209,6 +2266,17 @@ fn member_error() -> GwzError {
         detail: Some("HEAD and upstream have distinct commits".to_owned()),
         record_context: None,
     }
+}
+
+/// The transport owner's export, where `protocol/gwz.taut.py` finds it: beside the gwz-core that holds the schema. A prepared
+/// candidate tree (outside the workspace) links `protocol/` to the real one, so the schema's own location is followed.
+fn owner_export(root: &Path) -> PathBuf {
+    fs::canonicalize(root.join("protocol/gwz.taut.py"))
+        .expect("the schema")
+        .ancestors()
+        .nth(3)
+        .expect("the workspace holding gwz-core")
+        .join("gwz-transport/protocol/transport.ir.json")
 }
 
 fn taut_command(root: &Path) -> Command {

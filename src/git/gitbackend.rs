@@ -513,4 +513,68 @@ mod cli_placement_refusal_tests {
         );
         assert!(backend.with_transport(&std::env::temp_dir(), None).is_ok());
     }
+
+    /// Plan step 2.2 review S-P3-2: the trait's default refuses an explicit `cli` placement too, so a backend that
+    /// implements no endpoint of its own cannot run the request on its own credentials.
+    #[test]
+    fn the_trait_default_refuses_an_explicit_cli_placement() {
+        let fake = super::fake_repository::FakeGitRepository::default();
+        let cli = crate::TransportOptions {
+            placement: Some(crate::TransportPlacement::Cli),
+            ..Default::default()
+        };
+        let Err(refused) = fake.with_transport(&std::env::temp_dir(), Some(&cli)) else {
+            panic!("the default refuses an explicit cli placement");
+        };
+        assert_eq!(refused.code, ErrorCode::UnsupportedOperation);
+        assert!(matches!(
+            fake.with_transport(&std::env::temp_dir(), None),
+            Ok(None)
+        ));
+    }
+
+    /// Plan step 2.2 review C-P3-2: every build refuses the request-side fields it cannot honour, as the transport
+    /// build's `validate_meta` does, so one caller bug does not pass in one build and fail in the other.
+    #[test]
+    fn a_present_transport_message_and_a_stray_endpoint_path_base_are_refused_in_every_build() {
+        use crate::operation::{ActionKind, OperationContext};
+        use crate::{RequestMeta, TransportOptions, TransportPlacement};
+
+        let context = |meta: &RequestMeta| {
+            OperationContext::from_meta("op-1".to_owned(), ActionKind::Fetch, meta)
+        };
+        let meta = |transport: Option<TransportOptions>| RequestMeta {
+            request_id: "request-1".to_owned(),
+            schema_version: "gwz.protocol/v0".to_owned(),
+            transport,
+            ..Default::default()
+        };
+        assert!(context(&meta(None)).is_ok());
+
+        let mut embedded = meta(None);
+        embedded.transport_message = Some(crate::Envelope::default());
+        assert_eq!(
+            context(&embedded).unwrap_err().code,
+            ErrorCode::InvalidRequest
+        );
+
+        let base = |placement: Option<TransportPlacement>, path: &str| {
+            meta(Some(TransportOptions {
+                placement,
+                endpoint_path_base: Some(path.to_owned()),
+                ..Default::default()
+            }))
+        };
+        for stray in [
+            base(None, "/client/work"),
+            base(Some(TransportPlacement::Local), "/client/work"),
+            base(Some(TransportPlacement::Cli), ""),
+            base(Some(TransportPlacement::Cli), "/with\0nul"),
+            base(Some(TransportPlacement::Cli), &"x".repeat(16385)),
+        ] {
+            assert_eq!(context(&stray).unwrap_err().code, ErrorCode::InvalidRequest);
+        }
+        // A well-formed cli request passes this check; the build's own refusal (or its host context) decides the rest.
+        assert!(context(&base(Some(TransportPlacement::Cli), "/client/work")).is_ok());
+    }
 }

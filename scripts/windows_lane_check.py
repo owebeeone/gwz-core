@@ -25,7 +25,11 @@ spell it short). `--git-root DIR` puts another Git for Windows (for example a po
 its `sh.exe`. The run is long (about twenty minutes warm) and belongs under the host booking. Its result is a
 `hosted-like` entry in the receipt: exit status, the suite's passed and failed counts and the names of the failed tests.
 After the suite the mode runs the job's integration targets (`INTEGRATION_TARGETS`, step 5.4) into the same log; a
-filtered run leaves them out. `--hosted-like-filter NAME` narrows the run to the tests whose path contains NAME, for iterating on one failure; the
+filtered run leaves them out. `--taut-proto RELEASE` installs that taut-proto in a venv under the run's directory (nothing system-wide) and names it to the
+suite as `TAUT_PYTHON`, so tests/protocol.rs runs rather than failing as a host gap; the receipt records the owner export's line
+endings in the checkout (a Windows host checks gwz-transport out with CRLF) and the probe of taut-proto. A failed test is a named
+gap only when its own failure text says gwz-py or taut-proto is missing (the embedded-Python rows), or, for the protocol target's
+rows, when the probe found no taut-proto. `--hosted-like-filter NAME` narrows the run to the tests whose path contains NAME, for iterating on one failure; the
 receipt says it was filtered. It reaches `run_tests.py` as `--test-filter`, which narrows each group to its own tests. `--no-check-shapes` skips the `cargo check` shapes (a run that is only the suite).
 """
 import argparse
@@ -64,9 +68,16 @@ DEFAULT_GIT_ROOT = 'C:\\Program Files\\Git'  # Git for Windows as the hosted ima
 # installs neither (that would change the host), so they fail there; they are named in the receipt as gaps and are the
 # only failures a receipt passes. Anything else that fails fails the receipt.
 HOST_GAPS = ('transport_host::message_embedding_tests::python_messages_',)
+# What a missing gwz-py checkout or missing taut-proto looks like in a failed test's output. A row named above is a gap only
+# when its own failure text says so (plan step 2.2 review, S-P2-1): the same row failing for any other reason, a changed
+# line ending among them, is a failure. A row with no recorded text is not refuted.
+MISSING_TOOLING = re.compile(r"ModuleNotFoundError|No module named|codec input is missing|cannot locate gwz-dev workspace|"
+                             r"gwz-py checkout|taut-proto")
 # The same gap in the integration targets (step 5.4): tests/protocol.rs runs `python -m taut.cli` and the log-additive
 # check, which import taut from the interpreter's site-packages (the hosted job installs taut-proto; the mode does not).
-# Whole names, since an integration test has no module path to take a prefix of.
+# Whole names, since an integration test has no module path to take a prefix of. Their own panic says only "taut generator
+# failed" (the child's stderr is not the test's), so they are gaps only when the host's own probe found no taut-proto
+# (`HOSTED_LIKE_TAUT missing`); with `--taut-proto` installed they must pass.
 HOST_GAP_NAMES = ('generated_checked_artifact_protocol_is_current', 'generated_protocol_is_current',
                   'log_addition_check_refuses_a_schema_that_declares_a_taut_option',
                   'log_addition_preserves_the_complete_pre_log_wire_projection')
@@ -83,6 +94,7 @@ TRIGGER_EXTRA = ('Cargo.toml', 'Cargo.lock', 'tests/transport_backend/prepare.py
 SIBLING_PINS = (('gwz-transport', 'https://github.com/owebeeone/gwz-transport.git'),
                 ('gwz-sspi', 'https://github.com/owebeeone/gwz-sspi.git'),
                 ('gwz-git', 'https://github.com/owebeeone/gwz-git.git'))
+TAUT_RELEASE = re.compile(r'[0-9]+\.[0-9]+\.[0-9]+')
 LABEL = re.compile(r'^[a-z][a-z0-9]*(-[a-z0-9]+)*$')
 DATE = re.compile(r'(^|-)20\d{6}(-|$)')
 # The host's Application Control policy sometimes refuses to run a build script that cargo has just written
@@ -247,7 +259,34 @@ def integration_lines(d: str, test_filter: str | None) -> list[str]:
             'if [ "$status" -eq 0 ]; then status=$integration_status; fi']
 
 
-def hosted_like_script(label: str, git_root: str, test_filter: str | None) -> str:
+def taut_lines(d: str, taut_proto: str | None) -> list[str]:
+    """Host script lines: taut-proto in a venv inside the run's directory when asked (nothing system-wide), the probe, and
+    the line ending of the owner export the checkout produced (the plan step 2.2 review's CRLF case)."""
+    lines = []
+    if taut_proto:
+        venv = f'{d}/taut-venv'
+        lines += [f'python -m venv {venv} || exit 9',
+                  f'{venv}/Scripts/python.exe -m pip install --quiet --disable-pip-version-check "taut-proto=={taut_proto}" || exit 10',
+                  f'export TAUT_PYTHON="$(cygpath -w {venv}/Scripts/python.exe)"']
+    lines += ['taut=$("${TAUT_PYTHON:-python}" -c "import importlib.metadata as m; print(m.version(\'taut-proto\'))" 2>/dev/null || echo missing)',
+              'echo "HOSTED_LIKE_TAUT $taut"',
+              f"if grep -q \"$(printf '\\r')\" {d}/ws/gwz-transport/protocol/transport.ir.json; then eol=crlf; else eol=lf; fi",
+              'echo "HOSTED_LIKE_OWNER_EOL $eol"']
+    return lines
+
+
+def failure_text_lines(d: str) -> list[str]:
+    """Host script lines: one `HOSTED_LIKE_FAILURE_TEXT name<TAB>text` per failed test, from the libtest report's
+    `---- name stdout ----` sections, flattened to one line and cut at 600 characters."""
+    log = f'{d}/logs/hosted-like.log'
+    awk = ('/^---- .* stdout ----/ {if (n != "") print "HOSTED_LIKE_FAILURE_TEXT " n "\t" substr(t, 1, 600); '
+           'n = $0; sub(/^---- /, "", n); sub(/ stdout ----.*$/, "", n); t = ""; next} '
+           '/^(failures:|test result:)/ {if (n != "") print "HOSTED_LIKE_FAILURE_TEXT " n "\t" substr(t, 1, 600); n = ""; next} '
+           'n != "" {gsub(/\r/, ""); t = t " " $0} END {if (n != "") print "HOSTED_LIKE_FAILURE_TEXT " n "\t" substr(t, 1, 600)}')
+    return [f"awk '{awk}' {log}"]
+
+
+def hosted_like_script(label: str, git_root: str, test_filter: str | None, taut_proto: str | None = None) -> str:
     """Host script: the candidate build's library suites run under the hosted job's conditions (see the module doc).
 
     The suite command is the job's, the environment is the job's (the portable sshd, `GWZ_TEST_SH`, the real Git
@@ -282,7 +321,7 @@ def hosted_like_script(label: str, git_root: str, test_filter: str | None) -> st
         'export PATH="$GIT_UNIX/cmd:$PATH"', 'export GWZ_TEST_SH="$GIT_ROOT\\usr\\bin\\sh.exe"',
         'echo "HOSTED_LIKE_GIT $(command -v git): $(git --version)"',
         f'export RUSTUP_TOOLCHAIN={TOOLCHAIN} CARGO_INCREMENTAL=0 RUSTFLAGS="{CANDIDATE}" GWZ_TEST_GIT=real',
-        f'export CARGO_TARGET_DIR={d}/target-validator', f'cd {d}/ws/gwz-core',
+        f'export CARGO_TARGET_DIR={d}/target-validator', *taut_lines(d, taut_proto), f'cd {d}/ws/gwz-core',
         f'{HOSTED_SUITE}{filter_word} --manifest-path={d}/candidate/Cargo.toml --target-dir={d}/target-test '
         f'> {d}/logs/hosted-like.log 2>&1',
         'status=$?',
@@ -299,7 +338,19 @@ def hosted_like_script(label: str, git_root: str, test_filter: str | None) -> st
         "| awk '{s+=$1} END{print s+0}')",
         'echo "HOSTED_LIKE_RESULT passed=$passed failed=$failed"',
         f"grep -a -E '^test .* \\.\\.\\. FAILED' {d}/logs/hosted-like.log | sed -E 's/^test (.*) \\.\\.\\. FAILED.*/HOSTED_LIKE_FAILED \\1/' | sort -u",
+        *failure_text_lines(d),
         'exit $status']) + '\n'
+
+
+def is_host_gap(name: str, facts: dict) -> bool:
+    """Whether a failed test is a named gap: its row needs gwz-py or taut-proto, and the evidence says the host lacks it.
+
+    An embedded-Python row is a gap when its own failure text names the missing tooling (or no text was recorded). A
+    protocol-target row is a gap only when the host's probe found no taut-proto: with it installed the row must pass."""
+    if name.startswith(HOST_GAPS):
+        recorded = facts.get('failure_texts', {}).get(name)
+        return recorded is None or bool(MISSING_TOOLING.search(recorded))
+    return name in HOST_GAP_NAMES and facts.get('taut_proto', 'missing') == 'missing'
 
 
 def parse_hosted_like(text: str, test_filter: str | None) -> dict:
@@ -321,6 +372,13 @@ def parse_hosted_like(text: str, test_filter: str | None) -> dict:
             facts['library_passed'] = int(rest.partition('=')[2])
         elif word == 'HOSTED_LIKE_FAILED':
             facts['tests']['failed_names'].append(rest)
+        elif word == 'HOSTED_LIKE_TAUT':
+            facts['taut_proto'] = rest
+        elif word == 'HOSTED_LIKE_OWNER_EOL':
+            facts['owner_export_line_endings'] = rest
+        elif word == 'HOSTED_LIKE_FAILURE_TEXT':
+            name, _, text = rest.partition('\t')
+            facts.setdefault('failure_texts', {})[name] = text
         elif word == 'HOSTED_LIKE_RESULT':
             counts = dict(part.split('=', 1) for part in rest.split())
             facts['tests'].update(passed=int(counts.get('passed', 0)), failed=int(counts.get('failed', 0)))
@@ -362,7 +420,7 @@ def run_entry(host: Host, receipt: Receipt, name: str, flags: str, script: str, 
     if name == 'hosted-like':
         entry.update(parse_hosted_like(text, test_filter))
         names = entry['tests']['failed_names']
-        entry['gaps'] = [n for n in names if n.startswith(HOST_GAPS) or n in HOST_GAP_NAMES]
+        entry['gaps'] = [n for n in names if is_host_gap(n, entry)]
         entry['failures'] = [n for n in names if n not in entry['gaps']]
         # A gap-only failure passes. An integration step that died (a build error, a binary that could not load) names
         # no failed test, so it passes only when it exited 0 or every target reported a result.
@@ -392,9 +450,12 @@ def check_hosted_options(options) -> None:
     check_git_root(options.git_root)
     if options.hosted_like_filter is not None:
         check_filter(options.hosted_like_filter)
+    if options.taut_proto is not None and not TAUT_RELEASE.fullmatch(options.taut_proto):
+        raise Refused(f'--taut-proto {options.taut_proto!r} must be a release such as 0.10.0')
     stray = [flag for flag, given in (('--git-root', options.git_root != DEFAULT_GIT_ROOT),
                                       ('--hosted-like-filter', options.hosted_like_filter is not None),
-                                      ('--no-check-shapes', options.no_check_shapes)) if given]
+                                      ('--no-check-shapes', options.no_check_shapes),
+                                      ('--taut-proto', options.taut_proto is not None)) if given]
     if stray and not options.hosted_like:
         raise Refused(f'{", ".join(stray)} only apply with --hosted-like')
 
@@ -437,7 +498,7 @@ def execute(options, host: Host, core: Path = CORE, now=datetime.datetime.now) -
                   f'{HOST_ROOT}/{label}/logs/{name}.log')
     if options.hosted_like:
         run_entry(host, receipt, 'hosted-like', CANDIDATE,
-                  hosted_like_script(label, options.git_root, options.hosted_like_filter),
+                  hosted_like_script(label, options.git_root, options.hosted_like_filter, options.taut_proto),
                   f'{HOST_ROOT}/{label}/logs/hosted-like.log', test_filter=options.hosted_like_filter)
     receipt_dir.mkdir(parents=True)
     (receipt_dir / 'receipt.json').write_text(receipt.as_json(), encoding='utf-8')
@@ -462,6 +523,9 @@ def parser() -> argparse.ArgumentParser:
                    help='Windows directory of the Git for Windows the hosted-like run uses (default: the host\'s)')
     p.add_argument('--hosted-like-filter', metavar='NAME', help='run only the tests whose path contains NAME')
     p.add_argument('--no-check-shapes', action='store_true', help='with --hosted-like: skip the cargo check shapes')
+    p.add_argument('--taut-proto', metavar='RELEASE',
+                   help='with --hosted-like: install that taut-proto release in a venv inside the run\'s directory '
+                        '(nothing system-wide), so the protocol rows run instead of being named gaps')
     return p
 
 

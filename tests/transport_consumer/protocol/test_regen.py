@@ -39,6 +39,23 @@ def test_wrong_owner_pin_refuses_before_schema_load():
         REGEN._load_owner(OWNER, invalid, schema_from_json)
 
 
+def test_the_owner_pin_sees_through_crlf_line_endings_and_still_refuses_a_change(tmp_path):
+    """A Windows checkout (`core.autocrlf=true`) has the pinned export with CRLF endings: the digest is of the content."""
+    from taut.ir.load import schema_from_json
+
+    package = tmp_path / "gwz-transport"
+    (package / "protocol").mkdir(parents=True)
+    (package / "Cargo.toml").write_bytes((OWNER.parents[1] / "Cargo.toml").read_bytes())
+    export = package / "protocol" / "transport.ir.json"
+    text = OWNER.read_bytes().replace(b"\r\n", b"\n")
+    export.write_bytes(text.replace(b"\n", b"\r\n"))
+    assert REGEN._load_owner(export, pin(), schema_from_json) is not None
+
+    export.write_bytes(text.replace(b'"tag": 2,', b'"tag": 22,', 1).replace(b"\n", b"\r\n"))
+    with pytest.raises(SystemExit, match="owner schema digest mismatch"):
+        REGEN._load_owner(export, pin(), schema_from_json)
+
+
 def test_manifest_identity_reads_explicit_package_table(tmp_path):
     manifest = tmp_path / "Cargo.toml"
     manifest.write_text(

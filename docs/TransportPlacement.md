@@ -139,6 +139,12 @@ default manifest does not enable that configuration. See
 for preparation and tests; the example below is an exact-text compile fixture.
 `ModelResult<T>` and generated request/response types retain their existing meanings.
 
+`CliEndpoint::new(SshEndpointConfig)` is transitional, and so is `TransportRuntime::install_cli`: step 3.1 of the
+transport release plan ([`GwzTransportReleaseConvergencePlan.md`](../../dev-docs/GwzTransportReleaseConvergencePlan.md))
+replaces them with the client owner's `HostHandle` form, once the owner's production endpoint factory has landed
+(steps 1.3 and 2.2c). The signatures below describe today's in-process embedding, and the guide test keeps compiling
+their example.
+
 ```rust
 pub struct SshEndpointConfig { /* private */ }
 impl SshEndpointConfig {

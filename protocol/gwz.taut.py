@@ -2669,7 +2669,9 @@ def _with_owner(core: Schema) -> Schema:
             f"the transport owner's schema export is missing: {path} "
             "(set GWZ_TRANSPORT_SCHEMA to it, or check out gwz-transport beside gwz-core)"
         )
-    raw = path.read_bytes()
+    # The digest is of the export's content, not of a checkout's line endings: a Windows checkout of gwz-transport
+    # (`core.autocrlf=true`) has the same file with CRLF, and the pin must hold there and still refuse a real change.
+    raw = path.read_bytes().replace(b"\r\n", b"\n")
     if hashlib.sha256(raw).hexdigest() != _OWNER_SCHEMA_SHA256:
         raise RuntimeError(f"the transport owner's schema export is not the pinned one: {path}")
     owner = schema_from_json(json.loads(raw))

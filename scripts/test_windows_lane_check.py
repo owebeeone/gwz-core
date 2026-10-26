@@ -246,6 +246,68 @@ class HostedLike(unittest.TestCase):
         code, receipt = self.go(FakeRun(hosted_exit=101, hosted_output=output), '--hosted-like')
         self.assertEqual((code, receipt['shapes'][-1]['failures']), (1, ['generated_protocol_is_current_for_x']))
 
+    def test_the_protocol_rows_are_gaps_only_while_the_host_has_no_taut_proto(self):
+        """Plan step 2.2 review, S-P2-1: with taut-proto installed the three rows must pass, so a row failing there (a CRLF
+        export the pin refused, say) is a failure, not a gap; and a receipt records what the probe and the checkout showed."""
+        names = ['generated_protocol_is_current',
+                 'log_addition_check_refuses_a_schema_that_declares_a_taut_option',
+                 'log_addition_preserves_the_complete_pre_log_wire_projection']
+        failed = HOSTED_PASS.replace('failed=0', 'failed=3') + ''.join(f'HOSTED_LIKE_FAILED {n}\n' for n in names)
+        absent = failed + 'HOSTED_LIKE_TAUT missing\n'
+        code, receipt = self.go(FakeRun(hosted_exit=101, hosted_output=absent), '--hosted-like')
+        self.assertEqual((code, receipt['shapes'][-1]['gaps'], receipt['shapes'][-1]['failures']), (0, names, []))
+        present = failed + 'HOSTED_LIKE_TAUT 0.10.0\nHOSTED_LIKE_OWNER_EOL crlf\n'
+        code, receipt = self.go(FakeRun(hosted_exit=101, hosted_output=present), '--hosted-like', '--taut-proto', '0.10.0')
+        entry = receipt['shapes'][-1]
+        self.assertEqual((code, receipt['passed'], entry['gaps'], entry['failures']), (1, False, [], names))
+        self.assertEqual((entry['taut_proto'], entry['owner_export_line_endings']), ('0.10.0', 'crlf'))
+
+    def test_an_embedded_python_row_is_a_gap_only_when_its_own_text_says_the_tooling_is_missing(self):
+        row = 'transport_host::message_embedding_tests::python_messages_close_while_delivery_is_paused'
+        base = HOSTED_PASS.replace('failed=0', 'failed=1') + f'HOSTED_LIKE_FAILED {row}\n'
+        for text, gap in (("RuntimeError: codec input is missing: E:/x/gwz-py/src", True),
+                          ("ModuleNotFoundError: No module named 'taut'", True),
+                          ("assertion `left == right` failed: the bytes differ", False)):
+            with self.subTest(text=text):
+                output = base + f'HOSTED_LIKE_FAILURE_TEXT {row}\t{text}\n'
+                code, receipt = self.go(FakeRun(hosted_exit=101, hosted_output=output), '--hosted-like')
+                entry = receipt['shapes'][-1]
+                self.assertEqual((code, entry['gaps'] == [row]), (0 if gap else 1, gap))
+                self.assertEqual(entry['failure_texts'][row], text)
+
+    def test_the_owner_export_line_ending_probe_finds_a_carriage_return(self):
+        """The probe that records whether the checkout of gwz-transport has CRLF endings must detect one: the first version
+        escaped the carriage return twice, searched for a backslash and an r, and recorded `lf` for a CRLF file."""
+        import shutil
+        import tempfile
+        script = gate.hosted_like_script('a-20261025-a', gate.DEFAULT_GIT_ROOT, None)
+        line = [l for l in script.splitlines() if 'printf' in l and 'eol=' in l][0]
+        bash = shutil.which('bash')
+        if bash is None:
+            self.skipTest('no bash to run the probe')
+        with tempfile.TemporaryDirectory() as tmp:
+            export = Path(tmp) / 'ws' / 'gwz-transport' / 'protocol' / 'transport.ir.json'
+            export.parent.mkdir(parents=True)
+            for body, expected in ((b'{\r\n}\r\n', 'crlf'), (b'{\n}\n', 'lf')):
+                export.write_bytes(body)
+                probe = line.replace('/e/gwz-tests/a-20261025-a', tmp)
+                result = subprocess.run([bash, '-c', f'{probe}; echo $eol'], capture_output=True, text=True, check=True)
+                self.assertEqual(result.stdout.strip(), expected)
+
+    def test_taut_proto_goes_in_a_venv_under_the_runs_directory_and_needs_the_mode(self):
+        script = gate.hosted_like_script('a-20261025-a', gate.DEFAULT_GIT_ROOT, None, '0.10.0')
+        self.assertIn('python -m venv /e/gwz-tests/a-20261025-a/taut-venv', script)
+        self.assertIn('"taut-proto==0.10.0"', script)
+        self.assertIn('TAUT_PYTHON', script)
+        self.assertNotIn('taut-venv', gate.hosted_like_script('a-20261025-a', gate.DEFAULT_GIT_ROOT, None))
+        self.assertIn('HOSTED_LIKE_TAUT', gate.hosted_like_script('a-20261025-a', gate.DEFAULT_GIT_ROOT, None))
+        with self.assertRaises(SystemExit) as caught:
+            self.go(FakeRun(), '--taut-proto', '0.10.0')
+        self.assertEqual(caught.exception.code, 2)
+        with self.assertRaises(SystemExit) as caught:
+            self.go(FakeRun(), '--hosted-like', '--taut-proto', 'latest')
+        self.assertEqual(caught.exception.code, 2)
+
     def test_an_integration_step_that_died_is_a_failure_even_beside_named_gaps(self):
         """The integration step exits nonzero when a gap row fails, as the suite does; what tells that from a step that
         never ran its targets (a build error, a binary that could not load) is that every target reported a result."""
