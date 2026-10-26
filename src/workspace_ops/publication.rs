@@ -441,9 +441,11 @@ impl RootProof {
 /// Whether an advertisement proves the dependency's commit available: the
 /// commit is advertised, or, for a materialized member, is an ancestor of an
 /// advertised object. An advertised commit proves it without asking ancestry.
-/// An ancestry query that fails is a local Git error, not a disproof, so it is
-/// reported when nothing else proves the commit: none of the remedies a
-/// publication refusal names would repair a missing or shallow object.
+/// An advertised object the member does not hold as a commit proves nothing
+/// ([`descends_from_advertised`]). An ancestry query that fails otherwise is a
+/// local Git error, not a disproof, so it is reported when nothing else proves
+/// the commit: none of the remedies a publication refusal names would repair a
+/// missing or shallow object.
 fn available<B: GitBackend>(
     backend: &B,
     dependency: &PublicationDependency,
@@ -460,7 +462,7 @@ fn available<B: GitBackend>(
     }
     let mut failure = None;
     for reference in advertised {
-        match backend.is_ancestor(&dependency.path, &dependency.commit, &reference.target) {
+        match descends_from_advertised(backend, dependency, &reference.target) {
             Ok(true) => {
                 return Ok(true);
             }
@@ -475,6 +477,44 @@ fn available<B: GitBackend>(
     match failure {
         Some(error) => Err(error),
         None => Ok(false),
+    }
+}
+
+/// Whether the dependency's commit is an ancestor of an advertised `object`,
+/// asked of the member's repository. A remote advertises objects this
+/// repository may not hold: a commit another clone pushed that was never
+/// fetched here, or the tag object of an annotated tag. Ancestry of either
+/// fails in Git, which is not a local failure, so a failed query is classified
+/// before it is reported. An object the repository does not hold as a commit
+/// answers `false`: it proves nothing here, and only a fetch, which the
+/// refusal names, can make it a proof. An annotated tag answers through the
+/// commit it peels to. Any other failure, or a classification that itself
+/// fails, is the query's own failure.
+fn descends_from_advertised<B: GitBackend>(
+    backend: &B,
+    dependency: &PublicationDependency,
+    object: &str,
+) -> ModelResult<bool> {
+    let failure = match backend.is_ancestor(&dependency.path, &dependency.commit, object) {
+        Ok(answer) => {
+            return Ok(answer);
+        }
+        Err(failure) => failure,
+    };
+    match backend.commit_exists(&dependency.path, object) {
+        Ok(false) => {
+            return Ok(false);
+        }
+        Ok(true) => {}
+        Err(_) => {
+            return Err(failure);
+        }
+    }
+    match backend.read_ref(&dependency.path, &format!("{object}^{{commit}}")) {
+        Ok(Some(commit)) if commit != object => {
+            backend.is_ancestor(&dependency.path, &dependency.commit, &commit)
+        }
+        _ => Err(failure),
     }
 }
 

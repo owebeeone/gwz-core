@@ -94,21 +94,42 @@ impl ClonedMember {
         .unwrap()
     }
 
-    /// Commit a root lock that names `commit`, and push the whole workspace by
-    /// default.
-    fn push_root_naming(&self, commit: &str) -> crate::PushResponse {
+    /// Commit a root lock that names `commit`, and return the root's commit.
+    fn commit_root_lock(&self, commit: &str) -> String {
         self.lock(commit);
         self.backend
             .stage_paths(self.temp.path(), &["gwz.conf"])
             .unwrap();
         self.backend
             .commit(self.temp.path(), "lock", false)
-            .unwrap();
+            .unwrap()
+            .commit
+    }
+
+    /// Commit a root lock that names `commit`, and push the whole workspace by
+    /// default.
+    fn push_root_naming(&self, commit: &str) -> crate::PushResponse {
+        self.commit_root_lock(commit);
         let request = crate::PushRequest {
             meta: request_meta_with_workspace(),
             ..Default::default()
         };
         handle_push(&self.backend, self.temp.path(), request, "push").unwrap()
+    }
+
+    /// A default push of the root alone, as `gwz --target @root push` makes.
+    fn push_root_only(&self) -> crate::PushResponse {
+        let request = crate::PushRequest {
+            meta: crate::RequestMeta {
+                selection: Some(crate::Selection {
+                    targets: vec!["@root".to_owned()],
+                    ..Default::default()
+                }),
+                ..request_meta_with_workspace()
+            },
+            ..Default::default()
+        };
+        handle_push(&self.backend, self.temp.path(), request, "root").unwrap()
     }
 
     /// The push took the member as up to date and did not contact it. The read
@@ -406,4 +427,127 @@ fn a_layout_whose_tracking_ref_may_not_stand_for_origin_is_contacted() {
             "{layout}"
         );
     }
+}
+
+/// The root row of a root-only push: refused with the §3.6 remedies for
+/// `commit`, not with a Git error, and the root remote left at `published`.
+fn assert_root_only_refused(fixture: &ClonedMember, response: &crate::PushResponse, commit: &str) {
+    let root = response.response.members.single();
+    assert_eq!(root.member_id, "@root");
+    assert_eq!(root.status, crate::MemberStatus::Rejected);
+    let error = root.error.as_ref().unwrap();
+    assert_eq!(
+        error.code,
+        crate::GwzErrorCode::RemoteRejected,
+        "{}",
+        error.message
+    );
+    let proof = format!(
+        "cannot prove member mem_app commit {commit} is available at its committed fetch remote origin;"
+    );
+    assert!(error.message.contains(&proof), "{}", error.message);
+    assert!(
+        error
+            .message
+            .contains("fetch its advertised history and retry"),
+        "{}",
+        error.message
+    );
+    assert_eq!(
+        read_repo_ref(&fixture.root_remote, "refs/heads/main"),
+        Some(fixture.published_root.clone())
+    );
+}
+
+/// Hotfix 1.0.18: another clone moved the member's remote on to a commit the
+/// member has never fetched. The remote advertises only that commit, so the
+/// proof asks the member's repository whether the locked commit is its
+/// ancestor, and the repository does not hold it. That object was read as a
+/// local Git failure (libgit2's "object not found - no match for id"), which
+/// refused the root on every push, naming an id found in no local repository,
+/// while a plain `git push` of the root succeeded. An advertised object the
+/// member does not hold proves nothing here: the root is refused with the §3.6
+/// remedies, and once the member fetches, the root is published at the commit
+/// a plain `git push` sets.
+#[test]
+fn a_remote_commit_the_member_never_fetched_refuses_the_root_until_a_fetch() {
+    let fixture = ClonedMember::new("push-unfetched-remote-commit");
+    let backend = &fixture.backend;
+    let root_head = fixture.commit_root_lock(&fixture.initial);
+    let later = fixture
+        .upstream
+        .commit_and_push("README.md", "two", "later", backend);
+    assert!(!backend.commit_exists(&fixture.app, &later).unwrap());
+
+    let response = fixture.push_root_only();
+
+    assert_root_only_refused(&fixture, &response, &fixture.initial);
+    let message = &response
+        .response
+        .members
+        .single()
+        .error
+        .as_ref()
+        .unwrap()
+        .message;
+    assert!(!message.contains(&later), "{message}");
+
+    backend.fetch(&fixture.app, "origin").unwrap();
+    let response = fixture.push_root_only();
+
+    let root = response.response.members.single();
+    assert_eq!(root.status, crate::MemberStatus::Ok, "{:?}", root.error);
+    assert_eq!(
+        read_repo_ref(&fixture.root_remote, "refs/heads/main"),
+        Some(root_head)
+    );
+}
+
+/// Hotfix 1.0.18: an annotated tag is advertised as its tag object, which is
+/// not a commit. Asking whether the locked commit is an ancestor of that
+/// object failed (libgit2's "object is no commit object") and that failure
+/// replaced the refusal of a commit the remote does not hold. A tag object
+/// proves through the commit it peels to, so an unpublished commit is refused
+/// with the §3.6 remedies, and a commit published only under an annotated tag
+/// is proven.
+#[test]
+fn an_annotated_tag_on_the_remote_proves_through_its_commit() {
+    let fixture = ClonedMember::new("push-annotated-tag");
+    let backend = &fixture.backend;
+    let tag = |repo: &Path, name: &str, commit: &str| {
+        let args = ["-c", "user.name=t", "-c", "user.email=t@example.invalid"];
+        let tag = ["tag", "-a", name, "-m", name, commit];
+        git(repo, &[&args[..], &tag[..]].concat());
+    };
+    tag(&fixture.upstream.source, "v1", &fixture.initial);
+    git(
+        &fixture.upstream.source,
+        &["push", "origin", "refs/tags/v1"],
+    );
+    // The member holds the tag object, so only its kind can fail the query.
+    git(
+        &fixture.app,
+        &["fetch", "origin", "refs/tags/v1:refs/tags/v1"],
+    );
+    let v1 = read_repo_ref(&fixture.app, "refs/tags/v1").unwrap();
+    assert_ne!(v1, fixture.initial);
+    let work = fixture.commit_work();
+    let root_head = fixture.commit_root_lock(&work);
+
+    let response = fixture.push_root_only();
+
+    assert_root_only_refused(&fixture, &response, &work);
+
+    tag(&fixture.app, "v2", &work);
+    backend
+        .push(&fixture.app, "origin", "refs/tags/v2:refs/tags/v2")
+        .unwrap();
+    let response = fixture.push_root_only();
+
+    let root = response.response.members.single();
+    assert_eq!(root.status, crate::MemberStatus::Ok, "{:?}", root.error);
+    assert_eq!(
+        read_repo_ref(&fixture.root_remote, "refs/heads/main"),
+        Some(root_head)
+    );
 }
