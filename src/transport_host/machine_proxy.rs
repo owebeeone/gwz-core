@@ -28,6 +28,17 @@ cfg_if::cfg_if! {
     }
 }
 cfg_if::cfg_if! { if #[cfg(all(windows, test))] { mod host_rows; mod host_tunnel; } }
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        impl MachineProxy {
+            /// The setting a named machine proxy `proxy` with bypass list `bypass` captures, for rows outside this
+            /// module (the endpoint profile's, plan step 1.5).
+            pub(crate) fn named_for_test(proxy: &str, bypass: &str) -> Self {
+                testing::Fixed::named(proxy, Some(bypass)).capture()
+            }
+        }
+    }
+}
 
 use crate::git::endpoint::https_connection;
 use std::{net::IpAddr, sync::Arc};

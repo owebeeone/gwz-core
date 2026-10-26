@@ -39,6 +39,53 @@ pub(crate) struct Config {
     pub(crate) environment: Vec<(OsString, OsString)>,
 }
 
+/// One operation's authentication view (plan step 1.5; contract section 7, Safety P2-4): the credential helper's
+/// executable and the environment it runs with, so the account tokens (`GH_TOKEN`) and the configuration
+/// (`GIT_CONFIG_GLOBAL`) the helper reads. It is the provider of the operation's [`gwz_connection::AuthContext`], which
+/// lives in that operation's binding and reaches an adapter only with the connects and exchanges started for that
+/// operation: it is never part of an endpoint profile or an endpoint instance, so operations with equal profiles share
+/// connections' instances but never one another's helper. It has no `Debug`.
+pub(crate) struct OperationAuth {
+    helper: Config,
+}
+/// What the scope's digest is of, so that no other digest in gwz can equal it.
+const SCOPE_DOMAIN: &[u8] = b"gwz-operation-auth-scope/1";
+impl OperationAuth {
+    /// The context of an operation whose helper is `helper`. Its scope is the SHA-256 of the helper's executable and of
+    /// its whole environment, sorted: two operations share a connection only when their helpers would run alike, and
+    /// any changed variable (a token, a configuration file, `PATH`) gives a scope of its own. The digest stays in
+    /// memory beside the values it is of and is never logged or sent.
+    pub(crate) fn context(helper: Config) -> gwz_connection::AuthContext {
+        use sha2::{Digest, Sha256};
+        let mut entries: Vec<_> = helper.environment.iter().collect();
+        entries.sort();
+        let mut digest = Sha256::new();
+        let mut field = |bytes: &[u8]| {
+            digest.update((bytes.len() as u64).to_le_bytes());
+            digest.update(bytes);
+        };
+        field(SCOPE_DOMAIN);
+        field(helper.executable.as_os_str().as_encoded_bytes());
+        field(&(entries.len() as u64).to_le_bytes());
+        let mut charge = helper.executable.as_os_str().len() + 64;
+        for (name, value) in entries {
+            field(name.as_encoded_bytes());
+            field(value.as_encoded_bytes());
+            charge += name.len() + value.len() + 2 * std::mem::size_of::<OsString>();
+        }
+        let scope = gwz_connection::AuthScope::new(digest.finalize().into());
+        gwz_connection::AuthContext::new(charge, scope, Arc::new(Self { helper }))
+    }
+    /// The view `context` holds, when it is one of these.
+    pub(crate) fn of(context: &gwz_connection::AuthContext) -> Option<&Self> {
+        context.provider().downcast_ref::<Self>()
+    }
+    /// The helper this operation's credential lookups run.
+    pub(crate) fn helper(&self) -> &Config {
+        &self.helper
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AuthError {
     MissingExecutable,

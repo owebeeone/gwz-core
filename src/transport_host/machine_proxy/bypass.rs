@@ -49,6 +49,46 @@ impl Bypass {
         Ok(Self { rules, own })
     }
 
+    /// The rules as the parser read them, in list order, and this machine's own addresses as octets: what the bypass
+    /// decides by, as canonical bytes for an endpoint profile (plan step 1.5), with no layout of this build's `Debug`.
+    /// A rule is one kind byte (1 `<local>`, 2 `<-loopback>`, 3 a host), and a host rule its https flag, its port (a
+    /// flag and two bytes) and its pattern, length-prefixed. An address is its family's length and its octets.
+    pub(crate) fn canonical(&self) -> (Vec<u8>, Vec<u8>) {
+        let mut rules = Vec::new();
+        for rule in &self.rules {
+            match rule {
+                Rule::Local => rules.push(1),
+                Rule::LoopbackToken => rules.push(2),
+                Rule::Host {
+                    https,
+                    pattern,
+                    port,
+                } => {
+                    rules.push(3);
+                    rules.push(u8::from(*https));
+                    rules.push(u8::from(port.is_some()));
+                    rules.extend_from_slice(&port.unwrap_or(0).to_le_bytes());
+                    rules.extend_from_slice(&(pattern.len() as u32).to_le_bytes());
+                    rules.extend_from_slice(pattern);
+                }
+            }
+        }
+        let mut own = Vec::new();
+        for address in &self.own {
+            match address {
+                IpAddr::V4(v4) => {
+                    own.push(4);
+                    own.extend_from_slice(&v4.octets());
+                }
+                IpAddr::V6(v6) => {
+                    own.push(16);
+                    own.extend_from_slice(&v6.octets());
+                }
+            }
+        }
+        (rules, own)
+    }
+
     /// Whether a connection to `host:port` skips the proxy. `host` is the canonical destination host as text (an
     /// IPv6 literal has no brackets), and is never resolved.
     pub(crate) fn bypasses(&self, host: &str, port: u16) -> bool {
