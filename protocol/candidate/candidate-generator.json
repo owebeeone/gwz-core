@@ -9,5 +9,5 @@
   "retained-old-schema-sha256": "423cb73b8c17a6779155431aebe40949f90a429ef69625683b449ed7fe072adb",
   "rustfmt": "rustfmt 1.9.0-stable (59807616e1 2026-04-14)",
   "rust-module": "gwz_transport::protocol",
-  "current-core-schema-sha256": "7332f22a10364d8b4f65f0141b485e220909abff6c8ab1dd6fff2f70c9d0fdb3"
+  "current-core-schema-sha256": "95d49633f3a0fcabb3a4dc57cb2921280ea8d5ba7772a1394447cbdd32f4d758"
 }

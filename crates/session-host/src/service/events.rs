@@ -145,6 +145,7 @@ pub(crate) fn read_loop<P: HostPorts>(inner: &Arc<Inner<P>>) {
     loop {
         let (outgoing, next, ended) = {
             let mut state = lock(&inner.state);
+            state.unflushed += 1;
             let now = Instant::now();
             let closing = state.closing || state.ended;
             let mut outgoing = Vec::new();

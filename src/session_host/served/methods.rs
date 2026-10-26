@@ -13,6 +13,8 @@
 
 use std::time::Duration;
 
+use gwz_session_contract::Lane;
+
 use gwz_session_host::{
     Call, CancelTarget, Class, Code, EventsCall, EventsRead, HostError, MAX_READ_WAIT, Request,
     Verb,
@@ -42,6 +44,15 @@ pub(crate) const CREATING_METHODS: [&str; 4] = [
     "clone_workspace",
     "clone_local_workspace",
 ];
+
+/// The lane a call of `method` travels on (§3): `operation.cancel` and
+/// `session.close` on the control lane, every other call on the call lane.
+pub(crate) fn lane(method: &str) -> Lane {
+    match method {
+        "operation.cancel" | "session.close" => Lane::Control,
+        _ => Lane::Call,
+    }
+}
 
 /// The class of an operation method (§5.1): any method not named here is W.
 pub(crate) fn class(method: &str) -> Class {
@@ -96,6 +107,8 @@ pub(crate) fn classify(call: &Call) -> Result<Request, HostError> {
         _ if DIRECT_METHODS.contains(&method) => Request::Direct,
         _ => Request::Operation {
             class: class(method),
+            // §5.4: a merge declares its response as a view beside its result.
+            response_view: method == "merge",
         },
     })
 }

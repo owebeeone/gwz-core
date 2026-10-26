@@ -11,7 +11,7 @@ use super::events::{EventLog, Held};
 use super::workers;
 use super::{
     Call, CancelTarget, Class, Cleanup, Code, Controls, EventsCall, Gate, HostError, HostPorts,
-    Inner, Mode, Outcome, Outgoing, ProtocolError, Request, Resolved, Terminal,
+    Inner, Mode, Outcome, Outgoing, ProtocolError, Request, Resolved, Terminal, View,
 };
 use crate::detached::WorkerAlive;
 use crate::gate::CallControls;
@@ -51,11 +51,24 @@ pub(crate) struct Record<P: HostPorts> {
     pub(crate) responses: Vec<u64>,
     /// Whether a submit's `accepted` reply was sent.
     pub(crate) accepted: bool,
-    /// Whether a view of the terminal was delivered (§5.4).
-    pub(crate) delivered: bool,
+    /// Whether the method declares a response view beside its result.
+    pub(crate) response_view: bool,
+    /// Whether each view of the terminal was handed over (§5.4): a record
+    /// is delivered once every view its method declares has been.
+    pub(crate) result_delivered: bool,
+    pub(crate) response_delivered: bool,
     pub(crate) in_table: bool,
-    /// The running worker's marker, for the host's detached record.
+    /// The running worker's marker, for the host's detached record, until
+    /// the record settles: the worker's thread then owns the only strong
+    /// marker, and the detached record holds a weak one.
     pub(crate) alive: Option<WorkerAlive>,
+}
+
+impl<P: HostPorts> Record<P> {
+    /// Whether every view the method declares has been handed over (§5.4).
+    fn delivered(&self) -> bool {
+        self.result_delivered && (!self.response_view || self.response_delivered)
+    }
 }
 
 /// How many operations of each class run on one workspace.
@@ -121,6 +134,9 @@ pub(crate) struct State<P: HostPorts> {
     cleanup_pending: u32,
     cleanup_confirmed: bool,
     pub(crate) detached_count: u32,
+    /// Reply batches built under this lock and not yet handed to the sink.
+    /// Close waits for zero before its report and the channel's close.
+    pub(crate) unflushed: usize,
 }
 
 impl<P: HostPorts> Default for State<P> {
@@ -151,6 +167,28 @@ impl<P: HostPorts> Default for State<P> {
             cleanup_pending: 0,
             cleanup_confirmed: false,
             detached_count: 0,
+            unflushed: 0,
+        }
+    }
+}
+
+/// Whether `request_id` names a live operation of the session (§4.3).
+pub(crate) fn is_live<P: HostPorts>(state: &State<P>, request_id: &str) -> bool {
+    state.requests.contains_key(request_id)
+}
+
+/// Marks the views whose replies were handed over (§5.4).
+pub(crate) fn mark_delivered<P: HostPorts>(state: &mut State<P>, delivered: &[(u64, View)]) {
+    for (call_id, view) in delivered {
+        if let Some(record) = state.records.get_mut(call_id) {
+            match view {
+                View::Result => {
+                    record.result_delivered = true;
+                }
+                View::Response => {
+                    record.response_delivered = true;
+                }
+            }
         }
     }
 }
@@ -236,7 +274,7 @@ impl<P: HostPorts> State<P> {
         let Some(index) = self.retained.iter().position(|call_id| {
             self.records
                 .get(call_id)
-                .is_some_and(|record| record.delivered)
+                .is_some_and(|record| record.delivered())
         }) else {
             return false;
         };
@@ -278,13 +316,15 @@ pub(crate) fn receive<P: HostPorts>(
         return Ok(Vec::new());
     }
     let call_id = call.call_id;
+    // The lane comes from the method's name, before anything is decoded, so
+    // a malformed control call's refusal takes the control lane (§3).
+    let lane = inner.ports.lane(&call.method);
     let request = match inner.ports.classify(&call) {
         Ok(request) => request,
         Err(error) => {
-            return Ok(vec![inner.refuse(call_id, Lane::Call, error)]);
+            return Ok(vec![inner.refuse(call_id, lane, error)]);
         }
     };
-    let lane = request.lane();
     if state.closing && request != Request::Close {
         return Ok(vec![inner.refuse(
             call_id,
@@ -320,8 +360,11 @@ pub(crate) fn receive<P: HostPorts>(
             inner.admission.notify_all();
             Ok(Vec::new())
         }
-        Request::Operation { class } => {
-            create(inner, &mut state, call, Some(class));
+        Request::Operation {
+            class,
+            response_view,
+        } => {
+            create(inner, &mut state, call, Some((class, response_view)));
             inner.admission.notify_all();
             Ok(Vec::new())
         }
@@ -373,6 +416,7 @@ pub(crate) fn close_report<P: HostPorts>(
         lane: Lane::Control,
         target: call_id,
         control: false,
+        delivers: None,
     }
 }
 
@@ -382,10 +426,11 @@ fn create<P: HostPorts>(
     inner: &Arc<Inner<P>>,
     state: &mut State<P>,
     call: Call,
-    class: Option<Class>,
+    class: Option<(Class, bool)>,
 ) {
     let (controls, gate) = CallControls::new(&inner.session);
-    let operation = class.map(|class| {
+    let response_view = class.is_some_and(|(_, response_view)| response_view);
+    let operation = class.map(|(class, _)| {
         let operation_id = format!("op-{}", state.next_operation);
         state.next_operation += 1;
         (operation_id, class)
@@ -417,7 +462,9 @@ fn create<P: HostPorts>(
             results: Vec::new(),
             responses: Vec::new(),
             accepted: false,
-            delivered: false,
+            response_view,
+            result_delivered: false,
+            response_delivered: false,
             in_table: false,
             alive: None,
         },
@@ -514,8 +561,7 @@ fn view<P: HostPorts>(
     };
     match record.outcome.as_ref() {
         Some(outcome) => {
-            let reply = view_reply(inner, call_id, outcome, result);
-            record.delivered = true;
+            let reply = view_reply(inner, owner, call_id, outcome, result);
             state.answered_on(call_id, Lane::Call);
             vec![reply]
         }
@@ -531,21 +577,31 @@ fn view<P: HostPorts>(
     }
 }
 
+/// The reply to a view of `owner`'s terminal, which delivers that view once
+/// it is handed over (§5.4).
 fn view_reply<P: HostPorts>(
     inner: &Inner<P>,
+    owner: u64,
     call_id: u64,
     outcome: &Outcome<P::Failure>,
     result: bool,
 ) -> Outgoing {
-    if result {
-        return inner.reply(call_id, Lane::Call, outcome.result.clone());
-    }
-    match &outcome.terminal {
-        Terminal::Completed(response) => inner.reply(call_id, Lane::Call, response.clone()),
-        Terminal::Cancelled(failure) | Terminal::Failed(failure) => {
-            inner.error(call_id, Lane::Call, failure)
-        }
-    }
+    let (mut reply, view) = if result {
+        (
+            inner.reply(call_id, Lane::Call, outcome.result.clone()),
+            View::Result,
+        )
+    } else {
+        let reply = match &outcome.terminal {
+            Terminal::Completed(response) => inner.reply(call_id, Lane::Call, response.clone()),
+            Terminal::Cancelled(failure) | Terminal::Failed(failure) => {
+                inner.error(call_id, Lane::Call, failure)
+            }
+        };
+        (reply, View::Response)
+    };
+    reply.delivers = Some((owner, view));
+    reply
 }
 
 /// `operation.cancel`, on the reading thread (§4.2, §5.3).
@@ -679,6 +735,9 @@ pub(crate) fn settle<P: HostPorts>(
     let was_running = record.phase == Phase::Running;
     record.phase = Phase::Terminal;
     record.gate = None;
+    // The worker's thread keeps the only strong marker from here on, so the
+    // host's detached record ends with the thread (§8 step 5).
+    record.alive = None;
     if let Some(events) = record.events.as_ref() {
         events.complete();
     }
@@ -690,13 +749,10 @@ pub(crate) fn settle<P: HostPorts>(
         outgoing.push(inner.reply(*cancel, Lane::Control, inner.ports.cleanup(outcome.cleanup)));
     }
     for waiter in &results {
-        outgoing.push(view_reply(inner, *waiter, &outcome, true));
+        outgoing.push(view_reply(inner, call_id, *waiter, &outcome, true));
     }
     for waiter in &responses {
-        outgoing.push(view_reply(inner, *waiter, &outcome, false));
-    }
-    if !results.is_empty() || !responses.is_empty() {
-        record.delivered = true;
+        outgoing.push(view_reply(inner, call_id, *waiter, &outcome, false));
     }
     let submitted = record.call.mode == Mode::Submit && record.operation.is_some();
     let keep = submitted && record.accepted;
@@ -787,6 +843,7 @@ pub(crate) fn admission_loop<P: HostPorts>(inner: &Arc<Inner<P>>) {
         };
         let outgoing = {
             let mut state = lock(&inner.state);
+            state.unflushed += 1;
             admit(inner, &mut state, call_id, resolved)
         };
         inner.flush(outgoing);
@@ -920,6 +977,20 @@ pub(crate) fn schedule<P: HostPorts>(inner: &Arc<Inner<P>>, state: &mut State<P>
         };
         let class = *class;
         let workspace = resolved.workspace.clone();
+        // A worker another session detached since admission: refused, not
+        // run beside it (2.0 §3.2).
+        if matches!(class, Class::Write | Class::Push) && inner.detached.running_on(&workspace) {
+            state.queue.remove(index);
+            let call = record.call.clone();
+            let operation = record.operation.clone();
+            let failure = inner.ports.failure(HostError::new(
+                Code::WorkspaceBusy,
+                "a worker detached at a session's close bound still runs on this workspace",
+            ));
+            let outcome = failed_before_start(inner, &call, operation.as_ref(), failure);
+            outgoing.extend(settle(inner, state, call_id, outcome));
+            continue;
+        }
         let admits = state
             .busy
             .get(&workspace)

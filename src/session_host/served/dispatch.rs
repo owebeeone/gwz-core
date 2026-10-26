@@ -7,7 +7,8 @@
 //! | A call's `request` is the Taut request message its method declares, and its reply the Taut response message | §4.1 |
 //! | Each method runs its existing gwz-core handler, with the request's own caller directory as its start and the operation's ID | §5.2 |
 //! | Handlers report events through the operation's gate | §5.2, §6 |
-//! | `diff` and `log` register their spools in the session's own registries, reached through the gate | §5.4, §5.6 |
+//! | `diff` and `log` take an open-log slot from the session's spool layer, reached through the gate, before they register their logs, and answer with the session's own log ids | §5.4, §5.6 |
+//! | The worker, the handler context, carries the call's token: dispatch refuses with `cancelled` once it is cancelled, at its entry and at each gated step | §5.2 |
 //! | A method with no handler here is refused with `unsupported_operation`, before any effect | §4.2 |
 //!
 //! The backend is the composition's: the server step (2.3) passes the 1.7
@@ -21,7 +22,7 @@ use crate::operation::EventSink;
 use crate::workspace_ops as ops;
 use gwz_session_host::Worker;
 
-use super::ServedSession;
+use super::{ServedSession, SpoolKind};
 
 /// How a served session runs a call's handler. Production uses
 /// [`CoreDispatch`]; tests script their own.
@@ -85,6 +86,14 @@ impl Dispatch for CoreDispatch {
     ) -> ModelResult<Vec<u8>> {
         let backend = &self.backend;
         let id = worker.operation_id().unwrap_or("direct").to_owned();
+        // A gated step: a call cancelled before its handler starts refuses
+        // here. The handlers below read no token yet (plumbing only, 2.2c).
+        if worker.token().is_cancelled() {
+            return Err(ModelError::new(
+                ErrorCode::Cancelled,
+                "cancelled before its handler started",
+            ));
+        }
         match method {
             "status" => handle!(request, crate::StatusRequest, |r| {
                 crate::status::handle_status(backend, start, r, id)
@@ -107,22 +116,35 @@ impl Dispatch for CoreDispatch {
                 })
             }
             "diff" => {
-                let registry = worker
+                let spools = worker
                     .effect(|scope| scope.session().spools())
-                    .map_err(refused)??
-                    .diffs;
+                    .map_err(refused)?;
+                let slot = spools.reserve()?;
                 handle!(request, crate::DiffRequest, |r| {
-                    crate::diff::handle_diff(start, r, id, &registry)
-                        .map(|outcome| outcome.response)
+                    crate::diff::handle_diff(start, r, id, &spools.diffs).map(|outcome| {
+                        let mut response = outcome.response;
+                        if let (Some(log_id), Some(output)) =
+                            (outcome.log_id, response.output.as_mut())
+                        {
+                            output.log_id = slot.commit(SpoolKind::Diff, log_id);
+                        }
+                        response
+                    })
                 })
             }
             "log" => {
-                let registry = worker
+                let spools = worker
                     .effect(|scope| scope.session().spools())
-                    .map_err(refused)??
-                    .logs;
+                    .map_err(refused)?;
+                let slot = spools.reserve()?;
                 handle!(request, crate::LogRequest, |r| {
-                    crate::operation::handle_log(backend, start, r, id, &registry)
+                    crate::operation::handle_log(backend, start, r, id, &spools.logs).map(
+                        |mut response| {
+                            let inner = std::mem::take(&mut response.output.log_id);
+                            response.output.log_id = slot.commit(SpoolKind::Log, inner);
+                            response
+                        },
+                    )
                 })
             }
             "fetch" => handle!(request, crate::FetchRequest, |r| {

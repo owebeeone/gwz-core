@@ -122,7 +122,13 @@ try:
     check.check_appended_codes(gap)
     sys.exit(5)
 except ValueError as error:
-    sys.exit(0 if "tail" in str(error) else 6)
+    if "tail" not in str(error):
+        sys.exit(6)
+# A code a later step appends after 86 passes.
+later = dict(members)
+later["some_future_code"] = 87
+check.check_appended_codes(later)
+sys.exit(0)
 "#;
     let status = taut_python_command(&root)
         .args(["-c", script])

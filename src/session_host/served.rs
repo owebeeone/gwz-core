@@ -10,55 +10,51 @@
 //! | The session carries no endpoint environment: Git runs with the core process's own | 2.0 §3.1, §3.2, §3.5 |
 //! | Host refusals take their own wire codes: `transport_session_full` (77), `operation_expired` (78), `cancelled` (73) and the rest | §4.2; 2.0 §1 |
 //! | A cancelled terminal's result has `errors[0] = cancelled` and the handler's own error after it; a detached one adds "detached at the close bound; outcome unknown" | §6 |
-//! | The session's `diff.output` and `log.output` logs live in its context and are released at its end | §5.4, §8 step 7 |
-//! | Frames are routed without blocking: calls to the service, transport-lane frames (tags 16 and 17, client placement) to their call's lane, anything else a protocol error | 2.0 §3.3 |
+//! | The session's `diff.output` and `log.output` logs live in its context under the §5.4 bounds (`spool`) and are released at its end | §5.4, §8 step 7 |
+//! | The in-process reader hands every frame to the service's session-class seam; transport-lane frames (tags 16 and 17) and every per-binding state are step 2.1's carrier's, whose router consults the service's live-call registry | 2.0 §3.3 "Reader interface", §3.4 |
+//! | The handler context, the worker, carries the call's token: `CoreDispatch` refuses at its gated steps once it is cancelled. The handlers below it read no token yet (plumbing only; the carrier-backed handle of step 2.2c ends a running exchange) | §5.2 |
+//!
+//! Recorded deviations, accepted by the lane owner (2.2b remediation plan,
+//! decision 3): `diff.output` reads are probes, never held (the log
+//! service's v0 rule), and cancelling a spent read, result or control call
+//! answers `operation_expired`, not `invalid_request`. The §5.1 member lock
+//! manager is step 2.3's (decision 4): until it lands, two fetches of one
+//! session can meet on a member's refs and one fails on Git's own ref lock,
+//! the outcome two CLI processes get, where §5.1 would make the second wait.
 //!
 //! Sessions of one host share its detached-worker record (2.0 §1), which the
 //! host context holds. The in-process carrier is [`serve_in_process`]; the
-//! server step (2.3) serves byte streams through the same router.
+//! server step (2.3) serves byte streams through 2.1's router.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::Arc;
 
 use gwz_session_channel::{InProcessEnd, pair};
-use gwz_session_contract::{Frame, FrameSink, FrameSource, Tag};
+use gwz_session_contract::{Frame, FrameSink, FrameSource, Lane, Tag};
 use gwz_session_host::{
-    Call, Cleanup, Code, Ending, EventsBatch, EventsRead, HostError, HostPorts, Lanes, Limits,
-    Mode, Outcome, ProtocolError, ReplySink, Request, Resolved, Service, Terminal, Verb, Worker,
-    route_frame, validate_limits,
+    Call, Cleanup, Code, Ending, EventsBatch, EventsRead, HostError, HostPorts, Limits, Mode,
+    Outcome, ProtocolError, ReplySink, Request, Resolved, Service, Terminal, Verb, Worker,
+    validate_limits,
 };
 
 use super::context::HostContext;
-use crate::diff::DiffLogRegistry;
 use crate::model::{ErrorCode, ModelError, ModelResult};
-use crate::operation::{CommitLogOutputRegistry, EventSink};
+use crate::operation::EventSink;
 
 mod dispatch;
 mod methods;
 mod spool;
 
 pub(crate) use dispatch::Dispatch;
+pub(crate) use spool::{Kind as SpoolKind, Spools};
 
 cfg_if::cfg_if! {
+    // The frozen body of the transport lane, `TransportLaneFrame` (2.0
+    // §3.3): its codec only. Routing tags 16 and 17, and every per-binding
+    // state, is step 2.1's carrier's (2.0 §3.3 "Reader interface").
     if #[cfg(all(gwz_transport_candidate, gwz_session_candidate))] {
         pub(crate) mod lane;
-        use lane::decode_lane;
-    } else {
-        /// Without the client placement's projection the lane's body type does
-        /// not exist, so a lane frame is a protocol error.
-        fn decode_lane(frame: &Frame) -> Result<gwz_session_host::LaneFrame, ProtocolError> {
-            Err(ProtocolError(format!(
-                "frame tag {} needs the client placement's transport lane",
-                frame.tag
-            )))
-        }
     }
-}
-
-/// Nothing done under a served session's locks leaves their state half
-/// written, so a poisoned lock is recovered.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// A served session's own data, which its gates hold (§5.6 without the
@@ -66,31 +62,15 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub(crate) struct ServedSession {
     /// The one workspace the server serves, as resolution finds it.
     root: PathBuf,
-    /// The session's `diff.output` and `log.output` logs, until its end.
-    spools: Mutex<Option<Spools>>,
-    /// The live calls that may bind a transport (2.0 §3.3).
-    #[allow(
-        dead_code,
-        reason = "the carrier-backed handle (2.2c) registers its call's lane here"
-    )]
-    pub(crate) lanes: Lanes,
-}
-
-#[derive(Clone)]
-pub(crate) struct Spools {
-    pub(crate) diffs: DiffLogRegistry,
-    pub(crate) logs: CommitLogOutputRegistry,
+    /// The session's `diff.output` and `log.output` logs, under the §5.4
+    /// bounds, until its end.
+    spools: Arc<Spools>,
 }
 
 impl ServedSession {
-    /// The session's spool registries, or `operation_expired` once released.
-    pub(crate) fn spools(&self) -> ModelResult<Spools> {
-        lock(&self.spools).clone().ok_or_else(|| {
-            ModelError::new(
-                ErrorCode::OperationExpired,
-                "the session's diff and log output has been released",
-            )
-        })
+    /// The session's spool layer.
+    pub(crate) fn spools(&self) -> Arc<Spools> {
+        Arc::clone(&self.spools)
     }
 
     /// The served workspace root.
@@ -125,7 +105,6 @@ impl ServedFailure {
 /// Core's ports.
 pub(crate) struct ServedPorts {
     dispatch: Arc<dyn Dispatch>,
-    read_bytes: usize,
 }
 
 fn encode(cbor: &crate::Cbor) -> Vec<u8> {
@@ -269,6 +248,10 @@ impl HostPorts for ServedPorts {
         })
     }
 
+    fn lane(&self, method: &str) -> Lane {
+        methods::lane(method)
+    }
+
     fn classify(&self, call: &Call) -> Result<Request, HostError> {
         methods::classify(call)
     }
@@ -361,11 +344,14 @@ impl HostPorts for ServedPorts {
     }
 
     fn spool(&self, session: &ServedSession, call: &Call) -> Result<Vec<u8>, ServedFailure> {
-        spool::answer(session, call, self.read_bytes).map_err(|error| ServedFailure::model(&error))
+        session
+            .spools
+            .answer(call)
+            .map_err(|error| ServedFailure::model(&error))
     }
 
     fn release_spools(&self, session: &ServedSession) {
-        lock(&session.spools).take();
+        session.spools.release_all();
     }
 
     fn failure(&self, error: HostError) -> ServedFailure {
@@ -548,25 +534,20 @@ pub(crate) fn serve_in_process(
     let (client, host_end) = pair(channel_limits);
     let host_end = Arc::new(host_end);
     let sink = Arc::clone(&host_end) as Arc<dyn ReplySink>;
-    let lanes = Lanes::new(Arc::clone(&sink));
     let session = Arc::new(ServedSession {
         root,
-        spools: Mutex::new(Some(Spools {
-            diffs: DiffLogRegistry::new(),
-            logs: CommitLogOutputRegistry::new(),
-        })),
-        lanes: lanes.clone(),
+        spools: Arc::new(Spools::new(
+            session_tag()?,
+            limits.open_logs,
+            limits.read_bytes,
+        )),
     });
-    let ports = ServedPorts {
-        dispatch,
-        read_bytes: limits.read_bytes,
-    };
+    let ports = ServedPorts { dispatch };
     let service = Service::new(ports, session, sink, limits, host.detached(), true);
     service
         .start()
         .map_err(|_| ModelError::new(ErrorCode::InternalError, "no session thread could start"))?;
     let reader_service = service.clone();
-    let reader_lanes = lanes.clone();
     std::thread::Builder::new()
         .name("gwz-session-reader".into())
         .spawn(move || {
@@ -578,7 +559,9 @@ pub(crate) fn serve_in_process(
                         return;
                     }
                 };
-                if route_frame(&reader_service, &reader_lanes, &frame, decode_lane).is_err() {
+                // The in-process adapter carries tags 1 to 3 only; step 2.1's
+                // router, which owns tags 16 and 17, is a byte stream's.
+                if reader_service.route(&frame).is_err() {
                     host_end.close();
                     reader_service.channel_closed(Ending::Protocol);
                     return;
@@ -587,6 +570,25 @@ pub(crate) fn serve_in_process(
         })
         .map_err(|_| ModelError::new(ErrorCode::InternalError, "no session reader could start"))?;
     Ok(ServedChannel { client, service })
+}
+
+/// A session's own prefix of the log ids it issues, from the operating
+/// system's random source, so no other session can name its logs (§5.4).
+fn session_tag() -> ModelResult<String> {
+    let mut bytes = [0u8; 8];
+    getrandom::fill(&mut bytes).map_err(|error| {
+        ModelError::new(
+            ErrorCode::InternalError,
+            format!("no random session tag: {error}"),
+        )
+    })?;
+    Ok(format!(
+        "s{}",
+        bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    ))
 }
 
 cfg_if::cfg_if! {

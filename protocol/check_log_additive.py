@@ -251,9 +251,10 @@ def check_appended_codes(members: dict[str, int]) -> None:
 
     Fails when a number SESSION_CODES assigns is already taken by another
     member, when a session code is missing or sits elsewhere, or when the
-    session codes are not the consecutive tail after every other code.
+    session codes are not the consecutive run right after `capacity` (76),
+    the schema's last code before step 2.2b. Codes a later step appends after
+    86 pass.
     """
-    appended = dict(SESSION_CODES)
     for name, value in SESSION_CODES:
         holders = sorted(other for other, number in members.items() if number == value and other != name)
         if holders:
@@ -263,12 +264,17 @@ def check_appended_codes(members: dict[str, int]) -> None:
             )
         if members.get(name) != value:
             raise ValueError(f"GwzErrorCode.{name} must occupy slot {value}, got {members.get(name)!r}")
-    earlier = [number for name, number in members.items() if name not in appended]
-    expected = list(range(max(earlier) + 1, max(earlier) + 1 + len(SESSION_CODES)))
+    anchor_name, anchor = PRE_SESSION_CODES[-1]
+    if members.get(anchor_name) != anchor:
+        raise ValueError(
+            f"GwzErrorCode's session codes follow {anchor_name} ({anchor}), the tail they were "
+            f"appended at; got {members.get(anchor_name)!r}"
+        )
+    expected = list(range(anchor + 1, anchor + 1 + len(SESSION_CODES)))
     if [value for _, value in SESSION_CODES] != expected:
         raise ValueError(
             "GwzErrorCode's session codes must be the consecutive tail after "
-            f"{max(earlier)}: expected {expected}"
+            f"{anchor_name} ({anchor}): expected {expected}"
         )
 
 

@@ -12,6 +12,7 @@
 //! | The session limits ([`Limits`], [`MAX_READ_WAIT`], [`validate_limits`]) | The §1 defaults and `open`'s validation, and the channel's two limits for gwz-session-channel's `pair` | §1, §3, §9 |
 //! | The supervisor ([`Supervisor`], [`SupervisedJob`]) | One thread per host context; quarantine; `shutdown(bound)` | §5.6; reuse design §7 |
 //! | The operation service ([`Service`], over core's [`HostPorts`]) | Records at receipt; admission in receipt order; classes R, N and W; the §1 limits; cancel; events; results; release; close | §4.1, §4.2, §5.1–§5.4, §6, §8; `GwzSplitCommandChannel.md` §3.2 (step 2.2b) |
+//! | The router seam ([`Service::route`], [`Service::is_live`]) | Session-class frames handed on by the carrier's router; the live-call registry it consults for a transport-lane frame. The router, step 2.1's, owns every per-binding transport state | `GwzSplitCommandChannel.md` §3.3 "Reader interface", "Scope"; §3.4 |
 //! | The detached-worker record ([`DetachedWorkers`]) | Shared by a host's sessions; a write or push beside a detached worker is refused | §8 step 5; `GwzSplitCommandChannel.md` §1, §3.2 |
 //!
 //! Core's per-session data is the type parameter `S`: a gate holds it
@@ -36,7 +37,6 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 
 mod detached;
 mod gate;
-mod lane;
 mod limits;
 mod service;
 mod supervisor;
@@ -44,10 +44,6 @@ mod token;
 
 pub use detached::{DetachedWorkers, WorkerAlive};
 pub use gate::{CallControls, GateScope, GateState, GateView, HandlerContext, OperationGate};
-pub use lane::{
-    CallLane, LaneError, LaneFrame, LaneKind, Lanes, Routed, StreamTarget, TRANSPORT_CONTROL,
-    TRANSPORT_DATA, lane_tag, route_frame,
-};
 pub use limits::{InvalidLimits, Limits, MAX_READ_WAIT, validate_limits};
 pub use service::{
     Call, CancelTarget, Class, Cleanup, Code, Ending, EventsBatch, EventsCall, EventsRead,

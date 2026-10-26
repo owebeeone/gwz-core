@@ -84,6 +84,7 @@ fn run<P: HostPorts>(inner: &Arc<Inner<P>>, start: Start<P>) {
     if reported {
         let outgoing = {
             let mut state = lock(&inner.state);
+            state.unflushed += 1;
             let mut outgoing = settle(inner, &mut state, call_id, outcome);
             outgoing.extend(table::schedule(inner, &mut state));
             outgoing
@@ -213,6 +214,7 @@ fn run_close<P: HostPorts>(inner: &Arc<Inner<P>>, replies: bool) {
     // Steps 2 and 3: settle what has not started, cancel what runs.
     let outgoing = {
         let mut state = lock(&inner.state);
+        state.unflushed += 1;
         state.pending.clear();
         let mut outgoing = Vec::new();
         for call_id in state.not_started() {
@@ -277,13 +279,22 @@ fn run_close<P: HostPorts>(inner: &Arc<Inner<P>>, replies: bool) {
         state.answered(held.call_id);
         outgoing.push(inner.reply(held.call_id, Lane::Call, body));
     }
+    state.unflushed += 1;
     drop(state);
     inner.flush(outgoing);
     // Step 7: the session's spools.
     inner.ports.release_spools(&inner.session);
-    // Step 8: the close report, to every `session.close` waiting for it.
+    // Step 8: the close report, to every `session.close` waiting for it,
+    // once no reply batch is still on its way to the sink: the report is
+    // written only after every frame queued before it (2.0 §3.3).
     let outgoing = {
         let mut state = lock(&inner.state);
+        while state.unflushed > 0 {
+            state = inner
+                .settled
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
         let report = state.close_report();
         state.report = Some(report);
         let closers = std::mem::take(&mut state.closers);
@@ -294,10 +305,22 @@ fn run_close<P: HostPorts>(inner: &Arc<Inner<P>>, replies: bool) {
                 outgoing.push(close_report(inner, call_id, report));
             }
         }
+        state.unflushed += 1;
         outgoing
     };
     inner.flush(outgoing);
-    // Step 9: the channel closes after the replies above were handed over.
+    // Step 9: the channel closes after the replies above were handed over,
+    // and after any reply batch still on its way (a call refused while the
+    // session closed).
+    {
+        let mut state = lock(&inner.state);
+        while state.unflushed > 0 {
+            state = inner
+                .settled
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
     inner.sink.close_channel();
     let mut state = lock(&inner.state);
     state.ended = true;

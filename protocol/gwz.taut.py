@@ -2710,10 +2710,11 @@ SCHEMA = schema(
     SessionCall=Msg(
         call_id=F(1, INT),
         method=F(2, STR),
-        # Absent means unary.
+        # The key is always present; null means unary.
         mode=F(3, Ref.SessionMode, optional=True),
         request=F(4, BYTES),
-        # Only on the log methods; absent means read.
+        # Only on the log methods; the key is always present, and null means
+        # read.
         log_verb=F(5, Ref.LogVerb, optional=True)),
 
     # A call's reply: the Taut response message its method declares.

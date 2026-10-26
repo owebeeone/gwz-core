@@ -3,14 +3,13 @@
 //! handlers, encoding) is a script here, so these rows check the host's own
 //! rules (§4.2, §5.1–§5.4, §6, §8).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use gwz_session_contract::{Frame, Lane, SendError, Tag};
 
 use super::*;
-use crate::lane::{LaneFrame, LaneKind, Lanes, Routed, StreamTarget, route_frame};
 
 /// The failure core would report: the code's name and the text.
 type Failure = String;
@@ -61,6 +60,102 @@ struct Ports {
     script: Arc<Script>,
 }
 
+/// The test's carrier, standing in for step 2.1's: the frames a handler sends
+/// toward the client on the transport lane, and those the test router hands
+/// back to a live call. It is the session's data, so a handler reaches it
+/// through its gate.
+#[derive(Clone, Default)]
+struct Carrier {
+    shared: Arc<CarrierShared>,
+}
+
+#[derive(Default)]
+struct CarrierShared {
+    sent: Mutex<Vec<Frame>>,
+    sent_changed: Condvar,
+    inbound: Mutex<HashMap<String, Vec<Vec<u8>>>>,
+    inbound_changed: Condvar,
+}
+
+impl Carrier {
+    fn send(&self, frame: Frame) {
+        crate::lock(&self.shared.sent).push(frame);
+        self.shared.sent_changed.notify_all();
+    }
+
+    fn wait_sent(&self) -> Frame {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut sent = crate::lock(&self.shared.sent);
+        loop {
+            if !sent.is_empty() {
+                return sent.remove(0);
+            }
+            assert!(Instant::now() < deadline, "no lane frame was sent");
+            sent = self
+                .shared
+                .sent_changed
+                .wait_timeout(sent, Duration::from_millis(20))
+                .unwrap()
+                .0;
+        }
+    }
+
+    fn deliver(&self, request_id: &str, body: Vec<u8>) {
+        crate::lock(&self.shared.inbound)
+            .entry(request_id.to_owned())
+            .or_default()
+            .push(body);
+        self.shared.inbound_changed.notify_all();
+    }
+
+    fn wait_inbound(&self, request_id: &str, timeout: Duration) -> Option<Vec<u8>> {
+        let deadline = Instant::now() + timeout;
+        let mut inbound = crate::lock(&self.shared.inbound);
+        loop {
+            if let Some(body) = inbound.get_mut(request_id).and_then(|queue| queue.pop()) {
+                return Some(body);
+            }
+            if Instant::now() >= deadline {
+                return None;
+            }
+            inbound = self
+                .shared
+                .inbound_changed
+                .wait_timeout(inbound, Duration::from_millis(20))
+                .unwrap()
+                .0;
+        }
+    }
+}
+
+/// The test router, the brief's fake of step 2.1's `FrameRouter`: a
+/// transport-lane frame (tag 16 or 17, body `request_id|kind`) goes to its
+/// live call, through the service's live-call registry, and every other frame
+/// to the service's session-class seam. Before the session opens a lane frame
+/// is a protocol error, as every frame is.
+fn test_route(
+    service: &Service<Ports>,
+    carrier: &Carrier,
+    frame: &Frame,
+) -> Result<&'static str, ProtocolError> {
+    if frame.tag != 16 && frame.tag != 17 {
+        return service.route(frame).map(|()| "call");
+    }
+    if !service.is_open() {
+        return Err(ProtocolError(format!(
+            "a frame of tag {} before the session opened",
+            frame.tag
+        )));
+    }
+    let body = text(&frame.body);
+    let (request_id, _) = body.split_once('|').unwrap();
+    if !service.is_live(request_id) {
+        return Ok("discarded");
+    }
+    carrier.deliver(request_id, frame.body.clone());
+    Ok("delivered")
+}
+
 fn text(bytes: &[u8]) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
@@ -71,7 +166,7 @@ fn body(call_id: u64, method: &str, submit: bool, request: &str) -> Vec<u8> {
 }
 
 impl HostPorts for Ports {
-    type Session = Lanes;
+    type Session = Carrier;
     type Failure = Failure;
 
     fn decode(&self, body: &[u8]) -> Result<Call, ProtocolError> {
@@ -93,14 +188,29 @@ impl HostPorts for Ports {
         })
     }
 
+    fn lane(&self, method: &str) -> Lane {
+        match method {
+            "operation.cancel" | "session.close" | "bad-control" => Lane::Control,
+            _ => Lane::Call,
+        }
+    }
+
     fn classify(&self, call: &Call) -> Result<Request, HostError> {
         let request = text(&call.request);
         Ok(match call.method.as_str() {
             "status" => Request::Direct,
             "fetch" => Request::Operation {
                 class: Class::Fetch,
+                response_view: false,
             },
-            "push" => Request::Operation { class: Class::Push },
+            "push" => Request::Operation {
+                class: Class::Push,
+                response_view: false,
+            },
+            "merge" => Request::Operation {
+                class: Class::Write,
+                response_view: true,
+            },
             "events.subscribe" => {
                 let (operation_id, rest) = request.split_once(' ').unwrap_or((&request, "0 0"));
                 let (cursor, wait) = rest.split_once(' ').unwrap();
@@ -127,16 +237,17 @@ impl HostPorts for Ports {
                 Err(_) => CancelTarget::Operation(request),
             }),
             "session.close" => Request::Close,
-            "bad" => {
+            "bad" | "bad-control" => {
                 return Err(HostError::new(Code::InvalidRequest, "bad call"));
             }
             _ => Request::Operation {
                 class: Class::Write,
+                response_view: false,
             },
         })
     }
 
-    fn resolve(&self, _session: &Lanes, call: &Call) -> Result<Resolved, Failure> {
+    fn resolve(&self, _session: &Carrier, call: &Call) -> Result<Resolved, Failure> {
         let request = text(&call.request);
         if request.starts_with("slow") {
             let start = Instant::now();
@@ -155,7 +266,7 @@ impl HostPorts for Ports {
         })
     }
 
-    fn run(&self, call: &Call, resolved: &Resolved, worker: &Worker<Lanes>) -> Outcome<Failure> {
+    fn run(&self, call: &Call, resolved: &Resolved, worker: &Worker<Carrier>) -> Outcome<Failure> {
         let request = resolved.request_id.clone();
         crate::lock(&self.script.ran).push(request.clone());
         let _ = worker.event(format!("started {request}").into_bytes());
@@ -163,27 +274,20 @@ impl HostPorts for Ports {
             panic!("scripted panic");
         }
         if request.starts_with("open") {
-            // A handler with a running transport open: it binds its call's
-            // lane, sends `open` on tag 16 and waits for the client's answer.
-            let lane = worker
-                .effect(|scope| scope.session().register(&request, 1024))
-                .unwrap()
-                .unwrap();
-            let target = StreamTarget {
-                request_id: request.clone(),
-                session_id: "s".to_owned(),
-                stream_id: 1,
-            };
-            let open = Frame {
+            // A handler with a running transport open: through its gate it
+            // reaches the carrier, sends `open` on tag 16 and waits for the
+            // client's answer, which the router hands back to its live call.
+            let carrier = worker.effect(|scope| scope.session().clone()).unwrap();
+            carrier.send(Frame {
                 tag: 16,
-                body: format!("{request}|s|1|open").into_bytes(),
-            };
-            lane.send(open, &target).unwrap();
-            let answer = lane.recv(Duration::from_secs(20)).unwrap();
+                body: format!("{request}|open").into_bytes(),
+            });
+            let answer = carrier.wait_inbound(&request, Duration::from_secs(5));
+            let answer = answer.map_or_else(|| "no answer".to_owned(), |answer| text(&answer));
             let _ = worker.event(b"opened".to_vec());
             return Outcome {
                 terminal: Terminal::Completed(
-                    format!("done {} {}", call.method, text(&answer)).into_bytes(),
+                    format!("done {} {}", call.method, answer).into_bytes(),
                 ),
                 result: Vec::new(),
                 cleanup: Cleanup::default(),
@@ -211,11 +315,11 @@ impl HostPorts for Ports {
         }
     }
 
-    fn spool(&self, _session: &Lanes, _call: &Call) -> Result<Vec<u8>, Failure> {
+    fn spool(&self, _session: &Carrier, _call: &Call) -> Result<Vec<u8>, Failure> {
         Ok(b"spool".to_vec())
     }
 
-    fn release_spools(&self, _session: &Lanes) {}
+    fn release_spools(&self, _session: &Carrier) {}
 
     fn failure(&self, error: HostError) -> Failure {
         format!("{:?}: {}", error.code, error.message)
@@ -286,17 +390,18 @@ impl HostPorts for Ports {
 
 /// A reply: its call, its answer, its lane and whether it was control class.
 type Sent = (u64, Result<String, String>, Lane, bool);
-/// A lane frame, its lane, its target and its class.
-type SentLane = (Frame, Lane, StreamTarget, bool);
 
-/// The replies the host sent, by call.
+/// The replies the host sent, by call, and the order of everything it did.
 #[derive(Default)]
 struct Sink {
     replies: Mutex<Vec<Sent>>,
-    lanes: Mutex<Vec<SentLane>>,
-    lane_changed: Condvar,
     changed: Condvar,
     closed: Mutex<bool>,
+    /// `reply N` and `closed`, in the order they happened.
+    order: Mutex<Vec<String>>,
+    /// A call whose reply the sink holds back, and for how long, or with how
+    /// many yields when the duration is zero.
+    slow: Mutex<Option<(u64, Duration, u32)>>,
 }
 
 impl ReplySink for Sink {
@@ -309,6 +414,22 @@ impl ReplySink for Sink {
     ) -> Result<(), SendError> {
         let id = u64::from_be_bytes(frame.body[..8].try_into().unwrap());
         assert_eq!(id, target);
+        let slow = *crate::lock(&self.slow);
+        if let Some((call, delay, yields)) = slow
+            && call == id
+        {
+            std::thread::sleep(delay);
+            for _ in 0..yields {
+                std::thread::yield_now();
+            }
+        }
+        if *crate::lock(&self.closed) {
+            return Err(SendError::Closed(
+                frame,
+                gwz_session_contract::Closed::Local,
+            ));
+        }
+        crate::lock(&self.order).push(format!("reply {id}"));
         let payload = text(&frame.body[8..]);
         let answer = if frame.tag == Tag::SessionReply.byte() {
             Ok(payload)
@@ -320,20 +441,9 @@ impl ReplySink for Sink {
         Ok(())
     }
 
-    fn send_lane(
-        &self,
-        frame: Frame,
-        lane: Lane,
-        target: &StreamTarget,
-        control: bool,
-    ) -> Result<(), SendError> {
-        crate::lock(&self.lanes).push((frame, lane, target.clone(), control));
-        self.lane_changed.notify_all();
-        Ok(())
-    }
-
     fn close_channel(&self) {
         *crate::lock(&self.closed) = true;
+        crate::lock(&self.order).push("closed".to_owned());
     }
 }
 
@@ -354,22 +464,6 @@ impl Sink {
         }
     }
 
-    fn wait_lane(&self) -> (Frame, Lane, StreamTarget, bool) {
-        let deadline = Instant::now() + Duration::from_secs(20);
-        let mut lanes = crate::lock(&self.lanes);
-        loop {
-            if !lanes.is_empty() {
-                return lanes.remove(0);
-            }
-            assert!(Instant::now() < deadline, "no lane frame");
-            lanes = self
-                .lane_changed
-                .wait_timeout(lanes, Duration::from_millis(20))
-                .unwrap()
-                .0;
-        }
-    }
-
     fn has(&self, call_id: u64) -> bool {
         crate::lock(&self.replies)
             .iter()
@@ -385,7 +479,7 @@ impl Sink {
 
 struct Host {
     service: Service<Ports>,
-    lanes: Lanes,
+    carrier: Carrier,
     sink: Arc<Sink>,
     script: Arc<Script>,
     next: u64,
@@ -399,12 +493,12 @@ impl Host {
     fn shared(limits: Limits, detached: DetachedWorkers) -> Self {
         let script = Arc::new(Script::default());
         let sink = Arc::new(Sink::default());
-        let lanes = Lanes::new(Arc::clone(&sink) as Arc<dyn ReplySink>);
+        let carrier = Carrier::default();
         let service = Service::new(
             Ports {
                 script: Arc::clone(&script),
             },
-            Arc::new(lanes.clone()),
+            Arc::new(carrier.clone()),
             Arc::clone(&sink) as Arc<dyn ReplySink>,
             limits,
             detached,
@@ -413,7 +507,7 @@ impl Host {
         service.start().unwrap();
         Self {
             service,
-            lanes,
+            carrier,
             sink,
             script,
             next: 0,
@@ -467,7 +561,7 @@ fn call_ids_must_increase_and_nothing_is_read_before_the_session_opens() {
         Ports {
             script: Arc::default(),
         },
-        Arc::new(Lanes::new(Arc::clone(&sink))),
+        Arc::new(Carrier::default()),
         sink,
         Limits::default(),
         DetachedWorkers::new(),
@@ -676,11 +770,12 @@ fn a_full_table_evicts_the_oldest_delivered_terminal_record() {
         let submit = host.call("fetch", true, request);
         host.sink.wait(submit).unwrap();
     }
-    let result = host.call("operation.result", false, "op-1");
-    host.sink.wait(result).unwrap();
-    let response = host.call("operation.response", false, "op-2");
-    host.sink.wait(response).unwrap();
-    // op-1 and op-2 are delivered; the third evicts op-1.
+    for operation in ["op-1", "op-2"] {
+        let result = host.call("operation.result", false, operation);
+        host.sink.wait(result).unwrap();
+    }
+    // A fetch declares one view, its result: op-1 and op-2 are delivered,
+    // and the third evicts op-1, the oldest.
     let third = host.call("fetch", true, "c");
     assert_eq!(host.sink.wait(third), Ok("accepted op-3".to_owned()));
     let gone = host.call("operation.result", false, "op-1");
@@ -828,80 +923,55 @@ fn an_event_log_keeps_a_reset_for_the_history_it_dropped() {
     assert!(log.read(&after, 1024).complete);
 }
 
-/// The test client's decoding of a lane frame: `request|session|stream|kind`.
-fn decode_lane(frame: &Frame) -> Result<LaneFrame, ProtocolError> {
-    let body = text(&frame.body);
-    let parts: Vec<&str> = body.split('|').collect();
-    let [request_id, session_id, stream_id, kind] = parts.as_slice() else {
-        return Err(ProtocolError("the lane body does not decode".to_owned()));
-    };
-    let kind = match *kind {
-        "open" => LaneKind::Other {
-            kind: 4,
-            control: false,
-        },
-        "opened" => LaneKind::Other {
-            kind: 5,
-            control: true,
-        },
-        other => {
-            return Err(ProtocolError(format!("unknown kind {other}")));
-        }
-    };
-    Ok(LaneFrame {
-        tag: frame.tag,
-        target: StreamTarget {
-            request_id: (*request_id).to_owned(),
-            session_id: (*session_id).to_owned(),
-            stream_id: stream_id.parse().unwrap(),
-        },
-        kind,
-        body: frame.body.clone(),
-    })
-}
-
-/// Red row (step 2.2b): a call whose handler has a running `Open` round-trips.
-/// The handler's `open` leaves on tag 16 while the call runs, the client's
-/// `opened` comes back on tag 17 and reaches the handler, and only then does
-/// the call's reply arrive. The carrier is this test's fake, since the
-/// in-process adapter takes tags 16 and 17 only once step 2.1 lands.
+/// Red row 1 (step 2.2b): a call whose handler has a running `Open`
+/// round-trips. The handler's `open` leaves on tag 16 while the call runs;
+/// the client's `opened` comes back on tag 17, and the test router hands it to
+/// the call because the service's live-call registry names it; only then does
+/// the call's reply arrive. The router is the brief's fake of step 2.1's,
+/// which this row is re-pointed at when 2.1 merges.
 #[test]
 fn a_call_with_a_running_open_round_trips_over_the_transport_lane() {
     let mut host = Host::new(Limits::default());
     let fetch = host.call("fetch", false, "open-1");
-    let (open, lane, target, control) = host.sink.wait_lane();
-    assert_eq!((open.tag, lane, control), (16, Lane::Call, false));
-    assert_eq!(target.request_id, "open-1");
+    let open = host.carrier.wait_sent();
+    assert_eq!((open.tag, text(&open.body)), (16, "open-1|open".to_owned()));
     assert!(
         !host.sink.has(fetch),
         "the envelope travels before the reply"
     );
+    assert!(host.service.is_live("open-1"));
     let opened = Frame {
         tag: 17,
-        body: b"open-1|s|1|opened".to_vec(),
+        body: b"open-1|opened".to_vec(),
     };
-    let routed = route_frame(&host.service, &host.lanes, &opened, decode_lane).unwrap();
-    assert_eq!(routed, Routed::Delivered);
+    assert_eq!(
+        test_route(&host.service, &host.carrier, &opened),
+        Ok("delivered")
+    );
     assert_eq!(
         host.sink.wait(fetch),
-        Ok("done fetch open-1|s|1|opened".to_owned())
+        Ok("done fetch open-1|opened".to_owned())
     );
-    // The call has ended, so its lane is gone: a late frame is discarded.
-    let late = route_frame(&host.service, &host.lanes, &opened, decode_lane).unwrap();
-    assert_eq!(late, Routed::Discarded);
+    // The call has ended, so it is no longer live: a late frame is discarded.
+    assert!(!host.service.is_live("open-1"));
+    assert_eq!(
+        test_route(&host.service, &host.carrier, &opened),
+        Ok("discarded")
+    );
 }
 
-/// Red row (step 2.2b): a transport-lane frame before the handshake is a
-/// protocol error, as is a frame of a tag the host never takes.
+/// Red row 4 (step 2.2b): a transport-lane frame before the handshake is a
+/// protocol error, as is any session frame before it, or a frame of a tag the
+/// host never takes once open.
 #[test]
 fn a_transport_lane_frame_before_the_handshake_is_a_protocol_error() {
     let sink = Arc::new(Sink::default()) as Arc<dyn ReplySink>;
-    let lanes = Lanes::new(Arc::clone(&sink));
+    let carrier = Carrier::default();
     let service = Service::new(
         Ports {
             script: Arc::default(),
         },
-        Arc::new(lanes.clone()),
+        Arc::new(carrier.clone()),
         sink,
         Limits::default(),
         DetachedWorkers::new(),
@@ -910,20 +980,189 @@ fn a_transport_lane_frame_before_the_handshake_is_a_protocol_error() {
     service.start().unwrap();
     let lane_frame = Frame {
         tag: 17,
-        body: b"r|s|1|opened".to_vec(),
+        body: b"r|opened".to_vec(),
     };
-    let early = route_frame(&service, &lanes, &lane_frame, decode_lane);
+    let early = test_route(&service, &carrier, &lane_frame);
     assert!(early.unwrap_err().0.contains("before the session opened"));
+    let call = Frame::new(Tag::SessionCall, body(1, "status", false, "s"));
+    assert!(service.route(&call).is_err(), "a call before the handshake");
     service.open();
-    assert_eq!(
-        route_frame(&service, &lanes, &lane_frame, decode_lane).unwrap(),
-        Routed::Discarded
-    );
+    assert_eq!(test_route(&service, &carrier, &lane_frame), Ok("discarded"));
     let reply_tag = Frame {
         tag: 2,
         body: Vec::new(),
     };
-    assert!(route_frame(&service, &lanes, &reply_tag, decode_lane).is_err());
+    assert!(test_route(&service, &carrier, &reply_tag).is_err());
     service.channel_closed(Ending::Protocol);
     assert!(service.wait_ended(Duration::from_secs(5)));
+}
+
+/// One delayed-sink run: a unary call's terminal reply is held in the sink
+/// while `session.close` waits for its worker; the reply must reach the sink
+/// before the close report, and the channel close comes last.
+fn a_settled_reply_precedes_the_close_report(delay: Duration, yields: u32) {
+    let mut host = Host::new(Limits::default());
+    let fetch = host.call("fetch", false, "hold-order");
+    host.wait_ran("hold-order");
+    *crate::lock(&host.sink.slow) = Some((fetch, delay, yields));
+    let close = host.call("session.close", false, "");
+    assert!(host.service.wait_ended(Duration::from_secs(20)));
+    let order = crate::lock(&host.sink.order).clone();
+    let reply = order
+        .iter()
+        .position(|entry| *entry == format!("reply {fetch}"));
+    let report = order
+        .iter()
+        .position(|entry| *entry == format!("reply {close}"));
+    let closed = order.iter().position(|entry| entry == "closed");
+    assert!(
+        reply.is_some() && reply < report && report < closed,
+        "order {order:?}"
+    );
+    assert_eq!(host.service.dropped_replies(), 0);
+}
+
+/// C-P2-3 = S-P2-2: sends keep the order of settlement; close waits for no
+/// reply batch in flight before its report and the channel's close.
+#[test]
+fn a_settled_reply_is_never_overtaken_by_the_close_report() {
+    a_settled_reply_precedes_the_close_report(Duration::from_millis(200), 0);
+    for _ in 0..1000 {
+        a_settled_reply_precedes_the_close_report(Duration::ZERO, 50);
+    }
+}
+
+/// C-P2-4 = S-P2-1: a detached submitted operation's record does not keep the
+/// workspace recorded once its worker has ended.
+#[test]
+fn a_detached_submitted_operation_releases_the_workspace_when_its_worker_ends() {
+    let limits = Limits {
+        close_wait: Duration::from_millis(100),
+        ..Limits::default()
+    };
+    let detached = DetachedWorkers::new();
+    let mut host = Host::shared(limits, detached.clone());
+    let stubborn = host.call("commit", true, "hold-stubborn-submit");
+    assert_eq!(host.sink.wait(stubborn), Ok("accepted op-1".to_owned()));
+    host.wait_ran("hold-stubborn-submit");
+    let close = host.call("session.close", false, "");
+    assert_eq!(host.sink.wait(close), Ok("cleanup 1 false".to_owned()));
+    assert!(detached.running_on("/ws"));
+    host.script.release("hold-stubborn-submit");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while detached.running_on("/ws") {
+        assert!(
+            Instant::now() < deadline,
+            "the detached record outlived its worker"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // `host` is still alive, holding the retained record.
+    let mut other = Host::shared(Limits::default(), detached.clone());
+    let commit = other.call("commit", false, "w-after");
+    assert_eq!(
+        other.sink.wait(commit),
+        Ok("done commit w-after".to_owned())
+    );
+    drop(host);
+}
+
+/// S-P3-1: a write queued before another session detached a worker is
+/// refused when it would start, not run beside the worker.
+#[test]
+fn a_queued_write_is_refused_when_a_worker_was_detached_before_it_starts() {
+    let detached = DetachedWorkers::new();
+    let mut queued = Host::shared(Limits::default(), detached.clone());
+    queued.call("fetch", false, "hold-before");
+    queued.wait_ran("hold-before");
+    let write = queued.call("commit", false, "w-queued");
+    let limits = Limits {
+        close_wait: Duration::from_millis(50),
+        ..Limits::default()
+    };
+    let mut closing = Host::shared(limits, detached.clone());
+    closing.call("commit", false, "hold-stubborn-other");
+    closing.wait_ran("hold-stubborn-other");
+    let close = closing.call("session.close", false, "");
+    closing.sink.wait(close).unwrap();
+    assert!(detached.running_on("/ws"));
+    queued.script.release("hold-before");
+    assert!(
+        queued
+            .sink
+            .wait(write)
+            .unwrap_err()
+            .starts_with("WorkspaceBusy")
+    );
+    assert!(!queued.ran("w-queued"));
+    closing.script.release("hold-stubborn-other");
+}
+
+/// S-P2-3 (+ C-P3-2): a record is delivered only once every view its method
+/// declares has been handed over, so it is never evicted before.
+#[test]
+fn a_record_is_evicted_only_once_every_declared_view_is_delivered() {
+    let limits = Limits {
+        running_operations: 1,
+        queued_operations: 1,
+        operation_table: 2,
+        ..Limits::default()
+    };
+    // A merge declares its result and its response; only its result is read.
+    let mut host = Host::new(limits.clone());
+    let merge = host.call("merge", true, "m");
+    host.sink.wait(merge).unwrap();
+    let other = host.call("fetch", true, "f");
+    host.sink.wait(other).unwrap();
+    for operation in ["op-1", "op-2"] {
+        let result = host.call("operation.result", false, operation);
+        host.sink.wait(result).unwrap();
+    }
+    let third = host.call("fetch", true, "g");
+    // op-2 (a fetch whose result was read) is evictable; op-1 is not.
+    assert_eq!(host.sink.wait(third), Ok("accepted op-3".to_owned()));
+    let fourth = host.call("fetch", true, "h");
+    assert!(
+        host.sink
+            .wait(fourth)
+            .unwrap_err()
+            .starts_with("SessionFull")
+    );
+    let response = host.call("operation.response", false, "op-1");
+    assert_eq!(host.sink.wait(response), Ok("done merge m".to_owned()));
+
+    // A fetch whose response alone was read is not delivered: its result is
+    // the view it declares.
+    let mut host = Host::new(limits);
+    for request in ["a", "b"] {
+        let submit = host.call("fetch", true, request);
+        host.sink.wait(submit).unwrap();
+        let operation = format!("op-{}", if request == "a" { 1 } else { 2 });
+        let response = host.call("operation.response", false, &operation);
+        host.sink.wait(response).unwrap();
+    }
+    let third = host.call("fetch", true, "c");
+    assert!(
+        host.sink
+            .wait(third)
+            .unwrap_err()
+            .starts_with("SessionFull")
+    );
+    let result = host.call("operation.result", false, "op-1");
+    assert_eq!(host.sink.wait(result), Ok("result a".to_owned()));
+}
+
+/// S-P3-2: a malformed control call is refused on the control lane, decided
+/// from its method's name before anything is decoded.
+#[test]
+fn a_malformed_control_calls_refusal_takes_the_control_lane() {
+    let mut host = Host::new(Limits::default());
+    let bad = host.call("bad-control", false, "x");
+    assert!(
+        host.sink
+            .wait(bad)
+            .unwrap_err()
+            .starts_with("InvalidRequest")
+    );
+    assert_eq!(host.sink.lane(bad), (Lane::Control, true));
 }

@@ -6,8 +6,8 @@ context's supervisor, which the core session crate map moves out of gwz-core
 (gwz-dev `dev-docs/GwzCoreSessionCrateMap.md` §2 and §6 step 4). Its authority
 is the core session contract (`dev-docs/GwzCoreSessionDesign.md`, revision 5).
 Step 2.2b of the transport convergence plan adds the operation service
-(`Service`, over the `HostPorts` that gwz-core implements), the transport
-lane's routing (`Lanes`, `route_frame`) and the host's record of detached
+(`Service`, over the `HostPorts` that gwz-core implements), its seam for the
+carrier's router (`route`, `is_live`) and the host's record of detached
 workers (`DetachedWorkers`).
 
 It encodes and decodes no GWZ message, and none of its errors are gwz-core's.
@@ -80,10 +80,14 @@ Its authority is the session design's §4.1, §4.2 and §5, as gwz-dev
   `start()`, which starts its admission and read threads. `receive(body)`
   takes one `SessionCall` body and never blocks; `channel_closed(ending)`
   runs the closure of §8; `open()` marks the handshake done.
-- `HostPorts`, which core implements: `decode`, `classify` (the method
-  registry and class table), `resolve`, `run`, `spool`, `release_spools`,
-  and the encoders of every reply. `ReplySink` is where replies and lane
-  frames go; every `FrameSink` is one.
+- `HostPorts`, which core implements: `decode`, `lane` (from the method's
+  name), `classify` (the method registry and class table, with the views each
+  method declares), `resolve`, `run`, `spool`, `release_spools`, and the
+  encoders of every reply. `ReplySink` is where replies go; every `FrameSink`
+  is one.
+- Sends keep the order of settlement: close waits for no reply batch in flight
+  before its report and the channel's close. A record is evicted only once
+  every view its method declares has been handed over.
 - Records, tokens and gates at receipt; resolution and admission on one
   thread in receipt order; direct calls on a pool of direct workers;
   classes N (fetch, push) and W; the §1 limits refused with
@@ -96,14 +100,14 @@ Its authority is the session design's §4.1, §4.2 and §5, as gwz-dev
 - `DetachedWorkers` is shared by a host's sessions: a write or push on a
   workspace where a worker detached at a close bound still runs is refused.
 
-## The transport lane
+## The router seam
 
-`GwzSplitCommandChannel.md` §3.3: tags 16 and 17. Core decodes each lane
-frame's body into a `LaneFrame` header; `Lanes::route` delivers it to its live
-call's `CallLane` under the transport-class bound (window coalesced, data
-within the binding's receive window, one slot per other kind), and a frame
-that breaks it faults that binding only. `route_frame` routes every frame the
-host receives and refuses any frame before the session has opened.
+The transport lane (`GwzSplitCommandChannel.md` §3.3, tags 16 and 17) is the
+carrier's: step 2.1's router owns every per-binding transport state. This
+crate gives that router two things: `Service::route(frame)`, which takes the
+session-class frames (a `SessionCall`; anything else, or anything before
+`open()`, is a protocol error), and `Service::is_live(request_id)`, the
+live-call registry a lane frame's call must name.
 
 ## The limits
 

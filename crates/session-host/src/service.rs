@@ -23,7 +23,7 @@
 
 use std::fmt;
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -32,7 +32,6 @@ use gwz_session_contract::{Frame, FrameSink, Lane, SendError};
 
 use crate::detached::DetachedWorkers;
 use crate::gate::{CallControls, GateScope, OperationGate};
-use crate::lane::StreamTarget;
 use crate::limits::{Limits, MAX_READ_WAIT};
 use crate::lock;
 use crate::token::{CancellationToken, Refused};
@@ -103,6 +102,10 @@ pub enum Request {
     Operation {
         /// Its class.
         class: Class,
+        /// Whether the method declares a response view beside its result,
+        /// as `merge` does: its record is delivered only once both have been
+        /// handed over (§5.4).
+        response_view: bool,
     },
     /// An `events.subscribe` call.
     Events(EventsCall),
@@ -128,17 +131,6 @@ pub enum Request {
     },
     /// `session.close`.
     Close,
-}
-
-impl Request {
-    /// The lane the call, and its reply, travel on (§3): control calls on the
-    /// control lane, every other call on the call lane.
-    pub fn lane(&self) -> Lane {
-        match self {
-            Request::Cancel(_) | Request::Close => Lane::Control,
-            _ => Lane::Call,
-        }
-    }
 }
 
 /// The target of `operation.cancel` (§4.2).
@@ -378,6 +370,13 @@ pub trait HostPorts: Send + Sync + 'static {
     /// A body that does not decode, which is a protocol error (§3).
     fn decode(&self, body: &[u8]) -> Result<Call, ProtocolError>;
 
+    /// The lane a call of `method`, and its reply, travel on (§3): control
+    /// calls, `operation.cancel` and `session.close`, on the control lane,
+    /// every other call on the call lane. It is decided from the method's name
+    /// before anything is decoded, so a malformed control call's refusal
+    /// still takes the control lane.
+    fn lane(&self, method: &str) -> Lane;
+
     /// Classifies a call by its method (core's method registry and class
     /// table, §5.1), decoding the request messages of the methods declared
     /// with scalar parameters. Any method its table does not name is class W.
@@ -474,20 +473,6 @@ pub trait ReplySink: Send + Sync + 'static {
         control: bool,
     ) -> Result<(), SendError>;
 
-    /// Sends one transport-lane frame (tags 16 and 17,
-    /// `GwzSplitCommandChannel.md` §3.3), whose target is its stream.
-    ///
-    /// # Errors
-    ///
-    /// The channel's refusal; the frame comes back.
-    fn send_lane(
-        &self,
-        frame: Frame,
-        lane: Lane,
-        target: &StreamTarget,
-        control: bool,
-    ) -> Result<(), SendError>;
-
     /// Closes the channel (§8 step 9).
     fn close_channel(&self);
 }
@@ -498,16 +483,6 @@ impl<T: FrameSink + Send + Sync + 'static> ReplySink for T {
         frame: Frame,
         lane: Lane,
         _target: u64,
-        _control: bool,
-    ) -> Result<(), SendError> {
-        self.send(frame, lane)
-    }
-
-    fn send_lane(
-        &self,
-        frame: Frame,
-        lane: Lane,
-        _target: &StreamTarget,
         _control: bool,
     ) -> Result<(), SendError> {
         self.send(frame, lane)
@@ -555,6 +530,9 @@ pub(crate) struct Inner<P: HostPorts> {
     /// Wakes the read thread: an append, a completion, a parked read or the
     /// end. A separate lock, so a gate crossing never takes the table lock.
     pub(crate) reads: Arc<ReadSignal>,
+    /// Replies the channel refused as closed: a dropped-reply fault, which
+    /// the close path's ordering keeps at zero while the session is open.
+    dropped: AtomicUsize,
 }
 
 /// The read thread's wake-up, apart from the table lock.
@@ -586,6 +564,17 @@ pub(crate) struct Outgoing {
     pub(crate) lane: Lane,
     pub(crate) target: u64,
     pub(crate) control: bool,
+    /// The record view this reply delivers once it is handed over (§5.4).
+    pub(crate) delivers: Option<(u64, View)>,
+}
+
+/// A view of an operation's terminal (§5.4).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum View {
+    /// Its `OperationResult`.
+    Result,
+    /// Its final response.
+    Response,
 }
 
 /// How the channel ended, for [`Service::channel_closed`].
@@ -625,6 +614,7 @@ impl<P: HostPorts> Service<P> {
                 admission: Condvar::new(),
                 settled: Condvar::new(),
                 reads: Arc::default(),
+                dropped: AtomicUsize::new(0),
             }),
         }
     }
@@ -646,7 +636,10 @@ impl<P: HostPorts> Service<P> {
         Ok(())
     }
 
-    /// Marks the session open: the handshake has answered `SessionOpened`.
+    /// Marks the session open, so its frames may be read. The handshake (step
+    /// 2.3) calls it BEFORE it writes `SessionOpened`: a client may send its
+    /// first call as soon as it reads `SessionOpened`, and a call read before
+    /// `open` is a protocol error.
     pub fn open(&self) {
         self.inner.opened.store(true, Ordering::Release);
     }
@@ -654,6 +647,43 @@ impl<P: HostPorts> Service<P> {
     /// Whether the session is open, so its frames may be read.
     pub fn is_open(&self) -> bool {
         self.inner.opened.load(Ordering::Acquire)
+    }
+
+    /// Whether `request_id` names a live operation of this session: the
+    /// live-call registry the carrier's router consults for a transport-lane
+    /// frame (`GwzSplitCommandChannel.md` §3.3 "Scope"; §3.4). The router,
+    /// step 2.1's, owns every per-binding state; this service owns none.
+    pub fn is_live(&self, request_id: &str) -> bool {
+        table::is_live(&lock(&self.inner.state), request_id)
+    }
+
+    /// Routes one session-class frame, tags 1 to 8, as the carrier's router
+    /// hands it on without blocking: a `SessionCall` to [`Service::receive`];
+    /// any other tag, or any frame before [`Service::open`], is a protocol
+    /// error. Transport-lane frames (tags 16 and 17) are the router's own.
+    ///
+    /// # Errors
+    ///
+    /// A protocol error, which ends the session.
+    pub fn route(&self, frame: &Frame) -> Result<(), ProtocolError> {
+        if !self.is_open() {
+            return Err(ProtocolError(format!(
+                "a frame of tag {} before the session opened",
+                frame.tag
+            )));
+        }
+        if frame.tag != gwz_session_contract::Tag::SessionCall.byte() {
+            return Err(ProtocolError(format!(
+                "the host takes no frame of tag {} once the session is open",
+                frame.tag
+            )));
+        }
+        self.receive(&frame.body)
+    }
+
+    /// How many replies the channel refused as closed: a dropped-reply fault.
+    pub fn dropped_replies(&self) -> usize {
+        self.inner.dropped.load(Ordering::Acquire)
     }
 
     /// Core's per-session data.
@@ -674,9 +704,16 @@ impl<P: HostPorts> Service<P> {
             return Err(ProtocolError("a call before the session opened".to_owned()));
         }
         let call = self.inner.ports.decode(body)?;
-        let outgoing = table::receive(&self.inner, call)?;
+        // Counted before the table lock, so a close never overtakes the
+        // replies this call produces (§8; 2.0 §3.3 "Close report").
+        lock(&self.inner.state).unflushed += 1;
+        let outgoing = table::receive(&self.inner, call);
+        let (outgoing, result) = match outgoing {
+            Ok(outgoing) => (outgoing, Ok(())),
+            Err(error) => (Vec::new(), Err(error)),
+        };
         self.inner.flush(outgoing);
-        Ok(())
+        result
     }
 
     /// The channel has ended without `session.close` (§8): runs steps 2 to 5
@@ -714,19 +751,39 @@ impl<P: HostPorts> fmt::Debug for Service<P> {
 }
 
 impl<P: HostPorts> Inner<P> {
-    /// Sends replies collected under the table lock. A closed channel's
-    /// refusal is reported by its reader. A full lane means the client
-    /// exceeded its own bounds, since a reply takes the lane of the call it
-    /// answers (§3): the reply cannot be delivered, so the session ends.
+    /// Sends a batch of replies built under the table lock, whose section
+    /// counted it in `unflushed`, and then uncounts it: close waits for no
+    /// batch in flight before its report and the channel's close, so sends
+    /// keep the order of settlement (§8 steps 6 to 9; 2.0 §3.3 "Close
+    /// report"). A reply handed over marks the view it delivers (§5.4). A
+    /// closed channel's refusal is counted as a dropped reply. A full lane
+    /// means the client exceeded its own bounds, since a reply takes the lane
+    /// of the call it answers (§3): the reply cannot be delivered, so the
+    /// session ends.
     pub(crate) fn flush(&self, outgoing: Vec<Outgoing>) {
+        let mut delivered = Vec::new();
         for reply in outgoing {
+            let delivers = reply.delivers;
             let sent = self
                 .sink
                 .send_reply(reply.frame, reply.lane, reply.target, reply.control);
-            if matches!(sent, Err(SendError::Full(_))) {
-                self.sink.close_channel();
+            match sent {
+                Ok(()) => {
+                    delivered.extend(delivers);
+                }
+                Err(SendError::Full(_)) => {
+                    self.sink.close_channel();
+                }
+                Err(SendError::Closed(..)) => {
+                    self.dropped.fetch_add(1, Ordering::AcqRel);
+                }
             }
         }
+        let mut state = lock(&self.state);
+        table::mark_delivered(&mut state, &delivered);
+        state.unflushed = state.unflushed.saturating_sub(1);
+        drop(state);
+        self.settled.notify_all();
     }
 
     /// A reply carrying `body` to `call_id`.
@@ -736,6 +793,7 @@ impl<P: HostPorts> Inner<P> {
             lane,
             target: call_id,
             control: lane == Lane::Control,
+            delivers: None,
         }
     }
 
@@ -746,6 +804,7 @@ impl<P: HostPorts> Inner<P> {
             lane,
             target: call_id,
             control: lane == Lane::Control,
+            delivers: None,
         }
     }
 
