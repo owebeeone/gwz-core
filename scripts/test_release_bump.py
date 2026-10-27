@@ -208,7 +208,9 @@ class InternalBumpTests(unittest.TestCase):
         current = release.read_internal_version(self.tree)
         odd = self.tree / "crates" / "family-model" / "Cargo.toml"
         before = odd.read_text(encoding="utf-8")
-        after = before.replace(f'version = "{current}"', 'version = "0.0.9"', 1)
+        major, minor, patch = current.split(".")
+        odd_version = f"{major}.{minor}.{int(patch) + 1}"
+        after = before.replace(f'version = "{current}"', f'version = "{odd_version}"', 1)
         self.assertNotEqual(before, after, "the fixture did not change the package version")
         odd.write_text(after, encoding="utf-8")
         stderr = io.StringIO()
