@@ -1,0 +1,744 @@
+{
+ "done": false,
+ "entries": [
+  {
+   "path": "src/transport_host/carrier/local/mod.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: use unix::{LocalAddress, LocalListener, RuntimeDir, connect, own_identity}",
+   "state": "paired",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: the Unix arm of the local carrier; the Windows named pipe is local/windows.rs, the sibling arm of local/mod.rs's cfg_if (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/mod.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "mod unix",
+   "state": "paired",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: the Unix arm of the local carrier; the Windows named pipe is local/windows.rs, the sibling arm of local/mod.rs's cfg_if (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "gate",
+   "gate": "any(target_os = \"linux\", target_os = \"android\")",
+   "target": "arm: fn peer_of",
+   "state": "paired",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: the Unix arm of the local carrier; the Windows named pipe is local/windows.rs, the sibling arm of local/mod.rs's cfg_if (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::LOCAL_PEERPID",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::PATH_MAX",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::SOL_LOCAL",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::SOL_SOCKET",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::SO_PEERCRED",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::confstr",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::geteuid",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::getpeereid",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::getsockopt",
+   "target": "",
+   "count": 3,
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::gid_t",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::pid_t",
+   "target": "",
+   "count": 3,
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::sockaddr_un",
+   "target": "",
+   "count": 2,
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::socklen_t",
+   "target": "",
+   "count": 3,
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::ucred",
+   "target": "",
+   "count": 2,
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::uid_t",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/local_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: stmt let guard = tempfile::Builder::new",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/local_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "mod unix",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/local_rows.rs",
+   "kind": "os",
+   "gate": "libc::AF_UNIX",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/local_rows.rs",
+   "kind": "os",
+   "gate": "libc::getsockname",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/local_rows.rs",
+   "kind": "os",
+   "gate": "libc::sockaddr_storage",
+   "target": "",
+   "count": 2,
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/local_rows.rs",
+   "kind": "os",
+   "gate": "libc::sockaddr_un",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/local_rows.rs",
+   "kind": "os",
+   "gate": "libc::socklen_t",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/local_rows.rs",
+   "kind": "os",
+   "gate": "os::unix::fs::PermissionsExt::from_mode",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/local_rows.rs",
+   "kind": "os",
+   "gate": "os::unix::fs::symlink",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new",
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/local_rows.rs",
+   "kind": "os",
+   "gate": "os::unix::net::UnixStream",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 2 (GwzSplitCommandChannel-Step2.1-RemPlan-2.md)",
+   "reason": "a Unix-only row (a refused Unix-socket client that trickles bytes, bounding turn_away's drain by time): the Windows named-pipe turn_away has the same one-second overall deadline (local/windows.rs) and no socket peer to trickle through (plan 2.1, remediation round 2)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "gate",
+   "gate": "any(target_os = \"linux\", target_os = \"android\")",
+   "target": "arm: use std::os::fd::{FromRawFd, OwnedFd}",
+   "state": "paired",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "gate",
+   "gate": "target_vendor = \"apple\"",
+   "target": "arm: fn darwin_user_dir",
+   "state": "paired",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "gate",
+   "gate": "target_vendor = \"apple\"",
+   "target": "arm: impl DirFlavor",
+   "state": "paired",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::LOCAL_PEERTOKEN",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix domain socket, its peer credentials, the process hold and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token and holds a process handle instead (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::PROC_PIDT_SHORTBSDINFO",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix domain socket, its peer credentials, the process hold and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token and holds a process handle instead (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::SYS_pidfd_open",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix domain socket, its peer credentials, the process hold and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token and holds a process handle instead (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::SYS_pidfd_send_signal",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix domain socket, its peer credentials, the process hold and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token and holds a process handle instead (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::_CS_DARWIN_USER_DIR",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix domain socket, its peer credentials, the process hold and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token and holds a process handle instead (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::c_int",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix domain socket, its peer credentials, the process hold and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token and holds a process handle instead (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::proc_bsdshortinfo",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix domain socket, its peer credentials, the process hold and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token and holds a process handle instead (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::proc_pidinfo",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix domain socket, its peer credentials, the process hold and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token and holds a process handle instead (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::siginfo_t",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix domain socket, its peer credentials, the process hold and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token and holds a process handle instead (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::syscall",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix domain socket, its peer credentials, the process hold and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token and holds a process handle instead (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "os::fd::{FromRawFd, OwnedFd}",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix domain socket, its peer credentials, the process hold and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token and holds a process handle instead (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/directory_rows.rs",
+   "kind": "gate",
+   "gate": "target_vendor = \"apple\"",
+   "target": "arm: fn on_macos_the_users_directory_lies_under_confstr_and_ends_in_gwz_uid",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix-only row (a socket, a mode, a uid, a half-closed stream, confstr): the Windows twins are the portable rows of the same files and tests/windows_rows.rs (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/directory_rows.rs",
+   "kind": "os",
+   "gate": "libc::PATH_MAX",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix-only row (a socket, a mode, a uid, a half-closed stream, confstr): the Windows twins are the portable rows of the same files and tests/windows_rows.rs (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/directory_rows.rs",
+   "kind": "os",
+   "gate": "libc::_CS_DARWIN_USER_DIR",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix-only row (a socket, a mode, a uid, a half-closed stream, confstr): the Windows twins are the portable rows of the same files and tests/windows_rows.rs (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/directory_rows.rs",
+   "kind": "os",
+   "gate": "libc::confstr",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix-only row (a socket, a mode, a uid, a half-closed stream, confstr): the Windows twins are the portable rows of the same files and tests/windows_rows.rs (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/directory_rows.rs",
+   "kind": "os",
+   "gate": "libc::geteuid",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix-only row (a socket, a mode, a uid, a half-closed stream, confstr): the Windows twins are the portable rows of the same files and tests/windows_rows.rs (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/directory_rows.rs",
+   "kind": "os",
+   "gate": "os::unix::fs::PermissionsExt",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix-only row (a socket, a mode, a uid, a half-closed stream, confstr): the Windows twins are the portable rows of the same files and tests/windows_rows.rs (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/ending_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: macro assert!",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix-only row (a socket, a mode, a uid, a half-closed stream, confstr): the Windows twins are the portable rows of the same files and tests/windows_rows.rs (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/ending_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: stmt LocalAddress::from_path(std::path::",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix-only row (a socket, a mode, a uid, a half-closed stream, confstr): the Windows twins are the portable rows of the same files and tests/windows_rows.rs (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/ending_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: stmt std::os::unix::net::",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix-only row (a socket, a mode, a uid, a half-closed stream, confstr): the Windows twins are the portable rows of the same files and tests/windows_rows.rs (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/ending_rows.rs",
+   "kind": "os",
+   "gate": "os::unix::net::UnixStream",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix-only row (a socket, a mode, a uid, a half-closed stream, confstr): the Windows twins are the portable rows of the same files and tests/windows_rows.rs (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/ending_rows.rs",
+   "kind": "os",
+   "gate": "os::unix::net::UnixStream::connect",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix-only row (a socket, a mode, a uid, a half-closed stream, confstr): the Windows twins are the portable rows of the same files and tests/windows_rows.rs (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/tests/mod.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "mod directory_rows",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix-only row (a socket, a mode, a uid, a half-closed stream, confstr): the Windows twins are the portable rows of the same files and tests/windows_rows.rs (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/mod.rs",
+   "kind": "gate",
+   "gate": "all(test, unix)",
+   "target": "arm: use unix::{Hold, SOCKET_NAME_BYTES, SUN_PATH_MAX, peer_of, socket_path}",
+   "state": "paired",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/ending_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: fn a_hold_on_the_peers_process_is_given_up_when_the_process_goes",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix-only row (a socket, a mode, a uid, a half-closed stream, confstr): the Windows twins are the portable rows of the same files and tests/windows_rows.rs (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/ending_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: stmt if mode = = \"raw_hang\"{let _stream",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix-only row (a socket, a mode, a uid, a half-closed stream, confstr): the Windows twins are the portable rows of the same files and tests/windows_rows.rs (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/ending_rows.rs",
+   "kind": "os",
+   "gate": "os::fd::AsRawFd",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix-only row (a socket, a mode, a uid, a half-closed stream, confstr): the Windows twins are the portable rows of the same files and tests/windows_rows.rs (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/ending_rows.rs",
+   "kind": "os",
+   "gate": "os::unix::net::UnixListener::bind",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
+   "reason": "a Unix-only row (a socket, a mode, a uid, a half-closed stream, confstr): the Windows twins are the portable rows of the same files and tests/windows_rows.rs (plan 2.1, remediation round 1)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
+  }
+ ]
+}

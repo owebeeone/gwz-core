@@ -155,6 +155,12 @@ APPROVED_RUST_PATH_EDGES = {
     ),
     ("transport_host/request.rs", "https_budget_gate_tests.rs"),
     ("transport_host/session.rs", "cleanup_tests.rs"),
+    # Convergence plan 2.1: the carrier module (transport_host/carrier/) is declared from session/local_link.rs, because
+    # transport_host/mod.rs is the Phase 1 trunk's file. The edge goes when the trunk moves the declaration into mod.rs
+    # (the patch is in the step 2.1 report).
+    ("transport_host/session/local_link.rs", "../carrier/mod.rs"),
+    # Likewise the one file that reads the carrier's two environment variables (remediation round 1, C-P2-4).
+    ("transport_host/session/local_link.rs", "../runtime_env.rs"),
     # 2026-10-02, 1.1.0 S6.2: transport_scope's source test, which pins the
     # operations it names to the handlers that call with_transport, sits
     # beside it.

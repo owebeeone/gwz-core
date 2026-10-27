@@ -2,9 +2,10 @@
 //! Both adapters meet the channel contract: each runs gwz-session-contract's
 //! shared conformance suite against itself (LBT-009).
 
-use std::io::{self, PipeReader, PipeWriter};
+use std::io::{self, PipeWriter};
 
-use crate::{ByteStreamEnd, InProcessEnd, byte_stream, pair};
+use crate::test_router::RoutedEnd;
+use crate::{InProcessEnd, pair};
 use gwz_session_contract::contract_tests::{ChannelFixture, run_all};
 use gwz_session_contract::{Carrier, Limits};
 
@@ -28,7 +29,7 @@ impl ChannelFixture for InProcess {
 struct Pipes;
 
 impl ChannelFixture for Pipes {
-    type End = ByteStreamEnd<PipeReader, PipeWriter>;
+    type End = RoutedEnd<PipeWriter>;
 
     fn carrier(&self) -> Carrier {
         Carrier::ByteStream
@@ -38,8 +39,8 @@ impl ChannelFixture for Pipes {
         let (a_reads, b_writes) = io::pipe().expect("an OS pipe");
         let (b_reads, a_writes) = io::pipe().expect("an OS pipe");
         (
-            byte_stream(a_reads, a_writes),
-            byte_stream(b_reads, b_writes),
+            RoutedEnd::new(a_reads, a_writes),
+            RoutedEnd::new(b_reads, b_writes),
         )
     }
 }

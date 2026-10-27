@@ -6,17 +6,22 @@
 //! contract at revision 5, §1 and §3, with §3 as `GwzCoreServerDesign.md`
 //! §3 and §8 amend it (tags 4 to 8, for byte streams only), and
 //! `GwzCoreSessionCrateMap.md` §2 and §7, under which `send` takes a lane
-//! and core classifies each frame.
+//! and core classifies each frame, and, since operator decision D-N, a
+//! [`FrameKey`] that core derives from the body so that a byte stream's writer
+//! can order frames without decoding one, and a [`FrameRouter`] that core
+//! supplies to receive a byte stream's frames (`GwzSplitCommandChannel.md`
+//! §3.3).
 //!
 //! | Guarantee | Clause |
 //! | --- | --- |
 //! | A frame is a tag byte and a body; the body is bytes, never decoded here | §3, §4.1; map §1 |
-//! | Tags 1 to 3 on both adapters, 4 to 8 on byte streams only; 16 to 31 reserved; any other tag is a protocol error | §3; server design §3, §8 |
+//! | Tags 1 to 3, 16 and 17 on both adapters, 4 to 8 on byte streams only; 18 to 31 reserved; any other tag is a protocol error | §3; server design §3, §8; D-N |
 //! | No frame exceeds 64 MiB, its tag byte and body together | §1, §3 |
 //! | A protocol error ends the session, and the frame comes back to its sender | §3 |
 //! | Each queue holds the outstanding-call limit on the call lane plus the control reserve on the control lane; the outstanding-call limit never refuses a control frame | §3 |
 //! | A full lane refuses the frame and gives it back; the channel stays open | §3, §9 |
-//! | Frames arrive in the order sent, whatever their lanes, each once and whole | §3 |
+//! | Frames arrive in the order sent, whatever their lanes, each once and whole; on a byte stream a control-class frame may be written ahead of ordinary frames of other targets, never of its own target or a `SessionCall`, and the key decides, not the lane (D-N) | §3 |
+//! | A byte-stream end delivers each received frame to a core-supplied [`FrameRouter`] that never blocks, and is a [`FrameSink`] only | §3; D-N |
 //! | Closure is reported to both ends; the frames sent before it still arrive | §3, §8 |
 //!
 //! Bytes only: this crate holds no GWZ or Taut protocol type and decodes no
@@ -32,7 +37,9 @@ mod channel;
 mod frame;
 mod limits;
 
-pub use channel::{Closed, FrameSink, FrameSource, Lane, SendError};
+pub use channel::{
+    Class, Closed, FrameKey, FrameRouter, FrameSink, FrameSource, Lane, SendError, Target,
+};
 pub use frame::{Carrier, Frame, FrameError, MAX_FRAME_BYTES, RESERVED_TAGS, Tag};
 pub use limits::{Limits, LimitsError};
 

@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::model::ErrorCode;
-use gwz_session_contract::Tag;
+use gwz_session_contract::{FrameKey, Tag};
 use std::sync::Barrier;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
@@ -362,11 +362,18 @@ fn open_returns_the_client_end_of_an_in_process_channel() {
     channel.send(call.clone(), Lane::Call).unwrap();
     assert_eq!(channel.with_host_end(|host| host.recv()), Some(Ok(call)));
     let reply = Frame::new(Tag::SessionReply, vec![0xa1]);
-    let sent = channel.with_host_end(|host| host.send(reply.clone(), Lane::Call));
+    let sent =
+        channel.with_host_end(|host| host.send(reply.clone(), Lane::Call, FrameKey::IN_PROCESS));
     assert!(matches!(sent, Some(Ok(()))), "{sent:?}");
     assert_eq!(FrameSource::recv(&channel), Ok(reply));
     let cancel = Frame::new(Tag::SessionCall, vec![0xa2]);
-    FrameSink::send(&channel, cancel.clone(), Lane::Control).unwrap();
+    FrameSink::send(
+        &channel,
+        cancel.clone(),
+        Lane::Control,
+        FrameKey::IN_PROCESS,
+    )
+    .unwrap();
     assert_eq!(channel.with_host_end(|host| host.recv()), Some(Ok(cancel)));
 }
 

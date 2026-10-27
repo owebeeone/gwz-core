@@ -6,7 +6,7 @@ use std::fmt;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 
 use gwz_session_contract::{
-    Carrier, Closed, Frame, FrameError, FrameSink, FrameSource, Lane, Limits, SendError,
+    Carrier, Closed, Frame, FrameError, FrameKey, FrameSink, FrameSource, Lane, Limits, SendError,
 };
 
 /// A session's in-process channel: its client end and its host end.
@@ -155,7 +155,9 @@ impl InProcessEnd {
 }
 
 impl FrameSink for InProcessEnd {
-    fn send(&self, frame: Frame, lane: Lane) -> Result<(), SendError> {
+    fn send(&self, frame: Frame, lane: Lane, key: FrameKey) -> Result<(), SendError> {
+        // The lane bounds this adapter; the key is a byte stream's (operator decision D-N).
+        let _ = key;
         let mut state = self.lock();
         if let Some(ending) = state.ended {
             return Err(SendError::Closed(frame, ending.seen_by(self.side)));

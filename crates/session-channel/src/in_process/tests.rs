@@ -10,7 +10,9 @@ use std::thread;
 use std::time::Duration;
 
 use crate::{InProcessEnd, pair};
-use gwz_session_contract::{Closed, Frame, FrameSink, FrameSource, Lane, Limits, SendError, Tag};
+use gwz_session_contract::{
+    Closed, Frame, FrameKey, FrameSink, FrameSource, Lane, Limits, SendError, Tag,
+};
 
 fn call(marker: u16) -> Frame {
     Frame::new(Tag::SessionCall, marker.to_le_bytes().to_vec())
@@ -28,7 +30,7 @@ fn send_promptly(end: &Arc<InProcessEnd>, frame: Frame, lane: Lane) -> Result<()
     let (done, returned) = mpsc::channel();
     let sender = Arc::clone(end);
     thread::spawn(move || {
-        let _ = done.send(sender.send(frame, lane));
+        let _ = done.send(sender.send(frame, lane, FrameKey::IN_PROCESS));
     });
     returned
         .recv_timeout(Duration::from_secs(10))
@@ -71,22 +73,31 @@ fn a_control_frame_goes_through_on_the_reserve_when_the_call_lane_is_full() {
     let (client, host) = pair(small_limits());
     for marker in 0..3 {
         client
-            .send(call(marker), Lane::Call)
+            .send(call(marker), Lane::Call, FrameKey::IN_PROCESS)
             .expect("room on the call lane");
     }
-    assert_full(client.send(call(3), Lane::Call), &call(3));
+    assert_full(
+        client.send(call(3), Lane::Call, FrameKey::IN_PROCESS),
+        &call(3),
+    );
     let cancel = Frame::new(Tag::SessionCall, b"operation.cancel".to_vec());
     let close = Frame::new(Tag::SessionCall, b"session.close".to_vec());
     client
-        .send(cancel.clone(), Lane::Control)
+        .send(cancel.clone(), Lane::Control, FrameKey::IN_PROCESS)
         .expect("the control reserve takes a control frame");
     client
-        .send(close.clone(), Lane::Control)
+        .send(close.clone(), Lane::Control, FrameKey::IN_PROCESS)
         .expect("the control reserve takes a second");
     // The reserve is bounded too, and a full reserve leaves the call lane as
     // it was.
-    assert_full(client.send(call(9), Lane::Control), &call(9));
-    assert_full(client.send(call(3), Lane::Call), &call(3));
+    assert_full(
+        client.send(call(9), Lane::Control, FrameKey::IN_PROCESS),
+        &call(9),
+    );
+    assert_full(
+        client.send(call(3), Lane::Call, FrameKey::IN_PROCESS),
+        &call(3),
+    );
     // The lanes share one order.
     for expected in [call(0), call(1), call(2), cancel, close] {
         assert_eq!(host.recv(), Ok(expected));
@@ -98,16 +109,22 @@ fn the_call_lane_never_takes_the_reserves_room() {
     let (client, host) = pair(small_limits());
     for marker in 0..2 {
         client
-            .send(call(marker), Lane::Control)
+            .send(call(marker), Lane::Control, FrameKey::IN_PROCESS)
             .expect("room in the reserve");
     }
-    assert_full(client.send(call(2), Lane::Control), &call(2));
+    assert_full(
+        client.send(call(2), Lane::Control, FrameKey::IN_PROCESS),
+        &call(2),
+    );
     for marker in 10..13 {
         client
-            .send(call(marker), Lane::Call)
+            .send(call(marker), Lane::Call, FrameKey::IN_PROCESS)
             .expect("a full reserve leaves the call lane its room");
     }
-    assert_full(client.send(call(13), Lane::Call), &call(13));
+    assert_full(
+        client.send(call(13), Lane::Call, FrameKey::IN_PROCESS),
+        &call(13),
+    );
     for expected in [0, 1, 10, 11, 12] {
         assert_eq!(host.recv(), Ok(call(expected)));
     }
@@ -118,15 +135,18 @@ fn each_direction_has_its_own_queue() {
     let (client, host) = pair(small_limits());
     for marker in 0..3 {
         client
-            .send(call(marker), Lane::Call)
+            .send(call(marker), Lane::Call, FrameKey::IN_PROCESS)
             .expect("room toward the host");
     }
     let reply = |marker: u16| Frame::new(Tag::SessionReply, marker.to_le_bytes().to_vec());
     for marker in 0..3 {
-        host.send(reply(marker), Lane::Call)
+        host.send(reply(marker), Lane::Call, FrameKey::IN_PROCESS)
             .expect("the reply queue has its own room");
     }
-    assert_full(host.send(reply(3), Lane::Call), &reply(3));
+    assert_full(
+        host.send(reply(3), Lane::Call, FrameKey::IN_PROCESS),
+        &reply(3),
+    );
     for marker in 0..3 {
         assert_eq!(client.recv(), Ok(reply(marker)));
         assert_eq!(host.recv(), Ok(call(marker)));
@@ -138,16 +158,22 @@ fn the_default_queues_hold_1024_calls_and_64_control_frames() {
     let (client, host) = pair(Limits::default());
     for marker in 0..1024 {
         client
-            .send(call(marker), Lane::Call)
+            .send(call(marker), Lane::Call, FrameKey::IN_PROCESS)
             .expect("room on the call lane");
     }
-    assert_full(client.send(call(1024), Lane::Call), &call(1024));
+    assert_full(
+        client.send(call(1024), Lane::Call, FrameKey::IN_PROCESS),
+        &call(1024),
+    );
     for marker in 0..64 {
         client
-            .send(call(marker), Lane::Control)
+            .send(call(marker), Lane::Control, FrameKey::IN_PROCESS)
             .expect("room in the reserve");
     }
-    assert_full(client.send(call(64), Lane::Control), &call(64));
+    assert_full(
+        client.send(call(64), Lane::Control, FrameKey::IN_PROCESS),
+        &call(64),
+    );
     for marker in 0..1024 {
         assert_eq!(host.recv(), Ok(call(marker)));
     }
@@ -166,13 +192,13 @@ fn closure_is_reported_to_both_ends_whichever_closes() {
             (&client, &host)
         };
         closing
-            .send(call(1), Lane::Call)
+            .send(call(1), Lane::Call, FrameKey::IN_PROCESS)
             .expect("an open channel sends");
         closing.close();
         assert_eq!(closing.recv(), Err(Closed::Local));
         assert_eq!(other.recv(), Ok(call(1)), "sent before the close");
         assert_eq!(other.recv(), Err(Closed::Peer));
-        match other.send(call(2), Lane::Call) {
+        match other.send(call(2), Lane::Call, FrameKey::IN_PROCESS) {
             Err(SendError::Closed(frame, Closed::Peer)) => assert_eq!(frame, call(2)),
             result => panic!("the peer's sends fail once closed, got {result:?}"),
         }
@@ -184,11 +210,11 @@ fn a_closed_channel_reports_its_closure_before_a_full_lane() {
     let (client, host) = pair(small_limits());
     for marker in 0..3 {
         client
-            .send(call(marker), Lane::Call)
+            .send(call(marker), Lane::Call, FrameKey::IN_PROCESS)
             .expect("room on the call lane");
     }
     host.close();
-    match client.send(call(3), Lane::Call) {
+    match client.send(call(3), Lane::Call, FrameKey::IN_PROCESS) {
         Err(SendError::Closed(frame, Closed::Peer)) => assert_eq!(frame, call(3)),
         result => panic!("expected the closure, got {result:?}"),
     }

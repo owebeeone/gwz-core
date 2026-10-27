@@ -4,14 +4,19 @@
 use std::thread;
 
 use crate::{
-    Carrier, Closed, Frame, FrameError, FrameSink, FrameSource, Lane, MAX_FRAME_BYTES, SendError,
-    Tag,
+    Carrier, Closed, Frame, FrameError, FrameKey, FrameSink, FrameSource, Lane, MAX_FRAME_BYTES,
+    SendError, Tag, Target,
 };
+
+/// The key every case states. They all share one target, so a byte stream's writer keeps their send order (the
+/// writer reorders only across targets, operator decision D-N); the in-process adapter ignores it.
+const KEY: FrameKey = FrameKey::ordinary(Target::new(1));
 
 /// What the suite needs from an adapter.
 pub trait ChannelFixture {
     /// One end of the adapter's channel. The suite shares ends between
-    /// threads, so an end is `Send` and `Sync`.
+    /// threads, so an end is `Send` and `Sync`. A byte-stream adapter's end is a `FrameSink` only; its fixture wraps it
+    /// with a router that queues the frames it is given and answers `recv`.
     type End: FrameSink + FrameSource + Send + Sync;
 
     /// Which part of the tag registry the adapter carries.
@@ -69,9 +74,11 @@ pub fn run_all<F: ChannelFixture>(fixture: &mut F) {
     }
 }
 
-/// Frames arrive in the order they were sent, on both lanes and in both
-/// directions, each once and byte for byte, whatever their size: the channel
-/// is reliable and ordered in each direction while open (§3).
+/// Frames of one target arrive in the order they were sent, on both lanes and
+/// in both directions, each once and byte for byte, whatever their size: the
+/// channel is reliable and ordered in each direction while open (§3; per target
+/// on a byte stream, in send order in-process, operator decision D-N). Every
+/// frame here has the same target.
 pub fn frames_arrive_in_order_on_both_lanes<F: ChannelFixture>(fixture: &mut F) {
     let carrier = fixture.carrier();
     let (a, b) = fixture.pair();
@@ -88,7 +95,7 @@ pub fn frames_arrive_in_order_on_both_lanes<F: ChannelFixture>(fixture: &mut F) 
                     } else {
                         Lane::Control
                     };
-                    from.send(frame, lane)
+                    from.send(frame, lane, KEY)
                         .expect("an open channel sends each frame");
                 }
             });
@@ -114,7 +121,7 @@ pub fn concurrent_senders_keep_each_frame_whole<F: ChannelFixture>(fixture: &mut
                     // in several pieces if nothing keeps frames apart.
                     let mut body = vec![sender; 4096];
                     body[0] = sequence;
-                    a.send(Frame::new(Tag::SessionCall, body), Lane::Call)
+                    a.send(Frame::new(Tag::SessionCall, body), Lane::Call, KEY)
                         .expect("an open channel sends each frame");
                 }
             });
@@ -143,7 +150,7 @@ pub fn concurrent_senders_keep_each_frame_whole<F: ChannelFixture>(fixture: &mut
 pub fn closing_delivers_what_was_sent_then_the_closure<F: ChannelFixture>(fixture: &mut F) {
     let (a, b) = fixture.pair();
     let in_flight_to_a = frame_of(Tag::SessionReply, 3);
-    b.send(in_flight_to_a, Lane::Call)
+    b.send(in_flight_to_a, Lane::Call, KEY)
         .expect("an open channel sends");
     let sent = [
         frame_of(Tag::SessionCall, 0),
@@ -151,7 +158,8 @@ pub fn closing_delivers_what_was_sent_then_the_closure<F: ChannelFixture>(fixtur
         frame_of(Tag::SessionCall, 2),
     ];
     for (frame, lane) in sent.iter().zip([Lane::Call, Lane::Control, Lane::Call]) {
-        a.send(frame.clone(), lane).expect("an open channel sends");
+        a.send(frame.clone(), lane, KEY)
+            .expect("an open channel sends");
     }
     a.close();
     a.close();
@@ -159,7 +167,7 @@ pub fn closing_delivers_what_was_sent_then_the_closure<F: ChannelFixture>(fixtur
     assert_eq!(a.recv(), Err(Closed::Local), "closure is reported again");
     let refused = frame_of(Tag::SessionCall, 9);
     assert_closed(
-        a.send(refused.clone(), Lane::Control),
+        a.send(refused.clone(), Lane::Control, KEY),
         &refused,
         Closed::Local,
     );
@@ -169,7 +177,11 @@ pub fn closing_delivers_what_was_sent_then_the_closure<F: ChannelFixture>(fixtur
     }
     assert_eq!(b.recv(), Err(Closed::Peer));
     assert_eq!(b.recv(), Err(Closed::Peer), "closure is reported again");
-    assert_closed(b.send(refused.clone(), Lane::Call), &refused, Closed::Peer);
+    assert_closed(
+        b.send(refused.clone(), Lane::Call, KEY),
+        &refused,
+        Closed::Peer,
+    );
     b.close();
     assert_eq!(b.recv(), Err(Closed::Peer), "the first reason stands");
 }
@@ -178,12 +190,12 @@ pub fn closing_delivers_what_was_sent_then_the_closure<F: ChannelFixture>(fixtur
 pub fn dropping_an_end_closes_the_channel<F: ChannelFixture>(fixture: &mut F) {
     let (a, b) = fixture.pair();
     let frame = frame_of(Tag::SessionCall, 1);
-    a.send(frame.clone(), Lane::Call)
+    a.send(frame.clone(), Lane::Call, KEY)
         .expect("an open channel sends");
     drop(a);
     assert_eq!(b.recv(), Ok(frame.clone()));
     assert_eq!(b.recv(), Err(Closed::Peer));
-    assert_closed(b.send(frame.clone(), Lane::Call), &frame, Closed::Peer);
+    assert_closed(b.send(frame.clone(), Lane::Call, KEY), &frame, Closed::Peer);
 }
 
 /// A receiver waiting on an idle channel returns once the peer closes.
@@ -198,13 +210,13 @@ pub fn a_waiting_receiver_returns_when_the_peer_closes<F: ChannelFixture>(fixtur
 }
 
 /// A frame whose tag the carrier does not carry ends the session (§3: "any
-/// other tag"; the transport lane's reserved tags; and, in-process, the
+/// other tag"; the reserved tags 18 to 31; and, in-process, the
 /// byte-stream tags 4 to 8, server design §8). The frame comes back with the
 /// protocol error, which the sending end reports from then on; the frames sent
 /// before it still arrive, and then the peer sees the channel closed.
 pub fn a_tag_the_carrier_does_not_carry_ends_the_session<F: ChannelFixture>(fixture: &mut F) {
     let carrier = fixture.carrier();
-    let mut tags = vec![0, 9, 15, 16, 24, 31, 32, 255];
+    let mut tags = vec![0, 9, 15, 18, 24, 31, 32, 255];
     if carrier == Carrier::InProcess {
         tags.extend(4..=8);
     }
@@ -214,21 +226,21 @@ pub fn a_tag_the_carrier_does_not_carry_ends_the_session<F: ChannelFixture>(fixt
             .expect_err("the tag is outside the carrier's registry");
         let (a, b) = fixture.pair();
         let before = frame_of(Tag::SessionCall, 1);
-        a.send(before.clone(), Lane::Call)
+        a.send(before.clone(), Lane::Call, KEY)
             .expect("an open channel sends");
         let bad = Frame {
             tag,
             body: vec![0xa0],
         };
         assert_closed(
-            a.send(bad.clone(), Lane::Call),
+            a.send(bad.clone(), Lane::Call, KEY),
             &bad,
             Closed::Protocol(error),
         );
         assert_eq!(a.recv(), Err(Closed::Protocol(error)), "tag {tag}");
         let after = frame_of(Tag::SessionCall, 2);
         assert_closed(
-            a.send(after.clone(), Lane::Call),
+            a.send(after.clone(), Lane::Call, KEY),
             &after,
             Closed::Protocol(error),
         );
@@ -245,7 +257,7 @@ pub fn a_frame_over_the_size_limit_ends_the_session<F: ChannelFixture>(fixture: 
         size: MAX_FRAME_BYTES + 1,
     };
     let over = Frame::new(Tag::SessionReply, vec![0; MAX_FRAME_BYTES]);
-    match a.send(over, Lane::Call) {
+    match a.send(over, Lane::Call, KEY) {
         Err(SendError::Closed(frame, Closed::Protocol(reported))) => {
             assert_eq!(reported, error);
             assert_eq!(frame.body.len(), MAX_FRAME_BYTES, "the frame comes back");
@@ -270,7 +282,7 @@ pub fn a_frame_at_the_size_limit_arrives_whole<F: ChannelFixture>(fixture: &mut 
         let sent = frame.clone();
         let a = &a;
         scope.spawn(move || {
-            a.send(sent, Lane::Call)
+            a.send(sent, Lane::Call, KEY)
                 .expect("a frame at the limit is sent");
         });
         let received = b.recv().expect("a frame at the limit arrives");

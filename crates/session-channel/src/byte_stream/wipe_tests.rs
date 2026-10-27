@@ -5,11 +5,12 @@
 
 use std::io::{self, ErrorKind, Read};
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use super::{Body, ByteStreamEnd, read_frame};
-use crate::byte_stream;
-use gwz_session_contract::{Closed, FrameSink, FrameSource};
+use gwz_session_contract::{Closed, FrameSink};
 
 #[test]
 fn a_bodys_wipe_overwrites_the_allocation_that_held_it() {
@@ -97,19 +98,27 @@ fn a_body_read_in_part_is_owned_by_its_guard_on_every_exit() {
     }
 }
 
+/// The slot a test fills with the end the reader will close.
+type EndSlot = Arc<Mutex<Option<Arc<ByteStreamEnd<io::Sink>>>>>;
+
 /// Serves `bytes`, and closes its own end just before it serves the last of
-/// them: a close that lands while `recv` is inside a frame.
+/// them: a close that lands while the reader is inside a frame.
 struct ClosesMidFrame {
-    end: Weak<ByteStreamEnd<ClosesMidFrame, io::Sink>>,
+    end: EndSlot,
     bytes: &'static [u8],
 }
 
 impl Read for ClosesMidFrame {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         let length = buffer.len().min(self.bytes.len());
-        if length == self.bytes.len()
-            && let Some(end) = self.end.upgrade()
-        {
+        if length == self.bytes.len() {
+            // The end exists once the test has built it and put it in the slot.
+            let end = loop {
+                if let Some(end) = self.end.lock().unwrap().clone() {
+                    break end;
+                }
+                thread::sleep(Duration::from_millis(1));
+            };
             end.close();
         }
         buffer[..length].copy_from_slice(&self.bytes[..length]);
@@ -121,16 +130,23 @@ impl Read for ClosesMidFrame {
 #[test]
 fn a_frame_read_while_the_session_ends_here_is_discarded_whole() {
     // The whole frame arrives, but the session ended here while it was read,
-    // so `recv` discards it. Its body never left the guard, which wipes it.
-    let end = Arc::new_cyclic(|end| {
-        byte_stream(
+    // so the reader discards it. Its body never left the guard, which wipes
+    // it, and the router never sees it.
+    let slot: EndSlot = Arc::default();
+    let router = crate::test_router::QueueRouter::new();
+    let end = Arc::new(
+        crate::byte_stream(
             ClosesMidFrame {
-                end: end.clone(),
+                end: slot.clone(),
                 bytes: &[5, 0, 0, 0, 4, b's', b'3', b'c', b'r'],
             },
             io::sink(),
+            router.clone(),
         )
-    });
-    assert_eq!(end.recv(), Err(Closed::Local));
-    assert_eq!(end.recv(), Err(Closed::Local), "the end stays closed");
+        .expect("a reader thread"),
+    );
+    *slot.lock().unwrap() = Some(end.clone());
+    assert_eq!(router.recv(), Err(Closed::Local));
+    assert_eq!(router.recv(), Err(Closed::Local), "the end stays closed");
+    assert_eq!(router.ends_told(), 1);
 }

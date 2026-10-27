@@ -31,6 +31,8 @@
      "reason": "SshEndpointConfig::from_environment reads the home variables and SSH_AUTH_SOCK; capture them once at session open (RemPlan B5)."},
     {"path": "src/transport_host/mod.rs", "kind": "env", "name": "env::current_dir", "disposition": "debt",
      "reason": "SshEndpointConfig::from_environment reads the process directory once, for a relative home (design TR1.8 section 3, OQ7 (a)); capture it at session open with the variables (RemPlan B5)."},
+    {"path": "src/transport_host/runtime_env.rs", "kind": "env", "name": "env::var_os", "count": 2, "disposition": "permanent",
+     "reason": "The one capture, at the process boundary, of XDG_RUNTIME_DIR and TMPDIR for the local carrier's per-user directory (GwzSplitCommandChannel.md section 1, Linux order). The carrier reads no environment and its resolver is a pure function of the values passed in; the server command (plan step 2.3) calls the capture once. macOS ignores both values."},
     {"path": "src/transport_host/session.rs", "kind": "static", "name": "SERIAL", "disposition": "debt", "owner": "CS7.1, the candidate crates' extraction (IdSource)",
      "reason": "Process-wide placement ID counter (checked increment): global mutable state, never permanent (GwzCoreSessionCrateMap §1). It takes IDs from the host context's IdSource (crate map §4)."},
     {"path": "src/workspace_ops/merge/preserve/artifacts.rs", "kind": "thread_local", "name": "V1_PRESERVATION_IMAGE_CAPTURES", "disposition": "debt", "owner": "CS2.1 (session plan §5.4)",

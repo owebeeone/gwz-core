@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use gwz_session_channel::{InProcessEnd, pair};
-use gwz_session_contract::{Closed, Frame, FrameSink, FrameSource, Lane, SendError};
+use gwz_session_contract::{Closed, Frame, FrameKey, FrameSink, FrameSource, Lane, SendError};
 use gwz_session_host::{Limits, SuperviseError, SupervisedJob, Supervisor, validate_limits};
 
 use super::environment::EnvironmentSnapshot;
@@ -322,7 +322,8 @@ impl ClientChannel {
     /// `SendError::Closed` once the session has ended; the frame comes back
     /// either way.
     pub fn send(&self, frame: Frame, lane: Lane) -> Result<(), SendError> {
-        self.end.send(frame, lane)
+        // The in-process adapter ignores the key, which is a byte stream's (operator decision D-N).
+        self.end.send(frame, lane, FrameKey::IN_PROCESS)
     }
 
     /// Takes the host's next frame, waiting until one arrives or the session
@@ -354,8 +355,8 @@ impl ClientChannel {
 }
 
 impl FrameSink for ClientChannel {
-    fn send(&self, frame: Frame, lane: Lane) -> Result<(), SendError> {
-        self.end.send(frame, lane)
+    fn send(&self, frame: Frame, lane: Lane, key: FrameKey) -> Result<(), SendError> {
+        self.end.send(frame, lane, key)
     }
 
     fn close(&self) {
