@@ -128,6 +128,7 @@ class ParallelChecks(unittest.TestCase):
             'check_spawn_gate_minting.py',
             'check_cfg_boundaries.py',
             'check_candidate_switches.py',
+            'check_carrier_peer_rule.py',
             'check_windows_parity.py',
             'check_process_globals.py',
             'check_process_globals.py',

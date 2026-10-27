@@ -2,7 +2,11 @@
 mod cancellable;
 // Only the in-process carrier has a production caller in plan step 2.1; the stream and local carriers are first called by
 // `gwz server` (step 2.3).
-#[allow(dead_code, unused_imports, reason = "first production caller of the stream and local carriers: plan step 2.3")]
+#[allow(
+    dead_code,
+    unused_imports,
+    reason = "first production caller of the stream and local carriers: plan step 2.3"
+)]
 mod carrier;
 mod cli_placement;
 pub(crate) mod composition;
