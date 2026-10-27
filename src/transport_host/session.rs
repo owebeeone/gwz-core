@@ -35,14 +35,12 @@ mod close;
 mod driver;
 /// The missing-git message's closing hint, shared with the HTTPS twin in `request/https_failure.rs`.
 pub(in crate::transport_host) use driver::native_hint::native_switch_hint;
-mod local_link;
 mod passes;
 mod port;
 mod requests;
 cfg_if::cfg_if! { if #[cfg(test)] { mod wake_tests; } }
 mod wait;
 pub(crate) use driver::{AgentFailure, SshLimitFailure, SshOpenFailure};
-pub(super) use local_link::LocalLink;
 use wait::Wait;
 pub type Attachment = (String, Envelope);
 const CLEANUP: Duration = Duration::from_secs(5);

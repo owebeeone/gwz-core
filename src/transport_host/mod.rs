@@ -1,5 +1,9 @@
 //! Candidate embedding ownership for endpoint placement. The host supplies message delivery.
 mod cancellable;
+// Only the in-process carrier has a production caller in plan step 2.1; the stream and local carriers are first called by
+// `gwz server` (step 2.3).
+#[allow(dead_code, unused_imports, reason = "first production caller of the stream and local carriers: plan step 2.3")]
+mod carrier;
 mod cli_placement;
 pub(crate) mod composition;
 mod connection_factory;
@@ -20,6 +24,9 @@ pub use local_command::{
     with_local_transport, with_local_transport_native, with_local_transport_native_noted,
 };
 mod request;
+// The one file that reads the local carrier's environment variables; first called by `gwz server` (step 2.3).
+#[allow(dead_code, reason = "first production caller: plan step 2.3")]
+mod runtime_env;
 mod session;
 cfg_if::cfg_if! { if #[cfg(test)] { mod qualification_tests; } }
 cfg_if::cfg_if! {
@@ -238,7 +245,7 @@ pub struct CleanupReport {
 struct RuntimeState {
     local: Arc<Session>,
     local_endpoint: Arc<Session>,
-    local_link: session::LocalLink,
+    local_link: carrier::CarrierLink,
     /// The Cli placement's driver session and the budgets it is built with.
     cli: cli_placement::CliSlot,
     closed: bool,
@@ -381,7 +388,7 @@ impl TransportRuntime {
         )?;
         driver.set_home(home);
         driver.set_machine(machine);
-        let link = session::LocalLink::new(core_port, peer_port)?;
+        let link = carrier::CarrierLink::in_process(core_port, peer_port)?;
         Ok(Self(Arc::new(Mutex::new(RuntimeState {
             local: driver,
             local_endpoint: endpoint,

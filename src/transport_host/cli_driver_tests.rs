@@ -17,7 +17,7 @@ pub(super) struct CliHarness {
     pub(super) fixture: common::SshdFixture,
     pub(super) runtime: TransportRuntime,
     pub(super) endpoint: CliEndpoint,
-    _link: session::LocalLink,
+    _link: carrier::CarrierLink,
     home: PathBuf,
 }
 
@@ -36,7 +36,7 @@ impl CliHarness {
         let driver_port = runtime.install_cli().unwrap();
         let (endpoint, endpoint_port) =
             CliEndpoint::new(SshEndpointConfig::fixture(home.clone(), None)).unwrap();
-        let link = session::LocalLink::new(driver_port, endpoint_port).unwrap();
+        let link = carrier::CarrierLink::in_process(driver_port, endpoint_port).unwrap();
         Self {
             fixture,
             runtime,
