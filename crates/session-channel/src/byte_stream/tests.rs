@@ -179,8 +179,7 @@ fn write_all(frames: &[Frame]) -> Vec<u8> {
                 .expect("a Vec takes every frame");
         }
     }
-    let bytes = written.0.lock().unwrap().clone();
-    bytes
+    written.0.lock().unwrap().clone()
 }
 
 #[track_caller]
