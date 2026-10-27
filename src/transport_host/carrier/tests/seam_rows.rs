@@ -1,9 +1,18 @@
 //! The seam on the in-process carrier: order, bounds, the control reserve, close reasons and the binding.
 use super::super::{
-    Carrier, CarrierClosed, CarrierLimits, CloseCode, CloseReason, Lane, SendRefused, in_process,
+    BindingEnd, BindingFault, BindingLimits, Carrier, CarrierClosed, CarrierLimits, CarrierLink,
+    CloseCode, CloseReason, FrameClass, Join, Lane, SendRefused, StreamCarrier, in_process,
 };
 use super::support::*;
+use crate::transport_host::{TransportPort, session::Session};
 use gwz_transport::protocol::MessageKind;
+use std::{
+    future::Future,
+    pin::pin,
+    sync::Arc,
+    task::{Context, Poll, Waker},
+    time::Duration,
+};
 
 #[test]
 fn messages_arrive_in_the_order_sent_in_both_directions() {
@@ -188,4 +197,107 @@ fn a_links_end_closes_the_surviving_carriers_with_a_code_that_never_calls_a_fail
         closed(CloseReason::Peer(CloseCode::Dropped)).code(),
         CloseCode::Cancelled
     );
+}
+
+/// A scoped link over the bindings `a` and `b` of one stream carrier (and `ghost`, never opened, when asked), with a
+/// port per join: (the link, the carrier, the ports in join order, the peer's raw writer, the ports' sessions).
+struct Scoped {
+    link: CarrierLink,
+    carrier: Arc<StreamCarrier>,
+    ports: Vec<TransportPort>,
+    to_carrier: std::io::PipeWriter,
+    _sessions: Vec<Arc<Session>>,
+}
+
+fn scoped(names: &[&str]) -> Scoped {
+    let (carrier, _from_carrier, to_carrier) = against_raw(limits(8, 4));
+    for name in ["a", "b"] {
+        let limits = BindingLimits {
+            receive_window: 4,
+            ..BindingLimits::default()
+        };
+        carrier.open_binding(name, limits).unwrap();
+    }
+    let carrier = Arc::new(carrier);
+    let mut ports = Vec::new();
+    let mut sessions = Vec::new();
+    let mut joins = Vec::new();
+    for name in names {
+        let (session, port) = Session::driver(3000, 3000, None).expect("a driver session");
+        sessions.push(session);
+        ports.push(port.clone());
+        let end: Arc<dyn Carrier> = carrier.clone();
+        joins.push(Join {
+            port,
+            end,
+            binding: Some((*name).to_owned()),
+        });
+    }
+    let link = CarrierLink::start_joined(joins).unwrap();
+    Scoped {
+        link,
+        carrier,
+        ports,
+        to_carrier,
+        _sessions: sessions,
+    }
+}
+
+/// Whether the port has been disconnected: its next message is the end.
+fn disconnected(port: &TransportPort) -> bool {
+    let mut context = Context::from_waker(Waker::noop());
+    let mut next = pin!(port.next_message());
+    matches!(next.as_mut().poll(&mut context), Poll::Ready(Ok(None)))
+}
+
+/// What a scoped link must show once join 0 (`a`) has ended alone: its port disconnected and its reason recorded, while
+/// join 1 (`b`) is untouched, the link has not ended and the carrier is open.
+fn only_join_zero_ended(scoped: &Scoped, why: BindingEnd) {
+    eventually("a's join to end", || {
+        scoped.link.join_ended(0).map(|ended| {
+            assert_eq!(ended, why);
+        })
+    });
+    eventually("a's port to be disconnected", || {
+        disconnected(&scoped.ports[0]).then_some(())
+    });
+    assert!(!disconnected(&scoped.ports[1]), "b's port was disconnected");
+    assert_eq!(scoped.link.join_ended(1), None);
+    assert_eq!(scoped.link.ended(), None);
+    assert!(
+        scoped
+            .carrier
+            .wait_closed(Duration::from_millis(1))
+            .is_none()
+    );
+    // The link keeps serving `b`: a quiet wait changes nothing.
+    std::thread::sleep(Duration::from_millis(60));
+    assert!(!disconnected(&scoped.ports[1]));
+    assert_eq!(scoped.link.ended(), None);
+}
+
+#[test]
+fn a_scoped_link_ends_only_the_join_whose_binding_was_faulted() {
+    let mut link = scoped(&["a", "b"]);
+    // One frame larger than a's whole window (4 bytes): the overrun is decided when the frame is read, whatever the
+    // link has taken meanwhile. A burst of small frames overruns only if the link has not drained them as they came.
+    write_all(&mut link.to_carrier, &wire_for("a", data(1, 0, vec![9; 5])));
+    eventually("a's overrun", || link.carrier.binding_fault("a"));
+    only_join_zero_ended(
+        &link,
+        BindingEnd::Faulted(BindingFault::Overrun(FrameClass::TransportData)),
+    );
+}
+
+#[test]
+fn a_scoped_link_ends_only_the_join_whose_binding_was_retired() {
+    let link = scoped(&["a", "b"]);
+    link.carrier.retire_binding("a");
+    only_join_zero_ended(&link, BindingEnd::NotOpen);
+}
+
+#[test]
+fn a_scoped_link_ends_only_the_join_whose_binding_was_never_opened() {
+    let link = scoped(&["ghost", "b"]);
+    only_join_zero_ended(&link, BindingEnd::NotOpen);
 }

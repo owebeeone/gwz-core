@@ -22,7 +22,7 @@ use std::{
         },
     },
     path::{Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// Bytes of a socket's file name: `s-` and 16 hex digits.
@@ -337,19 +337,31 @@ fn check_peer(
     Ok(peer)
 }
 
+/// The whole of a refusal, answer and drain: the accept thread serves no other client until it is over (as the Windows
+/// listener's, `windows.rs` `turn_away`).
+const TURN_AWAY_BOUND: Duration = Duration::from_secs(1);
+
 /// A refused client of a listener is owed one answer (parked server design §4): a `SessionError` for call ID 0 with
 /// `server_peer_refused`, naming the cause, and then the end of the stream. Nothing of the client was read before the
-/// check; what it sent meanwhile is drained (bounded) after the answer, so that closing does not reset the connection
-/// and lose the answer.
+/// check; what it sent meanwhile is drained after the answer, so that closing does not reset the connection and lose
+/// the answer. The drain is bounded by time as well as bytes: a client that keeps sending a byte at a time holds the
+/// accept thread for [`TURN_AWAY_BOUND`] and no longer.
 fn turn_away(stream: &UnixStream, refusal: &PeerRefusal) {
+    let deadline = Instant::now() + TURN_AWAY_BOUND;
     let frame = session_error_frame(SERVER_PEER_REFUSED, &format!("peer refused: {refusal}"));
-    let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
+    let _ = stream.set_write_timeout(Some(TURN_AWAY_BOUND));
     let _ = write_frame(&mut &*stream, &frame);
     let _ = stream.shutdown(std::net::Shutdown::Write);
-    let _ = stream.set_read_timeout(Some(Duration::from_millis(200)));
     let mut sink = [0u8; 4096];
     let mut drained = 0usize;
     while drained < 64 * 1024 {
+        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        let wait = left.min(Duration::from_millis(200));
+        if wait.is_zero() || stream.set_read_timeout(Some(wait)).is_err() {
+            break;
+        }
         match (&*stream).read(&mut sink) {
             Ok(0) | Err(_) => break,
             Ok(read) => drained += read,

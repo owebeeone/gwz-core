@@ -1,8 +1,8 @@
 //! The inbound record taken by class and by binding (remediation round 1: C-P2-1 = S-P2-6), and the attribution of a
 //! transport frame to its binding before it is decoded (C-P2-2).
 use super::super::{
-    BindingFault, BindingLimits, Carrier, CarrierLimits, CloseCode, CloseReason, FrameClass,
-    InboundLimits, ProtocolFault,
+    BindingEnd, BindingFault, BindingLimits, Carrier, CarrierClosed, CarrierLimits, CloseCode,
+    CloseReason, FrameClass, InboundLimits, ProtocolFault, TakeEnd,
 };
 use super::support::*;
 use gwz_transport::protocol::MessageKind;
@@ -140,12 +140,19 @@ fn one_binding_over_its_window_faults_only_that_binding_and_the_registry_goes_on
     write_all(&mut to_carrier, &wire_frame(1, b"call"));
     pause_until("a's fault", || carrier.binding_fault("a").is_some());
     assert_eq!(carrier.binding_fault("b"), None);
+    // The registry frame was written after the fault's frame, so it may still be on its way when the fault shows.
+    let call = eventually("the registry frame", || {
+        carrier.try_recv_registry().unwrap().map(|frame| frame.body)
+    });
+    assert_eq!(call, b"call".to_vec());
+    // The faulted binding's take is over (round 2, N-P2-1), not empty; the other binding's frame is still taken.
     assert_eq!(
-        carrier.try_recv_registry().unwrap().map(|frame| frame.body),
-        Some(b"call".to_vec())
+        carrier.try_recv_binding("a").unwrap_err(),
+        TakeEnd::Binding(BindingEnd::Faulted(BindingFault::Overrun(
+            FrameClass::TransportData
+        )))
     );
-    assert!(carrier.try_recv_binding("a").unwrap().is_none());
-    assert!(carrier.try_recv_binding("b").unwrap().is_some());
+    eventually("b's frame", || carrier.try_recv_binding("b").unwrap());
 }
 
 #[test]
@@ -252,8 +259,10 @@ fn after_the_peers_close_each_class_drains_what_it_has_and_then_learns_the_closu
         .expect("a's frame survives");
     assert_eq!(arrival.message.1.data.unwrap().offset, 0);
     assert_eq!(
-        carrier.try_recv_binding("a").unwrap_err().reason,
-        CloseReason::Peer(CloseCode::Normal)
+        carrier.try_recv_binding("a").unwrap_err(),
+        TakeEnd::Carrier(CarrierClosed {
+            reason: CloseReason::Peer(CloseCode::Normal)
+        })
     );
 }
 
@@ -333,4 +342,66 @@ fn the_in_process_carrier_takes_its_one_stream_by_binding_too() {
         .unwrap()
         .expect("the message");
     assert_eq!(arrival.message.1.kind, MessageKind::Data);
+}
+
+#[test]
+fn a_faulted_binding_ends_its_own_take_and_the_carrier_and_the_other_binding_go_on() {
+    let (carrier, _from_carrier, mut to_carrier) = against_raw(limits(8, 4));
+    carrier.open_binding("a", small_window(4)).unwrap();
+    carrier.open_binding("b", small_window(4)).unwrap();
+    for offset in 0..5 {
+        write_all(&mut to_carrier, &wire_for("a", data(1, offset, vec![9])));
+    }
+    pause_until("a's overrun", || carrier.binding_fault("a").is_some());
+    let fault = BindingFault::Overrun(FrameClass::TransportData);
+    // The take of `a` is over, not empty: both the polled and the waiting take say why, and keep saying it.
+    for _ in 0..2 {
+        assert_eq!(
+            carrier.try_recv_binding("a").unwrap_err(),
+            TakeEnd::Binding(BindingEnd::Faulted(fault))
+        );
+        assert_eq!(
+            carrier.recv_binding_timeout("a", SHORT).unwrap_err(),
+            TakeEnd::Binding(BindingEnd::Faulted(fault))
+        );
+    }
+    // `b` is open and empty, which is an answer and not an end; the carrier is open.
+    assert!(carrier.try_recv_binding("b").unwrap().is_none());
+    assert!(carrier.recv_binding_timeout("b", SHORT).unwrap().is_none());
+    assert!(carrier.wait_closed(Duration::from_millis(1)).is_none());
+}
+
+#[test]
+fn a_retired_binding_wakes_and_ends_its_consumer_and_an_unknown_one_is_over_at_once() {
+    let (carrier, _from_carrier, _to_carrier) = against_raw(limits(8, 4));
+    carrier.open_binding("a", BindingLimits::default()).unwrap();
+    carrier.open_binding("b", BindingLimits::default()).unwrap();
+    let (waker, wakes) = counting_waker();
+    carrier.register_binding("a", &waker);
+    let started = std::time::Instant::now();
+    let ended = std::thread::scope(|scope| {
+        let waiting = scope.spawn(|| carrier.recv_binding_timeout("a", WAIT));
+        std::thread::sleep(Duration::from_millis(50));
+        carrier.retire_binding("a");
+        waiting.join().unwrap()
+    });
+    // The blocked take returned because of the retirement, long before its own wait.
+    assert_eq!(ended.unwrap_err(), TakeEnd::Binding(BindingEnd::NotOpen));
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert!(wakes.count() >= 1, "retiring must wake the binding's waker");
+    assert_eq!(
+        carrier.try_recv_binding("a").unwrap_err(),
+        TakeEnd::Binding(BindingEnd::NotOpen)
+    );
+    // A name that was never opened is over too; an open binding and the carrier are not.
+    assert_eq!(
+        carrier.try_recv_binding("ghost").unwrap_err(),
+        TakeEnd::Binding(BindingEnd::NotOpen)
+    );
+    assert_eq!(
+        carrier.recv_binding_timeout("ghost", SHORT).unwrap_err(),
+        TakeEnd::Binding(BindingEnd::NotOpen)
+    );
+    assert!(carrier.try_recv_binding("b").unwrap().is_none());
+    assert!(carrier.wait_closed(Duration::from_millis(1)).is_none());
 }

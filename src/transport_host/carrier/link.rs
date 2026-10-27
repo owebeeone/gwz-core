@@ -6,8 +6,8 @@
 //! Arrivals pass through the end's binding first: a message that did not arrive on the connection the pump was bound
 //! to is discarded without touching the port.
 use super::{
-    Carrier, CarrierBinding, CarrierClosed, CarrierLimits, CloseCode, CloseReason, SendRefused,
-    in_process,
+    BindingEnd, Carrier, CarrierBinding, CarrierClosed, CarrierLimits, CloseCode, CloseReason,
+    SendRefused, TakeEnd, in_process,
 };
 use crate::{
     git::endpoint::ssh_worker::ThreadWake,
@@ -70,6 +70,20 @@ impl LinkEnd {
     }
 }
 
+/// Why a pump stopped.
+enum PumpEnd {
+    /// The whole link ends, with this reason.
+    Link(LinkEnd),
+    /// Only this pump's join ends: its binding is over and the carrier, with the other joins, goes on.
+    Join(BindingEnd),
+}
+
+impl From<LinkEnd> for PumpEnd {
+    fn from(end: LinkEnd) -> Self {
+        PumpEnd::Link(end)
+    }
+}
+
 /// A port, the carrier end it talks through, and the binding (if the end has bindings) whose arrivals are the port's.
 pub(crate) struct Join {
     pub(crate) port: TransportPort,
@@ -79,6 +93,8 @@ pub(crate) struct Join {
 
 /// One port joined to one carrier end.
 struct PortPump {
+    /// This pump's join: its place in the list the link was started with.
+    index: usize,
     port: TransportPort,
     end: Arc<dyn Carrier>,
     bound: CarrierBinding,
@@ -93,7 +109,7 @@ struct PortPump {
 }
 
 impl PortPump {
-    fn new(join: Join) -> Self {
+    fn new(index: usize, join: Join) -> Self {
         let Join {
             port,
             end,
@@ -101,6 +117,7 @@ impl PortPump {
         } = join;
         let bound = end.binding();
         Self {
+            index,
             port,
             end,
             bound,
@@ -111,8 +128,8 @@ impl PortPump {
         }
     }
 
-    /// Moves what is ready in both directions; `Err` once either side has closed.
-    fn pump(&mut self, cx: &mut Context<'_>) -> Result<bool, LinkEnd> {
+    /// Moves what is ready in both directions; `Err` once either side has closed, or this pump's binding has ended.
+    fn pump(&mut self, cx: &mut Context<'_>) -> Result<bool, PumpEnd> {
         let outbound = self.outbound(cx)?;
         let inbound = self.inbound(cx)?;
         Ok(outbound || inbound)
@@ -151,7 +168,7 @@ impl PortPump {
     }
 
     /// Carrier to port.
-    fn inbound(&mut self, cx: &mut Context<'_>) -> Result<bool, LinkEnd> {
+    fn inbound(&mut self, cx: &mut Context<'_>) -> Result<bool, PumpEnd> {
         let mut moved = false;
         for _ in 0..PER_PASS {
             if let Some(give) = self.give.as_mut() {
@@ -160,13 +177,13 @@ impl PortPump {
                         self.give = None;
                         moved = true;
                     }
-                    Poll::Ready(Err(_)) => return Err(LinkEnd::PortFailed),
+                    Poll::Ready(Err(_)) => return Err(LinkEnd::PortFailed.into()),
                     Poll::Pending => return Ok(moved),
                 }
             }
             let arrival = match &self.scope {
                 Some(binding) => self.end.try_recv_binding(binding),
-                None => self.end.try_recv(),
+                None => self.end.try_recv().map_err(TakeEnd::Carrier),
             };
             match arrival {
                 Ok(Some(arrival)) => {
@@ -178,7 +195,8 @@ impl PortPump {
                     }
                 }
                 Ok(None) => return Ok(moved),
-                Err(closed) => return Err(LinkEnd::Carrier(closed)),
+                Err(TakeEnd::Carrier(closed)) => return Err(LinkEnd::Carrier(closed).into()),
+                Err(TakeEnd::Binding(end)) => return Err(PumpEnd::Join(end)),
             }
         }
         Ok(moved)
@@ -190,6 +208,9 @@ pub(crate) struct CarrierLink {
     stop: Arc<AtomicBool>,
     thread: thread::Thread,
     ended: Arc<Mutex<Option<LinkEnd>>>,
+    /// Why each join's own binding ended, by the join's place in the list the link was started with. A join that ends
+    /// this way is disconnected alone; the link goes on for the others.
+    join_ends: Arc<Mutex<Vec<Option<BindingEnd>>>>,
 }
 
 impl CarrierLink {
@@ -223,6 +244,8 @@ impl CarrierLink {
         let stopped = stop.clone();
         let ended = Arc::new(Mutex::new(None));
         let record = ended.clone();
+        let join_ends = Arc::new(Mutex::new(vec![None; joins.len()]));
+        let join_record = join_ends.clone();
         let link = thread::Builder::new()
             .name("gwz-placement-local".into())
             .spawn(move || {
@@ -230,7 +253,11 @@ impl CarrierLink {
                 // message arrives or room appears; the timeout only covers a wake that never comes.
                 let waker = Waker::from(Arc::new(ThreadWake(thread::current())));
                 let mut cx = Context::from_waker(&waker);
-                let mut pumps: Vec<PortPump> = joins.into_iter().map(PortPump::new).collect();
+                let mut pumps: Vec<PortPump> = joins
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, join)| PortPump::new(index, join))
+                    .collect();
                 for pump in &pumps {
                     pump.end.register(&waker);
                     if let Some(binding) = &pump.scope {
@@ -240,15 +267,30 @@ impl CarrierLink {
                 let mut why = LinkEnd::Stopped;
                 while !stopped.load(Ordering::Acquire) {
                     let mut moved = false;
-                    for pump in &mut pumps {
+                    let mut ended_joins = Vec::new();
+                    for (place, pump) in pumps.iter_mut().enumerate() {
                         match pump.pump(&mut cx) {
                             Ok(progress) => moved |= progress,
-                            Err(end) => {
+                            Err(PumpEnd::Join(end)) => {
+                                join_record.lock().unwrap_or_else(PoisonError::into_inner)
+                                    [pump.index] = Some(end);
+                                ended_joins.push(place);
+                            }
+                            Err(PumpEnd::Link(end)) => {
                                 why = end;
                                 stopped.store(true, Ordering::Release);
                                 break;
                             }
                         }
+                    }
+                    // A join whose binding ended is disconnected alone: its end is shared with the other joins, so it
+                    // is not closed, and the pass goes on.
+                    for place in ended_joins.into_iter().rev() {
+                        let pump = pumps.remove(place);
+                        let port = pump.port.clone();
+                        drop(pump);
+                        port.disconnect();
+                        moved = true;
                     }
                     if !moved && !stopped.load(Ordering::Acquire) {
                         thread::park_timeout(PARK);
@@ -267,12 +309,24 @@ impl CarrierLink {
             stop,
             thread: link.thread().clone(),
             ended,
+            join_ends,
         })
     }
 
     /// Why the link stopped, once it has.
     pub(crate) fn ended(&self) -> Option<LinkEnd> {
         *self.ended.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Why join `index` (its place in the list the link was started with) ended alone, once it has: its binding was
+    /// faulted, retired or never opened. The link and its other joins go on.
+    pub(crate) fn join_ended(&self, index: usize) -> Option<BindingEnd> {
+        self.join_ends
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(index)
+            .copied()
+            .flatten()
     }
 
     pub(crate) fn stop(&self) {

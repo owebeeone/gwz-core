@@ -43,7 +43,7 @@
 //! is admitted only into an empty queue.
 use super::{
     Arrival, Attachment, BindingFault, BindingLimits, Carrier, CarrierBinding, CarrierClosed,
-    CarrierLimits, CloseCode, CloseReason, Lane, ProtocolFault, SendRefused, wire,
+    CarrierLimits, CloseCode, CloseReason, Lane, ProtocolFault, SendRefused, TakeEnd, wire,
 };
 use gwz_session_channel::{ByteStreamEnd, byte_stream};
 use gwz_session_contract::{Frame, FrameKey};
@@ -259,10 +259,14 @@ impl StreamCarrier {
         Ok(())
     }
 
-    /// Retires a binding: its queued frames are dropped and its later frames are discarded without a record.
+    /// Retires a binding: its queued frames are dropped and its later frames are discarded without a record. Its
+    /// consumer is woken to learn that the binding is over ([`TakeEnd::Binding`]).
     pub(crate) fn retire_binding(&self, id: &str) {
         let mut state = lock(self.core());
-        state.remove_binding(id);
+        let waker = state.remove_binding(id);
+        drop(state);
+        self.core().in_ready.notify_all();
+        self.core().wake(waker);
     }
 
     /// Why the binding was faulted, if it has been. The fault stays until the binding is retired.
@@ -321,15 +325,16 @@ impl StreamCarrier {
         }
     }
 
-    /// The next transport message of `binding`, waiting up to `wait`.
+    /// The next transport message of `binding`, waiting up to `wait`. A binding that was faulted, retired or never
+    /// opened ends the take with [`TakeEnd::Binding`] at once; the carrier's own end is [`TakeEnd::Carrier`].
     pub(crate) fn recv_binding_timeout(
         &self,
         binding: &str,
         wait: Duration,
-    ) -> Result<Option<Arrival>, CarrierClosed> {
-        match self.recv_item(Scope::Binding(binding), wait)? {
+    ) -> Result<Option<Arrival>, TakeEnd> {
+        match self.recv_with(wait, |core, state| core.take_binding(state, binding))? {
             None => Ok(None),
-            Some(item) => self.arrival(item).map(Some),
+            Some(item) => self.arrival(item).map(Some).map_err(TakeEnd::Carrier),
         }
     }
 
@@ -439,10 +444,19 @@ impl StreamCarrier {
     }
 
     fn recv_item(&self, scope: Scope<'_>, wait: Duration) -> Result<Option<Taken>, CarrierClosed> {
+        self.recv_with(wait, |core, state| core.take(state, scope))
+    }
+
+    /// Waits up to `wait` for `take` to give an item or an end.
+    fn recv_with<E>(
+        &self,
+        wait: Duration,
+        mut take: impl FnMut(&Core, &mut State) -> Result<Option<Taken>, E>,
+    ) -> Result<Option<Taken>, E> {
         let deadline = Instant::now() + wait;
         let mut state = lock(self.core());
         loop {
-            if let Some(item) = self.core().take(&mut state, scope)? {
+            if let Some(item) = take(self.core(), &mut state)? {
                 return Ok(Some(item));
             }
             let Some(left) = deadline.checked_duration_since(Instant::now()) else {
@@ -504,10 +518,14 @@ impl Carrier for StreamCarrier {
         }
     }
 
-    fn try_recv_binding(&self, binding: &str) -> Result<Option<Arrival>, CarrierClosed> {
-        match self.take_scoped(Scope::Binding(binding))? {
+    fn try_recv_binding(&self, binding: &str) -> Result<Option<Arrival>, TakeEnd> {
+        let taken = {
+            let mut state = lock(self.core());
+            self.core().take_binding(&mut state, binding)?
+        };
+        match taken {
             None => Ok(None),
-            Some(item) => self.arrival(item).map(Some),
+            Some(item) => self.arrival(item).map(Some).map_err(TakeEnd::Carrier),
         }
     }
 

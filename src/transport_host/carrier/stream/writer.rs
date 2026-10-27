@@ -11,7 +11,7 @@
 //! frames are queued (or one is mid-write) and no byte has been accepted for [`StallBounds::no_progress`]. A closing
 //! end flushes for at most [`StallBounds::close`] and then shuts the stream anyway, so `close` and `Drop` cannot leave
 //! the threads and the descriptor behind a peer that never reads.
-use super::super::{CarrierClosed, CloseReason, Lane, ProtocolFault, wire};
+use super::super::{CarrierClosed, CloseReason, Lane, ProtocolFault, TakeEnd, wire};
 use super::{
     Admission, Core, Inner, closed, lane_index, lock,
     state::{Ending, Outgoing, Scope, State, Taken, close_deadline},
@@ -224,6 +224,23 @@ impl Core {
             }
             _ => Ok(None),
         }
+    }
+
+    /// The next inbound item of one binding, or why there will be none: the carrier's end, else the binding's own (it
+    /// was faulted, retired or never opened). A binding that is open and merely empty is `Ok(None)`.
+    pub(super) fn take_binding(
+        &self,
+        state: &mut State,
+        id: &str,
+    ) -> Result<Option<Taken>, TakeEnd> {
+        if let Some(reason) = state.closed {
+            return Err(TakeEnd::Carrier(reason));
+        }
+        if let Some(end) = state.binding_end(id) {
+            return Err(TakeEnd::Binding(end));
+        }
+        self.take(state, Scope::Binding(id))
+            .map_err(TakeEnd::Carrier)
     }
 }
 

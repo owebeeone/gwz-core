@@ -338,6 +338,31 @@ impl fmt::Display for CarrierClosed {
 
 impl std::error::Error for CarrierClosed {}
 
+/// Why one binding has nothing more to give while the carrier goes on.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BindingEnd {
+    /// The peer broke the binding's bounds or rules: the binding was faulted (contract §6).
+    Faulted(BindingFault),
+    /// The binding is not open: it was retired, or never opened.
+    NotOpen,
+}
+
+/// Why a per-binding take ([`Carrier::try_recv_binding`]) gives no more: the whole carrier ended, or only that binding
+/// did. A consumer of one binding ends its own join on the second and leaves the carrier's other bindings running.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TakeEnd {
+    /// The carrier ended, with its reason.
+    Carrier(CarrierClosed),
+    /// This binding ended, and the carrier did not.
+    Binding(BindingEnd),
+}
+
+impl From<CarrierClosed> for TakeEnd {
+    fn from(closed: CarrierClosed) -> Self {
+        TakeEnd::Carrier(closed)
+    }
+}
+
 /// Why [`Carrier::try_send`] did not send. The message comes back; a carrier never drops one.
 #[derive(Debug)]
 pub(crate) enum SendRefused {
@@ -374,17 +399,20 @@ pub(crate) trait Carrier: Send + Sync {
 
     /// The next message of one binding (the transport messages whose envelope names `binding`), in the order they were
     /// sent, whatever else is queued for the end. A binding that is not open has none. An end with no bindings of its
-    /// own (the in-process carrier) has one stream of messages, which this takes.
-    fn try_recv_binding(&self, binding: &str) -> Result<Option<Arrival>, CarrierClosed> {
+    /// own (the in-process carrier) has one stream of messages, which this takes. A binding that was faulted, retired
+    /// or never opened is not "empty": the take ends with [`TakeEnd::Binding`] and the reason (a fault or a
+    /// retirement drops the binding's queued messages), so that its consumer learns the binding is over.
+    fn try_recv_binding(&self, binding: &str) -> Result<Option<Arrival>, TakeEnd> {
         let _ = binding;
-        self.try_recv()
+        self.try_recv().map_err(TakeEnd::Carrier)
     }
 
     /// Wakes `waker` when a message arrives, a full lane gets room, or the carrier ends. One waker per end: a later
     /// registration replaces the earlier.
     fn register(&self, waker: &Waker);
 
-    /// Wakes `waker` when a message for `binding` arrives or the carrier ends. One waker per binding.
+    /// Wakes `waker` when a message for `binding` arrives, the binding ends or the carrier ends. One waker per
+    /// binding.
     fn register_binding(&self, binding: &str, waker: &Waker) {
         let _ = binding;
         self.register(waker);

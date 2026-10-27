@@ -482,6 +482,60 @@ mod unix {
     }
 
     #[test]
+    fn a_refused_client_that_trickles_bytes_holds_the_accept_thread_for_one_second_at_most() {
+        use std::{io::Write, os::unix::net::UnixStream, time::Instant};
+        let dir = dir();
+        let strict =
+            LocalListener::bind(&dir.runtime, other_user_policy(), CarrierLimits::DEFAULT).unwrap();
+        let address = strict.address().clone();
+        // A refused peer that sends one byte every 100 ms for four seconds: each read succeeds, so only a bound on
+        // time ends the drain before the peer does.
+        let mut trickler = UnixStream::connect(address.path()).unwrap();
+        let trickling = thread::spawn(move || {
+            for _ in 0..40 {
+                if trickler.write_all(&[0]).is_err() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        });
+        // The next client is already waiting behind it.
+        let next = connected(
+            &address,
+            &PeerPolicy::current_user().unwrap(),
+            CarrierLimits::DEFAULT,
+        )
+        .unwrap();
+        let accepting = thread::spawn(move || {
+            let started = Instant::now();
+            let first = strict.accept().err().expect("the trickler is refused");
+            let first_took = started.elapsed();
+            let second = strict
+                .accept()
+                .err()
+                .expect("the next client is refused too");
+            (first, first_took, second, started.elapsed())
+        });
+        let (first, first_took, second, both_took) = accepting.join().unwrap();
+        assert_eq!(first, LocalRefusal::Peer(PeerRefusal::OtherPrincipal));
+        assert_eq!(second, LocalRefusal::Peer(PeerRefusal::OtherPrincipal));
+        assert!(
+            first_took < Duration::from_millis(1500),
+            "accept was held {first_took:?} by a refused client"
+        );
+        assert!(
+            both_took < Duration::from_millis(2500),
+            "the next client waited {both_took:?}"
+        );
+        // And the next client got its one answer.
+        let answer = eventually("the next client's answer", || {
+            next.recv_registry_timeout(SHORT).unwrap()
+        });
+        assert_eq!(decode_session_error(&answer).1, 82);
+        trickling.join().unwrap();
+    }
+
+    #[test]
     fn a_squatted_unix_socket_counts_zero_bytes_from_a_client_that_refuses_it() {
         let dir = dir();
         // A raw listener that is not ours to trust in the client's eyes: the client expects another user.

@@ -7,7 +7,8 @@
 //! is not ready holds back only the entries it owns, and a window's worth of one binding queued and untaken never
 //! keeps a registry frame or another binding's frame from being taken.
 use super::super::{
-    BindingFault, BindingLimits, CarrierClosed, CloseCode, CloseReason, Lane, StallBounds,
+    BindingEnd, BindingFault, BindingLimits, CarrierClosed, CloseCode, CloseReason, Lane,
+    StallBounds,
 };
 use gwz_session_channel::WriteQueue;
 use gwz_session_contract::{Frame, FrameKey};
@@ -171,10 +172,19 @@ impl State {
         self.writing || !self.out.is_empty()
     }
 
-    /// Drops a binding's queued frames and its record.
-    pub(super) fn remove_binding(&mut self, id: &str) {
-        if let Some(binding) = self.bindings.remove(id) {
-            self.drop_entries(&binding);
+    /// Drops a binding's queued frames and its record. Returns the binding's waker, for the caller to wake once the
+    /// lock is released: its consumer learns that the binding is gone.
+    pub(super) fn remove_binding(&mut self, id: &str) -> Option<Waker> {
+        let binding = self.bindings.remove(id)?;
+        self.drop_entries(&binding);
+        binding.waker
+    }
+
+    /// Why `id` has nothing more to give while the carrier goes on: it was faulted, or it is not open.
+    pub(super) fn binding_end(&self, id: &str) -> Option<BindingEnd> {
+        match self.bindings.get(id) {
+            None => Some(BindingEnd::NotOpen),
+            Some(binding) => binding.fault.map(BindingEnd::Faulted),
         }
     }
 

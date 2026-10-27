@@ -330,6 +330,18 @@
    "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
   },
   {
+   "path": "src/transport_host/carrier/tests/local_rows.rs",
+   "kind": "os",
+   "gate": "os::unix::net::UnixStream",
+   "target": "",
+   "state": "platform",
+   "owner": [
+    "2.1"
+   ],
+   "appendix": "new: remediation round 2 (GwzSplitCommandChannel-Step2.1-RemPlan-2.md)",
+   "reason": "a Unix-only row (a refused Unix-socket client that trickles bytes, bounding turn_away's drain by time): the Windows named-pipe turn_away has the same one-second overall deadline (local/windows.rs) and no socket peer to trickle through (plan 2.1, remediation round 2)"
+  },
+  {
    "path": "src/transport_host/carrier/local/unix.rs",
    "kind": "gate",
    "gate": "any(target_os = \"linux\", target_os = \"android\")",
