@@ -6,7 +6,7 @@
 # §2). Bytes only, std only.
 [package]
 name = "gwz-session-channel"
-version = "0.0.8"
+version = "0.0.9"
 edition = "2024"
 rust-version = "1.95"
 license = "GPL-2.0-only"
@@ -24,7 +24,7 @@ include = ["/Cargo.toml", "/src/**", "/README.md"]
 path = "src/lib.rs"
 
 [dependencies]
-gwz-session-contract = { path = "../session-contract", version = "0.0.8" }
+gwz-session-contract = { path = "../session-contract", version = "0.0.9" }
 
 [dev-dependencies]
 gwz-session-contract = { path = "../session-contract", features = ["contract-tests"] }

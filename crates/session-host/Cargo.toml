@@ -9,7 +9,7 @@
 # numbers, so ids is not declared yet. std only.
 [package]
 name = "gwz-session-host"
-version = "0.0.8"
+version = "0.0.9"
 edition = "2024"
 rust-version = "1.95"
 license = "GPL-2.0-only"
@@ -34,4 +34,4 @@ path = "src/lib.rs"
 test-support = []
 
 [dependencies]
-gwz-session-contract = { path = "../session-contract", version = "0.0.8" }
+gwz-session-contract = { path = "../session-contract", version = "0.0.9" }

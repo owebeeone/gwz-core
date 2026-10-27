@@ -4,7 +4,7 @@
 # from the operating system's random source; this crate never does.
 [package]
 name = "gwz-ids"
-version = "0.0.8"
+version = "0.0.9"
 edition = "2024"
 rust-version = "1.95"
 license = "GPL-2.0-only"
