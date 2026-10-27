@@ -44,7 +44,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/local/unix.rs",
@@ -56,7 +57,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/local/unix.rs",
@@ -69,7 +71,8 @@
    ],
    "appendix": "new",
    "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)",
-   "count": 2
+   "count": 2,
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/local/unix.rs",
@@ -81,7 +84,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/local/unix.rs",
@@ -93,7 +97,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/local/unix.rs",
@@ -105,7 +110,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/local/unix.rs",
@@ -117,7 +123,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/local/unix.rs",
@@ -129,7 +136,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/local/unix.rs",
@@ -142,7 +150,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/local/unix.rs",
@@ -154,7 +163,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/local/unix.rs",
@@ -167,7 +177,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/local/unix.rs",
@@ -180,7 +191,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/local/unix.rs",
@@ -193,7 +205,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/local/unix.rs",
@@ -206,7 +219,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/local/unix.rs",
@@ -218,7 +232,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)"
+   "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/tests/local_rows.rs",
@@ -230,7 +245,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/tests/local_rows.rs",
@@ -242,7 +258,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/tests/local_rows.rs",
@@ -254,7 +271,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/tests/local_rows.rs",
@@ -266,7 +284,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/tests/local_rows.rs",
@@ -279,7 +298,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/tests/local_rows.rs",
@@ -291,7 +311,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/tests/local_rows.rs",
@@ -303,7 +324,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/tests/local_rows.rs",
@@ -315,7 +337,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/tests/local_rows.rs",
@@ -327,7 +350,8 @@
     "2.1"
    ],
    "appendix": "new",
-   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs"
+   "reason": "a Unix-only row (AF_UNIX family, socket modes, uid, symlinks): the Windows twins of the local rows are in tests/windows_rows.rs",
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
   },
   {
    "path": "src/transport_host/carrier/tests/local_rows.rs",
@@ -339,7 +363,8 @@
     "2.1"
    ],
    "appendix": "new: remediation round 2 (GwzSplitCommandChannel-Step2.1-RemPlan-2.md)",
-   "reason": "a Unix-only row (a refused Unix-socket client that trickles bytes, bounding turn_away's drain by time): the Windows named-pipe turn_away has the same one-second overall deadline (local/windows.rs) and no socket peer to trickle through (plan 2.1, remediation round 2)"
+   "reason": "a Unix-only row (a refused Unix-socket client that trickles bytes, bounding turn_away's drain by time): the Windows named-pipe turn_away has the same one-second overall deadline (local/windows.rs) and no socket peer to trickle through (plan 2.1, remediation round 2)",
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan-2.md (Code N-P3-1 = State N-P3-2)"
   },
   {
    "path": "src/transport_host/carrier/local/unix.rs",
