@@ -199,6 +199,23 @@ fn a_request_s_limits_bound_the_shared_authority_only_while_it_is_live() {
     wait(runtime.shutdown());
 }
 #[test]
+fn the_session_registers_each_of_its_pools_with_the_authority() {
+    // State review P2-3: the authority retires surplus idle connections through the pools' controls, so every pool
+    // whose connections hold its reservations is registered with it.
+    let runtime = TransportRuntime::new(config()).unwrap();
+    let endpoint = runtime
+        .0
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .local_endpoint
+        .clone();
+    let pools = usize::from(endpoint.ssh_counts_for_test().is_some())
+        + usize::from(endpoint.https_counts_for_test().is_some());
+    assert!(pools >= 1, "the endpoint has a physical pool");
+    assert_eq!(endpoint.authority_for_test().registered_pools(), pools);
+    wait(runtime.shutdown());
+}
+#[test]
 fn a_duplicate_request_id_admission_fails_and_leaves_the_first_request_untouched() {
     // State review P3-2: a refused registration changes no limits and no authority state.
     let runtime = TransportRuntime::new(config()).unwrap();

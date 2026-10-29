@@ -12,7 +12,7 @@ use super::ssh_worker::ChannelResource;
 use super::{ssh_channel::GitService, ssh_pump::SshPump};
 use gwz_transport::stream::{MessageEndpoint, Stream};
 use gwz_transport::{
-    pool::{Identity, Key},
+    pool::{Identity, Key, PoolControl, Site},
     protocol::{Effect, ErrorCode, Failure},
 };
 use std::collections::BTreeMap;
@@ -21,6 +21,8 @@ use std::{
     io, mem,
     task::{Context, Poll, Waker},
 };
+
+mod retire;
 
 /// The pool owner session of one request's opens: `base` (the runtime's, or the mux session's) and the request, so that the
 /// pool counts the request alone (State review P2-1). The pool bounds a session at 128 bytes, so a pair that would exceed
@@ -65,6 +67,12 @@ struct State {
     /// another request's limits. This is stricter than contract section 8's max(256, limit) for the legacy path only,
     /// which phase 3 retires (lane owner's ruling, remediation round 1).
     live: BTreeMap<String, (usize, usize)>,
+    /// The sites (scheme, host, port) that hold reservations, by host, with how many each holds: where a host's idle
+    /// connections are found when the ceilings fall below what it holds (`retire.rs`).
+    sites: retire::Sites,
+    /// The controls of the pools whose connections hold the reservations, to retire their surplus idle connections
+    /// with (`retire.rs`).
+    pools: Vec<PoolControl>,
     /// Connections waiting for a reservation, woken when one is returned.
     waiters: Vec<Waker>,
 }
@@ -72,6 +80,8 @@ struct State {
 pub(crate) struct Reservation {
     authority: Authority,
     host: String,
+    /// The site the reservation was taken for, when its taker named one.
+    site: Option<Site>,
 }
 
 /// Takes one reservation before it starts a connection, as `Authority`
@@ -127,7 +137,7 @@ impl<C: Connector> ReservedResource<C> {
         };
         let Some(reservation) = waiting
             .authority
-            .reserve_or_wait(waiting.key.host.clone(), cx.waker())
+            .reserve_site_or_wait(waiting.key.site(), cx.waker())
         else {
             return Poll::Pending;
         };
@@ -405,6 +415,8 @@ impl Authority {
                 total_limit: total,
                 per_host_limit: per_host,
                 live: BTreeMap::new(),
+                sites: retire::Sites::default(),
+                pools: Vec::new(),
                 waiters: Vec::new(),
             })),
             supervisor: Supervisor::new(),
@@ -436,13 +448,22 @@ impl Authority {
         for waiter in waiters {
             waiter.wake();
         }
+        // A lone request below the base lowers the ceilings under what idle connections hold (State review P2-3).
+        self.retire_surplus();
     }
 
     /// `request` ended (cancelled or finished): its limits no longer bound the host. A request that was never
     /// admitted, or has ended already, changes nothing.
     pub(crate) fn end_operation(&self, request: &str) {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.live.remove(request);
+        let lowered = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.live.remove(request).is_some()
+        };
+        if lowered {
+            // The ceilings fell to the remaining requests' (or to the base): the idle connections beyond them go
+            // (State review P2-3).
+            self.retire_surplus();
+        }
     }
 
     /// A reservation now, or none, with `waker` woken when one is returned.
@@ -453,8 +474,16 @@ impl Authority {
         host: impl Into<String>,
         waker: &Waker,
     ) -> Option<Reservation> {
+        self.reserve_for(host.into(), None, waker)
+    }
+    /// `reserve_or_wait` for a connection to `site`, which the reservation remembers so that the connection's idle
+    /// retirement can find it.
+    pub(crate) fn reserve_site_or_wait(&self, site: Site, waker: &Waker) -> Option<Reservation> {
+        self.reserve_for(site.host.clone(), Some(site), waker)
+    }
+    fn reserve_for(&self, host: String, site: Option<Site>, waker: &Waker) -> Option<Reservation> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let taken = state.take(self, host.into());
+        let taken = state.take(self, host, site);
         if taken.is_none() && !state.waiters.iter().any(|queued| queued.will_wake(waker)) {
             state.waiters.push(waker.clone());
         }
@@ -475,7 +504,12 @@ impl State {
                 (total.max(limits.0), per_host.max(limits.1))
             })
     }
-    fn take(&mut self, authority: &Authority, host: String) -> Option<Reservation> {
+    fn take(
+        &mut self,
+        authority: &Authority,
+        host: String,
+        site: Option<Site>,
+    ) -> Option<Reservation> {
         let host_count = self.hosts.get(&host).copied().unwrap_or(0);
         let (total_limit, per_host_limit) = self.ceilings();
         if self.total >= total_limit || host_count >= per_host_limit {
@@ -483,9 +517,13 @@ impl State {
         }
         self.total += 1;
         self.hosts.insert(host.clone(), host_count + 1);
+        if let Some(site) = &site {
+            self.sites.add(site);
+        }
         Some(Reservation {
             authority: authority.clone(),
             host,
+            site,
         })
     }
 }
@@ -505,6 +543,9 @@ impl Drop for Reservation {
                     state.hosts.remove(&self.host);
                 }
             }
+            if let Some(site) = &self.site {
+                state.sites.remove(site);
+            }
             mem::take(&mut state.waiters)
         };
         for waiter in waiters {
@@ -518,7 +559,7 @@ impl Authority {
     /// A reservation now, or none: what `reserve_or_wait` does without a wait.
     pub(crate) fn try_reserve(&self, host: impl Into<String>) -> Option<Reservation> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.take(self, host.into())
+        state.take(self, host.into(), None)
     }
     /// The ceilings a reservation is judged against now: (total, per host).
     pub(crate) fn ceilings(&self) -> (usize, usize) {

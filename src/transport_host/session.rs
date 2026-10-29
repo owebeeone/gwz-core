@@ -545,10 +545,11 @@ impl Session {
                 ssh_helpers,
             )
             .map_err(|_| unavailable("SSH endpoint construction failed"))?;
-            state.engine = Some(
-                PlacementEndpoint::new(ssh, ssh_settings.home, id.clone(), id.clone())
-                    .map_err(|_| unavailable("endpoint supervisor unavailable"))?,
-            );
+            let engine = PlacementEndpoint::new(ssh, ssh_settings.home, id.clone(), id.clone())
+                .map_err(|_| unavailable("endpoint supervisor unavailable"))?;
+            // The authority retires this pool's surplus idle connections when the ceilings fall (State review P2-3).
+            authority.register_pool(engine.pool().control());
+            state.engine = Some(engine);
         }
         if let Some((https, helper_slots)) = https {
             let mut endpoint = super::https_endpoint::HttpsEndpoint::new_native(
@@ -561,6 +562,7 @@ impl Session {
                 native,
             )?;
             endpoint.set_handoff(ends);
+            authority.register_pool(endpoint.pool().control());
             state.https = Some(endpoint);
         }
         let https_enabled = state.https.is_some();
