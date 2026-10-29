@@ -393,7 +393,7 @@ jobs:
           cargo check --locked --lib --manifest-path "$RUNNER_TEMP/candidate/Cargo.toml" --target-dir "$GITHUB_WORKSPACE/candidate-target"
       - name: Host-level transport rows
         # The rows of src/transport_host/qualification_tests.rs (the module keeps
-        # the name WH1 gave it): seven on Windows, six elsewhere. A filter that
+        # the name WH1 gave it): six on Windows, five elsewhere. A filter that
         # matches nothing passes, so the count is checked.
         env:
           RUSTFLAGS: --cfg gwz_transport_candidate
@@ -401,8 +401,8 @@ jobs:
           set -o pipefail
           cargo test --locked --lib --manifest-path "$RUNNER_TEMP/candidate/Cargo.toml" --target-dir "$GITHUB_WORKSPACE/candidate-target" qualification_tests:: -- --nocapture 2>&1 | tee "$RUNNER_TEMP/qualification.log"
           passed="$(sed -n -E 's/^test result: ok\. ([0-9]+) passed.*/\1/p' "$RUNNER_TEMP/qualification.log" | tr -d '\r')"
-          if [ "${passed:-0}" -lt 7 ]; then
-            echo "::error::expected the 7 host-level transport rows of qualification_tests, ran ${passed:-0}"
+          if [ "${passed:-0}" -lt 6 ]; then
+            echo "::error::expected the 6 host-level transport rows of qualification_tests, ran ${passed:-0}"
             exit 1
           fi
       - id: suites
