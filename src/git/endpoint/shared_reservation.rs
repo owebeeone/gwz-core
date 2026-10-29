@@ -34,8 +34,14 @@ pub(crate) struct Authority {
 struct State {
     total: usize,
     hosts: BTreeMap<String, usize>,
+    /// The physical ceilings the host was built with.
     total_limit: usize,
     per_host_limit: usize,
+    /// The largest limits any admitted operation brought (reuse design section 5): a reservation needs fewer than
+    /// max(ceiling, this) in total and on its host. They only grow, so nothing admitted is ever refused, shrunk or
+    /// released for another operation's limits.
+    admitted_total: usize,
+    admitted_per_host: usize,
     /// Connections waiting for a reservation, woken when one is returned.
     waiters: Vec<Waker>,
 }
@@ -375,6 +381,8 @@ impl Authority {
                 hosts: BTreeMap::new(),
                 total_limit: total,
                 per_host_limit: per_host,
+                admitted_total: 0,
+                admitted_per_host: 0,
                 waiters: Vec::new(),
             })),
             supervisor: Supervisor::new(),
@@ -386,19 +394,14 @@ impl Authority {
         &self.supervisor
     }
 
-    /// Called after surplus idle owners have completed physical disposal.
-    pub(crate) fn install_capacity(&self, total: usize, per_host: usize) -> bool {
+    /// An operation was admitted with `total` and `per_host` limits. Nothing is installed, resized, released or
+    /// refused for them: a new reservation needs fewer than max(ceiling, the largest limit admitted) in total and on
+    /// its host, which keeps a lone operation's limits exactly (the no-clamp rule) and bounds overlapping operations by
+    /// the ceilings. The operation's own limit is held by the pools, whose requests carry it.
+    pub(crate) fn admit_operation(&self, total: usize, per_host: usize) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        if total == 0
-            || per_host == 0
-            || state.total > total
-            || state.hosts.values().any(|count| *count > per_host)
-        {
-            return false;
-        }
-        state.total_limit = total;
-        state.per_host_limit = per_host;
-        true
+        state.admitted_total = state.admitted_total.max(total);
+        state.admitted_per_host = state.admitted_per_host.max(per_host);
     }
 
     /// A reservation now, or none, with `waker` woken when one is returned.
@@ -421,7 +424,9 @@ impl Authority {
 impl State {
     fn take(&mut self, authority: &Authority, host: String) -> Option<Reservation> {
         let host_count = self.hosts.get(&host).copied().unwrap_or(0);
-        if self.total >= self.total_limit || host_count >= self.per_host_limit {
+        if self.total >= self.total_limit.max(self.admitted_total)
+            || host_count >= self.per_host_limit.max(self.admitted_per_host)
+        {
             return None;
         }
         self.total += 1;
@@ -684,17 +689,60 @@ mod tests {
     }
 
     #[test]
-    fn shrinking_authority_waits_for_actual_disposal_across_schemes() {
+    fn an_admitted_limit_above_the_ceilings_is_neither_clamped_nor_refused() {
+        // Reuse design section 5: a new connection needs fewer than max(ceiling, its limit) reservations, so a lone
+        // operation at 16 per host gets 16 where the ceilings are 2 (the no-clamp rule).
         let authority = Authority::new(2, 2);
-        let ssh = authority.try_reserve("host").unwrap();
-        let https = authority.try_reserve("host").unwrap();
-        assert!(!authority.install_capacity(1, 1));
-        assert_eq!(authority.counts("host"), (2, 2));
-        drop(https);
-        assert!(authority.install_capacity(1, 1));
+        authority.admit_operation(16, 16);
+        let held: Vec<_> = (0..16)
+            .map(|_| authority.try_reserve("host").expect("within its own limit"))
+            .collect();
         assert!(authority.try_reserve("host").is_none());
-        drop(ssh);
+        assert_eq!(authority.counts("host"), (16, 16));
+        drop(held);
+    }
+
+    #[test]
+    fn admitting_a_lower_limit_neither_shrinks_the_ceilings_nor_touches_a_reservation() {
+        // Reserve-before-connect under two differing limits: the second operation (4) is admitted while the first (16)
+        // holds reservations; nothing is refused, resized or released, and the physical ceiling stays the larger.
+        let authority = Authority::new(2, 2);
+        authority.admit_operation(16, 16);
+        let first: Vec<_> = (0..10)
+            .map(|_| authority.try_reserve("host").unwrap())
+            .collect();
+        authority.admit_operation(4, 4);
+        assert_eq!(authority.counts("host"), (10, 10));
+        let more: Vec<_> = (0..6)
+            .map(|_| authority.try_reserve("host").unwrap())
+            .collect();
+        assert!(authority.try_reserve("host").is_none());
+        drop(first);
+        drop(more);
         assert!(authority.try_reserve("host").is_some());
+    }
+
+    #[test]
+    fn a_connection_waits_for_a_reservation_under_a_higher_limit_too() {
+        let authority = Authority::new(1, 1);
+        authority.admit_operation(2, 2);
+        let a = authority.try_reserve("host").unwrap();
+        let b = authority.try_reserve("host").unwrap();
+        let mut connector = ReservedConnector::new(
+            FakeConnector {
+                dispose_pending: false,
+                fail: false,
+            },
+            authority.clone(),
+        );
+        let mut waiting = connector
+            .start(&Key::ssh("git", "host", 22), &Identity::Ambient, None)
+            .unwrap();
+        assert!(waiting.waiting_locally(), "a full authority defers the connect, never fails it");
+        drop(a);
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(matches!(waiting.poll_connected(&mut cx), Poll::Ready(Ok(_))));
+        drop(b);
     }
 
     #[test]

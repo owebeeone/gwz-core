@@ -36,7 +36,6 @@ impl Endpoint {
         if io_timeout_ms > i32::MAX as u64 {
             return Err(io::ErrorKind::InvalidInput.into());
         }
-        let capacity = config.max_requests;
         let cleanup = config.cleanup_timeout_ms;
         let policy = config.clone();
         let ceiling = config.per_host.min(config.per_user_host);
@@ -92,7 +91,6 @@ impl Endpoint {
                 sender,
                 worker: join.thread().clone(),
                 outstanding: Arc::new(AtomicUsize::new(0)),
-                capacity: AtomicUsize::new(capacity),
                 pool: client_pool,
                 policy,
                 io_timeout_ms,
@@ -174,9 +172,6 @@ impl Endpoint {
     pub(crate) fn pool_now(&self) -> u64 {
         elapsed(self.shared.origin)
     }
-    pub(crate) fn set_request_capacity(&self, capacity: usize) {
-        self.shared.capacity.store(capacity, Ordering::Release);
-    }
     /// Submits a bridged open, with a selected key or the agent, and returns
     /// at once. No thread and no supervised job waits for it: the worker owns
     /// it until it replies, and its reply wakes `context.waker`. A selected
@@ -192,13 +187,16 @@ impl Endpoint {
         cancelled: Arc<AtomicBool>,
     ) -> io::Result<PendingOpen> {
         self.start_endpoint_open_tagged(
-            key, selected, service, path, context, cancelled, None, false,
+            key, selected, service, path, context, cancelled, None, None, false,
         )
     }
     /// `start_endpoint_open`, where the pool request carries `tag`, which
     /// names the member the connection serves (adaptive concurrency design
     /// §4.8), and `carrier` says the open carries a test of the site's limit,
-    /// which the background close must never defer.
+    /// which the background close must never defer. `limits` are the open's
+    /// operation's: its pool request carries them, so its owner is held to them
+    /// (reuse design section 5), and the endpoint's outstanding opens stay below
+    /// max(the pool's ceiling, its `max_requests`).
     #[allow(clippy::too_many_arguments)] // One open's fields, and its limit tag.
     pub(crate) fn start_endpoint_open_tagged(
         &self,
@@ -209,6 +207,7 @@ impl Endpoint {
         context: BridgeContext,
         cancelled: Arc<AtomicBool>,
         tag: Option<String>,
+        limits: Option<gwz_transport::pool::Capacity>,
         carrier: bool,
     ) -> io::Result<PendingOpen> {
         if self.shared.stop.load(Ordering::Acquire) {
@@ -223,7 +222,12 @@ impl Endpoint {
         self.shared
             .outstanding
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < self.shared.capacity.load(Ordering::Acquire)).then_some(n + 1)
+                (n < self
+                    .shared
+                    .policy
+                    .max_requests
+                    .max(limits.map_or(0, |l| l.max_requests)))
+                .then_some(n + 1)
             })
             .map_err(|_| io::Error::new(io::ErrorKind::WouldBlock, "endpoint admission full"))?;
         let permit = Permit(self.shared.outstanding.clone());
@@ -270,6 +274,7 @@ impl Endpoint {
             setup_slot: Arc::default(),
             cancelled,
             tag,
+            limits,
             carrier,
             deadline: absolute.map(|at| at.duration_since(self.shared.origin).as_millis() as u64),
             context,

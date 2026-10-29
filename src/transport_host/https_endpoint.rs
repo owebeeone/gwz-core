@@ -116,6 +116,9 @@ pub(super) struct HttpsEndpoint {
     watch: Watch,
     entries: BTreeMap<Key, Entry>,
     operations: BTreeMap<String, Operation>,
+    /// Each admitted request's resolved limits (reuse design section 5), by request ID; its operation's pool requests
+    /// carry them.
+    limits: BTreeMap<String, pool::Capacity>,
     endpoint: String,
     trust_owner: String,
     shutting_down: bool,
@@ -203,6 +206,7 @@ impl HttpsEndpoint {
             watch,
             entries: BTreeMap::new(),
             operations: BTreeMap::new(),
+            limits: BTreeMap::new(),
             trust_owner: endpoint.clone(),
             endpoint,
             shutting_down: false,
@@ -237,6 +241,17 @@ impl HttpsEndpoint {
     }
     /// The operation's `--max-retries`, which its admission installs before
     /// its first open. An operation never given one retries three times.
+    /// The limits of an admitted request, which its operation's pool requests carry.
+    pub(super) fn set_limits(&mut self, request: &str, capacity: pool::Capacity) {
+        self.limits.insert(request.to_owned(), capacity);
+    }
+    /// The limits `request` is held to: its own, or the pool's capacity.
+    pub(super) fn limits_of(&self, request: &str) -> pool::Capacity {
+        self.limits
+            .get(request)
+            .copied()
+            .unwrap_or_else(|| self.pool().capacity())
+    }
     pub(super) fn set_max_retries(&mut self, request: &str, max_retries: u32) {
         self.retries.set_max_retries(request, max_retries);
     }
@@ -333,10 +348,11 @@ impl HttpsEndpoint {
                     Refusal::Sealed => EndpointError::InvalidRequest,
                 })?;
             // The operation's limit machines start SATURATED at the per-host
-            // limit its admission installed in the pool (adaptive concurrency
+            // limit its admission recorded for the request (adaptive concurrency
             // design §4.1), named as its attempts name it. They adapt unless
             // the operation retries nothing (`--max-retries 0`, §5.3).
-            let capacity = self.pool().capacity();
+            let capacity = self.limits_of(&request);
+            self.client.set_operation_limits(&name, capacity);
             self.client.governor().begin_operation(
                 &name,
                 capacity.per_host.min(capacity.per_user_host),
@@ -485,6 +501,7 @@ impl HttpsEndpoint {
                 }
             }
         }
+        self.limits.remove(request);
         if let Some(operation) = self.operations.remove(request) {
             self.client.finish_operation(&operation.name);
             self.client

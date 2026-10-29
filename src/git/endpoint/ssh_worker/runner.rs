@@ -209,6 +209,7 @@ pub(super) fn run<C>(
             policy.connect_timeout_ms = Some(d.connect_ms as u64);
             policy.interaction_timeout_ms = Some(d.interaction_ms as u64);
             policy.tag = request.tag.clone();
+            policy.limits = request.limits;
             // An open for a connection that is closing waits for it, once; a
             // test of the site's limit does not, for it needs a connection of
             // its own at once (§4.7).

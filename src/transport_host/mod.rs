@@ -475,17 +475,15 @@ impl TransportRuntime {
             let per_host = crate::operation::resolve_per_host(
                 policy.and_then(|value| value.max_connections_per_host),
             );
-            let client = endpoint
-                .admit_client_request(
-                    &meta.request_id,
-                    pool::Capacity {
-                        per_user_host: per_host,
-                        per_host,
-                        total: jobs.max(256),
-                        max_requests: jobs.max(1024),
-                    },
-                )
-                .await?;
+            let client = endpoint.admit_client_request(
+                &meta.request_id,
+                pool::Capacity {
+                    per_user_host: per_host,
+                    per_host,
+                    total: jobs.max(256),
+                    max_requests: jobs.max(1024),
+                },
+            )?;
             endpoint.set_max_retries(&meta.request_id, max_retries);
             Some(client)
         } else {

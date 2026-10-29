@@ -25,6 +25,8 @@ pub(in crate::git::endpoint) struct OpenRequest {
     pub(in crate::git::endpoint) context: BridgeContext,
     /// Names the member the open's connection serves, for the limit machines.
     pub(in crate::git::endpoint) tag: Option<String>,
+    /// The open's operation's limits, which its pool request carries.
+    pub(in crate::git::endpoint) limits: Option<gwz_transport::pool::Capacity>,
     /// The open carries a test of the site's limit: never deferred.
     pub(in crate::git::endpoint) carrier: bool,
 }

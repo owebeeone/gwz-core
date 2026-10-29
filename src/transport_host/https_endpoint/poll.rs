@@ -12,7 +12,7 @@ fn site_limits(client: &Client, operation: Option<&str>, key: &pool::Key) -> Sit
             max_per_host: view.ceiling,
         },
         None => {
-            let capacity = client.pool().capacity();
+            let capacity = client.limits_of(operation);
             SiteLimits {
                 limit_applied: None,
                 max_per_host: capacity.per_host.min(capacity.per_user_host),

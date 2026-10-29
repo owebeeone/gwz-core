@@ -267,8 +267,7 @@ impl super::super::ssh_worker::ChannelResource for Setting {
         false
     }
 }
-/// An endpoint over the slow fixture, with the operation limits the transport
-/// host installs in its pool when the operation starts.
+/// An endpoint over the slow fixture, over a pool whose capacity is `capacity`.
 fn slow_endpoint(
     setup: Duration,
     capacity: gwz_transport::pool::Capacity,
@@ -280,7 +279,13 @@ fn slow_endpoint(
     };
     let endpoint = PlacementEndpoint::new(
         Endpoint::with_registry(
-            gwz_transport::pool::Config::default(),
+            gwz_transport::pool::Config {
+                per_user_host: capacity.per_user_host,
+                per_host: capacity.per_host,
+                total: capacity.total,
+                max_requests: capacity.max_requests,
+                ..gwz_transport::pool::Config::default()
+            },
             super::super::ssh_key_snapshot::Registry::new(),
             |_, _| connector,
             9_000,
@@ -291,7 +296,6 @@ fn slow_endpoint(
         "owner".into(),
     )
     .unwrap();
-    endpoint.pool().install_capacity(capacity).unwrap();
     (endpoint, started)
 }
 fn ambient_open(stream_id: i64, host: &str) -> Envelope {

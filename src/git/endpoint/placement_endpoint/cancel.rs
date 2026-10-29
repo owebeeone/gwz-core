@@ -26,6 +26,7 @@ impl PlacementEndpoint {
         }
         // Its members are all finished: no wake opens a probe for it.
         self.retries.remove(request);
+        self.limits.remove(request);
         self.endpoint
             .governor()
             .end_operation(request, self.endpoint.pool_now());

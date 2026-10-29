@@ -130,10 +130,6 @@ pub enum ErrorCode {
     /// known-host URL, for example a nonstandard port (wire `url_scheme_unavailable`
     /// = 72; gwz-dev dev-docs/GwzUrlSchemePlan.md §2.5).
     UrlSchemeUnavailable,
-    /// Python native-session admission refused a different live physical pool
-    /// policy before consuming the caller request ID. This is a bridge error,
-    /// not a terminal GWZ operation result.
-    TransportCapacityConflict,
     /// Native Python Client exhausted its bounded operation/ledger admission,
     /// or a core session limit refused a call before any effect (wire
     /// `transport_session_full` = 77).

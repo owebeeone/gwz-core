@@ -276,6 +276,16 @@ impl Client {
     pub(crate) fn pool(&self) -> &pool::Pool {
         &self.pool.pool
     }
+    /// The operation's limits, which its pool requests carry.
+    pub(crate) fn set_operation_limits(&self, operation: &str, limits: pool::Capacity) {
+        self.pool.set_operation_limits(operation, limits);
+    }
+    /// The limits `operation` is held to: its own, or the pool's capacity.
+    pub(crate) fn limits_of(&self, operation: Option<&str>) -> pool::Capacity {
+        operation
+            .and_then(|name| self.pool.operation_limits(name))
+            .unwrap_or_else(|| self.pool().capacity())
+    }
     fn helper_pending(&self) -> usize {
         self.auth_owner.pending_cleanup_count()
     }
@@ -296,6 +306,7 @@ impl Client {
     } }
     pub(crate) fn finish_operation(&self, operation: &str) {
         self.operations.finish(operation);
+        self.pool.forget_operation_limits(operation);
     }
     pub(crate) fn operation(
         &self,

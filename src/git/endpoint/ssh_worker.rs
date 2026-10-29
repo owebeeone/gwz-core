@@ -67,7 +67,6 @@ struct Shared {
     sender: Sender<OpenRequest>,
     worker: Thread,
     outstanding: Arc<AtomicUsize>,
-    capacity: AtomicUsize,
     pool: Pool,
     policy: PoolConfig,
     io_timeout_ms: u64,

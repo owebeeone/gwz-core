@@ -81,6 +81,62 @@ fn a_stale_supervisor_tick_never_expires_a_fresh_one_millisecond_allowance() {
 }
 
 #[test]
+fn an_operations_limits_hold_its_https_checkouts_and_nobody_else_s() {
+    runtime().block_on(async {
+        let server = Server::start(Arc::new(|_| {
+            Box::pin(async { response(200, GitService::UploadPackAdvertisement, "ok") })
+        }))
+        .await;
+        let mut endpoint = Endpoint::new(
+            server.config(),
+            None,
+            gwz_transport::pool::Config::default(),
+        )
+        .unwrap();
+        let destination = Destination::parse(&server.url).unwrap();
+        let key = || Key::https(destination.host(), destination.port());
+        let cancel = CancellationToken::new();
+        // The pool's own capacity allows 32 on the host, so only the operation's limit can hold the second checkout.
+        endpoint.client.set_operation_limits(
+            "limited",
+            gwz_transport::pool::Capacity {
+                per_user_host: 1,
+                per_host: 1,
+                total: 256,
+                max_requests: 1024,
+            },
+        );
+        let checkout = |operation: &str, allocation_ms: u64| {
+            endpoint.client.pool.checkout_scoped(
+                key(),
+                Owner::new("session", operation),
+                allocation_ms,
+                30_000,
+                &cancel,
+                None,
+                false,
+                false,
+                None,
+            )
+        };
+        let first = checkout("limited", 30_000)
+            .await
+            .expect("within the operation's limit");
+        assert!(
+            checkout("limited", 100).await.is_err(),
+            "a second checkout of the operation waits out its allocation: its limit is one"
+        );
+        let beside = checkout("unlimited", 30_000)
+            .await
+            .expect("an operation with no limits is held to the pool's own capacity");
+        beside.finish(Disposition::Discarded).unwrap();
+        first.finish(Disposition::Discarded).unwrap();
+        endpoint.client.finish_operation("limited");
+        assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
+    });
+}
+
+#[test]
 fn active_io_custom_timeout_expires_delayed_headers() {
     runtime().block_on(async {
         let server = Server::start(Arc::new(|_| {

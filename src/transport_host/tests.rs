@@ -66,8 +66,15 @@ fn operation_policy_carries_max_retries_and_an_older_writer_leaves_it_absent() {
     assert_eq!(older.max_retries, None);
 }
 #[test]
-fn request_installs_its_resolved_pool_capacity_before_bind() {
+fn request_records_its_resolved_limits_and_nothing_is_installed() {
     let runtime = TransportRuntime::new(config()).unwrap();
+    let endpoint = runtime
+        .0
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .local_endpoint
+        .clone();
+    let ceilings = endpoint.capacity_for_test().unwrap();
     let mut custom = meta("capacity-custom");
     custom.policy = Some(crate::OperationPolicy {
         concurrency: Some(400),
@@ -75,14 +82,8 @@ fn request_installs_its_resolved_pool_capacity_before_bind() {
         ..Default::default()
     });
     let request = wait(runtime.request(custom, "operation-one".into())).unwrap();
-    let endpoint = runtime
-        .0
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .local_endpoint
-        .clone();
     assert_eq!(
-        endpoint.capacity_for_test(),
+        endpoint.limits_for_test("capacity-custom"),
         Some(pool::Capacity {
             per_user_host: 50,
             per_host: 50,
@@ -90,10 +91,10 @@ fn request_installs_its_resolved_pool_capacity_before_bind() {
             max_requests: 1024,
         })
     );
-    wait(request.finish());
-    let request = wait(runtime.request(meta("capacity-default"), "operation-two".into())).unwrap();
+    // A request that overlaps it has limits of its own; the first keeps its own, and the pool's ceilings are untouched.
+    let next = wait(runtime.request(meta("capacity-default"), "operation-two".into())).unwrap();
     assert_eq!(
-        endpoint.capacity_for_test(),
+        endpoint.limits_for_test("capacity-default"),
         Some(pool::Capacity {
             per_user_host: 32,
             per_host: 32,
@@ -101,111 +102,57 @@ fn request_installs_its_resolved_pool_capacity_before_bind() {
             max_requests: 1024,
         })
     );
+    assert_eq!(
+        endpoint
+            .limits_for_test("capacity-custom")
+            .unwrap()
+            .per_host,
+        50
+    );
+    assert_eq!(endpoint.capacity_for_test(), Some(ceilings));
+    wait(next.finish());
     wait(request.finish());
     wait(runtime.shutdown());
 }
 #[test]
-fn live_request_between_leases_refuses_a_different_physical_capacity() {
+fn live_request_between_leases_admits_a_different_limit() {
+    // Plan 1.4: differing limits are admitted while another request is live; nothing is refused (no
+    // `TransportCapacityConflict`), and neither request's limits change when the other ends.
     let runtime = TransportRuntime::new(config()).unwrap();
+    let endpoint = runtime
+        .0
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .local_endpoint
+        .clone();
     let first = wait(runtime.request(meta("capacity-first"), "first".into())).unwrap();
     let mut different = meta("capacity-different");
     different.policy = Some(crate::OperationPolicy {
         max_connections_per_host: Some(16),
         ..Default::default()
     });
-    let error = wait(runtime.request(different.clone(), "different".into()))
-        .err()
-        .expect("a live request blocks physical policy replacement even between leases");
+    let second = wait(runtime.request(different, "different".into()))
+        .expect("a live request no longer blocks a different limit");
     assert_eq!(
-        error.code,
-        crate::model::ErrorCode::TransportCapacityConflict
+        endpoint.limits_for_test("capacity-first").unwrap().per_host,
+        32
+    );
+    assert_eq!(
+        endpoint
+            .limits_for_test("capacity-different")
+            .unwrap()
+            .per_host,
+        16
     );
     wait(first.finish());
-    let retry = wait(runtime.request(different, "different-retry".into()))
-        .expect("pre-registration capacity refusal leaves request_id retryable");
-    wait(retry.finish());
-    wait(runtime.shutdown());
-}
-#[test]
-fn waiting_for_admission_leadership_times_out_before_registration() {
-    let runtime = TransportRuntime::new(config()).unwrap();
-    let endpoint = runtime
-        .0
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .local_endpoint
-        .clone();
-    endpoint.hold_admission_for_test();
-    let request = meta("waiting-capacity");
-    let began = std::time::Instant::now();
-    let error = wait(runtime.request(request.clone(), "waiting".into()))
-        .err()
-        .expect("held admission leadership must time out");
-    assert!(error.message.contains("timed out"), "{error:?}");
-    assert!(began.elapsed() < std::time::Duration::from_secs(6));
-    endpoint.release_admission_for_test();
-    let retry = wait(runtime.request(request, "waiting-retry".into()))
-        .expect("timed-out wait must not consume its request ID");
-    wait(retry.finish());
-    wait(runtime.shutdown());
-}
-#[test]
-fn capacity_wait_after_leadership_does_not_register_request_id() {
-    let runtime = TransportRuntime::new(config()).unwrap();
-    let endpoint = runtime
-        .0
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .local_endpoint
-        .clone();
-    endpoint.hold_capacity_for_test();
-    let request = meta("late-capacity");
-    let began = std::time::Instant::now();
-    let error = wait(runtime.request(request.clone(), "first".into()))
-        .err()
-        .expect("capacity gate must time out");
-    assert!(error.message.contains("timed out"), "{error:?}");
-    assert!(began.elapsed() < std::time::Duration::from_secs(6));
-    endpoint.release_capacity_for_test();
-    let retry = wait(runtime.request(request, "retry".into()))
-        .expect("pre-registration timeout must leave the ID reusable");
-    wait(retry.finish());
-    wait(runtime.shutdown());
-}
-
-#[test]
-fn dropping_staged_capacity_installation_closes_the_generation() {
-    let runtime = TransportRuntime::new(config()).unwrap();
-    let endpoint = runtime
-        .0
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .local_endpoint
-        .clone();
-    endpoint.hold_retirement_for_test();
-    let mut changed = meta("staged-capacity");
-    changed.policy = Some(crate::OperationPolicy {
-        max_connections_per_host: Some(16),
-        ..Default::default()
-    });
-    let mut request = Box::pin(runtime.request(changed, "first".into()));
-    let mut context = Context::from_waker(Waker::noop());
-    let began = std::time::Instant::now();
-    while !endpoint.retirement_waiting_for_test() {
-        match request.as_mut().poll(&mut context) {
-            Poll::Pending => {}
-            Poll::Ready(Err(error)) => panic!("capacity installation failed early: {error:?}"),
-            Poll::Ready(Ok(_)) => panic!("capacity installation unexpectedly completed"),
-        }
-        assert!(began.elapsed() < std::time::Duration::from_secs(2));
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
-    drop(request);
-    assert!(
-        endpoint.is_closed(),
-        "dropped transaction closes mutated endpoint"
+    assert_eq!(
+        endpoint
+            .limits_for_test("capacity-different")
+            .unwrap()
+            .per_host,
+        16
     );
-    assert!(wait(runtime.request(meta("later"), "later".into())).is_err());
+    wait(second.finish());
     wait(runtime.shutdown());
 }
 fn meta(id: &str) -> RequestMeta {

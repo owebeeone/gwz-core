@@ -3,10 +3,7 @@
 //! connector ends every setup with one outcome; the endpoint's clock is the
 //! `now` each test passes to `step`, so no test waits out a real backoff.
 use super::*;
-use gwz_transport::{
-    pool::Capacity,
-    protocol::{Deadlines, SetupFailureCause},
-};
+use gwz_transport::protocol::{Deadlines, SetupFailureCause};
 use std::sync::{Arc, Mutex};
 
 const JITTER: u64 = 7;
@@ -131,7 +128,11 @@ fn scripted_endpoint(
     let starts = connector.starts.clone();
     let mut endpoint = PlacementEndpoint::new(
         Endpoint::with_registry(
-            gwz_transport::pool::Config::default(),
+            gwz_transport::pool::Config {
+                per_user_host: per_host,
+                per_host,
+                ..gwz_transport::pool::Config::default()
+            },
             super::super::ssh_key_snapshot::Registry::new(),
             |_, _| connector,
             9_000,
@@ -144,15 +145,6 @@ fn scripted_endpoint(
         "owner".into(),
     )
     .unwrap();
-    endpoint
-        .pool()
-        .install_capacity(Capacity {
-            per_user_host: per_host,
-            per_host,
-            total: 256,
-            max_requests: 1024,
-        })
-        .unwrap();
     endpoint.set_jitter(setup_retry::Jitter::fixed(JITTER));
     endpoint.set_max_retries(OPERATION, max_retries);
     (endpoint, starts)

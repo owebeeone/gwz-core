@@ -199,7 +199,7 @@ fn capacity_meta(id: &str, limit: i64) -> RequestMeta {
     value
 }
 #[test]
-fn https_only_capacity_first_later_and_incompatible_overlap_use_the_actual_owner() {
+fn https_only_overlapping_requests_with_different_limits_are_both_admitted() {
     let executor = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -211,71 +211,36 @@ fn https_only_capacity_first_later_and_incompatible_overlap_use_the_actual_owner
             .request(capacity_meta("capacity-first", 1), "first".into())
             .await
             .unwrap();
-        assert_eq!(endpoint.capacity_for_test().unwrap().per_host, 1);
+        assert_eq!(
+            endpoint.limits_for_test("capacity-first").unwrap().per_host,
+            1
+        );
+        // The shared authority holds the physical ceilings, which no operation's limit shrinks: a request at 1 per
+        // host does not clamp the reservations (the pool holds its owner to 1).
         let authority = endpoint.authority_for_test();
-        let reservation = authority.try_reserve("example.invalid").unwrap();
-        assert!(authority.try_reserve("example.invalid").is_none());
-        drop(reservation);
-        let error = runtime
+        let held: Vec<_> = (0..3)
+            .map(|_| authority.try_reserve("example.invalid").unwrap())
+            .collect();
+        drop(held);
+        // An overlapping request with another limit is admitted: no `TransportCapacityConflict`.
+        let next = runtime
             .request(capacity_meta("capacity-next", 2), "overlap".into())
             .await
-            .err()
             .unwrap();
         assert_eq!(
-            error.code,
-            crate::model::ErrorCode::TransportCapacityConflict
+            endpoint.limits_for_test("capacity-next").unwrap().per_host,
+            2
+        );
+        assert_eq!(
+            endpoint.limits_for_test("capacity-first").unwrap().per_host,
+            1
         );
         first.finish().await;
-        let next = runtime
-            .request(capacity_meta("capacity-next", 2), "next".into())
-            .await
-            .unwrap();
-        assert_eq!(endpoint.capacity_for_test().unwrap().per_host, 2);
-        let one = authority.try_reserve("example.invalid").unwrap();
-        let two = authority.try_reserve("example.invalid").unwrap();
-        assert!(authority.try_reserve("example.invalid").is_none());
-        drop((one, two));
-        next.finish().await;
-        assert_eq!(runtime.shutdown().await.pending_local_work, 0);
-    });
-}
-#[test]
-fn https_only_cancelled_capacity_retirement_closes_the_mutated_generation() {
-    use std::{
-        future::Future,
-        task::{Context, Poll, Waker},
-    };
-    let executor = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-    executor.block_on(async {
-        let runtime = https_only_runtime();
-        let endpoint = runtime.0.lock().unwrap().local_endpoint.clone();
-        endpoint.hold_retirement_for_test();
-        let mut request =
-            Box::pin(runtime.request(capacity_meta("capacity-cancel", 1), "cancel".into()));
-        let mut cx = Context::from_waker(Waker::noop());
-        let deadline = std::time::Instant::now() + Duration::from_secs(30);
-        while !endpoint.retirement_waiting_for_test() {
-            match request.as_mut().poll(&mut cx) {
-                Poll::Pending => {}
-                Poll::Ready(Err(error)) => {
-                    panic!("capacity installation failed before retirement: {error:?}")
-                }
-                Poll::Ready(Ok(_)) => panic!("held retirement unexpectedly completed"),
-            }
-            assert!(std::time::Instant::now() < deadline);
-            tokio::task::yield_now().await;
-        }
-        drop(request);
-        assert!(endpoint.is_closed());
-        assert!(
-            runtime
-                .request(meta("after-cancel"), "after".into())
-                .await
-                .is_err()
+        assert_eq!(
+            endpoint.limits_for_test("capacity-next").unwrap().per_host,
+            2
         );
+        next.finish().await;
         assert_eq!(runtime.shutdown().await.pending_local_work, 0);
     });
 }

@@ -416,8 +416,8 @@ impl Governor {
         let mut scope = Scope::new(ceiling);
         scope.adaptive = adaptive;
         book.scopes.insert(operation.to_owned(), scope);
-        // The pool's numbers may have been cleared by the capacity install
-        // that admitted this operation: send them again.
+        // The pool's numbers are not trusted across operations (nothing
+        // installs a capacity now, but a host may clear them): send them again.
         book.applied.clear();
     }
 

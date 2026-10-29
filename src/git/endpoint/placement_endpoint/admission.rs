@@ -261,7 +261,7 @@ impl PlacementEndpoint {
                     self.queued_opens.push_back(queued);
                     return Ok(());
                 }
-                if left > 0 && self.admits_open(&queued.pool_key, admission.target) {
+                if left > 0 && self.admits_open(&queued.key.0, &queued.pool_key, admission.target) {
                     self.start_attempt(queued, now, left, carries_test);
                     return Ok(());
                 }
@@ -340,6 +340,7 @@ impl PlacementEndpoint {
             context,
             cancelled.clone(),
             Some(tag),
+            self.limits.get(&key.0).copied(),
             carries_test.is_some(),
         ) {
             Ok(reply) => self.opens.push(OpenJob {
@@ -539,13 +540,13 @@ impl PlacementEndpoint {
     }
 
     /// An open starts while the opens in flight stay within the operation's
-    /// limits, which the transport host installs in the pool before the
-    /// operation's first open: the per-host and per-user ceilings of the open's
+    /// limits, which the transport host records for the request before its
+    /// first open (its pool requests carry them too): the per-host and per-user ceilings of the open's
     /// host, `open_ceiling` across every host, and `target`, the believed
     /// limit of the open's site that its limit machine sets (the ceiling
     /// until a limit is found).
-    fn admits_open(&self, key: &Key, target: usize) -> bool {
-        let capacity = self.endpoint.pool().capacity();
+    fn admits_open(&self, request: &str, key: &Key, target: usize) -> bool {
+        let capacity = self.limits_of(request);
         let host = self
             .opens
             .iter()

@@ -12,6 +12,7 @@ use gwz_transport::{
     protocol::{Disposition, ErrorCode, Failure, SetupFailureCause},
 };
 use std::{
+    collections::BTreeMap,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -35,6 +36,8 @@ pub(crate) struct HttpsPool {
     /// The limit machines of this pool; its host reports every connection's
     /// state change to them.
     governor: Governor,
+    /// Each live operation's limits, by operation name: the pool requests it makes carry them (reuse design section 5).
+    limits: Arc<Mutex<BTreeMap<String, pool::Capacity>>>,
 }
 pub(crate) struct RunningPool {
     pub(crate) client: HttpsPool,
@@ -76,6 +79,7 @@ impl RunningPool {
             wake: Arc::default(),
             tls,
             governor,
+            limits: Arc::default(),
         };
         let owner = client.clone();
         let supervisor = tokio::spawn(async move { owner.supervise().await });
@@ -173,6 +177,27 @@ impl HttpsPool {
     pub(crate) fn governor(&self) -> &Governor {
         &self.governor
     }
+    /// The operation's limits, which every pool request it makes carries (reuse design section 5); nothing is
+    /// installed in the pool, which holds each owner to the limits its requests carry.
+    pub(crate) fn set_operation_limits(&self, operation: &str, limits: pool::Capacity) {
+        self.limits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(operation.to_owned(), limits);
+    }
+    pub(crate) fn operation_limits(&self, operation: &str) -> Option<pool::Capacity> {
+        self.limits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(operation)
+            .copied()
+    }
+    pub(crate) fn forget_operation_limits(&self, operation: &str) {
+        self.limits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(operation);
+    }
     pub(crate) fn pending(&self) -> usize {
         self.host
             .lock()
@@ -226,7 +251,9 @@ impl HttpsPool {
     ) -> Result<HttpLease, (Failure, Phase)> {
         let started = Instant::now();
         let identity = scope.map_or(Identity::Https, |scope| Identity::HttpsScoped(scope.into()));
+        let limits = self.operation_limits(&owner.operation);
         let mut request = Request::new(key, identity, owner);
+        request.limits = limits;
         request.connect_timeout_ms = Some(connect_ms);
         request.allocation_timeout_ms = Some(allocation_ms);
         request.fresh = fresh;

@@ -479,7 +479,7 @@ impl HttpsEndpoint {
             .is_some_and(|entry| entry.attempts >= self.retries.machines.max_retries(&key.0));
         let waits_for_restore =
             admission.holds_final_attempt(final_attempt, idle, carries_test.is_some());
-        let room = self.admits_attempt(&pool_key, admission.target);
+        let room = self.admits_attempt(&key.0, &pool_key, admission.target);
         let Some(entry) = self.entries.get_mut(key) else {
             return;
         };
@@ -537,13 +537,17 @@ impl HttpsEndpoint {
     }
 
     /// An attempt starts while the attempts in flight on its host stay within
-    /// the operation's per-host limits, which the transport host installs in
-    /// the pool: a key's first wave is at most that many setups (amendment
+    /// the operation's per-host limits, which the transport host records for
+    /// the request (its pool requests carry them): a key's first wave is at most that many setups (amendment
     /// 2's §3.20), as on SSH. The attempts in flight on its site also stay
     /// within `target`, the believed limit its limit machine sets (the ceiling
     /// until a limit is found).
-    fn admits_attempt(&self, pool_key: &pool::Key, target: usize) -> bool {
-        let capacity = self.client.pool().capacity();
+    fn admits_attempt(&self, request: &str, pool_key: &pool::Key, target: usize) -> bool {
+        let capacity = self.client.limits_of(
+            self.operations
+                .get(request)
+                .map(|operation| operation.name.as_str()),
+        );
         let on_host = self
             .entries
             .values()

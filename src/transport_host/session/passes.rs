@@ -6,8 +6,6 @@ impl Session {
             state: Mutex::new(state),
             event: Event::new(),
             origin: Instant::now(),
-            capacity_gate: AtomicBool::new(false),
-            admission_gate: AtomicBool::new(false),
             test_hooks: TestHooks::new(),
             passes: OnceLock::new(),
         });

@@ -657,7 +657,7 @@ fn native_publication_session_before_d_across_the_mux_lock_is_published() {
         }));
 }
 #[test]
-fn https_only_capacity_replacement_waits_for_actual_physical_disposal() {
+fn https_only_reservation_is_held_until_actual_physical_disposal() {
     use crate::git::endpoint::{
         https_fixture::{Server, input, response},
         https_worker::native,
@@ -738,17 +738,16 @@ fn https_only_capacity_replacement_waits_for_actual_physical_disposal() {
             }
             let authority = endpoint.authority_for_test();
             assert_eq!(authority.counts("localhost"), (1, 1));
-            assert!(authority.try_reserve("localhost").is_none());
-            let error = runtime
+            // A different limit is admitted at once (nothing is installed, so nothing waits for disposal), while the
+            // revoked connection's reservation stays held until the connection is actually disposed of.
+            let replacement = runtime
                 .request(metadata("physical-next", 2), "replacement".into())
                 .await
-                .err()
                 .unwrap();
             assert_eq!(
-                error.code,
-                crate::model::ErrorCode::TransportCapacityConflict
+                endpoint.limits_for_test("physical-next").unwrap().per_host,
+                2
             );
-            assert_eq!(endpoint.capacity_for_test().unwrap().per_host, 1);
             assert_eq!(authority.counts("localhost"), (1, 1));
             drop(connection);
             while endpoint.https_counts_for_test().unwrap().total() != 0 {
@@ -756,11 +755,6 @@ fn https_only_capacity_replacement_waits_for_actual_physical_disposal() {
                 tokio::time::sleep(Duration::from_millis(2)).await;
             }
             assert_eq!(authority.counts("localhost"), (0, 0));
-            let replacement = runtime
-                .request(metadata("physical-next", 2), "replacement".into())
-                .await
-                .unwrap();
-            assert_eq!(endpoint.capacity_for_test().unwrap().per_host, 2);
             replacement.finish().await;
             assert_eq!(runtime.shutdown().await.pending_local_work, 0);
         });

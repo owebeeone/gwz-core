@@ -23,7 +23,7 @@ use std::{
     pin::{Pin, pin},
     sync::{
         Condvar, OnceLock,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     task::{Context, Poll, Waker},
     thread,
@@ -146,7 +146,6 @@ struct State {
     engine: Option<PlacementEndpoint>,
     https: Option<super::https_endpoint::HttpsEndpoint>,
     authority: Option<Authority>,
-    installed_capacity: Option<pool::Capacity>,
     prefer_https: bool,
     endpoint_config: Option<binding::EndpointConfig>,
     pending: Option<Attachment>,
@@ -218,17 +217,14 @@ pub(super) struct Session {
     state: Mutex<State>,
     event: Event,
     origin: Instant,
-    capacity_gate: AtomicBool,
-    admission_gate: AtomicBool,
     test_hooks: TestHooks,
     /// The thread that runs the session's passes.
     passes: OnceLock<thread::Thread>,
 }
 cfg_if::cfg_if! {
     if #[cfg(test)] {
+        use std::sync::atomic::AtomicBool;
         struct TestHooks {
-            hold_retirement: AtomicBool,
-            waiting_retirement: AtomicBool,
             hold_pump: AtomicBool,
             pumps: std::sync::atomic::AtomicUsize,
             park_ms: AtomicU64,
@@ -239,8 +235,6 @@ cfg_if::cfg_if! {
         impl TestHooks {
             fn new() -> Self {
                 Self {
-                    hold_retirement: AtomicBool::new(false),
-                    waiting_retirement: AtomicBool::new(false),
                     hold_pump: AtomicBool::new(false),
                     pumps: std::sync::atomic::AtomicUsize::new(0),
                     park_ms: AtomicU64::new(PARK.as_millis() as u64),
@@ -266,14 +260,6 @@ cfg_if::cfg_if! {
             fn pumped(&self) {
                 self.pumps.fetch_add(1, Ordering::AcqRel);
             }
-            fn should_hold_retirement(&self) -> bool {
-                if self.hold_retirement.load(Ordering::Acquire) {
-                    self.waiting_retirement.store(true, Ordering::Release);
-                    true
-                } else {
-                    false
-                }
-            }
         }
     } else {
         struct TestHooks;
@@ -282,7 +268,6 @@ cfg_if::cfg_if! {
             fn backstop_skew_ms(&self) -> u64 { 0 }
             fn park(&self) -> Duration { PARK }
             fn passed(&self) {}
-            fn should_hold_retirement(&self) -> bool { false }
             fn should_hold_pump(&self) -> bool { false }
             fn pumped(&self) {}
         }
@@ -365,10 +350,17 @@ impl Session {
         pub(super) fn set_producer_ceiling_ms_for_test(&self, ms: u64) {
             self.state.lock().unwrap_or_else(|error| error.into_inner()).producer_ceiling_ms = ms;
         }
+        /// The pool's own capacity: its ceilings, which nothing installs or resizes.
         pub(super) fn capacity_for_test(&self) -> Option<pool::Capacity> {
             let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
             state.engine.as_ref().map(|engine| engine.pool().capacity())
                 .or_else(|| state.https.as_ref().map(|endpoint| endpoint.pool().capacity()))
+        }
+        /// The limits `request` is held to on the SSH endpoint, or on the HTTPS one when there is none.
+        pub(super) fn limits_for_test(&self, request: &str) -> Option<pool::Capacity> {
+            let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.engine.as_ref().map(|engine| engine.limits_of(request))
+                .or_else(|| state.https.as_ref().map(|endpoint| endpoint.limits_of(request)))
         }
         cfg_if::cfg_if! { if #[cfg(test)] {
             pub(super) fn https_client_for_test(&self) -> crate::git::endpoint::https_worker::Client {
@@ -402,20 +394,6 @@ impl Session {
                 .https
                 .as_ref()
                 .map(|endpoint| endpoint.pool().counts())
-        }
-        pub(super) fn hold_admission_for_test(&self) {
-            assert!(!self.admission_gate.swap(true, Ordering::AcqRel));
-        }
-        pub(super) fn release_admission_for_test(&self) {
-            assert!(self.admission_gate.swap(false, Ordering::AcqRel));
-            self.event.signal();
-        }
-        pub(super) fn hold_capacity_for_test(&self) {
-            assert!(!self.capacity_gate.swap(true, Ordering::AcqRel));
-        }
-        pub(super) fn release_capacity_for_test(&self) {
-            assert!(self.capacity_gate.swap(false, Ordering::AcqRel));
-            self.event.signal();
         }
         pub(super) fn hold_pump_for_test(&self, hold: bool) {
             self.test_hooks.hold_pump.store(hold, Ordering::Release);
@@ -459,12 +437,6 @@ impl Session {
                 .fetch_add(by.as_millis() as u64, Ordering::AcqRel);
             self.wake();
         }
-        pub(super) fn hold_retirement_for_test(&self) {
-            self.test_hooks.hold_retirement.store(true, Ordering::Release);
-        }
-        pub(super) fn retirement_waiting_for_test(&self) -> bool {
-            self.test_hooks.waiting_retirement.load(Ordering::Acquire)
-        }
     } }
     fn empty() -> State {
         State {
@@ -479,7 +451,6 @@ impl Session {
             engine: None,
             https: None,
             authority: None,
-            installed_capacity: None,
             prefer_https: false,
             endpoint_config: None,
             pending: None,
@@ -554,7 +525,6 @@ impl Session {
             config.pool.per_host,
         );
         state.authority = Some(authority.clone());
-        state.installed_capacity = Some(pool::Capacity::from(&config.pool));
         if let Some(ssh_settings) = config.ssh {
             let ssh_helpers = https.as_ref().and_then(|(https, slots)| {
                 https.auth.as_ref().map(|auth| {

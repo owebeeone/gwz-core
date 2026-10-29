@@ -59,6 +59,7 @@ fn queued_expiry_releases_admission_without_stopping_worker() {
         sender
             .send(OpenRequest {
                 tag: None,
+                limits: None,
                 carrier: false,
                 progress: Default::default(),
                 setup_slot: Arc::default(),
@@ -213,6 +214,7 @@ fn an_open_cancelled_while_connecting_fails_cancelled_whichever_pass_sees_it() {
     sender
         .send(OpenRequest {
             tag: None,
+            limits: None,
             carrier: false,
             progress: Default::default(),
             setup_slot: Arc::default(),
@@ -358,4 +360,107 @@ fn the_worker_wakes_its_watcher_when_its_shutdown_has_settled() {
         status.status().cleanup_complete,
         "the watcher was woken before the worker's cleanup was complete"
     );
+}
+/// Two opens to one host over a connector whose connects never finish, with `limits` on each: how many connections the
+/// pool has opening once both are in the pool.
+fn opening_with(limits: Option<gwz_transport::pool::Capacity>) -> usize {
+    let config = PoolConfig::default();
+    let (pool, mut host) = PoolHost::new(
+        config.clone(),
+        CancelsOnStart(Arc::new(AtomicBool::new(false))),
+        0,
+    )
+    .unwrap();
+    let (sender, receiver) = mpsc::sync_channel(2);
+    let permits = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut replies = Vec::new();
+    for stream_id in 1..=2 {
+        let (reply, result) = mpsc::sync_channel(1);
+        replies.push(result);
+        permits.fetch_add(1, Ordering::SeqCst);
+        sender
+            .send(OpenRequest {
+                tag: None,
+                limits,
+                carrier: false,
+                progress: Default::default(),
+                setup_slot: Arc::default(),
+                key: Key::ssh("git", "host", 22),
+                identity: Identity::Ambient,
+                service: GitService::UploadPack,
+                path: "repo".into(),
+                deadline: None,
+                cancelled: Arc::new(AtomicBool::new(false)),
+                reply: Some(reply),
+                selected: None,
+                authority: None,
+                url: None,
+                producer: None,
+                permit: Permit(permits.clone()),
+                context: BridgeContext {
+                    session_id: "session".into(),
+                    stream_id,
+                    version: 2,
+                    limits: gwz_transport::binding::default_limits(),
+                    deadlines: Deadlines {
+                        allocation_ms: config.allocation_timeout_ms as i64,
+                        connect_ms: config.connect_timeout_ms as i64,
+                        io_ms: 100,
+                        interaction_ms: config.interaction_timeout_ms as i64,
+                        cleanup_ms: config.cleanup_timeout_ms as i64,
+                    },
+                    waker: None,
+                },
+            })
+            .unwrap();
+    }
+    let mut admissions = Admissions::new(
+        Registry::new(),
+        Arc::new(Registry::start),
+        Instant::now(),
+        100,
+    );
+    let observed = pool.clone();
+    let worker_stop = stop.clone();
+    let join = thread::spawn(move || {
+        run(
+            receiver,
+            pool,
+            &mut host,
+            &mut admissions,
+            100,
+            10,
+            worker_stop,
+            || 0,
+            999,
+            &Status::default(),
+        )
+    });
+    let until = Instant::now() + Duration::from_secs(30);
+    while observed.outstanding_requests() < 2 {
+        assert!(Instant::now() < until, "the worker never took both opens");
+        thread::sleep(Duration::from_millis(1));
+    }
+    let opening = observed.counts().opening;
+    stop.store(true, Ordering::Release);
+    join.thread().unpark();
+    join.join().unwrap();
+    drop(replies);
+    opening
+}
+#[test]
+fn an_open_carries_its_operations_limits_to_the_pool_which_holds_the_worker_to_them() {
+    use gwz_transport::pool::Capacity;
+    // No limits: the pool's own capacity (32 a host) lets both connect at once.
+    assert_eq!(opening_with(None), 2);
+    // The operation's limit of one connection on the host: the second open waits in the pool, whatever the worker's
+    // owner (the worker is one owner for all of its opens).
+    let one = Capacity {
+        per_user_host: 1,
+        per_host: 1,
+        total: 256,
+        max_requests: 1024,
+    };
+    assert_eq!(opening_with(Some(one)), 1);
 }

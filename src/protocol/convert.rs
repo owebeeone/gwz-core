@@ -83,8 +83,6 @@ impl From<model::ErrorCode> for generated::GwzErrorCode {
             model::ErrorCode::UrlSchemeUnavailable => Self::UrlSchemeUnavailable,
             model::ErrorCode::CredentialHelperTimeout => Self::CredentialHelperTimeout,
             model::ErrorCode::Capacity => Self::Capacity,
-            // Native-session bridge errors do not enter an OperationResult.
-            model::ErrorCode::TransportCapacityConflict => Self::IoError,
             // The core session's own codes (gwz-dev dev-docs/GwzCoreSessionDesign.md
             // §4.2; numbered 77 and 78 by GwzSplitCommandChannel.md §1).
             model::ErrorCode::TransportSessionFull => Self::TransportSessionFull,

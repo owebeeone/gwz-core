@@ -134,6 +134,9 @@ pub(crate) struct PlacementEndpoint {
     /// retry plan's §5, and `RetryKey`); an attempt's member is its request
     /// key.
     retries: Operations<RetryKey, RequestKey>,
+    /// Each admitted request's resolved limits (reuse design section 5), by request ID: its opens' pool requests carry
+    /// them and its open gates read them. A request without any is held to the pool's own capacity.
+    limits: BTreeMap<String, Capacity>,
     jitter: Jitter,
     /// Where the limit machines' notes go (§9), if anywhere.
     notes: Option<setup_retry::NoteSink>,
@@ -152,8 +155,17 @@ impl PlacementEndpoint {
     pub(crate) fn set_notes(&mut self, notes: setup_retry::NoteSink) {
         self.notes = Some(notes);
     }
-    pub(crate) fn set_request_capacity(&self, capacity: usize) {
-        self.endpoint.set_request_capacity(capacity);
+    /// The limits of an admitted request, which its opens carry. Nothing is installed in the pool: the pool holds
+    /// each owner to the limits its requests carry.
+    pub(crate) fn set_limits(&mut self, request: &str, capacity: Capacity) {
+        self.limits.insert(request.to_owned(), capacity);
+    }
+    /// The limits `request` is held to: its own, or the pool's capacity.
+    pub(crate) fn limits_of(&self, request: &str) -> Capacity {
+        self.limits
+            .get(request)
+            .copied()
+            .unwrap_or_else(|| self.pool().capacity())
     }
     pub(crate) fn new(
         endpoint: Endpoint,
@@ -185,6 +197,7 @@ impl PlacementEndpoint {
             faulted: false,
             waker: None,
             retries: Operations::new(),
+            limits: BTreeMap::new(),
             jitter: Jitter::random(),
             notes: None,
         })
@@ -195,11 +208,11 @@ impl PlacementEndpoint {
         self.retries.set_max_retries(request, max_retries);
         // The operation's limit machines start SATURATED at the pool's own
         // cap, the per-host and per-user limits its admission has just
-        // installed (adaptive concurrency design §4.1). `open_ceiling` bounds
+        // recorded for it (adaptive concurrency design §4.1). `open_ceiling` bounds
         // opens in flight and stays in `admits_open`: the connections the
         // opens leave behind, streaming on their leases, are the pool's to
         // count. They adapt unless the operation retries nothing (§5.3).
-        let capacity = self.pool().capacity();
+        let capacity = self.limits_of(request);
         let ceiling = capacity.per_host.min(capacity.per_user_host);
         self.endpoint.governor().begin_operation(
             request,

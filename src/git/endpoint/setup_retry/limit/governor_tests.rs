@@ -486,7 +486,7 @@ fn a_hold_still_in_force_outlives_its_operation_but_the_rest_of_its_state_does_n
 #[test]
 fn a_slot_kept_for_its_hold_takes_the_next_operations_ceiling_and_resends_the_pools_numbers() {
     // The reviewer's probe (P2-3): hold under ceiling 4, then an operation
-    // with 32 on a pool whose numbers its admission has just cleared.
+    // with 32 on a pool whose numbers have just been cleared.
     let mut rig = Rig::new(32, false);
     rig.governor.end_operation("op", 0);
     rig.governor.begin_operation("a", 4, false, 0);
@@ -498,12 +498,11 @@ fn a_slot_kept_for_its_hold_takes_the_next_operations_ceiling_and_resends_the_po
     rig.governor.end_operation("a", 120);
     rig.host.release(lease, Disposition::Discarded).unwrap();
     rig.tick(150);
-    rig.pool.install_capacity(rig.pool.capacity()).unwrap();
-    assert_eq!(
-        rig.pool.limit(&rig.site()),
-        None,
-        "install cleared the pool"
-    );
+    // The operation's numbers on the pool are cleared when it ends (nothing else clears them now).
+    rig.pool.clear_limit(&rig.site());
+    rig.pool.set_settle(&rig.site(), 0).unwrap();
+    rig.pool.set_no_evict(&rig.site(), false).unwrap();
+    assert_eq!(rig.pool.limit(&rig.site()), None);
     rig.governor.begin_operation("b", 32, false, 200);
     rig.scope = "b";
     assert!(!rig.op().admission(&key(), 20_099).gate_open);
