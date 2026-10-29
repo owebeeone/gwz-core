@@ -407,14 +407,18 @@ fn a_failing_stream_ends_the_session_and_an_interrupted_one_does_not() {
 #[test]
 fn a_writer_that_meets_the_peers_departure_does_not_end_the_session_or_lose_what_the_peer_sent() {
     // The peer sent three frames and stopped listening: our write breaks the pipe, but the three frames are still
-    // delivered, then the stream's end is the session's one reason.
+    // delivered, then the stream's end is the session's one reason. The peer's end of stream waits for the sends: a
+    // reader that met it first would end the session with `Peer`, the reason a later send reports.
     let sent_by_peer = write_all(&[frame(1, vec![1]), frame(1, vec![2]), frame(1, vec![3])]);
+    let (reader, mut peer) = idle();
+    peer.write_all(&sent_by_peer)
+        .expect("the pipe holds three small frames");
     let writer = Failing {
         interrupted: 0,
         error: ErrorKind::BrokenPipe,
         bytes: &[],
     };
-    let (end, router) = open(Cursor::new(sent_by_peer), writer);
+    let (end, router) = open(reader, writer);
     let broken = Closed::Stream(ErrorKind::BrokenPipe);
     for _ in 0..2 {
         match end.send(frame(1, vec![0]), Lane::Call, KEY) {
@@ -422,6 +426,7 @@ fn a_writer_that_meets_the_peers_departure_does_not_end_the_session_or_lose_what
             result => panic!("{result:?}"),
         }
     }
+    drop(peer);
     let mut seen = Vec::new();
     let closed = loop {
         match router.recv() {
