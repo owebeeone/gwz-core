@@ -341,6 +341,7 @@ impl PlacementEndpoint {
             cancelled.clone(),
             Some(tag),
             self.limits.get(&key.0).copied(),
+            Some(key.0.clone()),
             carries_test.is_some(),
         ) {
             Ok(reply) => self.opens.push(OpenJob {

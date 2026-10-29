@@ -151,7 +151,6 @@ fn the_pool_errors_that_end_a_started_setup_have_the_setup_phase() {
         pool::Error::WrongState,
         pool::Error::InvalidRequest,
         pool::Error::InvalidConfig,
-        pool::Error::ActiveOperation,
     ] {
         assert_eq!(phase_of(&error), Phase::Other, "{error:?}");
     }

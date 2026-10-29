@@ -137,6 +137,81 @@ fn an_operations_limits_hold_its_https_checkouts_and_nobody_else_s() {
 }
 
 #[test]
+fn overlapping_https_requests_on_one_session_are_each_held_to_their_own_limit() {
+    // State review P2-1: the mux session is shared by every request on it, and the pool counts per owner session, so an
+    // owner keyed by the session alone would judge the request at 4 against the 10 held by the request at 32. One
+    // request is one owner (its operation is made for it). Prepares go through the production owner of `prepare`.
+    let limits = |per_host| gwz_transport::pool::Capacity {
+        per_user_host: per_host,
+        per_host,
+        total: 256,
+        max_requests: 1024,
+    };
+    /// Prepares `count` opens of `operation` (one request, limit `own`), each allowed 300 ms for a connection, and
+    /// returns the ones the pool granted.
+    async fn prepare_up_to(
+        endpoint: &Endpoint,
+        server: &Server,
+        operation: &str,
+        own: gwz_transport::pool::Capacity,
+        count: usize,
+    ) -> Vec<Prepared> {
+        endpoint.client.set_operation_limits(operation, own);
+        let cancel = CancellationToken::new();
+        let mut granted = Vec::new();
+        for _ in 0..count {
+            let mut request = input(server, GitService::UploadPackAdvertisement);
+            request.operation = operation.into();
+            if let Ok(prepared) = endpoint
+                .client
+                .prepare_budget_for_transition(
+                    request,
+                    &cancel,
+                    &mut endpoint.client.budget(),
+                    &mut None,
+                )
+                .await
+            {
+                granted.push(prepared);
+            }
+        }
+        granted
+    }
+    let scenario = |first: (&'static str, usize, usize),
+                    second: Option<(&'static str, usize, usize)>| {
+        runtime().block_on(async move {
+            let server = Server::start(Arc::new(|_| {
+                Box::pin(async { response(200, GitService::UploadPackAdvertisement, "ok") })
+            }))
+            .await;
+            let mut pool = gwz_transport::pool::Config::default();
+            pool.per_user_host = 64;
+            pool.per_host = 64;
+            pool.total = 64;
+            pool.allocation_timeout_ms = 300;
+            let mut endpoint = Endpoint::new(server.config(), None, pool).unwrap();
+            let one = prepare_up_to(&endpoint, &server, first.0, limits(first.1), first.2).await;
+            let two = match second {
+                Some((name, per_host, count)) => {
+                    prepare_up_to(&endpoint, &server, name, limits(per_host), count).await
+                }
+                None => Vec::new(),
+            };
+            let granted = (one.len(), two.len());
+            drop((one, two));
+            assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
+            granted
+        })
+    };
+    // The request at 32 holds 10; the request at 4 is granted exactly 4.
+    assert_eq!(scenario(("large", 32, 10), Some(("small", 4, 5))), (10, 4));
+    // Reverse order: the request at 4 holds 4; the request at 32 still gets its 32.
+    assert_eq!(scenario(("small", 4, 5), Some(("large", 32, 33))), (4, 32));
+    // A lone request at 32 is unchanged.
+    assert_eq!(scenario(("large", 32, 33), None), (32, 0));
+}
+
+#[test]
 fn active_io_custom_timeout_expires_delayed_headers() {
     runtime().block_on(async {
         let server = Server::start(Arc::new(|_| {

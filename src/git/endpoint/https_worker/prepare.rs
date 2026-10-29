@@ -239,7 +239,7 @@ impl Client {
                 };
                 let checkout = self.pool.checkout_scoped(
                     Key::https(destination.host(), destination.port()),
-                    Owner::new(&input.session, &input.operation),
+                    input.owner(),
                     duration_ms(budget.allocation),
                     budget.logical_deadline.map_or_else(
                         || budget.connect.map_or(0, duration_ms),

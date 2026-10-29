@@ -60,6 +60,7 @@ fn queued_expiry_releases_admission_without_stopping_worker() {
             .send(OpenRequest {
                 tag: None,
                 limits: None,
+                request: None,
                 carrier: false,
                 progress: Default::default(),
                 setup_slot: Arc::default(),
@@ -215,6 +216,7 @@ fn an_open_cancelled_while_connecting_fails_cancelled_whichever_pass_sees_it() {
         .send(OpenRequest {
             tag: None,
             limits: None,
+            request: None,
             carrier: false,
             progress: Default::default(),
             setup_slot: Arc::default(),
@@ -361,60 +363,25 @@ fn the_worker_wakes_its_watcher_when_its_shutdown_has_settled() {
         "the watcher was woken before the worker's cleanup was complete"
     );
 }
-/// Two opens to one host over a connector whose connects never finish, with `limits` on each: how many connections the
-/// pool has opening once both are in the pool.
-fn opening_with(limits: Option<gwz_transport::pool::Capacity>) -> usize {
-    let config = PoolConfig::default();
+/// One group of opens for `opening_by_request`: the transport request they belong to, its limits, and how many.
+type Group<'a> = (
+    Option<&'a str>,
+    Option<gwz_transport::pool::Capacity>,
+    usize,
+);
+/// Opens to one host over a connector whose connects never finish, sent group by group to ONE worker (one runtime):
+/// how many connections the pool has opening once each group is in the pool.
+fn opening_by_request(config: PoolConfig, groups: &[Group<'_>]) -> Vec<usize> {
+    let total: usize = groups.iter().map(|group| group.2).sum();
     let (pool, mut host) = PoolHost::new(
         config.clone(),
         CancelsOnStart(Arc::new(AtomicBool::new(false))),
         0,
     )
     .unwrap();
-    let (sender, receiver) = mpsc::sync_channel(2);
+    let (sender, receiver) = mpsc::sync_channel(total);
     let permits = Arc::new(AtomicUsize::new(0));
     let stop = Arc::new(AtomicBool::new(false));
-    let mut replies = Vec::new();
-    for stream_id in 1..=2 {
-        let (reply, result) = mpsc::sync_channel(1);
-        replies.push(result);
-        permits.fetch_add(1, Ordering::SeqCst);
-        sender
-            .send(OpenRequest {
-                tag: None,
-                limits,
-                carrier: false,
-                progress: Default::default(),
-                setup_slot: Arc::default(),
-                key: Key::ssh("git", "host", 22),
-                identity: Identity::Ambient,
-                service: GitService::UploadPack,
-                path: "repo".into(),
-                deadline: None,
-                cancelled: Arc::new(AtomicBool::new(false)),
-                reply: Some(reply),
-                selected: None,
-                authority: None,
-                url: None,
-                producer: None,
-                permit: Permit(permits.clone()),
-                context: BridgeContext {
-                    session_id: "session".into(),
-                    stream_id,
-                    version: 2,
-                    limits: gwz_transport::binding::default_limits(),
-                    deadlines: Deadlines {
-                        allocation_ms: config.allocation_timeout_ms as i64,
-                        connect_ms: config.connect_timeout_ms as i64,
-                        io_ms: 100,
-                        interaction_ms: config.interaction_timeout_ms as i64,
-                        cleanup_ms: config.cleanup_timeout_ms as i64,
-                    },
-                    waker: None,
-                },
-            })
-            .unwrap();
-    }
     let mut admissions = Admissions::new(
         Registry::new(),
         Arc::new(Registry::start),
@@ -437,17 +404,69 @@ fn opening_with(limits: Option<gwz_transport::pool::Capacity>) -> usize {
             &Status::default(),
         )
     });
-    let until = Instant::now() + Duration::from_secs(30);
-    while observed.outstanding_requests() < 2 {
-        assert!(Instant::now() < until, "the worker never took both opens");
-        thread::sleep(Duration::from_millis(1));
+    let mut replies = Vec::new();
+    let mut sent = 0;
+    let mut opening = Vec::new();
+    for (request, limits, count) in groups {
+        for _ in 0..*count {
+            sent += 1;
+            let (reply, result) = mpsc::sync_channel(1);
+            replies.push(result);
+            permits.fetch_add(1, Ordering::SeqCst);
+            sender
+                .send(OpenRequest {
+                    tag: None,
+                    limits: *limits,
+                    request: request.map(str::to_owned),
+                    carrier: false,
+                    progress: Default::default(),
+                    setup_slot: Arc::default(),
+                    key: Key::ssh("git", "host", 22),
+                    identity: Identity::Ambient,
+                    service: GitService::UploadPack,
+                    path: "repo".into(),
+                    deadline: None,
+                    cancelled: Arc::new(AtomicBool::new(false)),
+                    reply: Some(reply),
+                    selected: None,
+                    authority: None,
+                    url: None,
+                    producer: None,
+                    permit: Permit(permits.clone()),
+                    context: BridgeContext {
+                        session_id: "session".into(),
+                        stream_id: sent,
+                        version: 2,
+                        limits: gwz_transport::binding::default_limits(),
+                        deadlines: Deadlines {
+                            allocation_ms: config.allocation_timeout_ms as i64,
+                            connect_ms: config.connect_timeout_ms as i64,
+                            io_ms: 100,
+                            interaction_ms: config.interaction_timeout_ms as i64,
+                            cleanup_ms: config.cleanup_timeout_ms as i64,
+                        },
+                        waker: None,
+                    },
+                })
+                .unwrap();
+        }
+        join.thread().unpark();
+        let until = Instant::now() + Duration::from_secs(30);
+        while observed.outstanding_requests() < sent as usize {
+            assert!(Instant::now() < until, "the worker never took the opens");
+            thread::sleep(Duration::from_millis(1));
+        }
+        opening.push(observed.counts().opening);
     }
-    let opening = observed.counts().opening;
     stop.store(true, Ordering::Release);
     join.thread().unpark();
     join.join().unwrap();
     drop(replies);
     opening
+}
+/// Two opens of one request (or of none) with `limits` on each: how many connections the pool has opening.
+fn opening_with(limits: Option<gwz_transport::pool::Capacity>) -> usize {
+    opening_by_request(PoolConfig::default(), &[(None, limits, 2)])[0]
 }
 #[test]
 fn an_open_carries_its_operations_limits_to_the_pool_which_holds_the_worker_to_them() {
@@ -463,4 +482,52 @@ fn an_open_carries_its_operations_limits_to_the_pool_which_holds_the_worker_to_t
         max_requests: 1024,
     };
     assert_eq!(opening_with(Some(one)), 1);
+}
+#[test]
+fn overlapping_requests_on_one_worker_are_each_held_to_their_own_limit() {
+    use gwz_transport::pool::Capacity;
+    // State review P2-1: the worker is one runtime for every request, and the pool counts per owner session, so an
+    // owner keyed by the worker alone would judge a request at 4 against the 10 held by a request at 32 (and starve it),
+    // or let it eat into the larger request's share. One request is one owner.
+    let limits = |per_host| Capacity {
+        per_user_host: per_host,
+        per_host,
+        total: 256,
+        max_requests: 1024,
+    };
+    let config = || PoolConfig {
+        per_user_host: 64,
+        per_host: 64,
+        total: 64,
+        ..PoolConfig::default()
+    };
+    // The request at 32 holds 10; the request at 4 then holds exactly 4.
+    let opening = opening_by_request(
+        config(),
+        &[
+            (Some("large"), Some(limits(32)), 10),
+            (Some("small"), Some(limits(4)), 8),
+        ],
+    );
+    assert_eq!(
+        opening,
+        vec![10, 14],
+        "the request at 4 is granted exactly 4"
+    );
+    // Reverse order: the request at 4 holds 4, and the request at 32 still gets its 32.
+    let opening = opening_by_request(
+        config(),
+        &[
+            (Some("small"), Some(limits(4)), 8),
+            (Some("large"), Some(limits(32)), 40),
+        ],
+    );
+    assert_eq!(
+        opening,
+        vec![4, 36],
+        "the request at 32 gets 32 beside the 4"
+    );
+    // A lone request at 32 is unchanged.
+    let opening = opening_by_request(config(), &[(Some("large"), Some(limits(32)), 40)]);
+    assert_eq!(opening, vec![32]);
 }

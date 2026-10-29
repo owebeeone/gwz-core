@@ -48,6 +48,9 @@ impl Session {
         if let Some(engine) = &mut state.https {
             engine.cancel_request(request);
         }
+        if let Some(authority) = &state.authority {
+            authority.end_operation(request);
+        }
         if state
             .incoming
             .as_ref()

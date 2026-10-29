@@ -2,6 +2,7 @@ use super::*;
 use crate::git::endpoint::{
     agent_auth::{Authenticator, Check, Evidence, Possession, Verdict},
     agent_job::{self as job, Job},
+    shared_reservation::request_owner_session,
     ssh_pool::{Lessee, Proofs},
 };
 pub(super) fn run<C>(
@@ -199,10 +200,17 @@ pub(super) fn run<C>(
             } else {
                 request.identity.clone()
             };
+            // One request is one owner: a limit-bearing open is counted with the opens of its own request alone, so
+            // overlapping requests with differing limits are each held to their own (State review P2-1). Its workers
+            // still share one limit. An open that names no request is counted with the worker's.
+            let owner_session = match (&request.request, request.limits) {
+                (Some(name), Some(_)) => request_owner_session(&session, name),
+                _ => session.clone(),
+            };
             let mut policy = gwz_transport::pool::Request::new(
                 request.key.clone(),
                 pool_identity,
-                Owner::new(&session, serial.to_string()),
+                Owner::new(owner_session, serial.to_string()),
             );
             let d = &request.context.deadlines;
             policy.allocation_timeout_ms = Some(d.allocation_ms as u64);

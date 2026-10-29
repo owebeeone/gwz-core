@@ -331,14 +331,14 @@ impl Gate {
     /// ones were discarded, so it is a fresh one.
     pub(super) async fn recheckout(
         &self,
-        session: &str,
+        owner: Owner,
         relet: &Relet,
         cancel: &CancellationToken,
     ) -> Result<HttpLease, Failure> {
         self.pool
             .checkout_scoped(
                 self.key.clone(),
-                Owner::new(session, &self.operation),
+                owner,
                 relet.allocation_ms,
                 relet.connect_ms,
                 cancel,

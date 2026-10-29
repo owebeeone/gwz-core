@@ -187,7 +187,7 @@ impl Endpoint {
         cancelled: Arc<AtomicBool>,
     ) -> io::Result<PendingOpen> {
         self.start_endpoint_open_tagged(
-            key, selected, service, path, context, cancelled, None, None, false,
+            key, selected, service, path, context, cancelled, None, None, None, false,
         )
     }
     /// `start_endpoint_open`, where the pool request carries `tag`, which
@@ -196,7 +196,8 @@ impl Endpoint {
     /// which the background close must never defer. `limits` are the open's
     /// operation's: its pool request carries them, so its owner is held to them
     /// (reuse design section 5), and the endpoint's outstanding opens stay below
-    /// max(the pool's ceiling, its `max_requests`).
+    /// max(the pool's ceiling, its `max_requests`). `request` names the transport request, which keys the open's pool
+    /// owner so that it is counted apart from other requests' (State review P2-1).
     #[allow(clippy::too_many_arguments)] // One open's fields, and its limit tag.
     pub(crate) fn start_endpoint_open_tagged(
         &self,
@@ -208,6 +209,7 @@ impl Endpoint {
         cancelled: Arc<AtomicBool>,
         tag: Option<String>,
         limits: Option<gwz_transport::pool::Capacity>,
+        request: Option<String>,
         carrier: bool,
     ) -> io::Result<PendingOpen> {
         if self.shared.stop.load(Ordering::Acquire) {
@@ -275,6 +277,7 @@ impl Endpoint {
             cancelled,
             tag,
             limits,
+            request,
             carrier,
             deadline: absolute.map(|at| at.duration_since(self.shared.origin).as_millis() as u64),
             context,

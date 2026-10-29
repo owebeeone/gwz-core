@@ -215,12 +215,14 @@ fn https_only_overlapping_requests_with_different_limits_are_both_admitted() {
             endpoint.limits_for_test("capacity-first").unwrap().per_host,
             1
         );
-        // The shared authority holds the physical ceilings, which no operation's limit shrinks: a request at 1 per
-        // host does not clamp the reservations (the pool holds its owner to 1).
+        // A lone request at 1 per host bounds the shared authority's reservations to one on a host, across schemes, as
+        // `install_capacity` gave (State review P2-2, consequence 2; the ratchet this row once asserted is gone).
         let authority = endpoint.authority_for_test();
-        let held: Vec<_> = (0..3)
-            .map(|_| authority.try_reserve("example.invalid").unwrap())
-            .collect();
+        let held = authority.try_reserve("example.invalid").unwrap();
+        assert!(
+            authority.try_reserve("example.invalid").is_none(),
+            "the lone request's limit of 1 bounds the host"
+        );
         drop(held);
         // An overlapping request with another limit is admitted: no `TransportCapacityConflict`.
         let next = runtime

@@ -22,6 +22,26 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
+/// The pool owner session of one request's opens: `base` (the runtime's, or the mux session's) and the request, so that the
+/// pool counts the request alone (State review P2-1). The pool bounds a session at 128 bytes, so a pair that would exceed
+/// it keys the request by a fixed-width digest of the pair instead; a collision would only make two requests share a count.
+pub(crate) fn request_owner_session(base: &str, request: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let plain = format!("{base}/{request}");
+    if plain.len() <= 128 {
+        return plain;
+    }
+    let mut digest = std::collections::hash_map::DefaultHasher::new();
+    (base, request).hash(&mut digest);
+    let tail = format!("/{:016x}", digest.finish());
+    let keep = 128 - tail.len();
+    let mut end = base.len().min(keep);
+    while !base.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}{tail}", &base[..end])
+}
+
 /// What one transport host's SSH and HTTPS endpoints share: the physical
 /// reservations below and the job budget of their setups (`Supervisor`). A new
 /// authority is a new host, with a budget of its own.
@@ -37,11 +57,14 @@ struct State {
     /// The physical ceilings the host was built with.
     total_limit: usize,
     per_host_limit: usize,
-    /// The largest limits any admitted operation brought (reuse design section 5): a reservation needs fewer than
-    /// max(ceiling, this) in total and on its host. They only grow, so nothing admitted is ever refused, shrunk or
-    /// released for another operation's limits.
-    admitted_total: usize,
-    admitted_per_host: usize,
+    /// The limits of the requests that are live, (total, per host) by request. While any is live a reservation needs
+    /// fewer than the largest of them in total and on its host (reuse design section 5, the no-clamp rule: a lone
+    /// request keeps its own limits, below the base ceilings too, as `install_capacity` gave); overlapping requests
+    /// share the larger. When none is live the base ceilings above apply. A request's entry goes when it ends, so no
+    /// request's limit outlives it (State review P2-2), and nothing admitted is refused, shrunk or released for
+    /// another request's limits. This is stricter than contract section 8's max(256, limit) for the legacy path only,
+    /// which phase 3 retires (lane owner's ruling, remediation round 1).
+    live: BTreeMap<String, (usize, usize)>,
     /// Connections waiting for a reservation, woken when one is returned.
     waiters: Vec<Waker>,
 }
@@ -381,8 +404,7 @@ impl Authority {
                 hosts: BTreeMap::new(),
                 total_limit: total,
                 per_host_limit: per_host,
-                admitted_total: 0,
-                admitted_per_host: 0,
+                live: BTreeMap::new(),
                 waiters: Vec::new(),
             })),
             supervisor: Supervisor::new(),
@@ -394,14 +416,33 @@ impl Authority {
         &self.supervisor
     }
 
-    /// An operation was admitted with `total` and `per_host` limits. Nothing is installed, resized, released or
-    /// refused for them: a new reservation needs fewer than max(ceiling, the largest limit admitted) in total and on
-    /// its host, which keeps a lone operation's limits exactly (the no-clamp rule) and bounds overlapping operations by
-    /// the ceilings. The operation's own limit is held by the pools, whose requests carry it.
-    pub(crate) fn admit_operation(&self, total: usize, per_host: usize) {
+    /// `request` was admitted, and registered, with `total` and `per_host` limits. Nothing is installed, resized,
+    /// released or refused for them: while it is live a new reservation needs fewer than the largest limits of the live
+    /// requests in total and on its host, which keeps a lone request's limits exactly (the no-clamp rule) and bounds
+    /// overlapping requests by the larger. The request's own limit is held by the pools, whose requests carry it.
+    /// Waiting connections are woken when the ceilings rise.
+    pub(crate) fn admit_operation(&self, request: &str, total: usize, per_host: usize) {
+        let waiters = {
+            let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            let before = state.ceilings();
+            state.live.insert(request.to_owned(), (total, per_host));
+            let after = state.ceilings();
+            if after.0 > before.0 || after.1 > before.1 {
+                mem::take(&mut state.waiters)
+            } else {
+                Vec::new()
+            }
+        };
+        for waiter in waiters {
+            waiter.wake();
+        }
+    }
+
+    /// `request` ended (cancelled or finished): its limits no longer bound the host. A request that was never
+    /// admitted, or has ended already, changes nothing.
+    pub(crate) fn end_operation(&self, request: &str) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.admitted_total = state.admitted_total.max(total);
-        state.admitted_per_host = state.admitted_per_host.max(per_host);
+        state.live.remove(request);
     }
 
     /// A reservation now, or none, with `waker` woken when one is returned.
@@ -422,11 +463,22 @@ impl Authority {
 }
 
 impl State {
+    /// The ceilings a reservation is judged against: (total, per host). The live requests' largest limits, or the
+    /// base when none is live.
+    fn ceilings(&self) -> (usize, usize) {
+        if self.live.is_empty() {
+            return (self.total_limit, self.per_host_limit);
+        }
+        self.live
+            .values()
+            .fold((0, 0), |(total, per_host), limits| {
+                (total.max(limits.0), per_host.max(limits.1))
+            })
+    }
     fn take(&mut self, authority: &Authority, host: String) -> Option<Reservation> {
         let host_count = self.hosts.get(&host).copied().unwrap_or(0);
-        if self.total >= self.total_limit.max(self.admitted_total)
-            || host_count >= self.per_host_limit.max(self.admitted_per_host)
-        {
+        let (total_limit, per_host_limit) = self.ceilings();
+        if self.total >= total_limit || host_count >= per_host_limit {
             return None;
         }
         self.total += 1;
@@ -467,6 +519,14 @@ impl Authority {
     pub(crate) fn try_reserve(&self, host: impl Into<String>) -> Option<Reservation> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         state.take(self, host.into())
+    }
+    /// The ceilings a reservation is judged against now: (total, per host).
+    pub(crate) fn ceilings(&self) -> (usize, usize) {
+        self.state.lock().unwrap_or_else(|error| error.into_inner()).ceilings()
+    }
+    /// How many admitted requests are live.
+    pub(crate) fn live_operations(&self) -> usize {
+        self.state.lock().unwrap_or_else(|error| error.into_inner()).live.len()
     }
     /// The reservations held in total and for `host`.
     pub(crate) fn counts(&self, host: &str) -> (usize, usize) {
@@ -693,7 +753,7 @@ mod tests {
         // Reuse design section 5: a new connection needs fewer than max(ceiling, its limit) reservations, so a lone
         // operation at 16 per host gets 16 where the ceilings are 2 (the no-clamp rule).
         let authority = Authority::new(2, 2);
-        authority.admit_operation(16, 16);
+        authority.admit_operation("lone", 16, 16);
         let held: Vec<_> = (0..16)
             .map(|_| authority.try_reserve("host").expect("within its own limit"))
             .collect();
@@ -707,11 +767,11 @@ mod tests {
         // Reserve-before-connect under two differing limits: the second operation (4) is admitted while the first (16)
         // holds reservations; nothing is refused, resized or released, and the physical ceiling stays the larger.
         let authority = Authority::new(2, 2);
-        authority.admit_operation(16, 16);
+        authority.admit_operation("large", 16, 16);
         let first: Vec<_> = (0..10)
             .map(|_| authority.try_reserve("host").unwrap())
             .collect();
-        authority.admit_operation(4, 4);
+        authority.admit_operation("small", 4, 4);
         assert_eq!(authority.counts("host"), (10, 10));
         let more: Vec<_> = (0..6)
             .map(|_| authority.try_reserve("host").unwrap())
@@ -725,7 +785,7 @@ mod tests {
     #[test]
     fn a_connection_waits_for_a_reservation_under_a_higher_limit_too() {
         let authority = Authority::new(1, 1);
-        authority.admit_operation(2, 2);
+        authority.admit_operation("higher", 2, 2);
         let a = authority.try_reserve("host").unwrap();
         let b = authority.try_reserve("host").unwrap();
         let mut connector = ReservedConnector::new(
@@ -743,6 +803,96 @@ mod tests {
         let mut cx = Context::from_waker(Waker::noop());
         assert!(matches!(waiting.poll_connected(&mut cx), Poll::Ready(Ok(_))));
         drop(b);
+    }
+
+    #[test]
+    fn a_limit_admitted_by_a_request_that_has_ended_no_longer_raises_the_ceilings() {
+        // State review P2-2: the ceilings are the live requests' limits, not the largest ever admitted.
+        let authority = Authority::new(2, 2);
+        authority.admit_operation("big", 16, 16);
+        assert_eq!(authority.ceilings(), (16, 16));
+        authority.end_operation("big");
+        assert_eq!(authority.ceilings(), (2, 2), "no request is live: the base applies");
+        authority.admit_operation("small", 4, 4);
+        assert_eq!(authority.ceilings(), (4, 4));
+        let held: Vec<_> = (0..4)
+            .map(|_| authority.try_reserve("host").expect("within the live request's limit"))
+            .collect();
+        assert!(authority.try_reserve("host").is_none(), "the ended request's 16 no longer applies");
+        drop(held);
+    }
+
+    #[test]
+    fn live_requests_bound_the_ceilings_by_the_largest_and_the_largest_ending_lowers_them() {
+        let authority = Authority::new(2, 2);
+        authority.admit_operation("sixteen", 16, 16);
+        authority.admit_operation("four", 4, 4);
+        assert_eq!(authority.ceilings(), (16, 16));
+        assert_eq!(authority.live_operations(), 2);
+        authority.end_operation("sixteen");
+        assert_eq!(authority.ceilings(), (4, 4));
+        authority.end_operation("sixteen");
+        authority.end_operation("never admitted");
+        assert_eq!(authority.live_operations(), 1, "ending twice, or a stranger, changes nothing");
+        authority.end_operation("four");
+        assert_eq!(authority.ceilings(), (2, 2));
+        assert_eq!(authority.live_operations(), 0);
+    }
+
+    #[test]
+    fn a_lone_request_below_the_base_bounds_one_host_across_both_schemes() {
+        // State review P2-2, consequence 2: a lone operation at 4 per host keeps a cross-scheme bound of 4 on a host
+        // reached over SSH and HTTPS (as `install_capacity` gave), where the base per-host ceiling is 32.
+        let authority = Authority::new(256, 32);
+        authority.admit_operation("lone", 256, 4);
+        let mut ssh = ReservedConnector::new(FakeConnector { dispose_pending: false, fail: false }, authority.clone());
+        let mut https = ReservedConnector::new(FakeConnector { dispose_pending: false, fail: false }, authority.clone());
+        let mut started = Vec::new();
+        for _ in 0..2 {
+            started.push(ssh.start(&Key::ssh("git", "host", 22), &Identity::Ambient, None).unwrap());
+            started.push(https.start(&Key::https("host", 443), &Identity::Https, None).unwrap());
+        }
+        assert!(started.iter().all(|resource| !resource.waiting_locally()), "four reservations fit");
+        assert_eq!(authority.counts("host"), (4, 4));
+        let fifth = https.start(&Key::https("host", 443), &Identity::Https, None).unwrap();
+        assert!(fifth.waiting_locally(), "a fifth reservation to the host waits, on either scheme");
+        assert_eq!(authority.counts("host"), (4, 4));
+    }
+
+    #[test]
+    fn admitting_a_larger_limit_wakes_the_connections_waiting_for_a_reservation() {
+        use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+        struct Count(AtomicUsize);
+        impl std::task::Wake for Count {
+            fn wake(self: Arc<Self>) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let authority = Authority::new(1, 1);
+        authority.admit_operation("one", 1, 1);
+        let held = authority.try_reserve("host").unwrap();
+        let woken = Arc::new(Count(AtomicUsize::new(0)));
+        let waker = Waker::from(woken.clone());
+        assert!(authority.reserve_or_wait("host", &waker).is_none());
+        authority.admit_operation("two", 2, 2);
+        assert_eq!(woken.0.load(Ordering::SeqCst), 1, "the raised ceiling wakes the waiter");
+        drop(held);
+    }
+
+    #[test]
+    fn a_request_s_owner_session_is_unique_per_request_and_within_the_pool_s_bound() {
+        use super::request_owner_session as owner;
+        assert_eq!(owner("ssh-worker-1", "r1"), "ssh-worker-1/r1");
+        assert_ne!(owner("ssh-worker-1", "r1"), owner("ssh-worker-1", "r2"));
+        let (a, b) = ("a".repeat(128), "b".repeat(128));
+        for (base, request) in [("ssh-worker-1", &a), ("ssh-worker-1", &b), (&a, &b), (&b, &a)] {
+            let session = owner(base, request);
+            assert!(session.len() <= 128, "{} bytes", session.len());
+            assert!(!session.is_empty() && !session.chars().any(char::is_control));
+            assert_eq!(session, owner(base, request), "the same pair, the same owner");
+        }
+        assert_ne!(owner("ssh-worker-1", &a), owner("ssh-worker-1", &b));
+        assert_ne!(owner(&a, &b), owner(&b, &a));
     }
 
     #[test]

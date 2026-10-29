@@ -53,6 +53,17 @@ pub(crate) struct Input {
     pub(crate) session: String,
     pub(crate) operation: String,
 }
+impl Input {
+    /// The pool owner of this open's checkouts. The operation is one transport request's (its name is made for the
+    /// request), so the owner is keyed by it as well as by the mux session: overlapping requests on one session with
+    /// differing limits are each counted and held alone, and one request's checkouts share one limit (State review P2-1).
+    pub(crate) fn owner(&self) -> Owner {
+        Owner::new(
+            super::shared_reservation::request_owner_session(&self.session, &self.operation),
+            &self.operation,
+        )
+    }
+}
 #[derive(Clone)]
 pub(crate) struct Client {
     pool: HttpsPool,

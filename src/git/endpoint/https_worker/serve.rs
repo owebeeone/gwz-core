@@ -84,7 +84,7 @@ impl Prepared {
             () = cancel.cancelled() => return Err(ErrorCode::Cancelled),
         }
         let lease = tokio::select! {
-            lease = self.gate.recheckout(&self.input.session, &self.relet, cancel) => {
+            lease = self.gate.recheckout(self.input.owner(), &self.relet, cancel) => {
                 lease.map_err(|failed| failed.code)?
             }
             () = cancel.cancelled() => return Err(ErrorCode::Cancelled),

@@ -27,6 +27,10 @@ pub(in crate::git::endpoint) struct OpenRequest {
     pub(in crate::git::endpoint) tag: Option<String>,
     /// The open's operation's limits, which its pool request carries.
     pub(in crate::git::endpoint) limits: Option<gwz_transport::pool::Capacity>,
+    /// The transport request the open belongs to. A limit-bearing open's pool owner is keyed by it, so that
+    /// overlapping requests with differing limits are each counted and held alone (State review P2-1); one request's
+    /// workers still share one owner and one limit.
+    pub(in crate::git::endpoint) request: Option<String>,
     /// The open carries a test of the site's limit: never deferred.
     pub(in crate::git::endpoint) carrier: bool,
 }

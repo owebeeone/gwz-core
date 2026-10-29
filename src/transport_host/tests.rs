@@ -155,6 +155,82 @@ fn live_request_between_leases_admits_a_different_limit() {
     wait(second.finish());
     wait(runtime.shutdown());
 }
+#[test]
+fn a_request_s_limits_bound_the_shared_authority_only_while_it_is_live() {
+    // State review P2-2: the cross-scheme ceilings are the live requests' limits; the base applies when none is live.
+    let runtime = TransportRuntime::new(config()).unwrap();
+    let endpoint = runtime
+        .0
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .local_endpoint
+        .clone();
+    let authority = endpoint.authority_for_test();
+    let base = authority.ceilings();
+    let with = |id: &str, per_host| {
+        let mut request = meta(id);
+        request.policy = Some(crate::OperationPolicy {
+            max_connections_per_host: Some(per_host),
+            ..Default::default()
+        });
+        request
+    };
+    let large = wait(runtime.request(with("authority-large", 50), "large".into())).unwrap();
+    assert_eq!(authority.ceilings().1, 50);
+    let small = wait(runtime.request(with("authority-small", 4), "small".into())).unwrap();
+    assert_eq!(
+        authority.ceilings().1,
+        50,
+        "two live requests share the larger limit"
+    );
+    wait(large.finish());
+    assert_eq!(
+        authority.ceilings().1,
+        4,
+        "the larger request ended: the smaller one's limit bounds the host"
+    );
+    wait(small.finish());
+    assert_eq!(
+        authority.ceilings(),
+        base,
+        "no request is live: the base applies again"
+    );
+    assert_eq!(authority.live_operations(), 0);
+    wait(runtime.shutdown());
+}
+#[test]
+fn a_duplicate_request_id_admission_fails_and_leaves_the_first_request_untouched() {
+    // State review P3-2: a refused registration changes no limits and no authority state.
+    let runtime = TransportRuntime::new(config()).unwrap();
+    let endpoint = runtime
+        .0
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .local_endpoint
+        .clone();
+    let authority = endpoint.authority_for_test();
+    let mut first = meta("duplicate");
+    first.policy = Some(crate::OperationPolicy {
+        max_connections_per_host: Some(16),
+        ..Default::default()
+    });
+    let request = wait(runtime.request(first, "first".into())).unwrap();
+    let ceilings = authority.ceilings();
+    let limits = endpoint.limits_for_test("duplicate").unwrap();
+    let larger = pool::Capacity {
+        per_user_host: 99,
+        per_host: 99,
+        total: 999,
+        max_requests: 2048,
+    };
+    assert!(endpoint.admit_client_request("duplicate", larger).is_err());
+    assert_eq!(endpoint.limits_for_test("duplicate"), Some(limits));
+    assert_eq!(authority.ceilings(), ceilings);
+    assert_eq!(authority.live_operations(), 1);
+    wait(request.finish());
+    assert_eq!(authority.live_operations(), 0);
+    wait(runtime.shutdown());
+}
 fn meta(id: &str) -> RequestMeta {
     RequestMeta {
         request_id: id.into(),
