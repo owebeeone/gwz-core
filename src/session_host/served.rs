@@ -52,7 +52,7 @@ cfg_if::cfg_if! {
     // The frozen body of the transport lane, `TransportLaneFrame` (2.0
     // §3.3): its codec only. Routing tags 16 and 17, and every per-binding
     // state, is step 2.1's carrier's (2.0 §3.3 "Reader interface").
-    if #[cfg(all(gwz_transport_candidate, gwz_session_candidate))] {
+    if #[cfg(gwz_transport_candidate)] {
         pub(crate) mod lane;
     }
 }

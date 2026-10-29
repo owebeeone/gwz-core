@@ -13,7 +13,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use gwz_session_channel::InProcessEnd;
-use gwz_session_contract::{Closed, Frame, FrameSink, FrameSource, Lane, Tag};
+use gwz_session_contract::{Closed, Frame, FrameKey, FrameSink, FrameSource, Lane, Tag};
 use gwz_session_host::{Limits, Worker};
 
 use super::dispatch::CoreDispatch;
@@ -213,6 +213,7 @@ impl Session {
             .send(
                 Frame::new(Tag::SessionCall, crate::encode(&call.to_cbor())),
                 lane,
+                FrameKey::IN_PROCESS,
             )
             .unwrap();
     }

@@ -28,7 +28,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use gwz_session_contract::{Frame, FrameSink, Lane, SendError};
+use gwz_session_contract::{Frame, FrameKey, FrameSink, Lane, SendError, Target};
 
 use crate::detached::DetachedWorkers;
 use crate::gate::{CallControls, GateScope, OperationGate};
@@ -482,10 +482,18 @@ impl<T: FrameSink + Send + Sync + 'static> ReplySink for T {
         &self,
         frame: Frame,
         lane: Lane,
-        _target: u64,
-        _control: bool,
+        target: u64,
+        control: bool,
     ) -> Result<(), SendError> {
-        self.send(frame, lane)
+        // The key carries the call's ID and class: a byte stream orders its
+        // writes by it, and the in-process end ignores it.
+        let target = Target::new(target);
+        let key = if control {
+            FrameKey::control(target)
+        } else {
+            FrameKey::ordinary(target)
+        };
+        self.send(frame, lane, key)
     }
 
     fn close_channel(&self) {
