@@ -480,7 +480,7 @@ impl Client {
         let facts = prepared.opened.facts.clone();
         let checkout = self.pool.checkout_scoped(
             Key::https(prepared.destination.host(), prepared.destination.port()),
-            Owner::new(&prepared.input.session, &prepared.input.operation),
+            prepared.input.owner(),
             prepare::duration_ms(budget.allocation),
             budget.logical_deadline.map_or_else(
                 || budget.connect.map_or(0, prepare::duration_ms),

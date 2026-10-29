@@ -199,3 +199,83 @@ fn d19_code_p3_4_a_re_lease_whose_connect_fails_is_the_opens_setup_failure() {
         );
     });
 }
+
+/// Step 1.4: one request is one pool owner, so the connection a native challenge's re-lease takes is counted with the
+/// request's other checkouts, not with an owner of its own. At a limit of two, an open whose first 401 is marked
+/// `Connection: close` (so it re-leases) and one that does not hold both of the request's two connections, and a third
+/// open of the request is refused.
+#[test]
+fn a_re_lease_is_counted_with_its_request_s_other_checkouts_under_the_request_s_limits() {
+    run(async {
+        let first = Arc::new(AtomicUsize::new(0));
+        let server = Server::start(Arc::new(move |request| {
+            let authorized = request.headers().contains_key(AUTHORIZATION);
+            let first = first.clone();
+            Box::pin(async move {
+                let mut result = response(
+                    if authorized { 200 } else { 401 },
+                    GitService::UploadPackAdvertisement,
+                    Bytes::new(),
+                );
+                if !authorized {
+                    result
+                        .headers_mut()
+                        .insert(WWW_AUTHENTICATE, "NTLM".parse().unwrap());
+                    // Only the first challenge ends its connection, so only the first open re-leases.
+                    if first.fetch_add(1, Ordering::SeqCst) == 0 {
+                        result
+                            .headers_mut()
+                            .insert(hyper::header::CONNECTION, "close".parse().unwrap());
+                    }
+                }
+                result
+            })
+        }))
+        .await;
+        let config = pool::Config {
+            per_user_host: 64,
+            per_host: 64,
+            total: 64,
+            allocation_timeout_ms: 300,
+            ..pool::Config::default()
+        };
+        let mut endpoint = Endpoint::new(server.config(), None, config).unwrap();
+        let (caller, _) = fake(true, 2);
+        endpoint.client.set_native(caller);
+        endpoint.client.set_operation_limits(
+            "operation",
+            pool::Capacity {
+                per_user_host: 2,
+                per_host: 2,
+                total: 256,
+                max_requests: 1024,
+            },
+        );
+        let mut held = Vec::new();
+        let mut outcomes = Vec::new();
+        for _ in 0..3 {
+            let mut request = input(&server, GitService::UploadPackAdvertisement);
+            request.policy = AuthPolicy::WindowsDefault;
+            let (result, _) = endpoint
+                .client
+                .prepare_attempt(
+                    request,
+                    &CancellationToken::new(),
+                    &mut endpoint.client.budget(),
+                    &mut None,
+                )
+                .await;
+            outcomes.push(result.is_ok());
+            held.extend(result.ok());
+        }
+        assert_eq!(
+            outcomes,
+            [true, true, false],
+            "the re-leased connection is one of the request's two"
+        );
+        drop(held);
+        endpoint.client.finish_operation("operation");
+        let _ = endpoint.client.reap_cleanup(Duration::from_secs(2)).await;
+        assert_eq!(endpoint.shutdown(Duration::from_secs(5)).await, 0);
+    });
+}
