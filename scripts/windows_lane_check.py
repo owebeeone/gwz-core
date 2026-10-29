@@ -31,6 +31,32 @@ endings in the checkout (a Windows host checks gwz-transport out with CRLF) and 
 gap only when its own failure text says gwz-py or taut-proto is missing (the embedded-Python rows), or, for the protocol target's
 rows, when the probe found no taut-proto. `--hosted-like-filter NAME` narrows the run to the tests whose path contains NAME, for iterating on one failure; the
 receipt says it was filtered. It reaches `run_tests.py` as `--test-filter`, which narrows each group to its own tests. `--no-check-shapes` skips the `cargo check` shapes (a run that is only the suite).
+
+A watchdog bounds every phase (`stage`, `ordinary`, `transport`, `hosted-like`; the builds are part of their phase). Each has a
+wall-clock deadline, and each phase with a log has a no-progress deadline: the phase is aborted when its log has not grown for
+that long. The defaults come from the 247 receipts recorded so far (ordinary at most 117 s, transport 109 s, hosted-like 900 s
+cold and about 730 s warm, with 1482 s the slowest ever, a failing run; staging 2905 s once) and are several times those, and
+far below the 7944 s that one hung hosted-like run took:
+
+    phase        --deadline   --no-progress
+    stage        3600 s       (no log: wall clock only)
+    ordinary      900 s        600 s
+    transport     900 s        600 s
+    hosted-like  2700 s       1200 s
+
+    --deadline PHASE=SECONDS   --no-progress PHASE=SECONDS   --watchdog-poll SECONDS   (0 switches a limit off)
+
+On an abort, before anything is killed, the runner captures on the host, next to the phase's logs: the tests libtest reported as
+"running for over 60 seconds" that never finished, the last lines of the phase log, the Windows process tree under the phase's
+own root process (PID, parent, image, command line, CPU time, start time, working set; the root is the `bash` that runs the
+phase's script, whose Windows PID the script records in `logs/PHASE.pid`) and the host's CPU load. It then kills that tree with
+`taskkill /T /F /PID <root>` (never by image name, and only while the root is still the process that wrote the pid file),
+checks that every recorded PID has ended (a survivor is killed by its PID) and writes the receipt: `result` is `TIMEOUT`,
+`passed` is false, and `abort` names the phase, the elapsed seconds, the reason (`deadline` or `no-progress`), the stalled
+tests and the evidence files (`watchdog-PHASE.json` and `watchdog-PHASE-log-tail.txt` beside `receipt.json`, and
+`logs/watchdog-PHASE.json` on the host). A watchdog abort is never a PASS.
+
+Exit status: 0 every phase passed, 1 a phase failed, 2 refused (usage), 124 the watchdog aborted a phase (TIMEOUT).
 """
 import argparse
 from dataclasses import dataclass, field
@@ -43,6 +69,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import threading
 import time
 
 CORE = Path(__file__).resolve().parents[1]
@@ -52,6 +79,7 @@ sys.modules.setdefault('check_windows_parity', parity)
 _spec.loader.exec_module(parity)
 HOST = 'gianni@dabeest'
 HOST_ROOT = '/e/gwz-tests'  # E:/gwz-tests in MinGW bash
+HOST_ROOT_WINDOWS = 'E:\\gwz-tests'  # the same directory as Windows spells it
 SSH = ['ssh', '-o', 'ClearAllForwardings=yes', '-o', 'ForwardAgent=no', '-o', 'ForwardX11=no',
        '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', HOST]
 TOOLCHAIN = '1.95.0'
@@ -100,6 +128,17 @@ DATE = re.compile(r'(^|-)20\d{6}(-|$)')
 # The host's Application Control policy sometimes refuses to run a build script that cargo has just written
 # (os error 4551); the shape is run once more and the receipt records both attempts.
 BLOCKED = 'os error 4551'
+# The watchdog (see the module doc for where the numbers come from). Seconds; 0 switches a limit off.
+EXIT_TIMEOUT = 124
+PHASES = ('stage', 'ordinary', 'transport', 'hosted-like')
+DEFAULT_DEADLINES = {'stage': 3600, 'ordinary': 900, 'transport': 900, 'hosted-like': 2700}
+DEFAULT_QUIET = {'ordinary': 600, 'transport': 600, 'hosted-like': 1200}  # the stage has no log
+DEFAULT_POLL = 60
+POLL_TIMEOUT, EVIDENCE_TIMEOUT, KILL_TIMEOUT = 45, 180, 90  # per ssh call of the watchdog, seconds
+KILL_ROUNDS = 3  # survivors of the tree kill are killed by PID this many times before they are reported
+STAMP = re.compile(r'^[0-9T:.+Z-]+$')  # an ISO time as PowerShell prints it ('o' format)
+SLOW_TEST = re.compile(r'^test (.+?) has been running for over \d+ seconds\s*$')
+DONE_TEST = re.compile(r'^test (.+?) \.\.\. (?:ok|FAILED|ignored)\b')
 WARNINGS = re.compile(r'`gwz-core` \(lib[^)]*\) generated (\d+) warnings?')
 
 
@@ -143,20 +182,30 @@ def triggered(paths, patterns=None) -> list[str]:
     return [p for p in paths if any(matches(p, t) for t in patterns)]
 
 
+def wait_for(done, seconds):
+    """Waits up to `seconds` for the event; whether it is set."""
+    return done.wait(seconds)
+
+
 @dataclass
 class Host:
-    """The Windows host. `run` is subprocess.run, replaced in tests; `clock` is time.monotonic."""
+    """The Windows host. `run` is subprocess.run, replaced in tests; `clock` is time.monotonic; `wait` is how the watchdog
+    waits for a phase to end (`wait_for`), replaced in tests so that a deadline passes without anyone sleeping."""
     run: object = subprocess.run
     clock: object = time.monotonic
+    wait: object = wait_for
 
     def ssh(self, script: str, check=True, capture=True):
         """Runs a bash script on the host through stdin, so nothing needs shell quoting."""
         return self.run(SSH + ['bash', '-s'], input=script, text=True, capture_output=capture, check=check)
 
-    def timed(self, script: str):
-        start = self.clock()
-        result = self.ssh(script, check=False)
-        return result, round(self.clock() - start, 1)
+    def remote(self, script: str, timeout: float):
+        """A watchdog call: a bash script on the host with a time limit; None when the call failed or timed out."""
+        try:
+            return self.run(SSH + ['bash', '-s'], input=script, text=True, errors='replace', capture_output=True,
+                            check=False, timeout=timeout)
+        except (subprocess.TimeoutExpired, OSError):
+            return None
 
 
 @dataclass
@@ -170,22 +219,33 @@ class Receipt:
     stage_seconds: float = 0.0
     shapes: list = field(default_factory=list)
     toolchain: str = ''
+    abort: dict | None = None  # the watchdog's summary, when it aborted a phase
 
     def passed(self) -> bool:
         return bool(self.shapes) and all(s.get('passed', s['exit'] == 0) for s in self.shapes)
 
     def as_json(self) -> str:
         total = round(self.stage_seconds + sum(a['seconds'] for s in self.shapes for a in s['attempts']), 1)
-        return json.dumps({'label': self.label, 'host_dir': f'{HOST_ROOT}/{self.label}', 'source': self.source,
-                           'commit': self.commit, 'cache_from': self.cache_from, 'with_tests': self.with_tests,
-                           'toolchain': self.toolchain, 'started': self.started, 'stage_seconds': self.stage_seconds,
-                           'shapes': self.shapes, 'total_seconds': total, 'passed': self.passed()}, indent=2) + '\n'
+        data = {'label': self.label, 'host_dir': f'{HOST_ROOT}/{self.label}', 'source': self.source,
+                'commit': self.commit, 'cache_from': self.cache_from, 'with_tests': self.with_tests,
+                'toolchain': self.toolchain, 'started': self.started, 'stage_seconds': self.stage_seconds,
+                'shapes': self.shapes, 'total_seconds': total, 'passed': self.passed()}
+        if self.abort:
+            data.update(result='TIMEOUT', abort=self.abort)
+        return json.dumps(data, indent=2) + '\n'
+
+
+def pid_lines(d: str, name: str) -> list[str]:
+    """Host script lines: the Windows PID and the MSYS PID of the script's own bash in the phase's pid file, which is where the
+    watchdog finds the root of the process tree it may have to end. (MSYS keeps its own numbers, and a program that MSYS
+    `exec`s leaves the Windows parent chain, so the MSYS descendants are found by the MSYS PID.)"""
+    return [f'mkdir -p {d}/logs', f'echo "$(cat /proc/$$/winpid) $$" > {d}/logs/{name}.pid']
 
 
 def stage_script(label: str, cache_from: str | None) -> str:
     """Host script: the siblings at gwz-core's pins, then the prepared candidate. The core is already in place."""
     d = f'{HOST_ROOT}/{label}'
-    lines = ['set -euo pipefail', 'export GIT_TERMINAL_PROMPT=0', f'cd {d}/ws/gwz-core',
+    lines = ['set -euo pipefail', *pid_lines(d, 'stage'), 'export GIT_TERMINAL_PROMPT=0', f'cd {d}/ws/gwz-core',
              'bash .github/checkout-git2-rs.sh']
     for name, url in SIBLING_PINS:
         lines += [f'pin=$(grep -m1 -E "^[0-9a-f]{{40}}$" .github/{name}.commit | tr -d "\\r")',
@@ -207,7 +267,7 @@ def shape_script(label: str, flags: str, with_tests: bool, name: str) -> str:
     d = f'{HOST_ROOT}/{label}'
     targets = '--lib --profile test' if with_tests else '--lib'  # the test profile also checks in test mode (cfg(test))
     return '\n'.join([
-        'set -uo pipefail', f'mkdir -p {d}/logs', f'cd {d}/ws/gwz-core',
+        'set -uo pipefail', *pid_lines(d, name), f'cd {d}/ws/gwz-core',
         f'export RUSTUP_TOOLCHAIN={TOOLCHAIN} CARGO_INCREMENTAL=0 RUSTFLAGS="{flags}"',
         f'cargo check --locked {targets} --manifest-path {d}/candidate/Cargo.toml --target-dir {d}/target '
         f'> {d}/logs/{name}.log 2>&1',
@@ -297,7 +357,7 @@ def hosted_like_script(label: str, git_root: str, test_filter: str | None, taut_
     ssh = f'{d}/openssh'
     filter_word = f' --test-filter {test_filter}' if test_filter else ''
     return '\n'.join([
-        'set -uo pipefail', f'mkdir -p {d}/logs {ssh}', f"GIT_ROOT='{git_root}'",
+        'set -uo pipefail', *pid_lines(d, 'hosted-like'), f'mkdir -p {ssh}', f"GIT_ROOT='{git_root}'",
         # The short TEMP: a directory whose long name has an 8.3 spelling, as `RUNNER~1` is on the runner. A host
         # that does not generate short names would run the suite with a long one and prove nothing.
         f'long="$(cygpath -u "$LOCALAPPDATA")/Temp/{temp_directory_name(label)}"', 'mkdir -p "$long"',
@@ -385,6 +445,317 @@ def parse_hosted_like(text: str, test_filter: str | None) -> dict:
     return facts
 
 
+# ---- The watchdog -------------------------------------------------------------------------------------------------
+
+@dataclass
+class Limits:
+    """The watchdog's limits in seconds: a wall-clock deadline per phase, a no-progress deadline per phase with a log, the poll."""
+    deadline: dict
+    quiet: dict
+    poll: float = DEFAULT_POLL
+
+
+def parse_limit(text: str, flag: str, allowed) -> tuple[str, float]:
+    """`PHASE=SECONDS` from --deadline or --no-progress; 0 switches that limit off."""
+    phase, _, seconds = text.partition('=')
+    try:
+        value = float(seconds)
+    except ValueError:
+        value = -1.0
+    if phase not in allowed or value < 0:
+        raise Refused(f'{flag} {text!r} must be PHASE=SECONDS with PHASE one of {", ".join(allowed)} and SECONDS >= 0')
+    return phase, int(value) if value == int(value) else value
+
+
+def watchdog_limits(options) -> Limits:
+    """The defaults with the command line's overrides applied; a refusal for a limit that means nothing."""
+    deadline, quiet = dict(DEFAULT_DEADLINES), dict(DEFAULT_QUIET)
+    for text in options.deadline or ():
+        phase, seconds = parse_limit(text, '--deadline', PHASES)
+        deadline[phase] = seconds
+    for text in options.no_progress or ():
+        phase, seconds = parse_limit(text, '--no-progress', tuple(DEFAULT_QUIET))
+        quiet[phase] = seconds
+    if options.watchdog_poll <= 0:
+        raise Refused(f'--watchdog-poll {options.watchdog_poll} must be more than 0 seconds')
+    return Limits(deadline, quiet, options.watchdog_poll)
+
+
+def stalled_tests(text: str) -> list[str]:
+    """The tests libtest reported "has been running for over N seconds" and never reported finished, in report order."""
+    running = {}
+    for raw in text.splitlines():
+        line = raw.rstrip('\r')
+        slow = SLOW_TEST.match(line)
+        if slow:
+            running.setdefault(slow.group(1))
+            continue
+        done = DONE_TEST.match(line)
+        if done:
+            running.pop(done.group(1), None)
+    return list(running)
+
+
+def powershell(script: str) -> str:
+    """Host script lines that run a PowerShell script from stdin. Every statement is on one line: `-Command -` reads the
+    script as typed input."""
+    return f"powershell -NoProfile -NonInteractive -Command - <<'WATCHDOG_PS'\n{script}\nWATCHDOG_PS\n"
+
+
+def poll_script(label: str, name: str) -> str:
+    """Host script: the size of the phase's log (a phase without one has nothing to watch)."""
+    if name not in DEFAULT_QUIET:
+        return '# watchdog-poll\ntrue\n'
+    return ('# watchdog-poll\n'
+            f'f={HOST_ROOT}/{label}/logs/{name}.log\n'
+            'if [ -f "$f" ]; then echo "WATCHDOG_SIZE $(stat -c %s "$f")"; else echo "WATCHDOG_SIZE none"; fi\n')
+
+
+EVIDENCE_PS = r"""$pidfile = '{pidfile}'
+$root = 0
+try { $root = [int]((Get-Content -Raw -LiteralPath $pidfile).Trim().Split(' ')[0]) } catch { }
+$all = @(Get-CimInstance Win32_Process)
+$mtime = $null
+try { $mtime = (Get-Item -LiteralPath $pidfile).LastWriteTimeUtc } catch { }
+$self = $all | Where-Object { [int]$_.ProcessId -eq $root } | Select-Object -First 1
+$valid = $false
+$why = ''
+if (-not $self) { $why = 'no such process: the root has exited or the pid file is missing' } elseif (-not $mtime) { $why = 'the pid file has no time' } else { $gap = ($mtime - $self.CreationDate.ToUniversalTime()).TotalSeconds; if ($gap -ge -1 -and $gap -le 120) { $valid = $true } else { $why = "the process is not the one that wrote the pid file (it was created $gap s before the file was written)" } }
+$started = $null
+if ($self) { $started = $self.CreationDate.ToUniversalTime().ToString('o') }
+$written = $null
+if ($mtime) { $written = $mtime.ToString('o') }
+'WATCHDOG_ROOT ' + ([pscustomobject]@{ pid = $root; started = $started; pidfile_utc = $written; valid = $valid; why = $why } | ConvertTo-Json -Compress)
+$tree = New-Object System.Collections.Generic.List[object]
+$queue = New-Object System.Collections.Generic.Queue[object]
+$seen = @{}
+if ($valid) { $queue.Enqueue($self); $seen[$root] = 1 }
+$extra = @()
+if ($env:WATCHDOG_EXTRA) { $extra = @($env:WATCHDOG_EXTRA.Split(',') | Where-Object { $_ } | ForEach-Object { [int]$_ }) }
+if ($valid) { foreach ($e in $extra) { $q = $all | Where-Object { [int]$_.ProcessId -eq $e -and $_.CreationDate -ge $self.CreationDate } | Select-Object -First 1; if ($q -and -not $seen.ContainsKey($e)) { $seen[$e] = 1; $queue.Enqueue($q) } } }
+while ($queue.Count -gt 0) { $p = $queue.Dequeue(); $tree.Add($p); foreach ($c in ($all | Where-Object { [int]$_.ParentProcessId -eq [int]$p.ProcessId -and $_.CreationDate -ge $p.CreationDate })) { if (-not $seen.ContainsKey([int]$c.ProcessId)) { $seen[[int]$c.ProcessId] = 1; $queue.Enqueue($c) } } }
+foreach ($p in $tree) { 'WATCHDOG_PROC ' + ([pscustomobject]@{ pid = [int]$p.ProcessId; ppid = [int]$p.ParentProcessId; image = $p.Name; cmd = $p.CommandLine; cpu_seconds = [math]::Round(([double]$p.KernelModeTime + [double]$p.UserModeTime) / 1e7, 2); started = $p.CreationDate.ToUniversalTime().ToString('o'); working_set = [int64]$p.WorkingSetSize } | ConvertTo-Json -Compress) }
+$cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
+$os = Get-CimInstance Win32_OperatingSystem
+$logical = (Get-CimInstance Win32_ComputerSystem).NumberOfLogicalProcessors
+'WATCHDOG_LOAD ' + ([pscustomobject]@{ cpu_percent = $cpu; logical_processors = $logical; memory_free_mb = [int]($os.FreePhysicalMemory / 1024); memory_total_mb = [int]($os.TotalVisibleMemorySize / 1024) } | ConvertTo-Json -Compress)"""
+
+
+# The MSYS descendants of the phase's bash, from `ps -W`: MSYS keeps its own parent chain, which a Windows parent id loses
+# when MSYS `exec`s a program (the new process's Windows parent is a stub that has already exited). Prints their Windows PIDs,
+# comma separated.
+MSYS_DESCENDANTS = (r'NR > 1 { win[$1] = $4; parent[$1] = $2; n++; id[n] = $1 } '
+                    r'END { seen[root] = 1; again = 1; while (again) { again = 0; for (i = 1; i <= n; i++) { q = id[i]; '
+                    r'if (!(q in seen) && (parent[q] in seen)) { seen[q] = 1; again = 1; printf "%s,", win[q] } } } }')
+LIBTEST_LINES = r"^test .*( has been running for over [0-9]+ seconds| \.\.\. (ok|FAILED|ignored))"
+
+
+def evidence_script(label: str, name: str) -> str:
+    """Host script, run before anything is killed: the root process named by the phase's pid file (valid only while it is the
+    process that wrote the file) and the processes under it, the host's load, the libtest lines that tell which tests are
+    stalled, and the last lines of the phase's log."""
+    d = f'{HOST_ROOT}/{label}'
+    pidfile = f'{HOST_ROOT_WINDOWS}\\{label}\\logs\\{name}.pid'
+    return '\n'.join([
+        '# watchdog-evidence', 'set +e', f'log={d}/logs/{name}.log', f'read -r winpid msyspid < {d}/logs/{name}.pid',
+        "extra=''", f'if [ -n "$msyspid" ]; then extra=$(ps -W | awk -v root="$msyspid" \'{MSYS_DESCENDANTS}\'); fi',
+        'export WATCHDOG_EXTRA="$extra"',
+        powershell(EVIDENCE_PS.replace('{pidfile}', pidfile)).rstrip('\n'),
+        'echo WATCHDOG_TESTS_BEGIN', f'[ -f "$log" ] && grep -a -E \'{LIBTEST_LINES}\' "$log" | tr -d \'\\r\'',
+        'echo WATCHDOG_TESTS_END', 'echo WATCHDOG_TAIL_BEGIN',
+        '[ -f "$log" ] && tail -n 60 "$log" | tr -d \'\\r\' | cut -c1-500', 'echo WATCHDOG_TAIL_END',
+        '[ -f "$log" ] && echo "WATCHDOG_LOGSIZE $(stat -c %s "$log")"', 'true']) + '\n'
+
+
+def check_stamp(stamp: str) -> str:
+    if not isinstance(stamp, str) or not STAMP.fullmatch(stamp):
+        raise ValueError(f'not a recorded process start time: {stamp!r}')
+    return stamp
+
+
+def kill_script(root: int, started: str) -> str:
+    """Host script: ends the process tree under `root` (`taskkill /T /F /PID`), and only while `root` is still the process the
+    evidence recorded (same start time), so a PID the host has reused for someone else's process is left alone."""
+    ps = (f"$root = {int(root)}\n$expected = '{check_stamp(started)}'\n"
+          '$p = Get-CimInstance Win32_Process -Filter "ProcessId = $root"\n'
+          "if ($p -and $p.CreationDate.ToUniversalTime().ToString('o') -eq $expected) { $out = & taskkill.exe /T /F /PID $root 2>&1; "
+          "'WATCHDOG_KILL taskkill rc=' + $LASTEXITCODE; $out | ForEach-Object { 'WATCHDOG_KILL_OUT ' + $_ } } "
+          "else { 'WATCHDOG_KILL refused: the root is gone or is not the recorded process' }\n"
+          'Start-Sleep -Seconds 3')
+    return '# watchdog-kill\n' + powershell(ps)
+
+
+def verify_script(recorded: list[dict], kill: bool) -> str:
+    """Host script: which of the recorded processes (same PID and start time) are still alive; with `kill`, each is first ended
+    by its PID alone. The list is plain `pid;start` words: ConvertFrom-Json would turn the start times into dates."""
+    want = ', '.join(f"'{int(r['pid'])};{check_stamp(r['started'])}'" for r in recorded)
+    alive = ('$id, $at = $w.Split(";"); $p = Get-CimInstance Win32_Process -Filter "ProcessId = $id"; '
+             "if ($p -and $p.CreationDate.ToUniversalTime().ToString('o') -eq $at)")
+    lines = [f'$want = @({want})']
+    if kill:
+        lines += [f'foreach ($w in $want) {{ {alive} {{ & taskkill.exe /F /PID $id | Out-Null }} }}', 'Start-Sleep -Seconds 2']
+    lines += [f"foreach ($w in $want) {{ {alive} {{ 'WATCHDOG_ALIVE ' + ([pscustomobject]@{{ pid = [int]$id; "
+              f"ppid = [int]$p.ParentProcessId; image = $p.Name; started = $at }} | ConvertTo-Json -Compress) }} }}",
+              "'WATCHDOG_ALIVE_DONE'"]
+    return '# watchdog-verify\n' + powershell('\n'.join(lines))
+
+
+def tagged(text: str, tag: str) -> list:
+    """The JSON values of the `TAG {json}` lines in a watchdog script's output."""
+    values = []
+    for line in (text or '').splitlines():
+        word, _, rest = line.rstrip('\r').partition(' ')
+        if word == tag:
+            try:
+                values.append(json.loads(rest))
+            except ValueError:
+                pass
+    return values
+
+
+def between(text: str, begin: str, end: str) -> list[str]:
+    lines, inside = [], False
+    for raw in (text or '').splitlines():
+        line = raw.rstrip('\r')
+        if line == begin:
+            inside = True
+        elif line == end:
+            inside = False
+        elif inside:
+            lines.append(line)
+    return lines
+
+
+def parse_evidence(text: str) -> dict:
+    """What the evidence script printed, as a dict (missing parts are None or empty)."""
+    roots, loads = tagged(text, 'WATCHDOG_ROOT'), tagged(text, 'WATCHDOG_LOAD')
+    size = [line.split()[1] for line in (text or '').splitlines() if line.startswith('WATCHDOG_LOGSIZE ')]
+    return {'root': roots[0] if roots else None, 'process_tree': tagged(text, 'WATCHDOG_PROC'),
+            'host_load': loads[0] if loads else None, 'test_lines': between(text, 'WATCHDOG_TESTS_BEGIN', 'WATCHDOG_TESTS_END'),
+            'tail': between(text, 'WATCHDOG_TAIL_BEGIN', 'WATCHDOG_TAIL_END'),
+            'log_size': int(size[0]) if size and size[0].isdigit() else None}
+
+
+class PhaseAborted(Exception):
+    """The watchdog ended a phase; `info` is what it captured and what it did."""
+
+    def __init__(self, info: dict):
+        super().__init__(f"{info['phase']}: {info['reason']}")
+        self.info = info
+
+
+class Watchdog:
+    """Runs a phase's host script in a worker thread and watches it: a wall-clock deadline for the phase and, when it has a log,
+    a no-progress deadline (the log has not grown). On a breach it captures the evidence, ends the phase's own process tree on
+    the host, checks that it ended, and raises PhaseAborted. The worker is a daemon, so a local ssh that never returns cannot hold
+    the process."""
+
+    def __init__(self, host: Host, limits: Limits, label: str):
+        self.host, self.limits, self.label = host, limits, label
+
+    def run(self, name: str, script: str, phase_start: float | None = None):
+        """The script's result and its seconds. `phase_start` is when the phase began, for a phase run more than once."""
+        host = self.host
+        attempt_start = host.clock()
+        phase_start = attempt_start if phase_start is None else phase_start
+        box, done = {}, threading.Event()
+
+        def work():
+            try:
+                box['result'] = host.ssh(script, check=False)
+            except BaseException as error:  # handed to the caller's thread
+                box['error'] = error
+            finally:
+                done.set()
+
+        worker = threading.Thread(target=work, name='watchdog-phase', daemon=True)
+        worker.start()
+        deadline, quiet = self.limits.deadline.get(name), self.limits.quiet.get(name)
+        last_size, progress_at = None, attempt_start
+        while not done.is_set():
+            now = host.clock()
+            waits = [self.limits.poll]
+            if deadline:
+                waits.append(phase_start + deadline - now)
+            if quiet:
+                waits.append(progress_at + quiet - now)
+            if host.wait(done, max(0.0, min(waits))):
+                break
+            now = host.clock()
+            size = self.poll(name) if quiet else None
+            if size is not None and size != last_size:
+                last_size, progress_at = size, now
+            reason, limit = None, None
+            if deadline and now - phase_start >= deadline - 1e-6:
+                reason, limit = 'deadline', deadline
+            elif quiet and now - progress_at >= quiet - 1e-6:
+                reason, limit = 'no-progress', quiet
+            if reason:
+                raise PhaseAborted(self.abort(name, reason, limit, phase_start, done, box))
+        if 'error' in box:
+            raise box['error']
+        return box['result'], round(host.clock() - attempt_start, 1)
+
+    def poll(self, name: str):
+        """The phase's log size now, or None when it cannot be read (no growth is credited then)."""
+        result = self.host.remote(poll_script(self.label, name), POLL_TIMEOUT)
+        for line in ((result.stdout or '') if result is not None and result.returncode == 0 else '').splitlines():
+            if line.startswith('WATCHDOG_SIZE '):
+                value = line.split()[1]
+                return int(value) if value.isdigit() else None
+        return None
+
+    def abort(self, name: str, reason: str, limit, phase_start: float, done, box: dict) -> dict:
+        host = self.host
+        elapsed = round(host.clock() - phase_start, 1)
+        errors = []
+        reply = host.remote(evidence_script(self.label, name), EVIDENCE_TIMEOUT)
+        if reply is None:
+            errors.append('the evidence script did not answer')
+        found = parse_evidence(reply.stdout if reply is not None else '')
+        kill = self.kill(found, errors)
+        for _ in range(0 if 'refused' in kill else 12):  # the killed script ends its ssh; one that stays is left to its daemon thread
+            if host.wait(done, 5):
+                break
+        partial = box['result'].stdout if 'result' in box and box['result'] is not None else ''
+        tests = stalled_tests('\n'.join(found['test_lines']))
+        return {'phase': name, 'label': self.label, 'reason': reason, 'limit_seconds': limit, 'elapsed_seconds': elapsed,
+                'stalled_tests': tests, 'running_over_60s_reports': sum(1 for l in found['test_lines'] if SLOW_TEST.match(l)),
+                'log': {'path': f'{HOST_ROOT}/{self.label}/logs/{name}.log', 'size': found['log_size'], 'tail': found['tail']},
+                'host_load': found['host_load'], 'root': found['root'], 'process_tree': found['process_tree'],
+                'kill': kill, 'phase_script_ended': done.is_set(), 'phase_output_so_far': (partial or '')[-2000:],
+                'errors': errors}
+
+    def kill(self, found: dict, errors: list) -> dict:
+        """Ends the root's tree and proves it: every recorded PID (with its start time) is looked up again afterwards, and a
+        survivor is killed by its PID, up to KILL_ROUNDS times. `survivors` is None when nothing could be proved."""
+        recorded = found['process_tree']
+        root = found['root'] or {}
+        kill = {'recorded_pids': [r['pid'] for r in recorded], 'survivors': None}
+        if not root.get('valid') or not recorded:
+            kill['refused'] = root.get('why') or 'no root process was recorded'
+            return kill
+        reply = self.host.remote(kill_script(root['pid'], root['started']), KILL_TIMEOUT)
+        kill['taskkill_output'] = [] if reply is None else (reply.stdout or '').strip().splitlines()[-20:]
+        if reply is None:
+            errors.append('the kill script did not answer')
+        alive = self.alive(recorded, False, errors)
+        for _ in range(KILL_ROUNDS):
+            if not alive:
+                break
+            alive = self.alive(alive, True, errors)
+        kill['survivors'] = alive
+        return kill
+
+    def alive(self, recorded: list, kill: bool, errors: list):
+        """The recorded processes still alive, or None when the check could not be made."""
+        reply = self.host.remote(verify_script(recorded, kill), KILL_TIMEOUT)
+        if reply is None or 'WATCHDOG_ALIVE_DONE' not in (reply.stdout or ''):
+            errors.append('the check that the processes ended did not answer')
+            return None
+        return tagged(reply.stdout, 'WATCHDOG_ALIVE')
+
+
 UNTRACKED_EXCLUDED = ':(exclude)dev-docs'  # the worktree archive leaves untracked documents at home
 
 
@@ -404,14 +775,16 @@ def git_output(core: Path, *args: str, run=subprocess.run) -> str:
     return run(['git', '-C', str(core), *args], text=True, capture_output=True, check=True).stdout.strip()
 
 
-def run_entry(host: Host, receipt: Receipt, name: str, flags: str, script: str, log: str, test_filter=None) -> None:
-    """Runs one host script and records its entry. A build script the host blocked (os error 4551) is run once more,
-    both attempts are recorded; a genuine failure, a failed test among them, is never run again."""
-    result, seconds = host.timed(script)
+def run_entry(watchdog: Watchdog, receipt: Receipt, name: str, flags: str, script: str, log: str, test_filter=None) -> None:
+    """Runs one host script under the watchdog and records its entry. A build script the host blocked (os error 4551) is run
+    once more, both attempts are recorded and both count against the phase's deadline; a genuine failure, a failed test among
+    them, is never run again. A phase the watchdog ends raises PhaseAborted."""
+    phase_start = watchdog.host.clock()
+    result, seconds = watchdog.run(name, script, phase_start)
     attempts = [{'exit': result.returncode, 'seconds': seconds}]
     if result.returncode != 0 and BLOCKED in (result.stdout or ''):
         print(f'{name}: a build script was blocked by the host (os error 4551); running it once more', flush=True)
-        result, seconds = host.timed(script)
+        result, seconds = watchdog.run(name, script, phase_start)
         attempts.append({'exit': result.returncode, 'seconds': seconds})
     text = result.stdout or ''
     found = WARNINGS.findall(text)
@@ -482,33 +855,94 @@ def execute(options, host: Host, core: Path = CORE, now=datetime.datetime.now) -
                       capture_output=True, check=False)
     if unpack.returncode != 0:
         raise SystemExit(f'windows_lane_check: unpacking the archive on the host failed: {unpack.stderr!r}')
-    staged = host.ssh(stage_script(label, options.cache_from), check=False)
-    receipt.stage_seconds = round(host.clock() - start, 1)
-    if staged.returncode != 0:
-        print(staged.stdout, staged.stderr, sep='\n', file=sys.stderr)
-        raise SystemExit('windows_lane_check: staging the siblings or preparing the candidate failed; the host '
-                         f'directory {HOST_ROOT}/{label} is kept for inspection')
-    receipt.toolchain = (staged.stdout or '').strip().splitlines()[-1] if (staged.stdout or '').strip() else ''
-    if options.no_check_shapes:
-        shapes = ()
-    else:
-        shapes = SHAPES
-    for name, flags in shapes:
-        run_entry(host, receipt, name, flags, shape_script(label, flags, options.tests, name),
-                  f'{HOST_ROOT}/{label}/logs/{name}.log')
-    if options.hosted_like:
-        run_entry(host, receipt, 'hosted-like', CANDIDATE,
-                  hosted_like_script(label, options.git_root, options.hosted_like_filter, options.taut_proto),
-                  f'{HOST_ROOT}/{label}/logs/hosted-like.log', test_filter=options.hosted_like_filter)
+    watchdog = Watchdog(host, options.watchdog, label)
+    aborted = None
+    try:
+        staged, _ = watchdog.run('stage', stage_script(label, options.cache_from))
+        receipt.stage_seconds = round(host.clock() - start, 1)
+        if staged.returncode != 0:
+            print(staged.stdout, staged.stderr, sep='\n', file=sys.stderr)
+            raise SystemExit('windows_lane_check: staging the siblings or preparing the candidate failed; the host '
+                             f'directory {HOST_ROOT}/{label} is kept for inspection')
+        receipt.toolchain = (staged.stdout or '').strip().splitlines()[-1] if (staged.stdout or '').strip() else ''
+        if options.no_check_shapes:
+            shapes = ()
+        else:
+            shapes = SHAPES
+        for name, flags in shapes:
+            run_entry(watchdog, receipt, name, flags, shape_script(label, flags, options.tests, name),
+                      f'{HOST_ROOT}/{label}/logs/{name}.log')
+        if options.hosted_like:
+            run_entry(watchdog, receipt, 'hosted-like', CANDIDATE,
+                      hosted_like_script(label, options.git_root, options.hosted_like_filter, options.taut_proto),
+                      f'{HOST_ROOT}/{label}/logs/hosted-like.log', test_filter=options.hosted_like_filter)
+    except PhaseAborted as stopped:
+        aborted = stopped.info
+        record_abort(receipt, aborted, flags_of(aborted['phase']), start, host.clock())
     receipt_dir.mkdir(parents=True)
+    if aborted:
+        save_evidence(host, receipt, receipt_dir, aborted)
     (receipt_dir / 'receipt.json').write_text(receipt.as_json(), encoding='utf-8')
     host.ssh(f"cat > {HOST_ROOT}/{label}/receipt.json <<'RECEIPT'\n{receipt.as_json()}RECEIPT\n", check=False)
+    if receipt.abort:
+        print(f'receipt: {receipt_dir / "receipt.json"} (TIMEOUT)')
+        return EXIT_TIMEOUT
     print(f'receipt: {receipt_dir / "receipt.json"} ({"PASS" if receipt.passed() else "FAIL"})')
     return 0 if receipt.passed() else 1
 
 
+def flags_of(phase: str) -> str:
+    """The RUSTFLAGS a phase runs with, for its receipt entry."""
+    return dict(SHAPES).get(phase, CANDIDATE if phase == 'hosted-like' else '')
+
+
+def record_abort(receipt: Receipt, info: dict, flags: str, start: float, now: float) -> None:
+    """The receipt's account of an aborted phase: an entry that failed (a stage abort has none, it is not a shape), and the
+    summary the receipt carries at the top."""
+    name = info['phase']
+    receipt.abort = {'phase': name, 'elapsed_seconds': info['elapsed_seconds'], 'reason': info['reason'],
+                     'limit_seconds': info['limit_seconds'], 'stalled_tests': info['stalled_tests'],
+                     'remote_processes_ended': (None if info['kill']['survivors'] is None else not info['kill']['survivors']),
+                     'evidence': {}}
+    if name == 'stage':
+        receipt.stage_seconds = round(now - start, 1)
+        return
+    receipt.shapes.append({'shape': name, 'rustflags': flags, 'exit': None, 'seconds': info['elapsed_seconds'], 'warnings': 0,
+                           'attempts': [{'exit': None, 'seconds': info['elapsed_seconds']}], 'log': info['log']['path'],
+                           'passed': False, 'aborted': True})
+
+
+def save_evidence(host: Host, receipt: Receipt, receipt_dir: Path, info: dict) -> None:
+    """Writes the evidence beside the receipt and on the host next to the phase's logs, and names the files in the receipt."""
+    name = info['phase']
+    local, tail = receipt_dir / f'watchdog-{name}.json', receipt_dir / f'watchdog-{name}-log-tail.txt'
+    remote = f'{HOST_ROOT}/{receipt.label}/logs/watchdog-{name}.json'
+    receipt.abort['evidence'] = {'local': str(local), 'log_tail': str(tail), 'host': remote}
+    text = json.dumps(info, indent=2) + '\n'
+    local.write_text(text, encoding='utf-8')
+    tail.write_text('\n'.join(info['log']['tail']) + '\n', encoding='utf-8')
+    host.ssh(f"cat > {remote} <<'WATCHDOG_EVIDENCE'\n{text}WATCHDOG_EVIDENCE\n", check=False)
+    print(f'{name}: TIMEOUT ({info["reason"]}) after {info["elapsed_seconds"]}s; {len(info["stalled_tests"])} stalled tests; '
+          f'remote processes ended: {receipt.abort["remote_processes_ended"]}; evidence {local}')
+
+
+class Parser(argparse.ArgumentParser):
+    """The parser, with the watchdog's limits worked out from the options as `options.watchdog`."""
+
+    def parse_args(self, args=None, namespace=None):
+        options = super().parse_args(args, namespace)
+        options.watchdog = watchdog_limits(options)
+        return options
+
+
+USAGE_EXIT_CODES = """exit status: 0 every phase passed; 1 a phase failed; 2 refused (usage); 124 the watchdog aborted a phase
+(receipt result TIMEOUT, evidence beside the receipt): a deadline or a stalled log is never a PASS. Defaults (seconds):
+deadline stage 3600, ordinary 900, transport 900, hosted-like 2700; no-progress ordinary 600, transport 600, hosted-like 1200."""
+
+
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
+    p = Parser(description=__doc__.splitlines()[0], allow_abbrev=False, epilog=USAGE_EXIT_CODES,
+               formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--label', required=True, help='new host directory name under E:/gwz-tests, with the date')
     p.add_argument('--receipt-dir', required=True, type=Path, help='directory that receives <label>/receipt.json')
     source = p.add_mutually_exclusive_group()
@@ -526,6 +960,12 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--taut-proto', metavar='RELEASE',
                    help='with --hosted-like: install that taut-proto release in a venv inside the run\'s directory '
                         '(nothing system-wide), so the protocol rows run instead of being named gaps')
+    p.add_argument('--deadline', action='append', metavar='PHASE=SECONDS',
+                   help='wall-clock deadline of a phase (stage, ordinary, transport, hosted-like); repeatable; 0 = none')
+    p.add_argument('--no-progress', action='append', metavar='PHASE=SECONDS',
+                   help='abort a phase (ordinary, transport, hosted-like) whose log has not grown for this long; repeatable; 0 = none')
+    p.add_argument('--watchdog-poll', type=float, default=DEFAULT_POLL, metavar='SECONDS',
+                   help=f'how often the watchdog reads the log size (default {DEFAULT_POLL})')
     return p
 
 

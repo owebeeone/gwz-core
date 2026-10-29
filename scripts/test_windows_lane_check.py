@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 
 spec = importlib.util.spec_from_file_location('windows_lane_check', Path(__file__).with_name('windows_lane_check.py'))
@@ -567,6 +568,371 @@ class Run(unittest.TestCase):
     def test_the_cache_label_is_validated(self):
         with self.assertRaises(SystemExit):
             self.go(FakeRun(), '--cache-from', '../etc')
+
+
+LIBTEST_LOG = (
+    'running 4 tests\n'
+    'test a::fast ... ok\n'
+    'test a::slow_but_finishes has been running for over 60 seconds\n'
+    'test a::hung_one has been running for over 60 seconds\r\n'
+    'test b::also_hung has been running for over 60 seconds\n'
+    'test a::slow_but_finishes ... ok\n'
+    'test c::failed_late has been running for over 60 seconds\n'
+    'test c::failed_late ... FAILED\n'
+    'test d::skipped has been running for over 60 seconds\n'
+    'test d::skipped ... ignored, reason\n'
+    'test doc::src/lib.rs - thing (line 12) has been running for over 120 seconds\n')
+
+POLL_MARK, EVIDENCE_MARK, KILL_MARK, VERIFY_MARK = ('# watchdog-poll', '# watchdog-evidence', '# watchdog-kill', '# watchdog-verify')
+STARTED = '2026-10-30T01:00:00.0000000Z'
+
+
+def proc(pid, ppid, image, cmd='', cpu=1.5, working_set=9000000):
+    return json.dumps({'pid': pid, 'ppid': ppid, 'image': image, 'cmd': cmd or image, 'cpu_seconds': cpu,
+                       'started': STARTED, 'working_set': working_set})
+
+
+def evidence_output(valid=True, root=4242, children=((4300, 4242, 'cargo.exe'), (4311, 4300, 'rustc.exe'))):
+    lines = ['WATCHDOG_ROOT ' + json.dumps({'pid': root, 'started': STARTED, 'pidfile_utc': STARTED, 'valid': valid,
+                                            'why': '' if valid else 'the process is not the one that wrote the pid file'}),
+             'WATCHDOG_PROC ' + proc(root, 100, 'bash.exe', 'bash.exe -s')]
+    lines += ['WATCHDOG_PROC ' + proc(pid, ppid, image) for pid, ppid, image in children]
+    lines += ['WATCHDOG_LOAD ' + json.dumps({'cpu_percent': 97, 'logical_processors': 16, 'memory_free_mb': 2048}),
+              'WATCHDOG_TESTS_BEGIN', *LIBTEST_LOG.replace('\r', '').splitlines(), 'WATCHDOG_TESTS_END',
+              'WATCHDOG_TAIL_BEGIN', 'last line one', 'last line two', 'WATCHDOG_TAIL_END', 'WATCHDOG_LOGSIZE 1234']
+    return '\n'.join(lines) + '\n'
+
+
+class ManualClock:
+    """Time moves only when the watchdog waits, so a deadline is reached without anyone sleeping."""
+
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+    def wait(self, done, seconds):
+        if done.wait(0.05):
+            return True
+        self.t += seconds
+        return False
+
+
+class HangingRun(FakeRun):
+    """A host whose `hang` phase never returns until its process tree is killed (a taskkill script arrives)."""
+
+    def __init__(self, hang='hosted-like', sizes=(100,), evidence=None, survivors=(), **kwargs):
+        super().__init__(**kwargs)
+        self.hang, self.sizes, self.survivors = hang, list(sizes), [list(s) for s in survivors]
+        self.evidence = evidence_output() if evidence is None else evidence
+        self.released = threading.Event()
+        self.polls, self.kills, self.verifies, self.evidence_scripts, self.stored = [], [], [], [], []
+
+    def __call__(self, argv, **kwargs):
+        script = kwargs.get('input', '')
+        if argv[0] == 'ssh' and 'bash' in argv and isinstance(script, str):
+            if script.startswith(POLL_MARK):
+                self.polls.append(script)
+                size = self.sizes.pop(0) if len(self.sizes) > 1 else self.sizes[0]
+                self.calls.append((list(argv), kwargs))
+                return subprocess.CompletedProcess(argv, 0, f'WATCHDOG_SIZE {size}\n', '')
+            if script.startswith(EVIDENCE_MARK):
+                self.calls.append((list(argv), kwargs))
+                self.evidence_scripts.append(script)
+                return subprocess.CompletedProcess(argv, 0, self.evidence, '')
+            if script.startswith(KILL_MARK):
+                self.calls.append((list(argv), kwargs))
+                self.kills.append(script)
+                self.released.set()
+                return subprocess.CompletedProcess(argv, 0, 'WATCHDOG_KILL taskkill rc=0\n', '')
+            if script.startswith(VERIFY_MARK):
+                self.calls.append((list(argv), kwargs))
+                self.verifies.append(script)
+                alive = self.survivors.pop(0) if self.survivors else []
+                out = ''.join('WATCHDOG_ALIVE ' + proc(pid, 1, 'rustc.exe') + '\n' for pid in alive)
+                if alive and 'taskkill' in script:
+                    self.released.set()
+                return subprocess.CompletedProcess(argv, 0, out + 'WATCHDOG_ALIVE_DONE\n', '')
+            if 'cat > /e/gwz-tests/' in script and 'watchdog-' in script:
+                self.calls.append((list(argv), kwargs))
+                self.stored.append(script)
+                return subprocess.CompletedProcess(argv, 0, '', '')
+            if f'/logs/{self.hang}.log' in script and 'mkdir /e/' not in script[:12]:
+                self.calls.append((list(argv), kwargs))
+                self.released.wait(10)
+                return subprocess.CompletedProcess(argv, 255, 'HOSTED_LIKE_TEMP C:\\x\\HL1234~1\n', '')
+        return super().__call__(argv, **kwargs)
+
+
+def watched_host(runner):
+    clock = ManualClock()
+    return gate.Host(run=runner, clock=clock, wait=clock.wait)
+
+
+class LibtestStalls(unittest.TestCase):
+    def test_a_test_reported_running_for_over_60_seconds_that_never_finished_is_stalled(self):
+        self.assertEqual(gate.stalled_tests(LIBTEST_LOG),
+                         ['a::hung_one', 'b::also_hung', 'doc::src/lib.rs - thing (line 12)'])
+
+    def test_a_healthy_log_has_none_and_garbage_has_none(self):
+        self.assertEqual(gate.stalled_tests('test a ... ok\ntest b ... ok\n'), [])
+        self.assertEqual(gate.stalled_tests(''), [])
+        self.assertEqual(gate.stalled_tests('Compiling gwz-core v0.1.0\n'), [])
+
+    def test_a_test_that_is_reported_slow_twice_and_finishes_once_is_not_stalled(self):
+        text = ('test x has been running for over 60 seconds\ntest x has been running for over 120 seconds\n'
+                'test x ... ok\n')
+        self.assertEqual(gate.stalled_tests(text), [])
+        self.assertEqual(gate.stalled_tests(text.replace('test x ... ok\n', '')), ['x'])
+
+
+class WatchdogOptions(unittest.TestCase):
+    def test_defaults_are_generous_against_the_recorded_history_and_far_below_hours(self):
+        limits = options('--label', 'a-20261009').watchdog
+        self.assertEqual(sorted(gate.DEFAULT_DEADLINES), ['hosted-like', 'ordinary', 'stage', 'transport'])
+        # recorded maxima (247 receipts): ordinary 117 s, transport 109 s, hosted-like ~1480 s (a failing run),
+        # healthy cold hosted-like 900 s; staging 2905 s once.
+        self.assertGreaterEqual(limits.deadline['ordinary'], 6 * 117)
+        self.assertGreaterEqual(limits.deadline['transport'], 6 * 109)
+        self.assertGreaterEqual(limits.deadline['hosted-like'], 1800)
+        self.assertGreaterEqual(limits.deadline['stage'], 2905)
+        for phase, seconds in limits.deadline.items():
+            self.assertLessEqual(seconds, 3600, phase)
+        self.assertEqual(sorted(limits.quiet), ['hosted-like', 'ordinary', 'transport'])
+        for phase, seconds in limits.quiet.items():
+            self.assertLess(seconds, limits.deadline[phase], phase)
+        self.assertGreater(limits.quiet['hosted-like'], 900)  # longer than the slowest healthy cold phase
+        self.assertGreaterEqual(limits.poll, 10)
+
+    def test_flags_override_one_phase_at_a_time(self):
+        limits = options('--label', 'a-20261009', '--deadline', 'hosted-like=60', '--no-progress', 'ordinary=30',
+                         '--deadline', 'stage=100', '--watchdog-poll', '5').watchdog
+        self.assertEqual((limits.deadline['hosted-like'], limits.quiet['ordinary'], limits.deadline['stage'], limits.poll),
+                         (60, 30, 100, 5))
+        self.assertEqual(limits.deadline['ordinary'], gate.DEFAULT_DEADLINES['ordinary'])
+
+    def test_bad_values_are_refused_before_any_host_call(self):
+        for argv in (['--deadline', 'nonsense=60'], ['--deadline', 'hosted-like'], ['--deadline', 'hosted-like=abc'],
+                     ['--deadline', 'hosted-like=-5'], ['--no-progress', 'stage=60'], ['--watchdog-poll', '0']):
+            runner = FakeRun()
+            with self.subTest(argv), self.assertRaises(SystemExit) as caught:
+                with tempfile.TemporaryDirectory() as tmp:
+                    run_main(runner, '--label', 'a-20261009', *argv, receipts=Path(tmp))
+            self.assertEqual(caught.exception.code, 2)
+            self.assertEqual(runner.ssh_scripts(), [])
+
+    def test_the_exit_code_is_documented_in_the_docstring_and_the_usage_text(self):
+        self.assertEqual(gate.EXIT_TIMEOUT, 124)
+        self.assertNotIn(gate.EXIT_TIMEOUT, (0, 1, 2, 3))
+        self.assertIn('124', gate.__doc__)
+        self.assertIn('--deadline', gate.__doc__)
+        usage = gate.parser().format_help()
+        self.assertIn('124', usage)
+        self.assertIn('--no-progress', usage)
+        self.assertIn('--watchdog-poll', usage)
+
+
+class WatchdogScripts(unittest.TestCase):
+    def test_every_phase_records_the_windows_pid_of_its_own_root_process(self):
+        scripts = {'stage': gate.stage_script('a-20261009', None),
+                   'ordinary': gate.shape_script('a-20261009', '', False, 'ordinary'),
+                   'transport': gate.shape_script('a-20261009', gate.CANDIDATE, False, 'transport'),
+                   'hosted-like': gate.hosted_like_script('a-20261009', gate.DEFAULT_GIT_ROOT, None)}
+        for name, script in scripts.items():
+            with self.subTest(name):
+                self.assertIn(f'echo "$(cat /proc/$$/winpid) $$" > /e/gwz-tests/a-20261009/logs/{name}.pid', script)
+
+    def test_the_kill_script_kills_one_pid_tree_and_only_if_it_is_still_the_recorded_process(self):
+        script = gate.kill_script(4242, STARTED)
+        self.assertTrue(script.startswith(KILL_MARK))
+        self.assertIn('taskkill.exe /T /F /PID', script)
+        self.assertIn('4242', script)
+        self.assertIn(STARTED, script)
+        for word in ('/IM', '-Name', 'Stop-Process', 'pkill', 'killall', 'wmic'):
+            self.assertNotIn(word, script)
+
+    def test_the_evidence_script_walks_down_from_the_pid_file_and_reports_load(self):
+        script = gate.evidence_script('a-20261009', 'hosted-like')
+        self.assertTrue(script.startswith(EVIDENCE_MARK))
+        for word in ('Win32_Process', 'ParentProcessId', 'CommandLine', 'WorkingSetSize', 'LoadPercentage',
+                     'logs\\hosted-like.pid', 'running for over', 'tail -n', 'ps -W', 'WATCHDOG_EXTRA'):
+            self.assertIn(word, script)
+        self.assertNotIn('taskkill', script)
+
+    def test_the_log_poll_names_the_phases_log_and_the_stage_has_none(self):
+        self.assertIn('/e/gwz-tests/a-20261009/logs/ordinary.log', gate.poll_script('a-20261009', 'ordinary'))
+        self.assertNotIn('.log', gate.poll_script('a-20261009', 'stage'))
+
+
+class WatchdogAbort(unittest.TestCase):
+    def go(self, runner, *argv, label='wd-20261030-a'):
+        self.addCleanup(runner.released.set)
+        with tempfile.TemporaryDirectory() as tmp:
+            host = watched_host(runner)
+            code = gate.main(['--receipt-dir', tmp, '--label', label, *argv], host=host, core=Path('/nonexistent-core'))
+            path = Path(tmp) / label / 'receipt.json'
+            receipt = json.loads(path.read_text(encoding='utf-8')) if path.exists() else None
+            files = {p.name: p.read_text(encoding='utf-8') for p in (Path(tmp) / label).glob('*')} if path.exists() else {}
+            return code, receipt, files, host
+
+    def test_the_wall_deadline_aborts_the_phase_and_fails_with_its_own_exit_code(self):
+        runner = HangingRun(sizes=(100, 200, 300, 400, 500, 600, 700))
+        code, receipt, files, host = self.go(runner, '--hosted-like', '--deadline', 'hosted-like=300',
+                                             '--watchdog-poll', '100')
+        self.assertEqual(code, gate.EXIT_TIMEOUT)
+        self.assertEqual((receipt['result'], receipt['passed']), ('TIMEOUT', False))
+        abort = receipt['abort']
+        self.assertEqual((abort['phase'], abort['reason'], abort['limit_seconds']), ('hosted-like', 'deadline', 300))
+        self.assertGreaterEqual(abort['elapsed_seconds'], 300)
+        self.assertLess(abort['elapsed_seconds'], 500)
+        self.assertEqual(len(runner.kills), 1)
+
+    def test_no_progress_aborts_when_the_log_stops_growing_long_before_the_wall_deadline(self):
+        runner = HangingRun(sizes=(100, 200, 300, 300))
+        code, receipt, files, host = self.go(runner, '--hosted-like', '--no-progress', 'hosted-like=250',
+                                             '--watchdog-poll', '100')
+        self.assertEqual(code, gate.EXIT_TIMEOUT)
+        abort = receipt['abort']
+        self.assertEqual((abort['phase'], abort['reason'], abort['limit_seconds']), ('hosted-like', 'no-progress', 250))
+        self.assertLess(abort['elapsed_seconds'], gate.DEFAULT_DEADLINES['hosted-like'])
+        # the log last grew at the poll that saw 300 (t=300); 250 s later is t=550
+        self.assertGreaterEqual(abort['elapsed_seconds'], 550)
+        self.assertLess(abort['elapsed_seconds'], 700)
+
+    def test_a_log_that_keeps_growing_is_not_a_no_progress_abort(self):
+        runner = HangingRun(sizes=range(100, 100000, 100))
+        code, receipt, files, host = self.go(runner, '--hosted-like', '--no-progress', 'hosted-like=250',
+                                             '--deadline', 'hosted-like=1000', '--watchdog-poll', '100')
+        self.assertEqual(receipt['abort']['reason'], 'deadline')
+
+    def test_an_earlier_phase_that_passed_stays_in_the_receipt_and_later_phases_do_not_run(self):
+        runner = HangingRun(hang='transport')
+        code, receipt, files, host = self.go(runner, '--hosted-like', '--deadline', 'transport=200',
+                                             '--watchdog-poll', '100')
+        self.assertEqual(code, gate.EXIT_TIMEOUT)
+        self.assertEqual([(s['shape'], s['exit']) for s in receipt['shapes'][:1]], [('ordinary', 0)])
+        self.assertEqual(receipt['shapes'][-1]['shape'], 'transport')
+        self.assertFalse(receipt['shapes'][-1]['passed'])
+        self.assertTrue(receipt['shapes'][-1]['aborted'])
+        self.assertEqual(receipt['abort']['phase'], 'transport')
+        self.assertFalse(any('run_tests.py' in s for s in runner.ssh_scripts()))
+
+    def test_the_receipt_summarizes_the_evidence_and_the_files_are_saved_with_it(self):
+        runner = HangingRun()
+        code, receipt, files, host = self.go(runner, '--hosted-like', '--deadline', 'hosted-like=300', '--watchdog-poll', '100')
+        abort = receipt['abort']
+        self.assertEqual(abort['stalled_tests'], ['a::hung_one', 'b::also_hung', 'doc::src/lib.rs - thing (line 12)'])
+        self.assertEqual(sorted(abort['evidence']), ['host', 'local', 'log_tail'])
+        self.assertEqual(abort['evidence']['host'], '/e/gwz-tests/wd-20261030-a/logs/watchdog-hosted-like.json')
+        self.assertIn('watchdog-hosted-like.json', files)
+        self.assertIn('watchdog-hosted-like-log-tail.txt', files)
+        self.assertIn('last line two', files['watchdog-hosted-like-log-tail.txt'])
+        evidence = json.loads(files['watchdog-hosted-like.json'])
+        self.assertEqual((evidence['phase'], evidence['reason']), ('hosted-like', 'deadline'))
+        self.assertEqual(evidence['log']['tail'][-1], 'last line two')
+        self.assertEqual(evidence['host_load']['cpu_percent'], 97)
+        self.assertEqual([p['pid'] for p in evidence['process_tree']], [4242, 4300, 4311])
+        self.assertEqual(sorted(evidence['process_tree'][1]),
+                         ['cmd', 'cpu_seconds', 'image', 'pid', 'ppid', 'started', 'working_set'])
+        self.assertEqual(evidence['stalled_tests'], abort['stalled_tests'])
+        self.assertTrue(any('watchdog-hosted-like.json' in s for s in runner.stored))
+        # the receipt on the host is written as on the normal path
+        self.assertTrue(any('receipt.json' in s for s in runner.ssh_scripts()))
+
+    def test_evidence_is_captured_before_anything_is_killed(self):
+        runner = HangingRun()
+        self.go(runner, '--hosted-like', '--deadline', 'hosted-like=300', '--watchdog-poll', '100')
+        order = [k['input'].split('\n', 1)[0] for a, k in runner.calls if 'input' in k and isinstance(k['input'], str)]
+        self.assertLess(order.index(EVIDENCE_MARK), order.index(KILL_MARK))
+
+    def test_only_the_recorded_pid_tree_is_killed_and_never_by_image_name(self):
+        runner = HangingRun()
+        self.go(runner, '--hosted-like', '--deadline', 'hosted-like=300', '--watchdog-poll', '100')
+        self.assertEqual(len(runner.kills), 1)
+        for script in runner.ssh_scripts():
+            for word in ('/IM', '-Name', 'pkill', 'killall', 'wmic', 'Stop-Process'):
+                self.assertNotIn(word, script)
+        self.assertIn(STARTED, runner.kills[0])
+
+    def test_after_the_kill_the_recorded_pids_are_checked_and_the_receipt_says_they_ended(self):
+        runner = HangingRun()
+        code, receipt, files, host = self.go(runner, '--hosted-like', '--deadline', 'hosted-like=300', '--watchdog-poll', '100')
+        self.assertEqual(len(runner.verifies), 1)
+        for pid in ('4242', '4300', '4311'):
+            self.assertIn(pid, runner.verifies[0])
+        self.assertIs(receipt['abort']['remote_processes_ended'], True)
+        evidence = json.loads(files['watchdog-hosted-like.json'])
+        self.assertEqual((evidence['kill']['survivors'], evidence['kill']['recorded_pids']), ([], [4242, 4300, 4311]))
+
+    def test_a_survivor_is_killed_by_its_recorded_pid_and_one_that_stays_is_reported(self):
+        runner = HangingRun(survivors=([4311], []))
+        code, receipt, files, host = self.go(runner, '--hosted-like', '--deadline', 'hosted-like=300', '--watchdog-poll', '100')
+        self.assertIs(receipt['abort']['remote_processes_ended'], True)
+        self.assertIn('taskkill.exe /F /PID', runner.verifies[1])
+        self.assertIn('4311', runner.verifies[1])
+        stubborn = HangingRun(survivors=([4311], [4311], [4311], [4311]))
+        code, receipt, files, host = self.go(stubborn, '--hosted-like', '--deadline', 'hosted-like=300', '--watchdog-poll', '100',
+                                             label='wd-20261030-b')
+        self.assertEqual(code, gate.EXIT_TIMEOUT)
+        self.assertIs(receipt['abort']['remote_processes_ended'], False)
+        self.assertEqual(json.loads(files['watchdog-hosted-like.json'])['kill']['survivors'][0]['pid'], 4311)
+
+    def test_a_pid_that_is_not_the_recorded_root_is_never_killed(self):
+        runner = HangingRun(evidence=evidence_output(valid=False))
+        code, receipt, files, host = self.go(runner, '--hosted-like', '--deadline', 'hosted-like=300', '--watchdog-poll', '100')
+        self.assertEqual(runner.kills, [])
+        self.assertEqual(code, gate.EXIT_TIMEOUT)
+        self.assertIsNone(receipt['abort']['remote_processes_ended'])
+        self.assertIn('not the one', json.loads(files['watchdog-hosted-like.json'])['kill']['refused'])
+
+    def test_a_build_phase_is_watched_too_and_the_stage_has_a_wall_deadline_only(self):
+        runner = HangingRun(hang='ordinary')
+        code, receipt, files, host = self.go(runner, '--no-progress', 'ordinary=250', '--watchdog-poll', '100')
+        self.assertEqual((receipt['abort']['phase'], receipt['abort']['reason']), ('ordinary', 'no-progress'))
+        self.assertEqual(receipt['shapes'][-1]['log'], '/e/gwz-tests/wd-20261030-a/logs/ordinary.log')
+
+    def test_the_phase_script_has_ended_after_the_kill_and_a_refused_kill_leaves_it_running_and_says_so(self):
+        runner = HangingRun()
+        code, receipt, files, host = self.go(runner, '--hosted-like', '--deadline', 'hosted-like=300', '--watchdog-poll', '100')
+        self.assertTrue(json.loads(files['watchdog-hosted-like.json'])['phase_script_ended'])
+        self.assertIn('C:\\x\\HL1234~1', json.loads(files['watchdog-hosted-like.json'])['phase_output_so_far'])
+        refused = HangingRun(evidence=evidence_output(valid=False))
+        code, receipt, files, host = self.go(refused, '--hosted-like', '--deadline', 'hosted-like=300', '--watchdog-poll', '100',
+                                             label='wd-20261030-c')
+        self.assertFalse(json.loads(files['watchdog-hosted-like.json'])['phase_script_ended'])
+
+
+class WatchdogLeavesNormalRunsAlone(unittest.TestCase):
+    def go(self, runner, *argv):
+        with tempfile.TemporaryDirectory() as tmp:
+            host = gate.Host(run=runner, clock=Clock())
+            code = gate.main(['--receipt-dir', tmp, '--label', 'wd-20261030-a', *argv], host=host,
+                             core=Path('/nonexistent-core'))
+            return code, json.loads((Path(tmp) / 'wd-20261030-a' / 'receipt.json').read_text(encoding='utf-8'))
+
+    def test_a_passing_run_has_the_same_receipt_keys_and_no_abort_fields(self):
+        code, receipt = self.go(FakeRun(), '--hosted-like')
+        self.assertEqual(code, 0)
+        self.assertEqual(list(receipt), ['label', 'host_dir', 'source', 'commit', 'cache_from', 'with_tests', 'toolchain',
+                                         'started', 'stage_seconds', 'shapes', 'total_seconds', 'passed'])
+        self.assertNotIn('abort', receipt)
+        self.assertNotIn('result', receipt)
+        self.assertEqual([sorted(s) for s in receipt['shapes'][:2]],
+                         [['attempts', 'exit', 'log', 'rustflags', 'seconds', 'shape', 'warnings']] * 2)
+        self.assertNotIn('aborted', receipt['shapes'][-1])
+
+    def test_a_failing_run_still_exits_1_and_runs_no_evidence_script(self):
+        runner = FakeRun(shape_exits=(0, 101))
+        code, receipt = self.go(runner)
+        self.assertEqual((code, receipt['passed']), (1, False))
+        self.assertFalse(any(s.startswith(('# watchdog-evidence', '# watchdog-kill')) for s in runner.ssh_scripts()))
+
+    def test_the_phase_runs_in_one_ssh_call_as_before_and_polling_is_only_for_the_log(self):
+        runner = FakeRun()
+        self.go(runner, '--hosted-like')
+        phases = [s for s in runner.ssh_scripts() if 'cargo check' in s or 'run_tests.py' in s]
+        self.assertEqual(len(phases), 3)
 
 
 if __name__ == '__main__':
