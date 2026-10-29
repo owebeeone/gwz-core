@@ -10,7 +10,7 @@ use crate::transport_host::{
 };
 use gwz_connection::{
     Clock, DriverWork, HostNamespace, Progress, ProgressUnavailable, Sleep, Tick,
-    remote::{CoreBinding, Lane, LaneEnded, LaneSend},
+    remote::{BindBounds, CoreBinding, Lane, LaneEnded, LaneSend, RemoteConfig},
 };
 use gwz_transport::protocol::{EndpointRole, MessageKind};
 use std::sync::Arc;
@@ -41,7 +41,7 @@ impl Progress for Held {
 struct Registry;
 impl Calls for Registry {
     fn is_live(&self, request_id: &str) -> bool {
-        request_id == "call-1"
+        request_id == "call-1" || request_id.starts_with("more-")
     }
     fn endpoint_path_base(&self, request_id: &str) -> Option<String> {
         (request_id == "call-1").then(|| "/home/me".to_owned())
@@ -64,6 +64,7 @@ fn ends() -> (Arc<CarrierLane>, Arc<CarrierLane>, Dyn, Dyn) {
         Arc::new(Held),
         HostNamespace::new(9),
         Arc::new(Registry),
+        BindBounds::core(&RemoteConfig::default()),
     );
     let client = CarrierLane::client(b.clone(), Arc::new(Fixed), Arc::new(Held));
     (core, client, a, b)
@@ -141,6 +142,17 @@ fn stream_ends() -> (
     Arc<StreamCarrier>,
     Arc<StreamCarrier>,
 ) {
+    stream_ends_with(CarrierLimits::DEFAULT)
+}
+/// [`stream_ends`] over carriers with `limits`.
+fn stream_ends_with(
+    limits: CarrierLimits,
+) -> (
+    Arc<CarrierLane>,
+    Arc<CarrierLane>,
+    Arc<StreamCarrier>,
+    Arc<StreamCarrier>,
+) {
     let (core_read, client_write) = std::io::pipe().expect("pipe");
     let (client_read, core_write) = std::io::pipe().expect("pipe");
     let id = CarrierId::random().expect("random");
@@ -151,7 +163,7 @@ fn stream_ends() -> (
                 Box::new(write),
                 Box::new(|| {}),
                 CarrierBinding::new(id, side, Peer::InProcess),
-                CarrierLimits::DEFAULT,
+                limits,
             )
             .expect("a carrier"),
         )
@@ -165,6 +177,7 @@ fn stream_ends() -> (
             Arc::new(Held),
             HostNamespace::new(9),
             Arc::new(Registry),
+            BindBounds::core(&RemoteConfig::default()),
         ),
         CarrierLane::client(client.clone(), Arc::new(Fixed), Arc::new(Held)),
         core,
@@ -320,4 +333,188 @@ fn a_handle_registers_over_a_stream_carrier_whose_bindings_the_adapter_opens_ret
         (core_carrier.discarded_frames() == discarded + 1).then_some(())
     });
     assert!(core.recv().unwrap().is_none(), "and no one gets it");
+}
+
+// --- remediation round 1 (State P2-3, Code P3-4) ---
+
+/// A message of the binding `session` on `stream`, as a raw peer sends it.
+fn of(session: &str, stream: i64, kind: MessageKind) -> gwz_transport::protocol::Envelope {
+    let mut envelope = gwz_transport::binding::offer(session, EndpointRole::Driver);
+    envelope.kind = kind;
+    envelope.stream_id = stream;
+    envelope.bind = None;
+    envelope
+}
+fn data(session: &str, stream: i64, offset: i64, length: usize) -> Attachment {
+    let mut envelope = of(session, stream, MessageKind::Data);
+    envelope.data = Some(gwz_transport::protocol::Data {
+        offset,
+        payload: vec![0; length],
+    });
+    ("call-1".to_owned(), envelope)
+}
+fn window(session: &str, stream: i64) -> Attachment {
+    let mut envelope = of(session, stream, MessageKind::Window);
+    envelope.window = Some(gwz_transport::protocol::Window { max_offset: 1 });
+    ("call-1".to_owned(), envelope)
+}
+
+/// Sends `message`, waiting out a full lane: the writer thread drains it.
+fn send_waiting(lane: &CarrierLane, message: Attachment) {
+    eventually("room on the lane", || match lane.send(message.clone()) {
+        Ok(()) => Some(()),
+        Err(LaneSend::Full(_)) => None,
+        Err(LaneSend::Closed(_)) => panic!("the carrier ended"),
+    });
+}
+
+/// A binding the carrier holds is bounded by the binding's own limits: its receive window per stream and the mux's
+/// streams per binding (GwzSplitCommandChannel 3.3, "Transport-class bound"; the 2026-10-27 amendment). `sender` is the
+/// end that sends to `receiver`'s binding `session`; the receiving carrier is `carrier`.
+fn a_binding_is_bounded_by_its_window_and_stream_limit(
+    sender: &CarrierLane,
+    receiver: &CarrierLane,
+    carrier: &StreamCarrier,
+    session: &str,
+) {
+    // More than one window on one stream faults the binding at the carrier: a window is 64 KiB.
+    send_waiting(sender, data(session, 1, 0, 65_536));
+    send_waiting(sender, data(session, 1, 65_536, 1));
+    eventually("the overrun of the stream's window", || {
+        receiver.faulted(session).then_some(())
+    });
+    assert!(carrier.binding_fault(session).is_some());
+}
+fn a_binding_is_bounded_by_its_stream_limit(
+    sender: &CarrierLane,
+    receiver: &CarrierLane,
+    carrier: &StreamCarrier,
+    session: &str,
+) {
+    // Sixty-four streams with queued state are the binding's streams; a frame for a sixty-fifth faults it.
+    for stream in 1..=64 {
+        send_waiting(sender, window(session, stream));
+    }
+    eventually("sixty-four streams queued", || {
+        (carrier.queued_in() == 64).then_some(())
+    });
+    assert!(
+        !receiver.faulted(session),
+        "a conforming peer is not faulted"
+    );
+    send_waiting(sender, window(session, 65));
+    eventually("the sixty-fifth stream", || {
+        receiver.faulted(session).then_some(())
+    });
+}
+
+#[test]
+fn a_binding_the_core_opens_as_its_bind_goes_out_is_held_to_the_bindings_window() {
+    let (core, client, core_carrier, _) = stream_ends();
+    core.send(bind("call-1", "s.1")).unwrap();
+    eventually("the bind", || client.recv().unwrap());
+    a_binding_is_bounded_by_its_window_and_stream_limit(&client, &core, &core_carrier, "s.1");
+}
+
+#[test]
+fn a_binding_the_core_opens_as_its_bind_goes_out_is_held_to_the_mux_streams_per_binding() {
+    let (core, client, core_carrier, _) = stream_ends();
+    core.send(bind("call-1", "s.1")).unwrap();
+    eventually("the bind", || client.recv().unwrap());
+    a_binding_is_bounded_by_its_stream_limit(&client, &core, &core_carrier, "s.1");
+}
+
+#[test]
+fn a_binding_the_client_accepts_is_held_to_the_bindings_window() {
+    let (core, client, _, client_carrier) = stream_ends();
+    core.send(bind("call-1", "s.1")).unwrap();
+    eventually("the bind", || client.recv().unwrap());
+    a_binding_is_bounded_by_its_window_and_stream_limit(&core, &client, &client_carrier, "s.1");
+}
+
+#[test]
+fn a_binding_the_client_accepts_is_held_to_the_mux_streams_per_binding() {
+    let (core, client, _, client_carrier) = stream_ends();
+    core.send(bind("call-1", "s.1")).unwrap();
+    eventually("the bind", || client.recv().unwrap());
+    a_binding_is_bounded_by_its_stream_limit(&core, &client, &client_carrier, "s.1");
+}
+
+#[test]
+fn a_lane_does_not_re_open_a_binding_it_retired() {
+    use crate::transport_host::carrier::BindingLimits;
+    let (core, _client, core_carrier, _) = stream_ends();
+    core.retire("s.9");
+    assert!(
+        core.send(bind("call-1", "s.9")).is_ok(),
+        "the bind of a binding that is over is dropped, not refused"
+    );
+    assert!(
+        core_carrier
+            .open_binding("s.9", BindingLimits::default())
+            .is_ok(),
+        "the lane re-opened a binding it had retired"
+    );
+}
+
+#[test]
+fn an_operation_ended_behind_a_full_lane_leaves_no_binding_at_the_carrier() {
+    use crate::transport_host::carrier::{BindingLimits, InboundLimits};
+    use gwz_connection::{OperationRef, Registration, remote::handle};
+    // The carrier holds one binding. The first operation's bind opens it; the second's has no room and stays queued in
+    // the core's outbox. The second operation ends, then the first frees the carrier's binding: the second's stale bind
+    // must not leave and re-open one.
+    let limits = CarrierLimits::DEFAULT.with_inbound(InboundLimits {
+        max_bindings: 1,
+        ..CarrierLimits::DEFAULT.inbound()
+    });
+    let (core, _client, core_carrier, _) = stream_ends_with(limits);
+    let host = handle(core.clone());
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    let mut register = |request: &str| {
+        let admission = host.admit(OperationRef::new(request).unwrap()).unwrap();
+        let mut acquire = Box::pin(admission.acquire());
+        match acquire.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(permit) => permit.unwrap().register(),
+            std::task::Poll::Pending => panic!("a free slot"),
+        }
+    };
+    let first = register("call-1");
+    let second = register("more-2");
+    let mut ended = Box::pin(second.finish());
+    let Some(end) = eventually("the second operation's end", || {
+        match ended.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(end) => Some(Some(end)),
+            std::task::Poll::Pending => None,
+        }
+    }) else {
+        unreachable!()
+    };
+    assert!(matches!(
+        end.registration,
+        Registration::NeverRegistered(gwz_connection::TerminalReason::Cancelled)
+    ));
+    let mut first_ended = Box::pin(first.finish());
+    eventually("the first operation's end", || {
+        first_ended.as_mut().poll(&mut cx).is_ready().then_some(())
+    });
+    // Any call pumps the handle: the stale bind would leave now.
+    drop(host.admit(OperationRef::new("more-3").unwrap()));
+    assert!(
+        core_carrier
+            .open_binding("probe", BindingLimits::default())
+            .is_ok(),
+        "the carrier still holds a binding after every operation ended"
+    );
+}
+
+#[test]
+fn a_core_end_remembers_at_most_a_binding_limit_of_retired_names() {
+    let (core, _client, _, _) = stream_ends();
+    for n in 0..(super::RETIRED + 10) {
+        core.retire(&format!("s.{n}"));
+    }
+    assert_eq!(core.retired.lock().unwrap().len(), super::RETIRED);
+    assert!(!core.was_retired("s.0"), "the oldest names are forgotten");
+    assert!(core.was_retired(&format!("s.{}", super::RETIRED + 9)));
 }

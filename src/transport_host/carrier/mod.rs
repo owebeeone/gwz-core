@@ -218,6 +218,17 @@ impl BindingLimits {
             per_kind: 4,
         }
     }
+
+    /// A remote binding's bounds, as the binding states them (GwzSplitCommandChannel 3.3 and its 2026-10-27 amendment,
+    /// which assigns the derivation to step 2.2c): `receive_window` bytes per stream, and the `max_streams` of the
+    /// binding's mux.
+    pub(crate) fn bounded(receive_window: usize, max_streams: usize) -> Self {
+        Self {
+            receive_window,
+            max_streams,
+            per_kind: 4,
+        }
+    }
 }
 
 impl Default for BindingLimits {
@@ -432,11 +443,12 @@ pub(crate) trait Carrier: Send + Sync {
         self.register(waker);
     }
 
-    /// Opens the binding `session` on this end: a byte-stream end routes the transport frames of open bindings only and
-    /// discards the rest with no state (contract §6), so the end that mints a binding opens it before it sends the
-    /// binding's `bind`. An end with one stream of messages (the in-process carrier) has no bindings to open.
-    fn bind_open(&self, session: &str) -> Result<(), BindingRefused> {
-        let _ = session;
+    /// Opens the binding `session` on this end, held to `limits` (the binding's receive window and its mux's stream
+    /// bound): a byte-stream end routes the transport frames of open bindings only and discards the rest with no state
+    /// (contract §6), so the end that mints a binding opens it before it sends the binding's `bind`. An end with one
+    /// stream of messages (the in-process carrier) has no bindings to open.
+    fn bind_open(&self, session: &str, limits: BindingLimits) -> Result<(), BindingRefused> {
+        let _ = (session, limits);
         Ok(())
     }
 
@@ -445,10 +457,13 @@ pub(crate) trait Carrier: Send + Sync {
         let _ = session;
     }
 
-    /// This end admits the peer's `bind` for a binding that is not open, within its binding limit (the client end of a
-    /// served session, whose bindings the core mints: GwzSplitCommandChannel 3.3). Nothing else opens a binding, and
-    /// the receiver above the end refuses a `bind` that names no call of its own.
-    fn accept_binds(&self) {}
+    /// This end admits the peer's `bind` for a binding that is not open, within its binding limit, and holds the binding
+    /// it opens to `limits` (the client end of a served session, whose bindings the core mints: GwzSplitCommandChannel
+    /// 3.3). Nothing else opens a binding, and the receiver above the end refuses a `bind` that names no call of its
+    /// own.
+    fn accept_binds(&self, limits: BindingLimits) {
+        let _ = limits;
+    }
 
     /// Ends the carrier at this end with `code`. This end sends and receives nothing more; the peer receives what was
     /// sent before, then the code. Closing again changes nothing.

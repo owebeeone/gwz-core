@@ -128,8 +128,9 @@ pub(super) struct State {
     /// The writer thread has returned.
     pub(super) writer_done: bool,
     pub(super) waker: Option<Waker>,
-    /// This end admits the peer's `bind` for a binding that is not open ([`Carrier::accept_binds`]).
-    pub(super) accept_binds: bool,
+    /// This end admits the peer's `bind` for a binding that is not open, and holds that binding to these limits
+    /// ([`Carrier::accept_binds`]).
+    pub(super) accept_binds: Option<BindingLimits>,
 }
 
 impl State {
@@ -154,7 +155,7 @@ impl State {
             reader_exited: false,
             writer_done: false,
             waker: None,
-            accept_binds: false,
+            accept_binds: None,
         }
     }
 

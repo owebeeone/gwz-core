@@ -5,15 +5,17 @@
 //!
 //! | Behaviour | Clause |
 //! | --- | --- |
-//! | The core end's `CoreBinding` is the session's lane and its live-call registry (`Service::is_live`) | §3.4 "Construction" |
+//! | The core end's `CoreBinding` is the session's lane and its live-call registry (`Calls`, which no type implements yet: 2.2b's `Service` has no live-call query, and step 2.3 adds it) | §3.4 "Construction" |
 //! | A message that did not arrive on the connection this binding was made for is discarded before the remote module sees it | contract §6 |
 //! | The client end's `ClientSession` is the same lane; `serve_bindings` builds the receiver over it | §3.4 walkthrough |
 //!
 //! The messages are the ones the carrier already moves (`Carrier::try_send`, `register`); the lane takes the transport
 //! class only (`try_recv_transport`), opens the core's bindings as their `bind` goes out (`bind_open`), retires them
 //! (`bind_retire`) and reports the ones the carrier faulted (`bind_fault`). The client's end admits the core's `bind`
-//! (`accept_binds`). These four are the seams step 2.2c added to the carrier trait; `FrameSink`, `FrameRouter` and
+//! (`accept_binds`); each binding it opens is held to the binding's own bounds (`BindBounds`: its receive window and its
+//! mux's streams), and the end that retired a binding never opens it again. These four are the seams step 2.2c added to the carrier trait; `FrameSink`, `FrameRouter` and
 //! `FrameKey` are unchanged.
+use super::carrier::BindingLimits;
 use super::{
     Attachment,
     carrier::{BindingRefused, Carrier, CarrierBinding, SendRefused},
@@ -21,15 +23,23 @@ use super::{
 use gwz_connection::{
     Clock, HostHandle, HostNamespace, Progress,
     remote::{
-        ClientSession, CoreBinding, Invocations, Lane, LaneEnded, LaneSend, Receiver,
+        BindBounds, ClientSession, CoreBinding, Invocations, Lane, LaneEnded, LaneSend, Receiver,
         serve_bindings,
     },
 };
 use gwz_transport::protocol::MessageKind;
-use std::{sync::Arc, task::Waker};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+    task::Waker,
+};
 
-/// What the core end knows of its calls, from the served session's registry (`Service::is_live`) and the request each
-/// call carried (its `TransportOptions.endpoint_path_base`): supplied by the composition that builds the session.
+/// The most retired binding names a core end remembers: the carrier's binding limit, as many as can be open at once.
+const RETIRED: usize = 1024;
+
+/// What the core end knows of its calls: whether a call is live in the served session and the request each call carried
+/// (its `TransportOptions.endpoint_path_base`). No type implements it yet: 2.2b's `Service` has no live-call query, and
+/// step 2.3, which wires the served session, adds one to it (a request to 2.2b's owner) and implements this over it.
 pub(crate) trait Calls: Send + Sync + 'static {
     fn is_live(&self, request_id: &str) -> bool;
     fn endpoint_path_base(&self, request_id: &str) -> Option<String>;
@@ -42,15 +52,20 @@ pub(crate) struct CarrierLane {
     clock: Arc<dyn Clock>,
     progress: Arc<dyn Progress>,
     core: Option<(HostNamespace, Arc<dyn Calls>)>,
+    /// What each binding it opens or accepts is held to at the carrier.
+    limits: BindingLimits,
+    /// The bindings this core end retired, newest last: a `bind` of one is dropped, never turned into an open binding.
+    retired: Mutex<VecDeque<String>>,
 }
 impl CarrierLane {
-    /// The core's end of a served session.
+    /// The core's end of a served session; its bindings are held to `bounds`, those of the handle it serves.
     pub(crate) fn core(
         carrier: Arc<dyn Carrier>,
         clock: Arc<dyn Clock>,
         progress: Arc<dyn Progress>,
         namespace: HostNamespace,
         calls: Arc<dyn Calls>,
+        bounds: BindBounds,
     ) -> Arc<Self> {
         Arc::new(Self {
             bound: carrier.binding(),
@@ -58,6 +73,8 @@ impl CarrierLane {
             clock,
             progress,
             core: Some((namespace, calls)),
+            limits: BindingLimits::bounded(bounds.receive_window, bounds.streams),
+            retired: Mutex::new(VecDeque::new()),
         })
     }
     /// The client's end. It admits the core's `bind` for a binding it has not opened (GwzSplitCommandChannel 3.3): the
@@ -67,22 +84,39 @@ impl CarrierLane {
         clock: Arc<dyn Clock>,
         progress: Arc<dyn Progress>,
     ) -> Arc<Self> {
-        carrier.accept_binds();
+        let bounds = BindBounds::client();
+        let limits = BindingLimits::bounded(bounds.receive_window, bounds.streams);
+        carrier.accept_binds(limits);
         Arc::new(Self {
             bound: carrier.binding(),
             carrier,
             clock,
             progress,
             core: None,
+            limits,
+            retired: Mutex::new(VecDeque::new()),
         })
+    }
+}
+impl CarrierLane {
+    fn was_retired(&self, session: &str) -> bool {
+        self.retired
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|retired| retired == session)
     }
 }
 impl Lane for CarrierLane {
     fn send(&self, message: Attachment) -> Result<(), LaneSend> {
         // The core's end opens a binding as its `bind` goes out, so the client's answers are routed to it. A retry of a
-        // `bind` the lane turned away finds the binding open already.
+        // `bind` the lane turned away finds the binding open already. A `bind` of a binding this end retired is over with
+        // it: it is dropped (the core purges it as well), never opened again.
         if self.core.is_some() && message.1.kind == MessageKind::Bind {
-            match self.carrier.bind_open(&message.1.session_id) {
+            if self.was_retired(&message.1.session_id) {
+                return Ok(());
+            }
+            match self.carrier.bind_open(&message.1.session_id, self.limits) {
                 Ok(()) | Err(BindingRefused::Name) => {}
                 Err(BindingRefused::TooMany) => return Err(LaneSend::Full(Box::new(message))),
                 Err(BindingRefused::Closed(_)) => return Err(LaneSend::Closed(Box::new(message))),
@@ -115,6 +149,13 @@ impl Lane for CarrierLane {
         self.carrier.register(waker);
     }
     fn retire(&self, session: &str) {
+        if self.core.is_some() {
+            let mut retired = self.retired.lock().unwrap_or_else(|e| e.into_inner());
+            if retired.len() == RETIRED {
+                retired.pop_front();
+            }
+            retired.push_back(session.to_owned());
+        }
         self.carrier.bind_retire(session);
     }
     fn faulted(&self, session: &str) -> bool {

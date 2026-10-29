@@ -111,7 +111,7 @@ impl Core {
         // the client end of a served session, whose bindings the core mints (GwzSplitCommandChannel 3.3).
         let may_bind = {
             let state = lock(self);
-            state.accept_binds
+            state.accept_binds.is_some()
                 && !state.peer_announced
                 && frame.tag == CONTROL_TAG
                 && !state.bindings.contains_key(&binding_id)
@@ -130,13 +130,11 @@ impl Core {
             if state.peer_announced || !live(&state, &binding_id) {
                 let opened = is_bind
                     && !state.peer_announced
-                    && state
-                        .open_binding(
-                            &binding_id,
-                            BindingLimits::default(),
-                            self.limits.inbound().max_bindings,
-                        )
-                        .is_ok();
+                    && state.accept_binds.is_some_and(|limits| {
+                        state
+                            .open_binding(&binding_id, limits, self.limits.inbound().max_bindings)
+                            .is_ok()
+                    });
                 if !opened {
                     // Not open, or faulted, or the peer has said it is done: discarded, and no state is created for it.
                     self.discard(state, frame);

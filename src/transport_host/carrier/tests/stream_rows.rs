@@ -50,7 +50,8 @@ fn an_end_admits_a_bind_for_a_binding_that_is_not_open_only_when_it_accepts_bind
     // a served session cannot open a binding the core mints, so it admits the core's `bind` (and nothing else) and the
     // receiver above it refuses what names no call (step 2.2c).
     let (core, client) = over_pipes_unbound(limits(64, 16));
-    core.bind_open("s-9").expect("the core opens what it binds");
+    core.bind_open("s-9", BindingLimits::default())
+        .expect("the core opens what it binds");
     core.try_send(bind_of("call-1", "s-9")).unwrap();
     eventually("the bind to be discarded", || {
         (client.discarded_frames() == 1).then_some(())
@@ -60,7 +61,7 @@ fn an_end_admits_a_bind_for_a_binding_that_is_not_open_only_when_it_accepts_bind
         "an end that does not accept binds creates no binding"
     );
 
-    client.accept_binds();
+    client.accept_binds(BindingLimits::default());
     let mut stray = window(1, 5);
     stray.1.session_id = "s-other".into();
     core.try_send(stray).unwrap();
@@ -145,10 +146,10 @@ fn binds_an_end_admits_are_bounded_by_its_binding_limit() {
         ..InboundLimits::DEFAULT
     };
     let (core, client) = over_pipes_unbound(limits(64, 16).with_inbound(inbound));
-    client.accept_binds();
+    client.accept_binds(BindingLimits::default());
     // The core's own end is as small, so it opens what it can read replies on; sending needs no open binding.
     for session in ["s-1", "s-2", "s-3"] {
-        let _ = core.bind_open(session);
+        let _ = core.bind_open(session, BindingLimits::default());
         core.try_send(bind_of("call-1", session)).unwrap();
     }
     let first = eventually("a bind", || client.recv_timeout(SHORT).unwrap());

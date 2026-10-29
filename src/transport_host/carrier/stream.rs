@@ -527,16 +527,16 @@ impl Carrier for StreamCarrier {
         lock(self.core()).waker = Some(waker.clone());
     }
 
-    fn bind_open(&self, session: &str) -> Result<(), BindingRefused> {
-        self.open_binding(session, BindingLimits::default())
+    fn bind_open(&self, session: &str, limits: BindingLimits) -> Result<(), BindingRefused> {
+        self.open_binding(session, limits)
     }
 
     fn bind_retire(&self, session: &str) {
         self.retire_binding(session);
     }
 
-    fn accept_binds(&self) {
-        lock(self.core()).accept_binds = true;
+    fn accept_binds(&self, limits: BindingLimits) {
+        lock(self.core()).accept_binds = Some(limits);
     }
 
     fn register_binding(&self, binding: &str, waker: &Waker) {
