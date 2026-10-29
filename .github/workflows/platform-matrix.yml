@@ -40,7 +40,7 @@ jobs:
         run: bash .github/checkout-siblings.sh
       - name: Install Rust toolchain
         run: |
-          rustup toolchain install 1.95.0 --profile minimal
+          rustup toolchain install 1.95.0 --profile minimal --component clippy
           rustup default 1.95.0
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2

@@ -314,7 +314,7 @@ jobs:
         # gwz-core's own (rust-toolchain.toml); the other legs' 1.96.0 is the
         # consumer generator's rustfmt, which this job does not run.
         run: |
-          rustup toolchain install 1.95.0 --profile minimal
+          rustup toolchain install 1.95.0 --profile minimal --component clippy
           rustup default 1.95.0
           rustc --version
       - name: Install the OpenSSH server the SSH fixtures run

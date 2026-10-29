@@ -70,6 +70,9 @@ PLACEMENT_ADDITIONS = {
 }
 
 
+SESSION_ADDITIONS = {"TransportCapabilitiesResponse": {"cancellation": 8}}
+
+
 def _without_members(schema: Schema, additions: dict, enums: tuple[str, ...] = ()) -> Schema:
     messages = dict(schema.messages)
     for message_name, fields in additions.items():
@@ -89,7 +92,10 @@ def _without_members(schema: Schema, additions: dict, enums: tuple[str, ...] = (
 NEW = load_schema(CORE_SCHEMA)
 PRODUCTION = NEW
 # The ordinary schema as it was before plan step 2.2, and as an older reader had it before C2.1 too.
-BEFORE_PLACEMENT = _without_members(NEW, PLACEMENT_ADDITIONS, enums=("TransportPlacement",))
+# The ordinary schema before plan step 2.2b, whose one field on an existing message is the MISSING_OK
+# `TransportCapabilitiesResponse.cancellation`; its session messages are new whole messages that no old snapshot names.
+BEFORE_SESSION = _without_members(NEW, SESSION_ADDITIONS)
+BEFORE_PLACEMENT = _without_members(BEFORE_SESSION, PLACEMENT_ADDITIONS, enums=("TransportPlacement",))
 OLD = _without_members(BEFORE_PLACEMENT, C2_ADDITIONS)
 # The transport owner's declarations, which the ordinary schema composes
 # whole: they are the owner's schema, not GWZ's.
@@ -163,7 +169,7 @@ def test_placement_members_have_exact_additive_tags_and_missing_ok_contract():
     # are pinned by `test_production_carries_the_1_1_0_fields_as_missing_ok`.
     added = {
         (message_name, field.name)
-        for message_name, message in NEW.messages.items()
+        for message_name, message in BEFORE_SESSION.messages.items()
         if message_name not in OWNER.messages
         for field in message.fields
         if message_name not in BEFORE_PLACEMENT.messages
@@ -174,13 +180,24 @@ def test_placement_members_have_exact_additive_tags_and_missing_ok_contract():
         for message_name, fields in expected.items()
         for field_name in fields
     }
-    assert set(NEW.enums) - set(BEFORE_PLACEMENT.enums) - set(OWNER.enums) == {"TransportPlacement"}
+    assert set(BEFORE_SESSION.enums) - set(BEFORE_PLACEMENT.enums) - set(OWNER.enums) == {"TransportPlacement"}
     for message_name, fields in expected.items():
         actual = {field.name: field for field in NEW.messages[message_name].fields}
         for field_name, tag in fields.items():
             field = actual[field_name]
             assert field.tag == tag
             assert field.optional == MISSING_OK
+
+
+def test_session_capability_member_has_its_additive_tag_and_missing_ok_contract():
+    # Step 2.2b's one field on a message an old reader knows; nothing else on such a message changed between the two.
+    for message_name, fields in SESSION_ADDITIONS.items():
+        new = {field.name: field for field in NEW.messages[message_name].fields}
+        before = {field.name for field in BEFORE_SESSION.messages[message_name].fields}
+        assert set(new) - before == set(fields)
+        for field_name, tag in fields.items():
+            assert new[field_name].tag == tag
+            assert new[field_name].optional == MISSING_OK
 
 
 def test_production_carries_the_1_1_0_fields_as_missing_ok():
