@@ -2,8 +2,9 @@
 # map moves CS1.4's operation gate, with the map's §2 nesting design, CS1.4's
 # session limits and the host context's supervisor (CS1.4, CS1.9) out of
 # gwz-core, with crate-local error types. Core's per-session data passes
-# through as a type parameter, so the environment snapshot stays in core;
-# Phase 2's generic machinery lands here next. Allowed first-party
+# through as a type parameter, so the environment snapshot stays in core.
+# Step 2.2b adds the operation service, the transport lane's routing and the
+# detached-worker record. Allowed first-party
 # dependencies: session-contract, ids (gwz-dev
 # dev-docs/GwzCoreSessionCrateMap.md §2); nothing moved so far needs unique
 # numbers, so ids is not declared yet. std only.
@@ -13,7 +14,7 @@ version = "0.0.9"
 edition = "2024"
 rust-version = "1.95"
 license = "GPL-2.0-only"
-description = "An internal component crate of GWZ's core session: the session host's operation gates, session limits and supervisor."
+description = "An internal component crate of GWZ's core session: the session host's operation service, gates, session limits and supervisor."
 repository = "https://github.com/owebeeone/gwz-core"
 readme = "README.md"
 keywords = ["gwz", "git", "workspace", "internal"]

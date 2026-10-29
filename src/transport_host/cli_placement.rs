@@ -144,6 +144,9 @@ impl TransportRuntime {
                 vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit]
             }),
             message_limits: Some(session::limits()),
+            // Appended by step 2.2b (session design §5.8, §13): absent
+            // means a running network operation cannot be cancelled.
+            cancellation: None,
         })
     }
     pub async fn remove_cli(&self) -> CleanupReport {

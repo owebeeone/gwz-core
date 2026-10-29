@@ -32,6 +32,7 @@ fn candidate_capabilities() -> new::TransportCapabilitiesResponse {
         schemes: Some(vec![Scheme::Ssh]),
         auth_policies: Some(vec![AuthPolicy::SshAmbient, AuthPolicy::SshExplicit]),
         message_limits: Some(limits()),
+        cancellation: None,
     }
 }
 

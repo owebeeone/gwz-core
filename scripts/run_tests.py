@@ -84,6 +84,12 @@ MIGRATED_GROUPS = (
 NATIVE_CROSSCHECKS = (
     "reverse::rollback::tests::real_git::",
 )
+# The core session's crates. Their own tests and doctests run, and clippy with
+# warnings denied, as the hosted checked-artifact-boundary job runs them for
+# every library, so the lane gate matrix covers them too (step 2.2b review,
+# State S-P3-5). A --test-filter run leaves them out: the filter narrows the
+# core groups.
+SESSION_CRATES = ("gwz-session-host",)
 
 
 # The characters of exact test names one filtered command carries; a Windows command line holds 32,767.
@@ -333,6 +339,20 @@ SKIP_CFG_SIBLING = "--skip-cfg-sibling"
 CFG_SIBLINGS = ("gwz-cli", "gwz-py")
 
 
+def run_session_crates() -> int:
+    """Each session crate's tests, doctests included, and its clippy with warnings denied."""
+    result = 0
+    for crate in SESSION_CRATES:
+        for command in (
+            ["cargo", "test", "--locked", "-p", crate],
+            ["cargo", "clippy", "--locked", "-p", crate, "--all-targets", "--", "-D", "warnings"],
+        ):
+            print(f"session crate {crate}: {' '.join(command)}", flush=True)
+            code = subprocess.run(command, cwd=ROOT, check=False).returncode
+            result = result or code
+    return result
+
+
 def check_cfg_boundaries(skipped: list[str], start=run_check) -> None:
     # The checker fails when a sibling named in its allowlist is not checked
     # out; skipping one makes it print SKIPPED GATE instead.
@@ -502,6 +522,8 @@ def main(argv: list[str] | None = None) -> None:
         real_result = run("real", cargo_args, [arg for name in skipped for arg in ("--skip", name)], **narrow)
         real_result = native_crosscheck_result or real_result
     result = filesystem_result or fake_result or real_result
+    if options.test_filter is None:
+        result = result or run_session_crates()
     if options.test_filter is not None and tally.matched == 0:
         # A filter that selects nothing would otherwise pass having run no test.
         if tally.listing_failures:

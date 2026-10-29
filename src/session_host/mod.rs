@@ -26,6 +26,10 @@
 pub(crate) mod context;
 pub(crate) mod environment;
 mod errors;
+// Step 2.2b (gwz-dev dev-docs/GwzSplitCommandChannel.md §3.2, §3.3): the
+// served core's operation service, core's implementation of gwz-session-host's
+// ports.
+pub(crate) mod served;
 
 pub use context::{
     CLEANUP_BOUND, ClientChannel, HostContext, SessionOptions, ShutdownReport, open,

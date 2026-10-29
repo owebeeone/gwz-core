@@ -331,6 +331,27 @@ impl CommitLogOutputRegistry {
     }
 }
 
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        impl CommitLogOutputRegistry {
+            /// A sealed log holding `records`, as `handle_log` leaves one, for
+            /// the served spool layer's tests (gwz-core `session_host::served`).
+            pub(crate) fn sealed_log_for_test(
+                &self,
+                records: &[crate::LogOutputRecord],
+            ) -> model::ModelResult<String> {
+                let (log_id, spool) = self.create()?;
+                let mut spool = spool.lock().unwrap();
+                for record in records {
+                    spool.append(record)?;
+                }
+                spool.seal()?;
+                Ok(log_id)
+            }
+        }
+    }
+}
+
 /// Execute the completed commit-history engine and retain its finite stream.
 pub(in crate::operation) fn handle_log(
     backend: &crate::git::Git2Backend,

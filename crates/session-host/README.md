@@ -5,8 +5,10 @@ gwz-core keeps. It holds the operation gate, the session limits and the host
 context's supervisor, which the core session crate map moves out of gwz-core
 (gwz-dev `dev-docs/GwzCoreSessionCrateMap.md` §2 and §6 step 4). Its authority
 is the core session contract (`dev-docs/GwzCoreSessionDesign.md`, revision 5).
-Phase 2 of the session plan adds the host itself here: `serve` and the
-`HostPorts` that gwz-core implements.
+Step 2.2b of the transport convergence plan adds the operation service
+(`Service`, over the `HostPorts` that gwz-core implements), its seam for the
+carrier's router (`route`, `is_live`) and the host's record of detached
+workers (`DetachedWorkers`).
 
 It encodes and decodes no GWZ message, and none of its errors are gwz-core's.
 Core's per-session data is a type parameter, `S`, that it never looks inside,
@@ -68,6 +70,44 @@ The literal alternative, if the review wants it, is a local change:
 `on_cancel(impl FnOnce(Option<GateScope<'_, S>>) + Send + 'static)`, with
 `None` once the session has ended. The token would then be generic over `S`,
 and so would everything that holds one, a transport request included.
+
+## The operation service
+
+Its authority is the session design's §4.1, §4.2 and §5, as gwz-dev
+`dev-docs/GwzSplitCommandChannel.md` §3.2 adopts them for the served core.
+
+- `Service::new(ports, session, sink, limits, detached, opened)` and
+  `start()`, which starts its admission and read threads. `receive(body)`
+  takes one `SessionCall` body and never blocks; `channel_closed(ending)`
+  runs the closure of §8; `open()` marks the handshake done.
+- `HostPorts`, which core implements: `decode`, `lane` (from the method's
+  name), `classify` (the method registry and class table, with the views each
+  method declares), `resolve`, `run`, `spool`, `release_spools`, and the
+  encoders of every reply. `ReplySink` is where replies go; every `FrameSink`
+  is one.
+- Sends keep the order of settlement: close waits for no reply batch in flight
+  before its report and the channel's close. A record is evicted only once
+  every view its method declares has been handed over.
+- Records, tokens and gates at receipt; resolution and admission on one
+  thread in receipt order; direct calls on a pool of direct workers;
+  classes N (fetch, push) and W; the §1 limits refused with
+  `Code::SessionFull`; cancel by `call_id` or `operation_id`; event logs
+  read through `events.subscribe` with held reads; `operation.result`,
+  `operation.response` and `operation.release`; `session.close` with its
+  report, which is exempt from the byte-stream writer's priority.
+- `Worker<S>` is what a handler holds: `token()`, `event(bytes)` through the
+  gate, `effect(f)` through the gate.
+- `DetachedWorkers` is shared by a host's sessions: a write or push on a
+  workspace where a worker detached at a close bound still runs is refused.
+
+## The router seam
+
+The transport lane (`GwzSplitCommandChannel.md` §3.3, tags 16 and 17) is the
+carrier's: step 2.1's router owns every per-binding transport state. This
+crate gives that router two things: `Service::route(frame)`, which takes the
+session-class frames (a `SessionCall`; anything else, or anything before
+`open()`, is a protocol error), and `Service::is_live(request_id)`, the
+live-call registry a lane frame's call must name.
 
 ## The limits
 

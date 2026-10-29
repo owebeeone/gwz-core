@@ -51,6 +51,10 @@ API and from workspace artifact YAML schemas.
 | GwzCore | diff.output | out | log | log_id: str | append: DiffOutputRecord |
 | GwzCore | log | in | unary | request: LogRequest | value: LogResponse |
 | GwzCore | log.output | out | log | log_id: str | append: LogOutputRecord |
+| GwzCore | operation.response | out | unary | operation_id: str | value: bytes |
+| GwzCore | operation.cancel | out | unary | call_id: int, operation_id: str | value: CleanupReport |
+| GwzCore | operation.release | out | unary | operation_id: str | value: OperationReleaseResponse |
+| GwzCore | session.close | out | unary | - | value: CleanupReport |
 
 ## CLI-Local Protocol Values
 
@@ -930,6 +934,16 @@ has no service method and no handler that executes commands.
 | transport_record_limit | 74 |
 | credential_helper_timeout | 75 |
 | capacity | 76 |
+| transport_session_full | 77 |
+| operation_expired | 78 |
+| server_unavailable | 79 |
+| server_version_mismatch | 80 |
+| server_environment_mismatch | 81 |
+| server_peer_refused | 82 |
+| server_address_refused | 83 |
+| server_listener_refused | 84 |
+| server_session_closed | 85 |
+| server_destination_refused | 86 |
 
 ### MergeRecordRequiredWave
 
@@ -1130,6 +1144,20 @@ has no service method and no handler that executes commands.
 | --- | --- |
 | changed | 0 |
 | always | 1 |
+
+### SessionMode
+
+| Member | Wire |
+| --- | --- |
+| unary | 0 |
+| submit | 1 |
+
+### LogVerb
+
+| Member | Wire |
+| --- | --- |
+| read | 0 |
+| end_stream | 1 |
 
 ## Messages
 
@@ -1501,6 +1529,7 @@ the value may be null and an absent key also decodes as null (`MISSING_OK`).
 | schemes | 5 | List<Scheme> | yes (absent ok) | no | - |
 | auth_policies | 6 | List<AuthPolicy> | yes (absent ok) | no | - |
 | message_limits | 7 | Limits | yes (absent ok) | no | - |
+| cancellation | 8 | bool | yes (absent ok) | no | - |
 
 ### TransportObservation
 
@@ -2912,6 +2941,80 @@ the value may be null and an absent key also decodes as null (`MISSING_OK`).
 | --- | --- | --- | --- | --- | --- |
 | response | 1 | ResponseEnvelope | no | no | - |
 | output | 2 | LogOutputLogRef | no | no | - |
+
+### SessionCall
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| call_id | 1 | int | no | no | - |
+| method | 2 | str | no | no | - |
+| mode | 3 | SessionMode | yes | no | - |
+| request | 4 | bytes | no | no | - |
+| log_verb | 5 | LogVerb | yes | no | - |
+
+### SessionReply
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| call_id | 1 | int | no | no | - |
+| response | 2 | bytes | no | no | - |
+
+### SessionError
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| call_id | 1 | int | no | no | - |
+| error | 2 | GwzError | no | no | - |
+| response_meta | 3 | ResponseMeta | yes | no | - |
+
+### OperationResultRequest
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| operation_id | 1 | str | no | no | - |
+
+### OperationResponseRequest
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| operation_id | 1 | str | no | no | - |
+
+### OperationCancelRequest
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| call_id | 1 | int | yes | no | - |
+| operation_id | 2 | str | yes | no | - |
+
+### OperationReleaseRequest
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| operation_id | 1 | str | no | no | - |
+
+### SessionCloseRequest
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+
+### CleanupReport
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| pending_local_work | 1 | int | no | no | - |
+| peer_cleanup_confirmed | 2 | bool | no | no | - |
+
+### OperationReleaseResponse
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+
+### TransportLaneFrame
+
+| Field | Tag | Type | Optional | Transient | Merge |
+| --- | --- | --- | --- | --- | --- |
+| request_id | 1 | str | no | no | - |
+| envelope | 2 | Envelope | no | no | - |
 
 ## Evolution Notes
 

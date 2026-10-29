@@ -41,5 +41,6 @@ gwz_transport_candidate  src/git/gitbackend/transport_support/identity.rs  fn va
 gwz_transport_candidate  src/git/mod.rs  mod endpoint
 gwz_transport_candidate  src/lib.rs  mod transport_host
 gwz_transport_candidate  src/lib.rs  mod transport_setting
+gwz_transport_candidate  src/session_host/served.rs  mod lane
 gwz_transport_candidate  src/workspace_ops/tests/g00/private_members.rs  fn private_materialize_keeps_production_native_identity_refusal_visible
 gwz_transport_candidate  tests/transport_backend/guide_test.rs  mod guide_example

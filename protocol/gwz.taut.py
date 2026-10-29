@@ -180,7 +180,33 @@ _CORE = schema(
         # supplied by the taut-shape log contract, exactly as for diff.output.
         method("log.output", role="out", shape="log",
                params=Params(log_id=STR),
-               out=Ref.LogOutputRecord)),
+               out=Ref.LogOutputRecord),
+        # The core session's operation methods (gwz-dev
+        # dev-docs/GwzCoreSessionDesign.md §4.2, §13; appended by step 2.2b of
+        # GwzTransportReleaseConvergencePlan.md). Each is declared with scalar
+        # parameters, and its SessionCall carries the request message named
+        # beside it.
+        # An operation method's final response once it is terminal: the
+        # response message of that operation's own method, as Taut bytes
+        # (OperationResponseRequest).
+        method("operation.response", role="out",
+               params=Params(operation_id=STR),
+               out=BYTES),
+        # Cancel a unary or submitted call by its call_id, or an operation by
+        # its operation_id, exactly one of the two; replies once the target is
+        # terminal (OperationCancelRequest).
+        method("operation.cancel", role="out",
+               params=Params(call_id=INT, operation_id=STR),
+               out=Ref.CleanupReport),
+        # Discard a terminal submitted record (OperationReleaseRequest).
+        method("operation.release", role="out",
+               params=Params(operation_id=STR),
+               out=Ref.OperationReleaseResponse),
+        # Close the session: replies after shutdown with the close report
+        # (SessionCloseRequest).
+        method("session.close", role="out",
+               params=Params(),
+               out=Ref.CleanupReport)),
 
     # ---- enums ------------------------------------------------------------
     # Operation action inferred from request type.
@@ -844,8 +870,10 @@ _CORE = schema(
          # A requested URL scheme cannot be derived for a known-host URL
          # (2026-09-12, gwz-dev dev-docs/GwzUrlSchemePlan.md §2.5).
          url_scheme_unavailable=72,
-         # Python shared transport session: an admitted operation was
-         # cancelled after remote effects became possible.
+         # An admitted operation was cancelled through its token: before any
+         # effect (a call not yet admitted, a queued operation, a direct call
+         # waiting for a worker) or after remote effects became possible
+         # (gwz-dev dev-docs/GwzCoreSessionDesign.md §4.2, §5.3).
          cancelled=73,
          # The operation's own bounded event/result record overflowed after
          # admission; do not infer Git success from the truncated record.
@@ -859,7 +887,47 @@ _CORE = schema(
          # (gwz-core dev-docs/GwzTransportAdaptiveConcurrencyDesign.md 5.3;
          # operator decision 2026-10-13). A script tells it from a git
          # failure: retry later, or lower --max-per-host.
-         capacity=76),
+         capacity=76,
+         # Step 2.2b (gwz-dev dev-docs/GwzSplitCommandChannel.md §1) appends
+         # the core session's and the server's codes here, at the tail. Their
+         # names are the identity; the designs allocated them from 75 when the
+         # schema ended at 74, so their numbers are assigned by this append.
+         #
+         # A session limit refused a call before any effect: the queue, the
+         # operation table, the outstanding calls, the control reserve, the
+         # open logs, a full in-process lane, or --max-sessions
+         # (GwzCoreSessionDesign.md §3, §5.1, §5.4).
+         transport_session_full=77,
+         # A released or evicted operation record, a unary call already
+         # answered, or a released log (GwzCoreSessionDesign.md §4.2, §5.4).
+         operation_expired=78,
+         # No server answered at the address, or the first frame was not a
+         # well-formed SessionHello (GwzCoreServerDesign.md §3, §17).
+         server_unavailable=79,
+         # The server's session protocol range or core does not match the
+         # client's (GwzCoreServerDesign.md §3).
+         server_version_mismatch=80,
+         # Appended and never emitted in this release: its producers, the
+         # must-match set and the native path's differences, are gone
+         # (GwzSplitCommandChannel.md §1, §3.1). Kept so the numbers after it
+         # stay stable.
+         server_environment_mismatch=81,
+         # The peer check refused the other end (GwzCoreServerDesign.md §4).
+         server_peer_refused=82,
+         # A server address was refused before any open: its grammar, the
+         # walk, `auto`, or the per-user directory (GwzCoreServerDesign.md §3,
+         # §4; GwzSplitCommandChannel.md §1, §4.1).
+         server_address_refused=83,
+         # The listener at the address is not the user's own server
+         # (GwzCoreServerDesign.md §4).
+         server_listener_refused=84,
+         # The session ended under an outstanding call: carrier loss, a
+         # crash, or the client's stall bound (GwzCoreServerDesign.md §6;
+         # GwzSplitCommandChannel.md §4.3, §4.7).
+         server_session_closed=85,
+         # The client's admission refused a destination the core asked for,
+         # for that member only (GwzSplitCommandChannel.md §5.6).
+         server_destination_refused=86),
 
     # Compatibility wave required to execute an allocated durable merge record.
     MergeRecordRequiredWave=Enum(
@@ -1112,7 +1180,11 @@ _CORE = schema(
         placements=F(4, List(Ref.TransportPlacement), optional=MISSING_OK),
         schemes=F(5, List(owner_enum("Scheme")), optional=MISSING_OK),
         auth_policies=F(6, List(owner_enum("AuthPolicy")), optional=MISSING_OK),
-        message_limits=F(7, Ref.Limits, optional=MISSING_OK)),
+        message_limits=F(7, Ref.Limits, optional=MISSING_OK),
+        # True when a running network operation can be cancelled; absent or
+        # null means unsupported, the same as false (gwz-dev
+        # dev-docs/GwzCoreSessionDesign.md §5.8, §13).
+        cancellation=F(8, BOOL, optional=MISSING_OK)),
     TransportCredentialMethod=Enum(unknown=0, file=1, agent=2, helper=3),
     TransportSelectionSource=Enum(ambient=0, invocation_remote=1, invocation_default=2, local_configuration=3),
     TransportOperation=Enum(clone=0, fetch=1, push=2, read_advertisement=3),
@@ -2646,6 +2718,92 @@ _CORE = schema(
     LogResponse=Msg(
         response=F(1, Ref.ResponseEnvelope),
         output=F(2, Ref.LogOutputLogRef)),
+
+    # ---- core session channel ---------------------------------------------
+    # The frame bodies of the core session (gwz-dev
+    # dev-docs/GwzCoreSessionDesign.md §3, §4.1, §13), appended by step 2.2b of
+    # GwzTransportReleaseConvergencePlan.md. Frame tags: SessionCall 1,
+    # SessionReply 2, SessionError 3.
+    #
+    # How an operation method replies: its final response, or its `accepted`
+    # response as soon as the session host admits it.
+    SessionMode=Enum(
+         unary=0,
+         submit=1),
+
+    # What a call to a log method does: read records, or end its stream.
+    LogVerb=Enum(
+         read=0,
+         end_stream=1),
+
+    # One call. `call_id` is chosen by the client before it sends and
+    # increases with every call in the session (at least 1); a call_id not
+    # greater than every earlier one is a protocol error. `request` is the
+    # Taut message the method declares: taut-shape's LogReadRequest or
+    # LogEndStream for the log methods, and for a method declared with scalar
+    # parameters the request message named beside it in the service.
+    SessionCall=Msg(
+        call_id=F(1, INT),
+        method=F(2, STR),
+        # The key is always present; null means unary.
+        mode=F(3, Ref.SessionMode, optional=True),
+        request=F(4, BYTES),
+        # Only on the log methods; the key is always present, and null means
+        # read.
+        log_verb=F(5, Ref.LogVerb, optional=True)),
+
+    # A call's reply: the Taut response message its method declares.
+    SessionReply=Msg(
+        call_id=F(1, INT),
+        response=F(2, BYTES)),
+
+    # A call's failure: the terminal's first GwzError and, whenever the
+    # failing call produced one, its ResponseMeta. `call_id` 0 names no call:
+    # a byte-stream host's refusal before the session opens.
+    SessionError=Msg(
+        call_id=F(1, INT),
+        error=F(2, Ref.GwzError),
+        response_meta=F(3, Ref.ResponseMeta, optional=True)),
+
+    # The request message of operation.result, whose declaration is otherwise
+    # unchanged.
+    OperationResultRequest=Msg(
+        operation_id=F(1, STR)),
+
+    # The request message of operation.response.
+    OperationResponseRequest=Msg(
+        operation_id=F(1, STR)),
+
+    # The request message of operation.cancel: exactly one of the two is set.
+    OperationCancelRequest=Msg(
+        call_id=F(1, INT, optional=True),
+        operation_id=F(2, STR, optional=True)),
+
+    # The request message of operation.release.
+    OperationReleaseRequest=Msg(
+        operation_id=F(1, STR)),
+
+    # The request message of session.close.
+    SessionCloseRequest=Msg(),
+
+    # operation.cancel's and session.close's reply: the fields of the
+    # transport's cleanup report. `pending_local_work` counts local work still
+    # running, a detached worker included; `peer_cleanup_confirmed` is false
+    # when no peer confirmed its cleanup, or when any worker was detached.
+    CleanupReport=Msg(
+        pending_local_work=F(1, INT),
+        peer_cleanup_confirmed=F(2, BOOL)),
+
+    # operation.release's reply.
+    OperationReleaseResponse=Msg(),
+
+    # The transport lane's frame body (gwz-dev dev-docs/GwzSplitCommandChannel.md
+    # §3.3, appended by step 2.2b): frame tags 16 (transport data) and 17
+    # (transport control) each carry one owner `Envelope` for the live call
+    # whose `request_id` bound it. The owner's `Envelope` is composed in below.
+    TransportLaneFrame=Msg(
+        request_id=F(1, STR),
+        envelope=F(2, Ref.Envelope)),
 )
 
 
