@@ -402,6 +402,11 @@ struct Sink {
     /// A call whose reply the sink holds back, and for how long, or with how
     /// many yields when the duration is zero.
     slow: Mutex<Option<(u64, Duration, u32)>>,
+    /// A call whose send parks once its reply is visible to the client, until
+    /// `resume`: the client then runs ahead of the sender's bookkeeping.
+    parked: Mutex<Option<u64>>,
+    resume: Mutex<bool>,
+    resumed: Condvar,
 }
 
 impl ReplySink for Sink {
@@ -438,6 +443,13 @@ impl ReplySink for Sink {
         };
         crate::lock(&self.replies).push((id, answer, lane, control));
         self.changed.notify_all();
+        if *crate::lock(&self.parked) == Some(id) {
+            let resume = crate::lock(&self.resume);
+            let _ = self
+                .resumed
+                .wait_timeout_while(resume, Duration::from_secs(20), |resume| !*resume)
+                .unwrap();
+        }
         Ok(())
     }
 
@@ -462,6 +474,11 @@ impl Sink {
                 .unwrap()
                 .0;
         }
+    }
+
+    fn resume(&self) {
+        *crate::lock(&self.resume) = true;
+        self.resumed.notify_all();
     }
 
     fn has(&self, call_id: u64) -> bool {
@@ -1150,6 +1167,36 @@ fn a_record_is_evicted_only_once_every_declared_view_is_delivered() {
     );
     let result = host.call("operation.result", false, "op-1");
     assert_eq!(host.sink.wait(result), Ok("result a".to_owned()));
+}
+
+/// A result delivered from a worker's thread is delivered as soon as the
+/// client can read it: the client's next submit, sent on reading that reply,
+/// may evict the record even while the sender is still inside its send.
+#[test]
+fn a_view_is_delivered_before_the_client_can_read_it() {
+    let limits = Limits {
+        running_operations: 1,
+        queued_operations: 1,
+        operation_table: 2,
+        ..Limits::default()
+    };
+    let mut host = Host::new(limits);
+    let first = host.call("fetch", true, "hold-a");
+    host.sink.wait(first).unwrap();
+    host.wait_ran("hold-a");
+    let second = host.call("fetch", true, "b");
+    host.sink.wait(second).unwrap();
+    // The result is asked while op-1 runs, so the worker's thread answers it.
+    let result = host.call("operation.result", false, "op-1");
+    *crate::lock(&host.sink.parked) = Some(result);
+    host.script.release("hold-a");
+    assert_eq!(host.sink.wait(result), Ok("result hold-a".to_owned()));
+    // The table holds op-1, whose result the client has, and op-2, which has
+    // not been read: op-1 is the one to evict for op-3.
+    let third = host.call("fetch", true, "c");
+    let admitted = host.sink.wait(third);
+    host.sink.resume();
+    assert_eq!(admitted, Ok("accepted op-3".to_owned()));
 }
 
 /// S-P3-2: a malformed control call is refused on the control lane, decided

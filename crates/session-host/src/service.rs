@@ -763,22 +763,24 @@ impl<P: HostPorts> Inner<P> {
     /// counted it in `unflushed`, and then uncounts it: close waits for no
     /// batch in flight before its report and the channel's close, so sends
     /// keep the order of settlement (§8 steps 6 to 9; 2.0 §3.3 "Close
-    /// report"). A reply handed over marks the view it delivers (§5.4). A
+    /// report"). The views the batch delivers are marked before any reply is
+    /// sent (§5.4): a client that reads a reply may submit at once, and its
+    /// call must find the record evictable. A reply the channel then refuses
+    /// ends the session either way, so an early mark is never observed. A
     /// closed channel's refusal is counted as a dropped reply. A full lane
     /// means the client exceeded its own bounds, since a reply takes the lane
     /// of the call it answers (§3): the reply cannot be delivered, so the
     /// session ends.
     pub(crate) fn flush(&self, outgoing: Vec<Outgoing>) {
-        let mut delivered = Vec::new();
+        let delivered: Vec<(u64, View)> =
+            outgoing.iter().filter_map(|reply| reply.delivers).collect();
+        table::mark_delivered(&mut lock(&self.state), &delivered);
         for reply in outgoing {
-            let delivers = reply.delivers;
             let sent = self
                 .sink
                 .send_reply(reply.frame, reply.lane, reply.target, reply.control);
             match sent {
-                Ok(()) => {
-                    delivered.extend(delivers);
-                }
+                Ok(()) => {}
                 Err(SendError::Full(_)) => {
                     self.sink.close_channel();
                 }
@@ -788,7 +790,6 @@ impl<P: HostPorts> Inner<P> {
             }
         }
         let mut state = lock(&self.state);
-        table::mark_delivered(&mut state, &delivered);
         state.unflushed = state.unflushed.saturating_sub(1);
         drop(state);
         self.settled.notify_all();
