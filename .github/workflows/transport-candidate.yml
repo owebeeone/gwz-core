@@ -126,7 +126,7 @@ jobs:
         # gwz-core's own (rust-toolchain.toml), and 1.96.0 for the rustfmt build
         # the consumer generator's pin names.
         run: |
-          rustup toolchain install 1.95.0 --profile minimal --component rustfmt
+          rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
           rustup toolchain install 1.96.0 --profile minimal --component rustfmt
       - uses: actions/setup-python@v5
         with:
