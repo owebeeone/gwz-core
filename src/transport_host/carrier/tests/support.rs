@@ -71,6 +71,24 @@ pub(super) fn cancel(stream_id: i64) -> Attachment {
     (format!("request-{stream_id}"), message)
 }
 
+/// A `bind_rejected` for the binding, stream 0, as a client answers a `bind` it refuses (GwzSplitCommandChannel 3.4).
+pub(super) fn bind_rejected(code: ErrorCode) -> Attachment {
+    let mut message = envelope(MessageKind::BindRejected, 0);
+    message.bind_rejected = Some(gwz_transport::protocol::Failure {
+        code,
+        ..Default::default()
+    });
+    ("request-1".to_owned(), message)
+}
+
+/// A `bind` of `session` for the call `request`, stream 0, as a core's handle offers it.
+pub(super) fn bind_of(request: &str, session: &str) -> Attachment {
+    (
+        request.to_owned(),
+        gwz_transport::binding::offer(session, gwz_transport::protocol::EndpointRole::Driver),
+    )
+}
+
 pub(super) fn close(stream_id: i64, final_offset: i64) -> Attachment {
     let mut message = envelope(MessageKind::Close, stream_id);
     message.close = Some(Close { final_offset });
@@ -113,6 +131,28 @@ pub(super) fn over_pipes(limits: CarrierLimits) -> (StreamCarrier, StreamCarrier
             .expect("the rows' binding");
     }
     (core, client)
+}
+
+/// Two stream carriers joined by two OS pipes with no binding open on either end: what a served session starts with
+/// (the core opens a binding as it binds, the client's end admits the bind).
+pub(super) fn over_pipes_unbound(limits: CarrierLimits) -> (StreamCarrier, StreamCarrier) {
+    let (core_read, client_write) = io::pipe().expect("pipe");
+    let (client_read, core_write) = io::pipe().expect("pipe");
+    let id = CarrierId::random().expect("random");
+    let end = |read, write, side| {
+        StreamCarrier::new(
+            Box::new(read),
+            Box::new(write),
+            Box::new(|| {}),
+            CarrierBinding::new(id, side, Peer::InProcess),
+            limits,
+        )
+        .expect("a carrier")
+    };
+    (
+        end(core_read, core_write, Side::Core),
+        end(client_read, client_write, Side::Client),
+    )
 }
 
 /// A carrier whose far end is raw bytes the row holds: (carrier, what the carrier wrote, where the row writes).
@@ -276,9 +316,17 @@ pub(super) fn wire_for(session: &str, message: Attachment) -> Vec<u8> {
 }
 
 /// A transport frame as a peer writes it, built from raw CBOR for an envelope: `tag`, the request `name` and `cbor`
-/// are the lane body as the carrier's wire adapter frames it. For envelopes the transport's encoder would refuse.
+/// are the lane body, the generated `TransportLaneFrame { request_id (1), envelope (2) }`. For envelopes the
+/// transport's encoder would refuse. (`name` is under 24 bytes here: one byte of text head.)
 pub(super) fn wire_lane_raw(tag: u8, name: &str, cbor: &[u8]) -> Vec<u8> {
-    let body = [&[name.len() as u8][..], name.as_bytes(), cbor].concat();
+    assert!(name.len() < 24);
+    let body = [
+        &[0xa2u8, 0x01, 0x60 | name.len() as u8][..],
+        name.as_bytes(),
+        &[0x02],
+        cbor,
+    ]
+    .concat();
     wire_frame(tag, &body)
 }
 

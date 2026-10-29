@@ -8,7 +8,7 @@
 //! would not decode, and a frame that fails the full decode faults the binding it names and no other. Only a frame
 //! that cannot be attributed (the request-name framing, a body that is not a map) ends the session.
 use super::super::{
-    BindingFault, CloseReason, FrameClass, ProtocolFault,
+    BindingFault, BindingLimits, CloseReason, FrameClass, ProtocolFault,
     wire::{self, CONTROL_TAG, DATA_TAG, INVALID_REQUEST, MAX_TRANSPORT_FRAME},
 };
 use super::{
@@ -107,16 +107,38 @@ impl Core {
                 return Err(self.session_fault(fault));
             }
         };
-        {
+        // An end that accepts binds admits the peer's `bind` for a binding it has not opened (and no other frame of one):
+        // the client end of a served session, whose bindings the core mints (GwzSplitCommandChannel 3.3).
+        let may_bind = {
             let state = lock(self);
+            state.accept_binds
+                && !state.peer_announced
+                && frame.tag == CONTROL_TAG
+                && !state.bindings.contains_key(&binding_id)
+        };
+        let is_bind = may_bind
+            && decode_envelope(&frame).is_ok_and(|envelope| {
+                envelope.kind == MessageKind::Bind && envelope.stream_id == 0
+            });
+        {
+            let mut state = lock(self);
             if state.closed.is_some() {
                 drop(state);
                 wipe(frame);
                 return Ok(());
             }
             if state.peer_announced || !live(&state, &binding_id) {
-                // Not open, or faulted, or the peer has said it is done: discarded, and no state is created for it.
-                {
+                let opened = is_bind
+                    && !state.peer_announced
+                    && state
+                        .open_binding(
+                            &binding_id,
+                            BindingLimits::default(),
+                            self.limits.inbound().max_bindings,
+                        )
+                        .is_ok();
+                if !opened {
+                    // Not open, or faulted, or the peer has said it is done: discarded, and no state is created for it.
                     self.discard(state, frame);
                     return Ok(());
                 }

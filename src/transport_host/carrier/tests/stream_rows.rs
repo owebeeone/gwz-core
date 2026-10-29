@@ -17,6 +17,162 @@ const SHORT: Duration = Duration::from_millis(50);
 const ZERO_KEY: FrameKey = FrameKey::ordinary(Target::new(0));
 
 #[test]
+fn each_bind_rejected_code_of_the_split_channel_crosses_a_stream_carrier() {
+    // GwzSplitCommandChannel 3.4: a client refuses a bind with `capacity`, `invalid_request` or `cancelled` (and the
+    // negotiation codes). The transport's codec admitted two of them until the widening of step 2.2c.
+    use gwz_transport::protocol::ErrorCode;
+    let (core, client) = over_pipes(limits(64, 16));
+    for code in [
+        ErrorCode::UnsupportedVersion,
+        ErrorCode::UnsupportedOperation,
+        ErrorCode::Capacity,
+        ErrorCode::InvalidRequest,
+        ErrorCode::Cancelled,
+    ] {
+        let message = bind_rejected(code);
+        client
+            .try_send(message.clone())
+            .expect("encodes and queues");
+        assert_eq!(next(&core), message, "{code:?}");
+    }
+    // A code the split channel does not use for a bind stays refused at the sender (and ends the carrier, as any
+    // message that does not encode does).
+    assert!(matches!(
+        client.try_send(bind_rejected(ErrorCode::Authentication)),
+        Err(SendRefused::Closed(..))
+    ));
+}
+
+#[test]
+fn an_end_admits_a_bind_for_a_binding_that_is_not_open_only_when_it_accepts_binds_and_only_a_bind()
+{
+    // GwzSplitCommandChannel 3.3: a frame for a binding that is not open is discarded with no state. The client end of
+    // a served session cannot open a binding the core mints, so it admits the core's `bind` (and nothing else) and the
+    // receiver above it refuses what names no call (step 2.2c).
+    let (core, client) = over_pipes_unbound(limits(64, 16));
+    core.bind_open("s-9").expect("the core opens what it binds");
+    core.try_send(bind_of("call-1", "s-9")).unwrap();
+    eventually("the bind to be discarded", || {
+        (client.discarded_frames() == 1).then_some(())
+    });
+    assert!(
+        client.try_recv().unwrap().is_none(),
+        "an end that does not accept binds creates no binding"
+    );
+
+    client.accept_binds();
+    let mut stray = window(1, 5);
+    stray.1.session_id = "s-other".into();
+    core.try_send(stray).unwrap();
+    eventually("the stray window to be discarded", || {
+        (client.discarded_frames() == 2).then_some(())
+    });
+    // Stream 0 is the bootstrap's, but only a `bind` opens a binding: a rejection or an answer for one is discarded.
+    let mut answer = bind_rejected(gwz_transport::protocol::ErrorCode::Capacity);
+    answer.1.session_id = "s-other".into();
+    core.try_send(answer).unwrap();
+    eventually("the answer to be discarded", || {
+        (client.discarded_frames() == 3).then_some(())
+    });
+    assert!(client.try_recv().unwrap().is_none());
+    core.try_send(bind_of("call-1", "s-9")).unwrap();
+    let arrival = eventually("the bind", || client.recv_timeout(SHORT).unwrap());
+    assert_eq!(arrival.message.1.kind, MessageKind::Bind);
+    assert_eq!(arrival.message.1.session_id, "s-9");
+    // The binding is open now: its frames are delivered, a second bind for it is just a frame of it, and a retired one
+    // is discarded again.
+    let mut data_frame = data(1, 0, vec![1, 2, 3]);
+    data_frame.1.session_id = "s-9".into();
+    core.try_send(data_frame.clone()).unwrap();
+    let arrival = eventually("the data", || client.recv_timeout(SHORT).unwrap());
+    assert_eq!(arrival.message, data_frame);
+    client.bind_retire("s-9");
+    core.try_send(data_frame).unwrap();
+    eventually("the data to be discarded", || {
+        (client.discarded_frames() == 4).then_some(())
+    });
+}
+
+#[test]
+fn the_transport_take_leaves_the_registry_frames_and_a_peers_fault_of_a_binding_is_visible() {
+    // A served session's one end carries both classes: the operation service takes tags 1 to 8, the transport lane's
+    // consumer takes the messages of every binding. `try_recv` takes whatever is oldest, and a registry frame there ends
+    // the carrier; the transport take must not.
+    let (core, client) = over_pipes(limits(64, 16));
+    let call = |body: &[u8]| Frame {
+        tag: 1,
+        body: body.to_vec(),
+    };
+    core.send_frame(call(b"first"), Lane::Data, ZERO_KEY)
+        .unwrap();
+    core.try_send(window(1, 5)).unwrap();
+    core.send_frame(call(b"second"), Lane::Data, ZERO_KEY)
+        .unwrap();
+    // (a second window of the same stream would coalesce into the first)
+    core.try_send(window(2, 9)).unwrap();
+    let mut seen = Vec::new();
+    while seen.len() < 2 {
+        let arrival = eventually("a transport message", || {
+            client.try_recv_transport().unwrap()
+        });
+        seen.push(arrival.message.1.window.unwrap().max_offset);
+    }
+    assert_eq!(seen, vec![5, 9]);
+    assert!(
+        client.wait_closed(SHORT).is_none(),
+        "a registry frame is not the transport take's business"
+    );
+    for expected in [&b"first"[..], &b"second"[..]] {
+        let frame = eventually("a registry frame", || {
+            client.recv_registry_timeout(SHORT).unwrap()
+        });
+        assert_eq!(frame.body, expected);
+    }
+    // Five cancels of one stream overrun the binding's slots for that kind: the peer faulted it, and its messages are gone.
+    assert!(client.bind_fault("session-1").is_none());
+    for _ in 0..5 {
+        core.try_send(cancel(1)).unwrap();
+    }
+    let fault = eventually("the binding's fault", || client.bind_fault("session-1"));
+    assert_eq!(fault, BindingFault::Overrun(FrameClass::TransportControl));
+    assert!(client.try_recv_transport().unwrap().is_none());
+}
+
+#[test]
+fn binds_an_end_admits_are_bounded_by_its_binding_limit() {
+    let inbound = InboundLimits {
+        max_bindings: 2,
+        ..InboundLimits::DEFAULT
+    };
+    let (core, client) = over_pipes_unbound(limits(64, 16).with_inbound(inbound));
+    client.accept_binds();
+    // The core's own end is as small, so it opens what it can read replies on; sending needs no open binding.
+    for session in ["s-1", "s-2", "s-3"] {
+        let _ = core.bind_open(session);
+        core.try_send(bind_of("call-1", session)).unwrap();
+    }
+    let first = eventually("a bind", || client.recv_timeout(SHORT).unwrap());
+    let second = eventually("a bind", || client.recv_timeout(SHORT).unwrap());
+    assert_eq!(
+        (
+            first.message.1.session_id.as_str(),
+            second.message.1.session_id.as_str()
+        ),
+        ("s-1", "s-2")
+    );
+    eventually("the third bind to be discarded", || {
+        (client.discarded_frames() == 1).then_some(())
+    });
+    assert!(client.try_recv().unwrap().is_none());
+    client.bind_retire("s-1");
+    core.try_send(bind_of("call-2", "s-3")).unwrap();
+    let third = eventually("the bind a freed slot admits", || {
+        client.recv_timeout(SHORT).unwrap()
+    });
+    assert_eq!(third.message.1.session_id, "s-3");
+}
+
+#[test]
 fn a_frame_set_round_trips_between_two_threads() {
     let (core, client) = over_pipes(limits(64, 16));
     let sent_messages = [

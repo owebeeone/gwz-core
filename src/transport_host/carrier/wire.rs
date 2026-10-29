@@ -8,8 +8,13 @@
 //! message has (tags 18 to 31 stay reserved). The registry's own tags (1 to 8) pass through unchanged for the
 //! operation service (plan 2.2b); only tag 4 is looked into.
 //!
-//! **A transport message** is a one-byte request-name length, the name, and the transport's own CBOR encoding of the
-//! envelope, which the transport's codec admits against its limits before it allocates a decoded tree.
+//! **A transport message** is the lane's frozen body, the generated taut `TransportLaneFrame { request_id (1), envelope
+//! (2) }` of `GwzSplitCommandChannel.md` §3.3 (step 2.2b's `session_host::served::lane` holds the generated type's
+//! codec): a deterministic CBOR map of those two entries, the request id as text and the envelope as the transport's own
+//! CBOR encoding, which the transport's codec admits against its limits before it allocates a decoded tree. The carrier
+//! reads the frame's shape by a walk (`split_lane`), attributes it to a binding from the envelope's `session_id`
+//! (`envelope_session_id`) and decodes the envelope only for a live binding, so a frame never builds a tree for a
+//! binding that is not open. The frames are byte for byte the generated type's (rows in `tests/wire_rows.rs`).
 //!
 //! **The `SessionOpen` of the client placement** carries no environment, in the one shape `GwzSplitCommandChannel.md`
 //! §3.1 freezes. The parked schema is `{protocol (1), client (2), environment (3, optional), limits (4, optional),
@@ -28,9 +33,9 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 
 pub(super) const DATA_TAG: u8 = Tag::TransportData.byte();
 pub(super) const CONTROL_TAG: u8 = Tag::TransportControl.byte();
-/// The largest frame under [`DATA_TAG`] or [`CONTROL_TAG`]: the transport's own frame, its request name and a byte of
-/// length. The router refuses a larger one.
-pub(super) const MAX_TRANSPORT_FRAME: usize = codec::MAX_FRAME + 1 + 128 + 1;
+/// The largest frame under [`DATA_TAG`] or [`CONTROL_TAG`]: the transport's own frame and the lane body's map head, its
+/// two keys and the request id with its text head. The router refuses a larger one.
+pub(super) const MAX_TRANSPORT_FRAME: usize = codec::MAX_FRAME + 1 + 1 + 2 + MAX_REQUEST_NAME + 1;
 const MAX_REQUEST_NAME: usize = 128;
 
 /// Why a `SessionOpen` is not of the client placement's shape.
@@ -51,6 +56,10 @@ pub(crate) enum SessionOpenRefusal {
     DuplicateField(u64),
 }
 
+/// The keys of the generated `TransportLaneFrame`.
+const REQUEST_ID_KEY: u64 = 1;
+const ENVELOPE_KEY: u64 = 2;
+
 /// The request name rule of the mux: non-empty, at most 128 bytes, no control characters.
 fn request_name_ok(name: &str) -> bool {
     !name.is_empty() && name.len() <= MAX_REQUEST_NAME && !name.chars().any(char::is_control)
@@ -61,9 +70,13 @@ pub(super) fn encode_attachment(message: &Attachment) -> Result<Frame, ProtocolF
         return Err(ProtocolFault::Message);
     }
     let encoded = codec::encode(&message.1).map_err(|_| ProtocolFault::Message)?;
-    let mut body = Vec::with_capacity(1 + message.0.len() + encoded.len());
-    body.push(u8::try_from(message.0.len()).map_err(|_| ProtocolFault::Message)?);
+    // `TransportLaneFrame`: a map of two entries, `request_id` (1) then `envelope` (2).
+    let mut body = Vec::with_capacity(8 + message.0.len() + encoded.len());
+    body.extend(put_head(5, 2));
+    body.extend(put_head(0, REQUEST_ID_KEY));
+    body.extend(put_head(3, message.0.len() as u64));
     body.extend_from_slice(message.0.as_bytes());
+    body.extend(put_head(0, ENVELOPE_KEY));
     body.extend_from_slice(&encoded);
     Ok(Frame {
         tag: tag_of(Lane::of(message.1.kind)),
@@ -105,29 +118,51 @@ pub(super) fn decode_attachment(frame: &Frame) -> Result<Attachment, ProtocolFau
     Ok((parts.name.to_owned(), envelope))
 }
 
-/// A transport frame's body, split at the request name: the framing, before any CBOR is read.
+/// A transport frame's body, split at the request name: the framing, before any CBOR of the envelope is read.
 pub(super) struct LaneParts<'a> {
     pub(super) name: &'a str,
     pub(super) encoded: &'a [u8],
 }
 
-/// The request-name framing of a transport frame. A fault here means the frame has no recognisable shape, which ends
-/// the session: nothing in it can be attributed to a binding.
+/// The shape of the lane body, `TransportLaneFrame`: a definite map of exactly `request_id` (1), text, then `envelope`
+/// (2), one CBOR item that runs to the end of the body. A fault here means the frame has no recognisable shape, which
+/// ends the session: nothing in it can be attributed to a binding.
 pub(super) fn split_lane(frame: &Frame) -> Result<LaneParts<'_>, ProtocolFault> {
     if frame.tag != DATA_TAG && frame.tag != CONTROL_TAG {
         return Err(ProtocolFault::Unexpected);
     }
-    let (&length, rest) = frame.body.split_first().ok_or(ProtocolFault::Message)?;
-    let length = usize::from(length);
-    if length == 0 || length > MAX_REQUEST_NAME || rest.len() < length {
+    let fault = |_: CborFault| ProtocolFault::Message;
+    let mut reader = Reader {
+        bytes: &frame.body,
+        at: 0,
+    };
+    let shape = |reader: &mut Reader<'_>, major: u8, argument: u64| {
+        let (found, value) = reader.head().map_err(fault)?;
+        (found == major && value == argument)
+            .then_some(())
+            .ok_or(ProtocolFault::Message)
+    };
+    shape(&mut reader, 5, 2)?;
+    shape(&mut reader, 0, REQUEST_ID_KEY)?;
+    let (major, length) = reader.head().map_err(fault)?;
+    if major != 3 || length == 0 || length > MAX_REQUEST_NAME as u64 {
         return Err(ProtocolFault::Message);
     }
-    let (name, encoded) = rest.split_at(length);
-    let name = std::str::from_utf8(name).map_err(|_| ProtocolFault::Message)?;
+    let name = std::str::from_utf8(reader.take(length).map_err(fault)?)
+        .map_err(|_| ProtocolFault::Message)?;
     if !request_name_ok(name) {
         return Err(ProtocolFault::Message);
     }
-    Ok(LaneParts { name, encoded })
+    shape(&mut reader, 0, ENVELOPE_KEY)?;
+    let start = reader.at;
+    reader.skip(0).map_err(fault)?;
+    if reader.at != frame.body.len() {
+        return Err(ProtocolFault::Message);
+    }
+    Ok(LaneParts {
+        name,
+        encoded: &frame.body[start..],
+    })
 }
 
 /// The transport's own decode of an envelope, with its validation.

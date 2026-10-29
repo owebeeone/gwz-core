@@ -141,7 +141,7 @@ fn wipe(mut frame: Frame) {
     std::hint::black_box(&frame.body);
 }
 
-fn binding_name_ok(name: &str) -> bool {
+pub(super) fn binding_name_ok(name: &str) -> bool {
     !name.is_empty() && name.len() <= 128 && !name.chars().any(char::is_control)
 }
 
@@ -239,24 +239,7 @@ impl StreamCarrier {
         if let Some(reason) = state.gone() {
             return Err(BindingRefused::Closed(reason));
         }
-        if !binding_name_ok(id) || state.bindings.contains_key(id) {
-            return Err(BindingRefused::Name);
-        }
-        if state.bindings.len() >= self.core().limits.inbound().max_bindings {
-            return Err(BindingRefused::TooMany);
-        }
-        state.bindings.insert(
-            id.to_owned(),
-            BindingInbound {
-                limits,
-                fault: None,
-                streams: HashMap::new(),
-                seqs: Default::default(),
-                bytes: 0,
-                waker: None,
-            },
-        );
-        Ok(())
+        state.open_binding(id, limits, self.core().limits.inbound().max_bindings)
     }
 
     /// Retires a binding: its queued frames are dropped and its later frames are discarded without a record. Its
@@ -518,6 +501,17 @@ impl Carrier for StreamCarrier {
         }
     }
 
+    fn try_recv_transport(&self) -> Result<Option<Arrival>, CarrierClosed> {
+        match self.take_scoped(Scope::Transport)? {
+            None => Ok(None),
+            Some(item) => self.arrival(item).map(Some),
+        }
+    }
+
+    fn bind_fault(&self, session: &str) -> Option<BindingFault> {
+        self.binding_fault(session)
+    }
+
     fn try_recv_binding(&self, binding: &str) -> Result<Option<Arrival>, TakeEnd> {
         let taken = {
             let mut state = lock(self.core());
@@ -531,6 +525,18 @@ impl Carrier for StreamCarrier {
 
     fn register(&self, waker: &Waker) {
         lock(self.core()).waker = Some(waker.clone());
+    }
+
+    fn bind_open(&self, session: &str) -> Result<(), BindingRefused> {
+        self.open_binding(session, BindingLimits::default())
+    }
+
+    fn bind_retire(&self, session: &str) {
+        self.retire_binding(session);
+    }
+
+    fn accept_binds(&self) {
+        lock(self.core()).accept_binds = true;
     }
 
     fn register_binding(&self, binding: &str, waker: &Waker) {

@@ -407,6 +407,20 @@ pub(crate) trait Carrier: Send + Sync {
         self.try_recv().map_err(TakeEnd::Carrier)
     }
 
+    /// The next transport message of any binding, in arrival order, leaving the registry's frames (tags 1 to 8) for
+    /// their own consumer: what the consumer of the transport lane takes when it learns of bindings as they arrive. An
+    /// end whose one stream carries only messages (the in-process carrier) takes its stream.
+    fn try_recv_transport(&self) -> Result<Option<Arrival>, CarrierClosed> {
+        self.try_recv()
+    }
+
+    /// Why the binding `session` was faulted by the peer (contract §6), if it was. The carrier drops what the binding
+    /// had queued, so its consumer learns of the fault here and not from a message.
+    fn bind_fault(&self, session: &str) -> Option<BindingFault> {
+        let _ = session;
+        None
+    }
+
     /// Wakes `waker` when a message arrives, a full lane gets room, or the carrier ends. One waker per end: a later
     /// registration replaces the earlier.
     fn register(&self, waker: &Waker);
@@ -417,6 +431,24 @@ pub(crate) trait Carrier: Send + Sync {
         let _ = binding;
         self.register(waker);
     }
+
+    /// Opens the binding `session` on this end: a byte-stream end routes the transport frames of open bindings only and
+    /// discards the rest with no state (contract §6), so the end that mints a binding opens it before it sends the
+    /// binding's `bind`. An end with one stream of messages (the in-process carrier) has no bindings to open.
+    fn bind_open(&self, session: &str) -> Result<(), BindingRefused> {
+        let _ = session;
+        Ok(())
+    }
+
+    /// Retires the binding `session` on this end: its queued frames are dropped and its later frames discarded.
+    fn bind_retire(&self, session: &str) {
+        let _ = session;
+    }
+
+    /// This end admits the peer's `bind` for a binding that is not open, within its binding limit (the client end of a
+    /// served session, whose bindings the core mints: GwzSplitCommandChannel 3.3). Nothing else opens a binding, and
+    /// the receiver above the end refuses a `bind` that names no call of its own.
+    fn accept_binds(&self) {}
 
     /// Ends the carrier at this end with `code`. This end sends and receives nothing more; the peer receives what was
     /// sent before, then the code. Closing again changes nothing.

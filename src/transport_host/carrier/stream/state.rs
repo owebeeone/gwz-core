@@ -7,9 +7,10 @@
 //! is not ready holds back only the entries it owns, and a window's worth of one binding queued and untaken never
 //! keeps a registry frame or another binding's frame from being taken.
 use super::super::{
-    BindingEnd, BindingFault, BindingLimits, CarrierClosed, CloseCode, CloseReason, Lane,
-    StallBounds,
+    BindingEnd, BindingFault, BindingLimits, BindingRefused, CarrierClosed, CloseCode, CloseReason,
+    Lane, StallBounds,
 };
+use super::binding_name_ok;
 use gwz_session_channel::WriteQueue;
 use gwz_session_contract::{Frame, FrameKey};
 use gwz_transport::protocol::MessageKind;
@@ -80,11 +81,13 @@ pub(super) struct RegistryInbound {
     pub(super) waker: Option<Waker>,
 }
 
-/// What a consumer takes: the whole end's next entry, the registry's, or one binding's.
+/// What a consumer takes: the whole end's next entry, the registry's, the oldest transport message of any binding, or
+/// one binding's.
 #[derive(Clone, Copy)]
 pub(super) enum Scope<'a> {
     Any,
     Registry,
+    Transport,
     Binding(&'a str),
 }
 
@@ -125,6 +128,8 @@ pub(super) struct State {
     /// The writer thread has returned.
     pub(super) writer_done: bool,
     pub(super) waker: Option<Waker>,
+    /// This end admits the peer's `bind` for a binding that is not open ([`Carrier::accept_binds`]).
+    pub(super) accept_binds: bool,
 }
 
 impl State {
@@ -149,7 +154,35 @@ impl State {
             reader_exited: false,
             writer_done: false,
             waker: None,
+            accept_binds: false,
         }
+    }
+
+    /// Opens a binding within `max` bindings: its frames are routed to it, within `limits`.
+    pub(super) fn open_binding(
+        &mut self,
+        id: &str,
+        limits: BindingLimits,
+        max: usize,
+    ) -> Result<(), BindingRefused> {
+        if !binding_name_ok(id) || self.bindings.contains_key(id) {
+            return Err(BindingRefused::Name);
+        }
+        if self.bindings.len() >= max {
+            return Err(BindingRefused::TooMany);
+        }
+        self.bindings.insert(
+            id.to_owned(),
+            BindingInbound {
+                limits,
+                fault: None,
+                streams: HashMap::new(),
+                seqs: Default::default(),
+                bytes: 0,
+                waker: None,
+            },
+        );
+        Ok(())
     }
 
     /// Why nothing more can be sent: this end's end, or the peer's.
@@ -214,6 +247,11 @@ impl State {
         let seq = match scope {
             Scope::Any => *self.inn.first_key_value()?.0,
             Scope::Registry => *self.registry.seqs.first()?,
+            Scope::Transport => self
+                .bindings
+                .values()
+                .filter_map(|binding| binding.seqs.first().copied())
+                .min()?,
             Scope::Binding(id) => *self.bindings.get(id)?.seqs.first()?,
         };
         Some(match self.inn.remove(&seq)? {
@@ -266,6 +304,9 @@ impl State {
                 wakers.extend(self.bindings.values().filter_map(|b| b.waker.clone()));
             }
             Scope::Registry => wakers.extend(self.registry.waker.iter().cloned()),
+            Scope::Transport => {
+                wakers.extend(self.bindings.values().filter_map(|b| b.waker.clone()));
+            }
             Scope::Binding(id) => {
                 wakers.extend(self.bindings.get(id).and_then(|b| b.waker.clone()));
             }
