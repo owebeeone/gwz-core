@@ -32,6 +32,68 @@ fn an_attachment_round_trips_through_its_frame() {
     }
 }
 
+/// The generated `TransportLaneFrame { request_id, envelope }` of 2.0 section 3.3 (step 2.2b's codec), the body the
+/// lane carries: the carrier's frames are byte for byte the ones it encodes, and read the ones it encodes.
+#[test]
+fn a_transport_frame_is_the_generated_transport_lane_frame_in_both_directions() {
+    use crate::session_host::served::lane::{decode_lane, encode_lane};
+    for message in [
+        data(3, 0, vec![9; 1000]),
+        window(3, 77),
+        cancel(3),
+        close(3, 5),
+        open_stream(3),
+    ] {
+        let frame = encode_attachment(&message).unwrap();
+        let generated = encode_lane(&message.0, message.1.clone());
+        assert_eq!(frame.tag, generated.tag, "{:?}", message.1.kind);
+        assert_eq!(frame.body, generated.body, "{:?}", message.1.kind);
+        // And the generated type reads what the carrier wrote, and the carrier what it wrote.
+        assert_eq!(
+            decode_lane(&frame.body).unwrap(),
+            (message.0.clone(), message.1.clone())
+        );
+        assert_eq!(decode_attachment(&generated).unwrap(), message);
+    }
+}
+
+#[test]
+fn a_body_of_the_old_form_or_a_lane_frame_out_of_shape_is_a_message_fault() {
+    let good = encode_attachment(&window(1, 1)).unwrap();
+    let envelope = gwz_transport::codec::encode(&window(1, 1).1).unwrap();
+    // The pre-2.2c body: one byte of name length, the name, the envelope.
+    let old = [&[1u8][..], b"r", &envelope].concat();
+    // A map of one entry, of three, the keys swapped, a request id that is not text, a duplicate key.
+    let cases = [
+        old,
+        [&[0xa1u8, 0x01, 0x61, b'r'][..]].concat(),
+        [
+            &[0xa3u8, 0x01, 0x61, b'r', 0x02][..],
+            &envelope,
+            &[0x03, 0x00],
+        ]
+        .concat(),
+        [&[0xa2u8, 0x02][..], &envelope, &[0x01, 0x61, b'r']].concat(),
+        [&[0xa2u8, 0x01, 0x41, b'r', 0x02][..], &envelope].concat(),
+        [&[0xa2u8, 0x01, 0x61, b'r', 0x01, 0x61, b'r'][..]].concat(),
+        // An empty request id, and the right shape with nothing after the name.
+        [&[0xa2u8, 0x01, 0x60, 0x02][..], &envelope].concat(),
+        vec![0xa2, 0x01, 0x61, b'r', 0x02],
+    ];
+    for body in cases {
+        let frame = Frame {
+            tag: good.tag,
+            body,
+        };
+        assert_eq!(
+            decode_attachment(&frame),
+            Err(ProtocolFault::Message),
+            "{:02x?}",
+            frame.body
+        );
+    }
+}
+
 #[test]
 fn a_frame_that_does_not_decode_is_a_message_fault() {
     let good = encode_attachment(&window(1, 1)).unwrap();

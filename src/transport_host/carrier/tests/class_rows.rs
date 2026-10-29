@@ -325,6 +325,14 @@ fn a_frame_that_names_no_binding_at_all_is_a_session_fault_only_when_it_cannot_b
     write_all(&mut to_carrier, &wire_lane_raw(16, "r", &[0x01]));
     let closed = eventually("the fault", || carrier.wait_closed(SHORT));
     assert_eq!(closed.reason, CloseReason::Protocol(ProtocolFault::Message));
+    // So do bytes after the lane body's one envelope: the frame has no recognisable shape.
+    let (carrier, _from_carrier, mut to_carrier) = against_raw(limits(8, 4));
+    write_all(
+        &mut to_carrier,
+        &wire_lane_raw(16, "r", &[0xa1, 0x01, 0x01, 0x00]),
+    );
+    let closed = eventually("the fault", || carrier.wait_closed(SHORT));
+    assert_eq!(closed.reason, CloseReason::Protocol(ProtocolFault::Message));
     // So does a broken request-name framing.
     let (carrier, _from_carrier, mut to_carrier) = against_raw(limits(8, 4));
     write_all(&mut to_carrier, &wire_frame(16, &[9, b'x']));

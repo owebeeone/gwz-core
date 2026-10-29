@@ -16,6 +16,9 @@ pub(crate) mod endpoint_environment;
 mod helper_failure;
 mod https_endpoint;
 mod local_command;
+// The first production caller is `gwz server` (plan step 2.3) and the client commands (plan 3.1).
+#[allow(dead_code, reason = "first production caller: plan steps 2.3 and 3.1")]
+mod remote_lane;
 // Step 4.6: the WinHTTP machine proxy. The grammar is portable and its tests run everywhere; Unix builds have no use for it.
 cfg_if::cfg_if! { if #[cfg(any(windows, test))] { mod machine_proxy; } }
 pub use crate::git::endpoint::https_worker::native::{NativeCaller, NativeHost};
