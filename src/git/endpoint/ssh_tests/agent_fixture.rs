@@ -287,12 +287,7 @@ impl Fixture {
     }
     pub fn assert_tcp_closed(&self) {
         let mut guard = self.monitor.lock().unwrap();
-        let socket = guard.as_mut().unwrap();
-        let read = socket.read(&mut [0; 1]);
-        assert!(
-            reads_closed(&read),
-            "connection owner must shut down TCP before disposal ack: {read:?}"
-        );
+        assert_ended(guard.as_mut().unwrap());
     }
     pub fn wait_closed(&self) {
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -329,6 +324,38 @@ pub fn reads_closed(read: &io::Result<usize>) -> bool {
         Err(error) => error.kind() == io::ErrorKind::ConnectionReset,
     }
 }
+/// The most bytes [`assert_ended`] reads from a connection before it calls it live.
+const DRAIN_LIMIT: usize = 1 << 20;
+/// Reads `socket` until a read shows its connection ended, or `limit` bytes are read, and returns the last read. A
+/// Unix stack that shut a socket down keeps what the peer sent before: Linux reads it out after the owner's
+/// `shutdown(Both)` (macOS drops it), so a server's late bytes, such as sshd's host key update after a login,
+/// come first and the end of the stream after them. A handle the owner left open has no end: it times out.
+pub fn read_until_ended(socket: &mut impl Read, limit: usize) -> io::Result<usize> {
+    let mut buffer = [0; 4096];
+    let mut drained = 0;
+    loop {
+        let read = socket.read(&mut buffer);
+        match read {
+            Ok(count) if count > 0 => {
+                drained += count;
+                if drained >= limit {
+                    return read;
+                }
+            }
+            other => {
+                return other;
+            }
+        }
+    }
+}
+/// Asserts that the connection owner has shut down the connection `socket` watches.
+pub fn assert_ended(socket: &mut TcpStream) {
+    let read = read_until_ended(socket, DRAIN_LIMIT);
+    assert!(
+        reads_closed(&read),
+        "connection owner must shut down TCP before disposal ack: {read:?}"
+    );
+}
 fn read_frame(stream: &mut UnixStream) -> Option<Vec<u8>> {
     let mut header = [0; 4];
     match stream.read_exact(&mut header) {
@@ -347,4 +374,58 @@ fn write_frame(stream: &mut UnixStream, body: &[u8]) {
         .write_all(&(body.len() as u32).to_be_bytes())
         .unwrap();
     stream.write_all(body).unwrap();
+}
+
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+
+    /// A loopback connection whose server has sent bytes the client never read, and that the client's owner holds:
+    /// the state a login leaves when the server answers once more (sshd's host key update) after the client's last
+    /// read. Returns the owner, a watch handle on its socket and the server's end.
+    fn queued_connection(queued: &[u8]) -> (SshConnection, TcpStream, TcpStream) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut server, _) = listener.accept().unwrap();
+        server.write_all(queued).unwrap();
+        // The bytes are in the client's receive queue once a peek sees them all.
+        client
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut seen = vec![0; queued.len()];
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while client.peek(&mut seen).unwrap() < queued.len() {
+            assert!(Instant::now() < deadline);
+            thread::yield_now();
+        }
+        let owner = SshConnection::new(client).unwrap();
+        let watch = owner.watch_socket().unwrap();
+        watch
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        (owner, watch, server)
+    }
+
+    #[test]
+    fn owner_shutdown_ends_the_watch_handle_although_the_server_had_queued_bytes() {
+        let (owner, mut watch, _server) = queued_connection(&[7; 444]);
+        drop(owner);
+        assert_ended(&mut watch);
+    }
+
+    #[test]
+    fn a_connection_the_owner_still_holds_has_no_end_whatever_the_server_queued() {
+        let (_owner, mut watch, _server) = queued_connection(&[7; 444]);
+        watch
+            .set_read_timeout(Some(Duration::from_millis(100)))
+            .unwrap();
+        let read = read_until_ended(&mut watch, DRAIN_LIMIT);
+        assert!(!reads_closed(&read), "{read:?}");
+    }
+
+    #[test]
+    fn a_stream_that_never_ends_is_not_drained_without_bound() {
+        let read = read_until_ended(&mut io::repeat(7), 100);
+        assert!(!reads_closed(&read), "{read:?}");
+    }
 }
