@@ -17,6 +17,24 @@ earlier run's directory is reused. The host is the shared dabeest machine: the S
 rules (no forwarding, no prompts); the script installs nothing, changes no host setting and uses the 1.95.0
 toolchain through RUSTUP_TOOLCHAIN. `--tests` also checks the library in test mode (cfg(test)), for a lane that edits test code; the integration targets are the CI job's.
 
+The siblings are staged from what the lane has: gwz-transport is the lane's own tree, beside gwz-core (or the one
+`--transport-tree DIR` names), archived as the core is (a `--ref` receipt: tracked files; `--worktree`: untracked, unignored
+ones too, recorded), with its `.git` so the suite's pin check reads its HEAD on the host, and never fetched from GitHub, so a
+lane need not push gwz-transport before it can receipt gwz-core. The Mac's `.git/config`, hooks, logs and info are NOT shipped
+(a repo-local `core.autocrlf=false` would beat the host's global `true` and leave the checkout LF, and a config can hold
+credentials); the host writes a minimal config with `core.autocrlf = true`, as the hosted runner image has it (the host's own
+Git has no such setting), and checks the files out again. The receipt records the effective value and its origin
+(`transport.host_autocrlf`). A `.git`
+that is a gitfile or a symlink, or has `objects/info/alternates`, is refused by name: its objects are not in the tree.
+`--preflight-only` judges the tree, the pin and the label and exits without touching the host (win-receipt.zsh runs it before
+it books the host's one slot). gwz-sspi and gwz-git are fetched at gwz-core's pins. The receipt's `transport` entry records the tree,
+its HEAD, its tracked changes and untracked files, the pin (`.github/gwz-transport.commit` of the commit being receipted)
+and whether HEAD equals it. CI builds the pin, so a tree whose HEAD is not the pin, or that has tracked changes, would
+certify code CI does not build: that is refused before the host is touched, unless `--allow-transport-pin-mismatch` says the
+lane moves the pin (the line then reads PIN MISMATCH, the receipt records it, the hosted-like suite gets the same flag, and the
+final line says `(PASS, PIN MISMATCH allowed)`). On a clean tree the hosted-like run must find the owner export CRLF
+(`HOSTED_LIKE_OWNER_EOL crlf`), as a hosted Windows checkout has it; a receipt that finds LF fails.
+
 `--hosted-like` also RUNS the candidate build's library suites the way the hosted `candidate-windows` job does, which
 `cargo check` cannot: the job's own `run_tests.py ... --lib` command with the portable Win32-OpenSSH `sshd.exe` (the
 job's pinned release, SHA-256 checked, unpacked inside the run's directory), `GWZ_TEST_SH`, and a `TEMP` that is an
@@ -119,9 +137,12 @@ SHAPES = (('ordinary', ''), ('transport', CANDIDATE))
 # A lane that changes one of these needs the compile gate before it merges (AGENTS.md, "Windows compile gate"): every
 # scope root of the Windows-parity inventory (so the two lists cannot drift apart) and the build inputs below.
 TRIGGER_EXTRA = ('Cargo.toml', 'Cargo.lock', 'tests/transport_backend/prepare.py', '.github/*.commit')
-SIBLING_PINS = (('gwz-transport', 'https://github.com/owebeeone/gwz-transport.git'),
-                ('gwz-sspi', 'https://github.com/owebeeone/gwz-sspi.git'),
+# Fetched at gwz-core's pins. gwz-transport is not here: the lane's own tree is staged (see `stage_transport`).
+SIBLING_PINS = (('gwz-sspi', 'https://github.com/owebeeone/gwz-sspi.git'),
                 ('gwz-git', 'https://github.com/owebeeone/gwz-git.git'))
+PIN_FLAG = '--allow-transport-pin-mismatch'
+TRANSPORT_PIN_FILE = '.github/gwz-transport.commit'
+FULL_SHA = re.compile(r'[0-9a-f]{40}')
 TAUT_RELEASE = re.compile(r'[0-9]+\.[0-9]+\.[0-9]+')
 LABEL = re.compile(r'^[a-z][a-z0-9]*(-[a-z0-9]+)*$')
 DATE = re.compile(r'(^|-)20\d{6}(-|$)')
@@ -220,6 +241,7 @@ class Receipt:
     shapes: list = field(default_factory=list)
     toolchain: str = ''
     abort: dict | None = None  # the watchdog's summary, when it aborted a phase
+    transport: dict | None = None  # the gwz-transport tree staged (see `transport_facts`)
 
     def passed(self) -> bool:
         return bool(self.shapes) and all(s.get('passed', s['exit'] == 0) for s in self.shapes)
@@ -230,6 +252,8 @@ class Receipt:
                 'commit': self.commit, 'cache_from': self.cache_from, 'with_tests': self.with_tests,
                 'toolchain': self.toolchain, 'started': self.started, 'stage_seconds': self.stage_seconds,
                 'shapes': self.shapes, 'total_seconds': total, 'passed': self.passed()}
+        if self.transport is not None:
+            data['transport'] = self.transport
         if self.abort:
             data.update(result='TIMEOUT', abort=self.abort)
         return json.dumps(data, indent=2) + '\n'
@@ -242,8 +266,42 @@ def pid_lines(d: str, name: str) -> list[str]:
     return [f'mkdir -p {d}/logs', f'echo "$(cat /proc/$$/winpid) $$" > {d}/logs/{name}.pid']
 
 
-def stage_script(label: str, cache_from: str | None) -> str:
-    """Host script: the siblings at gwz-core's pins, then the prepared candidate. The core is already in place."""
+# `core.autocrlf = true` mirrors the hosted Windows runner image, whose SYSTEM config resolves it (the comments in
+# .github/workflows/windows-matrix.yml and transport-candidate.yml; windows-matrix.yml also sets it globally). The receipt states it
+# rather than inherit whatever the host's Git says. (The 19 LF owner exports recorded 2026-10-25 to 2026-10-30 were the probe's
+# grep without -U, which strips CR on Git for Windows; receipt gate-fixes-20261030-b found 2402 CRLF lines that it called lf.)
+TRANSPORT_HOST_CONFIG = "printf '[core]\\n\\trepositoryformatversion = 0\\n\\tbare = false\\n\\tautocrlf = true\\n'"
+AUTOCRLF_WORD = 'TRANSPORT_AUTOCRLF'
+
+
+def transport_host_lines(d: str, host_checkout: bool) -> list[str]:
+    """Host script lines: the unpacked gwz-transport tree becomes a repository again. Its `.git` came without the Mac's
+    config, so the minimal repo-local config is written: `core.autocrlf = true` as the hosted runner image has it (a repo-local
+    value beats the host's global and system ones, so the checkout is CRLF whatever the host's own Git is set to), and no eol
+    or credential key. With `host_checkout` the files are written again from the index by the host's own Git, as that job's
+    checkout writes them; a tree with tracked changes keeps the files it was archived with, since that would discard the
+    changes. The effective `core.autocrlf` and the file it comes from are printed for the receipt."""
+    tree = f'{d}/ws/gwz-transport'
+    lines = [f'{TRANSPORT_HOST_CONFIG} > {tree}/.git/config']
+    if host_checkout:
+        lines.append(f'git -C {tree} checkout-index -a -f')
+    lines.append(f'echo "{AUTOCRLF_WORD} $(git -C {tree} config --show-origin --get core.autocrlf)"')
+    return lines
+
+
+def parse_autocrlf(text: str) -> dict:
+    """The stage's `TRANSPORT_AUTOCRLF <origin>\\t<value>` line (`git config --show-origin`) as the receipt records it; absent
+    ones read as empty strings, never as a guessed value."""
+    for line in text.splitlines():
+        if line.startswith(AUTOCRLF_WORD + ' '):
+            origin, _, value = line[len(AUTOCRLF_WORD) + 1:].rstrip('\r').partition('\t')
+            return {'value': value, 'origin': origin}
+    return {'value': '', 'origin': ''}
+
+
+def stage_script(label: str, cache_from: str | None, host_checkout: bool = False) -> str:
+    """Host script: the siblings at gwz-core's pins, then the prepared candidate. The core and gwz-transport are already in
+    place; the transport tree is made a repository again (see `transport_host_lines`)."""
     d = f'{HOST_ROOT}/{label}'
     lines = ['set -euo pipefail', *pid_lines(d, 'stage'), 'export GIT_TERMINAL_PROMPT=0', f'cd {d}/ws/gwz-core',
              'bash .github/checkout-git2-rs.sh']
@@ -257,6 +315,7 @@ def stage_script(label: str, cache_from: str | None) -> str:
         for name in SUITE_TARGETS:
             lines += [f'if [ -d {HOST_ROOT}/{cache_from}/{name} ]; then '
                       f'cp -a {HOST_ROOT}/{cache_from}/{name} {d}/{name}; fi']
+    lines += transport_host_lines(d, host_checkout)
     # `cargo metadata` prunes the prepared copy's lock file to the packages the copy uses (it is not a workspace), as the CI job does.
     lines += [f'python tests/transport_backend/prepare.py {d}/candidate', f'export RUSTUP_TOOLCHAIN={TOOLCHAIN}',
               f'cargo metadata --format-version 1 --manifest-path {d}/candidate/Cargo.toml > /dev/null', 'rustc --version']
@@ -330,7 +389,7 @@ def taut_lines(d: str, taut_proto: str | None) -> list[str]:
                   f'export TAUT_PYTHON="$(cygpath -w {venv}/Scripts/python.exe)"']
     lines += ['taut=$("${TAUT_PYTHON:-python}" -c "import importlib.metadata as m; print(m.version(\'taut-proto\'))" 2>/dev/null || echo missing)',
               'echo "HOSTED_LIKE_TAUT $taut"',
-              f"if grep -q \"$(printf '\\r')\" {d}/ws/gwz-transport/protocol/transport.ir.json; then eol=crlf; else eol=lf; fi",
+              f"if grep -qU \"$(printf '\\r')\" {d}/ws/gwz-transport/protocol/transport.ir.json; then eol=crlf; else eol=lf; fi",
               'echo "HOSTED_LIKE_OWNER_EOL $eol"']
     return lines
 
@@ -346,7 +405,8 @@ def failure_text_lines(d: str) -> list[str]:
     return [f"awk '{awk}' {log}"]
 
 
-def hosted_like_script(label: str, git_root: str, test_filter: str | None, taut_proto: str | None = None) -> str:
+def hosted_like_script(label: str, git_root: str, test_filter: str | None, taut_proto: str | None = None,
+                       allow_pin_mismatch: bool = False) -> str:
     """Host script: the candidate build's library suites run under the hosted job's conditions (see the module doc).
 
     The suite command is the job's, the environment is the job's (the portable sshd, `GWZ_TEST_SH`, the real Git
@@ -356,6 +416,9 @@ def hosted_like_script(label: str, git_root: str, test_filter: str | None, taut_
     d = f'{HOST_ROOT}/{label}'
     ssh = f'{d}/openssh'
     filter_word = f' --test-filter {test_filter}' if test_filter else ''
+    # The suite checks the gwz-transport tree's HEAD against gwz-core's pin; a lane that moves the pin (and was let past
+    # the receipt's own check by the flag) runs it with the same flag.
+    pin_word = f' {PIN_FLAG}' if allow_pin_mismatch else ''
     return '\n'.join([
         'set -uo pipefail', *pid_lines(d, 'hosted-like'), f'mkdir -p {ssh}', f"GIT_ROOT='{git_root}'",
         # The short TEMP: a directory whose long name has an 8.3 spelling, as `RUNNER~1` is on the runner. A host
@@ -382,7 +445,7 @@ def hosted_like_script(label: str, git_root: str, test_filter: str | None, taut_
         'echo "HOSTED_LIKE_GIT $(command -v git): $(git --version)"',
         f'export RUSTUP_TOOLCHAIN={TOOLCHAIN} CARGO_INCREMENTAL=0 RUSTFLAGS="{CANDIDATE}" GWZ_TEST_GIT=real',
         f'export CARGO_TARGET_DIR={d}/target-validator', *taut_lines(d, taut_proto), f'cd {d}/ws/gwz-core',
-        f'{HOSTED_SUITE}{filter_word} --manifest-path={d}/candidate/Cargo.toml --target-dir={d}/target-test '
+        f'{HOSTED_SUITE}{pin_word}{filter_word} --manifest-path={d}/candidate/Cargo.toml --target-dir={d}/target-test '
         f'> {d}/logs/hosted-like.log 2>&1',
         'status=$?',
         # The library suite's own count, before the integration step adds its lines to the log: a library binary that never
@@ -759,23 +822,136 @@ class Watchdog:
 UNTRACKED_EXCLUDED = ':(exclude)dev-docs'  # the worktree archive leaves untracked documents at home
 
 
+def worktree_listing(exclude: str | None, extra: str = '') -> str:
+    """A bash pipeline whose stdout is a tar of the working tree it runs in: tracked files as they are on disk (a deleted
+    one is left out), untracked, unignored ones outside `exclude`, and `extra` (printf statements naming more paths)."""
+    others = f"git ls-files -z --others --exclude-standard -- . '{exclude}'" if exclude else \
+        'git ls-files -z --others --exclude-standard'
+    # COPYFILE_DISABLE: macOS tar would add ._* AppleDouble files, which the host would unpack as sources.
+    return (f'{{ git ls-files -z --cached; {others}; {extra}}} | sort -zu | while IFS= read -r -d \'\' f; do '
+            '[ -e "$f" ] && printf \'%s\\0\' "$f"; done | COPYFILE_DISABLE=1 tar -cf - --null -T -')
+
+
 def archive_command(core: Path, ref: str | None) -> tuple[list[str], str]:
     """The local command whose stdout is a tar of the lane's gwz-core, and the source it names."""
     if ref is None:
-        # COPYFILE_DISABLE: macOS tar would add ._* AppleDouble files, which the host would unpack as sources.
-        # Tracked files as they are on disk (a deleted one is left out), plus untracked, unignored files outside dev-docs.
-        listing = ('{ git ls-files -z --cached; git ls-files -z --others --exclude-standard -- . '
-                   f"'{UNTRACKED_EXCLUDED}'; }} | sort -zu | while IFS= read -r -d '' f; do "
-                   '[ -e "$f" ] && printf \'%s\\0\' "$f"; done | COPYFILE_DISABLE=1 tar -cf - --null -T -')
-        return (['bash', '-c', listing], 'worktree (tracked files, and untracked ones outside dev-docs)')
+        return (['bash', '-c', worktree_listing(UNTRACKED_EXCLUDED)], 'worktree (tracked files, and untracked ones outside dev-docs)')
     return ['git', 'archive', '--format=tar', ref], f'ref {ref}'
+
+
+# What of the Mac's `.git` stays at home: the config (repo-local keys beat the host's global ones, and it can hold credentials
+# and remote URLs), the hooks, the logs and info/attributes (which can switch text handling off).
+TRANSPORT_GIT_EXCLUDED = ('.git/config', '.git/hooks', '.git/logs', '.git/info')
+
+
+def transport_archive_command(untracked: bool = False) -> list[str]:
+    """The command (run in the tree) whose stdout is a tar of the lane's gwz-transport: its tracked files as they are on disk
+    (and, with `untracked`, the untracked unignored ones: a `--worktree` receipt), and its `.git` minus
+    TRANSPORT_GIT_EXCLUDED, which the hosted suite's pin check and the host's checkout read. Every path is listed, so tar
+    does not recurse (`--no-recursion`)."""
+    prune = ' -o '.join(f'-path {path}' for path in TRANSPORT_GIT_EXCLUDED)
+    parts = ['git ls-files -z --cached']
+    if untracked:
+        parts.append('git ls-files -z --others --exclude-standard')
+    parts.append(f'find .git \\( {prune} \\) -prune -o -print0')
+    # COPYFILE_DISABLE: macOS tar would add ._* AppleDouble files, which the host would unpack as sources.
+    return ['bash', '-c', f'{{ {"; ".join(parts)}; }} | sort -zu | while IFS= read -r -d \'\' f; do '
+            '[ -e "$f" ] && printf \'%s\\0\' "$f"; done | COPYFILE_DISABLE=1 tar -cf - --null --no-recursion -T -']
 
 
 def git_output(core: Path, *args: str, run=subprocess.run) -> str:
     return run(['git', '-C', str(core), *args], text=True, capture_output=True, check=True).stdout.strip()
 
 
-def run_entry(watchdog: Watchdog, receipt: Receipt, name: str, flags: str, script: str, log: str, test_filter=None) -> None:
+def pin_in(text: str, where: str) -> str:
+    """The first 40-hex line of a pin file's text, as the workflow and run_tests.py read it."""
+    for line in text.splitlines():
+        if FULL_SHA.fullmatch(line.strip()):
+            return line.strip()
+    raise Refused(f'{where} names no gwz-transport commit (a 40-hex line)')
+
+
+def core_transport_pin(core: Path, ref: str | None, run=subprocess.run) -> str:
+    """The gwz-transport commit CI builds against for the gwz-core being receipted: the pin file of the working tree, or
+    of the ref (the archive the host unpacks is that tree, so its own pin is the one its suite checks)."""
+    if ref is None:
+        path = core / TRANSPORT_PIN_FILE
+        try:
+            return pin_in(path.read_text(encoding='utf-8'), str(path))
+        except OSError as error:
+            raise Refused(f'cannot read {path}: {error}') from None
+    try:
+        return pin_in(git_output(core, 'show', f'{ref}:{TRANSPORT_PIN_FILE}', run=run), f'{ref}:{TRANSPORT_PIN_FILE}')
+    except subprocess.CalledProcessError as error:
+        raise Refused(f'cannot read {TRANSPORT_PIN_FILE} at {ref}: {(error.stderr or "").strip()}') from None
+
+
+def check_transport_git_dir(tree: Path) -> None:
+    """Refuses a tree whose `.git` the archive could not carry whole: a gitfile (a linked worktree or a submodule) or a
+    symlink points outside the tree, and `objects/info/alternates` names objects outside it, so the host would fail with an
+    opaque error in checkout-index or rev-parse."""
+    hint = 'the receipt stages the lane\'s own gwz-transport clone: the checkout beside gwz-core, or --transport-tree DIR'
+    git_dir = tree / '.git'
+    if git_dir.is_symlink():
+        raise Refused(f'the gwz-transport tree {tree}: .git is a symlink, so its objects are not in the tree; {hint}')
+    if git_dir.is_file():
+        raise Refused(f'the gwz-transport tree {tree}: .git is a gitfile (a linked worktree or a submodule), so its objects '
+                      f'are outside the tree; use a full clone. {hint}')
+    if not git_dir.is_dir():
+        raise Refused(f'cannot read the gwz-transport tree {tree} (no .git directory); {hint}')
+    if (git_dir / 'objects' / 'info' / 'alternates').exists():
+        raise Refused(f'the gwz-transport tree {tree}: .git/objects/info/alternates names objects outside the tree, which '
+                      f'the archive would not carry; repack it (git repack -a -d) and remove the alternates file. {hint}')
+
+
+def transport_facts(tree: Path, pin: str, allow_mismatch: bool, run=subprocess.run, stage_untracked: bool = False) -> dict:
+    """What the receipt records of the gwz-transport tree it stages: the tree, its HEAD, its tracked changes (any change
+    but an untracked file) and untracked files (staged only when `stage_untracked`: a --worktree receipt), the pin and
+    whether HEAD is the pin. A tree that is not at the pin, or has tracked changes, is not what CI builds: it is refused
+    unless `allow_mismatch` (the lane moves the pin)."""
+    check_transport_git_dir(tree)
+    try:
+        head = git_output(tree, 'rev-parse', 'HEAD', run=run)
+        # not git_output: it strips, and the leading space of ` M path` is part of the status
+        status = run(['git', '-C', str(tree), 'status', '--porcelain'], text=True, capture_output=True,
+                     check=True).stdout
+    except (subprocess.CalledProcessError, OSError) as error:
+        detail = (getattr(error, 'stderr', None) or str(error)).strip()
+        raise Refused(f'cannot read the gwz-transport tree {tree} ({detail}); the receipt stages the lane\'s own '
+                      'gwz-transport: it is the checkout beside gwz-core, or --transport-tree DIR') from None
+    lines = [line for line in status.splitlines() if line.strip()]
+    tracked = [line[3:] for line in lines if not line.startswith('??')]
+    untracked = [line[3:] for line in lines if line.startswith('??')]
+    mismatch = head != pin or bool(tracked)
+    facts = {'source': 'lane tree', 'path': str(tree), 'head': head, 'pin': pin, 'matches_pin': head == pin,
+             'pin_mismatch': mismatch, 'pin_mismatch_allowed': allow_mismatch, 'tracked_changes': tracked,
+             'untracked': untracked, 'untracked_staged': stage_untracked, 'host_checkout': not tracked}
+    if mismatch:
+        what = f'HEAD {head} is not the pin {pin}' if head != pin else f'HEAD is the pin {pin}'
+        if tracked:
+            what += f', and tracked files are changed ({", ".join(tracked[:5])}{", ..." if len(tracked) > 5 else ""})'
+        if not allow_mismatch:
+            raise Refused(f'the gwz-transport tree {tree}: {what}. CI builds the pin ({TRANSPORT_PIN_FILE}), so this '
+                          f'receipt would certify code CI does not build. Check the pin out, or, for a lane that moves '
+                          f'the pin in this change, pass {PIN_FLAG}')
+        print(f'PIN MISMATCH ({PIN_FLAG}): gwz-transport {what}; move {TRANSPORT_PIN_FILE} to a pushed commit '
+              'that contains these changes before gwz-core is pushed', flush=True)
+    if tracked:
+        print('gwz-transport: tracked changes keep the files as archived (LF); a clean tree is written again by the '
+              "host's Git as a Windows checkout does (CRLF)", flush=True)
+    if untracked:
+        names = f'{", ".join(untracked[:5])}{", ..." if len(untracked) > 5 else ""}'
+        if stage_untracked:
+            print(f'gwz-transport: {len(untracked)} untracked file(s) are staged with the tree (--worktree): {names}',
+                  flush=True)
+        else:
+            print(f'gwz-transport: {len(untracked)} untracked file(s) are NOT staged (a --ref receipt stages tracked '
+                  f'files only; --worktree stages them): {names}', flush=True)
+    return facts
+
+
+def run_entry(watchdog: Watchdog, receipt: Receipt, name: str, flags: str, script: str, log: str, test_filter=None,
+              require_crlf: bool = False) -> None:
     """Runs one host script under the watchdog and records its entry. A build script the host blocked (os error 4551) is run
     once more, both attempts are recorded and both count against the phase's deadline; a genuine failure, a failed test among
     them, is never run again. A phase the watchdog ends raises PhaseAborted."""
@@ -802,6 +978,12 @@ def run_entry(watchdog: Watchdog, receipt: Receipt, name: str, flags: str, scrip
         # A suite that ran no library test passes nothing, whatever the integration targets did (a missing count is zero).
         entry['passed'] = entry.get('library_passed', 0) > 0 and (result.returncode == 0 or bool(
             entry['gaps'] and not entry['failures'] and entry['tests']['failed'] == len(entry['gaps']) and integration_ran))
+        # A clean transport tree was written again by the host's Git as a Windows checkout is: its owner export must be CRLF.
+        # LF means the receipt lost the coverage it exists for (the step 2.2 review's S-P2-1 case), whatever else passed.
+        if require_crlf and entry.get('owner_export_line_endings') != 'crlf':
+            entry['passed'] = False
+            entry['line_ending_failure'] = (f'HOSTED_LIKE_OWNER_EOL is {entry.get("owner_export_line_endings", "absent")!r}, '
+                                            'not crlf: the host checkout of gwz-transport is not a Windows checkout')
     receipt.shapes.append(entry)
     detail = ''
     if name == 'hosted-like':
@@ -811,6 +993,8 @@ def run_entry(watchdog: Watchdog, receipt: Receipt, name: str, flags: str, scrip
             detail += f'\n  FAILED {failed}'
         for gap in entry['gaps']:
             detail += f'\n  GAP {gap} (needs gwz-py and taut-proto, which the host does not have)'
+        if 'line_ending_failure' in entry:
+            detail += f'\n  FAILED line endings: {entry["line_ending_failure"]}'
     else:
         detail = f', {entry["warnings"]} warnings'
     print(f'{name}: exit {result.returncode} in {seconds}s{detail}', flush=True)
@@ -843,28 +1027,45 @@ def execute(options, host: Host, core: Path = CORE, now=datetime.datetime.now) -
         check_label(options.cache_from)
     ref = None if options.worktree else options.ref
     commit = git_output(core, 'rev-parse', ref or 'HEAD', run=host.run)
-    claim = host.ssh(f'mkdir {HOST_ROOT}/{label} 2>&1 && mkdir -p {HOST_ROOT}/{label}/ws/gwz-core', check=False)
+    # The lane's own gwz-transport, judged against the pin of the gwz-core being receipted, before the host is touched.
+    tree = options.transport_tree or core.parent / 'gwz-transport'
+    transport = transport_facts(tree, core_transport_pin(core, ref, host.run), options.allow_transport_pin_mismatch,
+                                host.run, stage_untracked=options.worktree)
+    if options.preflight_only:
+        print(f'windows_lane_check: preflight ok for {label}: the gwz-transport tree {tree} may be receipted'
+              f'{" (PIN MISMATCH allowed)" if transport["pin_mismatch"] else ""}; the host was not touched', flush=True)
+        return 0
+    claim = host.ssh(f'mkdir {HOST_ROOT}/{label} 2>&1 && mkdir -p {HOST_ROOT}/{label}/ws/gwz-core '
+                     f'{HOST_ROOT}/{label}/ws/gwz-transport', check=False)
     if claim.returncode != 0:
         raise Refused(f'{HOST_ROOT}/{label} on the host cannot be created (it may exist; labels are never reused): '
                       f'{(claim.stdout or "").strip()}')
     archive, source = archive_command(core, ref)
-    receipt = Receipt(label, source, commit, options.cache_from, options.tests, now().isoformat(timespec='seconds'))
+    receipt = Receipt(label, source, commit, options.cache_from, options.tests, now().isoformat(timespec='seconds'),
+                      transport=transport)
     start = host.clock()
     producer = host.run(archive, cwd=core, capture_output=True, check=True)
     unpack = host.run(SSH + ['tar', '-x', '-C', f'{HOST_ROOT}/{label}/ws/gwz-core'], input=producer.stdout,
                       capture_output=True, check=False)
     if unpack.returncode != 0:
         raise SystemExit(f'windows_lane_check: unpacking the archive on the host failed: {unpack.stderr!r}')
+    transport_producer = host.run(transport_archive_command(options.worktree), cwd=tree, capture_output=True, check=True)
+    transport_unpack = host.run(SSH + ['tar', '-x', '-C', f'{HOST_ROOT}/{label}/ws/gwz-transport'],
+                                input=transport_producer.stdout, capture_output=True, check=False)
+    if transport_unpack.returncode != 0:
+        raise SystemExit('windows_lane_check: unpacking the gwz-transport tree on the host failed: '
+                         f'{transport_unpack.stderr!r}')
     watchdog = Watchdog(host, options.watchdog, label)
     aborted = None
     try:
-        staged, _ = watchdog.run('stage', stage_script(label, options.cache_from))
+        staged, _ = watchdog.run('stage', stage_script(label, options.cache_from, transport['host_checkout']))
         receipt.stage_seconds = round(host.clock() - start, 1)
         if staged.returncode != 0:
             print(staged.stdout, staged.stderr, sep='\n', file=sys.stderr)
             raise SystemExit('windows_lane_check: staging the siblings or preparing the candidate failed; the host '
                              f'directory {HOST_ROOT}/{label} is kept for inspection')
         receipt.toolchain = (staged.stdout or '').strip().splitlines()[-1] if (staged.stdout or '').strip() else ''
+        receipt.transport['host_autocrlf'] = parse_autocrlf(staged.stdout or '')
         if options.no_check_shapes:
             shapes = ()
         else:
@@ -874,20 +1075,23 @@ def execute(options, host: Host, core: Path = CORE, now=datetime.datetime.now) -
                       f'{HOST_ROOT}/{label}/logs/{name}.log')
         if options.hosted_like:
             run_entry(watchdog, receipt, 'hosted-like', CANDIDATE,
-                      hosted_like_script(label, options.git_root, options.hosted_like_filter, options.taut_proto),
-                      f'{HOST_ROOT}/{label}/logs/hosted-like.log', test_filter=options.hosted_like_filter)
+                      hosted_like_script(label, options.git_root, options.hosted_like_filter, options.taut_proto,
+                                         allow_pin_mismatch=not transport['matches_pin']),
+                      f'{HOST_ROOT}/{label}/logs/hosted-like.log', test_filter=options.hosted_like_filter,
+                      require_crlf=transport['host_checkout'])
     except PhaseAborted as stopped:
         aborted = stopped.info
         record_abort(receipt, aborted, flags_of(aborted['phase']), start, host.clock())
+    note = ', PIN MISMATCH allowed' if transport['pin_mismatch'] else ''
     receipt_dir.mkdir(parents=True)
     if aborted:
         save_evidence(host, receipt, receipt_dir, aborted)
     (receipt_dir / 'receipt.json').write_text(receipt.as_json(), encoding='utf-8')
     host.ssh(f"cat > {HOST_ROOT}/{label}/receipt.json <<'RECEIPT'\n{receipt.as_json()}RECEIPT\n", check=False)
     if receipt.abort:
-        print(f'receipt: {receipt_dir / "receipt.json"} (TIMEOUT)')
+        print(f'receipt: {receipt_dir / "receipt.json"} (TIMEOUT{note})')
         return EXIT_TIMEOUT
-    print(f'receipt: {receipt_dir / "receipt.json"} ({"PASS" if receipt.passed() else "FAIL"})')
+    print(f'receipt: {receipt_dir / "receipt.json"} ({"PASS" if receipt.passed() else "FAIL"}{note})')
     return 0 if receipt.passed() else 1
 
 
@@ -949,6 +1153,14 @@ def parser() -> argparse.ArgumentParser:
     source.add_argument('--ref', default='HEAD', help='commit of gwz-core to check (default HEAD)')
     source.add_argument('--worktree', action='store_true', help='check the working tree instead of a ref')
     p.add_argument('--tests', action='store_true', help='also check the library in test mode (cfg(test))')
+    p.add_argument('--transport-tree', type=Path, metavar='DIR',
+                   help='the gwz-transport tree to stage (default: the checkout beside gwz-core); it is never fetched from GitHub')
+    p.add_argument(PIN_FLAG, action='store_true', dest='allow_transport_pin_mismatch',
+                   help='stage a gwz-transport tree whose HEAD is not gwz-core\'s pin, or that has tracked changes: for a lane '
+                        'that moves the pin in this change; the receipt and the output say PIN MISMATCH')
+    p.add_argument('--preflight-only', action='store_true',
+                   help='judge the label, the options and the gwz-transport tree (pin, tracked changes, .git) and exit 0 or '
+                        '2 without touching the host: win-receipt.zsh runs it before it books the host\'s one slot')
     p.add_argument('--cache-from', metavar='LABEL', help='copy an earlier run\'s target directory (a warm run)')
     p.add_argument('--if-triggered', metavar='BASE', help='do nothing unless BASE..ref changed a trigger path')
     p.add_argument('--hosted-like', action='store_true',

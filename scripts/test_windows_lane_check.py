@@ -1,10 +1,16 @@
 """Tests for the Windows compile gate script (GwzTransportWindowsParityPlan.md, step 0.4). No host is used."""
+import atexit
+import contextlib
 import importlib.util
+import io
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
+import shutil
 import tempfile
+import tarfile
 import threading
 import unittest
 
@@ -14,11 +20,32 @@ spec.loader.exec_module(gate)
 parity = gate.parity
 
 
+# The commit FakeRun answers `rev-parse` with, for gwz-core and (by default) for the gwz-transport tree.
+COMMIT = 'c0ffee' + '0' * 34
+OTHER_COMMIT = 'dec0de' + '1' * 34
+
+
+def stub_core(pin: str = COMMIT) -> Path:
+    """A directory standing in for gwz-core: it holds the pin file the worktree mode reads. Nothing else of it is used
+    (every git call goes through FakeRun), and the gwz-transport tree beside it does not exist either."""
+    root = Path(tempfile.mkdtemp(prefix='windows-lane-check-'))
+    atexit.register(shutil.rmtree, root, True)
+    core = root / 'gwz-core'
+    (core / '.github').mkdir(parents=True)
+    (root / 'gwz-transport' / '.git').mkdir(parents=True)
+    (core / '.github' / 'gwz-transport.commit').write_text(f'# pin\n{pin}\n', encoding='utf-8')
+    return core
+
+
+STUB_CORE = stub_core()
+
+
 HOSTED_PASS = (
     'HOSTED_LIKE_TEMP C:\\Users\\gianni\\AppData\\Local\\Temp\\WINP0-~1\n'
     'HOSTED_LIKE_GIT git version 2.55.0.windows.3\n'
     'HOSTED_LIKE_SSHD OpenSSH_for_Windows_9.8p2\n'
     'HOSTED_LIKE_LIBRARY passed=3433\n'
+    'HOSTED_LIKE_OWNER_EOL crlf\n'
     'HOSTED_LIKE_RESULT passed=3501 failed=0\n')
 HOSTED_FAIL = (HOSTED_PASS.replace('failed=0', 'failed=2')
                + 'HOSTED_LIKE_FAILED git::endpoint::ssh_tests::background_close::a\n'
@@ -29,17 +56,26 @@ class FakeRun:
     """Stands in for subprocess.run: records every call and answers by the command's first words."""
 
     def __init__(self, claim_exit=0, shape_exits=(0, 0), warnings=7, blocked_first=False, hosted_exit=0,
-                 hosted_output=None):
+                 hosted_output=None, transport_head=COMMIT, transport_status='', transport_unreadable=False):
         self.calls, self.claim_exit, self.shape_exits, self.warnings = [], claim_exit, list(shape_exits), warnings
         self.blocked_first = blocked_first
         self.hosted_exit = hosted_exit
         self.hosted_output = HOSTED_PASS if hosted_output is None else hosted_output
+        self.transport_head, self.transport_status = transport_head, transport_status
+        self.transport_unreadable = transport_unreadable
 
     def __call__(self, argv, **kwargs):
         self.calls.append((list(argv), kwargs))
         out = ''
-        if argv[0] == 'git' and 'rev-parse' in argv:
-            out = 'c0ffee' + '0' * 34 + '\n'
+        about_transport = argv[0] == 'git' and argv[1:2] == ['-C'] and argv[2].endswith('gwz-transport')
+        if about_transport and self.transport_unreadable:
+            raise subprocess.CalledProcessError(128, argv, '', 'fatal: not a git repository')
+        if about_transport and 'status' in argv:
+            out = self.transport_status
+        elif argv[0] == 'git' and 'rev-parse' in argv:
+            out = (self.transport_head if about_transport else COMMIT) + '\n'
+        elif argv[0] == 'git' and 'show' in argv:
+            out = f'# pin\n{COMMIT}\n'
         elif argv[0] == 'git' and 'diff' in argv:
             out = self.diff_names
         elif argv[0] == 'ssh' and 'bash' in argv:
@@ -59,12 +95,14 @@ class FakeRun:
                 return subprocess.CompletedProcess(
                     argv, code, f'warning: `gwz-core` (lib) generated {self.warnings} warnings\n', '')
             if 'rustc --version' in script:
-                out = 'rustc 1.95.0 (abc 2026-01-01)\n'
+                out = (f'TRANSPORT_AUTOCRLF file:C:/gwz-tests/x/ws/gwz-transport/.git/config\t{self.host_autocrlf}\n'
+                       'rustc 1.95.0 (abc 2026-01-01)\n')
         elif argv[0] == 'git' and 'archive' in argv:
             out = b'TAR'
         return subprocess.CompletedProcess(argv, 0, out, '' if isinstance(out, str) else b'')
 
     diff_names = ''
+    host_autocrlf = 'true'
 
     def ssh_scripts(self):
         return [k['input'] for a, k in self.calls if a[:1] == ['ssh'] and 'input' in k and 'bash' in a]
@@ -85,7 +123,7 @@ def options(*argv):
 
 def run_main(runner, *argv, receipts):
     host = gate.Host(run=runner, clock=Clock())
-    return gate.main(['--receipt-dir', str(receipts), *argv], host=host, core=Path('/nonexistent-core'))
+    return gate.main(['--receipt-dir', str(receipts), *argv], host=host, core=STUB_CORE)
 
 
 class Labels(unittest.TestCase):
@@ -294,6 +332,13 @@ class HostedLike(unittest.TestCase):
                 probe = line.replace('/e/gwz-tests/a-20261025-a', tmp)
                 result = subprocess.run([bash, '-c', f'{probe}; echo $eol'], capture_output=True, text=True, check=True)
                 self.assertEqual(result.stdout.strip(), expected)
+
+    def test_the_eol_probe_reads_bytes_because_msys_grep_strips_carriage_returns_in_text_mode(self):
+        # Receipt gate-fixes-20261030-b: the host file held 2402 CR and 2402 LF, plain `grep -q $'\r'` on the host
+        # said lf and `grep -qU` said crlf. Git for Windows' grep strips CR before matching unless -U (binary) is given,
+        # so the probe must ask for it; the Mac's grep cannot reproduce the strip, hence this check of the probe itself.
+        probe = next(line for line in gate.taut_lines('/e/gwz-tests/a-20261025-a', None) if 'transport.ir.json' in line)
+        self.assertRegex(probe, r'grep -[a-zA-Z]*U')
 
     def test_taut_proto_goes_in_a_venv_under_the_runs_directory_and_needs_the_mode(self):
         script = gate.hosted_like_script('a-20261025-a', gate.DEFAULT_GIT_ROOT, None, '0.10.0')
@@ -570,6 +615,398 @@ class Run(unittest.TestCase):
             self.go(FakeRun(), '--cache-from', '../etc')
 
 
+class TransportTree(unittest.TestCase):
+    """The receipt stages the lane's own gwz-transport, not GitHub's: a lane need not push gwz-transport to receipt gwz-core.
+
+    Until 2026-10-30 the stage script fetched the pinned gwz-transport commit from GitHub (SIBLING_PINS), so a lane whose
+    gwz-core moved the pin to a commit not yet pushed could not be receipted, and one whose gwz-transport was edited was
+    receipted against code it did not contain.
+    """
+    PIN_FLAG = '--allow-transport-pin-mismatch'
+
+    def go(self, runner, *argv, label='tt-20261030-a'):
+        err = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(err):
+            try:
+                code = gate.main(['--receipt-dir', tmp, '--label', label, *argv],
+                                 host=gate.Host(run=runner, clock=Clock()), core=STUB_CORE)
+            except gate.Refused as refused:
+                return refused.code, None, out.getvalue(), refused.message
+            path = Path(tmp) / label / 'receipt.json'
+            return code, json.loads(path.read_text(encoding='utf-8')), out.getvalue(), err.getvalue()
+
+    def test_the_stage_script_fetches_no_gwz_transport(self):
+        self.assertEqual([name for name, _ in gate.SIBLING_PINS], ['gwz-sspi', 'gwz-git'])
+        stage = gate.stage_script('tt-20261030-a', None)
+        self.assertNotIn('github.com/owebeeone/gwz-transport', stage)
+        self.assertNotIn('../gwz-transport', stage)
+        self.assertIn('git -C ../gwz-sspi fetch', stage)
+        self.assertIn('git -C ../gwz-git fetch', stage)
+
+    def test_a_clean_tree_is_written_again_by_the_hosts_git_as_a_windows_checkout_is(self):
+        """The old stage checked gwz-transport out on the host, so its files had the host's CRLF (the owner export's line
+        endings were a step 2.2 finding); a Mac tar alone would silently stop exercising that."""
+        stage = gate.stage_script('tt-20261030-a', None, host_checkout=True)
+        self.assertIn('git -C /e/gwz-tests/tt-20261030-a/ws/gwz-transport checkout-index -a -f', stage)
+        self.assertNotIn('checkout-index', gate.stage_script('tt-20261030-a', None))
+        clean, dirty = FakeRun(), FakeRun(transport_status=' M src/lib.rs\n')
+        self.go(clean)
+        self.go(dirty, self.PIN_FLAG)
+        self.assertTrue(any('checkout-index' in s for s in clean.ssh_scripts()))
+        self.assertFalse(any('checkout-index' in s for s in dirty.ssh_scripts()))
+
+    def test_the_lanes_tree_is_archived_beside_the_core_and_unpacked_on_the_host(self):
+        runner = FakeRun()
+        code, receipt, _, _ = self.go(runner)
+        self.assertEqual(code, 0)
+        tree = STUB_CORE.parent / 'gwz-transport'
+        archives = [(a, k) for a, k in runner.calls if a[:2] == ['bash', '-c'] and 'ls-files' in a[2]]
+        [(archive, kwargs)] = [(a, k) for a, k in archives if k.get('cwd') == tree]
+        # tracked files, with its .git minus config, hooks, logs and info (the suite checks HEAD against the pin on the
+        # host); a --ref receipt stages no untracked file
+        self.assertIn('--cached', archive[2])
+        self.assertNotIn('--others', archive[2])
+        self.assertIn('find .git', archive[2])
+        self.assertNotIn('exclude)', archive[2])
+        unpacks = [a for a, _ in runner.calls if a[:len(gate.SSH)] == gate.SSH and a[len(gate.SSH):len(gate.SSH) + 1] == ['tar']]
+        self.assertIn(gate.SSH + ['tar', '-x', '-C', '/e/gwz-tests/tt-20261030-a/ws/gwz-transport'], unpacks)
+        claim = runner.ssh_scripts()[0]
+        self.assertIn('/e/gwz-tests/tt-20261030-a/ws/gwz-transport', claim)
+        self.assertFalse(any('github.com/owebeeone/gwz-transport' in s for s in runner.ssh_scripts()))
+
+    def test_the_receipt_records_head_dirtiness_and_the_pin(self):
+        code, receipt, _, _ = self.go(FakeRun())
+        self.assertEqual(code, 0)
+        self.assertEqual(receipt['transport'], {
+            'source': 'lane tree', 'path': str(STUB_CORE.parent / 'gwz-transport'), 'head': COMMIT, 'pin': COMMIT,
+            'matches_pin': True, 'pin_mismatch': False, 'pin_mismatch_allowed': False, 'tracked_changes': [],
+            'untracked': [], 'untracked_staged': False, 'host_checkout': True,
+            'host_autocrlf': {'value': 'true', 'origin': 'file:C:/gwz-tests/x/ws/gwz-transport/.git/config'}})
+
+    def test_a_tree_named_by_the_option_is_the_one_read_and_archived(self):
+        runner = FakeRun()
+        other = stub_core().parent / 'gwz-transport'
+        code, receipt, _, _ = self.go(runner, '--transport-tree', str(other))
+        self.assertEqual(code, 0)
+        self.assertEqual(receipt['transport']['path'], str(other))
+        self.assertIn(['git', '-C', str(other), 'rev-parse', 'HEAD'], [a for a, _ in runner.calls])
+        self.assertTrue(any(k.get('cwd') == other for _, k in runner.calls))
+
+    def test_untracked_files_are_recorded_and_do_not_fail_the_receipt(self):
+        code, receipt, out, _ = self.go(FakeRun(transport_status='?? notes.txt\n?? scratch/a.rs\n'))
+        self.assertEqual(code, 0)
+        self.assertEqual(receipt['transport']['untracked'], ['notes.txt', 'scratch/a.rs'])
+        self.assertEqual(receipt['transport']['tracked_changes'], [])
+        self.assertTrue(receipt['transport']['matches_pin'])
+        self.assertIn('untracked', out)
+
+    def archive_script(self, runner):
+        tree = STUB_CORE.parent / 'gwz-transport'
+        [archive] = [a for a, k in runner.calls if a[:2] == ['bash', '-c'] and 'ls-files' in a[2] and k.get('cwd') == tree]
+        return archive[2]
+
+    def test_a_ref_receipt_stages_tracked_files_only_and_says_so(self):
+        """Review P3-1: the brief says tracked files; an untracked build.rs, src/bin/x.rs or tests/x.rs is built by Cargo
+        unseen by a ref receipt, so a --ref receipt leaves untracked files out (recorded, and named in the output)."""
+        runner = FakeRun(transport_status='?? build.rs\n')
+        code, receipt, out, _ = self.go(runner)
+        self.assertEqual(code, 0)
+        self.assertNotIn('--others', self.archive_script(runner))
+        self.assertEqual((receipt['transport']['untracked'], receipt['transport']['untracked_staged']), (['build.rs'], False))
+        self.assertIn('NOT staged', out)
+
+    def test_a_worktree_receipt_stages_untracked_files_and_records_them(self):
+        runner = FakeRun(transport_status='?? build.rs\n')
+        code, receipt, out, _ = self.go(runner, '--worktree')
+        self.assertEqual(code, 0)
+        self.assertIn('--others --exclude-standard', self.archive_script(runner))
+        self.assertEqual((receipt['transport']['untracked'], receipt['transport']['untracked_staged']), (['build.rs'], True))
+        self.assertNotIn('NOT staged', out)
+
+    def test_a_head_that_is_not_the_pin_is_refused_before_any_host_call(self):
+        runner = FakeRun(transport_head=OTHER_COMMIT)
+        code, receipt, _, message = self.go(runner)
+        self.assertEqual((code, receipt), (2, None))
+        self.assertIn(OTHER_COMMIT, message)
+        self.assertIn(COMMIT, message)
+        self.assertIn(self.PIN_FLAG, message)
+        self.assertEqual(runner.ssh_scripts(), [])
+
+    def test_modified_tracked_files_are_refused_the_same_way(self):
+        runner = FakeRun(transport_status=' M src/lib.rs\nA  src/new.rs\n?? stray\n')
+        code, receipt, _, message = self.go(runner)
+        self.assertEqual((code, receipt), (2, None))
+        self.assertIn('src/lib.rs', message)
+        self.assertIn(self.PIN_FLAG, message)
+        self.assertEqual(runner.ssh_scripts(), [])
+
+    def test_the_flag_allows_a_mismatch_which_the_receipt_and_the_output_say_loudly(self):
+        runner = FakeRun(transport_head=OTHER_COMMIT, transport_status=' M src/lib.rs\n')
+        code, receipt, out, _ = self.go(runner, self.PIN_FLAG)
+        self.assertEqual(code, 0)
+        self.assertEqual({k: receipt['transport'][k] for k in ('head', 'pin', 'matches_pin', 'pin_mismatch_allowed')},
+                         {'head': OTHER_COMMIT, 'pin': COMMIT, 'matches_pin': False, 'pin_mismatch_allowed': True})
+        self.assertEqual(receipt['transport']['tracked_changes'], ['src/lib.rs'])
+        self.assertIn('PIN MISMATCH', out)
+        self.assertIn(OTHER_COMMIT, out)
+
+    def test_the_hosted_suite_gets_the_pin_flag_only_when_the_tree_is_off_the_pin(self):
+        off = FakeRun(transport_head=OTHER_COMMIT)
+        self.go(off, '--hosted-like', self.PIN_FLAG)
+        [suite] = [s for s in off.ssh_scripts() if 'run_tests.py' in s]
+        self.assertIn(f'{gate.HOSTED_SUITE} {self.PIN_FLAG}', suite)
+        on = FakeRun()
+        self.go(on, '--hosted-like', self.PIN_FLAG)
+        [suite] = [s for s in on.ssh_scripts() if 'run_tests.py' in s]
+        self.assertNotIn(self.PIN_FLAG, suite)
+
+    def test_a_tree_git_cannot_read_is_refused_before_any_host_call(self):
+        runner = FakeRun(transport_unreadable=True)
+        code, receipt, _, message = self.go(runner)
+        self.assertEqual((code, receipt), (2, None))
+        self.assertIn('--transport-tree', message)
+        self.assertEqual(runner.ssh_scripts(), [])
+
+    def test_the_pin_is_the_one_in_the_ref_being_receipted(self):
+        runner = FakeRun()
+        self.go(runner, '--ref', 'abc123')
+        self.assertIn(['git', '-C', str(STUB_CORE), 'show', 'abc123:.github/gwz-transport.commit'],
+                      [a for a, _ in runner.calls])
+
+    def test_the_worktree_pin_is_the_file_on_disk(self):
+        runner = FakeRun()
+        self.go(runner, '--worktree')
+        self.assertFalse([a for a, _ in runner.calls if 'show' in a])
+
+    def test_a_pin_file_with_no_commit_is_refused(self):
+        bare = stub_core()
+        (bare / '.github' / 'gwz-transport.commit').write_text('# nothing\n', encoding='utf-8')
+        with tempfile.TemporaryDirectory() as tmp, self.assertRaises(gate.Refused) as caught:
+            gate.main(['--receipt-dir', tmp, '--label', 'tt-20261030-a', '--worktree'],
+                      host=gate.Host(run=FakeRun(), clock=Clock()), core=bare)
+        self.assertIn('gwz-transport.commit', caught.exception.message)
+
+
+    def test_a_gitfile_dot_git_is_refused_by_name_before_any_host_call(self):
+        """Review P2-1: a linked worktree or submodule has a `.git` file pointing outside the tree; the archive would carry a
+        dangling pointer and the host would fail in checkout-index with an opaque error."""
+        tree = stub_core().parent / 'gwz-transport'
+        shutil.rmtree(tree / '.git')
+        (tree / '.git').write_text('gitdir: /elsewhere/.git/worktrees/x\n', encoding='utf-8')
+        runner = FakeRun()
+        code, receipt, _, message = self.go(runner, '--transport-tree', str(tree))
+        self.assertEqual((code, receipt), (2, None))
+        self.assertIn('gitfile', message)
+        self.assertIn('--transport-tree', message)
+        self.assertEqual(runner.ssh_scripts(), [])
+
+    def test_alternates_are_refused_by_name_before_any_host_call(self):
+        tree = stub_core().parent / 'gwz-transport'
+        (tree / '.git' / 'objects' / 'info').mkdir(parents=True)
+        (tree / '.git' / 'objects' / 'info' / 'alternates').write_text('/elsewhere/objects\n', encoding='utf-8')
+        runner = FakeRun()
+        code, receipt, _, message = self.go(runner, '--transport-tree', str(tree))
+        self.assertEqual((code, receipt), (2, None))
+        self.assertIn('objects/info/alternates', message)
+        self.assertEqual(runner.ssh_scripts(), [])
+
+    def test_a_tree_with_no_dot_git_is_refused_by_name(self):
+        tree = stub_core().parent / 'gwz-transport'
+        shutil.rmtree(tree / '.git')
+        code, receipt, _, message = self.go(FakeRun(), '--transport-tree', str(tree))
+        self.assertEqual((code, receipt), (2, None))
+        self.assertIn('--transport-tree', message)
+
+    def test_a_clean_tree_whose_owner_export_is_not_crlf_fails_the_receipt(self):
+        """Review P2-1: the host's checkout is a Windows checkout only if the export came out CRLF; if it did not, the receipt
+        has lost the coverage it exists for and must not pass."""
+        lf = HOSTED_PASS.replace('HOSTED_LIKE_OWNER_EOL crlf', 'HOSTED_LIKE_OWNER_EOL lf')
+        code, receipt, out, _ = self.go(FakeRun(hosted_output=lf), '--hosted-like')
+        entry = receipt['shapes'][-1]
+        self.assertEqual((code, receipt['passed'], entry['passed']), (1, False, False))
+        self.assertEqual(entry['owner_export_line_endings'], 'lf')
+        self.assertIn('HOSTED_LIKE_OWNER_EOL', entry['line_ending_failure'])
+        code, receipt, _, _ = self.go(FakeRun(hosted_output=HOSTED_PASS), '--hosted-like')
+        self.assertEqual((code, receipt['passed']), (0, True))
+        missing = HOSTED_PASS.replace('HOSTED_LIKE_OWNER_EOL crlf\n', '')
+        self.assertEqual(self.go(FakeRun(hosted_output=missing), '--hosted-like')[0], 1)
+
+    def test_the_receipt_records_the_effective_autocrlf_and_its_origin(self):
+        code, receipt, _, _ = self.go(FakeRun(), '--hosted-like')
+        self.assertEqual(code, 0)
+        self.assertEqual(receipt['transport']['host_autocrlf'],
+                         {'value': 'true', 'origin': 'file:C:/gwz-tests/x/ws/gwz-transport/.git/config'})
+        self.assertEqual(receipt['toolchain'], 'rustc 1.95.0 (abc 2026-01-01)')
+
+    def test_a_stage_that_reports_no_autocrlf_is_recorded_as_absent_not_invented(self):
+        runner = FakeRun()
+        runner.host_autocrlf = ''
+        code, receipt, _, _ = self.go(runner, '--hosted-like')
+        self.assertEqual(receipt['transport']['host_autocrlf']['value'], '')
+
+    def test_a_tree_with_tracked_changes_keeps_its_files_so_lf_is_not_a_failure(self):
+        lf = HOSTED_PASS.replace('HOSTED_LIKE_OWNER_EOL crlf', 'HOSTED_LIKE_OWNER_EOL lf')
+        code, receipt, _, _ = self.go(FakeRun(transport_status=' M src/lib.rs\n', hosted_output=lf), '--hosted-like',
+                                      self.PIN_FLAG)
+        self.assertEqual((code, receipt['passed']), (0, True))
+
+    def test_the_final_line_says_pin_mismatch_when_one_was_allowed(self):
+        """Review P3-2: the mismatch was printed once, minutes before a 20-minute run; the line read at the end said PASS."""
+        _, _, out, _ = self.go(FakeRun(transport_head=OTHER_COMMIT), self.PIN_FLAG)
+        self.assertRegex(out.strip().splitlines()[-1], r'^receipt: .*receipt\.json \(PASS, PIN MISMATCH allowed\)$')
+        _, _, out, _ = self.go(FakeRun(transport_status=' M src/lib.rs\n'), self.PIN_FLAG)
+        self.assertIn('(PASS, PIN MISMATCH allowed)', out.strip().splitlines()[-1])
+        _, _, out, _ = self.go(FakeRun(), self.PIN_FLAG)
+        self.assertTrue(out.strip().endswith('(PASS)'), out)
+        _, _, out, _ = self.go(FakeRun(transport_head=OTHER_COMMIT, shape_exits=(1, 0)), self.PIN_FLAG)
+        self.assertIn('(FAIL, PIN MISMATCH allowed)', out)
+
+    def test_preflight_only_judges_the_tree_and_never_touches_the_host(self):
+        """Review P3-3: the refusals ran after the single Windows slot was booked; the wrapper runs this before booking."""
+        for kwargs, argv, expected in (({}, (), 0), ({'transport_head': OTHER_COMMIT}, (), 2),
+                                       ({'transport_status': ' M a.rs\n'}, (), 2),
+                                       ({'transport_head': OTHER_COMMIT}, (self.PIN_FLAG,), 0)):
+            with self.subTest(kwargs=kwargs, argv=argv):
+                runner = FakeRun(**kwargs)
+                with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    try:
+                        code = gate.main(['--receipt-dir', tmp, '--label', 'tt-20261030-a', '--preflight-only', *argv],
+                                         host=gate.Host(run=runner, clock=Clock()), core=STUB_CORE)
+                    except gate.Refused as refused:
+                        code = refused.code
+                    self.assertEqual(code, expected)
+                    self.assertEqual(list(Path(tmp).iterdir()), [])
+                self.assertFalse([a for a, _ in runner.calls if a[:1] == ['ssh']])
+                self.assertFalse([a for a, _ in runner.calls if a[:2] == ['bash', '-c']])
+
+
+class RealTransportTree(unittest.TestCase):
+    """Review P2-1 and P3-1 against real Git: the archive command and the host's staging lines are EXECUTED on a temp repo.
+
+    The Mac repo has `core.autocrlf=false` in its own config and a `.git/info/attributes` that switches text handling off; the
+    "host" has `core.autocrlf=true` in its global config, as a hosted Windows job has. Repo-local config beats global config,
+    so shipping the Mac's `.git/config` leaves the host checkout LF; the staging must leave it to the host."""
+    LABEL = 'rt-20261030-a'
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='wlc-real-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        if shutil.which('git') is None or shutil.which('bash') is None or shutil.which('tar') is None:
+            self.skipTest('needs git, bash and tar')
+        base = {**os.environ, 'HOME': str(self.tmp / 'home'), 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null'}
+        self.mac = base
+        host_global = self.tmp / 'host-gitconfig'
+        host_global.write_text('[core]\n\tautocrlf = true\n', encoding='utf-8')
+        self.host = {**base, 'GIT_CONFIG_GLOBAL': str(host_global)}
+        self.repo = self.tmp / 'gwz-transport'
+        self.git('init', '-q', '-b', 'main', str(self.repo))
+        self.git('-C', str(self.repo), 'config', 'core.autocrlf', 'false')
+        self.git('-C', str(self.repo), 'config', 'core.eol', 'lf')
+        self.git('-C', str(self.repo), 'config', 'credential.helper', 'store --file=/home/mac/secret')
+        self.git('-C', str(self.repo), 'config', 'user.name', 'T')
+        self.git('-C', str(self.repo), 'config', 'user.email', 't@example.invalid')
+        (self.repo / 'protocol').mkdir()
+        (self.repo / 'protocol' / 'transport.ir.json').write_bytes(b'{\n  "a": 1\n}\n')
+        (self.repo / 'src').mkdir()
+        (self.repo / 'src' / 'lib.rs').write_bytes(b'fn main() {}\n')
+        self.git('-C', str(self.repo), 'add', '-A')
+        self.git('-C', str(self.repo), 'commit', '-q', '-m', 'one')
+        (self.repo / '.git' / 'info').mkdir(exist_ok=True)
+        (self.repo / '.git' / 'info' / 'attributes').write_text('* -text\n', encoding='utf-8')
+        (self.repo / '.git' / 'hooks').mkdir(exist_ok=True)
+        (self.repo / '.git' / 'hooks' / 'post-checkout').write_text('#!/bin/sh\nexit 0\n', encoding='utf-8')
+        (self.repo / 'build.rs').write_bytes(b'fn main() {}\n')  # untracked
+
+    def git(self, *args):
+        subprocess.run(['git', *args], check=True, capture_output=True, env=self.mac)
+
+    def archive(self, *args):
+        return subprocess.run(gate.transport_archive_command(*args), cwd=self.repo, capture_output=True, check=True,
+                              env=self.mac).stdout
+
+    def host_with_global(self, text):
+        """The host's environment with a global config of the given text (None: no global config at all)."""
+        if text is None:
+            return {**self.mac, 'GIT_CONFIG_GLOBAL': '/dev/null'}
+        path = self.tmp / 'other-gitconfig'
+        path.write_text(text, encoding='utf-8')
+        return {**self.mac, 'GIT_CONFIG_GLOBAL': str(path)}
+
+    def stage_on_host(self, produced, env=None, capture=None):
+        """Unpacks the archive where the host would and runs the stage script's lines about the transport tree."""
+        target = self.tmp / 'host' / 'ws' / 'gwz-transport'
+        target.mkdir(parents=True)
+        subprocess.run(['tar', '-x', '-C', str(target)], input=produced, check=True, capture_output=True)
+        wanted = f'/e/gwz-tests/{self.LABEL}/ws/gwz-transport'
+        lines = [l.replace(wanted, str(target)) for l in
+                 gate.stage_script(self.LABEL, None, host_checkout=True).splitlines() if '/ws/gwz-transport' in l]
+        self.assertTrue(lines)
+        ran = subprocess.run(['bash', '-c', 'set -euo pipefail\n' + '\n'.join(lines)], check=True, capture_output=True,
+                             env=self.host if env is None else env, text=True)
+        if capture is not None:
+            capture.append(ran.stdout)
+        return target
+
+    def test_the_host_checkout_is_crlf_whatever_the_hosts_own_global_autocrlf_says(self):
+        """Review round 2, P2-3: the dabeest Git has no global `core.autocrlf` (19 receipts recorded `lf`), so the minimal
+        config sets it, as the hosted runner image's system config does (windows-matrix.yml); the host global is unset, `false`
+        or `true` and the tracked text files come out CRLF each time."""
+        produced = self.archive()
+        for name, text in (('unset', None), ('false', '[core]\n\tautocrlf = false\n'), ('input', '[core]\n\tautocrlf = input\n'),
+                           ('true', '[core]\n\tautocrlf = true\n')):
+            with self.subTest(host_global=name):
+                shutil.rmtree(self.tmp / 'host', True)
+                target = self.stage_on_host(produced, self.host_with_global(text))
+                self.assertIn(b'\r\n', (target / 'protocol' / 'transport.ir.json').read_bytes())
+                self.assertIn(b'\r\n', (target / 'src' / 'lib.rs').read_bytes())
+                self.assertNotIn(b'\n', (target / 'src' / 'lib.rs').read_bytes().replace(b'\r\n', b''))
+
+    def test_the_stage_records_the_effective_autocrlf_and_the_file_it_came_from(self):
+        out = []
+        self.stage_on_host(self.archive(), self.host_with_global(None), out)
+        lines = [l for l in out[0].splitlines() if l.startswith('TRANSPORT_AUTOCRLF ')]
+        self.assertEqual(len(lines), 1)
+        origin, _, value = lines[0][len('TRANSPORT_AUTOCRLF '):].partition('\t')
+        self.assertEqual(value, 'true')
+        self.assertTrue(origin.startswith('file:'), origin)
+        self.assertTrue(origin.endswith('.git/config'), origin)  # the repo-local file: git prints the path as it sees it
+
+    def test_the_host_checkout_is_crlf_because_the_macs_config_is_not_shipped(self):
+        target = self.stage_on_host(self.archive())
+        self.assertIn(b'\r\n', (target / 'protocol' / 'transport.ir.json').read_bytes())
+        self.assertIn(b'\r\n', (target / 'src' / 'lib.rs').read_bytes())
+
+    def test_the_host_repo_resolves_head_and_has_only_the_minimal_local_config(self):
+        target = self.stage_on_host(self.archive())
+        head = subprocess.run(['git', '-C', str(self.repo), 'rev-parse', 'HEAD'], capture_output=True, text=True,
+                              check=True, env=self.mac).stdout
+        there = subprocess.run(['git', '-C', str(target), 'rev-parse', 'HEAD'], capture_output=True, text=True,
+                               check=True, env=self.host).stdout
+        self.assertEqual(there, head)
+        config = (target / '.git' / 'config').read_text(encoding='utf-8')
+        self.assertIn('repositoryformatversion = 0', config)
+        self.assertIn('bare = false', config)
+        self.assertIn('autocrlf = true', config)
+        for key in ('eol', 'credential', 'remote', 'safecrlf', 'hooksPath'):
+            self.assertNotIn(key, config)
+
+    def test_the_archive_holds_no_dot_git_config_hooks_logs_or_info(self):
+        names = tarfile.open(fileobj=io.BytesIO(self.archive())).getnames()
+        self.assertIn('.git/HEAD', names)
+        self.assertIn('.git/index', names)
+        self.assertTrue([n for n in names if n.startswith('.git/objects/')])
+        self.assertIn('.git/refs', names)
+        for banned in ('.git/config', '.git/hooks', '.git/logs', '.git/info'):
+            self.assertFalse([n for n in names if n == banned or n.startswith(banned + '/')], banned)
+
+    def test_a_ref_archive_leaves_untracked_files_out_and_a_worktree_archive_has_them(self):
+        self.assertNotIn('build.rs', tarfile.open(fileobj=io.BytesIO(self.archive())).getnames())
+        self.assertIn('build.rs', tarfile.open(fileobj=io.BytesIO(self.archive(True))).getnames())
+        self.assertIn('src/lib.rs', tarfile.open(fileobj=io.BytesIO(self.archive(True))).getnames())
+
+
 LIBTEST_LOG = (
     'running 4 tests\n'
     'test a::fast ... ok\n'
@@ -770,7 +1207,7 @@ class WatchdogAbort(unittest.TestCase):
         self.addCleanup(runner.released.set)
         with tempfile.TemporaryDirectory() as tmp:
             host = watched_host(runner)
-            code = gate.main(['--receipt-dir', tmp, '--label', label, *argv], host=host, core=Path('/nonexistent-core'))
+            code = gate.main(['--receipt-dir', tmp, '--label', label, *argv], host=host, core=STUB_CORE)
             path = Path(tmp) / label / 'receipt.json'
             receipt = json.loads(path.read_text(encoding='utf-8')) if path.exists() else None
             files = {p.name: p.read_text(encoding='utf-8') for p in (Path(tmp) / label).glob('*')} if path.exists() else {}
@@ -908,14 +1345,14 @@ class WatchdogLeavesNormalRunsAlone(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             host = gate.Host(run=runner, clock=Clock())
             code = gate.main(['--receipt-dir', tmp, '--label', 'wd-20261030-a', *argv], host=host,
-                             core=Path('/nonexistent-core'))
+                             core=STUB_CORE)
             return code, json.loads((Path(tmp) / 'wd-20261030-a' / 'receipt.json').read_text(encoding='utf-8'))
 
-    def test_a_passing_run_has_the_same_receipt_keys_and_no_abort_fields(self):
+    def test_a_passing_run_has_the_same_receipt_keys_plus_the_transport_and_no_abort_fields(self):
         code, receipt = self.go(FakeRun(), '--hosted-like')
         self.assertEqual(code, 0)
         self.assertEqual(list(receipt), ['label', 'host_dir', 'source', 'commit', 'cache_from', 'with_tests', 'toolchain',
-                                         'started', 'stage_seconds', 'shapes', 'total_seconds', 'passed'])
+                                         'started', 'stage_seconds', 'shapes', 'total_seconds', 'passed', 'transport'])
         self.assertNotIn('abort', receipt)
         self.assertNotIn('result', receipt)
         self.assertEqual([sorted(s) for s in receipt['shapes'][:2]],

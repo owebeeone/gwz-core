@@ -84,12 +84,13 @@ MIGRATED_GROUPS = (
 NATIVE_CROSSCHECKS = (
     "reverse::rollback::tests::real_git::",
 )
-# The core session's crates. Their own tests and doctests run, and clippy with
-# warnings denied, as the hosted checked-artifact-boundary job runs them for
-# every library, so the lane gate matrix covers them too (step 2.2b review,
-# State S-P3-5). A --test-filter run leaves them out: the filter narrows the
+# The core session's crates (every gwz-session-* package under crates/; the unit test in
+# scripts/checks/test_run_tests_session_crates.py keeps the list equal to them). Their own tests and doctests run,
+# and clippy with warnings denied, as the hosted checked-artifact-boundary job runs them for every library, so the
+# lane gate matrix covers them too (step 2.2b review, State S-P3-5). They run after the core groups whether those
+# passed or not, and their status joins the run's. A --test-filter run leaves them out: the filter narrows the
 # core groups.
-SESSION_CRATES = ("gwz-session-host",)
+SESSION_CRATES = ("gwz-session-channel", "gwz-session-contract", "gwz-session-host")
 
 
 # The characters of exact test names one filtered command carries; a Windows command line holds 32,767.
@@ -523,7 +524,10 @@ def main(argv: list[str] | None = None) -> None:
         real_result = native_crosscheck_result or real_result
     result = filesystem_result or fake_result or real_result
     if options.test_filter is None:
-        result = result or run_session_crates()
+        # Always run: `result or run_session_crates()` would skip the crates once a core group had failed, and the
+        # failing run would hide what they report.
+        session_result = run_session_crates()
+        result = result or session_result
     if options.test_filter is not None and tally.matched == 0:
         # A filter that selects nothing would otherwise pass having run no test.
         if tally.listing_failures:
