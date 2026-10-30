@@ -1,9 +1,9 @@
 {
- "rule": "Shrink-only ratchet for the gwz_transport_candidate clippy debt (operator decision D-U, 2026-10-31). scripts/checks/check_candidate_clippy.py runs clippy over the prepared candidate tree and fails on any (lint, file, enclosing item, unit) key that is not listed or whose count rose; it reports keys that fell so the list can shrink (--update rewrites it, and refuses if anything grew). Never add or raise an entry: fix the diagnostic. Every entry's owner is the plan step that removes it (6.1, GwzTransportReleaseConvergencePlan) and its class says what kind of debt it is (style, dead-code, design, concurrency). No line numbers: the item is read from the source by indentation.",
+ "rule": "Shrink-only ratchet for the gwz_transport_candidate clippy debt (operator decision D-U, 2026-10-31). scripts/checks/check_candidate_clippy.py runs clippy over the prepared candidate tree and fails on any (lint, file, enclosing item, unit) key that is not listed or whose count rose; it reports keys that fell so the list can shrink (--update rewrites it, and refuses if anything grew). Never add or raise an entry: fix the diagnostic. Every entry's owner is the plan step that removes it (6.1, GwzTransportReleaseConvergencePlan) and its class says what kind of debt it is (style, dead-code, design, concurrency). Entries are grouped by shape, one per OS (macos, linux; dead code differs by platform) and the script compares with the running platform's shape unless --shape names another. No line numbers: the item is read from the source by indentation.",
  "command": "RUSTFLAGS='--cfg gwz_transport_candidate' CLIPPY_CONF_DIR=scripts/checks/filesystem_lints cargo +1.95.0 clippy --no-deps --all-targets --all-features --locked --keep-going --message-format=json --manifest-path <prepare.py tree>/Cargo.toml (no -D warnings: a denied lint in the library would stop the units that depend on it)",
  "shapes": {
-  "host": {
-   "description": "The candidate on the build host, all targets. Generated on macOS aarch64, rustc/clippy 1.95.0, gwz-core 25039b78 with gwz-transport 0a25363. cargo's JSON does not say whether a message came from the library or its test build, so both are unit gwz_core:lib and a diagnostic in library code that the test build repeats counts twice (65 library + 124 library test + 1 in the transport_placement_guide target = 190).",
+  "macos": {
+   "description": "The candidate on macOS, all targets. Generated on macOS aarch64, rustc/clippy 1.95.0, gwz-core 25039b78 with gwz-transport 0a25363. cargo's JSON does not say whether a message came from the library or its test build, so both are unit gwz_core:lib and a diagnostic in library code that the test build repeats counts twice (65 library + 124 library test + 1 in the transport_placement_guide target = 190).",
    "entries": [
     {
      "lint": "clippy::await_holding_lock",
@@ -918,6 +918,1046 @@
      "lint": "dead_code",
      "file": "src/git/endpoint/shared_reservation.rs",
      "item": "impl Authority > fn reserve_or_wait",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "dead_code",
+     "file": "src/git/endpoint/ssh_home.rs",
+     "item": "enum Rules",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "dead_code",
+     "file": "src/git/endpoint/ssh_network/kex_retry.rs",
+     "item": "enum KexRetry",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "dead_code",
+     "file": "src/git/endpoint/ssh_worker/endpoint.rs",
+     "item": "impl Endpoint > fn start_endpoint_open",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "dead_code",
+     "file": "src/git/gitbackend/transport_binding.rs",
+     "item": "fn https_policy_for",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "dead_code",
+     "file": "src/transport_host/endpoint_environment.rs",
+     "item": "mod profile > const FRAMING",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "unused_assignments",
+     "file": "src/git/endpoint/setup_retry/limit/governor.rs",
+     "item": "impl Observer for Governor > fn seen",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "unused_imports",
+     "file": "src/git/endpoint/https_auth.rs",
+     "item": "",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "unused_imports",
+     "file": "src/git/endpoint/https_auth/view.rs",
+     "item": "",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "unused_imports",
+     "file": "src/git/endpoint/setup_retry.rs",
+     "item": "",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "unused_imports",
+     "file": "src/git/endpoint/setup_retry/limit.rs",
+     "item": "",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "unused_imports",
+     "file": "src/git/endpoint/ssh_tests/selected_key.rs",
+     "item": "fn native_disconnect_is_io_at_the_setup_boundary_without_retry",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "unused_imports",
+     "file": "src/git/endpoint/ssh_tests/worker.rs",
+     "item": "",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "unused_imports",
+     "file": "src/git/gitbackend/transport_candidate_tests/host_context.rs",
+     "item": "",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "unused_mut",
+     "file": "src/git/endpoint/setup_retry/limit/governor_tests/notes.rs",
+     "item": "fn a_key_going_down_makes_one_note_until_it_is_healthy_again",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "dead-code"
+    }
+   ]
+  },
+  "linux": {
+   "description": "The candidate on Linux, all targets. Derived from the macos shape using the Linux run on WSL (rustc/clippy 1.95.0): dead code differs by platform, so SshdFixture::with_startups (src/git/endpoint/ssh_fixture.rs) is dead on Linux and not on macOS, while https_fixture.rs leaf_digest and the transport_placement_guide fetch_using_client needless_update appear on macOS only. Every other key and count is the same as the macos shape (189 diagnostics = 190 - 2 + 1).",
+   "entries": [
+    {
+     "lint": "clippy::await_holding_lock",
+     "file": "src/git/endpoint/https_auth_integration_tests/policy.rs",
+     "item": "fn receive_pack_public_advertisement_and_post_remain_anonymous",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "concurrency"
+    },
+    {
+     "lint": "clippy::await_holding_lock",
+     "file": "src/git/endpoint/https_worker/setup_slot_tests/post_hold.rs",
+     "item": "fn a_post_429_holds_the_posts_of_the_members_between_discovery_and_their_post",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "concurrency"
+    },
+    {
+     "lint": "clippy::await_holding_lock",
+     "file": "src/git/endpoint/https_worker/setup_slot_tests/post_hold.rs",
+     "item": "fn a_post_prepared_before_the_hold_waits_for_it_before_its_first_byte",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "concurrency"
+    },
+    {
+     "lint": "clippy::await_holding_lock",
+     "file": "src/git/endpoint/https_worker_tests.rs",
+     "item": "fn anonymous_challenge_retries_once_and_route_reuses_its_held_credential",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "concurrency"
+    },
+    {
+     "lint": "clippy::await_holding_lock",
+     "file": "src/git/endpoint/https_worker_tests/proxy.rs",
+     "item": "fn connect_proxy_and_no_proxy_keep_proxy_credentials_out_of_origin_requests",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "concurrency"
+    },
+    {
+     "lint": "clippy::await_holding_lock",
+     "file": "src/transport_host/https_policy_tests/auth_receipts.rs",
+     "item": "fn automatic_discovery_crosses_real_failure_then_gh_open_and_keeps_receipts_private",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "concurrency"
+    },
+    {
+     "lint": "clippy::bool_assert_comparison",
+     "file": "src/git/endpoint/https_auth_integration_tests/challenge.rs",
+     "item": "fn anonymous_challenge_and_gh_retry_keep_the_same_physical_socket",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::bool_assert_comparison",
+     "file": "src/git/endpoint/https_auth_integration_tests/challenge.rs",
+     "item": "fn cancelled_challenge_handoff_discards_its_socket_without_gh_lookup",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::bool_assert_comparison",
+     "file": "src/git/endpoint/https_auth_integration_tests/challenge.rs",
+     "item": "fn challenge_handoff_selects_its_socket_with_another_idle_connection",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::bool_assert_comparison",
+     "file": "src/git/endpoint/https_auth_integration_tests/challenge.rs",
+     "item": "fn unsafe_challenge_connections_are_discarded_before_gh_retry",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::bool_assert_comparison",
+     "file": "src/git/endpoint/https_opening_tests.rs",
+     "item": "fn automatic_gh_open_keeps_the_challenge_socket_across_mux_receipts",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::bool_assert_comparison",
+     "file": "src/git/endpoint/shared_reservation.rs",
+     "item": "mod tests > fn reservation_survives_pending_disposal_until_completion",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::bool_assert_comparison",
+     "file": "src/git/endpoint/stream_io_tests.rs",
+     "item": "mod producer > fn clones_of_a_stream_share_one_gate",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::bool_assert_comparison",
+     "file": "src/transport_host/https_policy_tests/auth_receipts.rs",
+     "item": "fn automatic_discovery_crosses_real_failure_then_gh_open_and_keeps_receipts_private",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::collapsible_if",
+     "file": "src/git/endpoint/https_connection.rs",
+     "item": "impl Config > fn validate",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::collapsible_if",
+     "file": "src/git/endpoint/https_local.rs",
+     "item": "impl OpenRpc for LocalRpc > fn cancel",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::collapsible_if",
+     "file": "src/git/endpoint/https_worker/serve.rs",
+     "item": "impl Prepared > fn reject_credential",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::collapsible_if",
+     "file": "src/git/endpoint/placement_endpoint/cancel.rs",
+     "item": "impl PlacementEndpoint > fn shutdown",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::collapsible_if",
+     "file": "src/git/endpoint/placement_endpoint/completion.rs",
+     "item": "impl PlacementEndpoint > fn finish_checks",
+     "unit": "gwz_core:lib",
+     "count": 4,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::collapsible_if",
+     "file": "src/git/endpoint/placement_endpoint/outbound.rs",
+     "item": "impl PlacementEndpoint > fn take_outbound",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::collapsible_if",
+     "file": "src/git/endpoint/ssh_channel.rs",
+     "item": "impl SshChannel > fn poll_dispose",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::collapsible_if",
+     "file": "src/git/endpoint/ssh_pump.rs",
+     "item": "impl<C: ChannelIo> SshPump<C> > fn poll_next_message",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::collapsible_if",
+     "file": "src/git/endpoint/ssh_tests/pooled.rs",
+     "item": "impl Drop for Harness > fn drop",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::collapsible_if",
+     "file": "src/git/endpoint/ssh_worker.rs",
+     "item": "fn transfer",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::collapsible_if",
+     "file": "src/git/gitbackend/transport_binding.rs",
+     "item": "impl OpenRpc for HostHttpsRoute > fn open",
+     "unit": "gwz_core:lib",
+     "count": 4,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::collapsible_if",
+     "file": "src/transport_host/https_endpoint.rs",
+     "item": "impl HttpsEndpoint > fn accept",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::collapsible_if",
+     "file": "src/transport_host/https_endpoint.rs",
+     "item": "impl HttpsEndpoint > fn before_handoff",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::collapsible_if",
+     "file": "src/transport_host/https_endpoint.rs",
+     "item": "impl HttpsEndpoint > fn handed_off",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::collapsible_if",
+     "file": "src/transport_host/https_endpoint/poll.rs",
+     "item": "impl HttpsEndpoint > fn step",
+     "unit": "gwz_core:lib",
+     "count": 10,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::collapsible_if",
+     "file": "src/transport_host/https_endpoint/poll.rs",
+     "item": "impl HttpsEndpoint > fn take_outbound",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::collapsible_if",
+     "file": "src/transport_host/https_tests.rs",
+     "item": "fn git_http_backend",
+     "unit": "gwz_core:lib",
+     "count": 3,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::collapsible_if",
+     "file": "src/transport_host/message_embedding_tests.rs",
+     "item": "fn python_rejects_malformed_present_attachment_instead_of_dispatching_it",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::collapsible_if",
+     "file": "src/transport_host/request.rs",
+     "item": "impl RequestContext > fn open_https_recording_with_allocation",
+     "unit": "gwz_core:lib",
+     "count": 4,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::collapsible_if",
+     "file": "src/transport_host/session/driver/pump.rs",
+     "item": "impl Session > fn drive",
+     "unit": "gwz_core:lib",
+     "count": 8,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::err_expect",
+     "file": "src/git/endpoint/https_worker/native/tests/closure.rs",
+     "item": "fn d19_state_p2_2_a_helper_outlasting_its_allowance_fails_timeout_with_the_m4_report",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::err_expect",
+     "file": "src/git/endpoint/https_worker/native/tests/precedence.rs",
+     "item": "fn a_challenged_post_is_refused_and_its_body_is_sent_once",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::err_expect",
+     "file": "src/git/endpoint/https_worker/native/tests/reconnect.rs",
+     "item": "fn d19_code_p3_4_a_re_lease_whose_connect_fails_is_the_opens_setup_failure",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::err_expect",
+     "file": "src/git/endpoint/https_worker/native/tests/reconnect.rs",
+     "item": "fn d19_state_p2_3_a_close_in_the_middle_of_an_ntlm_exchange_still_ends_it",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::err_expect",
+     "file": "src/transport_host/host_key_tests.rs",
+     "item": "fn clone_error",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::field_reassign_with_default",
+     "file": "src/git/endpoint/https_auth_integration_tests/challenge.rs",
+     "item": "fn delayed_challenge_handoff_discards_the_reserved_socket",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::field_reassign_with_default",
+     "file": "src/git/endpoint/https_budget_tests.rs",
+     "item": "fn a_stale_supervisor_tick_never_expires_a_fresh_one_millisecond_allowance",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::field_reassign_with_default",
+     "file": "src/git/endpoint/https_budget_tests.rs",
+     "item": "fn delayed_helper_is_charged_to_interaction_not_allocation",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::field_reassign_with_default",
+     "file": "src/git/endpoint/https_budget_tests.rs",
+     "item": "fn overlapping_https_requests_on_one_session_are_each_held_to_their_own_limit",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::field_reassign_with_default",
+     "file": "src/git/endpoint/https_budget_tests.rs",
+     "item": "fn physical_capacity_wait_uses_allocation_deadline",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::field_reassign_with_default",
+     "file": "src/transport_host/cleanup_tests.rs",
+     "item": "fn shutdown_reports_blocked_physical_disposal_then_eventual_zero",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::field_reassign_with_default",
+     "file": "src/transport_host/https_cancel_mux_tests.rs",
+     "item": "fn native_publication_case",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::field_reassign_with_default",
+     "file": "src/transport_host/https_cancel_mux_tests.rs",
+     "item": "fn session_publication_case",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::field_reassign_with_default",
+     "file": "src/transport_host/https_endpoint/stale_action_tests.rs",
+     "item": "impl Fixture > fn start",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::io_other_error",
+     "file": "src/git/endpoint/https_remote_tests.rs",
+     "item": "fn open_failure",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::large_enum_variant",
+     "file": "src/git/endpoint/https_opening.rs",
+     "item": "enum Outcome",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::large_enum_variant",
+     "file": "src/git/endpoint/ssh_setup.rs",
+     "item": "enum State",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::manual_inspect",
+     "file": "src/git/endpoint/ssh_local.rs",
+     "item": "fn native_connector",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::manual_inspect",
+     "file": "src/git/gitbackend/transport_binding.rs",
+     "item": "impl OpenRpc for HostHttpsRoute > fn open",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::manual_is_multiple_of",
+     "file": "src/git/endpoint/https_auth_integration_tests/route.rs",
+     "item": "fn concurrent_same_operation_conflicting_redirects_fail_protocol",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::match_like_matches_macro",
+     "file": "src/git/endpoint/https_auth/view/helpers.rs",
+     "item": "fn normal_host",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::needless_question_mark",
+     "file": "src/git/endpoint/ssh_tests/selected_pool.rs",
+     "item": "fn stalled_reader",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::needless_update",
+     "file": "src/transport_host/command_tests.rs",
+     "item": "fn all_workspace_command_funnels_keep_one_endpoint_and_fresh_scopes",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::needless_update",
+     "file": "src/transport_host/https_tests.rs",
+     "item": "fn local_https_workspace_commands_keep_the_same_host_scope",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::needless_update",
+     "file": "src/transport_host/qualification_tests.rs",
+     "item": "fn public_ssh_constructor_retains_its_engine_and_defaults",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::needless_update",
+     "file": "src/transport_host/qualification_tests.rs",
+     "item": "fn ssh_and_https_runtime_offers_both_schemes_and_binds_what_it_offers",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::nonminimal_bool",
+     "file": "src/git/endpoint/placement_endpoint/limit_tests.rs",
+     "item": "fn p2_7_a_request_cancelled_with_an_open_in_flight_leaves_no_machine_behind",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::ptr_arg",
+     "file": "src/transport_host/endpoint_environment_tests.rs",
+     "item": "fn check_configured_authentication",
+     "unit": "gwz_core:lib",
+     "count": 3,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::ptr_arg",
+     "file": "src/transport_host/endpoint_environment_tests.rs",
+     "item": "fn expected_agent",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::redundant_closure",
+     "file": "src/transport_host/request/https_failure.rs",
+     "item": "mod tests > fn one_refusal_among_resets_says_the_last_attempt_was_refused_and_not_that_the_host_kept_refusing",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::result_large_err",
+     "file": "src/git/endpoint/ssh_pump.rs",
+     "item": "impl<C: ChannelIo> SshPump<C> > fn into_owner",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::too_many_arguments",
+     "file": "src/git/endpoint/https_worker/native/exchange.rs",
+     "item": "impl Client > fn answer_basic",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::too_many_arguments",
+     "file": "src/git/endpoint/ssh_shutdown.rs",
+     "item": "fn manage",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::too_many_arguments",
+     "file": "src/git/endpoint/ssh_worker/runner.rs",
+     "item": "fn run",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::too_many_arguments",
+     "file": "src/transport_host/request.rs",
+     "item": "impl RequestContext > fn open_https_recording_for_test",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::too_many_arguments",
+     "file": "src/transport_host/request.rs",
+     "item": "impl RequestContext > fn open_https_recording_with_allocation",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::too_many_arguments",
+     "file": "src/transport_host/session/driver.rs",
+     "item": "fn open_failure_io",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::too_many_arguments",
+     "file": "src/transport_host/session/driver/opening.rs",
+     "item": "impl Session > fn open",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::too_many_arguments",
+     "file": "src/transport_host/session/driver/opening.rs",
+     "item": "impl Session > fn open_https",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::too_many_arguments",
+     "file": "src/transport_host/session/driver/opening.rs",
+     "item": "impl Session > fn open_stream",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::type_complexity",
+     "file": "src/git/endpoint/https_auth/secret.rs",
+     "item": "struct SecretHeader",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::type_complexity",
+     "file": "src/git/endpoint/https_worker/native.rs",
+     "item": "mod audit",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::type_complexity",
+     "file": "src/git/endpoint/https_worker/native/connection.rs",
+     "item": "fn authenticate_connection",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::type_complexity",
+     "file": "src/git/endpoint/setup_retry/limit/note_sink.rs",
+     "item": "struct NoteSink",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::type_complexity",
+     "file": "src/git/gitbackend/transport_binding.rs",
+     "item": "struct HostHttpsRoute",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::type_complexity",
+     "file": "src/git/gitbackend/transport_binding.rs",
+     "item": "struct HostRoute",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::type_complexity",
+     "file": "src/transport_host/endpoint_environment_tests/profile_partition.rs",
+     "item": "fn through_a_connection_host_a_changed_profile_or_context_reuses_nothing_and_reuse_then_resumes",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::type_complexity",
+     "file": "src/transport_host/producer_busy_tests.rs",
+     "item": "impl Rig > fn open_observing",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::type_complexity",
+     "file": "src/transport_host/request.rs",
+     "item": "impl RequestContext > fn open_https_recording",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::type_complexity",
+     "file": "src/transport_host/request.rs",
+     "item": "impl RequestContext > fn open_https_recording_for_test",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::type_complexity",
+     "file": "src/transport_host/request.rs",
+     "item": "impl RequestContext > fn open_https_recording_with_allocation",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::type_complexity",
+     "file": "src/transport_host/session.rs",
+     "item": "struct Entry",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::type_complexity",
+     "file": "src/transport_host/session/driver/opening.rs",
+     "item": "impl Session > fn open",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::type_complexity",
+     "file": "src/transport_host/session/driver/opening.rs",
+     "item": "impl Session > fn open_https",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::type_complexity",
+     "file": "src/transport_host/session/driver/opening.rs",
+     "item": "impl Session > fn open_stream",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "design"
+    },
+    {
+     "lint": "clippy::unneeded_wildcard_pattern",
+     "file": "src/transport_host/cli_driver_tests.rs",
+     "item": "fn cli_open_rechecks_a_selected_file_after_successful_preflight",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::unneeded_wildcard_pattern",
+     "file": "src/transport_host/fault_tests.rs",
+     "item": "fn cancellation_wakes_open_and_late_terminals_cannot_close_sibling_binding",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::unneeded_wildcard_pattern",
+     "file": "src/transport_host/fault_tests.rs",
+     "item": "fn carrier_drop_wakes_blocking_open",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "clippy::zombie_processes",
+     "file": "src/git/endpoint/https_worker/native/tests.rs",
+     "item": "fn kill_tree_ends_the_tree_and_writes_nothing_to_the_test_runs_output",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
+     "lint": "dead_code",
+     "file": "src/git/endpoint/agent_auth.rs",
+     "item": "fn authenticate_reporting",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "dead_code",
+     "file": "src/git/endpoint/https_auth/view/paths.rs",
+     "item": "fn value_bytes",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "dead_code",
+     "file": "src/git/endpoint/https_auth/view/paths.rs",
+     "item": "mod sys > fn value_bytes",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "dead_code",
+     "file": "src/git/endpoint/https_fixture/tests.rs",
+     "item": "enum Failed",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "dead_code",
+     "file": "src/git/endpoint/https_worker/prepare.rs",
+     "item": "impl Client > fn prepare_attempt",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "dead_code",
+     "file": "src/git/endpoint/placement_endpoint.rs",
+     "item": "struct OpenJob",
+     "unit": "gwz_core:lib",
+     "count": 2,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "dead_code",
+     "file": "src/git/endpoint/shared_reservation.rs",
+     "item": "impl Authority > fn reserve_or_wait",
+     "unit": "gwz_core:lib",
+     "count": 1,
+     "owner": "6.1",
+     "class": "dead-code"
+    },
+    {
+     "lint": "dead_code",
+     "file": "src/git/endpoint/ssh_fixture.rs",
+     "item": "impl SshdFixture > fn with_startups",
      "unit": "gwz_core:lib",
      "count": 1,
      "owner": "6.1",

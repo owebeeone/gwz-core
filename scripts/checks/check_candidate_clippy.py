@@ -25,9 +25,11 @@ scripts/checks/candidate_clippy_allowlist.json:
 - a key whose count fell, or that disappeared, is reported and passes, so the list can shrink (`--update` rewrites the
   list with the lower counts and refuses to write if anything grew).
 
-Every entry names its owner (`6.1`, the step that removes it) and a reason class. Entries are grouped by shape: `host`
-is the candidate on the build host (Linux and macOS agree unless a diagnostic sits behind a `cfg(target_os)`); a
-`--target` run uses the shape named for the target. `--baseline` prints a fresh list for a shape.
+Every entry names its owner (`6.1`, the step that removes it) and a reason class. Entries are grouped by shape, one
+per OS: `macos`, `linux` (and `windows` when it is generated). Dead code differs by platform (a helper used on one OS
+only, a `cfg(target_os)` branch), so a list made on one OS fails on another. The default shape is the running
+platform's (`sys.platform`: darwin is `macos`, linux is `linux`, win32 is `windows`); `--shape` overrides it, and a
+`--target` run names the shape for the target. `--baseline` prints a fresh list for a shape.
 
 `--json FILE` (or `-`) reads the JSON lines of an earlier `cargo clippy --message-format=json` run instead of running
 it, which is how the unit tests and a saved log exercise the comparison.
@@ -48,7 +50,8 @@ DEFAULT_CONF_DIR = HERE / 'filesystem_lints'
 DEFAULT_MANIFEST = ROOT / 'Cargo.toml'
 CANDIDATE_CFG = '--cfg gwz_transport_candidate'
 OWNER = '6.1'
-HOST_SHAPE = 'host'
+# sys.platform -> allowlist shape. Dead code differs by platform, so each OS has its own shape.
+SHAPE_BY_PLATFORM = (('darwin', 'macos'), ('linux', 'linux'), ('win32', 'windows'))
 LEVELS = ('error', 'warning')
 
 # The reason classes: what kind of debt an entry is. Chosen from the lint at baseline time only; the gate never
@@ -71,6 +74,14 @@ ITEM = re.compile(
 # line, the closing parenthesis of a long signature): it bounds nothing.
 CONTINUATION = re.compile(r'^[ \t]*(?:\{|where\b|\)|->)')
 NAME = re.compile(r'[ \t]*(?:mut[ \t]+)?(?P<name>r#[A-Za-z_]\w*|[A-Za-z_]\w*)')
+
+
+def platform_shape():
+    """The shape for the running platform (by sys.platform); the platform name itself when it has none listed."""
+    for prefix, shape in SHAPE_BY_PLATFORM:
+        if sys.platform.startswith(prefix):
+            return shape
+    return sys.platform
 
 
 def indent_of(line):
@@ -257,8 +268,8 @@ def load_allowlist(path):
         return None, [f'{path}: cannot be read: {error}']
     errors = []
     shapes = data.get('shapes')
-    if not isinstance(shapes, dict) or HOST_SHAPE not in shapes:
-        return None, [f"{path}: needs a 'shapes' object with a '{HOST_SHAPE}' shape"]
+    if not isinstance(shapes, dict):
+        return None, [f"{path}: needs a 'shapes' object (one shape per OS: macos, linux)"]
     for shape, body in shapes.items():
         seen = set()
         for number, entry in enumerate(body.get('entries', [])):
@@ -356,7 +367,9 @@ def run_clippy(options):
 def parse_arguments(argv):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('--allowlist', type=Path, default=DEFAULT_ALLOWLIST)
-    parser.add_argument('--shape', default=HOST_SHAPE, help='the allowlist shape to compare with (default: host)')
+    parser.add_argument('--shape', default=None,
+                        help="the allowlist shape to compare with (default: the running platform's: macos on "
+                             "darwin, linux on linux, windows on win32)")
     parser.add_argument('--json', metavar='FILE', help="read cargo's JSON lines from FILE ('-' for stdin); run nothing")
     parser.add_argument('--manifest-path', type=Path, default=DEFAULT_MANIFEST,
                         help='the prepared candidate tree\'s Cargo.toml (tests/transport_backend/prepare.py)')
@@ -375,6 +388,7 @@ def parse_arguments(argv):
                       help="rewrite the shape's entries with the lower counts; refuses if anything grew")
     options = parser.parse_args(argv)
     manifest_dir = options.manifest_path.resolve().parent
+    options.shape = options.shape or platform_shape()
     options.source_root = options.source_root or manifest_dir
     options.cwd = options.cwd or manifest_dir
     return options
@@ -411,8 +425,9 @@ def main(argv=None):
         return 1
     allowed = allowed_counts(data, options.shape)
     if allowed is None:
-        print(f"{options.allowlist}: no shape {options.shape!r}; run with --baseline to generate its entries",
-              file=sys.stderr)
+        have = ', '.join(sorted(data['shapes'])) or 'none'
+        print(f"{options.allowlist}: no shape {options.shape!r} (it has: {have}); run with --baseline to generate "
+              "its entries, or name another with --shape", file=sys.stderr)
         return 1
     grew, new, shrank, gone = compare(counts, allowed)
     by_lint, by_unit = summarise(counts)

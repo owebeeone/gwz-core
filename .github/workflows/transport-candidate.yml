@@ -196,7 +196,8 @@ jobs:
         # unit of the prepared tree with --message-format=json and --keep-going
         # (no -D warnings, so the integration targets are reached), reduces each
         # diagnostic to (lint, file, enclosing item, unit) and compares the
-        # counts with scripts/checks/candidate_clippy_allowlist.json: a new key
+        # counts with the linux shape of scripts/checks/candidate_clippy_allowlist.json
+        # (dead code differs by OS, so each OS has its own shape): a new key
         # or a count that rose fails, a count that fell is reported so the list
         # shrinks. It sets RUSTFLAGS and CLIPPY_CONF_DIR itself and builds into
         # the suites' cached candidate-target, so only the check-mode artifacts
@@ -207,6 +208,7 @@ jobs:
         run: |
           python -m unittest scripts/checks/test_check_candidate_clippy.py
           python scripts/checks/check_candidate_clippy.py \
+            --shape linux \
             --manifest-path "$RUNNER_TEMP/candidate/Cargo.toml" \
             --target-dir "$GITHUB_WORKSPACE/candidate-target"
       - name: Summarize failures

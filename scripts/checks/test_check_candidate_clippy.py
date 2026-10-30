@@ -215,7 +215,7 @@ class Comparison(unittest.TestCase):
 
 
 class Allowlist(unittest.TestCase):
-    def write(self, root, entries, shape='host'):
+    def write(self, root, entries, shape='macos'):
         path = Path(root) / 'allow.json'
         path.write_text(json.dumps({'shapes': {shape: {'entries': entries}}}), encoding='utf-8')
         return path
@@ -230,7 +230,7 @@ class Allowlist(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             data, errors = gate.load_allowlist(self.write(root, [self.entry(), self.entry(item='fn b')]))
         self.assertEqual(errors, [])
-        self.assertEqual(gate.allowed_counts(data, 'host'),
+        self.assertEqual(gate.allowed_counts(data, 'macos'),
                          {('clippy::a', 'src/a.rs', 'fn a', 'gwz_core:lib'): 1,
                           ('clippy::a', 'src/a.rs', 'fn b', 'gwz_core:lib'): 1})
 
@@ -247,10 +247,26 @@ class Allowlist(unittest.TestCase):
         self.assertIsNone(data)
         self.assertIn('duplicate', errors[0])
 
-    def test_a_list_without_the_host_shape_or_unreadable_is_refused(self):
+    def test_a_list_without_shapes_or_unreadable_is_refused(self):
         with tempfile.TemporaryDirectory() as root:
-            self.assertTrue(gate.load_allowlist(self.write(root, [], shape='windows'))[1])
+            bare = Path(root) / 'bare.json'
+            bare.write_text(json.dumps({'rule': 'x'}), encoding='utf-8')
+            self.assertIn("'shapes' object", gate.load_allowlist(bare)[1][0])
             self.assertTrue(gate.load_allowlist(Path(root) / 'missing.json')[1])
+
+    def test_the_checked_in_list_has_a_shape_per_os(self):
+        data, errors = gate.load_allowlist(gate.DEFAULT_ALLOWLIST)
+        self.assertEqual(errors, [])
+        self.assertTrue({'macos', 'linux'} <= set(data['shapes']))
+        self.assertNotIn('host', data['shapes'])
+
+    def test_the_default_shape_follows_the_platform(self):
+        for platform, shape in (('darwin', 'macos'), ('linux', 'linux'), ('win32', 'windows')):
+            with self.subTest(platform=platform), mock.patch.object(gate.sys, 'platform', platform):
+                self.assertEqual(gate.platform_shape(), shape)
+                self.assertEqual(gate.parse_arguments([]).shape, shape)
+        with mock.patch.object(gate.sys, 'platform', 'linux'):
+            self.assertEqual(gate.parse_arguments(['--shape', 'macos']).shape, 'macos')
 
     def test_the_checked_in_list_is_well_formed_and_owned_by_step_6_1(self):
         data, errors = gate.load_allowlist(gate.DEFAULT_ALLOWLIST)
@@ -281,8 +297,11 @@ class Gate(unittest.TestCase):
         self.allow = self.root / 'allow.json'
         self.json = self.root / 'clippy.json'
 
-    def run_gate(self, lines, entries, *extra):
-        self.allow.write_text(json.dumps({'shapes': {'host': {'entries': entries}}}), encoding='utf-8')
+    def run_gate(self, lines, entries, *extra, platform_default=False):
+        # The list is written under 'macos'; pass that shape unless the test names one or wants the platform's.
+        if '--shape' not in extra and not platform_default:
+            extra = ('--shape', 'macos', *extra)
+        self.allow.write_text(json.dumps({'shapes': {'macos': {'entries': entries}}}), encoding='utf-8')
         self.json.write_text('\n'.join(lines), encoding='utf-8')
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -331,12 +350,43 @@ class Gate(unittest.TestCase):
                    self.entry('dead_code', 'unused: u8', 1, 'struct Rig')]
         code, _, _ = self.run_gate(self.lines('clippy::ptr_arg', 'let x = 1'), entries, '--update')
         self.assertEqual(code, 0)
-        rewritten = json.loads(self.allow.read_text(encoding='utf-8'))['shapes']['host']['entries']
+        rewritten = json.loads(self.allow.read_text(encoding='utf-8'))['shapes']['macos']['entries']
         self.assertEqual([(e['lint'], e['count'], e['owner']) for e in rewritten], [('clippy::ptr_arg', 1, '6.1')])
         code, _, err = self.run_gate(self.lines('clippy::ptr_arg', 'let x = 1', 9), rewritten, '--update')
         self.assertEqual(code, 1)
         self.assertIn('GREW', err)
-        self.assertEqual(json.loads(self.allow.read_text(encoding='utf-8'))['shapes']['host']['entries'], rewritten)
+        self.assertEqual(json.loads(self.allow.read_text(encoding='utf-8'))['shapes']['macos']['entries'], rewritten)
+
+    def test_the_default_shape_selects_the_running_platforms_entries(self):
+        lines = self.lines('clippy::ptr_arg', 'let x = 1', 2)
+        entries = [self.entry('clippy::ptr_arg', 'let x = 1', 2, 'impl Rig > fn first')]
+        for platform, shape in (('darwin', 'macos'), ('linux', 'linux')):
+            other = 'linux' if shape == 'macos' else 'macos'
+            self.allow.write_text(json.dumps({'shapes': {shape: {'entries': entries}, other: {'entries': []}}}),
+                                  encoding='utf-8')
+            self.json.write_text('\n'.join(lines), encoding='utf-8')
+            with self.subTest(platform=platform), mock.patch.object(gate.sys, 'platform', platform):
+                out, err = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    code = gate.main(['--allowlist', str(self.allow), '--json', str(self.json),
+                                      '--source-root', str(self.root)])
+                self.assertEqual((code, err.getvalue()), (0, ''))
+                self.assertIn(f'(shape {shape})', out.getvalue())
+
+    def test_a_missing_shape_is_refused_and_named(self):
+        # run_gate writes only a macos shape.
+        with mock.patch.object(gate.sys, 'platform', 'linux'):
+            code, out, err = self.run_gate(self.lines('clippy::ptr_arg', 'let x = 1'),
+                                           [self.entry('clippy::ptr_arg', 'let x = 1', 1, 'impl Rig > fn first')],
+                                           platform_default=True)
+        self.assertEqual((code, out), (1, ''))
+        self.assertIn("no shape 'linux'", err)
+        self.assertIn('macos', err)
+        code, _, err = self.run_gate(self.lines('clippy::ptr_arg', 'let x = 1'),
+                                     [self.entry('clippy::ptr_arg', 'let x = 1', 1, 'impl Rig > fn first')],
+                                     '--shape', 'windows')
+        self.assertEqual(code, 1)
+        self.assertIn("no shape 'windows'", err)
 
     def test_baseline_prints_entries_with_owner_and_class(self):
         code, out, _ = self.run_gate(self.lines('dead_code', 'unused: u8', 2), [], '--baseline')
