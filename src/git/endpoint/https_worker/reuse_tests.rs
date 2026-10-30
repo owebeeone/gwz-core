@@ -1,13 +1,15 @@
 //! Step 1.6's HTTPS rows (plan §4; contract §7.2): a connection a helper's token or the logon session authenticated is
 //! scoped to that authentication, and is never leased to another operation binding. Two bindings here are two inputs
 //! of one endpoint with different sessions; they carry the same operation name, which is the only way two bindings
-//! reach one route today (the finding this step reports: routes are keyed by operation name, not by binding).
+//! reach one route of this worker (see the first row).
 use super::*;
 use crate::git::endpoint::https_fixture::{self as fixture, Server, input, response};
 use hyper::header::{AUTHORIZATION, WWW_AUTHENTICATE};
+use sha2::Digest;
 
-/// What the server saw of one request: whether it carried a credential, and on which connection.
-type Seen = Arc<Mutex<Vec<(Option<String>, usize)>>>;
+/// What the server saw of one request: the SHA-256 of its Authorization header (none when it carried no credential, so
+/// a failure message shows no header), and the connection it came on.
+type Seen = Arc<Mutex<Vec<(Option<[u8; 32]>, usize)>>>;
 
 async fn finish(prepared: Prepared) {
     let (stream, task) = fixture::attach(prepared);
@@ -23,20 +25,17 @@ fn recording(seen: &Seen, challenge: Option<&'static str>) -> fixture::Handler {
     Arc::new(move |request| {
         let records = records.clone();
         Box::pin(async move {
-            let authorization = request
+            let authorization: Option<[u8; 32]> = request
                 .headers()
                 .get(AUTHORIZATION)
-                .map(|value| value.to_str().unwrap().to_owned());
+                .map(|value| sha2::Sha256::digest(value.as_bytes()).into());
             let connection = request
                 .extensions()
                 .get::<fixture::ConnectionId>()
                 .unwrap()
                 .0;
             let post = request.method() == hyper::Method::POST;
-            records
-                .lock()
-                .unwrap()
-                .push((authorization.clone(), connection));
+            records.lock().unwrap().push((authorization, connection));
             let service = if post {
                 GitService::UploadPackExchange
             } else {
@@ -75,9 +74,9 @@ fn token_git(directory: &std::path::Path, token: &std::path::Path) -> https_auth
 }
 
 /// Binding A's helper token authenticates a connection; the token then expires (the helper now answers another) and
-/// binding B, of the same operation name, sends its request. What the server saw of each: its Authorization value and
+/// binding B, of the same operation name, sends its request. What the server saw of each: the digest of its Authorization header and
 /// its connection.
-async fn helper_token_bindings() -> ((Option<String>, usize), (Option<String>, usize)) {
+async fn helper_token_bindings() -> ((Option<[u8; 32]>, usize), (Option<[u8; 32]>, usize)) {
     let seen: Seen = Arc::default();
     let server = Server::start(recording(&seen, None)).await;
     let dir = tempfile::tempdir().unwrap();
@@ -126,8 +125,15 @@ async fn helper_token_bindings() -> ((Option<String>, usize), (Option<String>, u
     )
 }
 
-/// Red row of step 1.6, the connection leg: binding B's request must not go on binding A's token-authenticated
-/// connection. The route leg (which token B sends) is the known defect the second assertion names.
+/// Step 1.6's connection leg: binding B's request must not go on binding A's token-authenticated connection.
+///
+/// The route leg is a characterization of this worker, not a defect of the connection host. The worker's routes (and the
+/// helper answers they cache) are per operation, because a transport request is one operation with one binding and the
+/// runtime's one helper (`Client::auth`); the `session` of an input names one open, not a binding. Two bindings under
+/// one operation name exist only in this rig. A binding sending its own operation's helper answer is the connection
+/// host's rule, whose adapter takes each exchange's helper from that operation's `AuthContext`: the rows are
+/// `connection_host::https_auth_tests::a_changed_gh_token_...` and `a_changed_git_config_global_helper_...`
+/// (step 1.3c/C2(b)).
 #[tokio::test]
 async fn p1_6_an_expired_helper_tokens_connection_is_not_reused_by_another_binding() {
     let ((a_auth, a_connection), (b_auth, b_connection)) = helper_token_bindings().await;
@@ -136,20 +142,11 @@ async fn p1_6_an_expired_helper_tokens_connection_is_not_reused_by_another_bindi
         a_connection, b_connection,
         "binding B leased binding A's token-authenticated connection"
     );
-    assert_eq!(
-        a_auth, b_auth,
-        "OPEN: routes keyed by operation name; owner 1.3c/C2(b). Binding B sends binding A's cached helper answer; \
-         when routes are per binding this assertion fails and the ignored row below becomes the row"
+    assert!(
+        a_auth == b_auth,
+        "this worker's routes stopped being per operation: the connection host's rows now hold the per-binding rule, \
+         so retire this characterization with the worker's route"
     );
-}
-
-/// The desired route leg, for the step that keys routes per binding (1.3c/C2(b)): binding B's request carries the
-/// token B's own helper answered.
-#[tokio::test]
-#[ignore = "OPEN: routes keyed by operation name; owner 1.3c/C2(b)"]
-async fn p1_6_open_another_binding_sends_its_own_helper_token() {
-    let ((a_auth, _), (b_auth, _)) = helper_token_bindings().await;
-    assert_ne!(a_auth, b_auth);
 }
 
 /// Red row of step 1.6 for the logon session (amendment 2 §3.18): binding A authenticated a connection with the logon

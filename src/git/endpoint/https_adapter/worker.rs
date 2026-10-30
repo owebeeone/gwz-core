@@ -5,7 +5,7 @@
 //! told to dispose (or its adapter is dropped), every connection is disposed and every helper process and native
 //! conversation it started is confirmed gone.
 use super::{
-    Command, HttpsInputs, Scopes,
+    Binding, Command, HttpsInputs, Scopes,
     exchange::{self, Common, Ended, Work},
     failure,
     pipe::Pipe,
@@ -114,7 +114,6 @@ pub(super) fn run(
     runtime.block_on(async move {
         let HttpsInputs {
             tls,
-            auth,
             helper_slots,
             native,
             authority,
@@ -132,7 +131,6 @@ pub(super) fn run(
             epoch,
             common: Arc::new(Common {
                 settings,
-                auth,
                 owner: AuthOwner::new(helper_slots),
                 helpers: Arc::new(Semaphore::new(HELPER_LOOKUPS)),
                 native,
@@ -239,7 +237,7 @@ impl Worker {
             }),
         }
     }
-    fn start(&mut self, connection: ConnectionId, work: Work) {
+    fn start(&mut self, connection: ConnectionId, mut work: Work) {
         let Some(entry) = self.entries.get_mut(&connection) else {
             return work.fail(ErrorCode::Io);
         };
@@ -257,6 +255,10 @@ impl Worker {
             entry.phase = Phase::Broken;
             return;
         };
+        // The exchange is given the authentication that last bound this connection, and the repository it was for.
+        let scope = self.scopes.of(connection);
+        work.prior = scope.map_or(Binding::Anonymous, |scope| scope.binding);
+        work.authenticated = scope.and_then(|scope| scope.repository);
         // Leased: its idle watch stands down until a reusable end makes it idle again.
         resource
             .reusable
@@ -398,8 +400,9 @@ fn step(
                 Some(Ended {
                     disposition,
                     binding,
+                    repository,
                 }) => {
-                    scopes.bound(id, binding, *exchanges);
+                    scopes.bound(id, binding, *exchanges, repository);
                     disposition == Disposition::Reusable
                 }
                 // The task panicked or was cancelled: nothing about the connection is proven.

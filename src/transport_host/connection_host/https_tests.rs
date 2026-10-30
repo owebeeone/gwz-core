@@ -20,6 +20,10 @@ use crate::{
 };
 use bytes::Bytes;
 use gwz_connection::{
+    AuthContext, AuthScope, EndpointProfile, EndpointRoute, Operation, OperationPolicy,
+    PreparedOperation,
+};
+use gwz_connection::{
     EndpointAdapter, EndpointFactory, EndpointSpec, Exchange, ExchangeSpec, FactoryEnv,
     FactoryError, GitService, HostHandle, HostPhase, ProcessSafety, SafetyHold, SafetyState,
     SafetyUnavailable, SharedProcessSafety, StreamError,
@@ -50,14 +54,9 @@ fn settings() -> HttpsSettings {
         cleanup_timeout_ms: 2_000,
     }
 }
-fn inputs(
-    server: &Server,
-    auth: Option<https_auth::Config>,
-    native: Option<NativeCaller>,
-) -> HttpsInputs {
+fn inputs(server: &Server, native: Option<NativeCaller>) -> HttpsInputs {
     HttpsInputs {
         tls: server.config(),
-        auth,
         helper_slots: HelperSlots::new(),
         native,
         authority: Authority::new(256, 256),
@@ -138,6 +137,8 @@ pub(super) struct Case {
     scopes: Arc<Mutex<Vec<Scopes>>>,
     host: Mutex<ConnectionHost>,
     pub(super) handle: HostHandle,
+    /// The helper `Case::operation` gives its operations (their own, in their contexts: the instance holds none).
+    helper: Option<https_auth::Config>,
 }
 impl Case {
     fn new(handler: impl FnOnce(&Seen) -> Handler) -> Self {
@@ -161,12 +162,12 @@ impl Case {
         let server = runtime.block_on(Server::start_behaving(handler(&seen), behaviour));
         let proxy = CutProxy::start(port_of(&server));
         let directory = tempfile::tempdir().unwrap();
-        let (auth, native) = routes(directory.path());
+        let (helper, native) = routes(directory.path());
         // The helper fixture's files stay for the case's life.
         std::mem::forget(directory);
         let scopes = Arc::default();
         let factory = Factory {
-            inputs: inputs(&server, auth, native),
+            inputs: inputs(&server, native),
             scopes: Arc::clone(&scopes),
         };
         let safety = safety
@@ -181,10 +182,21 @@ impl Case {
             scopes,
             host: Mutex::new(host),
             handle,
+            helper,
         }
+    }
+    /// An operation whose context holds the case's helper (or none: a context of another provider).
+    pub(super) fn operation(&self, name: &str) -> Operation {
+        operation_of(&self.handle, name, context_of(self.helper.clone()))
     }
     /// The spec of an advertisement through the proxy (`through`) or straight to the server.
     fn spec(&self, through: bool) -> ExchangeSpec {
+        self.spec_for(through, GitService::UploadPackAdvertisement)
+    }
+    fn spec_for(&self, through: bool, service: GitService) -> ExchangeSpec {
+        self.spec_at(through, service, "/repo")
+    }
+    fn spec_at(&self, through: bool, service: GitService, path: &str) -> ExchangeSpec {
         let port = if through {
             self.proxy.port
         } else {
@@ -193,10 +205,29 @@ impl Case {
         ExchangeSpec::git(
             Key::https("localhost", port),
             Identity::Https,
-            GitService::UploadPackAdvertisement,
-            "/repo",
+            service,
+            path,
         )
         .unwrap()
+    }
+    /// An exchange of `service` at the repository `path` through the proxy.
+    pub(super) fn exchange_at(
+        &self,
+        operation: &Operation,
+        service: GitService,
+        path: &str,
+    ) -> Exchange {
+        block_on(
+            operation
+                .open(self.spec_at(true, service, path))
+                .unwrap()
+                .wait(),
+        )
+        .unwrap()
+    }
+    /// An exchange of `service` through the proxy, once the host has leased it a connection.
+    pub(super) fn exchange_of(&self, operation: &Operation, service: GitService) -> Exchange {
+        block_on(operation.open(self.spec_for(true, service)).unwrap().wait()).unwrap()
     }
     pub(super) fn exchange(
         &self,
@@ -205,7 +236,7 @@ impl Case {
     ) -> Exchange {
         block_on(operation.open(self.spec(through)).unwrap().wait()).unwrap()
     }
-    fn wait(&self, what: &str, done: impl Fn(gwz_transport::pool::Counts) -> bool) {
+    pub(super) fn wait(&self, what: &str, done: impl Fn(gwz_transport::pool::Counts) -> bool) {
         wait_for(what, || done(self.handle.snapshot().connections));
     }
     /// The one adapter's scope records.
@@ -225,6 +256,28 @@ impl Case {
     pub(super) fn close(&self) -> bool {
         block_on(self.host.lock().unwrap().close())
     }
+}
+/// The authentication context of an operation whose credential helper is `helper`: core's own provider, whose scope is
+/// the digest of the helper's executable and environment. Without one the provider is another's, which holds no helper.
+pub(super) fn context_of(helper: Option<https_auth::Config>) -> AuthContext {
+    match helper {
+        Some(helper) => https_auth::OperationAuth::context(helper),
+        None => AuthContext::new(64, AuthScope::new([0; 32]), Arc::new(())),
+    }
+}
+/// An operation over `auth`, registered on `handle`.
+pub(super) fn operation_of(handle: &HostHandle, name: &str, auth: AuthContext) -> Operation {
+    let input = PreparedOperation::new(
+        name,
+        EndpointRoute::ssh_and_https(),
+        EndpointProfile::new(b"fixture-https".to_vec(), [7; 32]).unwrap(),
+        auth,
+        OperationPolicy::new(4, 32, 3).unwrap(),
+    )
+    .unwrap();
+    block_on(handle.admit(input).unwrap().acquire())
+        .unwrap()
+        .register()
 }
 fn port_of(server: &Server) -> u16 {
     let authority = server.url.trim_start_matches("https://localhost:");

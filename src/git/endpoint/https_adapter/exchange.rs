@@ -1,7 +1,9 @@
 //! One exchange's task on the worker's runtime: the smart-HTTP request on its leased connection, the answer to a
 //! challenge (`auth.rs`), the response body into the client's buffer, and the settlement that decides whether the
 //! connection can serve another exchange.
-use super::{Binding, HttpsSettings, auth, closes, pipe::Pipe};
+use super::{
+    Binding, HttpsSettings, RepositoryDigest, auth, closes, pipe::Pipe, repository_digest,
+};
 use crate::git::endpoint::{
     https_auth,
     https_connection::{Connection, RequestBody},
@@ -11,7 +13,7 @@ use crate::git::endpoint::{
     ssh_adapter::Settle,
 };
 use bytes::Bytes;
-use gwz_connection::{GitService, SharedProcessSafety};
+use gwz_connection::{AuthContext, GitService, SharedProcessSafety};
 use gwz_transport::{
     pool::Key,
     protocol::{self, Disposition, ErrorCode},
@@ -26,11 +28,10 @@ use std::{future::Future, io, sync::Arc, time::Duration};
 use tokio::sync::{Mutex as AsyncMutex, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
-/// What every exchange of one adapter shares: its budgets, its helper and native routes, the composition's gate and
-/// the cancellation its disposal raises.
+/// What every exchange of one adapter shares: its budgets, its helper owner and native route, the composition's gate
+/// and the cancellation its disposal raises. It holds no credential helper: that is each exchange's operation's own.
 pub(super) struct Common {
     pub(super) settings: HttpsSettings,
-    pub(super) auth: Option<https_auth::Config>,
     pub(super) owner: https_auth::AuthOwner,
     /// The adapter's helper lookups at once (the endpoint's eight); the host's helper slots bound the processes.
     pub(super) helpers: Arc<Semaphore>,
@@ -48,6 +49,13 @@ pub(crate) struct Work {
     pub(super) path: String,
     /// A POST's request body, as the client writes it.
     pub(super) body: Option<mpsc::Receiver<io::Result<Bytes>>>,
+    /// The context of the operation this exchange serves, whose helper answers its challenges. It is dropped when the
+    /// exchange's task ends.
+    pub(super) auth: AuthContext,
+    /// Which authentication bound the connection when the exchange was given it (the adapter's scope record), and the
+    /// digest of the repository path that authentication was for.
+    pub(super) prior: Binding,
+    pub(super) authenticated: Option<RepositoryDigest>,
     pub(super) pipe: Arc<Pipe>,
     pub(super) settle: Arc<Settle>,
 }
@@ -58,10 +66,12 @@ impl Work {
         self.settle.end(Disposition::Discarded);
     }
 }
-/// How an exchange ended: whether its connection can serve another, and which authentication bound it.
+/// How an exchange ended: whether its connection can serve another, which authentication bound it and the digest of
+/// the repository path the exchange named.
 pub(super) struct Ended {
     pub(super) disposition: Disposition,
     pub(super) binding: Binding,
+    pub(super) repository: RepositoryDigest,
 }
 
 pub(super) fn wire_service(service: GitService) -> protocol::GitService {
@@ -182,6 +192,7 @@ pub(super) async fn run(
     Ended {
         disposition,
         binding,
+        repository: repository_digest(&work.path),
     }
 }
 
@@ -193,11 +204,41 @@ async fn exchange(
 ) -> Result<Disposition, ErrorCode> {
     let service = wire_service(work.service);
     let destination = destination(&work.key, &work.path)?;
+    // The helper is the operation's own, from its context; a context of another provider holds none.
+    let helper = https_auth::OperationAuth::of(&work.auth).map(https_auth::OperationAuth::helper);
     let body = match work.body.take() {
         Some(rx) => RequestBody { rx },
         None => no_body(),
     };
-    let request = request(&destination, service, None, body)?;
+    // A POST's body is on the wire as the client writes it, so its challenge cannot be answered (contract 7.2). One on
+    // a connection a helper token authenticated for this very repository path is sent with the operation's own
+    // credential from its first byte, asked of the helper now: the connection serves only the binding that
+    // authenticated it, and that server asked for a credential at this path (a token is request-scoped and kept
+    // nowhere). A POST to any other path of the connection is anonymous, as a repository the server serves to anyone
+    // must stay reachable without a helper.
+    let authenticated_here = work.prior == Binding::HelperToken
+        && work.authenticated == Some(repository_digest(&work.path));
+    let secret = if !https_policy::advertisement(service) && authenticated_here {
+        let config = helper.ok_or(ErrorCode::Authentication)?;
+        let secret = tokio::select! {
+            secret = auth::lookup(config, &destination, common) => secret?,
+            _ = work.pipe.interrupted() => return Ok(Disposition::Discarded),
+        };
+        *binding = Binding::HelperToken;
+        Some(secret)
+    } else {
+        None
+    };
+    let header = secret.as_ref().map(https_auth::Secret::header);
+    let request = request(
+        &destination,
+        service,
+        header.as_ref().map(https_auth::SecretHeader::as_bytes),
+        body,
+    );
+    drop(header);
+    drop(secret);
+    let request = request?;
     let response = tokio::select! {
         response = send(connection, request, &common.settings) => response?,
         _ = work.pipe.interrupted() => return Ok(Disposition::Discarded),
@@ -205,7 +246,7 @@ async fn exchange(
     let response = match response.status().as_u16() {
         401 if https_policy::advertisement(service) => {
             let (response, bound) = tokio::select! {
-                answered = auth::answer(connection, &destination, service, response, common) => answered?,
+                answered = auth::answer(connection, &destination, service, response, helper, common) => answered?,
                 _ = work.pipe.interrupted() => return Ok(Disposition::Discarded),
             };
             *binding = bound;
