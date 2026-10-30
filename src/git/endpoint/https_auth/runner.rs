@@ -190,7 +190,9 @@ impl Runner<'_> {
     /// ends at its cancellation, like every other wait of the lookup, and nothing is started for it: a lookup that
     /// gives up here has not launched.
     async fn hold_spawn_gate(&self) -> Result<SpawnHold, AuthError> {
-        let gate = self.owner.inner.helper_slots.gate();
+        // Registered for the whole wait, so the blocking holds of the host (a pathspec log's, one per entry) do not overtake
+        // the poll; the registration ends with the wait, or with the lookup's future.
+        let launching = self.owner.inner.helper_slots.gate().launching();
         let mut waited = false;
         loop {
             if let Err(error) = self.check() {
@@ -200,7 +202,7 @@ impl Runner<'_> {
                     other => other,
                 });
             }
-            if let Some(hold) = gate.try_hold() {
+            if let Some(hold) = launching.try_hold() {
                 return Ok(hold);
             }
             waited = true;
@@ -278,6 +280,7 @@ async fn bounded_output<R: AsyncRead + Unpin>(
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
+        mod gate_fairness_tests;
         mod gate_tests;
         mod process_tests;
         mod tests;
