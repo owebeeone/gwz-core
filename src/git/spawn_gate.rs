@@ -27,7 +27,7 @@ cfg_if::cfg_if! {
 use std::{
     io,
     process::{Child, Command, Output, Stdio},
-    sync::{Arc, Condvar, Mutex, PoisonError},
+    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError},
 };
 
 /// Why the process's gate is not available (contract 7.3): the Windows object could not be made, or another account owns it.
@@ -89,6 +89,11 @@ cfg_if::cfg_if! {
                     fn faulted(fault: GateFault) -> Self {
                         Self { kernel: Some(Err(fault)) }
                     }
+                    /// The kernel object of a name a test chooses: a row that saturates the gate must not hold the
+                    /// process's own object, which the other rows of the process use at the same time.
+                    fn named(name: &str) -> Self {
+                        Self { kernel: Some(kernel::Kernel::open_named(name, kernel::Expect::Current)) }
+                    }
                 }
             }
         }
@@ -130,6 +135,10 @@ cfg_if::cfg_if! {
                     fn faulted(fault: GateFault) -> Self {
                         Self { fault: Some(fault) }
                     }
+                    /// There is no kernel object here, whatever the name.
+                    fn named(_name: &str) -> Self {
+                        Self { fault: None }
+                    }
                 }
             }
         }
@@ -160,9 +169,34 @@ struct Shared {
     scope: Scope,
     /// Whether a hold on the in-process lock excludes another. Fixed when the gate is made.
     excludes: bool,
-    held: Mutex<bool>,
-    released: Condvar,
+    state: Mutex<State>,
+    changed: Condvar,
     process: ProcessLock,
+}
+
+/// What the in-process lock keeps. It is the entry to the gate on every excluding path, the process gate's kernel object
+/// included, so that at most one waiting hold is ever queued in the kernel and a launch is not overtaken by a queue of them.
+struct State {
+    held: bool,
+    /// Launches that are waiting for the gate ([`Launching`]). A blocking hold does not start while there is one.
+    launches: usize,
+}
+
+impl Shared {
+    fn lock(&self) -> MutexGuard<'_, State> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Whether a hold takes the in-process lock: the gate excludes in process, or the kernel object is the process's.
+    fn guards(&self) -> bool {
+        self.excludes || self.process.active()
+    }
+
+    /// Gives the in-process lock back and wakes the waiting holds.
+    fn unlock(&self) {
+        self.lock().held = false;
+        self.changed.notify_one();
+    }
 }
 
 /// The gate, held. The next hold waits until this is dropped. It owns its gate's state, so it can be moved to the
@@ -172,8 +206,19 @@ pub(crate) struct SpawnHold {
 }
 enum Release {
     Nothing,
+    /// The in-process lock alone.
     Local(Arc<Shared>),
+    /// The in-process lock and the process gate's kernel object.
     Process(Arc<Shared>),
+}
+
+/// A launch that is waiting for the gate (the HTTPS helper's, which waits on its own clock by polling [`SpawnGate::try_hold`]).
+/// While one exists a blocking [`SpawnGate::hold`] does not start, so the launch is overtaken by the holds already queued and
+/// by no later one: without it a launch that polls loses the gate to a queue of blocking holds for as long as the queue
+/// is refilled (the spawn-gate fairness probe, `https_auth/runner/gate_fairness_tests.rs`). Dropping it, with the launch
+/// holding the gate or having given up, lets the blocking holds start again.
+pub(crate) struct Launching {
+    gate: SpawnGate,
 }
 
 impl SpawnGate {
@@ -190,8 +235,11 @@ impl SpawnGate {
             shared: Arc::new(Shared {
                 scope,
                 excludes,
-                held: Mutex::new(false),
-                released: Condvar::new(),
+                state: Mutex::new(State {
+                    held: false,
+                    launches: 0,
+                }),
+                changed: Condvar::new(),
                 process,
             }),
         }
@@ -230,6 +278,14 @@ impl SpawnGate {
                 Self::make(Scope::Local, excludes, ProcessLock::none())
             }
 
+            /// The process gate on the kernel object `name` (Windows; elsewhere the process gate): the gate of a row that
+            /// saturates it, which must not hold the object the other rows of the process share.
+            pub(crate) fn process_named(name: &str) -> Self {
+                let process = ProcessLock::named(name);
+                let excludes = Self::PROCESS_EXCLUDES && !process.active();
+                Self::make(Scope::Process, excludes, process)
+            }
+
             /// The process gate whose object is unavailable for `fault`: it holds in this handle alone, as the product's
             /// does, and says why it is unavailable.
             pub(crate) fn faulted(fault: GateFault) -> Self {
@@ -260,68 +316,75 @@ impl SpawnGate {
     }
 
     /// Waits until no other hold exists, then holds the gate. A thread that holds it must not ask again: the gate
-    /// is not re-entrant.
+    /// is not re-entrant. It does not start while a launch is waiting ([`Self::launching`]).
     pub(crate) fn hold(&self) -> SpawnHold {
-        if self.shared.process.acquire() {
-            return SpawnHold {
-                release: Release::Process(self.shared.clone()),
-            };
-        }
-        if !self.shared.excludes {
+        if !self.shared.guards() {
             return SpawnHold {
                 release: Release::Nothing,
             };
         }
-        let mut held = self
-            .shared
-            .held
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        while *held {
-            held = self
+        let mut state = self.shared.lock();
+        while state.held || state.launches > 0 {
+            state = self
                 .shared
-                .released
-                .wait(held)
+                .changed
+                .wait(state)
                 .unwrap_or_else(PoisonError::into_inner);
         }
-        *held = true;
+        state.held = true;
+        drop(state);
+        // The process gate's kernel object, with the in-process lock held: the one thread of this gate that is let to wait
+        // for it is first in line there.
         SpawnHold {
-            release: Release::Local(self.shared.clone()),
+            release: self.release(self.shared.process.acquire()),
         }
     }
 
-    /// Holds the gate if no other hold exists, without waiting. A launch uses it to wait on its own clock; only the
-    /// transport build has launches.
+    /// Registers a launch that is about to wait for the gate with [`Self::try_hold`] (see [`Launching`]).
+    #[allow(
+        dead_code,
+        reason = "only the transport build's launches wait on their own clock"
+    )]
+    pub(crate) fn launching(&self) -> Launching {
+        self.shared.lock().launches += 1;
+        Launching { gate: self.clone() }
+    }
+
+    /// Holds the gate if no other hold exists, without waiting. A launch uses it to wait on its own clock, registered
+    /// with [`Self::launching`]; only the transport build has launches.
     #[allow(
         dead_code,
         reason = "only the transport build's launches wait on their own clock"
     )]
     pub(crate) fn try_hold(&self) -> Option<SpawnHold> {
-        if self.shared.process.try_acquire() {
-            return Some(SpawnHold {
-                release: Release::Process(self.shared.clone()),
-            });
-        }
-        if self.shared.process.active() {
-            return None;
-        }
-        if !self.shared.excludes {
+        if !self.shared.guards() {
             return Some(SpawnHold {
                 release: Release::Nothing,
             });
         }
-        let mut held = self
-            .shared
-            .held
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if *held {
+        let mut state = self.shared.lock();
+        if state.held {
             return None;
         }
-        *held = true;
+        state.held = true;
+        drop(state);
+        if self.shared.process.active() && !self.shared.process.try_acquire() {
+            // Another handle of the process gate, or another thread outside this one, has the kernel object.
+            self.shared.unlock();
+            return None;
+        }
         Some(SpawnHold {
-            release: Release::Local(self.shared.clone()),
+            release: self.release(self.shared.process.active()),
         })
+    }
+
+    /// The release of a hold that has the in-process lock, and the kernel object if `kernel`.
+    fn release(&self, kernel: bool) -> Release {
+        if kernel {
+            Release::Process(self.shared.clone())
+        } else {
+            Release::Local(self.shared.clone())
+        }
     }
 
     /// Spawns `command` under the gate and releases it as soon as the child exists. The caller sets every
@@ -366,11 +429,34 @@ impl Drop for SpawnHold {
     fn drop(&mut self) {
         match std::mem::replace(&mut self.release, Release::Nothing) {
             Release::Nothing => {}
-            Release::Local(shared) => {
-                *shared.held.lock().unwrap_or_else(PoisonError::into_inner) = false;
-                shared.released.notify_one();
+            Release::Local(shared) => shared.unlock(),
+            Release::Process(shared) => {
+                // The kernel object first, so the next thread of this gate to take the in-process lock finds it free.
+                shared.process.release();
+                shared.unlock();
             }
-            Release::Process(shared) => shared.process.release(),
+        }
+    }
+}
+
+impl Launching {
+    /// [`SpawnGate::try_hold`] for the registered launch.
+    #[allow(
+        dead_code,
+        reason = "only the transport build's launches wait on their own clock"
+    )]
+    pub(crate) fn try_hold(&self) -> Option<SpawnHold> {
+        self.gate.try_hold()
+    }
+}
+
+impl Drop for Launching {
+    fn drop(&mut self) {
+        let mut state = self.gate.shared.lock();
+        state.launches -= 1;
+        if state.launches == 0 {
+            drop(state);
+            self.gate.shared.changed.notify_all();
         }
     }
 }

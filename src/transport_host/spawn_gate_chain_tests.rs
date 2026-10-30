@@ -193,3 +193,36 @@ fn a_native_hosts_own_backend_holds_the_hosts_gate_and_no_other() {
         "another host's backend is on another gate"
     );
 }
+
+// The spawn-gate fairness fix reaches production only if the takers of a pathspec `log` (the host's own backend, gwz-py's
+// log call; `operation/commit_log/mod.rs`) and the HTTPS helper's launch (the helper slots `with_https_native` makes from
+// the caller) hold clones of one gate, so that a launch's registration is seen by the takers' blocking holds. The gate
+// is the host's `NativeHost::new` gate (one per gwz-py Client, or per CLI command), and both are taken from it.
+#[test]
+fn a_launch_registered_on_a_native_callers_gate_defers_its_hosts_own_backends_blocking_holds() {
+    let gate = SpawnGate::with_exclusion(true);
+    let (host, _guard) = native_host(&gate);
+    // What `with_https_native` does with the caller; the runtime's helpers launch through these slots.
+    let slots = HelperSlots::with_gate(host.caller().spawn_gate().clone());
+    let log_gate = host.backend().spawn_gate.clone();
+    let launching = slots.gate().launching();
+    let (started, taker) = std::sync::mpsc::channel();
+    let log = std::thread::spawn(move || {
+        let _hold = log_gate.hold();
+        started.send(()).unwrap();
+    });
+    assert!(
+        taker.recv_timeout(Duration::from_millis(300)).is_err(),
+        "a log's blocking hold started while the helper's launch waited: the two gates keep separate registrations"
+    );
+    let launch = slots
+        .gate()
+        .try_hold()
+        .expect("the free gate goes to the launch");
+    drop(launching);
+    drop(launch);
+    taker
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the log's hold starts once the launch is done");
+    log.join().unwrap();
+}

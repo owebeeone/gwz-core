@@ -35,6 +35,61 @@ fn an_excluding_gate_admits_one_hold_at_a_time() {
     assert!(gate.try_hold().is_some(), "the gate is free again");
 }
 
+/// A launch that is waiting is not overtaken: a blocking hold that arrives while one is registered does not start, even
+/// with the gate free, until the launch has the gate or has given up (the spawn-gate fairness probe is the same rule under
+/// load, `https_auth/runner/gate_fairness_tests.rs`).
+#[test]
+fn a_blocking_hold_defers_to_a_waiting_launch() {
+    let gate = SpawnGate::with_exclusion(true);
+    let launching = gate.launching();
+    let (sender, receiver) = mpsc::channel();
+    let taker = {
+        let gate = gate.clone();
+        thread::spawn(move || {
+            let _hold = gate.hold();
+            sender.send(()).unwrap();
+        })
+    };
+    assert!(
+        receiver.recv_timeout(BLOCKED).is_err(),
+        "a blocking hold started while a launch was waiting for a free gate"
+    );
+    let launch = launching
+        .try_hold()
+        .expect("the free gate goes to the launch");
+    drop(launching);
+    assert!(
+        receiver.recv_timeout(BLOCKED).is_err(),
+        "a blocking hold started while the launch held the gate"
+    );
+    drop(launch);
+    receiver
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the blocking hold starts once the launch is done");
+    taker.join().unwrap();
+}
+
+/// A launch that gives up (its clock ran out, or its lookup was cancelled) releases the blocking holds it deferred.
+#[test]
+fn a_launch_that_gives_up_lets_the_blocking_holds_start() {
+    let gate = SpawnGate::with_exclusion(true);
+    let launching = gate.launching();
+    let (sender, receiver) = mpsc::channel();
+    let taker = {
+        let gate = gate.clone();
+        thread::spawn(move || {
+            let _hold = gate.hold();
+            sender.send(()).unwrap();
+        })
+    };
+    assert!(receiver.recv_timeout(BLOCKED).is_err());
+    drop(launching);
+    receiver
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the blocking hold starts once no launch waits");
+    taker.join().unwrap();
+}
+
 #[test]
 fn a_gate_that_does_not_exclude_never_waits() {
     let gate = SpawnGate::with_exclusion(false);
