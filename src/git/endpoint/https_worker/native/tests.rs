@@ -15,7 +15,7 @@ cfg_if::cfg_if! { if #[cfg(windows)] { pub(crate) mod real_sspi; } }
 
 // Where the validator child runs as the leader of its own process group on Unix, and
 // what ends its tree when the 30 s bound passes. Windows has no process groups: the
-// child is not isolated, and `taskkill /T` ends the tree. The killer's own output goes to the null device: it
+// child is not isolated, and `taskkill /T` ends the tree. `taskkill`'s own output goes to the null device: it
 // reports each process it ends on the standard output it shares with the test run (see the last test below).
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
@@ -23,9 +23,15 @@ cfg_if::cfg_if! {
             use std::os::unix::process::CommandExt;
             command.process_group(0);
         }
+        // Not `/bin/kill -KILL -PID`: procps-ng 4.0.4 (Ubuntu 24.04, the hosted runner) reads a negative PID as an
+        // option and signals the group named by its first digit (procps issue #354), so the tree lived on, and a PID
+        // starting with 1 would have been kill(-1), every process the user owns.
         fn kill_tree(child: &std::process::Child) {
-            let _ = std::process::Command::new("/bin/kill").args(["-KILL", &format!("-{}", child.id())])
-                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+            // SAFETY: `isolate` made this child the leader of its own group, so the negated PID names that group,
+            // never the test's own group.
+            unsafe {
+                libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+            }
         }
     } else {
         fn isolate(_command: &mut std::process::Command) {}
@@ -214,6 +220,8 @@ cfg_if::cfg_if! { if #[cfg(test)] {
             Ok("root") => {
                 let _leaf = role("leaf").stdout(Stdio::inherit()).stderr(Stdio::null()).spawn().unwrap();
                 let mut output = std::io::stdout().lock();
+                // libtest may already have written `test <name> ... ` on this line (it does with one test thread).
+                output.write_all(b"\n").unwrap();
                 output.write_all(KILL_TREE_READY).unwrap();
                 output.write_all(b"\n").unwrap();
                 output.flush().unwrap();
