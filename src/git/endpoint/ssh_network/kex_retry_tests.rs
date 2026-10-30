@@ -90,7 +90,11 @@ impl Counts {
 impl Steps for Scripted {
     fn connect(&mut self, address: SocketAddr, control: &Control) -> io::Result<TcpStream> {
         self.connects.fetch_add(1, Ordering::SeqCst);
-        Native.connect(address, control)
+        let connected = Native.connect(address, control);
+        if let Err(error) = &connected {
+            eprintln!("a real connect ended with {:?}: {error}", error.kind());
+        }
+        connected
     }
 
     fn handshake(&mut self, session: &mut ssh2::Session) -> Result<(), ssh2::Error> {
@@ -121,6 +125,14 @@ impl Steps for Scripted {
             .is_err_and(|error| error.code() == KEX_FAILURE)
         {
             self.real_kex.fetch_add(1, Ordering::SeqCst);
+        }
+        // A nonblocking session answers "would block" (-37) until it is done. Any other end but the key exchange
+        // failure is a residual class, which no row absorbs (`observed.rs`): its code is printed.
+        if let Err(error) = &result
+            && error.code() != KEX_FAILURE
+            && error.code() != Ssh2Code::Session(-37)
+        {
+            eprintln!("a real handshake ended with {:?}: {error}", error.code());
         }
         result
     }
@@ -194,9 +206,76 @@ fn network<'a, S: Steps>(steps: S, kex: KexRetry, offered: &'a dyn Fn() -> bool)
     }
 }
 
+/// What `settled` promises a row that ends on a real handshake, and what this row pins: a run is made again exactly
+/// when a real handshake of that run ended with a key exchange failure, at most [`TRIES`] runs in all, and the last
+/// run is the row's result.
+///
+/// The first `stand_ins` runs end on a stand-in for the platform's own failure (`real_failures`), so they are
+/// deterministic. The runs after them end on the platform's real handshake, which WinCNG itself ends with -8 about
+/// 0.8% of the time: a hosted Windows runner made a third run of the first case (2026-10-30, `runs == 2` got 3). So
+/// the row does not say how many runs the real handshake makes. It reads each run's own count of real key exchange
+/// failures, which is what the promise is about, and asserts the runs against those counts: on a platform whose
+/// handshake never fails that is exactly `stand_ins + 1` runs, and one real -8 more adds a run, not a failure.
+fn assert_reruns_follow_real_key_exchange_failures(fixture: &SshdFixture, stand_ins: usize) {
+    let key = Key::ssh(&fixture.user, "127.0.0.1", fixture.port);
+    let known = std::fs::read_to_string(&fixture.known_hosts).unwrap();
+    let mut ends = Vec::new();
+    let mut errors = Vec::new();
+    let (counts, _) = settled(|counts| {
+        let (_, control) = timed();
+        let mut steps = counts.steps(1);
+        // One injected -8 uses up the one retry; the stand-in is the real handshake's -8.
+        steps.real_failures = usize::from(ends.len() < stand_ins);
+        let result = establish_against(
+            &key,
+            known.clone(),
+            &control,
+            &mut network(steps, KexRetry::Times(1), &|| false),
+        )
+        .map(|_| ());
+        ends.push(counts.real_kex());
+        errors.push(
+            result
+                .as_ref()
+                .err()
+                .map(|error| format!("{:?}: {error}", error.kind())),
+        );
+        result
+    });
+    let runs = ends.len();
+    eprintln!(
+        "{runs} runs for {stand_ins} stand-in(s); real key exchange failures per run: {ends:?}"
+    );
+    assert!(
+        runs > stand_ins,
+        "a run that ends on its stand-in is made again, so something else ended run {runs} \
+         (real key exchange failures per run {ends:?}, each run's error {errors:?})"
+    );
+    assert!(
+        ends[..stand_ins].iter().all(|real_kex| *real_kex == 1),
+        "each stand-in is one real -8 of its run: {ends:?}, {errors:?}"
+    );
+    assert!(
+        ends[..runs - 1].iter().all(|real_kex| *real_kex > 0),
+        "a run is made again only after a real -8: {ends:?}, {errors:?}"
+    );
+    assert!(
+        ends[runs - 1] == 0 || runs == TRIES,
+        "a run that met a real -8 is made again until the limit: {ends:?}, {errors:?}"
+    );
+    assert_eq!(counts.real_kex(), ends[runs - 1], "{ends:?}");
+}
+
 #[test]
 fn a_row_that_ends_on_a_real_handshake_reruns_only_for_a_real_key_exchange_failure() {
     let fixture = SshdFixture::new();
+    // A real -8 reruns the row, once for the stand-in and again for each real one after it: the second case is
+    // the hosted runner's, made certain. The last run's own result is not asserted: whether the platform's real
+    // handshake completes is the host's health, not what `settled` promises (an end that is not a key exchange
+    // failure is a residual class, `observed.rs`).
+    for stand_ins in [1, 2] {
+        assert_reruns_follow_real_key_exchange_failures(&fixture, stand_ins);
+    }
     let key = Key::ssh(&fixture.user, "127.0.0.1", fixture.port);
     let known = std::fs::read_to_string(&fixture.known_hosts).unwrap();
     let establish = |counts: &Counts, real_failures: usize, real_code: Ssh2Code| {
@@ -212,16 +291,6 @@ fn a_row_that_ends_on_a_real_handshake_reruns_only_for_a_real_key_exchange_failu
         )
         .map(|_| ())
     };
-    // One injected -8 uses up the one retry; the real handshake then returns -8 (WinCNG's own) on the first run only:
-    // the first run fails, is not the row's result, and the second run completes.
-    let mut runs = 0;
-    let (counts, result) = settled(|counts| {
-        runs += 1;
-        establish(counts, usize::from(runs == 1), KEX_FAILURE)
-    });
-    assert_eq!(runs, 2, "a real -8 reruns the row");
-    result.expect("the rerun's real handshake completes");
-    assert_eq!(counts.real_kex(), 0);
     // Another real failure is the row's result, not a reason to rerun it.
     let mut runs = 0;
     let (counts, result) = settled(|counts| {

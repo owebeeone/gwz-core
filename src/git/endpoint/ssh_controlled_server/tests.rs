@@ -144,15 +144,12 @@ fn a_prompt_server_serves_receive_pack_and_reuses_the_connection() {
     assert_eq!(server.authenticated_sessions, 1);
 }
 
-#[test]
-fn a_stuck_server_ends_both_outputs_and_then_withholds_its_exit_status_and_close() {
-    let mut server = ControlledSshd::start(Ending::Stuck);
-    let mut channel = channel_for(&mut server, GitService::ReceivePack);
-    // The request and the client's EOF.
+/// Sends the request and the client's EOF, and reads both outputs to their end.
+fn send_the_request_and_read_the_outputs_to_their_end(channel: &mut SshChannel) {
     let deadline = Instant::now() + Duration::from_secs(30);
     let mut written = 0;
     while written < 4 {
-        match io::Write::write(&mut channel, &b"0000"[written..]) {
+        match io::Write::write(channel, &b"0000"[written..]) {
             Ok(count) => written += count,
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
             Err(error) => panic!("request write failed: {error}"),
@@ -186,6 +183,13 @@ fn a_stuck_server_ends_both_outputs_and_then_withholds_its_exit_status_and_close
         assert!(Instant::now() < deadline, "the outputs never ended");
         thread::sleep(Duration::from_millis(2));
     }
+}
+
+#[test]
+fn a_stuck_server_ends_both_outputs_and_then_withholds_its_exit_status_and_close() {
+    let mut server = ControlledSshd::start(Ending::Stuck);
+    let mut channel = channel_for(&mut server, GitService::ReceivePack);
+    send_the_request_and_read_the_outputs_to_their_end(&mut channel);
     // Both outputs are over; the server's process is "still running", so there is no exit status and no close.
     let held = Instant::now() + Duration::from_millis(1_000);
     while Instant::now() < held {
@@ -195,6 +199,65 @@ fn a_stuck_server_ends_both_outputs_and_then_withholds_its_exit_status_and_close
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
         thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// Repeats a nonblocking libssh2 call until it stops answering "would block".
+fn ready<T, E: Into<io::Error>>(what: &str, mut step: impl FnMut() -> Result<T, E>) -> T {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        match step().map_err(Into::into) {
+            Ok(value) => return value,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(error) => panic!("{what} failed: {error}"),
+        }
+        assert!(Instant::now() < deadline, "{what} timed out");
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn a_gated_server_ends_the_outputs_and_holds_its_exit_status_and_close_until_released() {
+    let mut server = ControlledSshd::start(Ending::Gated);
+    let repository = server.repository.to_str().unwrap().to_owned();
+    let connection = server.session();
+    let session = connection.native();
+    let mut channel = ready("channel open", || session.channel_session());
+    let command = GitService::ReceivePack.command(&repository).unwrap();
+    ready("exec", || channel.exec(&command));
+    // The request and the client's EOF, and both outputs read to their end.
+    let mut written = 0;
+    while written < 4 {
+        written += ready("request write", || {
+            io::Write::write(&mut channel, &b"0000"[written..])
+        });
+    }
+    ready("EOF", || channel.send_eof());
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let count = ready("stdout read", || Read::read(&mut channel, &mut buffer));
+        let diagnostics = ready("stderr read", || {
+            Read::read(&mut channel.stderr(), &mut buffer)
+        });
+        if count == 0 && diagnostics == 0 && channel.eof() {
+            break;
+        }
+    }
+    // The gate is shut, so the server's exit status and close have not been sent, and the client has sent no close
+    // of its own for the server to answer: the channel is not closed, however long the client waits (a wait that can
+    // only turn a failure into a pass, never the reverse).
+    let held = Instant::now() + Duration::from_millis(1_000);
+    while Instant::now() < held {
+        let error = io::Error::from(
+            channel
+                .wait_close()
+                .expect_err("the gated server closed the channel before it was released"),
+        );
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        thread::sleep(Duration::from_millis(10));
+    }
+    server.release_closes();
+    ready("the released close", || channel.wait_close());
+    assert_eq!(channel.exit_status().unwrap(), 0);
 }
 
 #[test]

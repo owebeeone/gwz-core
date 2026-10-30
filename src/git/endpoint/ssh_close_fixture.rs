@@ -140,11 +140,12 @@ pub(crate) fn stuck_close_fixture() -> ControlledSshd {
     ControlledSshd::start(Ending::Stuck)
 }
 
-/// The service exits and its output ends, and the channel's exit status and close follow `delay` later: the
-/// test-controlled server's version of [`delayed_close_fixture`] for a test that reads the output to its end, which a
-/// Windows `sshd.exe` (no EOF before the session process exits) cannot show.
-pub(crate) fn late_close_server(delay: Duration) -> ControlledSshd {
-    ControlledSshd::start(Ending::Late(delay))
+/// The service exits and its output ends, and the channel's exit status and close are held until the test calls
+/// [`ControlledSshd::release_closes`]: the test-controlled server's version of [`delayed_close_fixture`] for a test
+/// that reads the output to its end, which a Windows `sshd.exe` (no EOF before the session process exits) cannot show,
+/// and whose delay is the test's own gate and not a timer a loaded runner can outrun.
+pub(crate) fn gated_close_server() -> ControlledSshd {
+    ControlledSshd::start(Ending::Gated)
 }
 
 /// The server never runs the service and never ends its output.

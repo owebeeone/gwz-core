@@ -15,7 +15,8 @@ cfg_if::cfg_if! { if #[cfg(windows)] { pub(crate) mod real_sspi; } }
 
 // Where the validator child runs as the leader of its own process group on Unix, and
 // what ends its tree when the 30 s bound passes. Windows has no process groups: the
-// child is not isolated, and `taskkill /T` ends the tree.
+// child is not isolated, and `taskkill /T` ends the tree. The killer's own output goes to the null device: it
+// reports each process it ends on the standard output it shares with the test run (see the last test below).
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
         fn isolate(command: &mut std::process::Command) {
@@ -23,12 +24,14 @@ cfg_if::cfg_if! {
             command.process_group(0);
         }
         fn kill_tree(child: &std::process::Child) {
-            let _ = std::process::Command::new("/bin/kill").args(["-KILL", &format!("-{}", child.id())]).status();
+            let _ = std::process::Command::new("/bin/kill").args(["-KILL", &format!("-{}", child.id())])
+                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
         }
     } else {
         fn isolate(_command: &mut std::process::Command) {}
         fn kill_tree(child: &std::process::Child) {
-            let _ = std::process::Command::new("taskkill").args(["/T", "/F", "/PID", &child.id().to_string()]).status();
+            let _ = std::process::Command::new("taskkill").args(["/T", "/F", "/PID", &child.id().to_string()])
+                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
         }
     }
 }
@@ -177,6 +180,77 @@ cfg_if::cfg_if! { if #[cfg(test)] {
             let mut digest = vec![0x41; length];
             assert!(https_auth::SecretHeader::channel_binding_digest(&mut digest).is_none());
             assert!(digest.iter().all(|byte| *byte == 0));
+        }
+    }
+
+    /// The role the one test below plays in the test binaries it starts: the driver (no role), the process that
+    /// kills a tree (`killer`), the tree's root (`root`) and the root's own child (`leaf`).
+    const KILL_TREE_ROLE: &str = "GWZ_KILL_TREE_ROLE";
+    /// The line the tree's root writes to the killer, on the output it shares with its child, once it has started it.
+    const KILL_TREE_READY: &[u8] = b"gwz-kill-tree-ready";
+
+    /// `kill_tree` ends a child and the child's own child, and writes nothing to the output of the test run it is in.
+    /// Windows' `taskkill` reports each process it ends ("SUCCESS: The process with PID ... has been terminated.") on its
+    /// standard output, which a child shares with the test binary: it landed in the middle of the line libtest was
+    /// writing for another test (`test <name> ... SUCCESS: ...`, the `ok` on the next line), so the 7944 s receipt of
+    /// 2026-10-30 showed a finished test as one that never finished.
+    ///
+    /// The driver runs the killer and reads what it wrote. The killer runs a root, which runs a leaf on the output
+    /// pipe the killer holds, and ends the root's tree: the pipe reaches its end only when both are gone.
+    #[test]
+    fn kill_tree_ends_the_tree_and_writes_nothing_to_the_test_runs_output() {
+        use std::io::{BufRead, Read, Write};
+        use std::process::Stdio;
+        let name = format!("{}::kill_tree_ends_the_tree_and_writes_nothing_to_the_test_runs_output",
+            module_path!().split_once("::").unwrap().1);
+        let this_binary = std::env::current_exe().unwrap();
+        let role = |role: &str| {
+            let mut command = std::process::Command::new(&this_binary);
+            command.args(["--exact", &name]).env(KILL_TREE_ROLE, role).stdin(Stdio::null());
+            command
+        };
+        match std::env::var(KILL_TREE_ROLE).as_deref() {
+            Ok("leaf") => std::thread::sleep(Duration::from_secs(120)),
+            Ok("root") => {
+                let _leaf = role("leaf").stdout(Stdio::inherit()).stderr(Stdio::null()).spawn().unwrap();
+                let mut output = std::io::stdout().lock();
+                output.write_all(KILL_TREE_READY).unwrap();
+                output.write_all(b"\n").unwrap();
+                output.flush().unwrap();
+                std::thread::sleep(Duration::from_secs(120));
+            }
+            Ok("killer") => {
+                let mut command = role("root");
+                command.stdout(Stdio::piped()).stderr(Stdio::null());
+                isolate(&mut command);
+                let mut child = command.spawn().unwrap();
+                let mut tree_output = std::io::BufReader::new(child.stdout.take().unwrap());
+                // A kill before the root has started its child would end a tree of one.
+                let mut line = Vec::new();
+                loop {
+                    line.clear();
+                    assert!(tree_output.read_until(b'\n', &mut line).unwrap() != 0, "the root ended before it started its child");
+                    if line.trim_ascii_end() == KILL_TREE_READY {
+                        break;
+                    }
+                }
+                kill_tree(&child);
+                assert!(!child.wait().unwrap().success(), "the tree's root was not ended");
+                let ended = std::time::Instant::now();
+                tree_output.read_to_end(&mut Vec::new()).unwrap();
+                assert!(ended.elapsed() < Duration::from_secs(60), "the root's child outlived kill_tree: {:?}", ended.elapsed());
+            }
+            _ => {
+                let output = role("killer").args(["--test-threads=1"]).output().unwrap();
+                let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+                assert!(output.status.success(), "{text}");
+                // Only libtest's own lines for the one test are the run's output.
+                let passed = format!("test {name} ... ok");
+                let noise: Vec<_> = text.lines().map(str::trim_end)
+                    .filter(|line| !(line.is_empty() || *line == "running 1 test" || *line == passed || line.starts_with("test result: ok.")))
+                    .collect();
+                assert!(noise.is_empty(), "kill_tree wrote to the test run's output: {noise:?}");
+            }
         }
     }
 } }

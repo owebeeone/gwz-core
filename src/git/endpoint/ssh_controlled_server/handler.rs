@@ -18,6 +18,7 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     process::{ChildStdin, Command},
+    sync::watch,
 };
 
 /// The extended-data type of a channel's standard error (RFC 4254, section 5.2).
@@ -29,6 +30,8 @@ pub(super) struct Client {
     pub(super) ending: Ending,
     /// Stops the connection's reads (see [`Ending::Stuck`]).
     hold: Arc<AtomicBool>,
+    /// Open when the test has released the closes of [`Ending::Gated`] channels.
+    gate: watch::Receiver<bool>,
     /// The standard input of each channel's service, until the client's EOF.
     stdin: HashMap<ChannelId, ChildStdin>,
 }
@@ -39,12 +42,14 @@ impl Client {
         authorized: PublicKey,
         ending: Ending,
         hold: Arc<AtomicBool>,
+        gate: watch::Receiver<bool>,
     ) -> Self {
         Self {
             user,
             authorized,
             ending,
             hold,
+            gate,
             stdin: HashMap::new(),
         }
     }
@@ -116,6 +121,7 @@ impl Handler for Client {
         }
         let handle = session.handle();
         let ending = self.ending;
+        let mut gate = self.gate.clone();
         tokio::spawn(async move {
             let mut stdout = child.stdout.take().expect("piped");
             let mut stderr = child.stderr.take().expect("piped");
@@ -137,8 +143,11 @@ impl Handler for Client {
                     let _ = handle.exit_status_request(channel, status as u32).await;
                     let _ = handle.close(channel).await;
                 }
-                Ending::Late(delay) => {
-                    tokio::time::sleep(delay).await;
+                Ending::Gated => {
+                    // A server that is gone (the sender dropped) closes nothing.
+                    if gate.wait_for(|released| *released).await.is_err() {
+                        return;
+                    }
                     let _ = handle.exit_status_request(channel, status as u32).await;
                     let _ = handle.close(channel).await;
                 }
@@ -169,10 +178,10 @@ impl Handler for Client {
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
         self.stdin.remove(&channel);
-        if self.ending == Ending::Stuck {
-            // The client has sent its whole request. From here the connection is not read: the CHANNEL_CLOSE that
-            // follows the client's EOF stays unread, so russh never answers it, and the service's output (which the
-            // session task still sends) is all the client gets.
+        if matches!(self.ending, Ending::Stuck | Ending::Gated) {
+            // The client has sent its whole request. From here the connection is not read (a gated one is, once the
+            // gate opens): the CHANNEL_CLOSE that follows the client's EOF stays unread, so russh does not answer
+            // it, and the service's output (which the session task still sends) is all the client gets.
             self.hold.store(true, Ordering::Release);
         }
         Ok(())
