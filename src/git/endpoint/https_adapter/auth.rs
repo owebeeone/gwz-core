@@ -24,12 +24,14 @@ const HELPER_INTERACTION: Duration = Duration::from_secs(120);
 /// The bound that stands for "none" on an allocation.
 const UNBOUNDED: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Answers `challenge`; the final response, and the authentication that bound the connection.
+/// Answers `challenge`; the final response, and the authentication that bound the connection. `helper` is the
+/// operation's own (from its context), or none when its context holds one of no provider of ours.
 pub(super) async fn answer(
     connection: &mut Connection,
     destination: &Destination,
     service: protocol::GitService,
     challenge: Response<Incoming>,
+    helper: Option<&https_auth::Config>,
     common: &Common,
 ) -> Result<(Response<Incoming>, Binding), ErrorCode> {
     if closes(challenge.headers()) {
@@ -65,7 +67,7 @@ pub(super) async fn answer(
         return Ok((response, Binding::LogonSession));
     }
     if native::offers_basic(&headers)?
-        && let Some(config) = &common.auth
+        && let Some(config) = helper
     {
         drain(challenge, common).await?;
         let secret = lookup(config, destination, common).await?;
@@ -100,8 +102,8 @@ async fn ready(connection: &mut Connection, common: &Common) -> Result<(), Error
         .await?
         .map_err(|_| ErrorCode::Io)
 }
-/// The configured helper's credential for `destination`: one lookup, on the adapter's helper slot and the host's.
-async fn lookup(
+/// The operation's helper's credential for `destination`: one lookup, on the adapter's helper slot and the host's.
+pub(super) async fn lookup(
     config: &https_auth::Config,
     destination: &Destination,
     common: &Common,

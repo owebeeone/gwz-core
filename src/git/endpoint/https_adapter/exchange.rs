@@ -11,7 +11,7 @@ use crate::git::endpoint::{
     ssh_adapter::Settle,
 };
 use bytes::Bytes;
-use gwz_connection::{GitService, SharedProcessSafety};
+use gwz_connection::{AuthContext, GitService, SharedProcessSafety};
 use gwz_transport::{
     pool::Key,
     protocol::{self, Disposition, ErrorCode},
@@ -26,11 +26,10 @@ use std::{future::Future, io, sync::Arc, time::Duration};
 use tokio::sync::{Mutex as AsyncMutex, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
-/// What every exchange of one adapter shares: its budgets, its helper and native routes, the composition's gate and
-/// the cancellation its disposal raises.
+/// What every exchange of one adapter shares: its budgets, its helper owner and native route, the composition's gate
+/// and the cancellation its disposal raises. It holds no credential helper: that is each exchange's operation's own.
 pub(super) struct Common {
     pub(super) settings: HttpsSettings,
-    pub(super) auth: Option<https_auth::Config>,
     pub(super) owner: https_auth::AuthOwner,
     /// The adapter's helper lookups at once (the endpoint's eight); the host's helper slots bound the processes.
     pub(super) helpers: Arc<Semaphore>,
@@ -48,6 +47,11 @@ pub(crate) struct Work {
     pub(super) path: String,
     /// A POST's request body, as the client writes it.
     pub(super) body: Option<mpsc::Receiver<io::Result<Bytes>>>,
+    /// The context of the operation this exchange serves, whose helper answers its challenges. It is dropped when the
+    /// exchange's task ends.
+    pub(super) auth: AuthContext,
+    /// Which authentication bound the connection when the exchange was given it (the adapter's scope record).
+    pub(super) prior: Binding,
     pub(super) pipe: Arc<Pipe>,
     pub(super) settle: Arc<Settle>,
 }
@@ -193,11 +197,37 @@ async fn exchange(
 ) -> Result<Disposition, ErrorCode> {
     let service = wire_service(work.service);
     let destination = destination(&work.key, &work.path)?;
+    // The helper is the operation's own, from its context; a context of another provider holds none.
+    let helper = https_auth::OperationAuth::of(&work.auth).map(https_auth::OperationAuth::helper);
     let body = match work.body.take() {
         Some(rx) => RequestBody { rx },
         None => no_body(),
     };
-    let request = request(&destination, service, None, body)?;
+    // A POST's body is on the wire as the client writes it, so its challenge cannot be answered (contract 7.2). One on
+    // a connection a helper token authenticated is sent with the operation's own credential from its first byte, asked
+    // of the helper now: the connection serves only the binding that authenticated it, so its server is known to ask
+    // for one (a token is request-scoped and kept nowhere).
+    let secret = if !https_policy::advertisement(service) && work.prior == Binding::HelperToken {
+        let config = helper.ok_or(ErrorCode::Authentication)?;
+        let secret = tokio::select! {
+            secret = auth::lookup(config, &destination, common) => secret?,
+            _ = work.pipe.interrupted() => return Ok(Disposition::Discarded),
+        };
+        *binding = Binding::HelperToken;
+        Some(secret)
+    } else {
+        None
+    };
+    let header = secret.as_ref().map(https_auth::Secret::header);
+    let request = request(
+        &destination,
+        service,
+        header.as_ref().map(https_auth::SecretHeader::as_bytes),
+        body,
+    );
+    drop(header);
+    drop(secret);
+    let request = request?;
     let response = tokio::select! {
         response = send(connection, request, &common.settings) => response?,
         _ = work.pipe.interrupted() => return Ok(Disposition::Discarded),
@@ -205,7 +235,7 @@ async fn exchange(
     let response = match response.status().as_u16() {
         401 if https_policy::advertisement(service) => {
             let (response, bound) = tokio::select! {
-                answered = auth::answer(connection, &destination, service, response, common) => answered?,
+                answered = auth::answer(connection, &destination, service, response, helper, common) => answered?,
                 _ = work.pipe.interrupted() => return Ok(Disposition::Discarded),
             };
             *binding = bound;

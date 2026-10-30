@@ -13,10 +13,14 @@
 //!   did not close the connection and Hyper says the connection can carry another request; the exchange's end
 //!   (`ExchangeIo::poll_finish`) says `Reusable` only then (contract 8: an unread body discards the lease).
 //! - A challenge (401) to an advertisement is answered on the same connection, once per exchange: by the logon
-//!   session when it offers `Negotiate` or `NTLM` and the adapter has a native caller, otherwise by the configured
-//!   helper when it offers `Basic` and helpers are configured. A challenge to a POST is refused (contract 7.2). The
-//!   native route **fails closed** (contract 7.3, step 1.3a): when the composition's `ProcessSafety` is unavailable, or
-//!   the caller's gate gave its supervisor no window, it refuses before any credential is read or token sent.
+//!   session when it offers `Negotiate` or `NTLM` and the adapter has a native caller, otherwise by the helper of the
+//!   operation the exchange serves (the one its `AuthContext` holds, never another's; the adapter holds none) when it
+//!   offers `Basic`. A challenge to a POST is refused (contract 7.2): its body is on the wire, and nothing is replayed.
+//!   A POST on a connection a helper token authenticated, which only the binding that authenticated it is leased,
+//!   is sent with its operation's credential from its first byte, asked of the helper per exchange (a token is
+//!   request-scoped and kept nowhere), so an authenticated push can go through the host. The native route **fails closed**
+//!   (contract 7.3, step 1.3a): when the composition's `ProcessSafety` is unavailable, or the caller's gate gave its
+//!   supervisor no window, it refuses before any credential is read or token sent.
 //! - Per-exchange scoping (contract 7.2): each connection's [`ConnectionScope`] records which authentication bound
 //!   it; a helper token or the logon session marks it per-exchange scoped. The adapter's reuse
 //!   authorization (`authorize_reuse`, plan step 1.6) reads this record: a connection nothing authenticated is
@@ -31,7 +35,7 @@
 //! thread drives (`worker.rs`), started by the first `connect`, outside every connection-host lock; the methods here
 //! only queue commands and read completions. Nothing here is a global.
 use super::{
-    https_auth::{self, HelperSlots},
+    https_auth::HelperSlots,
     https_connection,
     https_worker::native::NativeCaller,
     shared_reservation::Authority,
@@ -74,13 +78,13 @@ pub(crate) struct HttpsSettings {
     pub(crate) cleanup_timeout_ms: u64,
 }
 
-/// What an HTTPS adapter is made from: the endpoint's TLS and proxy configuration, its helper configuration and the
-/// host's helper slots (whose launches hold the host's spawn gate), the native caller of a native-route runtime, and
-/// the host's shared reservation, which its SSH adapters share.
+/// What an HTTPS adapter is made from: the endpoint's TLS and proxy configuration, the host's helper slots (whose
+/// launches hold the host's spawn gate), the native caller of a native-route runtime, and the host's shared
+/// reservation, which its SSH adapters share. It holds no credential helper, environment or token: those are the
+/// operation's own, in the `AuthContext` that `start_exchange` carries (contract section 7).
 #[derive(Clone)]
 pub(crate) struct HttpsInputs {
     pub(crate) tls: https_connection::Config,
-    pub(crate) auth: Option<https_auth::Config>,
     pub(crate) helper_slots: HelperSlots,
     pub(crate) native: Option<NativeCaller>,
     pub(crate) authority: Authority,
@@ -260,9 +264,7 @@ impl EndpointAdapter for HttpsAdapter {
         &mut self,
         connection: ConnectionId,
         spec: &ExchangeSpec,
-        // The exchange's helper is still the instance's (`HttpsInputs::auth`): reading the operation's own helper from
-        // this context is the route naming of plan step 1.3c/C2(b). Nothing of the context is kept.
-        _auth: &AuthContext,
+        auth: &AuthContext,
     ) -> io::Result<Box<dyn ExchangeIo>> {
         if !self.running {
             return Err(io::Error::new(
@@ -271,7 +273,9 @@ impl EndpointAdapter for HttpsAdapter {
             ));
         }
         let settle = Arc::new(Settle::default());
-        let (client, work) = pipe::exchange(spec, settle);
+        // The exchange authenticates with the helper this operation's own context holds (plan step 1.3c/C2(b)), never
+        // another operation's: the context lives in the exchange's work until its task ends, and nothing else keeps it.
+        let (client, work) = pipe::exchange(spec, auth, settle);
         self.send(Command::Start {
             connection,
             work: Box::new(work),

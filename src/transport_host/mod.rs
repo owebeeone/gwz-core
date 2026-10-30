@@ -579,7 +579,6 @@ fn https_factory_inputs(
 ) -> crate::git::endpoint::https_adapter::HttpsInputs {
     crate::git::endpoint::https_adapter::HttpsInputs {
         tls: https.tls.clone(),
-        auth: https.auth.clone(),
         helper_slots: slots.clone(),
         native: native.cloned(),
         authority,

@@ -5,10 +5,10 @@
 //! `ExchangeIo` has no `shutdown_write` yet (step 1.3b's finding; contract 9 names one), so a POST's request body ends
 //! at the client's first `read` (or at its finish): smart HTTP is half duplex, a client reads the response only after
 //! it has written its whole request.
-use super::{exchange::Work, stream_error};
+use super::{Binding, exchange::Work, stream_error};
 use crate::git::endpoint::ssh_adapter::Settle;
 use bytes::Bytes;
-use gwz_connection::{ExchangeIo, ExchangeSpec};
+use gwz_connection::{AuthContext, ExchangeIo, ExchangeSpec};
 use gwz_transport::protocol::{Disposition, ErrorCode};
 use std::{
     collections::VecDeque,
@@ -108,8 +108,12 @@ pub(crate) struct HttpsExchange {
     pipe: Arc<Pipe>,
     settle: Arc<Settle>,
 }
-/// The two halves of an exchange for `spec`, which `settle` ends.
-pub(super) fn exchange(spec: &ExchangeSpec, settle: Arc<Settle>) -> (HttpsExchange, Work) {
+/// The two halves of an exchange for `spec` of the operation whose context is `auth`, which `settle` ends.
+pub(super) fn exchange(
+    spec: &ExchangeSpec,
+    auth: &AuthContext,
+    settle: Arc<Settle>,
+) -> (HttpsExchange, Work) {
     let pipe = Arc::new(Pipe::default());
     let advertisement = spec.service().is_advertisement();
     let (sender, receiver) = if advertisement {
@@ -123,6 +127,8 @@ pub(super) fn exchange(spec: &ExchangeSpec, settle: Arc<Settle>) -> (HttpsExchan
         service: spec.service(),
         path: spec.path().into(),
         body: receiver,
+        auth: auth.clone(),
+        prior: Binding::Anonymous,
         pipe: pipe.clone(),
         settle: settle.clone(),
     };

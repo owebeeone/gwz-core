@@ -5,7 +5,7 @@
 //! told to dispose (or its adapter is dropped), every connection is disposed and every helper process and native
 //! conversation it started is confirmed gone.
 use super::{
-    Command, HttpsInputs, Scopes,
+    Binding, Command, HttpsInputs, Scopes,
     exchange::{self, Common, Ended, Work},
     failure,
     pipe::Pipe,
@@ -114,7 +114,6 @@ pub(super) fn run(
     runtime.block_on(async move {
         let HttpsInputs {
             tls,
-            auth,
             helper_slots,
             native,
             authority,
@@ -132,7 +131,6 @@ pub(super) fn run(
             epoch,
             common: Arc::new(Common {
                 settings,
-                auth,
                 owner: AuthOwner::new(helper_slots),
                 helpers: Arc::new(Semaphore::new(HELPER_LOOKUPS)),
                 native,
@@ -239,7 +237,7 @@ impl Worker {
             }),
         }
     }
-    fn start(&mut self, connection: ConnectionId, work: Work) {
+    fn start(&mut self, connection: ConnectionId, mut work: Work) {
         let Some(entry) = self.entries.get_mut(&connection) else {
             return work.fail(ErrorCode::Io);
         };
@@ -257,6 +255,11 @@ impl Worker {
             entry.phase = Phase::Broken;
             return;
         };
+        // The exchange is given the authentication that last bound this connection.
+        work.prior = self
+            .scopes
+            .of(connection)
+            .map_or(Binding::Anonymous, |scope| scope.binding);
         // Leased: its idle watch stands down until a reusable end makes it idle again.
         resource
             .reusable
