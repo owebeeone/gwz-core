@@ -307,30 +307,19 @@ fn resolve_remote(
     remote: Option<&str>,
     url: &str,
 ) -> ModelResult<Option<SelectedIdentity>> {
-    let scp = !url.contains("://")
-        && !Path::new(url).is_absolute()
-        && url
-            .split_once(':')
-            .is_some_and(|(host, _)| host.len() > 1 && !host.contains('/'));
-    let ssh_scheme = url.split_once("://").is_some_and(|(scheme, _)| {
-        ["ssh", "git+ssh", "ssh+git"]
-            .iter()
-            .any(|v| scheme.eq_ignore_ascii_case(v))
-    });
+    let ssh = ssh_destination(is_cli(backend), url);
+    // The route is refused here, before an identity is read, a connection is made or a file is written: the Cli
+    // placement's endpoint serves SSH and HTTPS only, and the core never falls back to libgit2's native transport.
     cfg_if::cfg_if! {
         if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
-            let https_scheme = url
-                .split_once("://")
-                .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("https"));
-            if backend.ssh.is_cli_context() && !ssh_scheme && !scp && !https_scheme {
-                return Err(ModelError::new(
-                    ErrorCode::UnsupportedOperation,
-                    "explicit cli placement supports SSH and HTTPS routes only; native transport fallback is disabled",
-                ));
+            if backend.ssh.is_cli_context()
+                && let Some(route) = local_only_route(url)
+            {
+                return Err(route.refusal());
             }
         }
     }
-    if !ssh_scheme && !scp {
+    if !ssh {
         if remote.is_some_and(|remote| backend.identities.remotes.contains_key(remote)) {
             return Err(invalid(
                 "a per-remote SSH identity override names a non-SSH destination; use --identity PATH, which non-SSH destinations ignore, or no override for that remote",
@@ -359,6 +348,222 @@ fn resolve_remote(
         check_selected(backend, &identity.path)?;
     }
     Ok(identity)
+}
+
+/// Whether identity selection treats `url` as an SSH destination, so that a per-remote override or an invocation
+/// default applies to it. `cli` is whether the operation runs under the cli placement, where the route that carries
+/// the request is `transport_binding::bound_route`: identity selection then reads the same classification, and no
+/// spelling is an SSH route to one and a non-SSH destination to the other (State round-2 P2-1). Elsewhere the SCP test
+/// stands, as before.
+fn ssh_destination(cli: bool, url: &str) -> bool {
+    let ssh_scheme = url.split_once("://").is_some_and(|(scheme, _)| {
+        ["ssh", "git+ssh", "ssh+git"]
+            .iter()
+            .any(|v| scheme.eq_ignore_ascii_case(v))
+    });
+    cfg_if::cfg_if! {
+        if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
+            if cli {
+                return ssh_scheme
+                    || super::super::transport_binding::bound_route(url)
+                        == super::super::transport_binding::Bound::Ssh;
+            }
+        } else {
+            let _ = cli;
+        }
+    }
+    ssh_scheme || scp_like(url)
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
+        fn is_cli(backend: &super::super::Git2Backend) -> bool {
+            backend.ssh.is_cli_context()
+        }
+    } else {
+        fn is_cli(_backend: &super::super::Git2Backend) -> bool {
+            false
+        }
+    }
+}
+
+/// Whether `url` is git's SCP-like SSH form (`host:path`): no scheme, not an absolute path, and a host of more than one
+/// character before the first `:` (so a Windows drive letter is a path) that holds no `/`.
+fn scp_like(url: &str) -> bool {
+    !url.contains("://")
+        && !Path::new(url).is_absolute()
+        && url
+            .split_once(':')
+            .is_some_and(|(host, _)| host.len() > 1 && !host.contains('/'))
+}
+
+cfg_if::cfg_if! {
+    if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
+        use super::super::transport_binding::{Bound, bound_route};
+        /// A route the Cli placement does not serve (plan step 1.7; `GwzSplitCommandChannel.md` section 4.6): the
+        /// client's endpoint carries SSH and HTTPS only, so a remote that libgit2 would serve with its own transport
+        /// stays on the machine that holds it and is refused, by name, before anything runs.
+        #[derive(Clone, Debug, Eq, PartialEq)]
+        pub(crate) enum LocalOnlyRoute {
+            /// A `file://` URL.
+            File,
+            /// A bare local path: no scheme, and not an SCP-like spelling the binding reads as SSH.
+            LocalPath,
+            /// A plain `http://` URL.
+            Http,
+            /// A `git://` URL.
+            Git,
+            /// The clone family's anonymous local peer (`fetch_anonymous`, `push_anonymous`).
+            CloneFamily,
+            /// Any other scheme, as the URL wrote it (kept to the characters a scheme has).
+            Other(String),
+        }
+        impl LocalOnlyRoute {
+            /// The words that name the route in a refusal.
+            pub(crate) fn name(&self) -> String {
+                match self {
+                    Self::File => "file://".to_owned(),
+                    Self::LocalPath => "local path".to_owned(),
+                    Self::Http => "http://".to_owned(),
+                    Self::Git => "git://".to_owned(),
+                    Self::CloneFamily => "clone-family local peer".to_owned(),
+                    Self::Other(scheme) => format!("{scheme}://"),
+                }
+            }
+            /// The refusal for the route. It carries no part of the URL, which may hold a user name or a password.
+            pub(crate) fn refusal(&self) -> ModelError {
+                ModelError::new(
+                    ErrorCode::UnsupportedOperation,
+                    format!(
+                        "the cli placement does not serve the {} route: its endpoint carries ssh://, git+ssh://, \
+                         ssh+git://, SCP-like and https:// remotes only, and the core never falls back to libgit2's \
+                         native transport; nothing was run",
+                        self.name()
+                    ),
+                )
+            }
+            /// The refusal for a route that the configuration of the repository the operation created, and not the
+            /// configuration the route was judged on, rewrote the remote to.
+            pub(crate) fn refusal_after_creation(&self) -> ModelError {
+                let mut refusal = self.refusal();
+                refusal.message.push_str(
+                    " (the new repository's configuration rewrote the remote to this route after the route was judged)",
+                );
+                refusal
+            }
+        }
+        /// The route `url` takes that the Cli placement does not serve, or `None` for an SSH or HTTPS remote. It is
+        /// decided by `transport_binding::bound_route`, the classifier the binding binds on, so that nothing the check
+        /// admits is left to libgit2's own transport (State P1-1).
+        pub(crate) fn local_only_route(url: &str) -> Option<LocalOnlyRoute> {
+            (bound_route(url) == Bound::Unbound).then(|| unbound_route(url))
+        }
+        /// The name of the route of a `url` the endpoint does not bind (`bound_route` is `Bound::Unbound`).
+        pub(crate) fn unbound_route(url: &str) -> LocalOnlyRoute {
+            let Some((scheme, _)) = url.split_once("://") else {
+                return LocalOnlyRoute::LocalPath;
+            };
+            let is = |name: &str| scheme.eq_ignore_ascii_case(name);
+            if is("file") {
+                LocalOnlyRoute::File
+            } else if is("http") {
+                LocalOnlyRoute::Http
+            } else if is("git") {
+                LocalOnlyRoute::Git
+            } else {
+                let named = !scheme.is_empty()
+                    && scheme.len() <= 16
+                    && scheme
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.'));
+                LocalOnlyRoute::Other(if named {
+                    scheme.to_ascii_lowercase()
+                } else {
+                    "unrecognised".to_owned()
+                })
+            }
+        }
+        /// The URL the route check and the identity judge for an operation that connects to the URL `connecting` makes
+        /// (what libgit2 will bind, after the configuration's `url.<base>.insteadOf` and `pushInsteadOf` rules): under
+        /// the Cli placement that URL, so no rewrite lands a refused route after the check; elsewhere `requested`, as
+        /// before. `connecting` runs only under the Cli placement.
+        pub(crate) fn judged_url<'a>(
+            backend: &super::super::Git2Backend,
+            requested: &'a str,
+            connecting: impl FnOnce() -> ModelResult<String>,
+        ) -> ModelResult<std::borrow::Cow<'a, str>> {
+            if backend.ssh.is_cli_context() {
+                return connecting().map(std::borrow::Cow::Owned);
+            }
+            Ok(std::borrow::Cow::Borrowed(requested))
+        }
+        /// Observes the remote a clone created in its new repository against the URL the route was judged on. The judge
+        /// reads the default configuration, which cannot see the conditional includes (`includeIf "gitdir:"`) of the new
+        /// repository, so a rule only that repository applies can still land a refused route: under the Cli placement the
+        /// created remote is refused, by the name of the route it was rewritten to, when it is not served or is not the
+        /// kind of route judged (libgit2 then removes the target it made). Elsewhere nothing is observed.
+        pub(crate) fn refuse_unjudged_remote(
+            backend: &super::super::Git2Backend,
+            judged: &str,
+            created: &git2::Remote<'_>,
+            attempt: &super::super::transport_observations::TransportAttempt,
+        ) -> Result<(), git2::Error> {
+            if !backend.ssh.is_cli_context() {
+                return Ok(());
+            }
+            let created = created.url().unwrap_or_default();
+            if created == judged {
+                return Ok(());
+            }
+            let refusal = match local_only_route(created) {
+                Some(route) => route.refusal_after_creation(),
+                None if bound_route(created) == bound_route(judged) => return Ok(()),
+                None => ModelError::new(
+                    ErrorCode::UnsupportedOperation,
+                    "the cli placement does not serve this remote: the new repository's configuration rewrote it to a \
+                     different route after the route was judged; nothing was run",
+                ),
+            };
+            attempt.failed(refusal.clone());
+            Err(git2::Error::new(
+                git2::ErrorCode::GenericError,
+                git2::ErrorClass::Net,
+                &refusal.message,
+            ))
+        }
+        /// Refuses the clone family's anonymous local peer when the backend's operation is the Cli placement, before the
+        /// peer is looked at (plan step 1.7). Any other backend runs it.
+        pub(crate) fn refuse_clone_family_under_cli(
+            backend: &super::super::Git2Backend,
+        ) -> ModelResult<()> {
+            if backend.ssh.is_cli_context() {
+                return Err(LocalOnlyRoute::CloneFamily.refusal());
+            }
+            Ok(())
+        }
+    } else {
+        /// A build without the transport has no Cli placement: `with_transport` refuses an explicit `cli` request.
+        pub(crate) fn judged_url<'a>(
+            _backend: &super::super::Git2Backend,
+            requested: &'a str,
+            _connecting: impl FnOnce() -> ModelResult<String>,
+        ) -> ModelResult<std::borrow::Cow<'a, str>> {
+            Ok(std::borrow::Cow::Borrowed(requested))
+        }
+        pub(crate) fn refuse_clone_family_under_cli(
+            _backend: &super::super::Git2Backend,
+        ) -> ModelResult<()> {
+            Ok(())
+        }
+        pub(crate) fn refuse_unjudged_remote(
+            _backend: &super::super::Git2Backend,
+            _judged: &str,
+            _created: &git2::Remote<'_>,
+            _attempt: &super::super::transport_observations::TransportAttempt,
+        ) -> Result<(), git2::Error> {
+            Ok(())
+        }
+    }
 }
 
 fn unavailable() -> ModelError {
@@ -664,6 +869,121 @@ mod timeout_tests {
         unsafe {
             assert!(git2::opts::get_server_connect_timeout_in_milliseconds().unwrap() > 0);
             assert!(git2::opts::get_server_timeout_in_milliseconds().unwrap() > 0);
+        }
+    }
+}
+
+// Plan step 1.7: which remotes the Cli placement serves, and the words that refuse the rest.
+cfg_if::cfg_if! {
+    if #[cfg(all(gwz_transport_candidate, any(unix, windows)))] {
+        mod route_tests {
+            use super::{LocalOnlyRoute, local_only_route};
+
+            /// The spellings the route table pins: every classifier of a URL must agree on each.
+            const ROUTE_TABLE: &[&str] = &[
+                "a@b:c", "b:c", r"a\b:c", r"CORP\user@host:r.git", r"[u\x@127.0.0.1:1]:r", r".\x:y",
+                r"\x:y", r"C:\x", "C:/x", "c:x", "/a:b", "./x:y", "x", "", ":x", "@x:y", "[::1]:repo",
+                "[2001:db8::1]:repo", "[host]:repo", "[u@127.0.0.1:2222]:r", "file:x", "ext::cmd", "foo::bar",
+                "file:///x", "http://h/r", "git://h/r", "ssh://h/r", "ssh://", "https://h/r", "https://",
+                "HTTP://h/r", "ftp://h/r", " ssh://h/r", "%66ile://x", r"\\server\share\r.git",
+                "git@[::1]:repo", "ssh://[::1]/repo",
+            ];
+
+            #[test]
+            fn the_routes_the_endpoint_carries_are_not_refused() {
+                for url in [
+                    "ssh://git@example.com/o/r.git",
+                    "SSH://git@example.com/o/r.git",
+                    "git+ssh://example.com/o/r.git",
+                    "ssh+git://example.com/o/r.git",
+                    "https://example.com/o/r.git",
+                    "HTTPS://example.com/o/r.git",
+                    "git@example.com:o/r.git",
+                    "example.com:o/r.git",
+                ] {
+                    assert_eq!(local_only_route(url), None, "{url}");
+                }
+            }
+
+            #[test]
+            fn a_backslash_before_the_first_colon_is_a_local_path_not_scp() {
+                // State P1-1: the binding reads these as local paths and leaves them to libgit2's native SSH, so the
+                // check must refuse them: `Destination::parse` returns `Ok(None)` for each.
+                for url in [
+                    r"a\b:c",
+                    r"CORP\user@host:r.git",
+                    r"[u\x@127.0.0.1:1]:r",
+                    r".\x:y",
+                    r"\x:y",
+                ] {
+                    assert_eq!(local_only_route(url), Some(LocalOnlyRoute::LocalPath), "{url}");
+                }
+            }
+
+            #[test]
+            fn the_check_refuses_exactly_what_the_binding_does_not_bind() {
+                use crate::git::endpoint::ssh_destination::Destination;
+                for url in ROUTE_TABLE.iter().copied() {
+                    let bound = super::super::super::transport_binding::is_https_remote(url)
+                        || !matches!(Destination::parse(url), Ok(None));
+                    assert_eq!(local_only_route(url).is_none(), bound, "{url:?}");
+                }
+            }
+
+            #[test]
+            fn an_ipv6_scp_spelling_is_bound_to_the_ssh_route_and_gwz_cannot_open_it() {
+                // What is measured: the classifier sends these to the SSH route, as git, libgit2 and `Destination::parse`
+                // read them, so the check does not name them "local path" (the old SCP test, a one-character host `[`,
+                // did). What is not served: the core's session driver then refuses the destination at its parse
+                // ("invalid SSH destination", `session/driver/opening.rs`), so no request reaches the endpoint and no
+                // connection is made; `driver_only_tests::identity_split` records that outcome end to end.
+                for url in ["[::1]:repo", "[2001:db8::1]:repo", "git@[::1]:repo"] {
+                    assert_eq!(local_only_route(url), None, "{url}");
+                }
+            }
+
+            #[test]
+            fn identity_selection_reads_every_url_the_binding_binds_to_ssh_as_ssh_under_cli() {
+                // State round-2 P2-1: the route and the identity rules must classify a URL once. Every spelling of the
+                // route table that the binding sends to the SSH route is an SSH destination for identity selection, and
+                // an HTTPS one is not.
+                use super::{Bound, bound_route};
+                for url in ROUTE_TABLE.iter().copied() {
+                    match bound_route(url) {
+                        Bound::Ssh => assert!(super::ssh_destination(true, url), "{url:?}"),
+                        Bound::Https => assert!(!super::ssh_destination(true, url), "{url:?}"),
+                        Bound::Unbound => {}
+                    }
+                }
+            }
+
+            #[test]
+            fn each_local_only_route_has_its_own_name() {
+                for (url, route, name) in [
+                    ("file:///srv/r.git", LocalOnlyRoute::File, "file://"),
+                    ("FILE:///srv/r.git", LocalOnlyRoute::File, "file://"),
+                    ("/srv/r.git", LocalOnlyRoute::LocalPath, "local path"),
+                    ("../r.git", LocalOnlyRoute::LocalPath, "local path"),
+                    ("r.git", LocalOnlyRoute::LocalPath, "local path"),
+                    (r"C:\srv\r.git", LocalOnlyRoute::LocalPath, "local path"),
+                    ("http://example.com/r.git", LocalOnlyRoute::Http, "http://"),
+                    ("git://example.com/r.git", LocalOnlyRoute::Git, "git://"),
+                    ("ftp://example.com/r.git", LocalOnlyRoute::Other("ftp".into()), "ftp://"),
+                    ("a b://x", LocalOnlyRoute::Other("unrecognised".into()), "unrecognised://"),
+                ] {
+                    let found = local_only_route(url);
+                    assert_eq!(found.as_ref(), Some(&route), "{url}");
+                    assert_eq!(route.name(), name, "{url}");
+                }
+            }
+
+            #[test]
+            fn a_refusal_names_the_route_and_repeats_no_part_of_the_url() {
+                let route = local_only_route("http://user:hunter2@example.com/secret/r.git").unwrap();
+                let message = route.refusal().message;
+                assert!(message.contains("the http:// route"), "{message}");
+                assert!(!message.contains("hunter2") && !message.contains("secret"), "{message}");
+            }
         }
     }
 }

@@ -160,6 +160,49 @@ cfg_if::cfg_if! {
         pub(super) fn is_http_remote(url: &str) -> bool {
             url.split_once("://").is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("http"))
         }
+        /// Where a host with an endpoint sends `url`: the one classifier `configure` binds on and the cli placement's
+        /// route check refuses on (plan step 1.7, State P1-1), so that a URL one reads as SSH and the other as a local
+        /// path cannot exist.
+        #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+        pub(crate) enum Bound {
+            /// The HTTPS route.
+            Https,
+            /// The SSH route: an SSH scheme or an SCP-like spelling, well formed or not (a malformed one is refused by
+            /// the route, with no connection).
+            Ssh,
+            /// Neither: a file, the git protocol, `http://`, any other scheme or a local path, which libgit2 serves
+            /// with its own transport unless the host refuses it.
+            Unbound,
+        }
+        pub(crate) fn bound_route(url: &str) -> Bound {
+            if is_https_remote(url) {
+                Bound::Https
+            } else if matches!(Destination::parse(url), Ok(None)) {
+                Bound::Unbound
+            } else {
+                Bound::Ssh
+            }
+        }
+        /// A cli host serves no route of its own: a remote its endpoint does not carry gets a transport that refuses it
+        /// by name when libgit2 asks for one, so libgit2's own transport never runs (plan step 1.7).
+        fn refuse_unbound(
+            url: &str,
+            attempt: Option<&TransportAttempt>,
+            callbacks: &mut git2::RemoteCallbacks<'_>,
+        ) {
+            let refusal = super::transport_support::identity::unbound_route(url).refusal();
+            if let Some(attempt) = attempt {
+                attempt.failed(refusal.clone());
+            }
+            let message = refusal.message;
+            callbacks.smart_transport(false, move |_| {
+                Err::<RemoteTransport, git2::Error>(git2::Error::new(
+                    git2::ErrorCode::GenericError,
+                    git2::ErrorClass::Net,
+                    &message,
+                ))
+            });
+        }
         /// The URL a warning shows: the remote without the user name and password it may carry, which no message
         /// repeats.
         fn http_warning_url(url: &str) -> String {
@@ -251,7 +294,8 @@ cfg_if::cfg_if! {
             let Some(context) = backend.ssh.host_context() else {
                 return;
             };
-            if is_https_remote(url) {
+            let bound = bound_route(url);
+            if bound == Bound::Https {
                 let policy = backend.ssh.https_policy(backend.credential_helpers);
                 let attempt = attempt.cloned();
                 let facts_attempt = attempt.clone();
@@ -277,7 +321,12 @@ cfg_if::cfg_if! {
                 https_remote::install(callbacks, Arc::new(route));
                 return;
             }
-            if matches!(Destination::parse(url), Ok(None)) {
+            if bound == Bound::Unbound {
+                // A host with a cli context never leaves libgit2's own route in place.
+                if backend.ssh.is_cli_context() {
+                    refuse_unbound(url, attempt, callbacks);
+                    return;
+                }
                 // A plain `http://` remote on Windows goes by libgit2's native route, which is installed by leaving
                 // the callbacks alone, and says so first (design 7, decision D2).
                 if backend.ssh.serves_http_natively(url) {
