@@ -174,11 +174,12 @@ fn the_logon_session_route_refuses_while_the_process_gate_is_unavailable() {
 // against the fixture server, whose recorded requests carry the digest of each Authorization header and never the
 // header, so a failure message holds no credential.
 
-/// One request the fixture server saw: whether it was a POST, the SHA-256 of its Authorization header (none when it
-/// had none) and the connection it came on.
+/// One request the fixture server saw: whether it was a POST, whether it named the `/public` repository, the SHA-256 of
+/// its Authorization header (none when it had none) and the connection it came on.
 #[derive(Clone, Copy)]
 struct Seen {
     post: bool,
+    public: bool,
     digest: Option<[u8; 32]>,
     connection: usize,
 }
@@ -210,6 +211,7 @@ fn authorizing(requests: &Requests) -> Handler {
             .map_or(0, |id| id.0);
         requests.lock().unwrap().push(Seen {
             post,
+            public: request.uri().path().starts_with("/public"),
             digest,
             connection,
         });
@@ -222,7 +224,10 @@ fn authorizing(requests: &Requests) -> Handler {
             (true, true) => protocol::GitService::ReceivePackExchange,
         };
         let (status, bytes) = match (digest.is_some(), post) {
-            (false, _) => (401, &b""[..]),
+            // `/public` is served to anyone; every other repository wants a credential.
+            (false, _) if !request.uri().path().starts_with("/public") => (401, &b""[..]),
+            (false, false) => (200, ADVERTISEMENT),
+            (false, true) => (200, &b"0000"[..]),
             (true, false) => (200, ADVERTISEMENT),
             (true, true) => (200, &b"0000"[..]),
         };
@@ -308,12 +313,11 @@ fn changed_helper_gives_each_operation_its_own_credential(
     tokens: [&str; 2],
 ) {
     let requests = Requests::default();
-    // The instance's helper (while it has one) is the first operation's, as the runtime's capture makes it.
-    let first = a.clone();
+    // The instance holds no helper (the operations' own are in their contexts), so `a` and `b` are all that answers.
     let case = Case::with(
         |_| authorizing(&requests),
         Behaviour::default(),
-        move |_| (Some(first), None),
+        |_| (None, None),
         None,
     );
     let (accepted, first) = advertise(&case, &requests, "op-a", a);
@@ -533,5 +537,114 @@ fn a_push_is_authenticated_on_the_connection_its_advertisement_was() {
     );
     assert_eq!(post[0].connection, seen[0].connection);
     assert_eq!(case.accepted(), 1);
+    assert!(case.close());
+}
+
+/// Writes `bytes` as the request body, or stops where the exchange refuses them (it has ended).
+fn write_body(exchange: &mut gwz_connection::Exchange, bytes: &[u8]) {
+    let mut sent = 0;
+    while sent < bytes.len() {
+        match exchange.stream().write(&bytes[sent..]) {
+            Ok(n) => sent += n,
+            Err(StreamError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::yield_now();
+            }
+            Err(_) => return,
+        }
+    }
+}
+
+#[test]
+fn a_post_to_a_repository_the_helper_did_not_authenticate_is_sent_without_a_credential() {
+    // Contract 7.2: the connection `/private` authenticated is not authenticated for `/public`, which the server serves
+    // to anyone and the helper declines. A POST is pre-authenticated only for the repository path the helper's token
+    // was for; this one goes out anonymously, reaches the server once and succeeds.
+    let requests = Requests::default();
+    let case = Case::with(
+        |_| authorizing(&requests),
+        Behaviour::default(),
+        |_| (None, None),
+        None,
+    );
+    let directory = tempfile::tempdir().unwrap();
+    // Declines (as `credential.useHttpPath` with a per-path store does) when asked for `/public`.
+    let helper = helper_script::git_fixture(
+        directory.path(),
+        "case \"$(cat)\" in\n*/public*) exit 1;;\nesac\nprintf 'username=fixture\\npassword=fixture-token-a\\n\\n'",
+    );
+    let operation = operation_of(&case.handle, "op-mixed", context_of(Some(helper)));
+    let receive = GitService::ReceivePackAdvertisement;
+    // The private repository's advertisement is challenged and answered: the connection is helper-token bound.
+    let mut private = case.exchange_at(&operation, receive, "/private");
+    assert_eq!(body(&mut private).unwrap(), ADVERTISEMENT);
+    assert_eq!(
+        block_on(private.finish()).disposition,
+        Disposition::Reusable
+    );
+    case.wait("the connection is idle", |counts| counts.leased == 0);
+    // The public repository's advertisement is served anonymously on it.
+    let mut public = case.exchange_at(&operation, receive, "/public");
+    assert_eq!(body(&mut public).unwrap(), ADVERTISEMENT);
+    assert_eq!(block_on(public.finish()).disposition, Disposition::Reusable);
+    case.wait("the connection is idle", |counts| counts.leased == 0);
+    // Its push is a POST on the same connection.
+    let mut push = case.exchange_at(&operation, GitService::ReceivePackExchange, "/public");
+    write_body(&mut push, b"0000");
+    match body(&mut push) {
+        Ok(bytes) => assert_eq!(bytes, b"0000"),
+        Err(StreamError::Io(error)) => panic!("the anonymous push was refused: {:?}", error.kind()),
+        Err(_) => panic!("the anonymous push failed"),
+    }
+    assert_eq!(block_on(push.finish()).disposition, Disposition::Reusable);
+    block_on(operation.finish());
+    let seen = requests.lock().unwrap().clone();
+    let posts: Vec<_> = seen.iter().filter(|s| s.post && s.public).collect();
+    assert_eq!(posts.len(), 1, "the public POST reached the server once");
+    assert!(
+        posts[0].digest.is_none(),
+        "the public POST carried a credential"
+    );
+    assert_eq!(posts[0].connection, seen[0].connection);
+    assert_eq!(case.accepted(), 1, "one connection carried all three");
+    assert!(case.close());
+}
+
+#[test]
+fn a_post_on_a_connection_nothing_authenticated_is_refused_after_one_anonymous_attempt() {
+    // The deferred case (a Phase 3 prerequisite): the pool places a push's POST on a connection its advertisement did
+    // not authenticate. It goes out without a credential, the server challenges it, and it is refused (contract 7.2): a
+    // typed denial, nothing replayed, no credential sent, that connection closed and the host untouched.
+    let requests = Requests::default();
+    let case = Case::with(
+        |_| authorizing(&requests),
+        Behaviour::default(),
+        |_| (None, None),
+        None,
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let helper = token_helper(directory.path(), "fixture-token-a");
+    let operation = operation_of(&case.handle, "op-push", context_of(Some(helper)));
+    let mut push = case.exchange_of(&operation, GitService::ReceivePackExchange);
+    write_body(&mut push, b"0000");
+    assert!(matches!(
+        body(&mut push),
+        Err(StreamError::Io(error)) if error.kind() == std::io::ErrorKind::PermissionDenied
+    ));
+    assert_eq!(block_on(push.finish()).disposition, Disposition::Discarded);
+    block_on(operation.finish());
+    case.wait("the POST's connection is closed", |counts| {
+        counts.total() == 0
+    });
+    let seen = requests.lock().unwrap().clone();
+    assert_eq!(
+        seen.iter().filter(|s| s.post).count(),
+        1,
+        "the POST was sent once, never replayed"
+    );
+    assert!(
+        seen.iter().all(|s| s.digest.is_none()),
+        "a credential was sent"
+    );
+    assert_eq!(case.handle.snapshot().phase, HostPhase::Open);
     assert!(case.close());
 }

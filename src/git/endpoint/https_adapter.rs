@@ -16,9 +16,13 @@
 //!   session when it offers `Negotiate` or `NTLM` and the adapter has a native caller, otherwise by the helper of the
 //!   operation the exchange serves (the one its `AuthContext` holds, never another's; the adapter holds none) when it
 //!   offers `Basic`. A challenge to a POST is refused (contract 7.2): its body is on the wire, and nothing is replayed.
-//!   A POST on a connection a helper token authenticated, which only the binding that authenticated it is leased,
-//!   is sent with its operation's credential from its first byte, asked of the helper per exchange (a token is
-//!   request-scoped and kept nowhere), so an authenticated push can go through the host. The native route **fails closed**
+//!   A POST is sent with its operation's credential from its first byte, asked of the helper per exchange (a token is
+//!   request-scoped and kept nowhere), only on a connection a helper token authenticated for its own binding and for
+//!   the same repository path as the POST's; any other POST goes out anonymously. So an authenticated push goes through
+//!   the host only when the pool places its POST on the connection its advertisement was authenticated on. A POST the
+//!   pool places elsewhere (another connection of the binding, which nothing authenticated for that path) is sent
+//!   anonymously, challenged and refused: a typed `Authentication`, nothing replayed, and a prerequisite of Phase 3.
+//!   The native route **fails closed**
 //!   (contract 7.3, step 1.3a): when the composition's `ProcessSafety` is unavailable, or the caller's gate gave its
 //!   supervisor no window, it refuses before any credential is read or token sent.
 //! - Per-exchange scoping (contract 7.2): each connection's [`ConnectionScope`] records which authentication bound
@@ -91,6 +95,15 @@ pub(crate) struct HttpsInputs {
     pub(crate) settings: HttpsSettings,
 }
 
+/// The SHA-256 of a repository path: which repository a connection's authentication was for. The path is the URL path
+/// the exchange named, never a credential.
+pub(crate) type RepositoryDigest = [u8; 32];
+/// The digest of `path`.
+pub(super) fn repository_digest(path: &str) -> RepositoryDigest {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(path.as_bytes()).into()
+}
+
 /// Which authentication bound a connection's exchanges (contract 7.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Binding {
@@ -108,12 +121,14 @@ impl Binding {
     }
 }
 /// The scope record of one connection: the authentication that last bound it and, for an authenticated one, the
-/// adapter-local number of the exchange that did (an opaque tag, unique within the adapter). Once authenticated, a
-/// connection stays per-exchange scoped until it is disposed; a later anonymous exchange does not clear it.
+/// adapter-local number of the exchange that did (an opaque tag, unique within the adapter) and the digest of the
+/// repository path that exchange named. Once authenticated, a connection stays per-exchange scoped until it is
+/// disposed; a later anonymous exchange does not clear it. Nothing in it is a secret.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ConnectionScope {
     pub(crate) binding: Binding,
     pub(crate) exchange: Option<u64>,
+    pub(crate) repository: Option<RepositoryDigest>,
 }
 /// The adapter's scope records, one per live connection. A clone reads the same records.
 #[derive(Clone, Default)]
@@ -140,10 +155,17 @@ impl Scopes {
             ConnectionScope {
                 binding: Binding::Anonymous,
                 exchange: None,
+                repository: None,
             },
         );
     }
-    fn bound(&self, connection: ConnectionId, binding: Binding, exchange: u64) {
+    fn bound(
+        &self,
+        connection: ConnectionId,
+        binding: Binding,
+        exchange: u64,
+        repository: RepositoryDigest,
+    ) {
         if !binding.per_exchange() {
             return;
         }
@@ -151,6 +173,7 @@ impl Scopes {
             *scope = ConnectionScope {
                 binding,
                 exchange: Some(exchange),
+                repository: Some(repository),
             };
         }
     }

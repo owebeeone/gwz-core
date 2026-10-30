@@ -255,11 +255,10 @@ impl Worker {
             entry.phase = Phase::Broken;
             return;
         };
-        // The exchange is given the authentication that last bound this connection.
-        work.prior = self
-            .scopes
-            .of(connection)
-            .map_or(Binding::Anonymous, |scope| scope.binding);
+        // The exchange is given the authentication that last bound this connection, and the repository it was for.
+        let scope = self.scopes.of(connection);
+        work.prior = scope.map_or(Binding::Anonymous, |scope| scope.binding);
+        work.authenticated = scope.and_then(|scope| scope.repository);
         // Leased: its idle watch stands down until a reusable end makes it idle again.
         resource
             .reusable
@@ -401,8 +400,9 @@ fn step(
                 Some(Ended {
                     disposition,
                     binding,
+                    repository,
                 }) => {
-                    scopes.bound(id, binding, *exchanges);
+                    scopes.bound(id, binding, *exchanges, repository);
                     disposition == Disposition::Reusable
                 }
                 // The task panicked or was cancelled: nothing about the connection is proven.

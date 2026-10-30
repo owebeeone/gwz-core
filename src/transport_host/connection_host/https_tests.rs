@@ -194,6 +194,9 @@ impl Case {
         self.spec_for(through, GitService::UploadPackAdvertisement)
     }
     fn spec_for(&self, through: bool, service: GitService) -> ExchangeSpec {
+        self.spec_at(through, service, "/repo")
+    }
+    fn spec_at(&self, through: bool, service: GitService, path: &str) -> ExchangeSpec {
         let port = if through {
             self.proxy.port
         } else {
@@ -203,7 +206,22 @@ impl Case {
             Key::https("localhost", port),
             Identity::Https,
             service,
-            "/repo",
+            path,
+        )
+        .unwrap()
+    }
+    /// An exchange of `service` at the repository `path` through the proxy.
+    pub(super) fn exchange_at(
+        &self,
+        operation: &Operation,
+        service: GitService,
+        path: &str,
+    ) -> Exchange {
+        block_on(
+            operation
+                .open(self.spec_at(true, service, path))
+                .unwrap()
+                .wait(),
         )
         .unwrap()
     }

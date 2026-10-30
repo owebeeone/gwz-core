@@ -1,7 +1,9 @@
 //! One exchange's task on the worker's runtime: the smart-HTTP request on its leased connection, the answer to a
 //! challenge (`auth.rs`), the response body into the client's buffer, and the settlement that decides whether the
 //! connection can serve another exchange.
-use super::{Binding, HttpsSettings, auth, closes, pipe::Pipe};
+use super::{
+    Binding, HttpsSettings, RepositoryDigest, auth, closes, pipe::Pipe, repository_digest,
+};
 use crate::git::endpoint::{
     https_auth,
     https_connection::{Connection, RequestBody},
@@ -50,8 +52,10 @@ pub(crate) struct Work {
     /// The context of the operation this exchange serves, whose helper answers its challenges. It is dropped when the
     /// exchange's task ends.
     pub(super) auth: AuthContext,
-    /// Which authentication bound the connection when the exchange was given it (the adapter's scope record).
+    /// Which authentication bound the connection when the exchange was given it (the adapter's scope record), and the
+    /// digest of the repository path that authentication was for.
     pub(super) prior: Binding,
+    pub(super) authenticated: Option<RepositoryDigest>,
     pub(super) pipe: Arc<Pipe>,
     pub(super) settle: Arc<Settle>,
 }
@@ -62,10 +66,12 @@ impl Work {
         self.settle.end(Disposition::Discarded);
     }
 }
-/// How an exchange ended: whether its connection can serve another, and which authentication bound it.
+/// How an exchange ended: whether its connection can serve another, which authentication bound it and the digest of
+/// the repository path the exchange named.
 pub(super) struct Ended {
     pub(super) disposition: Disposition,
     pub(super) binding: Binding,
+    pub(super) repository: RepositoryDigest,
 }
 
 pub(super) fn wire_service(service: GitService) -> protocol::GitService {
@@ -186,6 +192,7 @@ pub(super) async fn run(
     Ended {
         disposition,
         binding,
+        repository: repository_digest(&work.path),
     }
 }
 
@@ -204,10 +211,14 @@ async fn exchange(
         None => no_body(),
     };
     // A POST's body is on the wire as the client writes it, so its challenge cannot be answered (contract 7.2). One on
-    // a connection a helper token authenticated is sent with the operation's own credential from its first byte, asked
-    // of the helper now: the connection serves only the binding that authenticated it, so its server is known to ask
-    // for one (a token is request-scoped and kept nowhere).
-    let secret = if !https_policy::advertisement(service) && work.prior == Binding::HelperToken {
+    // a connection a helper token authenticated for this very repository path is sent with the operation's own
+    // credential from its first byte, asked of the helper now: the connection serves only the binding that
+    // authenticated it, and that server asked for a credential at this path (a token is request-scoped and kept
+    // nowhere). A POST to any other path of the connection is anonymous, as a repository the server serves to anyone
+    // must stay reachable without a helper.
+    let authenticated_here = work.prior == Binding::HelperToken
+        && work.authenticated == Some(repository_digest(&work.path));
+    let secret = if !https_policy::advertisement(service) && authenticated_here {
         let config = helper.ok_or(ErrorCode::Authentication)?;
         let secret = tokio::select! {
             secret = auth::lookup(config, &destination, common) => secret?,
