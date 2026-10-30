@@ -124,6 +124,9 @@ jobs:
           # Convergence plan 2.1: nothing in the local carrier can weaken its peer rule.
           python scripts/checks/check_carrier_peer_rule.py
           python -m unittest scripts/checks/test_check_carrier_peer_rule.py
+          # Step 1.7: the driver-only builder cannot make a local endpoint (the type-level row).
+          python scripts/checks/check_driver_only_boundary.py
+          python -m unittest scripts/checks/test_check_driver_only_boundary.py
           python -m unittest scripts/checks/test_check_windows_parity.py scripts/test_windows_lane_check.py scripts/checks/test_check_windows_receipts.py tests/transport_backend/test_windows_qualification_boundary.py
           python -m unittest scripts/checks/test_check_filesystem_boundary.py scripts/checks/test_check_gwz_git_adoption.py scripts/checks/test_workflow_siblings.py scripts/checks/test_run_tests_filesystem_mode.py scripts/checks/test_run_tests_test_filter.py scripts/checks/test_run_tests_transport_globals.py scripts/checks/test_run_tests_transport_pin.py scripts/checks/test_run_tests_git_globals.py scripts/checks/test_run_tests_parallel_checks.py scripts/checks/test_check_process_globals.py scripts/checks/test_check_cfg_boundaries.py scripts/checks/test_check_candidate_switches.py scripts/checks/test_run_boundary_job.py scripts/checks/test_consumer_bridge_standalone.py scripts/checks/test_check_spawn_gate_minting.py
           python -m unittest scripts/checks/test_release_boundary.py -v

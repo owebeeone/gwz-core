@@ -12,6 +12,9 @@ mod cli_placement;
 pub(crate) mod composition;
 mod connection_factory;
 mod connection_host;
+// Step 1.7: the core-side host `gwz server` runs, whose first production caller is plan step 2.3.
+mod driver_only;
+pub use driver_only::{DriverOnly, DriverOnlyBuilder};
 pub(crate) mod endpoint_environment;
 mod helper_failure;
 mod https_endpoint;
@@ -107,6 +110,9 @@ cfg_if::cfg_if! {
 
 // Follow-up 1 of the SSH pump stall review: the large-blob push rows, ignored (they take minutes and gigabytes).
 cfg_if::cfg_if! { if #[cfg(test)] { mod blob_push_tests; } }
+
+// Step 1.7: the driver-only builder's rows.
+cfg_if::cfg_if! { if #[cfg(test)] { mod driver_only_tests; } }
 
 use crate::git::endpoint::agent_source::AgentSource;
 use crate::git::endpoint::https_auth::HelperSlots;

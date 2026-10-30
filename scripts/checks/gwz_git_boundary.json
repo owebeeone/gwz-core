@@ -62,16 +62,16 @@
   },
   {
    "path": "src/git/gitbackend/transport.rs",
-   "git2": 26,
+   "git2": 27,
    "rows": [
     "G4",
     "G5",
     "G6"
    ],
-   "responsibility": "local-peer transfer (fetch_anonymous, push_anonymous, local push remote, tracking refs), fetch, push, ls-remote, clone and read_remote_file over libgit2 remotes",
+   "responsibility": "local-peer transfer (fetch_anonymous, push_anonymous, local push remote, tracking refs), fetch, push, ls-remote, clone and read_remote_file over libgit2 remotes, and the effective-URL resolution (insteadOf, pushInsteadOf) the cli route check judges",
    "exit": "G4b with its step, G5 and G6 with step 5.4 after Phase 4.2",
-   "dated": "2026-10-25",
-   "producers": 53
+   "dated": "2026-10-30",
+   "producers": 58
   },
   {
    "path": "src/git/gitbackend.rs",

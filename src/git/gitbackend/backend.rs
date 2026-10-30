@@ -89,6 +89,17 @@ impl Git2Backend {
         }
     }
 
+    cfg_if::cfg_if! {
+        // Used only by the candidate-shape test of `transport_host::driver_only_tests`.
+        if #[cfg(all(test, gwz_transport_candidate, any(unix, windows)))] {
+            /// The callbacks an operation of this backend connects `url` with: the route binding alone, with no route
+            /// check and no identity before it (plan step 1.7: the binding itself must leave libgit2's own route out).
+            pub(crate) fn remote_callbacks_for_test<'a>(&self, url: &str) -> git2::RemoteCallbacks<'a> {
+                super::transport_support::remote_callbacks(self, url, None, None)
+            }
+        }
+    }
+
     pub fn without_credential_helpers() -> Self {
         super::transport_support::ensure_server_timeout();
         Self {

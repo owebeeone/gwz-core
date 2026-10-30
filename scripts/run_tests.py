@@ -495,6 +495,7 @@ def main(argv: list[str] | None = None) -> None:
         )
         start([sys.executable, str(ROOT / "scripts/checks/check_candidate_switches.py")])
         start([sys.executable, str(ROOT / "scripts/checks/check_carrier_peer_rule.py")])
+        start([sys.executable, str(ROOT / "scripts/checks/check_driver_only_boundary.py")])
         start([sys.executable, str(ROOT / "scripts/checks/check_windows_parity.py")])
         check_transport_process_globals(options.skip_transport_globals, start)
         check_transport_pin(options.skip_transport_globals, options.allow_transport_pin_mismatch)

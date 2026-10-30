@@ -31,7 +31,6 @@ pub(super) fn clone_repo_named(
 ) -> ModelResult<GitCloneResult> {
     ensure_clone_target_is_empty(path)?;
     let mut builder = git2::build::RepoBuilder::new();
-    builder.remote_create(move |repo, _default_name, url| repo.remote(remote, url));
     // Creation-time filter neutralization (Decision 1 Option B), clone edge:
     // this is the single production clone funnel, and `RepoBuilder::clone`
     // materializes the initial worktree itself — so the initial checkout runs
@@ -42,16 +41,25 @@ pub(super) fn clone_repo_named(
     let mut checkout = git2::build::CheckoutBuilder::new();
     checkout.disable_filters(true);
     builder.with_checkout(checkout);
-    let identity = identity::for_remote(backend, None, Some(remote), url)?;
+    // The route is judged on the URL the clone will connect to, before the target exists.
+    let judged = identity::judged_url(backend, url, || rewritten_by_global_configuration(url))?;
+    let identity = identity::for_remote(backend, None, Some(remote), &judged)?;
     let attempt = backend.observations.begin(
         path,
         remote,
         crate::TransportOperation::Clone,
         identity.as_ref(),
     );
+    // The new repository's own configuration is read when its remote is created: observe the remote it made.
+    let (observed, judged_url) = (attempt.clone(), judged.to_string());
+    builder.remote_create(move |repo, _default_name, url| {
+        let created = repo.remote(remote, url)?;
+        identity::refuse_unjudged_remote(backend, &judged_url, &created, &observed)?;
+        Ok(created)
+    });
     builder.fetch_options(fetch_options_with_progress(
         backend,
-        url,
+        &judged,
         identity,
         Some(attempt.clone()),
         Some(progress),
@@ -67,6 +75,14 @@ pub(super) fn clone_repo_named(
         path: path.to_path_buf(),
         head: backend.head(path)?,
     })
+}
+
+/// The URL a clone of `url` connects to. The clone's repository does not exist yet, so only the global configuration's
+/// `url.<base>.insteadOf` rules apply, and libgit2 applies exactly those to a detached remote: it reads the same default
+/// configuration, in memory, with no repository, no directory and no connection.
+fn rewritten_by_global_configuration(url: &str) -> ModelResult<String> {
+    let detached = git2::Remote::create_detached(url).map_err(git_error)?;
+    Ok(detached.url().map_err(git_error)?.to_owned())
 }
 
 pub(super) fn fetch(
@@ -181,7 +197,12 @@ pub(super) fn ls_remote_url(
     let mut remote = repo.remote_anonymous(url).map_err(git_error)?;
     let report_path = identity_repo.unwrap_or(Path::new("")).to_path_buf();
     let identity_repo = identity_repo.map(open_repo).transpose()?;
-    let identity = identity::for_remote(backend, identity_repo.as_ref(), Some(remote_name), url)?;
+    // The anonymous remote has applied the repository's `insteadOf` rules: judge the URL it will connect to.
+    let judged = identity::judged_url(backend, url, || {
+        Ok(remote.url().map_err(git_error)?.to_owned())
+    })?;
+    let identity =
+        identity::for_remote(backend, identity_repo.as_ref(), Some(remote_name), &judged)?;
     let attempt = backend.observations.begin(
         &report_path,
         remote_name,
@@ -285,11 +306,13 @@ fn admitted_local_peer(url: &str) -> ModelResult<String> {
 }
 
 pub(super) fn fetch_anonymous(
-    _backend: &Git2Backend,
+    backend: &Git2Backend,
     path: &Path,
     url: &str,
     refspecs: &[&str],
 ) -> ModelResult<GitFetchResult> {
+    // The Cli placement serves no local peer: refused before the peer is looked at.
+    identity::refuse_clone_family_under_cli(backend)?;
     let peer = admitted_local_peer(url)?;
     if refspecs.is_empty() {
         return Err(ModelError::new(
@@ -322,11 +345,12 @@ pub(super) fn fetch_anonymous(
 }
 
 pub(super) fn push_anonymous(
-    _backend: &Git2Backend,
+    backend: &Git2Backend,
     path: &Path,
     url: &str,
     refspec: &str,
 ) -> ModelResult<GitPushResult> {
+    identity::refuse_clone_family_under_cli(backend)?;
     let peer = admitted_local_peer(url)?;
     if refspec.trim().is_empty() {
         return Err(ModelError::new(
@@ -437,7 +461,16 @@ fn perform_push(
     plan: &GitPreparedPush,
 ) -> ModelResult<GitPushResult> {
     let remote = plan.remote.as_str();
-    let identity = identity::for_remote(backend, Some(repo), Some(remote), &plan.url)?;
+    // An anonymous handle has applied the repository's `insteadOf` and `pushInsteadOf` rules to the plan's URL: judge
+    // the push URL the handle will connect to.
+    let judged = identity::judged_url(backend, &plan.url, || {
+        Ok(remote_handle
+            .pushurl()
+            .map_err(git_error)?
+            .unwrap_or(remote_handle.url().map_err(git_error)?)
+            .to_owned())
+    })?;
+    let identity = identity::for_remote(backend, Some(repo), Some(remote), &judged)?;
     if plan.refspecs.is_empty() {
         return Ok(GitPushResult {
             remote: remote.to_owned(),
@@ -455,7 +488,7 @@ fn perform_push(
     );
     let report = super::transport_support::PushReport::default();
     let mut options =
-        remote_push_options(backend, &plan.url, identity, Some(attempt.clone()), &report);
+        remote_push_options(backend, &judged, identity, Some(attempt.clone()), &report);
     let pushed = match local_push_remote.as_mut() {
         Some(anonymous) => anonymous.push(&plan.refspecs, Some(&mut options)),
         None => remote_handle.push(&plan.refspecs, Some(&mut options)),
@@ -678,19 +711,28 @@ pub(super) fn read_remote_file(
     remote: &str,
     relative_path: &str,
 ) -> ModelResult<Option<Vec<u8>>> {
+    // The route is checked, on the URL the clone will connect to, before the scratch directory is made: a refused
+    // route writes nothing.
+    let judged = identity::judged_url(backend, url, || rewritten_by_global_configuration(url))?;
+    let identity = identity::for_remote(backend, None, Some(remote), &judged)?;
     let scratch = tempfile::tempdir().map_err(crate::git::io_error)?;
     let mut builder = git2::build::RepoBuilder::new();
     builder.bare(true);
-    let identity = identity::for_remote(backend, None, Some(remote), url)?;
     let attempt = backend.observations.begin(
         Path::new(""),
         remote,
         crate::TransportOperation::Clone,
         identity.as_ref(),
     );
+    let (observed, judged_url) = (attempt.clone(), judged.to_string());
+    builder.remote_create(move |repo, name, url| {
+        let created = repo.remote(name, url)?;
+        identity::refuse_unjudged_remote(backend, &judged_url, &created, &observed)?;
+        Ok(created)
+    });
     builder.fetch_options(remote_fetch_options(
         backend,
-        url,
+        &judged,
         identity,
         Some(attempt.clone()),
     ));

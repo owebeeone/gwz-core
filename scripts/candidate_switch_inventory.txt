@@ -22,6 +22,7 @@
 gwz_transport_candidate  src/git/gitbackend.rs  fn with_transport
 gwz_transport_candidate  src/git/gitbackend.rs  mod transport_candidate_tests
 gwz_transport_candidate  src/git/gitbackend.rs  use transport_support::server_timeout_ms as transport_timeout_ms
+gwz_transport_candidate  src/git/gitbackend/backend.rs  fn remote_callbacks_for_test
 gwz_transport_candidate  src/git/gitbackend/backend.rs  fn with_host_context
 gwz_transport_candidate  src/git/gitbackend/transport_binding.rs  fn check_identity
 gwz_transport_candidate  src/git/gitbackend/transport_binding.rs  fn is_cli_context
@@ -31,13 +32,17 @@ gwz_transport_candidate  src/git/gitbackend/transport_observations.rs  fn failed
 gwz_transport_candidate  src/git/gitbackend/transport_observations.rs  fn opened
 gwz_transport_candidate  src/git/gitbackend/transport_observations.rs  mod https_tests
 gwz_transport_candidate  src/git/gitbackend/transport_support.rs  fn server_timeout_ms
+gwz_transport_candidate  src/git/gitbackend/transport_support/identity.rs  enum LocalOnlyRoute
 gwz_transport_candidate  src/git/gitbackend/transport_support/identity.rs  fn check_selected
 gwz_transport_candidate  src/git/gitbackend/transport_support/identity.rs  fn configured_path
 gwz_transport_candidate  src/git/gitbackend/transport_support/identity.rs  fn for_backend
 gwz_transport_candidate  src/git/gitbackend/transport_support/identity.rs  fn from_options_cli
+gwz_transport_candidate  src/git/gitbackend/transport_support/identity.rs  fn is_cli
 gwz_transport_candidate  src/git/gitbackend/transport_support/identity.rs  fn opaque_path
 gwz_transport_candidate  src/git/gitbackend/transport_support/identity.rs  fn resolve_remote
+gwz_transport_candidate  src/git/gitbackend/transport_support/identity.rs  fn ssh_destination
 gwz_transport_candidate  src/git/gitbackend/transport_support/identity.rs  fn validate_endpoint_files
+gwz_transport_candidate  src/git/gitbackend/transport_support/identity.rs  mod route_tests
 gwz_transport_candidate  src/git/mod.rs  mod endpoint
 gwz_transport_candidate  src/lib.rs  mod transport_host
 gwz_transport_candidate  src/lib.rs  mod transport_setting

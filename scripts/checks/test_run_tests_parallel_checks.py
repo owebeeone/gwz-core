@@ -129,6 +129,7 @@ class ParallelChecks(unittest.TestCase):
             'check_cfg_boundaries.py',
             'check_candidate_switches.py',
             'check_carrier_peer_rule.py',
+            'check_driver_only_boundary.py',
             'check_windows_parity.py',
             'check_process_globals.py',
             'check_process_globals.py',
