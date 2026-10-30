@@ -280,6 +280,7 @@ impl SpawnGate {
 
             /// The process gate on the kernel object `name` (Windows; elsewhere the process gate): the gate of a row that
             /// saturates it, which must not hold the object the other rows of the process share.
+            #[allow(dead_code, reason = "only the transport build's fairness probe (https_auth::runner) saturates a gate")]
             pub(crate) fn process_named(name: &str) -> Self {
                 let process = ProcessLock::named(name);
                 let excludes = Self::PROCESS_EXCLUDES && !process.active();
