@@ -147,8 +147,10 @@ fn thirty_two_streams_closing_together_wait_out_one_delayed_close() {
 /// ever for a close: an Open grants its endpoint `OPEN_CLEANUP_MS` (5 s, `session/driver.rs`) for it, the endpoint
 /// discards a connection whose close is still open that long after the handoff, and the pool's `cleanup_timeout_ms`
 /// can only tighten that bound (`validate_deadlines`), not extend it. So a command that waited for the close would
-/// finish at about 5 s, not hang. The bound is half of that. It is one-sided: a healthy exit takes milliseconds (the
-/// whole test, fixture setup included, took 1.6 s at most in 102 runs under load on dabeest).
+/// finish at about 5 s, not hang. The bound is half of that, and nothing ties it to `OPEN_CLEANUP_MS`: if that falls
+/// below twice this bound, a command that waits for the close passes. It is one-sided: a healthy exit takes
+/// milliseconds (the whole process, fixture setup included, took at most 4.7 s in 102 runs with 18 CPU burners and
+/// 2.0 s in 600 with 24 on dabeest; the exit alone was not timed).
 const EXIT_BOUND: Duration = Duration::from_millis(2_500);
 
 /// A command that has all its results does not wait for a connection's close
