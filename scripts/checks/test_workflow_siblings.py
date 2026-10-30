@@ -156,7 +156,7 @@ class WorkflowSiblings(unittest.TestCase):
         if not workflow.is_file():
             self.skipTest(f'no gwz-git checkout at {sibling}')
         text = workflow.read_text(encoding='utf-8')
-        for runner in ('ubuntu-24.04-arm', 'macos-14', 'windows-2022'):
+        for runner in ('ubuntu-24.04-arm', 'macos-15', 'windows-2022'):
             self.assertIn(runner, text)
         self.assertEqual(len(re.findall(r'cargo test --locked', text)), 2)  # the unix matrix job and the windows job
         for command in ('cargo fmt --check', 'cargo clippy --locked --all-targets -- -D warnings'):
