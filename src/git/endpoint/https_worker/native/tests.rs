@@ -26,18 +26,26 @@ cfg_if::cfg_if! {
         // Not `/bin/kill -KILL -PID`: procps-ng 4.0.4 (Ubuntu 24.04, the hosted runner) reads a negative PID as an
         // option and signals the group named by its first digit (procps issue #354), so the tree lived on, and a PID
         // starting with 1 would have been kill(-1), every process the user owns.
-        fn kill_tree(child: &std::process::Child) {
+        fn kill_tree(child: &std::process::Child) -> std::io::Result<()> {
             // SAFETY: `isolate` made this child the leader of its own group, so the negated PID names that group,
             // never the test's own group.
-            unsafe {
-                libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
+            let sent = unsafe { libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL) };
+            if sent == 0 {
+                Ok(())
+            } else {
+                Err(std::io::Error::last_os_error())
             }
         }
     } else {
         fn isolate(_command: &mut std::process::Command) {}
-        fn kill_tree(child: &std::process::Child) {
-            let _ = std::process::Command::new("taskkill").args(["/T", "/F", "/PID", &child.id().to_string()])
-                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+        fn kill_tree(child: &std::process::Child) -> std::io::Result<()> {
+            let status = std::process::Command::new("taskkill").args(["/T", "/F", "/PID", &child.id().to_string()])
+                .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status()?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(std::io::Error::other(format!("taskkill ended with {status}")))
+            }
         }
     }
 }
@@ -66,7 +74,7 @@ cfg_if::cfg_if! { if #[cfg(test)] {
         let status = loop {
             if let Some(status) = child.try_wait().unwrap() { break status; }
             if std::time::Instant::now() >= until {
-                kill_tree(&child);
+                let _ = kill_tree(&child);
                 let _ = child.wait(); panic!("real SSPI validator fixture exceeded bound");
             }
             std::thread::sleep(Duration::from_millis(2));
@@ -220,10 +228,9 @@ cfg_if::cfg_if! { if #[cfg(test)] {
             Ok("root") => {
                 let _leaf = role("leaf").stdout(Stdio::inherit()).stderr(Stdio::null()).spawn().unwrap();
                 let mut output = std::io::stdout().lock();
-                // libtest may already have written `test <name> ... ` on this line (it does with one test thread).
-                output.write_all(b"\n").unwrap();
-                output.write_all(KILL_TREE_READY).unwrap();
-                output.write_all(b"\n").unwrap();
+                // libtest may already have written `test <name> ... ` on this line (it does with one test thread). One
+                // write, so the leaf's own prefix cannot land between the newline and the ready line.
+                output.write_all(&[b"\n", KILL_TREE_READY, b"\n"].concat()).unwrap();
                 output.flush().unwrap();
                 std::thread::sleep(Duration::from_secs(120));
             }
@@ -242,7 +249,7 @@ cfg_if::cfg_if! { if #[cfg(test)] {
                         break;
                     }
                 }
-                kill_tree(&child);
+                kill_tree(&child).expect("kill_tree could not signal the tree");
                 assert!(!child.wait().unwrap().success(), "the tree's root was not ended");
                 let ended = std::time::Instant::now();
                 tree_output.read_to_end(&mut Vec::new()).unwrap();

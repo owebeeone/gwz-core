@@ -147,8 +147,9 @@ fn thirty_two_streams_closing_together_wait_out_one_delayed_close() {
 /// ever for a close: an Open grants its endpoint `OPEN_CLEANUP_MS` (5 s, `session/driver.rs`) for it, the endpoint
 /// discards a connection whose close is still open that long after the handoff, and the pool's `cleanup_timeout_ms`
 /// can only tighten that bound (`validate_deadlines`), not extend it. So a command that waited for the close would
-/// finish at about 5 s, not hang. The bound is half of that, and nothing ties it to `OPEN_CLEANUP_MS`: if that falls
-/// below twice this bound, a command that waits for the close passes. It is one-sided: a healthy exit takes
+/// finish at about 5 s, not hang. The bound is half of that, and nothing ties it to `OPEN_CLEANUP_MS`: a command that
+/// waits for the close is caught only if its exit begins less than `OPEN_CLEANUP_MS` - `EXIT_BOUND` after the handoff
+/// (2.5 s today), so a lower `OPEN_CLEANUP_MS` narrows that window and one at `EXIT_BOUND` closes it. It is one-sided: a healthy exit takes
 /// milliseconds (the whole process, fixture setup included, took at most 4.7 s in 102 runs with 18 CPU burners and
 /// 2.0 s in 600 with 24 on dabeest; the exit alone was not timed).
 const EXIT_BOUND: Duration = Duration::from_millis(2_500);
@@ -161,8 +162,8 @@ const EXIT_BOUND: Duration = Duration::from_millis(2_500);
 /// no timer of the server's ends it (one did, on a hosted Windows runner: `(leased, idle)` was `(0, 1)`). The product
 /// itself ends it 5 s after the handoff (see [`EXIT_BOUND`]), so the count below must be read within that window:
 /// 30 ms was the window of the timer, and about 5 s is this one. A read stalled past it fails on the count, `(0, 0)`.
-/// A command that waited for the close fails on [`EXIT_BOUND`], provided its exit began less than `EXIT_BOUND` after
-/// the handoff: past that the product's own 5 s bound leaves it less than `EXIT_BOUND` to wait.
+/// A command that waited for the close fails on [`EXIT_BOUND`], provided its exit began less than `OPEN_CLEANUP_MS` -
+/// `EXIT_BOUND` (2.5 s) after the handoff: past that the product's own bound leaves it less than `EXIT_BOUND` to wait.
 #[test]
 fn command_exit_does_not_wait_for_a_close_in_flight() {
     // The test-controlled server: this test reads the output to its end, so the server must send its EOF at once
