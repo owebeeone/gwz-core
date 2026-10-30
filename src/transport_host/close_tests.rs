@@ -13,12 +13,12 @@ use super::driver_tests::{block_on, commit, endpoint_home, fixture_url, local_me
 use super::*;
 use crate::git::endpoint::{
     ssh_channel::GitService,
-    ssh_close_fixture::{delayed_close_fixture, late_close_server, read_advertisement},
+    ssh_close_fixture::{delayed_close_fixture, gated_close_server, read_advertisement},
 };
 use gwz_transport::{protocol::Disposition, stream::CloseResult};
 use std::{
     io::{self, Read, Write},
-    sync::Barrier,
+    sync::{Barrier, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -143,15 +143,29 @@ fn thirty_two_streams_closing_together_wait_out_one_delayed_close() {
     assert_closes_overlap(32);
 }
 
+/// How long a command's exit may take, from when it begins, with a close held in flight. The product does not wait for
+/// ever for a close: an Open grants its endpoint `OPEN_CLEANUP_MS` (5 s, `session/driver.rs`) for it, the endpoint
+/// discards a connection whose close is still open that long after the handoff, and the pool's `cleanup_timeout_ms`
+/// can only tighten that bound (`validate_deadlines`), not extend it. So a command that waited for the close would
+/// finish at about 5 s, not hang. The bound is half of that. It is one-sided: a healthy exit takes milliseconds (the
+/// whole test, fixture setup included, took 1.6 s at most in 102 runs under load on dabeest).
+const EXIT_BOUND: Duration = Duration::from_millis(2_500);
+
 /// A command that has all its results does not wait for a connection's close
 /// to end: its request finishes, and its runtime shuts down, with a close in
 /// flight, which is discarded.
+///
+/// The server holds the close in flight until the test releases it, after the request and the runtime are done, so
+/// no timer of the server's ends it (one did, on a hosted Windows runner: `(leased, idle)` was `(0, 1)`). The product
+/// itself ends it 5 s after the handoff (see [`EXIT_BOUND`]), so the count below must be read within that window:
+/// 30 ms was the window of the timer, and about 5 s is this one. A read stalled past it fails on the count, `(0, 0)`.
+/// A command that waited for the close fails on [`EXIT_BOUND`], provided its exit began less than `EXIT_BOUND` after
+/// the handoff: past that the product's own 5 s bound leaves it less than `EXIT_BOUND` to wait.
 #[test]
 fn command_exit_does_not_wait_for_a_close_in_flight() {
-    let delay = Duration::from_secs(3);
     // The test-controlled server: this test reads the output to its end, so the server must send its EOF at once
     // and close later, which `sshd` on Windows cannot do (the EOF comes with the exit).
-    let fixture = late_close_server(delay);
+    let fixture = gated_close_server();
     let server = git2::Repository::open_bare(&fixture.repository).unwrap();
     commit(&server, "advertised");
     let home = fixture.temp.path().join("endpoint-home");
@@ -187,7 +201,6 @@ fn command_exit_does_not_wait_for_a_close_in_flight() {
     stream.end_write().unwrap();
     let mut rest = Vec::new();
     stream.read_to_end(&mut rest).unwrap();
-    let started = Instant::now();
     stream
         .close()
         .expect("the push's result is final at the server's EOF");
@@ -199,12 +212,33 @@ fn command_exit_does_not_wait_for_a_close_in_flight() {
         .clone();
     let counts = endpoint.ssh_counts_for_test().unwrap();
     assert_eq!((counts.leased, counts.idle), (1, 0), "{counts:?}");
-    assert_eq!(block_on(request.finish()).pending_local_work, 0);
-    block_on(runtime.shutdown());
-    assert!(
-        started.elapsed() < delay / 2,
-        "the command's exit took {:?}, with a close {delay:?} from ending",
-        started.elapsed()
-    );
+    // The close is held, so a finish or a shutdown that waited for it would wait until the product ends the close, at
+    // its 5 s bound: this ends the wait at `EXIT_BOUND`, and no healthy run is near it. The gate is opened before the
+    // failure is reported, so the failure does not wait for the close either.
+    let (done, finished) = mpsc::channel();
+    thread::scope(|threads| {
+        threads.spawn(move || {
+            assert_eq!(block_on(request.finish()).pending_local_work, 0);
+            block_on(runtime.shutdown());
+            let _ = done.send(());
+        });
+        let waited = finished.recv_timeout(EXIT_BOUND);
+        fixture.release_closes();
+        match waited {
+            Ok(()) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                panic!(
+                    "the command's exit had not finished {EXIT_BOUND:?} after it began, with a close held in \
+                     flight: it waited for the close"
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                panic!(
+                    "the command's exit ended without finishing: its thread panicked (its own message is above), \
+                     which is not a wait for the close"
+                );
+            }
+        }
+    });
     assert!(!fixture.marker.exists());
 }

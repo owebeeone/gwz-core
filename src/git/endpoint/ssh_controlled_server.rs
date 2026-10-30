@@ -35,7 +35,7 @@ use std::{
     time::Duration,
 };
 use tempfile::TempDir;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 
 mod command;
 mod handler;
@@ -52,10 +52,16 @@ pub(crate) enum Ending {
     /// The server reads nothing more from the connection once the client's EOF arrives, so the CHANNEL_CLOSE a
     /// client sends after its EOF (libssh2 sends the EOF first, always) is never read, and never answered.
     Stuck,
-    /// The EOF is sent at once, and the exit status and the close follow after this long: a server whose session
-    /// process is slow to exit after it has closed its output. (`sshd` on Windows sends the EOF only when the
-    /// process exits, so a script under it cannot make this state.)
-    Late(Duration),
+    /// The EOF is sent at once, and the exit status and the close follow when the test says so
+    /// ([`ControlledSshd::release_closes`]): a server whose session process is slow to exit after it has closed its
+    /// output, until the test opens the gate. A timer would be a race against a loaded runner; the gate is not. The
+    /// server holds the close that long, but a client may end it sooner: the transport host's endpoint discards a
+    /// connection whose close is still in flight 5 s after the handoff (`OPEN_CLEANUP_MS`). As with [`Ending::Stuck`]
+    /// the server reads nothing more from the connection once the client's EOF arrives, until the gate opens, so the
+    /// client's CHANNEL_CLOSE is not answered before then: russh would answer it at once, and the close would not be in
+    /// flight at all. (`sshd` on Windows sends the EOF only when the process exits, so a script under it cannot make
+    /// this state.)
+    Gated,
 }
 
 /// A running controlled server and the files a client of it needs.
@@ -67,6 +73,8 @@ pub(crate) struct ControlledSshd {
     pub(crate) repository: PathBuf,
     pub(crate) marker: PathBuf,
     pub(crate) authenticated_sessions: usize,
+    /// The gate of [`Ending::Gated`]: open once [`ControlledSshd::release_closes`] says so, for every channel.
+    gate: watch::Sender<bool>,
     stop: Option<oneshot::Sender<()>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -112,6 +120,7 @@ impl ControlledSshd {
         let config = Arc::new(config);
         let user = layout.user.clone();
         let (stop, stopped) = oneshot::channel();
+        let (gate, gated) = watch::channel(false);
         let thread = thread::Builder::new()
             .name("controlled-sshd".into())
             .spawn(move || {
@@ -124,12 +133,14 @@ impl ControlledSshd {
                     let accepting = async {
                         while let Ok((socket, _)) = listener.accept().await {
                             let hold = Arc::new(AtomicBool::new(false));
-                            let stream = holdable::Holdable::new(socket, hold.clone());
+                            let release = (ending == Ending::Gated).then(|| gated.clone());
+                            let stream = holdable::Holdable::new(socket, hold.clone(), release);
                             let client = handler::Client::new(
                                 user.clone(),
                                 authorized.clone(),
                                 ending,
                                 hold,
+                                gated.clone(),
                             );
                             let config = config.clone();
                             tokio::spawn(async move {
@@ -156,9 +167,15 @@ impl ControlledSshd {
             repository: layout.repository,
             marker: layout.marker,
             authenticated_sessions: 0,
+            gate,
             stop: Some(stop),
             thread: Some(thread),
         }
+    }
+
+    /// Lets every [`Ending::Gated`] channel, those open and those to come, send its exit status and close.
+    pub(crate) fn release_closes(&self) {
+        self.gate.send_replace(true);
     }
 
     /// An authenticated, nonblocking session; panics if the setup fails.
