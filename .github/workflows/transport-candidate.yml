@@ -189,6 +189,26 @@ jobs:
           python scripts/run_tests.py --skip-cfg-sibling gwz-cli --no-fail-fast \
             --manifest-path="$RUNNER_TEMP/candidate/Cargo.toml" \
             --target-dir="$GITHUB_WORKSPACE/candidate-target" 2>&1 | tee "$RUNNER_TEMP/candidate.log"
+      - name: Candidate clippy ratchet
+        # Operator decision D-U (2026-10-31): the candidate shape carries clippy
+        # debt (plan step 6.1 removes it) that no gate saw, because this job ran
+        # only cargo check. scripts/checks/check_candidate_clippy.py lints every
+        # unit of the prepared tree with --message-format=json and --keep-going
+        # (no -D warnings, so the integration targets are reached), reduces each
+        # diagnostic to (lint, file, enclosing item, unit) and compares the
+        # counts with scripts/checks/candidate_clippy_allowlist.json: a new key
+        # or a count that rose fails, a count that fell is reported so the list
+        # shrinks. It sets RUSTFLAGS and CLIPPY_CONF_DIR itself and builds into
+        # the suites' cached candidate-target, so only the check-mode artifacts
+        # are added to the cache. It runs whether or not the suites passed.
+        if: ${{ !cancelled() }}
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          python -m unittest scripts/checks/test_check_candidate_clippy.py
+          python scripts/checks/check_candidate_clippy.py \
+            --manifest-path "$RUNNER_TEMP/candidate/Cargo.toml" \
+            --target-dir "$GITHUB_WORKSPACE/candidate-target"
       - name: Summarize failures
         if: always()
         run: |
