@@ -20,8 +20,8 @@ use crate::{
 };
 use bytes::Bytes;
 use gwz_connection::{
-    AuthContext, AuthScope, EndpointProfile, EndpointRoute, Operation, OperationPolicy,
-    PreparedOperation,
+    AuthContext, AuthScope, EndpointProfile, EndpointRoute, OpenFailure, Operation,
+    OperationPolicy, PreparedOperation,
 };
 use gwz_connection::{
     EndpointAdapter, EndpointFactory, EndpointSpec, Exchange, ExchangeSpec, FactoryEnv,
@@ -369,6 +369,73 @@ fn a_dead_idle_https_connection_is_detected_and_discarded() {
         "the next operation got a fresh connection"
     );
     block_on(b.finish());
+    assert!(case.close());
+}
+
+#[test]
+fn a_second_https_opening_at_per_host_one_ends_in_allocation_timeout_at_the_bound() {
+    // Phase 1 remediation R1 (Code P2-1 = State P2-1; the State review's REVIEW18-ALLOC): the first exchange holds the
+    // only connection the operation may have, and the host is quiet, so nothing wakes the driver but the second
+    // opening's own submission. The opening still ends, typed, at the pool's allocation bound (the default, 30 s: the
+    // host takes no shorter bound from its operations, so the row waits it out).
+    let case = Case::new(served);
+    let input = PreparedOperation::new(
+        "op-limited",
+        EndpointRoute::ssh_and_https(),
+        EndpointProfile::new(b"fixture-https".to_vec(), [7; 32]).unwrap(),
+        context_of(None),
+        OperationPolicy::new(4, 1, 3).unwrap(),
+    )
+    .unwrap();
+    let operation = block_on(case.handle.admit(input).unwrap().acquire())
+        .unwrap()
+        .register();
+    let first = case.exchange(&operation, true);
+    case.wait("the one connection is leased", |counts| counts.leased == 1);
+    // The driver settles and parks with no deadline of its own.
+    thread::sleep(Duration::from_secs(1));
+    let bound = Duration::from_millis(gwz_transport::pool::Config::default().allocation_timeout_ms);
+    let slack = Duration::from_secs(5);
+    let started = Instant::now();
+    let mut second = Box::pin(operation.open(case.spec(true)).unwrap().wait());
+    let waker = std::task::Waker::noop();
+    let outcome = loop {
+        if let std::task::Poll::Ready(outcome) = second
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(waker))
+        {
+            break outcome;
+        }
+        assert!(
+            started.elapsed() < bound + slack,
+            "the opening was still undecided {:?} after it was made",
+            started.elapsed()
+        );
+        thread::sleep(Duration::from_millis(20));
+    };
+    let elapsed = started.elapsed();
+    assert!(
+        matches!(
+            outcome,
+            Err(OpenFailure::Pool(
+                gwz_transport::pool::Error::AllocationTimeout
+            ))
+        ),
+        "{:?}",
+        outcome.err()
+    );
+    assert!(
+        elapsed + Duration::from_secs(1) >= bound,
+        "decided at {elapsed:?}, before the bound {bound:?}"
+    );
+    assert_eq!(
+        case.handle.snapshot().connections.leased,
+        1,
+        "the first is untouched"
+    );
+    drop(second);
+    first.abort();
+    block_on(operation.finish());
     assert!(case.close());
 }
 
