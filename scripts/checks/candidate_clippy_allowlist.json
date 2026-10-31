@@ -1595,6 +1595,15 @@
      "class": "style"
     },
     {
+     "lint": "clippy::needless_update",
+     "file": "tests/transport_backend/guide_example.rs",
+     "item": "fn fetch_using_client",
+     "unit": "transport_placement_guide:test",
+     "count": 1,
+     "owner": "6.1",
+     "class": "style"
+    },
+    {
      "lint": "clippy::nonminimal_bool",
      "file": "src/git/endpoint/placement_endpoint/limit_tests.rs",
      "item": "fn p2_7_a_request_cancelled_with_an_open_in_flight_leaves_no_machine_behind",
