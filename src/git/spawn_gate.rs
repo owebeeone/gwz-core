@@ -178,8 +178,14 @@ struct Shared {
 /// included, so that at most one waiting hold is ever queued in the kernel and a launch is not overtaken by a queue of them.
 struct State {
     held: bool,
-    /// Launches that are waiting for the gate ([`Launching`]). A blocking hold does not start while there is one.
+    /// Launches that are waiting for the gate ([`Launching`]). A blocking hold defers to them, within
+    /// [`SpawnGate::LAUNCHES_AHEAD`].
     launches: usize,
+    /// Blocking holds that are waiting in [`SpawnGate::hold`].
+    waiting_holds: usize,
+    /// Launches admitted since a blocking hold last was, counted only while one waits. At [`SpawnGate::LAUNCHES_AHEAD`] the
+    /// next admission is the blocking hold's.
+    launch_streak: usize,
 }
 
 impl Shared {
@@ -213,10 +219,14 @@ enum Release {
 }
 
 /// A launch that is waiting for the gate (the HTTPS helper's, which waits on its own clock by polling [`SpawnGate::try_hold`]).
-/// While one exists a blocking [`SpawnGate::hold`] does not start, so the launch is overtaken by the holds already queued and
-/// by no later one: without it a launch that polls loses the gate to a queue of blocking holds for as long as the queue
-/// is refilled (the spawn-gate fairness probe, `https_auth/runner/gate_fairness_tests.rs`). Dropping it, with the launch
-/// holding the gate or having given up, lets the blocking holds start again.
+/// While one exists a blocking [`SpawnGate::hold`] defers to it, so a launch that polls is not lost to a queue of blocking
+/// holds for as long as the queue is refilled (the spawn-gate fairness probe, `https_auth/runner/gate_fairness_tests.rs`).
+/// The precedence is bounded, the other way: once [`SpawnGate::LAUNCHES_AHEAD`] launches have been admitted since a
+/// blocking hold last was, while one waits, the next admission is a blocking hold's and the launch polls on (a launch is
+/// refused by [`Self::try_hold`] until it is). Without the bound a stream of overlapping launches, each registered before
+/// the last is dropped, keeps a blocking hold out for as long as the stream lasts (`spawn_gate/bounded_precedence_tests.rs`).
+/// Counting launches rather than time keeps the gate free of a clock, and the bound holds however long a launch's window is.
+/// Dropping it, with the launch holding the gate or having given up, lets the blocking holds start again.
 pub(crate) struct Launching {
     gate: SpawnGate,
 }
@@ -230,6 +240,9 @@ impl SpawnGate {
     )]
     pub(crate) const PROCESS_EXCLUDES: bool = cfg!(windows);
 
+    /// The most launches that are admitted while a blocking hold waits (see [`Launching`]).
+    pub(crate) const LAUNCHES_AHEAD: usize = 4;
+
     fn make(scope: Scope, excludes: bool, process: ProcessLock) -> Self {
         Self {
             shared: Arc::new(Shared {
@@ -238,6 +251,8 @@ impl SpawnGate {
                 state: Mutex::new(State {
                     held: false,
                     launches: 0,
+                    waiting_holds: 0,
+                    launch_streak: 0,
                 }),
                 changed: Condvar::new(),
                 process,
@@ -317,7 +332,8 @@ impl SpawnGate {
     }
 
     /// Waits until no other hold exists, then holds the gate. A thread that holds it must not ask again: the gate
-    /// is not re-entrant. It does not start while a launch is waiting ([`Self::launching`]).
+    /// is not re-entrant. It defers to a launch that is waiting ([`Self::launching`]), but to no more than
+    /// [`Self::LAUNCHES_AHEAD`] of them.
     pub(crate) fn hold(&self) -> SpawnHold {
         if !self.shared.guards() {
             return SpawnHold {
@@ -325,13 +341,16 @@ impl SpawnGate {
             };
         }
         let mut state = self.shared.lock();
-        while state.held || state.launches > 0 {
+        state.waiting_holds += 1;
+        while state.held || (state.launches > 0 && state.launch_streak < Self::LAUNCHES_AHEAD) {
             state = self
                 .shared
                 .changed
                 .wait(state)
                 .unwrap_or_else(PoisonError::into_inner);
         }
+        state.waiting_holds -= 1;
+        state.launch_streak = 0;
         state.held = true;
         drop(state);
         // The process gate's kernel object, with the in-process lock held: the one thread of this gate that is let to wait
@@ -358,19 +377,37 @@ impl SpawnGate {
         reason = "only the transport build's launches wait on their own clock"
     )]
     pub(crate) fn try_hold(&self) -> Option<SpawnHold> {
+        self.take(false)
+    }
+
+    /// [`Self::try_hold`] for a registered launch (`launch`), whose admission is counted against the blocking holds it
+    /// takes precedence over, and is refused when the blocking hold waiting is due: [`Self::LAUNCHES_AHEAD`] launches
+    /// have been admitted since a blocking hold last was.
+    #[allow(
+        dead_code,
+        reason = "only the transport build's launches wait on their own clock"
+    )]
+    fn take(&self, launch: bool) -> Option<SpawnHold> {
         if !self.shared.guards() {
             return Some(SpawnHold {
                 release: Release::Nothing,
             });
         }
         let mut state = self.shared.lock();
-        if state.held {
+        let contended = launch && state.waiting_holds > 0;
+        if state.held || (contended && state.launch_streak >= Self::LAUNCHES_AHEAD) {
             return None;
         }
         state.held = true;
+        if contended {
+            state.launch_streak += 1;
+        }
         drop(state);
         if self.shared.process.active() && !self.shared.process.try_acquire() {
             // Another handle of the process gate, or another thread outside this one, has the kernel object.
+            if contended {
+                self.shared.lock().launch_streak -= 1;
+            }
             self.shared.unlock();
             return None;
         }
@@ -447,7 +484,7 @@ impl Launching {
         reason = "only the transport build's launches wait on their own clock"
     )]
     pub(crate) fn try_hold(&self) -> Option<SpawnHold> {
-        self.gate.try_hold()
+        self.gate.take(true)
     }
 }
 
@@ -465,5 +502,6 @@ impl Drop for Launching {
 cfg_if::cfg_if! {
     if #[cfg(test)] {
         mod tests;
+        mod bounded_precedence_tests;
     }
 }
