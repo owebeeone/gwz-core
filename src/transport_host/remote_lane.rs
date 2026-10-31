@@ -24,7 +24,7 @@ use gwz_connection::{
     Clock, HostHandle, HostNamespace, Progress,
     remote::{
         BindBounds, ClientSession, CoreBinding, Invocations, Lane, LaneEnded, LaneSend, Receiver,
-        serve_bindings,
+        RemoteConfig, serve_bindings,
     },
 };
 use gwz_transport::protocol::MessageKind;
@@ -58,15 +58,19 @@ pub(crate) struct CarrierLane {
     retired: Mutex<VecDeque<String>>,
 }
 impl CarrierLane {
-    /// The core's end of a served session; its bindings are held to `bounds`, those of the handle it serves.
+    /// The core's end of a served session. Its bindings are held to the bounds `config` implies (`BindBounds::core`), so
+    /// the caller passes the one `config` here and to `remote::handle_with`: the lane and the handle it serves cannot
+    /// disagree about a binding's streams, and `config` cannot ask for more than the client's end holds (its
+    /// `streams_per_binding` is held to the client's ceiling).
     pub(crate) fn core(
         carrier: Arc<dyn Carrier>,
         clock: Arc<dyn Clock>,
         progress: Arc<dyn Progress>,
         namespace: HostNamespace,
         calls: Arc<dyn Calls>,
-        bounds: BindBounds,
+        config: &RemoteConfig,
     ) -> Arc<Self> {
+        let bounds = BindBounds::core(config);
         Arc::new(Self {
             bound: carrier.binding(),
             carrier,

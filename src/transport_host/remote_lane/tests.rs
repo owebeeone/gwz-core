@@ -10,7 +10,7 @@ use crate::transport_host::{
 };
 use gwz_connection::{
     Clock, DriverWork, HostNamespace, Progress, ProgressUnavailable, Sleep, Tick,
-    remote::{BindBounds, CoreBinding, Lane, LaneEnded, LaneSend, RemoteConfig},
+    remote::{CoreBinding, Lane, LaneEnded, LaneSend, RemoteConfig},
 };
 use gwz_transport::protocol::{EndpointRole, MessageKind};
 use std::sync::Arc;
@@ -64,7 +64,7 @@ fn ends() -> (Arc<CarrierLane>, Arc<CarrierLane>, Dyn, Dyn) {
         Arc::new(Held),
         HostNamespace::new(9),
         Arc::new(Registry),
-        BindBounds::core(&RemoteConfig::default()),
+        &RemoteConfig::default(),
     );
     let client = CarrierLane::client(b.clone(), Arc::new(Fixed), Arc::new(Held));
     (core, client, a, b)
@@ -153,6 +153,18 @@ fn stream_ends_with(
     Arc<StreamCarrier>,
     Arc<StreamCarrier>,
 ) {
+    stream_ends_for(limits, &RemoteConfig::default())
+}
+/// [`stream_ends_with`] for a core whose handle is made under `config` (the same value `handle_with` takes).
+fn stream_ends_for(
+    limits: CarrierLimits,
+    config: &RemoteConfig,
+) -> (
+    Arc<CarrierLane>,
+    Arc<CarrierLane>,
+    Arc<StreamCarrier>,
+    Arc<StreamCarrier>,
+) {
     let (core_read, client_write) = std::io::pipe().expect("pipe");
     let (client_read, core_write) = std::io::pipe().expect("pipe");
     let id = CarrierId::random().expect("random");
@@ -177,7 +189,7 @@ fn stream_ends_with(
             Arc::new(Held),
             HostNamespace::new(9),
             Arc::new(Registry),
-            BindBounds::core(&RemoteConfig::default()),
+            config,
         ),
         CarrierLane::client(client.clone(), Arc::new(Fixed), Arc::new(Held)),
         core,
@@ -517,4 +529,113 @@ fn a_core_end_remembers_at_most_a_binding_limit_of_retired_names() {
     assert_eq!(core.retired.lock().unwrap().len(), super::RETIRED);
     assert!(!core.was_retired("s.0"), "the oldest names are forgotten");
     assert!(core.was_retired(&format!("s.{}", super::RETIRED + 9)));
+}
+
+// --- step 2.3b (Code P3-7): one config for the lane and the handle ---
+
+/// Registers `call-1` on `host` over a stream carrier and has the client's endpoint half answer `bound`. Returns the
+/// registered operation and its binding's session name; the client lane is left unread from then on.
+fn registered_over(
+    host: &gwz_connection::HostHandle,
+    client: &CarrierLane,
+) -> (gwz_connection::Operation, String) {
+    use gwz_connection::{OperationRef, Registration};
+    use gwz_transport::{
+        binding::{EndpointConfig, default_limits},
+        mux::{Config, Mux},
+        protocol::{AuthPolicy, Scheme},
+    };
+    let admission = host.admit(OperationRef::new("call-1").unwrap()).unwrap();
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    let mut acquire = Box::pin(admission.acquire());
+    let std::task::Poll::Ready(permit) = acquire.as_mut().poll(&mut cx) else {
+        panic!("a free slot");
+    };
+    let op = permit.unwrap().register();
+    let bind = eventually("the bind at the client", || client.recv().unwrap());
+    let mut mux = Mux::endpoint(
+        &bind.1.session_id,
+        EndpointConfig {
+            endpoint_id: "endpoint-1".into(),
+            trust_owner: "trust-1".into(),
+            role: EndpointRole::Driver,
+            schemes: vec![Scheme::Ssh],
+            policies: vec![AuthPolicy::SshAmbient],
+            limits: default_limits(),
+        },
+        Config::default(),
+    )
+    .unwrap();
+    mux.register("call-1", None).unwrap();
+    mux.receive(&bind).unwrap();
+    while let Some(reply) = mux.next_message() {
+        client.send(reply).unwrap();
+    }
+    eventually("the registration", || {
+        (op.registration() != Registration::Pending).then_some(())
+    });
+    assert!(matches!(op.registration(), Registration::Registered(_)));
+    (op, bind.1.session_id)
+}
+
+#[test]
+fn a_core_at_one_hundred_and_twenty_eight_streams_with_a_lagging_client_faults_nothing() {
+    use gwz_connection::{ExchangeSpec, GitService, OpenError, remote::handle_with};
+    use gwz_transport::pool::{Identity, Key};
+    let config = RemoteConfig {
+        streams_per_binding: 128,
+        ..Default::default()
+    };
+    let (core, client, _core_carrier, client_carrier) =
+        stream_ends_for(CarrierLimits::DEFAULT, &config);
+    let host = handle_with(core.clone(), config);
+    let (op, session) = registered_over(&host, &client);
+    let spec = || {
+        ExchangeSpec::git(
+            Key::ssh("git", "example.invalid", 22),
+            Identity::Ambient,
+            GitService::UploadPackExchange,
+            "/r",
+        )
+        .unwrap()
+    };
+    // The client reads nothing from here on: every open the core sends stays queued at the client's carrier.
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    let mut waits = Vec::new();
+    for _ in 0..64 {
+        waits.push(Box::pin(
+            op.open(spec()).expect("within the ceiling").wait(),
+        ));
+    }
+    assert!(
+        matches!(op.open(spec()).map(drop), Err(OpenError::BindingLimit)),
+        "the sixty-fifth open is refused by the handle, not sent for the client's carrier to fault"
+    );
+    for wait in &mut waits {
+        assert!(wait.as_mut().poll(&mut cx).is_pending());
+    }
+    eventually("sixty-four opens queued at the client", || {
+        (client_carrier.queued_in() == 64).then_some(())
+    });
+    assert!(
+        !client.faulted(&session) && client_carrier.binding_fault(&session).is_none(),
+        "the lagging client's carrier faulted the binding"
+    );
+}
+
+#[test]
+fn the_core_lane_is_held_to_the_clients_ceiling_whatever_the_config_asks() {
+    use gwz_connection::remote::BindBounds;
+    for streams in [1, 64, 128, 1024, 5000] {
+        let config = RemoteConfig {
+            streams_per_binding: streams,
+            ..Default::default()
+        };
+        let (core, _client, _, _) = stream_ends_for(CarrierLimits::DEFAULT, &config);
+        assert_eq!(
+            core.limits.max_streams,
+            streams.min(BindBounds::client().streams)
+        );
+        assert!(core.limits.max_streams <= BindBounds::client().streams);
+    }
 }
