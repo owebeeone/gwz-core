@@ -517,7 +517,7 @@ fn a_push_is_authenticated_on_the_connection_its_advertisement_was() {
     let mut push = case.exchange_of(&operation, GitService::ReceivePackExchange);
     let mut sent = 0;
     while sent < 4 {
-        match push.stream().write(&b"0000"[sent..]) {
+        match push.stream().try_write(&b"0000"[sent..]) {
             Ok(n) => sent += n,
             Err(StreamError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::yield_now();
@@ -544,7 +544,7 @@ fn a_push_is_authenticated_on_the_connection_its_advertisement_was() {
 fn write_body(exchange: &mut gwz_connection::Exchange, bytes: &[u8]) {
     let mut sent = 0;
     while sent < bytes.len() {
-        match exchange.stream().write(&bytes[sent..]) {
+        match exchange.stream().try_write(&bytes[sent..]) {
             Ok(n) => sent += n,
             Err(StreamError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::yield_now();
