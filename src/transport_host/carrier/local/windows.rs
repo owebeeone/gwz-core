@@ -11,7 +11,7 @@ use super::super::{
 };
 use super::{
     Accepted, Integrity, LocalRefusal, PeerIdentity, PeerPolicy, PeerRefusal, Principal, Relation,
-    StreamCarrier,
+    StreamCarrier, sandbox::SandboxFindings,
 };
 use gwz_session_channel::write_frame;
 use std::{
@@ -179,6 +179,7 @@ fn token_identity(token: HANDLE, pid: u32) -> Result<PeerIdentity, LocalRefusal>
         pid: Some(pid),
         integrity: Some(Integrity::from_rid(rid)),
         app_container: boxed.first().is_some_and(|flag| (*flag & 0xffff_ffff) != 0),
+        sandbox: SandboxFindings::default(),
     })
 }
 
@@ -250,7 +251,11 @@ impl ProcessHold {
 }
 
 /// Reads the process `pid` through a hold, applies the rule, and confirms the hold.
-fn judge(pid: u32, policy: &PeerPolicy, relation: Relation) -> Result<PeerIdentity, PeerRefusal> {
+pub(crate) fn judge(
+    pid: u32,
+    policy: &PeerPolicy,
+    relation: Relation,
+) -> Result<PeerIdentity, PeerRefusal> {
     let hold = ProcessHold::take(pid).map_err(|error| match error {
         LocalRefusal::Peer(refusal) => refusal,
         _ => PeerRefusal::Unreadable("the peer's process"),
@@ -363,6 +368,13 @@ pub(crate) fn create_first_instance(name: &str) -> Result<PipeInstance, LocalRef
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
+        impl ProcessHold {
+            /// The identity read through the hold: the rows' way to the token flags of a real process. Test builds only.
+            pub(crate) fn identity(&self) -> &PeerIdentity {
+                &self.identity
+            }
+        }
+
         /// The first instance of a pipe name with a stated descriptor and mode (the rows' way to the variants that show
         /// which protection refuses what). Test builds only.
         pub(crate) fn create_first_instance_with(

@@ -7,7 +7,10 @@
 //! `scripts/checks/check_carrier_peer_rule.py`, fails the build on a hook that would, and on a field of the policy
 //! written outside this file). The one other constructor exists in test builds only, in this file, for the rows that need
 //! a policy for a user the host does not have.
-use super::LocalRefusal;
+use super::{
+    LocalRefusal,
+    sandbox::{self, Cause, SandboxFindings},
+};
 use std::fmt;
 
 cfg_if::cfg_if! {
@@ -17,6 +20,12 @@ cfg_if::cfg_if! {
             /// single-user host can produce. Test builds only.
             pub(crate) fn from_identity(own: PeerIdentity) -> Self {
                 Self { own }
+            }
+
+            /// [`current_user`](Self::current_user)'s rule applied to an identity given: the rows' way to an own
+            /// process that is sandboxed. Test builds only.
+            pub(crate) fn try_from_identity(own: PeerIdentity) -> Result<Self, LocalRefusal> {
+                Self::from_own(own)
             }
         }
     }
@@ -65,6 +74,8 @@ pub(crate) struct PeerIdentity {
     pub(crate) integrity: Option<Integrity>,
     /// Windows only: the peer's token is an AppContainer token.
     pub(crate) app_container: bool,
+    /// What the sandbox probes found (`sandbox.rs`); nothing found on Windows, whose token flags are above.
+    pub(crate) sandbox: SandboxFindings,
 }
 
 /// Which way the check runs.
@@ -85,6 +96,8 @@ pub(crate) enum PeerRefusal {
     Integrity,
     /// The peer's token is an AppContainer token.
     AppContainer,
+    /// The peer is sandboxed in a way the platform's probe sees, or is in a namespace other than this process's.
+    Sandboxed(Cause),
     /// The platform did not report what the rule needs; a check that cannot be made refuses.
     Unreadable(&'static str),
 }
@@ -95,7 +108,24 @@ impl fmt::Display for PeerRefusal {
             PeerRefusal::OtherPrincipal => f.write_str("the peer is another user"),
             PeerRefusal::Integrity => f.write_str("the peer's integrity level is not acceptable"),
             PeerRefusal::AppContainer => f.write_str("the peer runs in an AppContainer"),
+            PeerRefusal::Sandboxed(cause) => write!(f, "the peer is sandboxed by {cause}"),
             PeerRefusal::Unreadable(what) => write!(f, "the peer check could not read {what}"),
+        }
+    }
+}
+
+impl PeerRefusal {
+    /// The refusal as said about the caller's own process, which has no peer: the same cause, with this process as the
+    /// subject (parked server design §4, "Sandboxed callers").
+    pub(crate) fn about_caller(&self) -> String {
+        match self {
+            PeerRefusal::OtherPrincipal => "this process is another user".to_string(),
+            PeerRefusal::Integrity => "this process runs below Medium integrity".to_string(),
+            PeerRefusal::AppContainer => "this process runs in an AppContainer".to_string(),
+            PeerRefusal::Sandboxed(cause) => format!("this process is sandboxed by {cause}"),
+            PeerRefusal::Unreadable(what) => {
+                format!("this process could not be checked: it could not read {what}")
+            }
         }
     }
 }
@@ -108,15 +138,25 @@ pub(crate) struct PeerPolicy {
 
 impl PeerPolicy {
     /// The policy of this process: the same user, from outside any AppContainer, at the integrity this process has. The
-    /// caller is held to the rule it applies to its peer: a process below Medium integrity is itself sandboxed (parked
-    /// server design §4, "Sandboxed callers"), and gets no policy.
+    /// caller is held to the rule it applies to its peer: a process below Medium integrity, or one the sandbox probes
+    /// find sandboxed, is itself sandboxed (parked server design §4, "Sandboxed callers"), and gets no policy. A probe
+    /// that cannot complete refuses.
     pub(crate) fn current_user() -> Result<Self, LocalRefusal> {
-        let own = super::own_identity()?;
+        let mut own = super::own_identity()?;
+        own.sandbox = sandbox::of_self().map_err(LocalRefusal::Own)?;
+        Self::from_own(own)
+    }
+
+    /// The caller's side of the rule, a function of the identity read: a process that is itself sandboxed gets no policy.
+    fn from_own(own: PeerIdentity) -> Result<Self, LocalRefusal> {
         if own.app_container {
-            return Err(LocalRefusal::Peer(PeerRefusal::AppContainer));
+            return Err(LocalRefusal::Own(PeerRefusal::AppContainer));
         }
         if own.integrity.is_some_and(|level| level < Integrity::Medium) {
-            return Err(LocalRefusal::Peer(PeerRefusal::Integrity));
+            return Err(LocalRefusal::Own(PeerRefusal::Integrity));
+        }
+        if let Some(cause) = own.sandbox.cause() {
+            return Err(LocalRefusal::Own(PeerRefusal::Sandboxed(cause)));
         }
         Ok(Self { own })
     }
@@ -136,6 +176,13 @@ impl PeerPolicy {
         }
         if observed.app_container {
             return Err(PeerRefusal::AppContainer);
+        }
+        // Absolute: whatever sandbox this side is in, and whatever the other side's. Then the namespaces must be shared.
+        if let Some(cause) = observed.sandbox.cause().or(self.own.sandbox.cause()) {
+            return Err(PeerRefusal::Sandboxed(cause));
+        }
+        if !observed.sandbox.same_namespaces(&self.own.sandbox) {
+            return Err(PeerRefusal::Sandboxed(Cause::OtherNamespace));
         }
         match (self.own.integrity, observed.integrity) {
             (None, None) => Ok(()),

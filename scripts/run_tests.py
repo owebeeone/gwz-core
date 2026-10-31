@@ -40,6 +40,15 @@ contains NAME. Do not pass a bare test name instead: Cargo hands it to libtest
 as one more filter, libtest ORs filters, and every group (the fake-filesystem
 ones included) would also run every matching test of the other groups.
 
+--skip-exact NAME (repeatable) leaves one test out of the libtest runs: NAME is the test's full path, as `cargo test
+-- --list` prints it, and each skipped name is printed with the reason "run in the privileged step". For a CI job
+whose unprivileged step cannot run a row that needs root and runs it in a step of its own (the sandbox rule's
+mount-namespace and pid-reuse rows, plan 2.3a). It is an exact exclusion in both paths: before any test runs, every
+NAME is checked against the test binaries' `--list`, and it must equal exactly one listed test and be a substring of
+no other (libtest's `--skip`, which the unfiltered path uses, is a substring match, so a name that is also a part of
+another test would leave that one out); otherwise the run exits non-zero and nothing runs. The rows keep failing
+loudly for anyone who runs them without root and without this option.
+
 The source checks are read-only scans, so they are started side by side and
 judged in the order main() names them: the first that fails, in that order, is
 the failure the run reports, after the output of every check before it, and no
@@ -114,10 +123,12 @@ def run(
     filesystem: str = "real",
     test_filter: str | None = None,
     tally: FilterTally | None = None,
+    skip_exact: tuple[str, ...] = (),
 ) -> int:
     env = {**os.environ, "GWZ_TEST_GIT": mode, "GWZ_TEST_FS": filesystem}
     if test_filter is None:
-        return run_command(mode, filesystem, ["cargo", "test", "--locked", *cargo_args, "--", *test_args], env)
+        skips = [arg for name in skip_exact for arg in ("--skip", name)]
+        return run_command(mode, filesystem, ["cargo", "test", "--locked", *cargo_args, "--", *test_args, *skips], env)
     # libtest has no AND of filters: list the group, intersect here, and run the exact names.
     # `--list` names #[ignore] tests too, and an exact run only reports them ignored: list those separately and
     # leave them out, so a filter that matches only ignored tests counts as matching nothing.
@@ -132,7 +143,7 @@ def run(
             return listed.returncode
         listings.append([line[: -len(": test")] for line in listed.stdout.splitlines() if line.endswith(": test")])
     every, ignored = listings[0], set(listings[1])
-    names = [name for name in every if test_filter in name and name not in ignored]
+    names = [name for name in every if test_filter in name and name not in ignored and name not in skip_exact]
     if not names:
         print(f"Git backend: {mode}; filesystem: {filesystem}; no test of this group matches {test_filter!r}", flush=True)
         return 0
@@ -143,6 +154,47 @@ def run(
         code = run_command(mode, filesystem, ["cargo", "test", "--locked", *cargo_args, "--", "--exact", *batch], env)
         result = result or code
     return result
+
+
+def check_skip_exact(names: tuple[str, ...] | list[str], cargo_args: list[str]) -> None:
+    """Exits non-zero, before any test runs, unless every `--skip-exact` name is one listed test and part of no other.
+
+    The names are checked against the `--list` of the tests the run's own cargo arguments build. The unfiltered path
+    hands each name to libtest's `--skip`, which skips every test whose path contains it, and the filtered path
+    excludes by equality: a name that equals exactly one listed test and is a substring of no other listed test
+    means the same in both.
+    """
+    if not names:
+        return
+    env = {**os.environ, "GWZ_TEST_GIT": "real", "GWZ_TEST_FS": "real"}
+    listing = ["cargo", "test", "--locked", *cargo_args, "--", "--list", "--format", "terse"]
+    listed = subprocess.run(listing, cwd=ROOT, env=env, check=False, stdout=subprocess.PIPE, text=True)
+    if listed.returncode:
+        print(f"--skip-exact: listing the tests failed ({listed.returncode}); no name can be checked", flush=True)
+        raise SystemExit(listed.returncode)
+    tests = [line[: -len(": test")] for line in listed.stdout.splitlines() if line.endswith(": test")]
+    problems = []
+    for name in names:
+        equal = tests.count(name)
+        if equal != 1:
+            problems.append(f"{name!r} is {equal} of the listed tests; it must be exactly one")
+        parts = sorted({test for test in tests if test != name and name in test})
+        if parts:
+            problems.append(
+                f"{name!r} is a part of {len(parts)} other listed test(s), such as {parts[0]!r}, which "
+                "libtest's --skip would leave out too"
+            )
+    if problems:
+        for problem in problems:
+            print(f"--skip-exact: {problem}", flush=True)
+        raise SystemExit(2)
+
+
+def skip_exact_name(value: str) -> str:
+    """A test's full path. libtest's `--skip` matches substrings, so a bare word would skip every test containing it."""
+    if "::" not in value or re.search(r"\s", value):
+        raise argparse.ArgumentTypeError(f"{value!r} is not a full test path such as 'module::tests::name'")
+    return value
 
 
 def exact_batches(names: list[str]) -> list[list[str]]:
@@ -481,9 +533,18 @@ def main(argv: list[str] | None = None) -> None:
         metavar="NAME",
         help="run, in each group, only that group's tests whose path contains NAME",
     )
+    parser.add_argument(
+        "--skip-exact",
+        action="append",
+        default=[],
+        metavar="NAME",
+        type=skip_exact_name,
+        help="leave out the test with this full path ('a::b::name'); repeatable; for a CI step that runs it "
+        "elsewhere, with the privilege it needs",
+    )
     options, cargo_args = parser.parse_known_args(argv)
     tally = FilterTally()
-    narrow = {"test_filter": options.test_filter, "tally": tally}
+    narrow = {"test_filter": options.test_filter, "tally": tally, "skip_exact": tuple(options.skip_exact)}
     library_args = ["--lib", *[arg for arg in cargo_args if arg != "--lib"]]
 
     def source_checks(start) -> None:
@@ -507,6 +568,10 @@ def main(argv: list[str] | None = None) -> None:
     # time, so their output and failures keep that order too.
     check_git_adoption()
     subprocess.run([sys.executable, str(ROOT / "scripts/checks/check_crate_versions.py")], check=True)
+    # Before any test: a name that is not one exact test must not leave tests out.
+    check_skip_exact(options.skip_exact, cargo_args)
+    for name in options.skip_exact:
+        print(f"SKIPPED TEST {name}: run in the privileged step", flush=True)
     filesystem_result = run("fake", library_args, list(FILESYSTEM_CONTRACTS), filesystem="fake", **narrow)
     if filesystem_result and "--no-fail-fast" not in cargo_args:
         raise SystemExit(filesystem_result)

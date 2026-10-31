@@ -85,7 +85,8 @@
    ],
    "appendix": "new",
    "reason": "a Unix domain socket, its peer credentials and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token instead (plan 2.1)",
-   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)"
+   "approved_platform": "GwzSplitCommandChannel.md (step 2.0, accepted rev 3: the adopted server design section 11 platform primitives, Unix socket and Windows named pipe)",
+   "count": 2
   },
   {
    "path": "src/transport_host/carrier/local/unix.rs",
@@ -144,7 +145,7 @@
    "kind": "os",
    "gate": "libc::getsockopt",
    "target": "",
-   "count": 3,
+   "count": 4,
    "state": "platform",
    "owner": [
     "2.1"
@@ -171,7 +172,7 @@
    "kind": "os",
    "gate": "libc::pid_t",
    "target": "",
-   "count": 3,
+   "count": 2,
    "state": "platform",
    "owner": [
     "2.1"
@@ -199,7 +200,7 @@
    "kind": "os",
    "gate": "libc::socklen_t",
    "target": "",
-   "count": 3,
+   "count": 4,
    "state": "platform",
    "owner": [
     "2.1"
@@ -428,19 +429,6 @@
   {
    "path": "src/transport_host/carrier/local/unix.rs",
    "kind": "os",
-   "gate": "libc::SYS_pidfd_open",
-   "target": "",
-   "state": "platform",
-   "owner": [
-    "2.1"
-   ],
-   "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
-   "reason": "a Unix domain socket, its peer credentials, the process hold and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token and holds a process handle instead (plan 2.1, remediation round 1)",
-   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
-  },
-  {
-   "path": "src/transport_host/carrier/local/unix.rs",
-   "kind": "os",
    "gate": "libc::SYS_pidfd_send_signal",
    "target": "",
    "state": "platform",
@@ -476,7 +464,7 @@
    "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
    "reason": "a Unix domain socket, its peer credentials, the process hold and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token and holds a process handle instead (plan 2.1, remediation round 1)",
    "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)",
-   "count": 2
+   "count": 7
   },
   {
    "path": "src/transport_host/carrier/local/unix.rs",
@@ -529,8 +517,7 @@
    ],
    "appendix": "new: remediation round 1 (GwzSplitCommandChannel-Step2.1-RemPlan.md)",
    "reason": "a Unix domain socket, its peer credentials, the process hold and the user and path calls around them have no Windows form: the Windows carrier is the named pipe in local/windows.rs, which reads the process token and holds a process handle instead (plan 2.1, remediation round 1)",
-   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)",
-   "count": 2
+   "approved_platform": "GwzSplitCommandChannel-Step2.1-RemPlan.md (S-P2-5, C-P2-4)"
   },
   {
    "path": "src/transport_host/carrier/local/unix.rs",

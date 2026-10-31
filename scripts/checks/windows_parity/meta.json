@@ -28,6 +28,7 @@
     "2.1",
     "2.2",
     "2.3",
+    "2.3a",
     "2.3b",
     "2.4",
     "3.1",
@@ -71,6 +72,7 @@
     "0.5b"
   ],
   "step_notes": {
+    "2.3a": "Sub-step 2.3a of plan step 2.3 (dev-docs/GwzServerCore-Step2.3-Plan.md section 3): the peer sandbox rule's Linux and macOS probes and their real-process rows, with the Windows AppContainer row beside them. Added by the lane, not named by the parity plan.",
     "0.5b": "The TLS fixture on Windows: https_fixture.rs's servers are rustls over ring (test-only dev-dependencies in Cargo.toml, behind gwz_transport_candidate), because under dabeest's key-based OpenSSH logon schannel cannot load a server identity (DPAPI and persisted key containers are denied: Protect, CAPI and CNG all fail with Access is denied, so native_tls Identity::from_pkcs12 and from_pkcs8 both fail). The clients under test stay native-tls and verify against the fixture CA. Added by the lane, not in plan revision 3."
   }
 }

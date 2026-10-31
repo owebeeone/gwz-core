@@ -264,6 +264,7 @@ fn identity(principal: Principal, integrity: Option<Integrity>) -> PeerIdentity 
         pid: Some(1),
         integrity,
         app_container: false,
+        sandbox: Default::default(),
     }
 }
 

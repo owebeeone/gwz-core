@@ -29,12 +29,16 @@
 //! process ids, then that process's token user, integrity level and AppContainer flag). The rule is
 //! [`PeerPolicy::verify`], which also refuses any process below Medium integrity (sandboxed, absolutely) and holds the
 //! caller to it. The peer's process is **pinned** before it is read and checked again after: a process that has gone, or
-//! whose identity changed under the same process ID, is refused (Linux: a `pidfd` and the `/proc` start time before and
-//! after; macOS: the `LOCAL_PEERTOKEN` audit token and a live-process check; Windows: a process handle, its creation
-//! time and its exit state). The sandbox rule's platform checks (seccomp and namespaces, `sandbox_check`, AppContainer
-//! beyond the token flag) belong to plan step 2.3. A listener answers a refused peer with exactly one `SessionError`
-//! (`server_peer_refused`) and closes, reading nothing of the peer before the check; a client that refuses a listener
-//! sends nothing.
+//! whose identity changed under the same process ID, is refused (Linux: the `pidfd` the kernel recorded for the connection,
+//! `getsockopt(SO_PEERPIDFD)`, which names the process that connected or listened and never the one that holds its ID
+//! later, and the `/proc` start time before and after; a kernel before 6.5 has no such descriptor (it answers
+//! `ENOPROTOOPT`) and refuses every peer, while kernels 6.5 to 6.15 answer `EINVAL` for a peer that has gone, which is
+//! refused as a process that is no longer there; macOS: the `LOCAL_PEERTOKEN` audit token and a live-process check; Windows: a process handle, its creation time
+//! and its exit state). **The sandbox rule's platform probes** (`sandbox.rs`; seccomp and namespaces on Linux,
+//! `sandbox_check` on macOS, the AppContainer flag on Windows) run on the same hold, are part of the peer's identity, and
+//! refuse with [`PeerRefusal::Sandboxed`]; a probe that cannot complete refuses. A listener answers a refused peer with
+//! exactly one `SessionError` (`server_peer_refused`) and closes, reading nothing of the peer before the check; a client
+//! that refuses a listener sends nothing.
 //!
 //! **The Windows pipe** has a random name (`\\.\pipe\gwz-` and 32 hex digits), is created with
 //! `FILE_FLAG_FIRST_PIPE_INSTANCE` (a squatter that already holds the name makes the creation fail), with
@@ -44,6 +48,7 @@ use super::StreamCarrier;
 use std::{fmt, io};
 
 mod peer;
+pub(crate) mod sandbox;
 
 use std::ffi::OsString;
 
@@ -72,7 +77,7 @@ cfg_if::cfg_if! {
     if #[cfg(all(test, unix))] {
         pub(crate) use unix::{Hold, SOCKET_NAME_BYTES, SUN_PATH_MAX, peer_of, socket_path};
     } else if #[cfg(all(test, windows))] {
-        pub(crate) use windows::{PIPE_MODE, PIPE_OPEN_MODE, ProcessHold, create_first_instance, create_first_instance_with, created_pipe_dacl_sids, pipe_sddl};
+        pub(crate) use windows::{PIPE_MODE, PIPE_OPEN_MODE, ProcessHold, create_first_instance, create_first_instance_with, created_pipe_dacl_sids, judge, pipe_sddl};
     }
 }
 
@@ -103,6 +108,9 @@ pub(crate) enum LocalRefusal {
     NotOurSocket,
     /// The peer check refused the other end. Nothing was sent to it.
     Peer(PeerRefusal),
+    /// This process was refused a policy (it is itself sandboxed, or the check on it could not be made): there is no
+    /// peer, and the text says so.
+    Own(PeerRefusal),
     /// The pipe name is already taken: someone else created it first (Windows `FILE_FLAG_FIRST_PIPE_INSTANCE`).
     NameTaken,
     /// An operating-system call failed.
@@ -137,6 +145,7 @@ impl fmt::Display for LocalRefusal {
             }
             LocalRefusal::NotOurSocket => f.write_str("the address is not a socket this user owns"),
             LocalRefusal::Peer(refusal) => write!(f, "the peer was refused: {refusal}"),
+            LocalRefusal::Own(refusal) => f.write_str(&refusal.about_caller()),
             LocalRefusal::NameTaken => f.write_str("the pipe name is already taken"),
             LocalRefusal::Os { call, kind, code } => write!(f, "{call} failed: {kind} ({code:?})"),
         }

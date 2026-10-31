@@ -1,0 +1,601 @@
+{
+ "done": false,
+ "entries": [
+  {
+   "path": "src/transport_host/carrier/local/sandbox.rs",
+   "kind": "gate",
+   "gate": "any(target_os = \"linux\", target_os = \"android\")",
+   "target": "arm: use linux::{of_peer, of_self}",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3a's Linux and macOS sandbox probes; the sibling else arm of sandbox.rs's cfg_if is the Windows arm (no probe: the AppContainer flag and the integrity level are read with the identity, windows.rs)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/sandbox.rs",
+   "kind": "gate",
+   "gate": "any(target_os = \"linux\", target_os = \"android\")",
+   "target": "mod linux",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3a's Linux and macOS sandbox probes; the sibling else arm of sandbox.rs's cfg_if is the Windows arm (no probe: the AppContainer flag and the integrity level are read with the identity, windows.rs)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/sandbox.rs",
+   "kind": "gate",
+   "gate": "else if target_vendor = \"apple\"",
+   "target": "arm: use macos::{of_peer, of_self}",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3a's Linux and macOS sandbox probes; the sibling else arm of sandbox.rs's cfg_if is the Windows arm (no probe: the AppContainer flag and the integrity level are read with the identity, windows.rs)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/sandbox.rs",
+   "kind": "gate",
+   "gate": "else if target_vendor = \"apple\"",
+   "target": "mod macos",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3a's Linux and macOS sandbox probes; the sibling else arm of sandbox.rs's cfg_if is the Windows arm (no probe: the AppContainer flag and the integrity level are read with the identity, windows.rs)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/sandbox/linux.rs",
+   "kind": "os",
+   "gate": "libc::ESRCH",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 1"
+  },
+  {
+   "path": "src/transport_host/carrier/local/sandbox/macos.rs",
+   "kind": "os",
+   "gate": "libc::RTLD_DEFAULT",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/local/sandbox/macos.rs",
+   "kind": "os",
+   "gate": "libc::dlsym",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/local/sandbox/macos.rs",
+   "kind": "os",
+   "gate": "libc::pid_t",
+   "target": "",
+   "count": 2,
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/local/sandbox/macos.rs",
+   "kind": "os",
+   "gate": "os::fd::RawFd",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 1"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "gate",
+   "gate": "target_os = \"android\"",
+   "target": "arm: const SO_PEERPIDFD",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "a Unix-only row item or platform arm of the Linux hold and its fixtures; the Windows twin is the process handle hold and the real AppContainer child in windows.rs and windows_rows.rs",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 1"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::EINVAL",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 1"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::ENOPROTOOPT",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 1"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::ESRCH",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan-2.md (round 2: Code C2-1 = State N-1, the errno map of SO_PEERPIDFD; State N-2, the exec row; State N-3, the descriptor row; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 2"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
+   "gate": "libc::SO_PEERPIDFD",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 1"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/hold_rows.rs",
+   "kind": "os",
+   "gate": "libc::EBADF",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 1"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/hold_rows.rs",
+   "kind": "os",
+   "gate": "libc::EINVAL",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 1",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/tests/hold_rows.rs",
+   "kind": "os",
+   "gate": "libc::ENOPROTOOPT",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 1"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/hold_rows.rs",
+   "kind": "os",
+   "gate": "libc::ESRCH",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan-2.md (round 2: Code C2-1 = State N-1, the errno map of SO_PEERPIDFD; State N-2, the exec row; State N-3, the descriptor row; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 2"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/hold_rows.rs",
+   "kind": "os",
+   "gate": "libc::SIGKILL",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 1"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/hold_rows.rs",
+   "kind": "os",
+   "gate": "libc::SYS_pidfd_open",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan-2.md (round 2: Code C2-1 = State N-1, the errno map of SO_PEERPIDFD; State N-2, the exec row; State N-3, the descriptor row; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 2"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/hold_rows.rs",
+   "kind": "os",
+   "gate": "libc::geteuid",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 1"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/hold_rows.rs",
+   "kind": "os",
+   "gate": "libc::kill",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 1"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/hold_rows.rs",
+   "kind": "os",
+   "gate": "libc::pid_t",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 1",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/tests/hold_rows.rs",
+   "kind": "os",
+   "gate": "libc::syscall",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan-2.md (round 2: Code C2-1 = State N-1, the errno map of SO_PEERPIDFD; State N-2, the exec row; State N-3, the descriptor row; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 2"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/mod.rs",
+   "kind": "gate",
+   "gate": "any(target_os = \"linux\", target_os = \"android\")",
+   "target": "mod hold_rows",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "a Unix-only row item or platform arm of the Linux hold and its fixtures; the Windows twin is the process handle hold and the real AppContainer child in windows.rs and windows_rows.rs",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 1"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/mod.rs",
+   "kind": "gate",
+   "gate": "else if target_vendor = \"apple\"",
+   "target": "mod probe_rows",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "a Unix-only row item or platform arm of the Linux hold and its fixtures; the Windows twin is the process handle hold and the real AppContainer child in windows.rs and windows_rows.rs",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 1"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/probe_rows.rs",
+   "kind": "os",
+   "gate": "libc::pid_t",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 1"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "gate",
+   "gate": "any(target_os = \"linux\", target_os = \"android\")",
+   "target": "arm: enum How",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "a Unix-only row item: the real-process fixtures of the sandbox rule (seccomp, namespaces, sandbox-exec); the Windows twin is the real AppContainer child in the windows arm of the same file",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "gate",
+   "gate": "any(target_os = \"linux\", target_os = \"android\")",
+   "target": "arm: use super::super::local::sandbox::linux::probe_dir",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "a Unix-only row item: the real-process fixtures of the sandbox rule (seccomp, namespaces, sandbox-exec); the Windows twin is the real AppContainer child in the windows arm of the same file",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: use super::super::{Peer, StreamCarrier}",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "a Unix-only row item: the real-process fixtures of the sandbox rule (seccomp, namespaces, sandbox-exec); the Windows twin is the real AppContainer child in the windows arm of the same file",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::CLONE_NEWNS",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::CLONE_NEWUSER",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::F_SETFD",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 1"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::PR_SET_NO_NEW_PRIVS",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::PR_SET_SECCOMP",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::SECCOMP_MODE_FILTER",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::c_int",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::c_ulong",
+   "target": "",
+   "count": 6,
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::fcntl",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 1"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::getegid",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::geteuid",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::pid_t",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::prctl",
+   "target": "",
+   "count": 2,
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::sock_filter",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::sock_fprog",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::unshare",
+   "target": "",
+   "count": 2,
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  }
+ ]
+}
