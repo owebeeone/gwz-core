@@ -44,8 +44,12 @@
 //! `FILE_FLAG_FIRST_PIPE_INSTANCE` (a squatter that already holds the name makes the creation fail), with
 //! `PIPE_REJECT_REMOTE_CLIENTS`, and with a protected DACL that grants access to this user's SID alone. A client opens
 //! it with `SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION`, so a server can identify it but never impersonate it.
-use super::StreamCarrier;
-use std::{fmt, io};
+use super::{CarrierBinding, CarrierId, CarrierLimits, Peer, Side, StreamCarrier};
+use std::{
+    fmt,
+    io::{self, Read, Write},
+    time::Duration,
+};
 
 mod peer;
 pub(crate) mod sandbox;
@@ -65,17 +69,17 @@ pub(crate) struct RuntimeEnv {
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
         mod unix;
-        pub(crate) use unix::{LocalAddress, LocalListener, RuntimeDir, connect, own_identity};
+        pub(crate) use unix::{LocalAddress, LocalListener, RuntimeDir, connect, connect_stream, own_identity};
         pub(crate) use unix::{DirFlavor, resolve_directory};
     } else if #[cfg(windows)] {
         mod windows;
-        pub(crate) use windows::{LocalAddress, LocalListener, RuntimeDir, connect, own_identity};
+        pub(crate) use windows::{LocalAddress, LocalListener, RuntimeDir, connect, connect_stream, own_identity};
     }
 }
 // What the rows reach into: the path rule and the pipe's construction, which production code uses through the items above.
 cfg_if::cfg_if! {
     if #[cfg(all(test, unix))] {
-        pub(crate) use unix::{Hold, SOCKET_NAME_BYTES, SUN_PATH_MAX, peer_of, socket_path};
+        pub(crate) use unix::{Hold, SOCKET_NAME_BYTES, SUN_PATH_MAX, connect_once, connect_until, peer_of, socket_path};
     } else if #[cfg(all(test, windows))] {
         pub(crate) use windows::{PIPE_MODE, PIPE_OPEN_MODE, ProcessHold, create_first_instance, create_first_instance_with, created_pipe_dacl_sids, judge, pipe_sddl};
     }
@@ -113,6 +117,8 @@ pub(crate) enum LocalRefusal {
     Own(PeerRefusal),
     /// The pipe name is already taken: someone else created it first (Windows `FILE_FLAG_FIRST_PIPE_INSTANCE`).
     NameTaken,
+    /// The connect did not complete before its bound: a socket whose accept queue stayed full, a pipe that stayed busy.
+    Timeout,
     /// An operating-system call failed.
     Os {
         call: &'static str,
@@ -147,6 +153,7 @@ impl fmt::Display for LocalRefusal {
             LocalRefusal::Peer(refusal) => write!(f, "the peer was refused: {refusal}"),
             LocalRefusal::Own(refusal) => f.write_str(&refusal.about_caller()),
             LocalRefusal::NameTaken => f.write_str("the pipe name is already taken"),
+            LocalRefusal::Timeout => f.write_str("the connect did not complete within its bound"),
             LocalRefusal::Os { call, kind, code } => write!(f, "{call} failed: {kind} ({code:?})"),
         }
     }
@@ -157,3 +164,33 @@ impl std::error::Error for LocalRefusal {}
 /// The result of an accept: a connected carrier, or why this connection was refused. A refusal closes only that
 /// connection; the listener goes on.
 pub(crate) type Accepted = Result<StreamCarrier, LocalRefusal>;
+
+/// How long a [`connect`] may take when the caller states no bound: the handshake's 30 seconds (server design §3). The
+/// handshake's client counts its own bounds from the start of the connect and passes the deadline to [`connect_stream`].
+pub(crate) const CONNECT_BOUND: Duration = Duration::from_secs(30);
+
+/// A connected stream whose peer the check has passed, before any carrier is built over it: what the handshake's client
+/// reads and writes first. It becomes a carrier with [`RawConnection::into_carrier`] once the handshake is done, and
+/// not before, so a host's first bytes are judged as bytes and not as frames (`handshake`).
+pub(crate) struct RawConnection {
+    pub(crate) read: Box<dyn Read + Send>,
+    pub(crate) write: Box<dyn Write + Send>,
+    /// Shuts the stream so that a blocked read or write returns.
+    pub(crate) abort: Box<dyn Fn() + Send + Sync>,
+    pub(crate) peer: PeerIdentity,
+    pub(crate) side: Side,
+}
+
+impl RawConnection {
+    pub(crate) fn into_carrier(self, limits: CarrierLimits) -> Accepted {
+        let id = CarrierId::random().map_err(|error| LocalRefusal::os("getrandom", &error))?;
+        StreamCarrier::new(
+            self.read,
+            self.write,
+            self.abort,
+            CarrierBinding::new(id, self.side, Peer::Verified(self.peer)),
+            limits,
+        )
+        .map_err(|error| LocalRefusal::os("spawn", &error))
+    }
+}

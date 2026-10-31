@@ -309,7 +309,7 @@ pub(crate) fn session_error_frame(code: u64, message: &str) -> Frame {
 }
 
 /// The head of a CBOR item of `major` type with `argument`, in its shortest form.
-fn put_head(major: u8, argument: u64) -> Vec<u8> {
+pub(super) fn put_head(major: u8, argument: u64) -> Vec<u8> {
     let major = major << 5;
     match argument {
         0..=23 => vec![major | argument as u8],

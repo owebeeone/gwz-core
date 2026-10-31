@@ -43,6 +43,13 @@ use gwz_transport::protocol::MessageKind;
 use std::{fmt, io, task::Waker, time::Duration};
 
 mod binding;
+// The handshake's first production callers are the bounded connect (plan step 2.3d-2) and the served session
+// (2.3g), which come after this step.
+#[allow(
+    dead_code,
+    reason = "first production callers: plan steps 2.3d-2 and 2.3g"
+)]
+pub(crate) mod handshake;
 mod in_process;
 mod link;
 mod queue;

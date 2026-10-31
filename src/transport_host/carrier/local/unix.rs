@@ -680,13 +680,52 @@ impl Drop for LocalListener {
     }
 }
 
-/// Connects to `address`, verifying the listener before a byte is sent: the socket's directory and file, then the
-/// process that holds it.
-pub(crate) fn connect(
+use super::{CONNECT_BOUND, RawConnection};
+use socket2::{Domain, SockAddr, Socket, Type};
+
+/// The longest pause between two attempts to connect to a full accept queue.
+const QUEUE_PAUSE_MAX: Duration = Duration::from_millis(50);
+
+/// One non-blocking attempt to connect to the socket at `path`, giving a blocking stream. A listener whose accept queue
+/// is full answers `EAGAIN` on Linux (`WouldBlock`) and `ECONNREFUSED` on macOS (server design §3; macOS observed by the
+/// rows on 26.6.2).
+pub(crate) fn connect_once(path: &Path) -> io::Result<UnixStream> {
+    let socket = Socket::new(Domain::UNIX, Type::STREAM, None)?;
+    socket.set_nonblocking(true)?;
+    socket.connect(&SockAddr::unix(path)?)?;
+    socket.set_nonblocking(false)?;
+    Ok(UnixStream::from(socket))
+}
+
+/// [`connect_once`], retried while the queue is full (`WouldBlock`) until `deadline`, with a pause that doubles from a
+/// millisecond to [`QUEUE_PAUSE_MAX`]. Any other answer ends it: a refused connect is a stale or absent listener, and
+/// is not waited for.
+pub(crate) fn connect_until(path: &Path, deadline: Instant) -> Result<UnixStream, LocalRefusal> {
+    let mut pause = Duration::from_millis(1);
+    loop {
+        match connect_once(path) {
+            Ok(stream) => return Ok(stream),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    return Err(LocalRefusal::Timeout);
+                }
+                std::thread::sleep(pause.min(left));
+                pause = (pause * 2).min(QUEUE_PAUSE_MAX);
+            }
+            Err(error) => return Err(LocalRefusal::os("connect", &error)),
+        }
+    }
+}
+
+/// The connect of both [`connect`] and [`connect_stream`]: the socket's directory and file are checked, the connect is
+/// made before `deadline`, and the listener is verified before a byte is sent.
+fn connect_checked(
     address: &LocalAddress,
     policy: &PeerPolicy,
-    limits: CarrierLimits,
-) -> Accepted {
+    deadline: Instant,
+) -> Result<(UnixStream, PeerIdentity), LocalRefusal> {
     let path = address.path();
     let parent = path.parent().ok_or(LocalRefusal::NotOurSocket)?;
     check_directory(parent)?;
@@ -696,7 +735,7 @@ pub(crate) fn connect(
     if !ours {
         return Err(LocalRefusal::NotOurSocket);
     }
-    let stream = UnixStream::connect(path).map_err(|error| LocalRefusal::os("connect", &error))?;
+    let stream = connect_until(path, deadline)?;
     let peer = match check_peer(&stream, policy, Relation::ClientChecksListener) {
         Ok(peer) => peer,
         Err(refusal) => {
@@ -705,5 +744,39 @@ pub(crate) fn connect(
             return Err(LocalRefusal::Peer(refusal));
         }
     };
+    Ok((stream, peer))
+}
+
+/// Connects to `address`, verifying the listener before a byte is sent: the socket's directory and file, then the
+/// process that holds it. The connect is bounded by [`CONNECT_BOUND`]; the carrier is built at once, with no handshake
+/// (the rows that exercise the carrier alone use it; a client that handshakes uses [`connect_stream`]).
+pub(crate) fn connect(
+    address: &LocalAddress,
+    policy: &PeerPolicy,
+    limits: CarrierLimits,
+) -> Accepted {
+    let (stream, peer) = connect_checked(address, policy, Instant::now() + CONNECT_BOUND)?;
     carrier_over(stream, Side::Client, peer, limits)
+}
+
+/// [`connect`] up to the stream: the halves of the connection, not yet a carrier, for the client's handshake. The
+/// connect completes before `deadline`, which the handshake's client counts from the start of its connect.
+pub(crate) fn connect_stream(
+    address: &LocalAddress,
+    policy: &PeerPolicy,
+    deadline: Instant,
+) -> Result<RawConnection, LocalRefusal> {
+    let (stream, peer) = connect_checked(address, policy, deadline)?;
+    let os = |call, error: io::Error| LocalRefusal::os(call, &error);
+    let reader = stream.try_clone().map_err(|e| os("dup", e))?;
+    let killer = stream.try_clone().map_err(|e| os("dup", e))?;
+    Ok(RawConnection {
+        read: Box::new(Half(reader)),
+        write: Box::new(Half(stream)),
+        abort: Box::new(move || {
+            let _ = killer.shutdown(std::net::Shutdown::Both);
+        }),
+        peer,
+        side: Side::Client,
+    })
 }

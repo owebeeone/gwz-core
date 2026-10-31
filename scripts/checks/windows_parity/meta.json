@@ -61,7 +61,8 @@
     "6.2",
     "6.3",
     "6.4",
-    "6.5"
+    "6.5",
+    "2.3d"
   ],
   "done_steps": [
     "0.1",
@@ -72,6 +73,7 @@
     "0.5b"
   ],
   "step_notes": {
+    "2.3d": "Sub-step 2.3d of plan step 2.3 (dev-docs/GwzServerCore-Step2.3-Plan.md section 3): the handshake and the bounded connect; the Unix socket rows of the client's open and their Windows busy-pipe twin. Added by the lane, not named by the parity plan.",
     "2.3a": "Sub-step 2.3a of plan step 2.3 (dev-docs/GwzServerCore-Step2.3-Plan.md section 3): the peer sandbox rule's Linux and macOS probes and their real-process rows, with the Windows AppContainer row beside them. Added by the lane, not named by the parity plan.",
     "0.5b": "The TLS fixture on Windows: https_fixture.rs's servers are rustls over ring (test-only dev-dependencies in Cargo.toml, behind gwz_transport_candidate), because under dabeest's key-based OpenSSH logon schannel cannot load a server identity (DPAPI and persisted key containers are denied: Protect, CAPI and CNG all fail with Access is denied, so native_tls Identity::from_pkcs12 and from_pkcs8 both fail). The clients under test stay native-tls and verify against the fixture CA. Added by the lane, not in plan revision 3."
   }

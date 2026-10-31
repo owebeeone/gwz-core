@@ -68,9 +68,6 @@ pub(crate) const PIPE_MODE: u32 =
 const BUFFER: u32 = 64 * 1024;
 /// How many times `bind` draws a new name when the one drawn is taken.
 const NAME_DRAWS: usize = 3;
-/// How long a client waits for a busy pipe, in milliseconds, per attempt, and how many attempts it makes.
-const BUSY_WAIT_MS: u32 = 2_000;
-const BUSY_ATTEMPTS: usize = 3;
 
 fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(Some(0)).collect()
@@ -831,15 +828,17 @@ impl LocalListener {
     }
 }
 
-/// Connects to the pipe `address`, verifying the server before a byte is sent: the process that holds the pipe, its
-/// user, its integrity level and that it is not an AppContainer.
-pub(crate) fn connect(
+use super::{CONNECT_BOUND, RawConnection};
+
+/// The connect of both [`connect`] and [`connect_stream`]: opens the pipe, waiting for a busy one for the time left
+/// before `deadline`, and verifies the server before a byte is sent: the process that holds the pipe, its user, its
+/// integrity level and that it is not an AppContainer.
+fn connect_checked(
     address: &LocalAddress,
     policy: &PeerPolicy,
-    limits: CarrierLimits,
-) -> Accepted {
+    deadline: Instant,
+) -> Result<(Owned, PeerIdentity), LocalRefusal> {
     let name = wide(address.pipe_name());
-    let mut attempts = 0;
     let handle = loop {
         // SAFETY: `name` is NUL-terminated. The pipe is opened overlapped, and with identification impersonation only:
         // a server can learn who the client is but never act as it.
@@ -859,16 +858,24 @@ pub(crate) fn connect(
         }
         // SAFETY: reads the calling thread's last error.
         let code = unsafe { GetLastError() };
-        attempts += 1;
-        if code != ERROR_PIPE_BUSY || attempts >= BUSY_ATTEMPTS {
+        if code != ERROR_PIPE_BUSY {
             return Err(LocalRefusal::Os {
                 call: "CreateFileW",
                 kind: io::Error::from_raw_os_error(code as i32).kind(),
                 code: Some(code as i32),
             });
         }
-        // SAFETY: waits for an instance of a name this process has just seen busy.
-        unsafe { WaitNamedPipeW(name.as_ptr(), BUSY_WAIT_MS) };
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(LocalRefusal::Timeout);
+        }
+        let millis = u32::try_from(left.as_millis()).unwrap_or(u32::MAX).max(1);
+        // SAFETY: waits for an instance of a name this process has just seen busy, for at most the time left.
+        let waited = unsafe { WaitNamedPipeW(name.as_ptr(), millis) };
+        if waited == 0 {
+            // A wait that fails at once must not spin: the loop checks the bound each time round.
+            thread::sleep(left.min(Duration::from_millis(10)));
+        }
     };
     let mut pid = 0u32;
     // SAFETY: a live client handle.
@@ -879,5 +886,37 @@ pub(crate) fn connect(
     }
     // A client that refuses its listener sends nothing; the handle closes with this scope.
     let peer = judge(pid, policy, Relation::ClientChecksListener).map_err(LocalRefusal::Peer)?;
+    Ok((handle, peer))
+}
+
+/// Connects to the pipe `address`, verifying the server before a byte is sent. The connect is bounded by
+/// [`CONNECT_BOUND`]; the carrier is built at once, with no handshake (a client that handshakes uses
+/// [`connect_stream`]).
+pub(crate) fn connect(
+    address: &LocalAddress,
+    policy: &PeerPolicy,
+    limits: CarrierLimits,
+) -> Accepted {
+    let (handle, peer) = connect_checked(address, policy, Instant::now() + CONNECT_BOUND)?;
     carrier_over(handle, false, Side::Client, peer, limits)
+}
+
+/// [`connect`] up to the stream: the halves of the connection, not yet a carrier, for the client's handshake. A busy
+/// pipe is waited for until `deadline`, which the handshake's client counts from the start of its connect.
+pub(crate) fn connect_stream(
+    address: &LocalAddress,
+    policy: &PeerPolicy,
+    deadline: Instant,
+) -> Result<RawConnection, LocalRefusal> {
+    let (handle, peer) = connect_checked(address, policy, deadline)?;
+    let spawn = |error: io::Error| LocalRefusal::os("spawn", &error);
+    let pipe = Pipe::new(handle, false).map_err(spawn)?;
+    let killer = pipe.clone();
+    Ok(RawConnection {
+        read: Box::new(ReadHalf(pipe.clone())),
+        write: Box::new(WriteHalf(pipe)),
+        abort: Box::new(move || killer.abort()),
+        peer,
+        side: Side::Client,
+    })
 }
