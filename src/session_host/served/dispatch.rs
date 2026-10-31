@@ -8,8 +8,8 @@
 //! | Each method runs its existing gwz-core handler, with the request's own caller directory as its start and the operation's ID | §5.2 |
 //! | Handlers report events through the operation's gate | §5.2, §6 |
 //! | `diff` and `log` take an open-log slot from the session's spool layer, reached through the gate, before they register their logs, and answer with the session's own log ids | §5.4, §5.6 |
-//! | Every path that updates a member's refs from the network takes the member lock around that step, through the session's host context's manager, waiting under the call's token: `fetch`, `push`, `pull_head` (its member and root fetches, including the root merge plan's) and `tag` (its push) | §5.1; step 2.3c |
-//! | The dry-run push helpers (`push_member`, `push_root` with `dry_run`) take no lock: a dry run updates no refs | §5.1 |
+//! | Every path that updates a member's refs from the network takes the member lock around that step, through the session's host context's manager, waiting under the call's token: `fetch`, `push`, `pull_head` (its member and root fetches, including the root merge plan's) and `tag` (its push, its fetch and its remote delete) | §5.1; step 2.3c |
+//! | Only the dry-run push plans (`push_member`, `push_root`) take no lock: they read and plan and update no refs. Who takes the port: the arms here build it from `member_locks`; a direct caller's handler builds its own per-call one | §5.1 |
 //! | The worker, the handler context, carries the call's token: dispatch refuses with `cancelled` once it is cancelled, at its entry and at each gated step | §5.2 |
 //! | A method with no handler here is refused with `unsupported_operation`, before any effect | §4.2 |
 //!
@@ -25,7 +25,7 @@ use crate::workspace_ops as ops;
 use gwz_session_host::Worker;
 
 use super::{ServedSession, SpoolKind};
-use crate::session_host::members::BoundMemberLocks;
+use crate::operation::BoundMemberLocks;
 
 /// How a served session runs a call's handler. Production uses
 /// [`CoreDispatch`]; tests script their own.

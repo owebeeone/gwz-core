@@ -9,9 +9,8 @@ use std::time::Duration;
 use gwz_session_host::CallControls;
 
 use super::*;
-use crate::session_host::members::{BoundMemberLocks, MemberLockManager};
+use crate::operation::{BoundMemberLocks, MemberLockManager};
 
-const SETTLE: Duration = Duration::from_millis(250);
 const LONG: Duration = Duration::from_secs(30);
 
 fn root_tag_request(op: crate::TagOp) -> crate::TagRequest {
@@ -79,10 +78,7 @@ fn a_tag_push_waits_for_the_member_another_step_holds_then_succeeds() {
     let (_controls, gate) = CallControls::new(&session);
     let steps = BoundMemberLocks::new(manager.clone(), gate.token().clone());
     let (result, thread) = tag_on_a_thread(&fixture, crate::TagOp::Push, steps);
-    assert!(
-        result.recv_timeout(SETTLE).is_err(),
-        "the tag push did not wait for the member's holder"
-    );
+    manager.assert_waiting(&result, "the tag push did not wait for the member's holder");
     assert_eq!(pushes(&fixture), 0, "the tag was pushed while it was held");
     drop(holder);
     let response = result
@@ -107,7 +103,7 @@ fn a_cancelled_tag_push_wait_ends_with_cancelled_and_pushes_nothing() {
     let (controls, gate) = CallControls::new(&session);
     let steps = BoundMemberLocks::new(manager.clone(), gate.token().clone());
     let (result, thread) = tag_on_a_thread(&fixture, crate::TagOp::Push, steps);
-    assert!(result.recv_timeout(SETTLE).is_err(), "it should be waiting");
+    manager.assert_waiting(&result, "it should be waiting");
     controls.cancel();
     let error = result
         .recv_timeout(LONG)
@@ -133,9 +129,9 @@ fn a_tag_fetch_waits_for_the_member_another_step_holds_then_succeeds() {
     let (_controls, gate) = CallControls::new(&session);
     let steps = BoundMemberLocks::new(manager.clone(), gate.token().clone());
     let (result, thread) = tag_on_a_thread(&fixture, crate::TagOp::Fetch, steps);
-    assert!(
-        result.recv_timeout(SETTLE).is_err(),
-        "the tag fetch did not wait for the member's holder"
+    manager.assert_waiting(
+        &result,
+        "the tag fetch did not wait for the member's holder",
     );
     assert_eq!(
         tag_fetches(&fixture),
@@ -165,7 +161,7 @@ fn a_cancelled_tag_fetch_wait_ends_with_cancelled_and_fetches_nothing() {
     let (controls, gate) = CallControls::new(&session);
     let steps = BoundMemberLocks::new(manager.clone(), gate.token().clone());
     let (result, thread) = tag_on_a_thread(&fixture, crate::TagOp::Fetch, steps);
-    assert!(result.recv_timeout(SETTLE).is_err(), "it should be waiting");
+    manager.assert_waiting(&result, "it should be waiting");
     controls.cancel();
     let error = result
         .recv_timeout(LONG)
@@ -176,4 +172,74 @@ fn a_cancelled_tag_fetch_wait_ends_with_cancelled_and_fetches_nothing() {
     assert_eq!(tag_fetches(&fixture), 0);
     assert_eq!(manager.held_count(), 1);
     drop(holder);
+}
+
+/// Remediation round 1, P3-C3: `tag --remote ... delete` pushes `:refs/tags/<name>` to the member's remote, a network
+/// write of its tag refs, so it takes the member's guard like a tag push: it waits behind another holder of the
+/// member, and runs once that holder lets go.
+#[test]
+fn a_remote_tag_delete_waits_for_the_member_another_step_holds_then_succeeds() {
+    use crate::git::{Git2Backend, GitBackend};
+    let temp = TempDir::new("tag-delete-held");
+    let backend = Arc::new(Git2Backend::without_credential_helpers());
+    handle_create_workspace(create_workspace_request(temp.path()), "op_create").unwrap();
+    let remote = temp.path().join("root.git");
+    init_bare_main(&remote);
+    backend
+        .add_remote(temp.path(), "origin", remote.to_str().unwrap())
+        .unwrap();
+    set_identity(temp.path());
+    commit_file(temp.path(), "root.txt", "root", "root", &[]).unwrap();
+    backend.tag_create(temp.path(), "v1", None, false).unwrap();
+    backend
+        .push(temp.path(), "origin", "refs/tags/v1:refs/tags/v1")
+        .unwrap();
+    assert!(read_repo_ref(&remote, "refs/tags/v1").is_some());
+
+    let manager = MemberLockManager::new();
+    let holder = manager.lock(temp.path(), "@root", None).unwrap();
+    let session = Arc::new(());
+    let (_controls, gate) = CallControls::new(&session);
+    let steps = BoundMemberLocks::new(manager.clone(), gate.token().clone());
+    let (sender, result) = mpsc::channel();
+    let thread = {
+        let (backend, root) = (Arc::clone(&backend), temp.path().to_path_buf());
+        thread::spawn(move || {
+            let world = crate::operation_context::TestWorld::physical();
+            let mut request = root_tag_request(crate::TagOp::Delete);
+            request.remote = Some("origin".to_owned());
+            let outcome = handle_tag_in(
+                &world.context(),
+                &*backend,
+                &root,
+                request,
+                "op_delete",
+                &steps,
+            );
+            sender.send(outcome).unwrap();
+        })
+    };
+    manager.assert_waiting(
+        &result,
+        "the remote tag delete did not wait for the member's holder",
+    );
+    assert!(
+        read_repo_ref(&remote, "refs/tags/v1").is_some(),
+        "the tag was deleted from the remote while the member was held"
+    );
+    drop(holder);
+    let response = result
+        .recv_timeout(LONG)
+        .expect("the remote tag delete ended")
+        .unwrap();
+    thread.join().unwrap();
+    assert_eq!(
+        response.response.meta.aggregate_status,
+        crate::AggregateStatus::Ok
+    );
+    assert!(
+        read_repo_ref(&remote, "refs/tags/v1").is_none(),
+        "the delete never reached the remote"
+    );
+    assert_eq!(manager.held_count(), 0);
 }

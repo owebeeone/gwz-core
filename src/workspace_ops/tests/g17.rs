@@ -63,7 +63,7 @@ fn tag_publication_plan_pins_objects_before_any_transfer() {
         .unwrap();
     let plans = super::super::handle_tag::plan_tag_pushes(
         &backend,
-        &[temp.path().to_path_buf()],
+        &[("@root".to_owned(), temp.path().to_path_buf())],
         Some("v1"),
     )
     .unwrap();
@@ -87,6 +87,7 @@ fn tag_publication_plan_pins_objects_before_any_transfer() {
     assert_eq!(
         plans,
         vec![(
+            "@root".to_owned(),
             temp.path().to_path_buf(),
             format!("{original}:refs/tags/v1")
         )]

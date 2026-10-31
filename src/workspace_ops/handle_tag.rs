@@ -40,7 +40,7 @@ where
     B: GitBackend + MergeAuthorityBackend,
 {
     // A direct caller has no host context: its member steps take the manager of this call alone.
-    let steps = crate::session_host::members::BoundMemberLocks::per_call();
+    let steps = crate::operation::BoundMemberLocks::per_call();
     handle_tag_with_member_steps(services, backend, start, request, operation_id, &steps)
 }
 
@@ -126,8 +126,14 @@ where
             member_roots.push(root.join(&member.path));
         }
         let repos: Vec<PathBuf> = member_roots.clone();
+        // `member_roots` parallels `selected`, so a repository's member id is at the same index.
         let push_plans = if request.op == crate::TagOp::Push {
-            plan_tag_pushes(backend, &member_roots, request.name.as_deref())?
+            let members: Vec<(String, PathBuf)> = selected
+                .iter()
+                .cloned()
+                .zip(member_roots.iter().cloned())
+                .collect();
+            plan_tag_pushes(backend, &members, request.name.as_deref())?
         } else {
             Vec::new()
         };
@@ -138,7 +144,7 @@ where
             let remote = request.remote.as_deref().unwrap_or("origin");
             push_plans
                 .iter()
-                .map(|(repo, refspec)| backend.prepare_push(repo, remote, refspec))
+                .map(|(_, repo, refspec)| backend.prepare_push(repo, remote, refspec))
                 .collect::<ModelResult<Vec<_>>>()?
         } else {
             Vec::new()
@@ -151,7 +157,7 @@ where
                     names.push(remote.to_owned());
                 }
             }
-            for (repo, refspec) in &push_plans {
+            for (_, repo, refspec) in &push_plans {
                 if repo == &root {
                     let frozen = crate::PushRequest {
                         meta: request.meta.clone(),
@@ -182,7 +188,7 @@ where
                     if backend.is_repository(repo)? {
                         if request.op == crate::TagOp::Push {
                             if let Some(index) =
-                                push_plans.iter().position(|(path, _)| path == repo)
+                                push_plans.iter().position(|(_, path, _)| path == repo)
                             {
                                 let plan = &prepared_pushes[index];
                                 backend.ls_remote_url(repo, &plan.url, &plan.remote, Some(repo))?;
@@ -197,7 +203,7 @@ where
                         }
                     }
                 }
-                for (repo, refspec) in &push_plans {
+                for (_, repo, refspec) in &push_plans {
                     if repo == &root {
                         super::publication::preflight_dependencies(
                             backend,
@@ -259,10 +265,14 @@ where
                     // Remote delete: push a delete refspec to each member's remote that has the tag.
                     Some(remote) => {
                         let delete_refspec = format!(":refs/tags/{git_name}");
-                        for member_root in &member_roots {
+                        // `member_roots` parallels `selected`, so the member's key is at the same index.
+                        for (member_root, member_id) in member_roots.iter().zip(&selected) {
                             if backend.is_repository(member_root)?
                                 && remote_has_tag(backend, member_root, remote, &git_name)?
                             {
+                                // The member's step: the delete refspec is a network write of its tag refs, so it
+                                // runs under the member guard like a tag push.
+                                let _guard = steps.enter(&root, member_id)?;
                                 backend
                                     .push(member_root, remote, &delete_refspec)
                                     .map_err(tag_error)?;
@@ -322,7 +332,9 @@ where
                 }
                 // Capture every tag object before the first transfer. Root checks below
                 // inspect that captured object even if a local tag moves meanwhile.
-                for ((member_root, refspec), plan) in push_plans.into_iter().zip(prepared_pushes) {
+                for ((member_id, member_root, refspec), plan) in
+                    push_plans.into_iter().zip(prepared_pushes)
+                {
                     if member_root == root {
                         super::publication::checked_root_request(
                             backend,
@@ -338,10 +350,6 @@ where
                         )?;
                     }
                     // The member's step: its exchange and ref update, under its member guard.
-                    let member_id = member_roots
-                        .iter()
-                        .position(|candidate| candidate == &member_root)
-                        .map_or_else(|| "@root".to_owned(), |index| selected[index].clone());
                     let _guard = steps.enter(&root, &member_id)?;
                     backend
                         .push_prepared(&member_root, &plan)
@@ -429,13 +437,16 @@ fn ok_envelope(context: crate::operation::OperationContext) -> ModelResult<crate
 
 /// Enumerate concrete tag objects without transferring anything. Keep annotated
 /// tag objects intact and preserve the resolver's member-before-root ordering.
+///
+/// `members` pairs each selected member id (`@root` for the root repository) with its repository, and each plan
+/// carries its member's id: `(member id, repository, refspec)`.
 pub(super) fn plan_tag_pushes<B: GitBackend>(
     backend: &B,
-    repos: &[PathBuf],
+    members: &[(String, PathBuf)],
     name: Option<&str>,
-) -> ModelResult<Vec<(PathBuf, String)>> {
+) -> ModelResult<Vec<(String, PathBuf, String)>> {
     let mut plans = Vec::new();
-    for repo in repos {
+    for (member_id, repo) in members {
         if !backend.is_repository(repo)? {
             continue;
         }
@@ -450,7 +461,11 @@ pub(super) fn plan_tag_pushes<B: GitBackend>(
                     "tag disappeared while preparing publication; retry",
                 )
             })?;
-            plans.push((repo.clone(), format!("{object}:{reference}")));
+            plans.push((
+                member_id.clone(),
+                repo.clone(),
+                format!("{object}:{reference}"),
+            ));
         }
     }
     Ok(plans)

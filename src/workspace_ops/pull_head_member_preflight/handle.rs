@@ -4,9 +4,9 @@ use crate::artifact::{self};
 use crate::git::{GitBackend, MergeAuthorityBackend};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{
-    EventEmitter, EventSink, MemberSteps, NullSink, OpenMergeCommand, OperationRequest,
+    BoundMemberLocks, EventEmitter, EventSink, MemberSteps, NullSink, OpenMergeCommand,
+    OperationRequest,
 };
-use crate::session_host::members::BoundMemberLocks;
 
 use super::super::pull_head_barrier::validate_pull_barrier;
 use super::super::pull_head_merge_preflight::{apply_root_merge_pull, plan_root_merge_pull};

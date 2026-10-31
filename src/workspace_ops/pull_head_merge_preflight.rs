@@ -86,15 +86,17 @@ fn plan_root_merge_pull_inner<B: GitBackend>(
         "workspace root",
     )?;
 
-    {
-        // The fetch updates the root's remote-tracking refs: the root's step (core session design 5.1).
+    let (remote_ref, remote_commit) = {
+        // The fetch updates the root's remote-tracking refs: the root's step (core session design 5.1). The
+        // tracking ref the plan names is read inside the step, as `fetch_one` reads its refs.
         let _guard = steps.enter(root, "@root")?;
         backend.fetch(root, &remote)?;
-    }
-    let remote_ref = format!("refs/remotes/{remote}/{branch}");
-    let remote_commit = backend
-        .read_ref(root, &remote_ref)?
-        .ok_or_else(|| root_error(ErrorCode::MissingRemote, "root remote branch not found"))?;
+        let remote_ref = format!("refs/remotes/{remote}/{branch}");
+        let remote_commit = backend
+            .read_ref(root, &remote_ref)?
+            .ok_or_else(|| root_error(ErrorCode::MissingRemote, "root remote branch not found"))?;
+        (remote_ref, remote_commit)
+    };
     if local_commit == remote_commit {
         let prepared = backend.prepare_merge_upstream_checked(
             root,

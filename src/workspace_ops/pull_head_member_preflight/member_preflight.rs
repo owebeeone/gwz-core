@@ -84,15 +84,18 @@ where
             action: PullHeadAction::SkipNoFetchRemote,
         });
     };
-    {
+    let (remote_ref, remote_commit) = {
         // The fetch updates the member's remote-tracking refs: it is the member's step (core session design 5.1).
+        // The tracking ref the plan names is read inside the step, so it is the commit this fetch left there and
+        // not one another session's fetch moved it to meanwhile.
         let _guard = steps.enter(root, &member_id)?;
         backend.fetch(&member_root, &remote)?;
-    }
-    let remote_ref = format!("refs/remotes/{remote}/{branch}");
-    let remote_commit = backend
-        .read_ref(&member_root, &remote_ref)?
-        .ok_or_else(|| ModelError::new(ErrorCode::MissingRemote, "remote branch not found"))?;
+        let remote_ref = format!("refs/remotes/{remote}/{branch}");
+        let remote_commit = backend
+            .read_ref(&member_root, &remote_ref)?
+            .ok_or_else(|| ModelError::new(ErrorCode::MissingRemote, "remote branch not found"))?;
+        (remote_ref, remote_commit)
+    };
     let head = backend.head(&member_root)?;
     let Some(local_commit) = head.commit.clone() else {
         return Err(ModelError::new(

@@ -1,6 +1,7 @@
 mod attribution_from_protocol;
 mod commit_log;
 mod eventemitter;
+mod memberlockmanager;
 mod membermutationguard;
 mod now_ms;
 mod open_merge_gate;
@@ -18,7 +19,8 @@ cfg_if::cfg_if! {
 
 pub(crate) use attribution_from_protocol::*;
 pub use eventemitter::*;
-pub use membermutationguard::*;
+pub(crate) use memberlockmanager::*;
+pub(crate) use membermutationguard::*;
 pub(crate) use now_ms::*;
 pub use open_merge_gate::*;
 pub use par_map_per_host::*;

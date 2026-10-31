@@ -59,7 +59,7 @@ fn push_root_tag(fixture: &PublicationFixture, urls: [&str; 3]) -> Vec<RemoteCal
         root,
         request,
         "op_tag",
-        &crate::session_host::members::BoundMemberLocks::per_call(),
+        &crate::operation::BoundMemberLocks::per_call(),
     )
     .unwrap();
 

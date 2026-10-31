@@ -551,6 +551,7 @@ def main(argv: list[str] | None = None) -> None:
         start([sys.executable, str(ROOT / "scripts/checks/check_filesystem_boundary.py")])
         start([sys.executable, str(ROOT / "scripts/checks/check_process_globals.py")])
         start([sys.executable, str(ROOT / "scripts/checks/check_spawn_gate_minting.py")])
+        start([sys.executable, str(ROOT / "scripts/checks/check_member_step_boundary.py")])
         check_cfg_boundaries(
             [name for name in CFG_SIBLINGS if options.skip_cfg_siblings or name in options.skip_cfg_sibling],
             start,

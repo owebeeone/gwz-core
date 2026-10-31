@@ -114,6 +114,9 @@ jobs:
           python scripts/checks/check_process_globals.py
           # Step 1.3a: no production constructor mints a spawn gate; the composition is the one site.
           python scripts/checks/check_spawn_gate_minting.py
+          # Core session design 5.1 (step 2.3c): the handler layer names no session_host, and every network update of a
+          # member's refs follows a member step entry.
+          python scripts/checks/check_member_step_boundary.py
           # CS1.7: gwz-cli and gwz-py are not checked out here, so this job
           # checks gwz-core's conditional-compilation boundaries alone.
           python scripts/checks/check_cfg_boundaries.py --skip-repo gwz-cli --skip-repo gwz-py
@@ -128,7 +131,7 @@ jobs:
           python scripts/checks/check_driver_only_boundary.py
           python -m unittest scripts/checks/test_check_driver_only_boundary.py
           python -m unittest scripts/checks/test_check_windows_parity.py scripts/test_windows_lane_check.py scripts/checks/test_check_windows_receipts.py tests/transport_backend/test_windows_qualification_boundary.py
-          python -m unittest scripts/checks/test_check_filesystem_boundary.py scripts/checks/test_check_gwz_git_adoption.py scripts/checks/test_workflow_siblings.py scripts/checks/test_run_tests_filesystem_mode.py scripts/checks/test_run_tests_test_filter.py scripts/checks/test_run_tests_transport_globals.py scripts/checks/test_run_tests_transport_pin.py scripts/checks/test_run_tests_git_globals.py scripts/checks/test_run_tests_parallel_checks.py scripts/checks/test_run_tests_session_crates.py scripts/checks/test_check_process_globals.py scripts/checks/test_check_cfg_boundaries.py scripts/checks/test_check_candidate_switches.py scripts/checks/test_run_boundary_job.py scripts/checks/test_consumer_bridge_standalone.py scripts/checks/test_check_spawn_gate_minting.py
+          python -m unittest scripts/checks/test_check_filesystem_boundary.py scripts/checks/test_check_gwz_git_adoption.py scripts/checks/test_workflow_siblings.py scripts/checks/test_run_tests_filesystem_mode.py scripts/checks/test_run_tests_test_filter.py scripts/checks/test_run_tests_transport_globals.py scripts/checks/test_run_tests_transport_pin.py scripts/checks/test_run_tests_git_globals.py scripts/checks/test_run_tests_parallel_checks.py scripts/checks/test_run_tests_session_crates.py scripts/checks/test_check_process_globals.py scripts/checks/test_check_cfg_boundaries.py scripts/checks/test_check_candidate_switches.py scripts/checks/test_run_boundary_job.py scripts/checks/test_consumer_bridge_standalone.py scripts/checks/test_check_spawn_gate_minting.py scripts/checks/test_check_member_step_boundary.py
           python -m unittest scripts/checks/test_release_boundary.py -v
           # The release script's internal-version bump (plan S1.5) and the
           # crates.io publisher the release workflow runs (S2.1). This job

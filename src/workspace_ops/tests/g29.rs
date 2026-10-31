@@ -11,14 +11,12 @@ use std::time::Duration;
 use gwz_session_host::{CallControls, CancellationToken};
 
 use crate::operation::NullSink;
-use crate::session_host::members::{BoundMemberLocks, MemberLockManager};
+use crate::operation::{BoundMemberLocks, MemberLockManager};
 
 use super::*;
 
 use super::g01::tracking_backend::{ConfiguredRemote, TEST_COMMIT, TrackingBackend};
 
-/// Long enough that a step which was going to run has run.
-const SETTLE: Duration = Duration::from_millis(200);
 const LONG: Duration = Duration::from_secs(30);
 
 const APP: (&str, &str, &str, &str) = (
@@ -209,10 +207,7 @@ fn a_fetch_waits_for_the_member_another_step_holds() {
         let (backend, root) = (backend.clone(), temp.path().to_path_buf());
         move || fetch(&backend, &root, &["mem_app"], "op_fetch", &steps)
     });
-    assert!(
-        result.recv_timeout(SETTLE).is_err(),
-        "the fetch did not wait for the member's holder"
-    );
+    manager.assert_waiting(&result, "the fetch did not wait for the member's holder");
     assert_eq!(backend.fetch_peak(), 0, "the fetch ran while it was held");
     drop(holder);
     let response = result.recv_timeout(LONG).expect("the fetch ended");
@@ -239,10 +234,7 @@ fn a_push_waits_for_the_member_another_step_holds() {
         let (backend, root) = (backend.clone(), temp.path().to_path_buf());
         move || push(&backend, &root, "op_push", &steps)
     });
-    assert!(
-        result.recv_timeout(SETTLE).is_err(),
-        "the push did not wait for the member's holder"
-    );
+    manager.assert_waiting(&result, "the push did not wait for the member's holder");
     assert_eq!(backend.push_peak(), 0, "the push ran while it was held");
     drop(holder);
     let response = result.recv_timeout(LONG).expect("the push ended");
@@ -270,7 +262,7 @@ fn a_cancelled_fetch_wait_fails_its_members_row_with_cancelled() {
         let (backend, root) = (backend.clone(), temp.path().to_path_buf());
         move || fetch(&backend, &root, &["mem_app"], "op_fetch", &steps)
     });
-    assert!(result.recv_timeout(SETTLE).is_err(), "it should be waiting");
+    manager.assert_waiting(&result, "it should be waiting");
     controls.cancel();
     let response = result
         .recv_timeout(LONG)
@@ -300,7 +292,7 @@ fn a_cancelled_push_wait_fails_its_members_row_with_cancelled() {
         let (backend, root) = (backend.clone(), temp.path().to_path_buf());
         move || push(&backend, &root, "op_push", &steps)
     });
-    assert!(result.recv_timeout(SETTLE).is_err(), "it should be waiting");
+    manager.assert_waiting(&result, "it should be waiting");
     controls.cancel();
     let response = result
         .recv_timeout(LONG)
@@ -424,7 +416,7 @@ fn a_pulls_preflight_fetch_waits_for_the_member_another_step_holds_and_wakes_on_
             )
         }
     });
-    assert!(result.recv_timeout(SETTLE).is_err(), "it should be waiting");
+    manager.assert_waiting(&result, "it should be waiting");
     assert_eq!(
         backend.fetch_peak(),
         0,

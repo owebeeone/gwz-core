@@ -39,8 +39,8 @@ use gwz_session_host::{
 };
 
 use super::environment::EnvironmentSnapshot;
-use super::members::MemberLockManager;
 use crate::model::{ErrorCode, ModelError, ModelResult};
+use crate::operation::MemberLockManager;
 
 /// What the sessions of one driver share (§5.6): the driver creates it and
 /// passes it to every session it opens.

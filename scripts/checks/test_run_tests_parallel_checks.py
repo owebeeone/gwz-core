@@ -126,6 +126,7 @@ class ParallelChecks(unittest.TestCase):
             'check_filesystem_boundary.py',
             'check_process_globals.py',
             'check_spawn_gate_minting.py',
+            'check_member_step_boundary.py',
             'check_cfg_boundaries.py',
             'check_candidate_switches.py',
             'check_carrier_peer_rule.py',
@@ -148,7 +149,7 @@ class ParallelChecks(unittest.TestCase):
         printed = [line.split()[0] for line in stdout.splitlines() if line.endswith(' output')]
         self.assertEqual(printed, [
             'check_filesystem_boundary.py', 'check_process_globals.py', 'check_spawn_gate_minting.py',
-            'check_cfg_boundaries.py',
+            'check_member_step_boundary.py', 'check_cfg_boundaries.py',
         ])
         self.assertEqual(checks.cargo(), [])
 

@@ -38,9 +38,9 @@ use gwz_session_host::{
 };
 
 use super::context::HostContext;
-use super::members::MemberLockManager;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::EventSink;
+use crate::operation::MemberLockManager;
 
 mod dispatch;
 mod methods;

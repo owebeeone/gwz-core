@@ -4,10 +4,9 @@ use crate::artifact::{self, ArtifactSourceKind, ManifestMember};
 use crate::git::{GitBackend, GitHeadState, MergeAuthorityBackend, git_host};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{
-    EventEmitter, EventSink, MemberSteps, NullSink, OpenMergeCommand, OperationRequest,
-    par_map_per_host, resolve_jobs, resolve_per_host,
+    BoundMemberLocks, EventEmitter, EventSink, MemberSteps, NullSink, OpenMergeCommand,
+    OperationRequest, par_map_per_host, resolve_jobs, resolve_per_host,
 };
-use crate::session_host::members::BoundMemberLocks;
 
 use super::*;
 
@@ -147,11 +146,11 @@ where
                         .ok_or_else(|| {
                             ModelError::new(ErrorCode::MemberNotFound, "member not found")
                         })?;
-                    Ok(push_member(backend, &root, member, &request, true))
+                    Ok(push_member(backend, &root, member, &request))
                 })
                 .collect::<ModelResult<Vec<_>>>()?;
             if push_root_selected {
-                responses.push(push_root(backend, &root, &request, true));
+                responses.push(push_root(backend, &root, &request));
             }
 
             return Ok(crate::PushResponse {
@@ -175,11 +174,11 @@ where
                     .ok_or_else(|| {
                         ModelError::new(ErrorCode::MemberNotFound, "member not found")
                     })?;
-                Ok(push_member(backend, &root, member, &request, true))
+                Ok(push_member(backend, &root, member, &request))
             })
             .collect::<ModelResult<Vec<_>>>()?;
         if push_root_selected {
-            preflight.push(push_root(backend, &root, &request, true));
+            preflight.push(push_root(backend, &root, &request));
         }
         if preflight.iter().any(|response| {
             matches!(
@@ -457,12 +456,13 @@ where
         })
 }
 
+/// The dry-run plan of one member's push: it reads and plans, and updates no ref, so it takes no member step
+/// (core session design 5.1). The transfer is `handle_push_with_events_in`'s, under the member's guard.
 pub(crate) fn push_member<B>(
     backend: &B,
     root: &Path,
     member: &ManifestMember,
     request: &crate::PushRequest,
-    dry_run: bool,
 ) -> crate::MemberResponse
 where
     B: GitBackend,
@@ -513,63 +513,29 @@ where
     if let Err(error) = backend.validate_remote_identity(&member_root, &remote, true) {
         return push_policy_member_error(member, source_kind, request, error);
     }
-    if dry_run {
-        let (status, planned) = super::push_state::planned_push(
-            backend,
-            &member_root,
-            request,
-            &remote,
-            &head,
-            refspec,
-        );
-        return crate::MemberResponse {
-            member_id: member.id.clone(),
-            member_path: member.path.clone(),
-            source_kind,
-            status,
-            error: None,
-            planned: Some(planned),
-            state: None,
-            git_status: None,
-            target_kind: Some(crate::TargetKind::Member),
-            lock_match: None,
-            lock_difference_reasons: None,
-            url_resolution: None,
-        };
-    }
-
-    match backend.push(&member_root, &remote, &refspec) {
-        Ok(_) => crate::MemberResponse {
-            member_id: member.id.clone(),
-            member_path: member.path.clone(),
-            source_kind,
-            status: crate::MemberStatus::Ok,
-            error: None,
-            planned: None,
-            state: None,
-            git_status: None,
-            target_kind: Some(crate::TargetKind::Member),
-            lock_match: None,
-            lock_difference_reasons: None,
-            url_resolution: None,
-        },
-        Err(error) if error.code.keeps_its_code_on_a_network_row() => {
-            push_member_error(member, source_kind, error, crate::MemberStatus::Failed)
-        }
-        Err(error) => push_member_error(
-            member,
-            source_kind,
-            ModelError::new(ErrorCode::RemoteRejected, error.message),
-            crate::MemberStatus::Failed,
-        ),
+    let (status, planned) =
+        super::push_state::planned_push(backend, &member_root, request, &remote, &head, refspec);
+    crate::MemberResponse {
+        member_id: member.id.clone(),
+        member_path: member.path.clone(),
+        source_kind,
+        status,
+        error: None,
+        planned: Some(planned),
+        state: None,
+        git_status: None,
+        target_kind: Some(crate::TargetKind::Member),
+        lock_match: None,
+        lock_difference_reasons: None,
+        url_resolution: None,
     }
 }
 
+/// The dry-run plan of the root's push; see [`push_member`].
 pub(crate) fn push_root<B>(
     backend: &B,
     root: &Path,
     request: &crate::PushRequest,
-    dry_run: bool,
 ) -> crate::MemberResponse
 where
     B: GitBackend,
@@ -602,58 +568,32 @@ where
     if let Err(error) = backend.validate_remote_identity(root, &remote, true) {
         return push_root_error(error, crate::MemberStatus::Rejected);
     }
-    if dry_run {
-        let dependencies = super::publication::freeze_root_request(backend, root, request)
-            .and_then(|pinned| super::publication::root_dependencies(backend, root, &pinned));
-        let validated = dependencies.and_then(|dependencies| {
-            for dependency in dependencies {
-                super::publication::validate_dependency_identity(backend, &dependency)?;
-            }
-            Ok(())
-        });
-        if let Err(error) = validated {
-            return push_root_error(error, crate::MemberStatus::Rejected);
+    let dependencies = super::publication::freeze_root_request(backend, root, request)
+        .and_then(|pinned| super::publication::root_dependencies(backend, root, &pinned));
+    let validated = dependencies.and_then(|dependencies| {
+        for dependency in dependencies {
+            super::publication::validate_dependency_identity(backend, &dependency)?;
         }
-        let (status, planned) =
-            super::push_state::planned_push(backend, root, request, &remote, &head, refspec);
-        return crate::MemberResponse {
-            member_id: "@root".to_owned(),
-            member_path: ".".to_owned(),
-            source_kind: crate::SourceKind::Git,
-            status,
-            error: None,
-            planned: Some(planned),
-            state: None,
-            git_status: None,
-            target_kind: Some(crate::TargetKind::Root),
-            lock_match: None,
-            lock_difference_reasons: None,
-            url_resolution: None,
-        };
+        Ok(())
+    });
+    if let Err(error) = validated {
+        return push_root_error(error, crate::MemberStatus::Rejected);
     }
-
-    match backend.push(root, &remote, &refspec) {
-        Ok(_) => crate::MemberResponse {
-            member_id: "@root".to_owned(),
-            member_path: ".".to_owned(),
-            source_kind: crate::SourceKind::Git,
-            status: crate::MemberStatus::Ok,
-            error: None,
-            planned: None,
-            state: None,
-            git_status: None,
-            target_kind: Some(crate::TargetKind::Root),
-            lock_match: None,
-            lock_difference_reasons: None,
-            url_resolution: None,
-        },
-        Err(error) if error.code.keeps_its_code_on_a_network_row() => {
-            push_root_error(error, crate::MemberStatus::Failed)
-        }
-        Err(error) => push_root_error(
-            ModelError::new(ErrorCode::RemoteRejected, error.message),
-            crate::MemberStatus::Failed,
-        ),
+    let (status, planned) =
+        super::push_state::planned_push(backend, root, request, &remote, &head, refspec);
+    crate::MemberResponse {
+        member_id: "@root".to_owned(),
+        member_path: ".".to_owned(),
+        source_kind: crate::SourceKind::Git,
+        status,
+        error: None,
+        planned: Some(planned),
+        state: None,
+        git_status: None,
+        target_kind: Some(crate::TargetKind::Root),
+        lock_match: None,
+        lock_difference_reasons: None,
+        url_resolution: None,
     }
 }
 

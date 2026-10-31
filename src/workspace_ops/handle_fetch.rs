@@ -22,10 +22,9 @@ use crate::artifact::{self, ManifestMember};
 use crate::git::{GitBackend, GitHeadState, MergeAuthorityBackend, git_host};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{
-    EventEmitter, EventSink, MemberSteps, NullSink, OperationRequest, par_map_per_host,
-    resolve_jobs, resolve_per_host,
+    BoundMemberLocks, EventEmitter, EventSink, MemberSteps, NullSink, OperationRequest,
+    par_map_per_host, resolve_jobs, resolve_per_host,
 };
-use crate::session_host::members::BoundMemberLocks;
 
 use super::pull_head_member_preflight::member_preflight::{
     pull_fetch_remote_name, pull_remote_host,
@@ -420,9 +419,37 @@ where
         };
     };
     let upstream = format!("refs/remotes/{remote}/{branch}");
-    let contacted = steps
-        .enter(root, &target.member_id)
-        .and_then(|_guard| contact(backend, target, remote, &upstream));
+    // The network half, isolated in the closure so every error it can produce lands on one row. It runs only
+    // after `enter`, holding the member's guard: the exchange and the ref reads around it are one step.
+    let contacted = steps.enter(root, &target.member_id).and_then(
+        |_guard| -> ModelResult<crate::FetchRepoSummary> {
+            let before = backend.read_ref(&target.path, &upstream)?;
+            backend.fetch(&target.path, remote).map_err(|error| {
+                if error.code.keeps_its_code_on_a_network_row() {
+                    error
+                } else {
+                    ModelError::new(ErrorCode::RemoteRejected, error.message)
+                }
+            })?;
+            let after = backend.read_ref(&target.path, &upstream)?;
+            let result = if before == after {
+                crate::FetchResult::Unchanged
+            } else {
+                crate::FetchResult::Updated
+            };
+            let mut summary = target.row(result);
+            // Ahead/behind is measured AFTER the fetch, against the tracking ref this
+            // operation just wrote — the fact this operation established (plan D7).
+            if let (Some(local), Some(after)) = (&target.local_commit, &after) {
+                let counts = backend.ahead_behind(&target.path, local, after)?;
+                summary.ahead = Some(counts.ahead as i64);
+                summary.behind = Some(counts.behind as i64);
+            }
+            summary.before = before;
+            summary.after = after;
+            Ok(summary)
+        },
+    );
     match contacted {
         Ok(mut summary) => {
             let status = if summary.result == crate::FetchResult::Updated {
@@ -441,43 +468,6 @@ where
             summary: target.row(crate::FetchResult::Failed),
         },
     }
-}
-
-/// The network half, isolated so every error it can produce lands on one row.
-fn contact<B>(
-    backend: &B,
-    target: &FetchTarget,
-    remote: &str,
-    upstream: &str,
-) -> ModelResult<crate::FetchRepoSummary>
-where
-    B: GitBackend,
-{
-    let before = backend.read_ref(&target.path, upstream)?;
-    backend.fetch(&target.path, remote).map_err(|error| {
-        if error.code.keeps_its_code_on_a_network_row() {
-            error
-        } else {
-            ModelError::new(ErrorCode::RemoteRejected, error.message)
-        }
-    })?;
-    let after = backend.read_ref(&target.path, upstream)?;
-    let result = if before == after {
-        crate::FetchResult::Unchanged
-    } else {
-        crate::FetchResult::Updated
-    };
-    let mut summary = target.row(result);
-    // Ahead/behind is measured AFTER the fetch, against the tracking ref this
-    // operation just wrote — the fact this operation established (plan D7).
-    if let (Some(local), Some(after)) = (&target.local_commit, &after) {
-        let counts = backend.ahead_behind(&target.path, local, after)?;
-        summary.ahead = Some(counts.ahead as i64);
-        summary.behind = Some(counts.behind as i64);
-    }
-    summary.before = before;
-    summary.after = after;
-    Ok(summary)
 }
 
 fn fetch_response(

@@ -240,7 +240,7 @@ impl PublicationFixture {
             },
             "op_push",
             &NullSink,
-            &crate::session_host::members::BoundMemberLocks::per_call(),
+            &crate::operation::BoundMemberLocks::per_call(),
         )
         .unwrap()
     }
