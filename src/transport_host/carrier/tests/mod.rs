@@ -1,6 +1,11 @@
 //! The carrier's rows (plan 2.1). Fixture tests: nothing here is compiled into a build that is not a test build.
 mod class_rows;
 mod ending_rows;
+mod handshake_body_rows;
+mod handshake_client_rows;
+mod handshake_local_rows;
+mod handshake_rows;
+mod handshake_support;
 mod local_rows;
 mod sandbox_rows;
 mod seam_rows;

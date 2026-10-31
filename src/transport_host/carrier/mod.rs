@@ -43,6 +43,14 @@ use gwz_transport::protocol::MessageKind;
 use std::{fmt, io, task::Waker, time::Duration};
 
 mod binding;
+// The handshake's first production callers come after step 2.3d: the host's side, `accept_open`, is first called by
+// the served session (plan step 2.3g), and the client's side, `dial`, by the lock-file open (2.3i) and the `server`
+// subcommands (2.3k).
+#[allow(
+    dead_code,
+    reason = "first production callers: plan steps 2.3g (accept_open) and 2.3i and 2.3k (dial)"
+)]
+pub(crate) mod handshake;
 mod in_process;
 mod link;
 mod queue;
