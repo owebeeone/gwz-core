@@ -5,12 +5,12 @@
    "path": "src/transport_host/carrier/local/mod.rs",
    "kind": "gate",
    "gate": "unix",
-   "target": "arm: use unix::{LocalAddress, LocalListener, RuntimeDir, connect, connect_stream, own_identity}",
+   "target": "arm: use unix::{LocalAddress, LocalListener, RuntimeDir, connect_stream, own_identity}",
    "state": "paired",
    "owner": [
     "2.1"
    ],
-   "appendix": "new: the Unix arm of the local carrier; the Windows named pipe is local/windows.rs, the sibling arm of local/mod.rs's cfg_if (plan 2.1); step 2.3d-2 adds connect_stream (both arms) and the rows' connect_once/connect_until to the export lists"
+   "appendix": "new: the Unix arm of the local carrier; the Windows named pipe is local/windows.rs, the sibling arm of local/mod.rs's cfg_if (plan 2.1); step 2.3d-2 adds connect_stream (both arms) and the rows' connect_once/connect_until to the export lists; step 2.3d remediation round 1 (CODE-7) takes `connect` out of the export lists: it is a rows-only function of local/mod.rs now (connect_stream then into_carrier)"
   },
   {
    "path": "src/transport_host/carrier/local/mod.rs",

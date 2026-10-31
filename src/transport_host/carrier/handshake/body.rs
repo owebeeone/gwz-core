@@ -2,10 +2,12 @@
 //!
 //! **Encoding.** Every body is a definite map whose keys are small unsigned integers in ascending order, and every
 //! head is in its shortest form, so one value has one encoding. **Decoding is as strict:** a non-shortest head, an
-//! indefinite length, a tag, a float, a key out of order or repeated, a key the body does not define, and any byte
-//! after the item are refused, so decoding and re-encoding gives the same bytes. The registry's `SessionOpen` is
-//! checked for its client-placement shape by `validate_session_open`; this module reads its `protocol` (key 1) and
-//! `client` (key 2) under the same canonical rule.
+//! indefinite length, a tag, a float, any simple value but the single bytes `0xf4` and `0xf5`, a key out of order or
+//! repeated, a key the body does not define, and any byte after the item are refused, so decoding and re-encoding
+//! gives the same bytes. One rule is the exception: an optional boolean (`force`, `transport_off`) spelled out as
+//! `false` decodes as false and is encoded absent. The registry's `SessionOpen` is checked for its client-placement
+//! shape by `validate_session_open`; this module reads its `protocol` (key 1) and `client` (key 2) under the same
+//! canonical rule.
 use super::super::wire::put_head;
 
 /// Why a body is not accepted.
@@ -56,6 +58,11 @@ impl<'a> Strict<'a> {
     /// The next head, refused unless definite and shortest.
     fn head(&mut self) -> Result<(u8, u64), BodyFault> {
         let first = self.take(1)?[0];
+        // Major type 7 holds `false` and `true` only, as the single bytes 0xf4 and 0xf5: no float, no two-byte simple
+        // value, no other simple value, whatever its argument.
+        if first >> 5 == 7 && !matches!(first, 0xf4 | 0xf5) {
+            return Err(BodyFault::Malformed);
+        }
         let info = first & 0x1f;
         let (argument, floor) = match info {
             0..=23 => (u64::from(info), 0),
@@ -65,8 +72,7 @@ impl<'a> Strict<'a> {
             27 => (u64::from_be_bytes(self.array()?), 0x1_0000_0000),
             _ => return Err(BodyFault::Malformed),
         };
-        // Simple values and floats (major 7) carry their bits in the argument; `skip` refuses all but two.
-        if argument < floor && first >> 5 != 7 {
+        if argument < floor {
             return Err(BodyFault::NonShortest);
         }
         Ok((first >> 5, argument))
@@ -95,8 +101,8 @@ impl<'a> Strict<'a> {
                 Ok(())
             }
             5 => self.entries(argument, depth).map(|_| ()),
-            // `false` and `true`; no floats, no tags, no other simple value.
-            7 if (20..=21).contains(&argument) => Ok(()),
+            // `false` and `true`, the only major type 7 that `head` lets through; no floats, no tags.
+            7 => Ok(()),
             _ => Err(BodyFault::Malformed),
         }
     }
@@ -330,7 +336,8 @@ impl Control {
         encode(entries)
     }
 
-    /// `force` absent means false, and is written only when true: one encoding per value.
+    /// `force` absent means false, and is written only when true. A spelled-out `false` decodes as false, as the frozen
+    /// `SessionOpen`'s `transport_off` does; encoding writes neither (one rule for the optional booleans).
     pub(crate) fn decode(body: &[u8]) -> Result<Self, BodyFault> {
         let fields = Fields::parse(body, &[1, 2])?;
         let action = match fields.need(1, as_uint)? {
@@ -338,11 +345,7 @@ impl Control {
             1 => Action::Stop,
             _ => return Err(BodyFault::Range(1)),
         };
-        // `force: false` is an absent key, so spelling it out would be a second encoding of the value.
-        let force = match fields.value(2, as_bool)? {
-            Some(false) => return Err(BodyFault::Range(2)),
-            other => other.is_some(),
-        };
+        let force = fields.value(2, as_bool)?.unwrap_or(false);
         Ok(Self { action, force })
     }
 }

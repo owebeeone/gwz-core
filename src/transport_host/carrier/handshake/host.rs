@@ -6,6 +6,10 @@
 //! the one refusal. [`Hooks::control`] answers a `ServerControl` with the `ServerState` to write; a control exchange
 //! is not a session and the open hook does not run for it.
 //!
+//! **Refusals.** A refusal is one `SessionError` for call ID 0 and then the carrier's close (its close announcement).
+//! Its message never repeats text the peer sent; it may name a number the peer sent, such as the refused protocol
+//! version. A hook's message may hold values the host knows (a count of open sessions), so it is a `Cow`.
+//!
 //! **What this module does not hold.** The host reads only the first frame. A later `SessionOpen` or `ServerControl`
 //! on an opened session is the session's protocol error (server design §3, "each frame appears at most once"), which
 //! the router of the session enforces. A stream carrier also refuses a malformed `SessionOpen` itself before it
@@ -19,6 +23,7 @@ use super::{
 };
 use gwz_session_contract::{Frame, FrameKey, Tag, Target};
 use std::{
+    borrow::Cow,
     hint::black_box,
     time::{Duration, Instant},
 };
@@ -29,11 +34,12 @@ const CONTROL: u8 = Tag::ServerControl.byte();
 const NOT_OF_SHAPE: &str = "the session open is not of the client placement's shape";
 const NOT_CANONICAL: &str = "the request is not canonical";
 
-/// Why the composition refuses: the code and a fixed text.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Why the composition refuses: the code and a text. The text may hold a value the host knows; it must not repeat
+/// text the peer sent.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Refusal {
     pub(crate) code: u64,
-    pub(crate) message: &'static str,
+    pub(crate) message: Cow<'static, str>,
 }
 
 /// What the composition tells the host when it has opened the session.
@@ -46,6 +52,11 @@ pub(crate) struct OpenedInfo {
 /// The composition's side of the handshake.
 pub(crate) trait Hooks {
     /// Opens the session for a validated `SessionOpen`, before `SessionOpened` is written.
+    ///
+    /// **The caller owns the rollback.** The hook has opened the session when it returns `Ok`, and
+    /// [`accept_open`] can still fail after that (`SessionOpened` cannot be written, the stream has gone): it returns
+    /// `Err` and the session the hook opened is the caller's to close. Only `Ok(HostOutcome::Opened(_))` hands the
+    /// open session on.
     fn open(&mut self, open: &OpenRequest) -> Result<OpenedInfo, Refusal>;
     /// The state to answer a `ServerControl` with; a stdio host refuses it.
     fn control(&mut self, control: &Control) -> Result<State, Refusal>;
@@ -75,7 +86,8 @@ pub(crate) enum HostFault {
 }
 
 /// The host's handshake over `wire`: writes `hello`, reads the client's frame, answers. Closes the wire on every
-/// outcome but [`HostOutcome::Opened`].
+/// outcome but [`HostOutcome::Opened`]. An `Err` after [`Hooks::open`] returned `Ok` leaves that session to the
+/// caller to roll back.
 pub(crate) fn accept_open(
     wire: &mut dyn FrameWire,
     hello: &Hello,
@@ -146,7 +158,7 @@ fn open(
         return refuse(wire, SERVER_VERSION_MISMATCH, &text);
     }
     match hooks.open(&request) {
-        Err(refusal) => refuse(wire, refusal.code, refusal.message),
+        Err(refusal) => refuse(wire, refusal.code, &refusal.message),
         Ok(info) => {
             let opened = Opened {
                 protocol: request.protocol,
@@ -171,7 +183,7 @@ fn control(
         return refuse(wire, INVALID_REQUEST, NOT_CANONICAL);
     };
     match hooks.control(&control) {
-        Err(refusal) => refuse(wire, refusal.code, refusal.message),
+        Err(refusal) => refuse(wire, refusal.code, &refusal.message),
         Ok(state) => {
             wire.send(Frame::new(Tag::ServerState, state.encode()))
                 .map_err(HostFault::Wire)?;

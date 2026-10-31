@@ -48,7 +48,6 @@ use super::{CarrierBinding, CarrierId, CarrierLimits, Peer, Side, StreamCarrier}
 use std::{
     fmt,
     io::{self, Read, Write},
-    time::Duration,
 };
 
 mod peer;
@@ -69,19 +68,51 @@ pub(crate) struct RuntimeEnv {
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
         mod unix;
-        pub(crate) use unix::{LocalAddress, LocalListener, RuntimeDir, connect, connect_stream, own_identity};
+        pub(crate) use unix::{LocalAddress, LocalListener, RuntimeDir, connect_stream, own_identity};
         pub(crate) use unix::{DirFlavor, resolve_directory};
     } else if #[cfg(windows)] {
         mod windows;
-        pub(crate) use windows::{LocalAddress, LocalListener, RuntimeDir, connect, connect_stream, own_identity};
+        pub(crate) use windows::{LocalAddress, LocalListener, RuntimeDir, connect_stream, own_identity};
     }
 }
 // What the rows reach into: the path rule and the pipe's construction, which production code uses through the items above.
 cfg_if::cfg_if! {
     if #[cfg(all(test, unix))] {
         pub(crate) use unix::{Hold, SOCKET_NAME_BYTES, SUN_PATH_MAX, connect_once, connect_until, peer_of, socket_path};
+
+        /// How long [`connect`] may take: the handshake's 30 seconds (server design §3).
+        const CONNECT_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
+        /// Connects and builds the carrier at once, with no handshake: [`connect_stream`] and
+        /// [`RawConnection::into_carrier`] together, which is how the rows that exercise the carrier alone reach one.
+        /// Test builds only: every byte stream a client opens uses the handshake (`handshake::dial`, server design §3).
+        /// The same function stands in each platform's test arm.
+        pub(crate) fn connect(
+            address: &LocalAddress,
+            policy: &PeerPolicy,
+            limits: CarrierLimits,
+        ) -> Accepted {
+            let deadline = std::time::Instant::now() + CONNECT_BOUND;
+            connect_stream(address, policy, deadline)?.into_carrier(limits)
+        }
     } else if #[cfg(all(test, windows))] {
-        pub(crate) use windows::{PIPE_MODE, PIPE_OPEN_MODE, ProcessHold, create_first_instance, create_first_instance_with, created_pipe_dacl_sids, judge, pipe_sddl};
+        pub(crate) use windows::{PIPE_MODE, PIPE_OPEN_MODE, ProcessHold, create_first_instance, create_first_instance_with, created_pipe_dacl_sids, judge, pipe_sddl, squat};
+
+        /// How long [`connect`] may take: the handshake's 30 seconds (server design §3).
+        const CONNECT_BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+
+        /// Connects and builds the carrier at once, with no handshake: [`connect_stream`] and
+        /// [`RawConnection::into_carrier`] together, which is how the rows that exercise the carrier alone reach one.
+        /// Test builds only: every byte stream a client opens uses the handshake (`handshake::dial`, server design §3).
+        /// The same function stands in each platform's test arm.
+        pub(crate) fn connect(
+            address: &LocalAddress,
+            policy: &PeerPolicy,
+            limits: CarrierLimits,
+        ) -> Accepted {
+            let deadline = std::time::Instant::now() + CONNECT_BOUND;
+            connect_stream(address, policy, deadline)?.into_carrier(limits)
+        }
     }
 }
 
@@ -164,10 +195,6 @@ impl std::error::Error for LocalRefusal {}
 /// The result of an accept: a connected carrier, or why this connection was refused. A refusal closes only that
 /// connection; the listener goes on.
 pub(crate) type Accepted = Result<StreamCarrier, LocalRefusal>;
-
-/// How long a [`connect`] may take when the caller states no bound: the handshake's 30 seconds (server design §3). The
-/// handshake's client counts its own bounds from the start of the connect and passes the deadline to [`connect_stream`].
-pub(crate) const CONNECT_BOUND: Duration = Duration::from_secs(30);
 
 /// A connected stream whose peer the check has passed, before any carrier is built over it: what the handshake's client
 /// reads and writes first. It becomes a carrier with [`RawConnection::into_carrier`] once the handshake is done, and

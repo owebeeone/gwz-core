@@ -8,13 +8,18 @@
 use super::super::{
     CarrierLimits, StreamCarrier,
     local::{LocalAddress, LocalRefusal, PeerIdentity, PeerPolicy, RawConnection, connect_stream},
+    wire::INVALID_REQUEST,
 };
 use super::{
-    ByteWire, ClientConfig, ClientFault, ClientOutcome, Heard, Intent, WireEnd, client_handshake,
+    ByteWire, ClientConfig, ClientFault, ClientOutcome, Heard, Intent, SERVER_LISTENER_REFUSED,
+    SERVER_UNAVAILABLE, WireEnd, client::request_bytes, client_handshake,
 };
 use std::{
     io::{self, Read, Write},
-    sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel},
+    sync::{
+        Arc, Mutex, PoisonError,
+        mpsc::{Receiver, RecvTimeoutError, Sender, channel},
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -30,6 +35,14 @@ enum Ask {
     Return,
 }
 
+/// The bytes the helper thread has read towards the answer it is giving, so that a read that runs out of time can say
+/// what had arrived. [`StreamWire::recv`] clears it before it asks, so that nothing of an earlier answer is in it.
+type Progress = Arc<Mutex<Vec<u8>>>;
+
+fn progress_of(progress: &Progress) -> std::sync::MutexGuard<'_, Vec<u8>> {
+    progress.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 enum Reply {
     Bytes(Vec<u8>),
     /// The stream ended, after these bytes.
@@ -41,7 +54,12 @@ enum Reply {
 /// Reads for the wire, one request at a time, and returns the half when asked. The thread ends when it is told to
 /// return the half, when its wire is dropped, or when its stream fails or ends: aborting the stream is what frees a
 /// read that is waiting.
-fn pump(mut read: Box<dyn Read + Send>, asks: Receiver<Ask>, replies: Sender<Reply>) {
+fn pump(
+    mut read: Box<dyn Read + Send>,
+    asks: Receiver<Ask>,
+    replies: Sender<Reply>,
+    progress: Progress,
+) {
     while let Ok(ask) = asks.recv() {
         let count = match ask {
             Ask::Return => {
@@ -61,7 +79,10 @@ fn pump(mut read: Box<dyn Read + Send>, asks: Receiver<Ask>, replies: Sender<Rep
                     bytes.truncate(filled);
                     break Reply::Ended(bytes);
                 }
-                Ok(read) => filled += read,
+                Ok(read) => {
+                    progress_of(&progress).extend_from_slice(&bytes[filled..filled + read]);
+                    filled += read;
+                }
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
                 Err(error) => break Reply::Failed(error.kind()),
             }
@@ -82,6 +103,7 @@ pub(crate) struct StreamWire {
     side: super::super::Side,
     asks: Sender<Ask>,
     replies: Receiver<Reply>,
+    progress: Progress,
     reader: Option<JoinHandle<()>>,
 }
 
@@ -90,9 +112,11 @@ impl StreamWire {
         let (asks, asked) = channel();
         let (replied, replies) = channel();
         let read = raw.read;
+        let progress = Progress::default();
+        let seen = Arc::clone(&progress);
         let reader = thread::Builder::new()
             .name("gwz-handshake-read".into())
-            .spawn(move || pump(read, asked, replied))?;
+            .spawn(move || pump(read, asked, replied, seen))?;
         Ok(Self {
             write: raw.write,
             abort: raw.abort,
@@ -100,6 +124,7 @@ impl StreamWire {
             side: raw.side,
             asks,
             replies,
+            progress,
             reader: Some(reader),
         })
     }
@@ -150,6 +175,7 @@ impl ByteWire for StreamWire {
     }
 
     fn recv(&mut self, count: usize, wait: Duration) -> Result<Heard, WireEnd> {
+        progress_of(&self.progress).clear();
         self.asks
             .send(Ask::Read(count))
             .map_err(|_| WireEnd::Io(io::ErrorKind::BrokenPipe))?;
@@ -160,7 +186,9 @@ impl ByteWire for StreamWire {
             Ok(Reply::Returned(_)) | Err(RecvTimeoutError::Disconnected) => {
                 Err(WireEnd::Io(io::ErrorKind::BrokenPipe))
             }
-            Err(RecvTimeoutError::Timeout) => Ok(Heard::Silent),
+            Err(RecvTimeoutError::Timeout) => {
+                Ok(Heard::Silent(progress_of(&self.progress).clone()))
+            }
         }
     }
 
@@ -179,10 +207,37 @@ impl Drop for StreamWire {
 /// Why a [`dial`] did not give a carrier.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum DialFault {
+    /// The request cannot be sent (it is not of its shape, or it is longer than a first frame): nothing was connected.
+    Request(ClientFault),
     /// The connect, the peer check or the carrier's start failed or ran out of time.
     Connect(LocalRefusal),
     /// The handshake failed; the stream was aborted.
     Handshake(ClientFault),
+}
+
+impl DialFault {
+    /// The `GwzErrorCode` the failure reports (server design §17), when it has one:
+    /// - a request that cannot be sent is `invalid_request`;
+    /// - a connect that never completes, a socket that refuses or is missing, and a host that did not act as a gwz
+    ///   server (a reply out of order, a stream that failed) are `server_unavailable`;
+    /// - a listener this process refused is `server_listener_refused`;
+    /// - any other handshake failure carries the code of its [`ClientFault`].
+    pub(crate) fn code(&self) -> Option<u64> {
+        match self {
+            DialFault::Request(_) => Some(INVALID_REQUEST),
+            DialFault::Connect(LocalRefusal::Timeout) => Some(SERVER_UNAVAILABLE),
+            DialFault::Connect(LocalRefusal::Os {
+                kind: io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound,
+                ..
+            }) => Some(SERVER_UNAVAILABLE),
+            DialFault::Connect(LocalRefusal::Peer(_)) => Some(SERVER_LISTENER_REFUSED),
+            DialFault::Connect(_) => None,
+            DialFault::Handshake(ClientFault::Protocol(_) | ClientFault::Wire(_)) => {
+                Some(SERVER_UNAVAILABLE)
+            }
+            DialFault::Handshake(fault) => fault.code(),
+        }
+    }
 }
 
 /// Connects to `address` and handshakes, all within the bound `intent` gives from the moment of the call. The
@@ -195,6 +250,9 @@ pub(crate) fn dial(
     intent: &Intent,
 ) -> Result<(StreamCarrier, ClientOutcome), DialFault> {
     let started = Instant::now();
+    // Before anything is connected: the request is written on this thread, so only its size bounds the write. It is
+    // checked at the highest protocol this client speaks, the one it sends to a host that serves it.
+    request_bytes(config, intent, *config.supported.end()).map_err(DialFault::Request)?;
     let wait = match intent {
         Intent::Open => config.bounds.open_wait,
         Intent::Control(_) => config.bounds.state_wait,

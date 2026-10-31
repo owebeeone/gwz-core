@@ -7,23 +7,30 @@
 //!  |                                    |   the client sends nothing until it holds a well-formed hello
 //!  | <--- SessionOpen (4) | ServerControl (7)
 //!  | -- SessionOpened (5) | ServerState (8) then close, or one SessionError (call ID 0) then close
+//!
+//! a peer the listener refused: | -- one SessionError (call ID 0, server_peer_refused) then close
 //! ```
 //!
 //! **Bounds.** The host waits 30 s for the client's frame. The client waits 30 s for `SessionOpened` and 5 s for
 //! `ServerState`, each counted from the start of its connect, so the wait covers the connect and the hello. A bound
 //! that passes ends the handshake: the client aborts the stream and fails `server_unavailable`; the host closes.
 //!
-//! **The client reads the first frame by its length first.** A first frame whose length is zero or over 4 KiB, or
-//! whose tag is not 6, fails `server_unavailable` after the five header bytes, with those bytes escaped: the client
-//! does not read on, so a shell's banner is not taken for a frame. The same goes for a hello that does not decode.
-//! Later frames from the host are held to [`REPLY_FRAME_MAX`].
+//! **The client reads the first frame by its length first.** A first frame whose length is zero or over 4 KiB fails
+//! `server_unavailable` after the five header bytes, with those bytes escaped: the client does not read on, so a
+//! shell's banner is not taken for a frame. So does a first frame whose tag is neither 6 nor 3, and a hello that does
+//! not decode. The tag-3 first frame is the listener's refusal of this peer (server design §4 and §17,
+//! `GwzSplitCommandChannel.md` §3.1 as amended 2026-10-31): when its body is a `SessionError` for call ID 0 the client
+//! reports it as [`ClientFault::Refused`], with the cause escaped, and writes nothing; any other tag-3 frame is not a
+//! hello. Later frames from the host are held to [`REPLY_FRAME_MAX`].
 //!
 //! **No clock and no stream of its own.** The two sides run over a [`FrameWire`] (the host, whole frames: the
 //! accepted [`StreamCarrier`](super::StreamCarrier)) and a [`ByteWire`] (the client, raw bytes before a carrier
 //! exists). Both supply `now`, so the rows set the time and the bounds never wait for real.
 //!
-//! **Refusals.** A refusal is exactly one `SessionError` for call ID 0, with a fixed message that repeats nothing the
-//! peer sent, and then the close. The host never writes after it.
+//! **Refusals.** A refusal is exactly one `SessionError` for call ID 0, whose message never repeats text the peer sent
+//! (it may name a number the peer sent, such as the refused protocol version), and then the carrier's close, which
+//! announces itself with the carrier's own close frame (`GwzSplitCommandChannel.md` §3.3). The host writes nothing
+//! else after the refusal.
 use super::CarrierClosed;
 use gwz_session_contract::Frame;
 use std::{
@@ -50,10 +57,15 @@ pub(crate) use host::{
 pub(crate) const SERVER_UNAVAILABLE: u64 = 79;
 /// Error code `server_version_mismatch` of `GwzErrorCode`.
 pub(crate) const SERVER_VERSION_MISMATCH: u64 = 80;
+/// Error code `server_listener_refused` of `GwzErrorCode`: this process refused the listener it connected to.
+pub(crate) const SERVER_LISTENER_REFUSED: u64 = 84;
 /// The largest first frame a client reads: its tag byte and its body.
 pub(crate) const FIRST_FRAME_MAX: usize = 4096;
-/// The largest later frame a client reads from the host.
-pub(crate) const REPLY_FRAME_MAX: usize = 16 * 1024;
+/// The largest later frame a client reads from the host: 128 KiB, the largest legal `ServerState`. Its one unbounded
+/// field is the log path, up to 32 767 UTF-16 units on Windows, which is up to 98 301 UTF-8 bytes, and the other fields
+/// take a few dozen more. The cap exists so that a client does not allocate what an untrusted host names before it has
+/// checked the host (`GwzSplitCommandChannel.md` §3.1 as amended 2026-10-31); a longer reply is `server_unavailable`.
+pub(crate) const REPLY_FRAME_MAX: usize = 128 * 1024;
 /// Bytes of a frame's length prefix and tag, all a client reads before it judges a first frame.
 pub(crate) const FRAME_HEAD: usize = 5;
 /// The most bytes of a peer's first frame that an error message shows.
@@ -104,8 +116,8 @@ pub(crate) trait FrameWire {
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum Heard {
     Bytes(Vec<u8>),
-    /// `wait` passed before `count` bytes arrived.
-    Silent,
+    /// `wait` passed before `count` bytes arrived: the bytes that had arrived by then.
+    Silent(Vec<u8>),
     /// The stream ended first, after the bytes given.
     Ended(Vec<u8>),
 }

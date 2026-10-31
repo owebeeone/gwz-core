@@ -4,6 +4,32 @@
   {
    "path": "src/transport_host/carrier/tests/handshake_local_rows.rs",
    "kind": "gate",
+   "gate": "any(target_os = \"linux\", target_os = \"android\")",
+   "target": "arm: fn threads",
+   "owner": [
+    "2.3d"
+   ],
+   "state": "platform",
+   "reason": "a Unix-only row item: the thread count of the process is read through the operating system's own interface (/proc/self/status on Linux, proc_pidinfo on macOS); the Windows twin, a Toolhelp32 snapshot, is `threads` in the `windows` arm of the outer cfg_if of the same file",
+   "approved_platform": "GwzServerCore-Step2.3d-RemPlan.md (round 1, F9: a thread-count row on all three platforms, each through its own operating-system interface)",
+   "appendix": "new: step 2.3d remediation round 1 (F9)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/handshake_local_rows.rs",
+   "kind": "gate",
+   "gate": "else if target_vendor = \"apple\"",
+   "target": "arm: fn threads",
+   "owner": [
+    "2.3d"
+   ],
+   "state": "platform",
+   "reason": "a Unix-only row item: the thread count of the process is read through the operating system's own interface (/proc/self/status on Linux, proc_pidinfo on macOS); the Windows twin, a Toolhelp32 snapshot, is `threads` in the `windows` arm of the outer cfg_if of the same file",
+   "approved_platform": "GwzServerCore-Step2.3d-RemPlan.md (round 1, F9: a thread-count row on all three platforms, each through its own operating-system interface)",
+   "appendix": "new: step 2.3d remediation round 1 (F9)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/handshake_local_rows.rs",
+   "kind": "gate",
    "gate": "target_vendor = \"apple\"",
    "target": "arm: fn a_full_accept_queue_is_refused_and_not_retried",
    "owner": [
@@ -23,7 +49,73 @@
     "2.3d"
    ],
    "state": "paired",
-   "appendix": "new: step 2.3d-2: the Unix rows of the client's open (a squatting banner listener, a full accept queue); the sibling `windows` arm of the same cfg_if holds the busy-pipe row (ERROR_PIPE_BUSY waited for the bound)"
+   "appendix": "new: step 2.3d-2: the Unix rows of the client's open (a full accept queue, a stale socket file) and the Unix side of the squatter, missing-address and thread-count helpers; the sibling `windows` arm of the same cfg_if holds the busy-pipe row (ERROR_PIPE_BUSY waited for the bound) and the pipe side of the same helpers (step 2.3d remediation round 1)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/handshake_local_rows.rs",
+   "kind": "os",
+   "gate": "libc::PROC_PIDTASKINFO",
+   "target": "",
+   "owner": [
+    "2.3d"
+   ],
+   "state": "platform",
+   "reason": "a macOS-only row item: the thread count of the process is read through proc_pidinfo, the kernel interface macOS gives for it (Linux reads /proc/self/status and Windows a Toolhelp32 snapshot, in the sibling arms of the same cfg_if)",
+   "approved_platform": "GwzServerCore-Step2.3d-RemPlan.md (round 1, F9: a thread-count row on all three platforms, each through its own operating-system interface)",
+   "appendix": "new: step 2.3d remediation round 1 (F9)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/handshake_local_rows.rs",
+   "kind": "os",
+   "gate": "libc::c_int",
+   "target": "",
+   "owner": [
+    "2.3d"
+   ],
+   "state": "platform",
+   "reason": "a macOS-only row item: the thread count of the process is read through proc_pidinfo, the kernel interface macOS gives for it (Linux reads /proc/self/status and Windows a Toolhelp32 snapshot, in the sibling arms of the same cfg_if)",
+   "approved_platform": "GwzServerCore-Step2.3d-RemPlan.md (round 1, F9: a thread-count row on all three platforms, each through its own operating-system interface)",
+   "appendix": "new: step 2.3d remediation round 1 (F9)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/handshake_local_rows.rs",
+   "kind": "os",
+   "gate": "libc::getpid",
+   "target": "",
+   "owner": [
+    "2.3d"
+   ],
+   "state": "platform",
+   "reason": "a macOS-only row item: the thread count of the process is read through proc_pidinfo, the kernel interface macOS gives for it (Linux reads /proc/self/status and Windows a Toolhelp32 snapshot, in the sibling arms of the same cfg_if)",
+   "approved_platform": "GwzServerCore-Step2.3d-RemPlan.md (round 1, F9: a thread-count row on all three platforms, each through its own operating-system interface)",
+   "appendix": "new: step 2.3d remediation round 1 (F9)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/handshake_local_rows.rs",
+   "kind": "os",
+   "gate": "libc::proc_pidinfo",
+   "target": "",
+   "owner": [
+    "2.3d"
+   ],
+   "state": "platform",
+   "reason": "a macOS-only row item: the thread count of the process is read through proc_pidinfo, the kernel interface macOS gives for it (Linux reads /proc/self/status and Windows a Toolhelp32 snapshot, in the sibling arms of the same cfg_if)",
+   "approved_platform": "GwzServerCore-Step2.3d-RemPlan.md (round 1, F9: a thread-count row on all three platforms, each through its own operating-system interface)",
+   "appendix": "new: step 2.3d remediation round 1 (F9)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/handshake_local_rows.rs",
+   "kind": "os",
+   "gate": "libc::proc_taskinfo",
+   "target": "",
+   "owner": [
+    "2.3d"
+   ],
+   "state": "platform",
+   "reason": "a macOS-only row item: the thread count of the process is read through proc_pidinfo, the kernel interface macOS gives for it (Linux reads /proc/self/status and Windows a Toolhelp32 snapshot, in the sibling arms of the same cfg_if)",
+   "approved_platform": "GwzServerCore-Step2.3d-RemPlan.md (round 1, F9: a thread-count row on all three platforms, each through its own operating-system interface)",
+   "appendix": "new: step 2.3d remediation round 1 (F9)",
+   "count": 3
   },
   {
    "path": "src/transport_host/carrier/tests/handshake_local_rows.rs",

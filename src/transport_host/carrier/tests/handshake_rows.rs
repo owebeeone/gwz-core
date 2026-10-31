@@ -4,7 +4,7 @@ use super::super::{
     CarrierLimits, CloseCode, CloseReason, Lane,
     handshake::{
         Action, Bounds, CarrierWire, Control, Hello, HostFault, HostOutcome, OpenRequest, Opened,
-        OpenedInfo, Refusal, SERVER_VERSION_MISMATCH, accept_open,
+        OpenedInfo, Refusal, SERVER_VERSION_MISMATCH, WireEnd, accept_open,
     },
 };
 use super::handshake_support::*;
@@ -100,7 +100,7 @@ fn a_refusal_from_the_hook_is_one_session_error_and_no_session_opened() {
     let (mut wire, mut hooks) = setup(vec![frame(Tag::SessionOpen, open_body(1))]);
     hooks.open_answer = Err(Refusal {
         code: 77,
-        message: "the server is full",
+        message: "the server is full".into(),
     });
     assert_eq!(
         accept(&mut wire, &mut hooks),
@@ -169,11 +169,11 @@ fn a_protocol_outside_the_hosts_range_is_server_version_mismatch() {
         );
         let (call, found, text) = only_refusal(&wire);
         assert_eq!((call, found), (0, code), "protocol {protocol}");
-        assert!(
-            text.contains(&format!("protocol {protocol} is outside")),
-            "{text}"
+        // The refusal may name the number the peer sent, and the host's own range; it repeats no text of the peer's.
+        assert_eq!(
+            text,
+            format!("protocol {protocol} is outside the 1..=2 this host serves")
         );
-        assert!(text.contains("1..=2"), "{text}");
         assert!(hooks.opened.is_empty());
     }
     for protocol in [1u32, 2] {
@@ -183,6 +183,48 @@ fn a_protocol_outside_the_hosts_range_is_server_version_mismatch() {
             Ok(HostOutcome::Opened(_))
         ));
     }
+}
+
+#[test]
+fn a_session_opened_that_cannot_be_written_is_a_wire_fault_after_the_hook_ran() {
+    // The hook has opened the session when it returns Ok; if `SessionOpened` cannot be written the host reports
+    // `Err(Wire)` and the session the hook opened is the caller's to roll back (`Hooks::open`).
+    let (mut wire, mut hooks) = setup(vec![frame(Tag::SessionOpen, open_body(2))]);
+    wire.fail_send = Some(Tag::SessionOpened.byte());
+    let outcome = accept(&mut wire, &mut hooks);
+    assert!(
+        matches!(outcome, Err(HostFault::Wire(WireEnd::Io(_)))),
+        "{outcome:?}"
+    );
+    assert_eq!(hooks.opened.len(), 1, "the hook ran, so a session is open");
+    assert_eq!(
+        *wire.log.borrow(),
+        ["send 6", "recv", "hook open", "send 5"],
+        "the hook ran before the write that failed"
+    );
+    assert!(wire.closed, "the wire is closed on a fault");
+}
+
+#[test]
+fn a_hook_refusal_may_hold_a_value_the_host_knows() {
+    let (mut wire, mut hooks) = setup(vec![frame(Tag::SessionOpen, open_body(1))]);
+    let open_sessions = 64;
+    hooks.open_answer = Err(Refusal {
+        code: 77,
+        message: format!("the server has {open_sessions} open sessions, its --max-sessions").into(),
+    });
+    assert_eq!(
+        accept(&mut wire, &mut hooks),
+        Ok(HostOutcome::Refused { code: 77 })
+    );
+    assert_eq!(
+        only_refusal(&wire),
+        (
+            0,
+            77,
+            "the server has 64 open sessions, its --max-sessions".into()
+        )
+    );
 }
 
 #[test]
@@ -227,7 +269,7 @@ fn a_control_the_host_refuses_is_one_session_error() {
     let (mut wire, mut hooks) = setup(vec![frame(Tag::ServerControl, control.encode())]);
     hooks.control_answer = Err(Refusal {
         code: 1,
-        message: "a stdio host has no server to control",
+        message: "a stdio host has no server to control".into(),
     });
     assert_eq!(
         accept(&mut wire, &mut hooks),

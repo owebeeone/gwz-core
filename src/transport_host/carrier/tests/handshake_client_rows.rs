@@ -2,14 +2,15 @@
 use super::super::{
     handshake::{
         Action, Bounds, Cause, ClientConfig, ClientFault, ClientOutcome, Control, FIRST_FRAME_MAX,
-        Hello, Intent, OpenRequest, Opened, REPLY_FRAME_MAX, SERVER_UNAVAILABLE,
-        SERVER_VERSION_MISMATCH, Stage, Unavailable, client_handshake,
+        Hello, Intent, OpenRequest, Opened, REPLY_FRAME_MAX, Refusal, SERVER_UNAVAILABLE,
+        SERVER_VERSION_MISMATCH, Stage, State, Unavailable, accept_open, client_handshake,
     },
     validate_session_open,
+    wire::{INVALID_REQUEST, SERVER_PEER_REFUSED},
 };
 use super::handshake_support::*;
 use super::support::wire_frame;
-use gwz_session_contract::Tag;
+use gwz_session_contract::{Frame, Tag};
 use std::time::Duration;
 
 fn config() -> ClientConfig {
@@ -173,7 +174,8 @@ fn a_silent_host_fails_at_30_s_on_the_injected_clock() {
     assert_eq!(
         found.cause,
         Cause::Silent {
-            waited: Duration::from_secs(30)
+            waited: Duration::from_secs(30),
+            first: String::new()
         }
     );
     assert_eq!(found.peer_pid, Some(4242));
@@ -212,7 +214,7 @@ fn the_bound_counts_from_the_start_of_the_connect() {
     assert_eq!(wire.clock - started, Duration::from_secs(30));
     assert!(matches!(
         unavailable(fault).cause,
-        Cause::Silent { waited } if waited == Duration::from_secs(30)
+        Cause::Silent { waited, .. } if waited == Duration::from_secs(30)
     ));
     // A connect that used the whole bound reads nothing at all.
     let mut wire = ScriptedBytes::new(hello_frame(&hello()), After::Silent);
@@ -392,6 +394,219 @@ fn a_refusal_is_surfaced_and_a_nonzero_call_id_is_not_one() {
         run(&mut wire, &Intent::Open),
         Err(ClientFault::Protocol(_))
     ));
+}
+
+#[test]
+fn the_listeners_refusal_in_place_of_the_hello_is_reported_as_the_refusal_and_nothing_is_written() {
+    let control = Intent::Control(Control {
+        action: Action::Status,
+        force: false,
+    });
+    for intent in [Intent::Open, control] {
+        let refusal = refusal_frame(
+            SERVER_PEER_REFUSED,
+            "peer refused: the peer is another user\r\x1b[2J",
+        );
+        // The listener writes this one frame and closes.
+        let mut wire = ScriptedBytes::new(wire_bytes(&[refusal]), After::Ended);
+        let fault = run(&mut wire, &intent).unwrap_err();
+        assert_eq!(
+            fault,
+            ClientFault::Refused {
+                code: SERVER_PEER_REFUSED,
+                message: "peer refused: the peer is another user\\x0d\\x1b[2J".into()
+            }
+        );
+        assert_eq!(fault.code(), Some(SERVER_PEER_REFUSED));
+        assert!(
+            wire.written.is_empty(),
+            "the client wrote to a listener that refused it"
+        );
+        assert!(wire.aborted);
+    }
+}
+
+#[test]
+fn a_first_frame_session_error_that_is_not_the_refusal_is_not_a_hello() {
+    // For a call, not the handshake.
+    let mut for_a_call = refusal_frame(SERVER_PEER_REFUSED, "x").body;
+    for_a_call[2] = 7;
+    // Not the shape of a refusal at all.
+    let cases: [(&str, Vec<u8>); 3] = [
+        ("call ID 7", for_a_call),
+        ("no error map", vec![0xa1, 1, 0]),
+        ("not CBOR", b"Welcome".to_vec()),
+    ];
+    for (name, body) in cases {
+        let mut wire = ScriptedBytes::new(
+            wire_bytes(&[Frame::new(Tag::SessionError, body)]),
+            After::Silent,
+        );
+        let found = unavailable(run(&mut wire, &Intent::Open).unwrap_err());
+        assert_eq!(found.stage, Stage::Hello, "{name}");
+        assert!(matches!(found.cause, Cause::NotAHello { .. }), "{name}");
+        assert!(wire.written.is_empty() && wire.aborted, "{name}");
+    }
+    // The 4 KiB cap holds for a refusal too: the body is not read.
+    let mut script = (FIRST_FRAME_MAX as u32 + 1).to_le_bytes().to_vec();
+    script.push(Tag::SessionError.byte());
+    script.extend(refusal_frame(SERVER_PEER_REFUSED, "x").body);
+    let mut wire = ScriptedBytes::new(script, After::Silent);
+    let found = unavailable(run(&mut wire, &Intent::Open).unwrap_err());
+    assert!(matches!(found.cause, Cause::NotAHello { .. }));
+    assert_eq!(wire.read, 5);
+}
+
+#[test]
+fn a_hook_refusal_that_holds_a_value_reaches_the_client_escaped() {
+    let log = Log::default();
+    let mut host_wire = ScriptedFrames::new(
+        vec![Frame::new(Tag::SessionOpen, open_body(2))],
+        log.clone(),
+    );
+    let mut hooks = RecordingHooks::new(log);
+    let open_sessions = 64;
+    hooks.open_answer = Err(Refusal {
+        code: 77,
+        message: format!("the server has {open_sessions} open sessions\r\x1b[2J").into(),
+    });
+    accept_open(&mut host_wire, &hello(), &Bounds::DEFAULT, &mut hooks).unwrap();
+    // What the host wrote is what the client reads.
+    let mut wire = ScriptedBytes::new(wire_bytes(&host_wire.sent), After::Silent);
+    let fault = run(&mut wire, &Intent::Open).unwrap_err();
+    assert_eq!(
+        fault,
+        ClientFault::Refused {
+            code: 77,
+            message: "the server has 64 open sessions\\x0d\\x1b[2J".into()
+        }
+    );
+}
+
+#[test]
+fn a_host_that_sends_two_bytes_and_goes_silent_is_shown_what_it_sent() {
+    let mut wire = ScriptedBytes::new(vec![b'$', 0x1b], After::Silent);
+    let fault = run(&mut wire, &Intent::Open).unwrap_err();
+    let text = fault.to_string();
+    let found = unavailable(fault);
+    assert_eq!(found.stage, Stage::Hello);
+    assert_eq!(
+        found.cause,
+        Cause::Silent {
+            waited: Duration::from_secs(30),
+            first: "$\\x1b".into()
+        }
+    );
+    assert!(text.contains("it had sent \"$\\x1b\""), "{text}");
+    assert!(!text.contains('\x1b'), "{text:?}");
+    assert!(wire.written.is_empty() && wire.aborted);
+}
+
+#[test]
+fn a_request_longer_than_a_first_frame_is_refused_before_a_byte_is_written() {
+    let frame_len = |n: usize| {
+        OpenRequest {
+            protocol: 2,
+            client: "x".repeat(n),
+            limits: None,
+        }
+        .encode()
+        .len()
+            + 1
+    };
+    let exact = (3900..FIRST_FRAME_MAX)
+        .find(|n| frame_len(*n) == FIRST_FRAME_MAX)
+        .expect("a client string that makes a request of exactly the cap");
+    let host = hello();
+    let mut script = hello_frame(&host);
+    script.extend(wire_frame(
+        Tag::SessionOpened.byte(),
+        &opened_for(&host, 2).encode(),
+    ));
+    // Exactly the cap goes through.
+    let mut config = config();
+    config.client = "x".repeat(exact);
+    let mut wire = ScriptedBytes::new(script.clone(), After::Silent);
+    let started = wire.clock;
+    assert!(client_handshake(&mut wire, started, &config, &Intent::Open).is_ok());
+    // One byte more is the caller's mistake: nothing is written and the stream is aborted.
+    config.client = "x".repeat(exact + 1);
+    let mut wire = ScriptedBytes::new(script, After::Silent);
+    let started = wire.clock;
+    let fault = client_handshake(&mut wire, started, &config, &Intent::Open).unwrap_err();
+    assert_eq!(
+        fault,
+        ClientFault::TooLarge {
+            size: FIRST_FRAME_MAX + 1,
+            cap: FIRST_FRAME_MAX
+        }
+    );
+    assert_eq!(fault.code(), Some(INVALID_REQUEST));
+    assert!(wire.written.is_empty() && wire.aborted);
+}
+
+/// A `ServerState` whose log is `length` bytes of ASCII.
+fn state_with_log(length: usize) -> State {
+    State {
+        log: Some("l".repeat(length)),
+        ..state()
+    }
+}
+
+#[test]
+fn the_reply_cap_is_128_kib_counting_the_tag() {
+    assert_eq!(REPLY_FRAME_MAX, 128 * 1024);
+    let length = (100_000..REPLY_FRAME_MAX)
+        .find(|n| state_with_log(*n).encode().len() + 1 == REPLY_FRAME_MAX)
+        .expect("a log that makes a reply of exactly the cap");
+    let control = Intent::Control(Control {
+        action: Action::Status,
+        force: false,
+    });
+    let mut script = hello_frame(&hello());
+    script.extend(wire_frame(
+        Tag::ServerState.byte(),
+        &state_with_log(length).encode(),
+    ));
+    let mut wire = ScriptedBytes::new(script, After::Silent);
+    let outcome = run(&mut wire, &control).expect("a reply of exactly the cap is read");
+    assert!(matches!(outcome, ClientOutcome::State { .. }));
+    // One byte more is refused after its five header bytes.
+    let mut script = hello_frame(&hello());
+    script.extend(wire_frame(
+        Tag::ServerState.byte(),
+        &state_with_log(length + 1).encode(),
+    ));
+    let mut wire = ScriptedBytes::new(script, After::Silent);
+    assert!(matches!(
+        run(&mut wire, &control),
+        Err(ClientFault::Protocol(_))
+    ));
+    assert_eq!(wire.read, hello_frame(&hello()).len() + 5);
+}
+
+#[test]
+fn the_largest_legal_server_state_is_read_by_a_control_exchange() {
+    // A log path of 32 767 UTF-16 units: up to 98 301 UTF-8 bytes (the Windows maximum).
+    let state = State {
+        log: Some("\u{20ac}".repeat(32_767)),
+        ..state()
+    };
+    let control = Control {
+        action: Action::Status,
+        force: false,
+    };
+    let mut script = hello_frame(&hello());
+    script.extend(wire_frame(Tag::ServerState.byte(), &state.encode()));
+    let mut wire = ScriptedBytes::new(script, After::Silent);
+    let outcome = run(&mut wire, &Intent::Control(control)).unwrap();
+    assert_eq!(
+        outcome,
+        ClientOutcome::State {
+            hello: hello(),
+            state
+        }
+    );
 }
 
 #[test]

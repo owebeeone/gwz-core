@@ -1,9 +1,13 @@
 //! The handshake's bodies: one encoding per value, and every other encoding refused (step 2.3d-1).
-use super::super::handshake::{
-    Action, BodyFault, Control, Hello, OpenRequest, Opened, SERVER_UNAVAILABLE,
-    SERVER_VERSION_MISMATCH, SHOWN_BYTES, State, escape,
+use super::super::{
+    handshake::{
+        Action, BodyFault, Control, Hello, OpenRequest, Opened, REPLY_FRAME_MAX,
+        SERVER_LISTENER_REFUSED, SERVER_UNAVAILABLE, SERVER_VERSION_MISMATCH, SHOWN_BYTES, State,
+        escape,
+    },
+    validate_session_open,
 };
-use super::handshake_support::{hello, state};
+use super::handshake_support::{hello, open_with, state};
 use crate::protocol::generated::GwzErrorCode;
 
 fn opened() -> Opened {
@@ -244,6 +248,24 @@ fn nested_items_are_held_to_the_same_rule() {
         Err(BodyFault::Duplicate(1))
     );
     assert_eq!(with_limits(&[0xbf, 0xff]), Err(BodyFault::Malformed));
+    // Major type 7 holds `false` and `true` as the single bytes 0xf4 and 0xf5, and nothing else: not a half or a
+    // single float whose bits read 20 or 21, not a two-byte simple value, not inside an array.
+    for (name, limits) in [
+        ("a half float", vec![0xa1, 0x01, 0xf9, 0x00, 0x14]),
+        (
+            "a single float",
+            vec![0xa1, 0x01, 0xfa, 0x00, 0x00, 0x00, 0x15],
+        ),
+        ("a two-byte simple value", vec![0xa1, 0x01, 0xf8, 0x14]),
+        (
+            "a half float in an array",
+            vec![0xa1, 0x01, 0x81, 0xf9, 0x00, 0x15],
+        ),
+    ] {
+        assert_eq!(with_limits(&limits), Err(BodyFault::Malformed), "{name}");
+    }
+    // The two single bytes are still held as limits' values.
+    assert!(with_limits(&[0xa2, 1, 0xf4, 2, 0xf5]).is_ok());
 }
 
 #[test]
@@ -279,12 +301,63 @@ fn unknown_missing_mistyped_and_out_of_range_keys_are_refused() {
         }),
         Err(BodyFault::Range(5))
     );
-    // `force: false` is an absent key, and `action` is 0 or 1.
-    assert_eq!(
-        Control::decode(&[0xa2, 1, 0, 2, 0xf4]),
-        Err(BodyFault::Range(2))
-    );
+    // `action` is 0 or 1.
     assert_eq!(Control::decode(&[0xa1, 1, 2]), Err(BodyFault::Range(1)));
+}
+
+#[test]
+fn an_explicit_false_for_an_optional_boolean_decodes_as_false_and_is_encoded_absent() {
+    // One rule for both bodies: `force` of a `ServerControl` and `transport_off` of a `SessionOpen`'s attributes.
+    for (bytes, action) in [
+        ([0xa2, 1, 0, 2, 0xf4], Action::Status),
+        ([0xa2, 1, 1, 2, 0xf4], Action::Stop),
+    ] {
+        let control = Control::decode(&bytes).expect("force: false is accepted");
+        assert_eq!(
+            control,
+            Control {
+                action,
+                force: false
+            }
+        );
+        assert_eq!(control.encode(), [0xa1, 1, bytes[2]], "encoded absent");
+    }
+    let spelled_out = open_with(&[(5, &[0xa1, 2, 0xf4])]);
+    assert_eq!(validate_session_open(&spelled_out), Ok(()));
+    let request = OpenRequest::decode(&spelled_out).expect("transport_off: false is accepted");
+    let plain = OpenRequest {
+        protocol: 1,
+        client: "c".into(),
+        limits: None,
+    };
+    assert_eq!(request, plain);
+    assert_eq!(request.encode(), plain.encode(), "encoded absent");
+    // A `true` where the client placement forbids it is still refused by the shape check.
+    assert!(validate_session_open(&open_with(&[(5, &[0xa1, 2, 0xf5])])).is_err());
+}
+
+#[test]
+fn the_largest_legal_server_state_fits_the_reply_cap() {
+    // A log path of 32 767 UTF-16 units (Windows) holds up to 98 301 UTF-8 bytes: a unit of 1 to 3 bytes each.
+    let log: String = "\u{20ac}".repeat(32_767);
+    assert_eq!(log.len(), 98_301);
+    assert_eq!(log.encode_utf16().count(), 32_767);
+    let state = State {
+        server_pid: u32::MAX,
+        open_sessions: u32::MAX,
+        max_sessions: u32::MAX,
+        idle_exit: Some(u32::MAX),
+        log: Some(log),
+        stopping: true,
+    };
+    let body = state.encode();
+    let frame = body.len() + 1;
+    assert!(
+        frame > 16 * 1024,
+        "the old cap would have refused it: {frame}"
+    );
+    assert!(frame <= REPLY_FRAME_MAX, "{frame} > {REPLY_FRAME_MAX}");
+    assert_eq!(State::decode(&body), Ok(state));
 }
 
 #[test]
@@ -302,6 +375,10 @@ fn escape_shows_printable_text_and_escapes_the_rest() {
 
 #[test]
 fn the_error_codes_are_the_generated_schemas() {
+    assert_eq!(
+        SERVER_LISTENER_REFUSED as i64,
+        GwzErrorCode::ServerListenerRefused.wire()
+    );
     assert_eq!(
         SERVER_UNAVAILABLE as i64,
         GwzErrorCode::ServerUnavailable.wire()

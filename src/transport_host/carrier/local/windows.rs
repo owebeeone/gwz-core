@@ -372,6 +372,50 @@ cfg_if::cfg_if! {
             }
         }
 
+        /// The streams a squatter holds open: ended when this is dropped. Test builds only.
+        pub(crate) struct Squatted(Vec<Arc<Pipe>>);
+
+        impl Drop for Squatted {
+            fn drop(&mut self) {
+                for pipe in &self.0 {
+                    pipe.abort();
+                }
+            }
+        }
+
+        /// A listener that is not a gwz server, as the rows play one: serves `count` clients of the pipe `name` one after
+        /// another, whose first instance is `first` (a name taken with [`create_first_instance`]). Each client is sent
+        /// `banner` and then held open, unanswered, until the result is dropped. A squatter is the same user, so the
+        /// client's peer check passes. Test builds only.
+        pub(crate) fn squat(
+            first: PipeInstance,
+            name: &str,
+            count: usize,
+            banner: &[u8],
+        ) -> Result<Squatted, LocalRefusal> {
+            let mut held = Squatted(Vec::new());
+            let mut instance = first;
+            for turn in 0..count {
+                await_client(&instance)?;
+                let next = if turn + 1 < count {
+                    Some(create_instance(name, false)?)
+                } else {
+                    None
+                };
+                let PipeInstance(owned) = instance;
+                let pipe = Pipe::new(owned, true).map_err(|error| LocalRefusal::os("spawn", &error))?;
+                if !banner.is_empty() {
+                    let _ = pipe.write(banner);
+                }
+                held.0.push(pipe);
+                match next {
+                    Some(next) => instance = next,
+                    None => break,
+                }
+            }
+            Ok(held)
+        }
+
         /// The first instance of a pipe name with a stated descriptor and mode (the rows' way to the variants that show
         /// which protection refuses what). Test builds only.
         pub(crate) fn create_first_instance_with(
@@ -671,6 +715,27 @@ impl Write for WriteHalf {
     }
 }
 
+/// The halves of a connected `pipe`, not yet a carrier: the one place a pipe becomes a [`RawConnection`], for the
+/// listener's accepted instances ([`carrier_over`]) and the client's connect ([`connect_stream`]) alike, so that their
+/// error labels agree.
+fn raw_over(
+    pipe: Owned,
+    server: bool,
+    side: Side,
+    peer: PeerIdentity,
+) -> Result<RawConnection, LocalRefusal> {
+    let spawn = |error: io::Error| LocalRefusal::os("spawn", &error);
+    let pipe = Pipe::new(pipe, server).map_err(spawn)?;
+    let killer = pipe.clone();
+    Ok(RawConnection {
+        read: Box::new(ReadHalf(pipe.clone())),
+        write: Box::new(WriteHalf(pipe)),
+        abort: Box::new(move || killer.abort()),
+        peer,
+        side,
+    })
+}
+
 fn carrier_over(
     pipe: Owned,
     server: bool,
@@ -678,18 +743,7 @@ fn carrier_over(
     peer: PeerIdentity,
     limits: CarrierLimits,
 ) -> Accepted {
-    let spawn = |error: io::Error| LocalRefusal::os("spawn", &error);
-    let pipe = Pipe::new(pipe, server).map_err(spawn)?;
-    let id = CarrierId::random().map_err(spawn)?;
-    let killer = pipe.clone();
-    StreamCarrier::new(
-        Box::new(ReadHalf(pipe.clone())),
-        Box::new(WriteHalf(pipe)),
-        Box::new(move || killer.abort()),
-        CarrierBinding::new(id, side, Peer::Verified(peer)),
-        limits,
-    )
-    .map_err(spawn)
+    raw_over(pipe, server, side, peer)?.into_carrier(limits)
 }
 
 /// A refused client of a listener is owed one answer (parked server design §4): a `SessionError` for call ID 0 with
@@ -727,6 +781,35 @@ fn turn_away(instance: Owned, refusal: &PeerRefusal) {
         thread::sleep(Duration::from_millis(10));
     }
     pipe.abort();
+}
+
+/// Waits for a client to connect to `instance`.
+fn await_client(instance: &PipeInstance) -> Result<(), LocalRefusal> {
+    let handle = (instance.0).0;
+    // The instance is overlapped, so the connect is too.
+    let event = Event::new().map_err(|error| LocalRefusal::os("CreateEventW", &error))?;
+    // SAFETY: the request lives on this stack and is waited for before it is left.
+    let connected = unsafe {
+        let mut overlapped: OVERLAPPED = std::mem::zeroed();
+        overlapped.hEvent = (event.0).0;
+        if ConnectNamedPipe(handle, &mut overlapped) == 0 {
+            match GetLastError() {
+                ERROR_PIPE_CONNECTED => true,
+                ERROR_IO_PENDING => {
+                    let mut moved = 0u32;
+                    GetOverlappedResult(handle, &overlapped, &mut moved, 1) != 0
+                }
+                _ => false,
+            }
+        } else {
+            true
+        }
+    };
+    if connected {
+        Ok(())
+    } else {
+        Err(os("ConnectNamedPipe"))
+    }
 }
 
 /// A listening pipe: the instance waiting for the next client, and the rule applied to whoever connects.
@@ -785,28 +868,7 @@ impl LocalListener {
             None => create_instance(self.address.pipe_name(), false)?,
         };
         let handle = (instance.0).0;
-        // The instance is overlapped, so the connect is too.
-        let event = Event::new().map_err(|error| LocalRefusal::os("CreateEventW", &error))?;
-        // SAFETY: the request lives on this stack and is waited for before it is left.
-        let connected = unsafe {
-            let mut overlapped: OVERLAPPED = std::mem::zeroed();
-            overlapped.hEvent = (event.0).0;
-            if ConnectNamedPipe(handle, &mut overlapped) == 0 {
-                match GetLastError() {
-                    ERROR_PIPE_CONNECTED => true,
-                    ERROR_IO_PENDING => {
-                        let mut moved = 0u32;
-                        GetOverlappedResult(handle, &overlapped, &mut moved, 1) != 0
-                    }
-                    _ => false,
-                }
-            } else {
-                true
-            }
-        };
-        if !connected {
-            return Err(os("ConnectNamedPipe"));
-        }
+        await_client(&instance)?;
         // The next client may connect to a fresh instance while this one is judged.
         *waiting = Some(create_instance(self.address.pipe_name(), false)?);
         drop(waiting);
@@ -828,9 +890,9 @@ impl LocalListener {
     }
 }
 
-use super::{CONNECT_BOUND, RawConnection};
+use super::RawConnection;
 
-/// The connect of both [`connect`] and [`connect_stream`]: opens the pipe, waiting for a busy one for the time left
+/// The connect of [`connect_stream`]: opens the pipe, waiting for a busy one for the time left
 /// before `deadline`, and verifies the server before a byte is sent: the process that holds the pipe, its user, its
 /// integrity level and that it is not an AppContainer.
 fn connect_checked(
@@ -869,7 +931,11 @@ fn connect_checked(
         if left.is_zero() {
             return Err(LocalRefusal::Timeout);
         }
-        let millis = u32::try_from(left.as_millis()).unwrap_or(u32::MAX).max(1);
+        // At least 1, since 0 asks for the pipe's default wait; at most `u32::MAX - 1`, since `u32::MAX` is
+        // `NMPWAIT_WAIT_FOREVER`, which no bound may become.
+        let millis = u32::try_from(left.as_millis())
+            .unwrap_or(u32::MAX)
+            .clamp(1, u32::MAX - 1);
         // SAFETY: waits for an instance of a name this process has just seen busy, for at most the time left.
         let waited = unsafe { WaitNamedPipeW(name.as_ptr(), millis) };
         if waited == 0 {
@@ -889,34 +955,15 @@ fn connect_checked(
     Ok((handle, peer))
 }
 
-/// Connects to the pipe `address`, verifying the server before a byte is sent. The connect is bounded by
-/// [`CONNECT_BOUND`]; the carrier is built at once, with no handshake (a client that handshakes uses
-/// [`connect_stream`]).
-pub(crate) fn connect(
-    address: &LocalAddress,
-    policy: &PeerPolicy,
-    limits: CarrierLimits,
-) -> Accepted {
-    let (handle, peer) = connect_checked(address, policy, Instant::now() + CONNECT_BOUND)?;
-    carrier_over(handle, false, Side::Client, peer, limits)
-}
-
-/// [`connect`] up to the stream: the halves of the connection, not yet a carrier, for the client's handshake. A busy
-/// pipe is waited for until `deadline`, which the handshake's client counts from the start of its connect.
+/// Connects to the pipe `address`, verifying the server before a byte is sent. The result is the halves of the
+/// connection, not yet a carrier, for the client's handshake (`handshake::dial`): the carrier is built over them only
+/// once the handshake is done ([`RawConnection::into_carrier`]). A busy pipe is waited for until `deadline`, which the
+/// handshake's client counts from the start of its connect.
 pub(crate) fn connect_stream(
     address: &LocalAddress,
     policy: &PeerPolicy,
     deadline: Instant,
 ) -> Result<RawConnection, LocalRefusal> {
     let (handle, peer) = connect_checked(address, policy, deadline)?;
-    let spawn = |error: io::Error| LocalRefusal::os("spawn", &error);
-    let pipe = Pipe::new(handle, false).map_err(spawn)?;
-    let killer = pipe.clone();
-    Ok(RawConnection {
-        read: Box::new(ReadHalf(pipe.clone())),
-        write: Box::new(WriteHalf(pipe)),
-        abort: Box::new(move || killer.abort()),
-        peer,
-        side: Side::Client,
-    })
+    raw_over(handle, false, Side::Client, peer)
 }

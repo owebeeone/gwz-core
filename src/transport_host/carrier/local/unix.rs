@@ -585,26 +585,35 @@ cfg_if::cfg_if! {
     }
 }
 
+/// The halves of a connected `stream`, not yet a carrier: the one place a stream becomes a [`RawConnection`], for the
+/// listener's accepted streams ([`carrier_over`]) and the client's connect ([`connect_stream`]) alike, so that their
+/// error labels agree.
+fn raw_over(
+    stream: UnixStream,
+    side: Side,
+    peer: PeerIdentity,
+) -> Result<RawConnection, LocalRefusal> {
+    let os = |call, error: io::Error| LocalRefusal::os(call, &error);
+    let reader = stream.try_clone().map_err(|e| os("dup", e))?;
+    let killer = stream.try_clone().map_err(|e| os("dup", e))?;
+    Ok(RawConnection {
+        read: Box::new(Half(reader)),
+        write: Box::new(Half(stream)),
+        abort: Box::new(move || {
+            let _ = killer.shutdown(std::net::Shutdown::Both);
+        }),
+        peer,
+        side,
+    })
+}
+
 fn carrier_over(
     stream: UnixStream,
     side: Side,
     peer: PeerIdentity,
     limits: CarrierLimits,
 ) -> Accepted {
-    let os = |call, error: io::Error| LocalRefusal::os(call, &error);
-    let reader = stream.try_clone().map_err(|e| os("dup", e))?;
-    let killer = stream.try_clone().map_err(|e| os("dup", e))?;
-    let id = CarrierId::random().map_err(|e| os("getrandom", e))?;
-    StreamCarrier::new(
-        Box::new(Half(reader)),
-        Box::new(Half(stream)),
-        Box::new(move || {
-            let _ = killer.shutdown(std::net::Shutdown::Both);
-        }),
-        CarrierBinding::new(id, side, Peer::Verified(peer)),
-        limits,
-    )
-    .map_err(|e| os("spawn", e))
+    raw_over(stream, side, peer)?.into_carrier(limits)
 }
 
 /// A listening socket in a per-user directory, with the rule it applies to whoever connects.
@@ -680,7 +689,7 @@ impl Drop for LocalListener {
     }
 }
 
-use super::{CONNECT_BOUND, RawConnection};
+use super::RawConnection;
 use socket2::{Domain, SockAddr, Socket, Type};
 
 /// The longest pause between two attempts to connect to a full accept queue.
@@ -719,8 +728,8 @@ pub(crate) fn connect_until(path: &Path, deadline: Instant) -> Result<UnixStream
     }
 }
 
-/// The connect of both [`connect`] and [`connect_stream`]: the socket's directory and file are checked, the connect is
-/// made before `deadline`, and the listener is verified before a byte is sent.
+/// The connect of [`connect_stream`]: the socket's directory and file are checked, the connect is made before
+/// `deadline`, and the listener is verified before a byte is sent.
 fn connect_checked(
     address: &LocalAddress,
     policy: &PeerPolicy,
@@ -748,35 +757,14 @@ fn connect_checked(
 }
 
 /// Connects to `address`, verifying the listener before a byte is sent: the socket's directory and file, then the
-/// process that holds it. The connect is bounded by [`CONNECT_BOUND`]; the carrier is built at once, with no handshake
-/// (the rows that exercise the carrier alone use it; a client that handshakes uses [`connect_stream`]).
-pub(crate) fn connect(
-    address: &LocalAddress,
-    policy: &PeerPolicy,
-    limits: CarrierLimits,
-) -> Accepted {
-    let (stream, peer) = connect_checked(address, policy, Instant::now() + CONNECT_BOUND)?;
-    carrier_over(stream, Side::Client, peer, limits)
-}
-
-/// [`connect`] up to the stream: the halves of the connection, not yet a carrier, for the client's handshake. The
-/// connect completes before `deadline`, which the handshake's client counts from the start of its connect.
+/// process that holds it. The result is the halves of the connection, not yet a carrier, for the client's handshake
+/// (`handshake::dial`): the carrier is built over them only once the handshake is done ([`RawConnection::into_carrier`]).
+/// The connect completes before `deadline`, which the handshake's client counts from the start of its connect.
 pub(crate) fn connect_stream(
     address: &LocalAddress,
     policy: &PeerPolicy,
     deadline: Instant,
 ) -> Result<RawConnection, LocalRefusal> {
     let (stream, peer) = connect_checked(address, policy, deadline)?;
-    let os = |call, error: io::Error| LocalRefusal::os(call, &error);
-    let reader = stream.try_clone().map_err(|e| os("dup", e))?;
-    let killer = stream.try_clone().map_err(|e| os("dup", e))?;
-    Ok(RawConnection {
-        read: Box::new(Half(reader)),
-        write: Box::new(Half(stream)),
-        abort: Box::new(move || {
-            let _ = killer.shutdown(std::net::Shutdown::Both);
-        }),
-        peer,
-        side: Side::Client,
-    })
+    raw_over(stream, Side::Client, peer)
 }

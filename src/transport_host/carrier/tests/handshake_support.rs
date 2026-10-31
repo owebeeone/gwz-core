@@ -131,7 +131,7 @@ impl ByteWire for ScriptedBytes {
         match self.after {
             After::Silent => {
                 self.clock += wait;
-                Ok(Heard::Silent)
+                Ok(Heard::Silent(partial))
             }
             After::Ended => Ok(Heard::Ended(partial)),
         }
@@ -151,6 +151,8 @@ pub(super) struct ScriptedFrames {
     pub(super) closed: bool,
     /// What each send adds to the clock.
     pub(super) send_cost: Duration,
+    /// A tag whose send fails (the stream has gone): the frame is not recorded as sent.
+    pub(super) fail_send: Option<u8>,
     pub(super) log: Log,
 }
 
@@ -162,6 +164,7 @@ impl ScriptedFrames {
             sent: Vec::new(),
             closed: false,
             send_cost: Duration::ZERO,
+            fail_send: None,
             log,
         }
     }
@@ -175,6 +178,9 @@ impl FrameWire for ScriptedFrames {
     fn send(&mut self, frame: Frame) -> Result<(), WireEnd> {
         self.log.borrow_mut().push(format!("send {}", frame.tag));
         self.clock += self.send_cost;
+        if self.fail_send == Some(frame.tag) {
+            return Err(WireEnd::Io(std::io::ErrorKind::BrokenPipe));
+        }
         self.sent.push(frame);
         Ok(())
     }
@@ -220,7 +226,7 @@ impl Hooks for RecordingHooks {
     fn open(&mut self, open: &OpenRequest) -> Result<OpenedInfo, Refusal> {
         self.log.borrow_mut().push("hook open".into());
         self.opened.push(open.clone());
-        self.open_answer
+        self.open_answer.clone()
     }
 
     fn control(&mut self, control: &Control) -> Result<State, Refusal> {
