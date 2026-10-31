@@ -369,13 +369,13 @@ pub(super) fn advertisement(exchange: &mut Exchange) -> Result<Vec<u8>, StreamEr
     loop {
         assert!(Instant::now() < deadline, "the exchange did not end");
         if sent < 4 {
-            match exchange.stream().write(&b"0000"[sent..]) {
+            match exchange.stream().try_write(&b"0000"[sent..]) {
                 Ok(n) => sent += n,
                 Err(StreamError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {}
                 Err(error) => return Err(error),
             }
         }
-        match exchange.stream().read(&mut buffer) {
+        match exchange.stream().try_read(&mut buffer) {
             Ok(0) => return Ok(out),
             Ok(n) => out.extend_from_slice(&buffer[..n]),
             Err(StreamError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {

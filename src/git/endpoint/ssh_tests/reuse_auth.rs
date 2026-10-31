@@ -37,7 +37,7 @@ struct Rig {
     second: PathBuf,
     endpoint: Endpoint,
 }
-fn config() -> Config {
+pub(super) fn config() -> Config {
     Config {
         total: 4,
         per_host: 4,
@@ -77,31 +77,60 @@ impl Rig {
     fn key(&self) -> Key {
         Key::ssh(&self.ssh.user, "127.0.0.1", self.ssh.port)
     }
-    /// One upload-pack exchange to completion for the operation binding `binding` (its bridge's session), with the
-    /// selected key file `selected` or the agent.
     fn exchange_selected(&self, binding: &str, selected: Option<PathBuf>) -> io::Result<Opened> {
-        let context = BridgeContext {
-            session_id: binding.into(),
-            stream_id: 1,
-            version: 2,
-            limits: gwz_transport::binding::default_limits(),
-            deadlines: attachment::deadlines(&config(), 3000),
-            waker: None,
-        };
-        let pending = self.endpoint.start_endpoint_open(
-            self.key(),
-            selected,
-            GitService::UploadPack,
-            self.ssh.repository.to_str().unwrap(),
-            context.clone(),
-            Arc::new(AtomicBool::new(false)),
-        )?;
-        let (attachment, opened) = attachment::finish(&pending)?;
-        drain(attachment::drive(attachment, &context))?;
-        Ok(opened)
+        let repository = self.ssh.repository.to_str().unwrap();
+        exchange_on(&self.endpoint, self.key(), repository, binding, selected)
     }
     fn exchange(&self, binding: &str) -> io::Result<Opened> {
         self.exchange_selected(binding, None)
+    }
+}
+/// One upload-pack exchange of `repository` on `endpoint` to completion for the operation binding `binding` (its
+/// bridge's session), with the selected key file `selected` or the agent.
+pub(super) fn exchange_on(
+    endpoint: &Endpoint,
+    key: Key,
+    repository: &str,
+    binding: &str,
+    selected: Option<PathBuf>,
+) -> io::Result<Opened> {
+    let context = BridgeContext {
+        session_id: binding.into(),
+        stream_id: 1,
+        version: 2,
+        limits: gwz_transport::binding::default_limits(),
+        deadlines: attachment::deadlines(&config(), 3000),
+        waker: None,
+    };
+    let pending = endpoint.start_endpoint_open(
+        key,
+        selected,
+        GitService::UploadPack,
+        repository,
+        context.clone(),
+        Arc::new(AtomicBool::new(false)),
+    )?;
+    let (attachment, opened) = attachment::finish(&pending)?;
+    drain(attachment::drive(attachment, &context))?;
+    Ok(opened)
+}
+/// Waits until `endpoint`'s pool counts satisfy `condition`, and says what they were when it gave up.
+pub(super) fn wait_counts(
+    endpoint: &Endpoint,
+    what: &str,
+    condition: impl Fn(gwz_transport::pool::Counts) -> bool,
+) {
+    let until = Instant::now() + Duration::from_secs(10);
+    loop {
+        let counts = endpoint.pool().counts();
+        if condition(counts) {
+            return;
+        }
+        assert!(
+            Instant::now() < until,
+            "{what}: the pool stayed at {counts:?}"
+        );
+        thread::sleep(Duration::from_millis(10));
     }
 }
 fn drain(mut stream: BlockingStream) -> io::Result<()> {
@@ -199,20 +228,8 @@ impl Rig {
         drain(two).unwrap();
         (opened_one, opened_two)
     }
-    /// Waits until the endpoint's pool counts satisfy `condition`, and says what they were when it gave up.
     fn wait_counts(&self, what: &str, condition: impl Fn(gwz_transport::pool::Counts) -> bool) {
-        let until = Instant::now() + Duration::from_secs(10);
-        loop {
-            let counts = self.endpoint.pool().counts();
-            if condition(counts) {
-                return;
-            }
-            assert!(
-                Instant::now() < until,
-                "{what}: the pool stayed at {counts:?}"
-            );
-            thread::sleep(Duration::from_millis(10));
-        }
+        wait_counts(&self.endpoint, what, condition);
     }
 }
 

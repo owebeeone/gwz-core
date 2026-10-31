@@ -15,7 +15,7 @@
 //! `agent_auth::authenticate_reporting` over a pipe channel to this agent (plan step 3.4). It authenticates on the
 //! production path, and signs with the agent as the transport does.
 use super::agent_fixture_pipe::{
-    Behavior, Identity, PipeAgent, PipeChannel, Request, Stage, pipe_name,
+    Behavior, Fault, Identity, PipeAgent, PipeChannel, Request, Stage, pipe_name,
 };
 use crate::git::endpoint::{
     agent_auth, agent_client::Agent, agent_job::Job, ssh_fixture as common, ssh_network,
@@ -110,6 +110,12 @@ impl KeyAgent {
 
     pub(crate) fn connect(&self) -> PipeChannel {
         self.agent.connect()
+    }
+
+    /// The agent's keys are fixed when it starts: it refuses its next sign request, as an agent that no longer holds
+    /// the key does (the reuse rows' withdrawal).
+    pub(crate) fn refuse_next_sign(&self) {
+        self.agent.script(Fault::Refuse);
     }
 
     /// The agent source a runtime would choose for this agent: the pipe it serves on.

@@ -19,18 +19,20 @@ cfg_if::cfg_if! {
         use std::os::unix::net::{UnixListener, UnixStream};
         use std::{
             process::{Child, Stdio},
-            sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering},
+            sync::{Mutex, atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering}},
         };
 
         /// A private `ssh-agent` holding the row's keys, and a proxy socket in front of it that counts sign requests
-        /// and, when asked, damages the signature of the next one.
+        /// and, when asked, damages the signature of the next one. Or the same proxy in front of another agent
+        /// (`in_front_of`), which holds the keys and is stopped by whoever started it.
         pub(crate) struct Agent {
-            child: Child,
+            child: Option<Child>,
             real: PathBuf,
             path: PathBuf,
             signs: Arc<AtomicUsize>,
             forge: Arc<AtomicU8>,
             delay: Arc<AtomicU64>,
+            withdrawn: Arc<Mutex<Vec<Vec<u8>>>>,
             stop: Arc<AtomicBool>,
             accept: Option<thread::JoinHandle<()>>,
         }
@@ -53,22 +55,34 @@ cfg_if::cfg_if! {
                     assert!(Instant::now() < until, "the private agent never bound its socket");
                     thread::sleep(Duration::from_millis(2));
                 }
+                let agent = Self::proxy(Some(child), real, path);
+                for key in keys {
+                    agent.ssh_add(&[key.as_os_str()]);
+                }
+                agent
+            }
+            /// The counting proxy in `dir` in front of the agent that listens on `upstream`, which holds the keys.
+            pub(crate) fn in_front_of(dir: &Path, upstream: &Path) -> Self {
+                Self::proxy(None, upstream.to_owned(), dir.join("reuse-proxy-agent.sock"))
+            }
+            fn proxy(child: Option<Child>, real: PathBuf, path: PathBuf) -> Self {
                 let listener = UnixListener::bind(&path).unwrap();
                 listener.set_nonblocking(true).unwrap();
                 let signs = Arc::new(AtomicUsize::new(0));
                 let forge = Arc::new(AtomicU8::new(0));
                 let delay = Arc::new(AtomicU64::new(0));
+                let withdrawn = Arc::new(Mutex::new(Vec::new()));
                 let stop = Arc::new(AtomicBool::new(false));
                 let accept = {
-                    let (real, signs, forge, delay, stop) =
-                        (real.clone(), signs.clone(), forge.clone(), delay.clone(), stop.clone());
+                    let (real, signs, forge, delay, withdrawn, stop) =
+                        (real.clone(), signs.clone(), forge.clone(), delay.clone(), withdrawn.clone(), stop.clone());
                     thread::spawn(move || {
                         while !stop.load(Ordering::SeqCst) {
                             match listener.accept() {
                                 Ok((peer, _)) => {
-                                    let (real, signs, forge, delay) =
-                                        (real.clone(), signs.clone(), forge.clone(), delay.clone());
-                                    thread::spawn(move || relay(peer, &real, &signs, &forge, &delay));
+                                    let (real, signs, forge, delay, withdrawn) =
+                                        (real.clone(), signs.clone(), forge.clone(), delay.clone(), withdrawn.clone());
+                                    thread::spawn(move || relay(peer, &real, &signs, &forge, &delay, &withdrawn));
                                 }
                                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                                     thread::sleep(Duration::from_millis(2));
@@ -78,11 +92,7 @@ cfg_if::cfg_if! {
                         }
                     })
                 };
-                let agent = Self { child, real, path, signs, forge, delay, stop, accept: Some(accept) };
-                for key in keys {
-                    agent.ssh_add(&[key.as_os_str()]);
-                }
-                agent
+                Self { child, real, path, signs, forge, delay, withdrawn, stop, accept: Some(accept) }
             }
             pub(crate) fn source(&self) -> AgentSource {
                 AgentSource::from_path(Some(self.path.clone()))
@@ -99,6 +109,11 @@ cfg_if::cfg_if! {
             pub(crate) fn withdraw(&self, key: &Path) {
                 let public = key.with_extension("pub");
                 self.ssh_add(&["-d".as_ref(), public.as_os_str()]);
+            }
+            /// The agent no longer holds the key whose public blob is `blob`: a sign request for it fails, whether or
+            /// not the agent behind the proxy is one `ssh-add` can remove it from.
+            pub(crate) fn withdraw_blob(&self, blob: &[u8]) {
+                self.withdrawn.lock().unwrap().push(blob.to_vec());
             }
             /// The next signature the agent returns no longer verifies.
             pub(crate) fn forge_next(&self) {
@@ -124,8 +139,10 @@ cfg_if::cfg_if! {
                     let _ = accept.join();
                 }
                 // Stopped by its own process (its PID), never by name.
-                let _ = self.child.kill();
-                let _ = self.child.wait();
+                if let Some(child) = self.child.as_mut() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                }
             }
         }
         fn frame(stream: &mut UnixStream) -> Option<Vec<u8>> {
@@ -141,7 +158,24 @@ cfg_if::cfg_if! {
             stream.write_all(&(body.len() as u32).to_be_bytes())?;
             stream.write_all(body)
         }
-        fn relay(mut peer: UnixStream, real: &Path, signs: &AtomicUsize, forge: &AtomicU8, delay: &AtomicU64) {
+        /// Whether `body` asks the agent to sign with a key that was withdrawn.
+        fn withdrawn_signing(body: &[u8], withdrawn: &Mutex<Vec<Vec<u8>>>) -> bool {
+            let Some(length) = body.get(1..5).map(|bytes| u32::from_be_bytes(bytes.try_into().unwrap()) as usize) else {
+                return false;
+            };
+            let Some(blob) = body.get(5..5 + length) else {
+                return false;
+            };
+            withdrawn.lock().unwrap().iter().any(|held| held == blob)
+        }
+        fn relay(
+            mut peer: UnixStream,
+            real: &Path,
+            signs: &AtomicUsize,
+            forge: &AtomicU8,
+            delay: &AtomicU64,
+            withdrawn: &Mutex<Vec<Vec<u8>>>,
+        ) {
             // An accepted socket inherits the listener's non-blocking mode on macOS.
             if peer.set_nonblocking(false).is_err() {
                 return;
@@ -153,6 +187,13 @@ cfg_if::cfg_if! {
                 let signing = body[0] == 13;
                 if signing {
                     signs.fetch_add(1, Ordering::SeqCst);
+                    if withdrawn_signing(&body, withdrawn) {
+                        // SSH_AGENT_FAILURE, as an agent that lacks the key answers.
+                        if send(&mut peer, &[5]).is_err() {
+                            return;
+                        }
+                        continue;
+                    }
                 }
                 if send(&mut upstream, &body).is_err() {
                     return;
@@ -192,6 +233,34 @@ cfg_if::cfg_if! {
                 if send(&mut peer, &response).is_err() {
                     return;
                 }
+            }
+        }
+        pub(crate) use super::key_fixture::{KeyAgent, Sign};
+
+        /// The key agent (`key_fixture`: certificates and security keys beside plain keys) behind the counting proxy,
+        /// which can stop signing for one key (the proof rows of `reuse_proof_keys`).
+        pub(crate) struct ProofAgent {
+            // The proxy first, then the agent behind it.
+            front: Agent,
+            keys: KeyAgent,
+        }
+        impl ProofAgent {
+            /// The key agent in `dir` listing `listed`, signing with the `private` key files (and their certificates).
+            pub(crate) fn start(dir: &Path, private: &[&Path], listed: &[Sign<'_>]) -> Self {
+                let keys = KeyAgent::start(dir, private, listed, false);
+                let front = Agent::in_front_of(dir, &keys.path);
+                Self { front, keys }
+            }
+            pub(crate) fn source(&self) -> AgentSource {
+                self.front.source()
+            }
+            /// The agent no longer holds the key `blob`: it answers a sign request for it with a failure.
+            pub(crate) fn withdraw(&self, blob: &[u8]) {
+                self.front.withdraw_blob(blob);
+            }
+            /// The requests the key agent has seen, in order: `list`, or `sign:<listed key's index>:<flags>`.
+            pub(crate) fn requests(&self) -> Vec<String> {
+                self.keys.requests()
             }
         }
         /// The type of the rows' agent keys: Ed25519.
@@ -243,6 +312,31 @@ cfg_if::cfg_if! {
                     .iter()
                     .filter(|request| matches!(request, Request::Sign { .. }))
                     .count()
+            }
+        }
+        pub(crate) use super::key_fixture_pipe::{KeyAgent, Sign};
+
+        /// The key agent (`key_fixture_pipe`: certificates and security keys beside plain keys) on its pipe (the proof
+        /// rows of `reuse_proof_keys`).
+        pub(crate) struct ProofAgent {
+            keys: KeyAgent,
+        }
+        impl ProofAgent {
+            /// The key agent in `dir` listing `listed`, signing with the `private` key files (and their certificates).
+            pub(crate) fn start(dir: &Path, private: &[&Path], listed: &[Sign<'_>]) -> Self {
+                Self { keys: KeyAgent::start(dir, private, listed) }
+            }
+            pub(crate) fn source(&self) -> AgentSource {
+                self.keys.source()
+            }
+            /// The agent's keys are fixed when it starts: it refuses its next sign request, as an agent that no longer
+            /// holds the key does.
+            pub(crate) fn withdraw(&self, _blob: &[u8]) {
+                self.keys.refuse_next_sign();
+            }
+            /// The requests the key agent has seen, in order: `list`, or `sign:<listed key's index>:<flags>`.
+            pub(crate) fn requests(&self) -> Vec<String> {
+                self.keys.requests()
             }
         }
         /// The type of the rows' agent keys: RSA, the agent key type libssh2 on Windows (CNG) signs with, in the PEM
