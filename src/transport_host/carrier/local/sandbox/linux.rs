@@ -63,17 +63,32 @@ fn thread_seccomp(tasks: &Path) -> Result<u32, PeerRefusal> {
     Ok(highest)
 }
 
-/// The findings of the process whose `/proc` directory is `dir`. Any file that cannot be read, and a status without a
-/// seccomp mode (a kernel built without seccomp), refuses.
-pub(crate) fn probe_dir(dir: &Path) -> Result<SandboxFindings, PeerRefusal> {
+/// The `Seccomp:` mode in `dir/status`, the process's own (the first thread's) line.
+fn leader_seccomp(dir: &Path) -> Result<u32, PeerRefusal> {
     let status = std::fs::read_to_string(dir.join("status"))
         .map_err(|_| PeerRefusal::Unreadable("the process status"))?;
-    let leader =
-        seccomp_mode(&status).ok_or(PeerRefusal::Unreadable("the process's seccomp mode"))?;
+    seccomp_mode(&status).ok_or(PeerRefusal::Unreadable("the process's seccomp mode"))
+}
+
+/// The findings of the process whose `/proc` directory is `dir`. Any file that cannot be read, and a status without a
+/// seccomp mode (a kernel built without seccomp), refuses.
+///
+/// The leader's status is read again after the threads and the namespace links, last: a filtered thread that `exec`s
+/// while they are scanned takes over the leader's ID, so that its own entry vanishes from `task/` and the leader read
+/// first was the old one. The second read of the same file is of the process as it is then, which carries the filter
+/// across the `exec`. While the `exec` kills the other threads, and until it has taken the ID, `/proc` lists the old
+/// leader alone and shows the thread nowhere; a scan inside that interval finds no filter whatever is read, and the
+/// later the second read is, the less likely a scan is inside it (it is rare: see the exec row of `hold_rows.rs`).
+pub(crate) fn probe_dir(dir: &Path) -> Result<SandboxFindings, PeerRefusal> {
+    let leader = leader_seccomp(dir)?;
+    let threads = thread_seccomp(&dir.join("task"))?;
+    let user_namespace = inode(&dir.join("ns/user"), "the process's user namespace")?;
+    let mount_namespace = inode(&dir.join("ns/mnt"), "the process's mount namespace")?;
+    let after = leader_seccomp(dir)?;
     Ok(SandboxFindings {
-        seccomp: leader.max(thread_seccomp(&dir.join("task"))?),
-        user_namespace: Some(inode(&dir.join("ns/user"), "the process's user namespace")?),
-        mount_namespace: Some(inode(&dir.join("ns/mnt"), "the process's mount namespace")?),
+        seccomp: leader.max(threads).max(after),
+        user_namespace: Some(user_namespace),
+        mount_namespace: Some(mount_namespace),
         profile: false,
     })
 }

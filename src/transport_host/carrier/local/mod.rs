@@ -31,8 +31,9 @@
 //! caller to it. The peer's process is **pinned** before it is read and checked again after: a process that has gone, or
 //! whose identity changed under the same process ID, is refused (Linux: the `pidfd` the kernel recorded for the connection,
 //! `getsockopt(SO_PEERPIDFD)`, which names the process that connected or listened and never the one that holds its ID
-//! later, and the `/proc` start time before and after; a kernel before 6.5 has no such descriptor and refuses every
-//! peer; macOS: the `LOCAL_PEERTOKEN` audit token and a live-process check; Windows: a process handle, its creation time
+//! later, and the `/proc` start time before and after; a kernel before 6.5 has no such descriptor (it answers
+//! `ENOPROTOOPT`) and refuses every peer, while kernels 6.5 to 6.15 answer `EINVAL` for a peer that has gone, which is
+//! refused as a process that is no longer there; macOS: the `LOCAL_PEERTOKEN` audit token and a live-process check; Windows: a process handle, its creation time
 //! and its exit state). **The sandbox rule's platform probes** (`sandbox.rs`; seccomp and namespaces on Linux,
 //! `sandbox_check` on macOS, the AppContainer flag on Windows) run on the same hold, are part of the peer's identity, and
 //! refuse with [`PeerRefusal::Sandboxed`]; a probe that cannot complete refuses. A listener answers a refused peer with

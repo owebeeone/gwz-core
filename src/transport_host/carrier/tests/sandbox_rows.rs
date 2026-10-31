@@ -450,7 +450,7 @@ cfg_if::cfg_if! {
 
                     /// An allow-all filter of one instruction (`BPF_RET | BPF_K`, `SECCOMP_RET_ALLOW`) on the calling thread
                     /// alone (no `TSYNC`): the process's `Seccomp:` line is the first thread's.
-                    fn seccomp_allow_all() -> std::io::Result<()> {
+                    pub(in super::super) fn seccomp_allow_all() -> std::io::Result<()> {
                         // SAFETY: plain `prctl` calls; the program outlives the call that reads it.
                         unsafe {
                             check(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1 as libc::c_ulong, 0 as libc::c_ulong, 0 as libc::c_ulong, 0 as libc::c_ulong))?;
@@ -778,6 +778,10 @@ cfg_if::cfg_if! {
                     thread("11", "Name:\tz\n");
                     unreadable("a thread whose status has no Seccomp line");
                     std::fs::remove_dir_all(at("task/11")).unwrap();
+                    // A thread whose status exists but cannot be read (a directory in its place) is not a thread that has gone.
+                    std::fs::create_dir_all(at("task/12/status")).unwrap();
+                    assert_eq!(probe_dir(proc.path()).err(), Some(PeerRefusal::Unreadable("the process's threads")));
+                    std::fs::remove_dir_all(at("task/12")).unwrap();
                     status("Name:\tx\nSeccomp_filters:\t3\n");
                     unreadable("a status with no Seccomp line (only Seccomp_filters)");
                     status("Seccomp:\tmaybe\n");

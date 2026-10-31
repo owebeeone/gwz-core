@@ -153,6 +153,19 @@
   {
    "path": "src/transport_host/carrier/local/unix.rs",
    "kind": "os",
+   "gate": "libc::ESRCH",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan-2.md (round 2: Code C2-1 = State N-1, the errno map of SO_PEERPIDFD; State N-2, the exec row; State N-3, the descriptor row; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 2"
+  },
+  {
+   "path": "src/transport_host/carrier/local/unix.rs",
+   "kind": "os",
    "gate": "libc::SO_PEERPIDFD",
    "target": "",
    "owner": [
@@ -187,7 +200,8 @@
    "state": "platform",
    "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
    "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
-   "appendix": "new: step 2.3a remediation round 1"
+   "appendix": "new: step 2.3a remediation round 1",
+   "count": 2
   },
   {
    "path": "src/transport_host/carrier/tests/hold_rows.rs",
@@ -205,6 +219,19 @@
   {
    "path": "src/transport_host/carrier/tests/hold_rows.rs",
    "kind": "os",
+   "gate": "libc::ESRCH",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan-2.md (round 2: Code C2-1 = State N-1, the errno map of SO_PEERPIDFD; State N-2, the exec row; State N-3, the descriptor row; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 2"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/hold_rows.rs",
+   "kind": "os",
    "gate": "libc::SIGKILL",
    "target": "",
    "owner": [
@@ -214,6 +241,19 @@
    "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
    "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
    "appendix": "new: step 2.3a remediation round 1"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/hold_rows.rs",
+   "kind": "os",
+   "gate": "libc::SYS_pidfd_open",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan-2.md (round 2: Code C2-1 = State N-1, the errno map of SO_PEERPIDFD; State N-2, the exec row; State N-3, the descriptor row; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 2"
   },
   {
    "path": "src/transport_host/carrier/tests/hold_rows.rs",
@@ -252,7 +292,21 @@
    "state": "platform",
    "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
    "approved_platform": "GwzServerCore-Step2.3a-RemPlan.md (round 1: State P2-1, the SO_PEERPIDFD hold; State P3-1, every thread read; Code C-2, the macOS probe bound to the hold; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
-   "appendix": "new: step 2.3a remediation round 1"
+   "appendix": "new: step 2.3a remediation round 1",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/tests/hold_rows.rs",
+   "kind": "os",
+   "gate": "libc::syscall",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the Linux hold (SO_PEERPIDFD, pidfd signals, /proc reads) and the real-process fixtures call the operating system's own interfaces; Windows holds the process by handle and creation time and has its own AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3a-RemPlan-2.md (round 2: Code C2-1 = State N-1, the errno map of SO_PEERPIDFD; State N-2, the exec row; State N-3, the descriptor row; the Linux-only and macOS-only OS interfaces have no Windows form, Windows being the process handle, creation time and token of windows.rs)",
+   "appendix": "new: step 2.3a remediation round 2"
   },
   {
    "path": "src/transport_host/carrier/tests/mod.rs",

@@ -25,9 +25,11 @@
 //! the descriptor now, is refused: the hold names the process that made it.
 //!
 //! **Kernel requirement (Linux).** The hold is the descriptor `getsockopt(SO_PEERPIDFD)` returns (Linux 6.5 or later). A
-//! kernel without it cannot say which process is on the other end of a connection, so every peer is refused
-//! ([`PeerRefusal::Unreadable`], naming the requirement); there is no weaker fallback. A peer in a process-ID namespace
-//! that this process's `/proc` does not show has no ID there, and is refused the same way.
+//! kernel without it (before 6.5, which answers `ENOPROTOOPT`) cannot say which process is on the other end of a
+//! connection, so every peer is refused ([`PeerRefusal::Unreadable`], naming the requirement); there is no weaker
+//! fallback. Kernels 6.5 to 6.15 have the option and answer `EINVAL` for a peer that has gone, and 6.16 and later give
+//! it a stale descriptor; both are refused as `a live peer process`, not as the requirement. A peer in a process-ID
+//! namespace that this process's `/proc` does not show has no ID there, and is refused as `a live peer process` too.
 use super::PeerRefusal;
 use std::fmt;
 

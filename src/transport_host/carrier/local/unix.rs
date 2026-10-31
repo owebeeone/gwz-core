@@ -381,7 +381,8 @@ cfg_if::cfg_if! {
     if #[cfg(any(target_os = "linux", target_os = "android"))] {
         use std::os::fd::{FromRawFd, OwnedFd};
 
-        /// What a kernel without `SO_PEERPIDFD` is refused for.
+        /// What a kernel without `SO_PEERPIDFD` is refused for. Only a kernel before 6.5 is without it, and it answers
+        /// `ENOPROTOOPT`; kernels 6.5 to 6.15 answer `EINVAL` for a peer that has gone, which is not this.
         const KERNEL_REQUIREMENT: &str = "a peer process descriptor (SO_PEERPIDFD, Linux 6.5 or later)";
 
         cfg_if::cfg_if! {
@@ -457,7 +458,11 @@ cfg_if::cfg_if! {
             ) -> Result<Self, PeerRefusal> {
                 let gone = PeerRefusal::Unreadable("a live peer process");
                 let pidfd = ask(fd).map_err(|error| match error.raw_os_error() {
-                    Some(libc::ENOPROTOOPT | libc::EINVAL) => PeerRefusal::Unreadable(KERNEL_REQUIREMENT),
+                    // Only ENOPROTOOPT says the option is missing (a kernel before 6.5). A kernel with it, 6.5 to 6.15,
+                    // answers EINVAL (and a reap that races the call ESRCH) for a peer that has gone; 6.16 and later
+                    // give such a peer a stale descriptor instead, which `descriptor_pid` reads as gone below.
+                    Some(libc::ENOPROTOOPT) => PeerRefusal::Unreadable(KERNEL_REQUIREMENT),
+                    Some(libc::EINVAL | libc::ESRCH) => gone.clone(),
                     _ => PeerRefusal::Unreadable("the peer's process descriptor"),
                 })?;
                 if descriptor_pid(&pidfd) != Some(pid) || !signalled(&pidfd) {
@@ -558,6 +563,13 @@ cfg_if::cfg_if! {
 
             /// Whether the process is the one held and is still there: the socket records the same token, and the
             /// process exists.
+            ///
+            /// **Limit.** This cannot see a process ID that was reused: the token the socket records is constant for the
+            /// connection, and a live process that now has the same ID passes both tests. A replaced peer is still
+            /// refused (the probe asks about the held token, and the system answers it as sandboxed: fail-closed), but it
+            /// is named `Profile` where the truth is that the peer has gone. Comparing word 7 of the token (the process's
+            /// version) with the live process would name it correctly; that is a hypothesis for a later step, not part of
+            /// this check.
             pub(crate) fn check(&self, fd: RawFd) -> Result<(), PeerRefusal> {
                 let same = peer_token(fd) == Some(self.token);
                 (same && process_alive(self.pid))

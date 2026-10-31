@@ -216,6 +216,9 @@ jobs:
         if: ${{ !cancelled() && steps.suites.outcome != 'skipped' }}
         run: |
           set -o pipefail
+          # SO_PEERPIDFD answers differently on a kernel before 6.5, on 6.5 to 6.15 and on 6.16 and later for a peer that
+          # has gone, so the kernel is printed with the result.
+          echo "kernel: $(uname -r)"
           sudo -E env "HOME=$HOME" "PATH=$PATH" RUSTFLAGS='--cfg gwz_transport_candidate' GWZ_TEST_GIT=real cargo test --locked --lib \
             --manifest-path "$RUNNER_TEMP/candidate/Cargo.toml" \
             --target-dir "$GITHUB_WORKSPACE/candidate-target" -- --exact \
@@ -223,6 +226,7 @@ jobs:
             transport_host::carrier::tests::hold_rows::a_reused_process_id_does_not_stand_for_the_process_that_connected_or_listened \
             2>&1 | tee "$RUNNER_TEMP/root-rows.log"
           passed="$(sed -n -E 's/^test result: ok\. ([0-9]+) passed.*/\1/p' "$RUNNER_TEMP/root-rows.log")"
+          echo "kernel $(uname -r): ${passed:-0} of the 2 root-only sandbox rows passed"
           if [ "${passed:-0}" -ne 2 ]; then
             echo "::error::expected the 2 root-only sandbox rows, ran ${passed:-0}"
             exit 1

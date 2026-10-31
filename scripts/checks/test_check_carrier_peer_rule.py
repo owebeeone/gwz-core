@@ -14,7 +14,9 @@ CLEAN = {
     'local/peer.rs': 'pub struct PeerPolicy { own: u8 }\nimpl PeerPolicy { pub fn verify(&self) {} fn new() -> Self { PeerPolicy { own: 1 } } }\nfn s() { sandbox::of_self(); }\n',
     'local/sandbox.rs': 'cfg_if::cfg_if! { if #[cfg(any(target_os = "linux", target_os = "android"))] { mod linux; } else if #[cfg(target_vendor = "apple")] { mod macos; } }\n',
     'local/sandbox/linux.rs': 'fn probe() { std::fs::read_to_string("/proc/self/status"); }\n',
-    'local/unix.rs': 'fn a() { p.verify(x, Relation::ListenerChecksClient); }\nfn b() { p.verify(y, Relation::ClientChecksListener); }\nfn c() { sandbox::of_peer(&hold, fd); }\n',
+    'local/unix.rs': 'fn a() { p.verify(x, Relation::ListenerChecksClient); }\nfn b() { p.verify(y, Relation::ClientChecksListener); }\n'
+                     'fn check_peer() { let hold = Hold::take(fd)?; sandbox::of_peer(&hold, fd); policy.verify(&peer, r)?; hold.confirm(fd)?; }\n'
+                     'impl Hold { fn check(&self) {} fn confirm(self) { self.check() } }\n',
     'local/windows.rs': 'fn a() { p.verify(x, Relation::ListenerChecksClient); }\nfn b() { p.verify(y, Relation::ClientChecksListener); }\n',
 }
 
@@ -109,11 +111,54 @@ class PeerRuleTests(unittest.TestCase):
                     root = tree(**{rel: CLEAN[rel] + source})
                     self.assertTrue(any('switch' in line for line in checker.violations(root)), source)
 
-    def test_the_cfg_expression_macro_may_name_only_the_listed_switches(self):
-        root = tree(**{'local/unix.rs': CLEAN['local/unix.rs'] + 'fn host() -> bool { cfg!(target_vendor = "apple") }\n'})
-        self.assertEqual(checker.violations(root), [])
-        root = tree(**{'local/windows.rs': CLEAN['local/windows.rs'] + 'fn host() -> bool { cfg!(test) }\n'})
-        self.assertEqual(checker.violations(root), [])
+    def test_the_cfg_expression_macro_is_allowed_nowhere_not_even_for_the_files_own_conditions(self):
+        # The attribute list names `test` for peer.rs, windows.rs and mod.rs and the platform conditions for unix.rs, but
+        # `if !cfg!(test) { return Ok(()); }` is strict in a test build and lax in production, where no row can see it.
+        cases = [('local/peer.rs', 'fn verify_loosely() -> Result<(), ()> { if !cfg!(test) { return Ok(()); } Err(()) }\n'),
+                 ('local/windows.rs', 'fn weaker() -> bool { !cfg!(test) }\n'),
+                 ('local/windows.rs', 'fn weaker() -> bool { cfg!(test) }\n'),
+                 ('mod.rs', 'fn weaker() -> bool { !cfg!(test) }\n'),
+                 ('local/mod.rs', 'fn weaker() -> bool { cfg!(unix) }\n'),
+                 ('local/unix.rs', 'fn check_loosely(peer: P) -> R { if cfg!(target_os = "android") { return Ok(peer); } todo() }\n'),
+                 ('local/unix.rs', 'fn host() -> bool { cfg!(target_vendor = "apple") }\n'),
+                 ('local/sandbox.rs', 'fn host() -> bool { cfg!(any(target_os = "linux", target_os = "android")) }\n'),
+                 ('local/unix.rs', 'fn host() -> bool { core::cfg!(target_os = "android") }\n')]
+        for rel, source in cases:
+            with self.subTest(rel=rel, source=source):
+                root = tree(**{rel: CLEAN[rel] + source})
+                self.assertTrue(any('switch' in line for line in checker.violations(root)), source)
+
+    def test_a_platform_condition_is_allowed_as_a_cfg_if_or_attribute_condition(self):
+        source = ('cfg_if::cfg_if! { if #[cfg(any(target_os = "linux", target_os = "android"))] { cfg_if::cfg_if! { if #[cfg(target_os = "android")] { '
+                  'const A: i32 = 77; } else { const A: i32 = 1; } } } else { fn other() {} } }\n')
+        self.assertEqual(checker.violations(tree(**{'local/unix.rs': CLEAN['local/unix.rs'] + source})), [])
+
+    def test_the_hold_must_be_confirmed_after_the_probe(self):
+        # Md2: the non-consuming test of the hold before the probe, the confirmation dropped.
+        unix = CLEAN['local/unix.rs'].replace(' hold.confirm(fd)?;', '').replace('sandbox::of_peer(&hold, fd);', 'hold.check(fd)?; sandbox::of_peer(&hold, fd);')
+        found = checker.violations(tree(**{'local/unix.rs': unix}))
+        self.assertTrue(any('never calls hold.confirm(' in line for line in found), found)
+        self.assertTrue(any('check_peer calls .check(' in line for line in found), found)
+
+    def test_a_check_call_in_check_peer_fails_even_beside_the_confirmation(self):
+        for call in ['hold.check(fd)?;', 'Hold::check(&hold, fd)?;', 'hold . check ( fd )?;']:
+            with self.subTest(call=call):
+                unix = CLEAN['local/unix.rs'].replace('sandbox::of_peer(&hold, fd);', f'{call} sandbox::of_peer(&hold, fd);')
+                found = checker.violations(tree(**{'local/unix.rs': unix}))
+                self.assertTrue(any('check_peer calls .check(' in line for line in found), found)
+
+    def test_dropping_the_confirmation_alone_fails(self):
+        unix = CLEAN['local/unix.rs'].replace(' hold.confirm(fd)?;', '')
+        self.assertTrue(any('never calls hold.confirm(' in line for line in checker.violations(tree(**{'local/unix.rs': unix}))))
+
+    def test_check_outside_check_peer_is_the_holds_own_business(self):
+        # The hold's own `check` (and a platform probe's closure over it) are not in check_peer.
+        unix = CLEAN['local/unix.rs'] + 'fn probe(hold: &Hold) { let _ = || hold.check(fd); }\n'
+        self.assertEqual(checker.violations(tree(**{'local/unix.rs': unix})), [])
+
+    def test_a_unix_module_without_check_peer_fails(self):
+        unix = CLEAN['local/unix.rs'].replace('fn check_peer()', 'fn renamed()')
+        self.assertTrue(any('no check_peer function' in line for line in checker.violations(tree(**{'local/unix.rs': unix}))))
 
     def test_dropping_a_probe_call_fails(self):
         for rel, text in [('local/unix.rs', CLEAN['local/unix.rs'].replace('sandbox::of_peer(&hold, fd)', 'nothing()')),
