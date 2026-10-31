@@ -92,6 +92,10 @@ pub(crate) struct Opening {
     pub(crate) path: String,
     pub(crate) allocation_ms: u64,
     pub(crate) interaction_ms: u64,
+    /// The context of the operation this connection is opened for (the connection host's `ConnectCommand::auth`; none
+    /// on the legacy pool's path). The setup runs the credential helper that context holds and keeps nothing of it
+    /// once it ends (contract section 7: the adapter drops the context when the connect completes or is cancelled).
+    pub(crate) auth: Option<gwz_connection::AuthContext>,
 }
 
 /// Connection setup is nonblocking. An error returned by start owns no remaining

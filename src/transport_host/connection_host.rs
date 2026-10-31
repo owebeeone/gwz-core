@@ -7,6 +7,11 @@
 //! until they are confirmed); the `OwnerSeed` is 128 random bits drawn once at build. The thread starts the first time
 //! any of them is used, so a runtime whose host never attaches an endpoint starts none, and it ends when the last
 //! port reference goes (the host, its domain and everything they retain). Nothing here is a global.
+//!
+//! The clock's epoch (contract section 10) is the wall clock against the monotonic origin: the epoch moves when the two
+//! have drifted apart by more than the idle interval since it last moved, as they do over a suspend, which the host
+//! then answers by retiring its idle connections. The wall clock is a parameter of the thread ([`WallClock`]); the
+//! cleanup domain's budgets are a parameter of the host ([`HostParts`]).
 use crate::git::endpoint::ssh_key_snapshot::Registry;
 use gwz_connection::{
     CleanupDomainOwner, CleanupStatus, Clock, DomainConfig, DriverWork, EndpointFactory,
@@ -23,8 +28,63 @@ use std::{
     },
     task::{Context, Poll, Wake, Waker},
     thread::{self, Thread},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+/// The wall clock, in milliseconds since the Unix epoch (negative before it). A suspend moves it and not the monotonic
+/// origin, which is how the driver sees one.
+pub(crate) type WallClock = Arc<dyn Fn() -> i64 + Send + Sync>;
+/// The operating system's wall clock.
+pub(crate) fn system_wall() -> WallClock {
+    Arc::new(|| match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(after) => i64::try_from(after.as_millis()).unwrap_or(i64::MAX),
+        Err(before) => i64::try_from(before.duration().as_millis()).map_or(i64::MIN, |ms| -ms),
+    })
+}
+
+/// The suspend and wall-clock-jump detector behind `Clock::epoch`: the counter moves when the wall clock and the
+/// monotonic origin have drifted apart by more than `threshold_ms` since the counter last moved (or since the origin).
+/// The baseline is re-set only when the counter moves, so several drifts that are each under the threshold add up, as
+/// several short suspends age an idle connection together.
+struct Epoch {
+    wall: WallClock,
+    threshold_ms: u64,
+    state: Mutex<EpochState>,
+}
+struct EpochState {
+    counter: u64,
+    /// The monotonic and wall readings at the origin or at the last move.
+    base_mono_ms: u64,
+    base_wall_ms: i64,
+}
+impl Epoch {
+    fn new(wall: WallClock, threshold_ms: u64, mono_ms: u64) -> Self {
+        let base_wall_ms = wall();
+        Self {
+            wall,
+            threshold_ms,
+            state: Mutex::new(EpochState {
+                counter: 0,
+                base_mono_ms: mono_ms,
+                base_wall_ms,
+            }),
+        }
+    }
+    /// The counter at `mono_ms` on the monotonic origin, moved first if the drift calls for it. The wall clock is read
+    /// before the lock is taken.
+    fn read(&self, mono_ms: u64) -> u64 {
+        let wall_ms = (self.wall)();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mono_elapsed = i128::from(mono_ms) - i128::from(state.base_mono_ms);
+        let wall_elapsed = i128::from(wall_ms) - i128::from(state.base_wall_ms);
+        if (wall_elapsed - mono_elapsed).unsigned_abs() > u128::from(self.threshold_ms) {
+            state.counter += 1;
+            state.base_mono_ms = mono_ms;
+            state.base_wall_ms = wall_ms;
+        }
+        state.counter
+    }
+}
 
 /// The longest the thread parks with nothing due: every wake source unparks it sooner.
 const PARK: Duration = Duration::from_secs(1);
@@ -62,6 +122,7 @@ struct State {
 }
 struct Inner {
     origin: Instant,
+    epoch: Epoch,
     state: Mutex<State>,
 }
 impl Inner {
@@ -83,10 +144,12 @@ pub(crate) struct DriverThread {
     inner: Arc<Inner>,
 }
 impl DriverThread {
-    pub(crate) fn new() -> Arc<Self> {
+    /// A thread whose epoch moves when `wall` drifts from the monotonic origin by more than `epoch_threshold_ms`.
+    pub(crate) fn new(wall: WallClock, epoch_threshold_ms: u64) -> Arc<Self> {
         Arc::new(Self {
             inner: Arc::new(Inner {
                 origin: Instant::now(),
+                epoch: Epoch::new(wall, epoch_threshold_ms, 0),
                 state: Mutex::new(State::default()),
             }),
         })
@@ -242,8 +305,7 @@ impl Clock for DriverPorts {
         })
     }
     fn epoch(&self) -> u64 {
-        // An `Instant` neither sees a suspend nor jumps with the wall clock.
-        0
+        self.0.inner.epoch.read(self.0.inner.now())
     }
 }
 impl Progress for DriverPorts {
@@ -301,6 +363,22 @@ pub(crate) struct ConnectionHost {
     )]
     ssh_keys: Option<Registry>,
 }
+/// What the composition chooses for a host besides its factory and gate: its cleanup domain's budgets (contract section
+/// 10: setup jobs, retained cleanup records and helper slots, which its adapters draw on) and the wall clock its epoch
+/// is read from.
+pub(crate) struct HostParts {
+    pub(crate) domain: DomainConfig,
+    pub(crate) wall: WallClock,
+}
+impl HostParts {
+    /// The product's: the contract's 64 / 64 / 8 and the operating system's wall clock.
+    pub(crate) fn product() -> Self {
+        Self {
+            domain: DomainConfig::default(),
+            wall: system_wall(),
+        }
+    }
+}
 impl ConnectionHost {
     /// Builds the host over `factory` on the process's gate. No thread starts and nothing physical is made.
     /// `ssh_keys` is the registry the factory's SSH adapters look selected keys up in.
@@ -309,12 +387,22 @@ impl ConnectionHost {
         ssh_keys: Option<Registry>,
         safety: SharedProcessSafety,
     ) -> Result<Self, String> {
+        Self::build_on(factory, ssh_keys, safety, HostParts::product())
+    }
+    /// [`ConnectionHost::build`] with the cleanup domain's budgets and the wall clock `parts` gives.
+    pub(crate) fn build_on(
+        factory: Arc<dyn EndpointFactory>,
+        ssh_keys: Option<Registry>,
+        safety: SharedProcessSafety,
+        parts: HostParts,
+    ) -> Result<Self, String> {
         let mut seed = [0u8; 16];
         getrandom::fill(&mut seed).map_err(|error| format!("host namespace: {error}"))?;
-        let ports = Arc::new(DriverPorts(DriverThread::new()));
-        let (domain_owner, domain) =
-            gwz_connection::cleanup_domain(DomainConfig::default(), ports.clone())
-                .map_err(|error| error.to_string())?;
+        // The idle interval is the instances' pools' (the crate's default), the discrepancy a suspend must exceed.
+        let idle_ms = gwz_transport::pool::Config::default().idle_timeout_ms;
+        let ports = Arc::new(DriverPorts(DriverThread::new(parts.wall, idle_ms)));
+        let (domain_owner, domain) = gwz_connection::cleanup_domain(parts.domain, ports.clone())
+            .map_err(|error| error.to_string())?;
         let (owner, handle) = gwz_connection::build(
             HostConfig {
                 domain,
@@ -361,6 +449,7 @@ impl ConnectionHost {
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
+        mod domain_ports_tests;
         mod factory_profile_tests;
         mod https_auth_tests;
         mod https_tests;

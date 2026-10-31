@@ -14,17 +14,48 @@ use std::{io, sync::Arc, time::Duration};
 use tokio::{sync::Semaphore, time::Instant};
 use tokio_util::sync::CancellationToken;
 
+/// Whose credential helper a lookup runs.
+enum Source {
+    /// The one helper the runtime that built the endpoint was configured with: the legacy session endpoint's, whose
+    /// runtime is its one operation's. It retires with the legacy pool (plan step 3.3).
+    Runtime(https_auth::Config),
+    /// The helper of the context of the operation the connection is being opened for (`Opening::auth`; the connection
+    /// host's endpoint instances are shared by operations and hold no helper of their own, Phase 1 Code P2-2).
+    Operation,
+}
 pub(crate) struct Helpers {
-    config: https_auth::Config,
+    source: Source,
     slots: https_auth::HelperSlots,
     endpoint: Arc<Semaphore>,
 }
 impl Helpers {
+    /// Helpers that run `config`, whichever operation asks: for an endpoint built for one operation's runtime.
     pub(crate) fn new(config: https_auth::Config, slots: https_auth::HelperSlots) -> Self {
+        Self::from_source(Source::Runtime(config), slots)
+    }
+    /// Helpers that run the helper of the context of the operation each opening serves: for the connection host's
+    /// shared endpoint instances.
+    pub(crate) fn per_operation(slots: https_auth::HelperSlots) -> Self {
+        Self::from_source(Source::Operation, slots)
+    }
+    fn from_source(source: Source, slots: https_auth::HelperSlots) -> Self {
         Self {
-            config,
+            source,
             slots,
             endpoint: Arc::new(Semaphore::new(8)),
+        }
+    }
+    /// The helper `opening`'s lookup runs: the runtime's own, or the one its operation's context holds. An opening
+    /// with no context, or one of another provider, has none, and the lookup is refused.
+    fn helper_for<'a>(&'a self, opening: &'a Opening) -> io::Result<&'a https_auth::Config> {
+        match &self.source {
+            Source::Runtime(config) => Ok(config),
+            Source::Operation => opening
+                .auth
+                .as_ref()
+                .and_then(https_auth::OperationAuth::of)
+                .map(https_auth::OperationAuth::helper)
+                .ok_or_else(|| io::ErrorKind::InvalidInput.into()),
         }
     }
     pub(crate) fn lookup(
@@ -33,6 +64,7 @@ impl Helpers {
         opening: &Opening,
         control: &Control,
     ) -> io::Result<https_auth::Secret> {
+        let helper = self.helper_for(opening)?;
         let setup = opening.setup.as_ref().ok_or(io::ErrorKind::InvalidInput)?;
         let interaction_ms = opening.interaction_ms.min(120_000);
         if interaction_ms == 0 {
@@ -59,7 +91,7 @@ impl Helpers {
             let cancelled = CancellationToken::new();
             let work = self.lookup_async(
                 &owner,
-                url.as_str(),
+                (helper, url.as_str()),
                 setup,
                 opening.allocation_ms,
                 interaction_ms,
@@ -106,7 +138,7 @@ impl Helpers {
     async fn lookup_async(
         &self,
         owner: &https_auth::AuthOwner,
-        url: &str,
+        (helper, url): (&https_auth::Config, &str),
         setup: &SetupContext,
         allocation_ms: u64,
         interaction_ms: u64,
@@ -124,7 +156,7 @@ impl Helpers {
         let mut remaining = until.saturating_duration_since(Instant::now());
         https_auth::lookup_setup(
             owner,
-            &self.config,
+            helper,
             (url, setup),
             &mut remaining,
             Duration::from_millis(interaction_ms),
@@ -143,5 +175,10 @@ cfg_if::cfg_if! {
             pub(crate) async fn hold_endpoint(&self) -> tokio::sync::OwnedSemaphorePermit { self.endpoint.clone().acquire_many_owned(8).await.unwrap() }
             pub(crate) fn available(&self) -> usize { self.endpoint.available_permits() }
         }
+    }
+}
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        mod operation_tests;
     }
 }

@@ -9,11 +9,15 @@
 //! profile's (Phase 1 Code P2-2). A spec whose profile carries no inputs is refused `Unavailable`. The factory itself
 //! holds only what is the host's, not an operation's:
 //! - SSH: the key registry the selected keys are admitted to, the host's shared reservation, where a refused host key
-//!   is noted, and the SSH password helpers;
+//!   is noted, and the SSH password helpers (which hold the host's slots and no configuration);
 //! - HTTPS: the host's helper slots (whose launches hold its spawn gate) and the same shared reservation.
 //!
-//! The native caller is the operation's too: it is in its `AuthContext` (`https_auth::OperationAuth`), and the HTTPS
-//! adapter reads it there, per exchange.
+//! The helper and the native caller are the operation's too: they are in its `AuthContext` (`https_auth::OperationAuth`),
+//! which the SSH adapter gives a connect's setup (`Opening::auth`) and the HTTPS adapter reads per exchange.
+//!
+//! The host's setup-job, cleanup-record and helper-slot ledgers are held to the budgets of the cleanup domain the host
+//! was built on (`FactoryEnv::domain().config()`, contract sections 4.1 and 10; Phase 1 State P3-2(d)) as the first
+//! adapter is made.
 //!
 //! The adapter is a [`SchemeRouter`] over two halves, each present when the factory has that scheme's host parts and the
 //! profile has that scheme's settings:
@@ -55,7 +59,8 @@ use std::{
 };
 
 /// The SSH half of the factory's host parts: the key registry the instances' selected keys are admitted to, the host's
-/// shared reservation, where a refused host key is noted, and the SSH password helpers (the runtime's).
+/// shared reservation, where a refused host key is noted, and the SSH password helpers (the host's slots; each lookup
+/// runs the helper of the operation's context).
 #[derive(Clone)]
 pub(crate) struct SshHost {
     pub(crate) registry: Registry,
@@ -96,6 +101,24 @@ impl EndpointFactory for CoreFactory {
             .inputs()
             .and_then(|inputs| inputs.downcast_ref::<EndpointInputs>())
             .ok_or_else(unavailable)?;
+        // The setup jobs, cleanup records and helper slots of the host's adapters are the cleanup domain's budgets
+        // (contract sections 4.1 and 10), not constants of the adapters: the ledgers the halves below share are held to
+        // them as the first adapter is made. The domain is the host's for its life, so every create applies the same
+        // numbers, which changes nothing the second time.
+        let budgets = env.domain().config();
+        for host in [
+            self.ssh.as_ref().map(|ssh| &ssh.authority),
+            self.https.as_ref().map(|https| &https.authority),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            host.supervisor()
+                .limit_to(budgets.setup_jobs, budgets.retained_cleanup);
+        }
+        if let Some(https) = &self.https {
+            https.helper_slots.fit_to(budgets.helper_slots);
+        }
         let ssh = self
             .ssh
             .clone()
