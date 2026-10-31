@@ -3,7 +3,10 @@
 //! refuses instead of failing to link. A non-zero answer is a sandbox; a missing symbol or a failed call refuses.
 use super::super::unix::Hold;
 use super::{PeerRefusal, SandboxFindings};
-use std::ffi::{CStr, c_char, c_int, c_void};
+use std::{
+    ffi::{CStr, c_char, c_int, c_void},
+    os::fd::RawFd,
+};
 
 /// `audit_token_t`, passed by value.
 #[repr(C)]
@@ -28,10 +31,13 @@ fn dlsym_default(name: &CStr) -> *mut c_void {
     unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) }
 }
 
-/// The findings for `subject`, the symbols found with `resolve`.
+/// The findings for `subject`, the symbols found with `resolve`. A sandbox is reported only while `holds` says the process
+/// asked about is still the one held: the answer for a process that has gone, or whose ID names another, is not about the
+/// peer, and is refused as unreadable instead.
 pub(crate) fn probe_with(
     resolve: Resolve,
     subject: Subject,
+    holds: &dyn Fn() -> Result<(), PeerRefusal>,
 ) -> Result<SandboxFindings, PeerRefusal> {
     let by_pid = |pid: u32| {
         let symbol = resolve(c"sandbox_check");
@@ -57,24 +63,36 @@ pub(crate) fn probe_with(
     };
     match answer {
         0 => Ok(SandboxFindings::default()),
-        1.. => Ok(SandboxFindings {
-            profile: true,
-            ..SandboxFindings::default()
-        }),
+        1.. => {
+            holds()?;
+            Ok(SandboxFindings {
+                profile: true,
+                ..SandboxFindings::default()
+            })
+        }
         _ => Err(PeerRefusal::Unreadable("the sandbox check's answer")),
     }
 }
 
-/// The peer held by `hold`, through its audit token.
-pub(crate) fn of_peer(hold: &Hold) -> Result<SandboxFindings, PeerRefusal> {
+/// The peer held by `hold` on the socket `fd`, through its audit token, the symbols found with `resolve`.
+pub(crate) fn of_peer_with(
+    resolve: Resolve,
+    hold: &Hold,
+    fd: RawFd,
+) -> Result<SandboxFindings, PeerRefusal> {
     let subject = Subject::Token {
         token: AuditToken(hold.token()),
         pid: hold.pid(),
     };
-    probe_with(&dlsym_default, subject)
+    probe_with(resolve, subject, &|| hold.check(fd))
 }
 
-/// This process, by its ID.
+/// The peer held by `hold` on the socket `fd`.
+pub(crate) fn of_peer(hold: &Hold, fd: RawFd) -> Result<SandboxFindings, PeerRefusal> {
+    of_peer_with(&dlsym_default, hold, fd)
+}
+
+/// This process, by its ID. It is there: it is asking.
 pub(crate) fn of_self() -> Result<SandboxFindings, PeerRefusal> {
-    probe_with(&dlsym_default, Subject::Pid(std::process::id()))
+    probe_with(&dlsym_default, Subject::Pid(std::process::id()), &|| Ok(()))
 }

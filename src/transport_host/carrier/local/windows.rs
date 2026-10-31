@@ -188,7 +188,7 @@ fn token_identity(token: HANDLE, pid: u32) -> Result<PeerIdentity, LocalRefusal>
 pub(crate) struct ProcessHold {
     process: Owned,
     created: u64,
-    pub(crate) identity: PeerIdentity,
+    identity: PeerIdentity,
 }
 
 fn creation_time(process: HANDLE) -> Result<u64, LocalRefusal> {
@@ -368,6 +368,13 @@ pub(crate) fn create_first_instance(name: &str) -> Result<PipeInstance, LocalRef
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
+        impl ProcessHold {
+            /// The identity read through the hold: the rows' way to the token flags of a real process. Test builds only.
+            pub(crate) fn identity(&self) -> &PeerIdentity {
+                &self.identity
+            }
+        }
+
         /// The first instance of a pipe name with a stated descriptor and mode (the rows' way to the variants that show
         /// which protection refuses what). Test builds only.
         pub(crate) fn create_first_instance_with(

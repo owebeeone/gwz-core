@@ -170,12 +170,29 @@ jobs:
           workspaces: gwz-core -> ../candidate-target
           cache-on-failure: true
           key: transport
+      - name: Allow unprivileged user namespaces for the sandbox rows
+        # Plan 2.3a (operator decision Q6, 2026-10-31): the peer sandbox rule's
+        # user-namespace rows put a child in `unshare(CLONE_NEWUSER)`, which this
+        # image's AppArmor refuses to unprivileged users. The rows fail, they do not
+        # skip, when it is refused.
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          if [ -e /proc/sys/kernel/unprivileged_userns_clone ]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
       - id: suites
         name: Run the candidate build's suites
         # gwz-cli is not checked out, so the conditional-compilation check
         # covers gwz-core and gwz-py and prints SKIPPED GATE for gwz-cli.
         # gwz-transport's process-global check runs over the checkout beside
         # gwz-core.
+        #
+        # The suites run as the runner user, without privilege. Two sandbox rows
+        # need root (the mount-namespace row, `unshare(CLONE_NEWNS)`, and the
+        # pid-reuse row, which writes `/proc/sys/kernel/ns_last_pid`); they fail
+        # loudly without it, so this step leaves exactly those two out
+        # (`--skip-exact`, which prints each name) and the step after it runs them
+        # as root.
         env:
           RUSTFLAGS: --cfg gwz_transport_candidate
           # Only places the tests' nested gwz-sspi validator build outside every
@@ -187,8 +204,29 @@ jobs:
         run: |
           set -o pipefail
           python scripts/run_tests.py --skip-cfg-sibling gwz-cli --no-fail-fast \
+            --skip-exact transport_host::carrier::tests::sandbox_rows::a_process_in_another_mount_namespace_is_refused_as_client_and_listener \
+            --skip-exact transport_host::carrier::tests::hold_rows::a_reused_process_id_does_not_stand_for_the_process_that_connected_or_listened \
             --manifest-path="$RUNNER_TEMP/candidate/Cargo.toml" \
             --target-dir="$GITHUB_WORKSPACE/candidate-target" 2>&1 | tee "$RUNNER_TEMP/candidate.log"
+      - name: Sandbox rows that need root, run as root
+        # Plan 2.3a (operator decision Q6): the mount-namespace row and the
+        # pid-reuse row, by exact name, under `sudo -E` with the suites' target
+        # directory (the binary the suites built is reused, not rebuilt as root).
+        # A name that matches nothing passes, so the count is checked.
+        if: ${{ !cancelled() && steps.suites.outcome != 'skipped' }}
+        run: |
+          set -o pipefail
+          sudo -E env "HOME=$HOME" "PATH=$PATH" RUSTFLAGS='--cfg gwz_transport_candidate' GWZ_TEST_GIT=real cargo test --locked --lib \
+            --manifest-path "$RUNNER_TEMP/candidate/Cargo.toml" \
+            --target-dir "$GITHUB_WORKSPACE/candidate-target" -- --exact \
+            transport_host::carrier::tests::sandbox_rows::a_process_in_another_mount_namespace_is_refused_as_client_and_listener \
+            transport_host::carrier::tests::hold_rows::a_reused_process_id_does_not_stand_for_the_process_that_connected_or_listened \
+            2>&1 | tee "$RUNNER_TEMP/root-rows.log"
+          passed="$(sed -n -E 's/^test result: ok\. ([0-9]+) passed.*/\1/p' "$RUNNER_TEMP/root-rows.log")"
+          if [ "${passed:-0}" -ne 2 ]; then
+            echo "::error::expected the 2 root-only sandbox rows, ran ${passed:-0}"
+            exit 1
+          fi
       - name: Candidate clippy ratchet
         # Operator decision D-U (2026-10-31): the candidate shape carries clippy
         # debt (plan step 6.1 removes it) that no gate saw, because this job ran

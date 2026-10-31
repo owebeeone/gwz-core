@@ -337,8 +337,8 @@ fn check_peer(
     };
     let hold = Hold::take(fd, pid, uid)?;
     // The sandbox probes read the peer through the hold and are part of the identity the rule judges; the hold is
-    // confirmed after them.
-    peer.sandbox = sandbox::of_peer(&hold)?;
+    // confirmed after them, and confirming ends it (it is consumed), so that no probe can follow.
+    peer.sandbox = sandbox::of_peer(&hold, fd)?;
     policy.verify(&peer, relation)?;
     hold.confirm(fd)?;
     Ok(peer)
@@ -381,8 +381,22 @@ cfg_if::cfg_if! {
     if #[cfg(any(target_os = "linux", target_os = "android"))] {
         use std::os::fd::{FromRawFd, OwnedFd};
 
-        /// A hold on the peer's process: a `pidfd` for it, and the start time `/proc` gave before and after the
-        /// descriptor was taken. Without a hold a process ID can name another process by the time it is read.
+        /// What a kernel without `SO_PEERPIDFD` is refused for.
+        const KERNEL_REQUIREMENT: &str = "a peer process descriptor (SO_PEERPIDFD, Linux 6.5 or later)";
+
+        cfg_if::cfg_if! {
+            if #[cfg(target_os = "android")] {
+                /// `SO_PEERPIDFD` (the value of every architecture Android runs on).
+                const SO_PEERPIDFD: libc::c_int = 77;
+            } else {
+                const SO_PEERPIDFD: libc::c_int = libc::SO_PEERPIDFD;
+            }
+        }
+
+        /// A hold on the peer's process: the `pidfd` the kernel recorded for the connection (`SO_PEERPIDFD`), which names
+        /// the process that connected (or that listened) and never the process that holds its ID later, and the start
+        /// time `/proc` gave before and after. Without such a hold a process ID can name another process by the time it
+        /// is read.
         pub(crate) struct Hold {
             pid: u32,
             pidfd: OwnedFd,
@@ -401,48 +415,94 @@ cfg_if::cfg_if! {
             Some((started, matches!(state, "Z" | "X")))
         }
 
+        /// The descriptor the kernel recorded for the process on the other end of the connected socket `fd`
+        /// (`SO_PEERPIDFD`): the connector's at `connect`, the listener's at `listen`. It is close-on-exec.
+        fn peer_pidfd(fd: RawFd) -> io::Result<OwnedFd> {
+            let mut pidfd: libc::c_int = -1;
+            let mut length = mem::size_of::<libc::c_int>() as libc::socklen_t;
+            // SAFETY: `pidfd` is valid for `length` bytes.
+            let result = unsafe {
+                libc::getsockopt(fd, libc::SOL_SOCKET, SO_PEERPIDFD, (&raw mut pidfd).cast(), &mut length)
+            };
+            if result != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if pidfd < 0 || length as usize != mem::size_of::<libc::c_int>() {
+                return Err(io::Error::from(io::ErrorKind::InvalidData));
+            }
+            // SAFETY: the kernel gave this value a new descriptor, which it now owns.
+            Ok(unsafe { OwnedFd::from_raw_fd(pidfd) })
+        }
+
         impl Hold {
             /// The held process's ID.
             pub(crate) fn pid(&self) -> u32 {
                 self.pid
             }
 
-            pub(crate) fn take(_fd: RawFd, pid: u32, _uid: u32) -> Result<Self, PeerRefusal> {
+            /// The hold on the process on the other end of `fd`, which the kernel reports as `pid` (`SO_PEERCRED`).
+            pub(crate) fn take(fd: RawFd, pid: u32, uid: u32) -> Result<Self, PeerRefusal> {
+                Self::take_with(fd, pid, uid, &peer_pidfd)
+            }
+
+            /// [`take`](Self::take), the descriptor asked for with `ask`: the rows' way to a socket or a kernel that
+            /// refuses the question. The descriptor must name a process that is still there and has the ID `pid`; one
+            /// whose process has gone (and whose ID may now name another) is refused, and so is a kernel that cannot
+            /// say who is on the other end.
+            pub(crate) fn take_with(
+                fd: RawFd,
+                pid: u32,
+                _uid: u32,
+                ask: &dyn Fn(RawFd) -> io::Result<OwnedFd>,
+            ) -> Result<Self, PeerRefusal> {
                 let gone = PeerRefusal::Unreadable("a live peer process");
-                let (before, dead) = process_start(pid).ok_or(gone.clone())?;
-                if dead {
+                let pidfd = ask(fd).map_err(|error| match error.raw_os_error() {
+                    Some(libc::ENOPROTOOPT | libc::EINVAL) => PeerRefusal::Unreadable(KERNEL_REQUIREMENT),
+                    _ => PeerRefusal::Unreadable("the peer's process descriptor"),
+                })?;
+                if descriptor_pid(&pidfd) != Some(pid) || !signalled(&pidfd) {
                     return Err(gone);
                 }
-                // SAFETY: `pidfd_open` takes a process ID and flags and returns a descriptor or -1.
-                let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
-                if fd < 0 {
-                    return Err(PeerRefusal::Unreadable("a hold on the peer's process"));
-                }
-                // SAFETY: `fd` is a new descriptor this value owns.
-                let pidfd = unsafe { OwnedFd::from_raw_fd(fd as RawFd) };
-                let (after, dead) = process_start(pid).ok_or(gone.clone())?;
-                if dead || after != before {
+                let (before, dead) = process_start(pid).ok_or(gone.clone())?;
+                // The descriptor still names a live process after the start time was read, so that process was there,
+                // and kept its ID, for the whole read.
+                if dead || !signalled(&pidfd) {
                     return Err(gone);
                 }
                 Ok(Self { pid, pidfd, started: before })
             }
 
-            pub(crate) fn confirm(&self, _fd: RawFd) -> Result<(), PeerRefusal> {
-                // SAFETY: signal 0 through the descriptor checks that the process is there and sends nothing.
-                let alive = unsafe {
-                    libc::syscall(
-                        libc::SYS_pidfd_send_signal,
-                        self.pidfd.as_raw_fd(),
-                        0,
-                        std::ptr::null::<libc::siginfo_t>(),
-                        0u32,
-                    )
-                } == 0;
+            /// Whether the process is the one held and is still there: the descriptor takes a signal, and the start time
+            /// is the one read at the start.
+            pub(crate) fn check(&self, _fd: RawFd) -> Result<(), PeerRefusal> {
                 let same = process_start(self.pid) == Some((self.started, false));
-                (alive && same)
+                (signalled(&self.pidfd) && same)
                     .then_some(())
                     .ok_or(PeerRefusal::Unreadable("a live peer process"))
             }
+
+            /// [`check`](Self::check), ending the hold: nothing can be read through it afterwards.
+            pub(crate) fn confirm(self, fd: RawFd) -> Result<(), PeerRefusal> {
+                self.check(fd)
+            }
+        }
+
+        /// The process ID a `pidfd` names in this process's `/proc` (the `Pid:` line of its `fdinfo`): none for a process
+        /// that has gone (the kernel prints -1) or that this process's `/proc` does not show (0).
+        fn descriptor_pid(pidfd: &OwnedFd) -> Option<u32> {
+            let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", pidfd.as_raw_fd())).ok()?;
+            let pid: i64 = info.lines().find_map(|line| line.strip_prefix("Pid:"))?.trim().parse().ok()?;
+            u32::try_from(pid).ok().filter(|pid| *pid > 0)
+        }
+
+        /// Whether the process behind `pidfd` is there: signal 0 through the descriptor sends nothing and fails for a
+        /// process that has gone.
+        fn signalled(pidfd: &OwnedFd) -> bool {
+            // SAFETY: signal 0 through the descriptor checks that the process is there and sends nothing.
+            let result = unsafe {
+                libc::syscall(libc::SYS_pidfd_send_signal, pidfd.as_raw_fd(), 0, std::ptr::null::<libc::siginfo_t>(), 0u32)
+            };
+            result == 0
         }
     } else {
         /// A hold on the peer's process: the audit token the kernel recorded for the connection (`LOCAL_PEERTOKEN`),
@@ -496,11 +556,18 @@ cfg_if::cfg_if! {
                 Ok(Self { pid, token })
             }
 
-            pub(crate) fn confirm(&self, fd: RawFd) -> Result<(), PeerRefusal> {
+            /// Whether the process is the one held and is still there: the socket records the same token, and the
+            /// process exists.
+            pub(crate) fn check(&self, fd: RawFd) -> Result<(), PeerRefusal> {
                 let same = peer_token(fd) == Some(self.token);
                 (same && process_alive(self.pid))
                     .then_some(())
                     .ok_or(PeerRefusal::Unreadable("a live peer process"))
+            }
+
+            /// [`check`](Self::check), ending the hold: nothing can be read through it afterwards.
+            pub(crate) fn confirm(self, fd: RawFd) -> Result<(), PeerRefusal> {
+                self.check(fd)
             }
         }
     }

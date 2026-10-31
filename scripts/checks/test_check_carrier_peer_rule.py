@@ -14,7 +14,7 @@ CLEAN = {
     'local/peer.rs': 'pub struct PeerPolicy { own: u8 }\nimpl PeerPolicy { pub fn verify(&self) {} fn new() -> Self { PeerPolicy { own: 1 } } }\nfn s() { sandbox::of_self(); }\n',
     'local/sandbox.rs': 'cfg_if::cfg_if! { if #[cfg(any(target_os = "linux", target_os = "android"))] { mod linux; } else if #[cfg(target_vendor = "apple")] { mod macos; } }\n',
     'local/sandbox/linux.rs': 'fn probe() { std::fs::read_to_string("/proc/self/status"); }\n',
-    'local/unix.rs': 'fn a() { p.verify(x, Relation::ListenerChecksClient); }\nfn b() { p.verify(y, Relation::ClientChecksListener); }\nfn c() { sandbox::of_peer(&hold); }\n',
+    'local/unix.rs': 'fn a() { p.verify(x, Relation::ListenerChecksClient); }\nfn b() { p.verify(y, Relation::ClientChecksListener); }\nfn c() { sandbox::of_peer(&hold, fd); }\n',
     'local/windows.rs': 'fn a() { p.verify(x, Relation::ListenerChecksClient); }\nfn b() { p.verify(y, Relation::ClientChecksListener); }\n',
 }
 
@@ -100,8 +100,23 @@ class PeerRuleTests(unittest.TestCase):
                     root = tree(**{rel: CLEAN[rel] + source})
                     self.assertTrue(any('switch' in line for line in checker.violations(root)))
 
+    def test_the_cfg_expression_macro_is_a_switch_too(self):
+        # `cfg!(..)` is an expression, not an attribute: a probe that returns early under it is a build variant with a different rule.
+        for rel in ['local/sandbox/linux.rs', 'local/unix.rs', 'local/sandbox.rs']:
+            for source in ['fn weaker() { if cfg!(debug_assertions) { return; } }\n', 'fn weaker() -> bool { cfg!(not(test)) }\n',
+                           'fn weaker() -> bool { cfg ! ( feature = "lax" ) }\n']:
+                with self.subTest(rel=rel, source=source):
+                    root = tree(**{rel: CLEAN[rel] + source})
+                    self.assertTrue(any('switch' in line for line in checker.violations(root)), source)
+
+    def test_the_cfg_expression_macro_may_name_only_the_listed_switches(self):
+        root = tree(**{'local/unix.rs': CLEAN['local/unix.rs'] + 'fn host() -> bool { cfg!(target_vendor = "apple") }\n'})
+        self.assertEqual(checker.violations(root), [])
+        root = tree(**{'local/windows.rs': CLEAN['local/windows.rs'] + 'fn host() -> bool { cfg!(test) }\n'})
+        self.assertEqual(checker.violations(root), [])
+
     def test_dropping_a_probe_call_fails(self):
-        for rel, text in [('local/unix.rs', CLEAN['local/unix.rs'].replace('sandbox::of_peer(&hold)', 'nothing()')),
+        for rel, text in [('local/unix.rs', CLEAN['local/unix.rs'].replace('sandbox::of_peer(&hold, fd)', 'nothing()')),
                           ('local/peer.rs', CLEAN['local/peer.rs'].replace('sandbox::of_self()', 'nothing()'))]:
             with self.subTest(rel=rel):
                 self.assertTrue(any('sandbox probes must run' in line for line in checker.violations(tree(**{rel: text}))))

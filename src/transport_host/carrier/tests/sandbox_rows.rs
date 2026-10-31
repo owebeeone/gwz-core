@@ -147,7 +147,7 @@ fn the_decision_table_over_injected_findings() {
 #[test]
 fn a_caller_that_is_sandboxed_gets_no_policy_and_the_message_names_only_the_cause() {
     let own = |sandbox| PeerPolicy::try_from_identity(who(sandbox)).err();
-    let sandboxed = |cause| Some(LocalRefusal::Peer(PeerRefusal::Sandboxed(cause)));
+    let sandboxed = |cause| Some(LocalRefusal::Own(PeerRefusal::Sandboxed(cause)));
     assert_eq!(own(SandboxFindings::default()), None);
     assert_eq!(own(spaces(INIT_USER_NAMESPACE, 100)), None);
     assert_eq!(own(seccomp(2)), sandboxed(Cause::Seccomp));
@@ -157,13 +157,13 @@ fn a_caller_that_is_sandboxed_gets_no_policy_and_the_message_names_only_the_caus
     boxed.app_container = true;
     assert_eq!(
         PeerPolicy::try_from_identity(boxed).err(),
-        Some(LocalRefusal::Peer(PeerRefusal::AppContainer))
+        Some(LocalRefusal::Own(PeerRefusal::AppContainer))
     );
     let mut low = who(SandboxFindings::default());
     low.integrity = Some(Integrity::Low);
     assert_eq!(
         PeerPolicy::try_from_identity(low).err(),
-        Some(LocalRefusal::Peer(PeerRefusal::Integrity))
+        Some(LocalRefusal::Own(PeerRefusal::Integrity))
     );
     let causes = [
         Cause::Seccomp,
@@ -188,6 +188,37 @@ fn a_caller_that_is_sandboxed_gets_no_policy_and_the_message_names_only_the_caus
             "{message}"
         );
     }
+}
+
+#[test]
+fn a_refused_caller_is_told_about_this_process_and_never_about_a_peer() {
+    for sandbox in [seccomp(2), spaces(5000, 100), profile()] {
+        let shown = PeerPolicy::try_from_identity(who(sandbox))
+            .expect_err("refused")
+            .to_string();
+        assert!(
+            shown.starts_with("this process is sandboxed by "),
+            "{shown}"
+        );
+        assert!(!shown.contains("peer"), "{shown}");
+    }
+    let mut boxed = who(SandboxFindings::default());
+    boxed.app_container = true;
+    let unreadable = LocalRefusal::Own(PeerRefusal::Unreadable("the process status"));
+    for refusal in [
+        PeerPolicy::try_from_identity(boxed).expect_err("refused"),
+        unreadable,
+    ] {
+        let shown = refusal.to_string();
+        assert!(shown.starts_with("this process "), "{shown}");
+        assert!(!shown.contains("peer"), "{shown}");
+    }
+    // A peer is still a peer.
+    assert!(
+        LocalRefusal::Peer(PeerRefusal::Sandboxed(Cause::Seccomp))
+            .to_string()
+            .contains("the peer is sandboxed")
+    );
 }
 
 /// This process's policy with `findings` where the sandbox findings are: a sandbox the host does not have.
@@ -276,22 +307,25 @@ cfg_if::cfg_if! {
         use std::sync::mpsc;
 
         /// An accept that a fixture that never connects cannot hang.
-        fn accept_within(listener: LocalListener) -> Result<StreamCarrier, LocalRefusal> {
+        pub(super) fn accept_within(listener: LocalListener) -> Result<StreamCarrier, LocalRefusal> {
             let (tx, rx) = mpsc::channel();
             thread::spawn(move || tx.send(accepted(&listener)));
             rx.recv_timeout(WAIT)
                 .expect("nothing connected: the fixture process did not reach the listener")
         }
 
-        mod fixture {
+        pub(super) mod fixture {
             use super::*;
             use gwz_session_contract::Frame;
             use std::{
                 io::{BufRead, BufReader, Read},
-                os::unix::{
-                    fs::PermissionsExt,
-                    net::{UnixListener, UnixStream},
-                    process::CommandExt,
+                os::{
+                    fd::AsRawFd,
+                    unix::{
+                        fs::PermissionsExt,
+                        net::{UnixListener, UnixStream},
+                        process::CommandExt,
+                    },
                 },
                 path::{Path, PathBuf},
                 process::{Child, Command, Stdio},
@@ -410,21 +444,69 @@ cfg_if::cfg_if! {
                         unsafe { command.pre_exec(move || apply(how, &maps)) };
                     }
 
+                    fn check(result: libc::c_int) -> std::io::Result<()> {
+                        if result == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
+                    }
+
+                    /// An allow-all filter of one instruction (`BPF_RET | BPF_K`, `SECCOMP_RET_ALLOW`) on the calling thread
+                    /// alone (no `TSYNC`): the process's `Seccomp:` line is the first thread's.
+                    fn seccomp_allow_all() -> std::io::Result<()> {
+                        // SAFETY: plain `prctl` calls; the program outlives the call that reads it.
+                        unsafe {
+                            check(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1 as libc::c_ulong, 0 as libc::c_ulong, 0 as libc::c_ulong, 0 as libc::c_ulong))?;
+                            let mut allow = [libc::sock_filter { code: 0x06, jt: 0, jf: 0, k: 0x7fff_0000 }];
+                            let program = libc::sock_fprog { len: 1, filter: allow.as_mut_ptr() };
+                            check(libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER as libc::c_ulong, &raw const program as libc::c_ulong))
+                        }
+                    }
+
+                    /// The roles whose filter is on a second thread: `thread_connect` and `thread_listen` do what `connect` and
+                    /// `listen` do, from a thread that has put itself under the filter; `thread_own` asks for a policy from the
+                    /// first thread while another is under it.
+                    fn platform_role(role: &str, path: &Path) -> bool {
+                        let (path, under) = (path.to_path_buf(), |work: Box<dyn FnOnce() + Send>| {
+                            thread::spawn(move || {
+                                seccomp_allow_all().expect("seccomp permitted");
+                                work();
+                            })
+                            .join()
+                            .unwrap();
+                        });
+                        match role {
+                            "thread_connect" => under(Box::new(move || {
+                                let mut stream = UnixStream::connect(&path).expect("connect");
+                                println!("connected");
+                                report(&mut stream);
+                            })),
+                            "thread_listen" => under(Box::new(move || {
+                                let listener = UnixListener::bind(&path).expect("bind");
+                                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+                                println!("listening");
+                                let (mut stream, _) = listener.accept().expect("accept");
+                                report(&mut stream);
+                            })),
+                            "thread_own" => {
+                                let (ready, filtered) = mpsc::channel();
+                                let (done, finished) = mpsc::channel::<()>();
+                                let other = thread::spawn(move || {
+                                    seccomp_allow_all().expect("seccomp permitted");
+                                    ready.send(()).unwrap();
+                                    let _ = finished.recv();
+                                });
+                                filtered.recv().unwrap();
+                                say_own();
+                                drop(done);
+                                other.join().unwrap();
+                            }
+                            _ => return false,
+                        }
+                        true
+                    }
+
                     fn apply(how: How, maps: &[(&str, String)]) -> std::io::Result<()> {
-                        let check = |result: libc::c_int| {
-                            if result == 0 { Ok(()) } else { Err(std::io::Error::last_os_error()) }
-                        };
                         match how {
                             How::Plain => Ok(()),
-                            How::Seccomp => {
-                                // SAFETY: an allow-all filter of one instruction (`BPF_RET | BPF_K`, `SECCOMP_RET_ALLOW`).
-                                unsafe {
-                                    check(libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1 as libc::c_ulong, 0 as libc::c_ulong, 0 as libc::c_ulong, 0 as libc::c_ulong))?;
-                                    let mut allow = [libc::sock_filter { code: 0x06, jt: 0, jf: 0, k: 0x7fff_0000 }];
-                                    let program = libc::sock_fprog { len: 1, filter: allow.as_mut_ptr() };
-                                    check(libc::prctl(libc::PR_SET_SECCOMP, libc::SECCOMP_MODE_FILTER as libc::c_ulong, &raw const program as libc::c_ulong))
-                                }
-                            }
+                            How::Seccomp => seccomp_allow_all(),
                             How::UserNamespace => {
                                 // SAFETY: no pointers.
                                 check(unsafe { libc::unshare(libc::CLONE_NEWUSER) })?;
@@ -461,6 +543,11 @@ cfg_if::cfg_if! {
 
                     /// macOS: the process is started under `sandbox-exec` (above); nothing to do between fork and exec.
                     fn confine(_: &mut Command, _: How) {}
+
+                    /// macOS has no roles beyond the common ones.
+                    fn platform_role(_: &str, _: &Path) -> bool {
+                        false
+                    }
                 }
             }
 
@@ -474,15 +561,56 @@ cfg_if::cfg_if! {
                 println!("received:{}", hex(&bytes));
             }
 
+            /// Says whether this process gets a policy, and what the refusal tells the user.
+            pub(super) fn say_own() {
+                let own = PeerPolicy::current_user().map(|_| ());
+                println!("own:{own:?}");
+                if let Err(refusal) = &own {
+                    println!("own_text:{refusal}");
+                }
+            }
+
+            /// Hands `socket` to a `sleep` that outlives this process (the descriptor is made inheritable for it alone),
+            /// so that the connection or the listening socket stays open in a process this one forked, and says its ID.
+            fn hand_off(socket: &impl AsRawFd) -> Child {
+                let raw = socket.as_raw_fd();
+                let mut command = Command::new("sleep");
+                command.arg("600").stdout(Stdio::null());
+                // SAFETY: only `fcntl`, between fork and exec.
+                unsafe {
+                    command.pre_exec(move || {
+                        if libc::fcntl(raw, libc::F_SETFD, 0) < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }
+                    })
+                };
+                let holder = command.spawn().expect("sleep");
+                println!("handed:{}", holder.id());
+                holder
+            }
+
             /// The other process of the rows. `connect` connects and reads to the end; `connect_exit` connects and goes;
-            /// `listen` listens, accepts one connection and reads to the end; `own` says whether this process gets a policy.
+            /// `connect_handoff` connects, hands the connection to a `sleep` and goes; `listen` listens, accepts one
+            /// connection and reads to the end; `listen_handoff` listens, hands the listening socket to a `sleep` and
+            /// goes; `own` says whether this process gets a policy.
             #[test]
             fn sandbox_child() {
                 let Some(role) = std::env::var_os(ROLE) else {
                     return;
                 };
                 let path = PathBuf::from(std::env::var_os(PATH).expect("a path"));
+                if platform_role(role.to_str().unwrap(), &path) {
+                    return;
+                }
                 match role.to_str().unwrap() {
+                    "connect_handoff" => {
+                        // The `sleep` outlives this process on purpose: it is not waited for.
+                        std::mem::forget(hand_off(&UnixStream::connect(&path).expect("connect")));
+                    }
+                    "listen_handoff" => {
+                        let listener = UnixListener::bind(&path).expect("bind");
+                        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+                        println!("listening");
+                        std::mem::forget(hand_off(&listener));
+                    }
                     "connect" => {
                         let mut stream = UnixStream::connect(&path).expect("connect");
                         println!("connected");
@@ -498,7 +626,7 @@ cfg_if::cfg_if! {
                         let (mut stream, _) = listener.accept().expect("accept");
                         report(&mut stream);
                     }
-                    "own" => println!("own:{:?}", PeerPolicy::current_user().map(|_| ())),
+                    "own" => say_own(),
                     other => panic!("no role {other}"),
                 }
             }
@@ -514,11 +642,11 @@ cfg_if::cfg_if! {
 
         /// A child that connects under `how` to a listener of this process, which must refuse it with `cause` and owe it
         /// exactly one `server_peer_refused` answer.
-        fn client_is_refused(how: How, cause: Cause) {
+        pub(super) fn client_is_refused(role: &str, how: How, cause: Cause) {
             let dir = dir();
             let listener = listener(&dir);
             let path = listener.address().path().to_path_buf();
-            let child = Fixture::spawn("connect", &path, how);
+            let child = Fixture::spawn(role, &path, how);
             let refused = accept_within(listener).err().expect("refused at accept");
             assert_eq!(refused, LocalRefusal::Peer(PeerRefusal::Sandboxed(cause)));
             let (call_id, code, message) = frame_received(&child.received());
@@ -527,10 +655,10 @@ cfg_if::cfg_if! {
         }
 
         /// A child that listens under `how`, which this process refuses as a client with `cause`, sending it nothing.
-        fn listener_is_refused(how: How, cause: Cause) {
+        pub(super) fn listener_is_refused(role: &str, how: How, cause: Cause) {
             let dir = dir();
             let path = dir_runtime(&dir).path().join("s-0123456789abcdef");
-            let child = Fixture::spawn("listen", &path, how);
+            let child = Fixture::spawn(role, &path, how);
             child.wait_for("listening");
             let address = super::super::local::LocalAddress::from_path(&path);
             let refused = super::super::local::connect(&address, &PeerPolicy::current_user().unwrap(), CarrierLimits::DEFAULT)
@@ -541,10 +669,12 @@ cfg_if::cfg_if! {
         }
 
         /// A child under `how` whose own policy is refused.
-        fn own_is_refused(how: How, cause: Cause) {
-            let child = Fixture::spawn("own", std::path::Path::new("/"), how);
-            let expected = format!("own:Err(Peer(Sandboxed({cause:?})))");
+        pub(super) fn own_is_refused(role: &str, how: How, cause: Cause) {
+            let child = Fixture::spawn(role, std::path::Path::new("/"), how);
+            let expected = format!("own:Err(Own(Sandboxed({cause:?})))");
             assert_eq!(child.wait_for("own:"), expected);
+            let shown = child.wait_for("own_text:");
+            assert!(shown.starts_with("own_text:this process is sandboxed by ") && !shown.contains("peer"), "{shown}");
         }
 
         #[test]
@@ -576,22 +706,22 @@ cfg_if::cfg_if! {
 
                 #[test]
                 fn a_client_under_a_seccomp_filter_is_refused_and_so_is_a_listener_and_the_caller() {
-                    client_is_refused(How::Seccomp, Cause::Seccomp);
-                    listener_is_refused(How::Seccomp, Cause::Seccomp);
-                    own_is_refused(How::Seccomp, Cause::Seccomp);
+                    client_is_refused("connect", How::Seccomp, Cause::Seccomp);
+                    listener_is_refused("listen", How::Seccomp, Cause::Seccomp);
+                    own_is_refused("own", How::Seccomp, Cause::Seccomp);
                 }
 
                 #[test]
                 fn a_process_in_a_user_namespace_is_refused_as_client_listener_and_caller() {
-                    client_is_refused(How::UserNamespace, Cause::UserNamespace);
-                    listener_is_refused(How::UserNamespace, Cause::UserNamespace);
-                    own_is_refused(How::UserNamespace, Cause::UserNamespace);
+                    client_is_refused("connect", How::UserNamespace, Cause::UserNamespace);
+                    listener_is_refused("listen", How::UserNamespace, Cause::UserNamespace);
+                    own_is_refused("own", How::UserNamespace, Cause::UserNamespace);
                 }
 
                 #[test]
                 fn a_process_in_another_mount_namespace_is_refused_as_client_and_listener() {
-                    client_is_refused(How::MountNamespace, Cause::OtherNamespace);
-                    listener_is_refused(How::MountNamespace, Cause::OtherNamespace);
+                    client_is_refused("connect", How::MountNamespace, Cause::OtherNamespace);
+                    listener_is_refused("listen", How::MountNamespace, Cause::OtherNamespace);
                 }
 
                 #[test]
@@ -603,8 +733,12 @@ cfg_if::cfg_if! {
                     child.wait_exit();
                     let refused = accept_within(listener).err().expect("refused");
                     assert!(matches!(refused, LocalRefusal::Peer(PeerRefusal::Unreadable(_))), "{refused:?}");
-                    // The probe alone, on the process ID of a process that has been reaped.
-                    let gone = probe_dir(Path::new(&format!("/proc/{}", child.pid())));
+                    // The probe alone, on the `/proc` directory of a process that has been reaped (a directory that is gone: the
+                    // reaped process's ID may be reused by the time it is read, which the hold's rows state).
+                    let proc = tempfile::tempdir().unwrap();
+                    let path = proc.path().to_path_buf();
+                    drop(proc);
+                    let gone = probe_dir(&path);
                     assert!(matches!(gone, Err(PeerRefusal::Unreadable(_))), "{gone:?}");
                 }
 
@@ -624,6 +758,26 @@ cfg_if::cfg_if! {
                     std::fs::write(at("ns/user"), "").unwrap();
                     unreadable("no mount namespace link");
                     std::fs::write(at("ns/mnt"), "").unwrap();
+                    status("Name:\tx\nSeccomp:\t0\n");
+                    unreadable("no task directory (the threads cannot be listed)");
+                    let thread = |tid: &str, text: &str| {
+                        std::fs::create_dir_all(at(&format!("task/{tid}"))).unwrap();
+                        std::fs::write(at(&format!("task/{tid}/status")), text).unwrap();
+                    };
+                    std::fs::create_dir(at("task")).unwrap();
+                    thread("7", "Name:\tx\nSeccomp:\t0\n");
+                    assert_eq!(probe_dir(proc.path()).unwrap().seccomp, 0);
+                    // A filter on a thread other than the first counts, and the highest mode among the threads is the answer.
+                    thread("8", "Name:\ty\nSeccomp:\t2\n");
+                    thread("9", "Name:\ty\nSeccomp:\t1\n");
+                    assert_eq!(probe_dir(proc.path()).unwrap().seccomp, 2);
+                    // A thread with no status file has gone since the listing: nothing of it is left to find.
+                    std::fs::create_dir_all(at("task/10")).unwrap();
+                    assert_eq!(probe_dir(proc.path()).unwrap().seccomp, 2);
+                    // A thread whose status has no mode cannot be judged.
+                    thread("11", "Name:\tz\n");
+                    unreadable("a thread whose status has no Seccomp line");
+                    std::fs::remove_dir_all(at("task/11")).unwrap();
                     status("Name:\tx\nSeccomp_filters:\t3\n");
                     unreadable("a status with no Seccomp line (only Seccomp_filters)");
                     status("Seccomp:\tmaybe\n");
@@ -638,9 +792,9 @@ cfg_if::cfg_if! {
             } else {
                 #[test]
                 fn a_client_under_a_sandbox_profile_is_refused_and_so_is_a_listener_and_the_caller() {
-                    client_is_refused(How::Profile, Cause::Profile);
-                    listener_is_refused(How::Profile, Cause::Profile);
-                    own_is_refused(How::Profile, Cause::Profile);
+                    client_is_refused("connect", How::Profile, Cause::Profile);
+                    listener_is_refused("listen", How::Profile, Cause::Profile);
+                    own_is_refused("own", How::Profile, Cause::Profile);
                 }
 
                 use super::super::local::sandbox::macos::{AuditToken, Subject, probe_with};
@@ -668,27 +822,32 @@ cfg_if::cfg_if! {
                     Subject::Token { token: AuditToken([first, 0, 0, 0, 0, 0, 0, 0]), pid: 0 }
                 }
 
+                /// The probe with a hold that always holds.
+                fn probe(resolve: &dyn Fn(&CStr) -> *mut c_void, subject: Subject) -> Result<SandboxFindings, PeerRefusal> {
+                    probe_with(resolve, subject, &|| Ok(()))
+                }
+
                 #[test]
                 fn the_probe_uses_the_token_form_first_and_refuses_what_it_cannot_ask() {
                     let both = resolver(&["sandbox_check_by_audit_token", "sandbox_check"]);
                     // A non-zero answer is a sandbox; zero is none. The process form would have answered the other way.
-                    let sandboxed = probe_with(&both, Subject::Token { token: AuditToken([3, 0, 0, 0, 0, 0, 0, 0]), pid: 0 });
+                    let sandboxed = probe(&both, Subject::Token { token: AuditToken([3, 0, 0, 0, 0, 0, 0, 0]), pid: 0 });
                     assert_eq!(sandboxed.unwrap().cause(), Some(Cause::Profile));
-                    let clean = probe_with(&both, Subject::Token { token: AuditToken([0, 0, 0, 0, 0, 0, 0, 0]), pid: 9 });
+                    let clean = probe(&both, Subject::Token { token: AuditToken([0, 0, 0, 0, 0, 0, 0, 0]), pid: 9 });
                     assert_eq!(clean.unwrap(), SandboxFindings::default());
                     // Without the token form, the process form: its answer (the pid) decides.
                     let by_process = resolver(&["sandbox_check"]);
-                    assert_eq!(probe_with(&by_process, Subject::Token { token: AuditToken([0; 8]), pid: 9 }).unwrap().cause(), Some(Cause::Profile));
-                    assert_eq!(probe_with(&by_process, token(5)).unwrap(), SandboxFindings::default());
-                    assert_eq!(probe_with(&by_process, Subject::Pid(9)).unwrap().cause(), Some(Cause::Profile));
+                    assert_eq!(probe(&by_process, Subject::Token { token: AuditToken([0; 8]), pid: 9 }).unwrap().cause(), Some(Cause::Profile));
+                    assert_eq!(probe(&by_process, token(5)).unwrap(), SandboxFindings::default());
+                    assert_eq!(probe(&by_process, Subject::Pid(9)).unwrap().cause(), Some(Cause::Profile));
                     // A symbol that is not there refuses: neither, or the process form alone for a process ID.
                     let neither = resolver(&[]);
                     let only_token = resolver(&["sandbox_check_by_audit_token"]);
                     for (found, subject) in [(&neither, token(0)), (&neither, Subject::Pid(0)), (&only_token, Subject::Pid(0))] {
-                        assert!(matches!(probe_with(found, subject), Err(PeerRefusal::Unreadable(_))));
+                        assert!(matches!(probe(found, subject), Err(PeerRefusal::Unreadable(_))));
                     }
                     // A failed call refuses, and is not read as "not sandboxed".
-                    let failed = probe_with(&both, token(u32::MAX));
+                    let failed = probe(&both, token(u32::MAX));
                     assert!(matches!(failed, Err(PeerRefusal::Unreadable(_))), "{failed:?}");
                 }
             }
@@ -812,8 +971,8 @@ cfg_if::cfg_if! {
             }
             // The same token read through the hold gives no policy to a caller that runs in an AppContainer.
             let hold = ProcessHold::take(boxed.pid).expect("a hold on the AppContainer process");
-            assert!(hold.identity.app_container);
-            assert_eq!(PeerPolicy::try_from_identity(hold.identity.clone()).err(), Some(LocalRefusal::Peer(PeerRefusal::AppContainer)));
+            assert!(hold.identity().app_container);
+            assert_eq!(PeerPolicy::try_from_identity(hold.identity().clone()).err(), Some(LocalRefusal::Own(PeerRefusal::AppContainer)));
             // Control: an ordinary child of this user is accepted.
             let plain = Waiting::start(false);
             for relation in RELATIONS {

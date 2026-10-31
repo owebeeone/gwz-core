@@ -534,7 +534,7 @@ cfg_if::cfg_if! {
         assert_eq!(pid, child.id());
         // The hold is taken while the process is there and confirms as long as it is.
         let hold = Hold::take(fd, pid, uid).expect("a hold on a live process");
-        assert!(hold.confirm(fd).is_ok());
+        assert!(hold.check(fd).is_ok());
         // The process goes, and the hold no longer confirms: a process ID, or a token, that names nothing is not a peer.
         child.kill().expect("kill the child");
         child.wait().expect("reap the child");

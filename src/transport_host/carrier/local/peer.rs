@@ -114,6 +114,22 @@ impl fmt::Display for PeerRefusal {
     }
 }
 
+impl PeerRefusal {
+    /// The refusal as said about the caller's own process, which has no peer: the same cause, with this process as the
+    /// subject (parked server design §4, "Sandboxed callers").
+    pub(crate) fn about_caller(&self) -> String {
+        match self {
+            PeerRefusal::OtherPrincipal => "this process is another user".to_string(),
+            PeerRefusal::Integrity => "this process runs below Medium integrity".to_string(),
+            PeerRefusal::AppContainer => "this process runs in an AppContainer".to_string(),
+            PeerRefusal::Sandboxed(cause) => format!("this process is sandboxed by {cause}"),
+            PeerRefusal::Unreadable(what) => {
+                format!("this process could not be checked: it could not read {what}")
+            }
+        }
+    }
+}
+
 /// The rule: who may be on the other end. Built once from this process's own identity.
 #[derive(Clone, Debug)]
 pub(crate) struct PeerPolicy {
@@ -127,20 +143,20 @@ impl PeerPolicy {
     /// that cannot complete refuses.
     pub(crate) fn current_user() -> Result<Self, LocalRefusal> {
         let mut own = super::own_identity()?;
-        own.sandbox = sandbox::of_self().map_err(LocalRefusal::Peer)?;
+        own.sandbox = sandbox::of_self().map_err(LocalRefusal::Own)?;
         Self::from_own(own)
     }
 
     /// The caller's side of the rule, a function of the identity read: a process that is itself sandboxed gets no policy.
     fn from_own(own: PeerIdentity) -> Result<Self, LocalRefusal> {
         if own.app_container {
-            return Err(LocalRefusal::Peer(PeerRefusal::AppContainer));
+            return Err(LocalRefusal::Own(PeerRefusal::AppContainer));
         }
         if own.integrity.is_some_and(|level| level < Integrity::Medium) {
-            return Err(LocalRefusal::Peer(PeerRefusal::Integrity));
+            return Err(LocalRefusal::Own(PeerRefusal::Integrity));
         }
         if let Some(cause) = own.sandbox.cause() {
-            return Err(LocalRefusal::Peer(PeerRefusal::Sandboxed(cause)));
+            return Err(LocalRefusal::Own(PeerRefusal::Sandboxed(cause)));
         }
         Ok(Self { own })
     }

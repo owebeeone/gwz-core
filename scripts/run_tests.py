@@ -40,6 +40,13 @@ contains NAME. Do not pass a bare test name instead: Cargo hands it to libtest
 as one more filter, libtest ORs filters, and every group (the fake-filesystem
 ones included) would also run every matching test of the other groups.
 
+--skip-exact NAME (repeatable) leaves one test out of the libtest runs: NAME is the test's full path, as `cargo test
+-- --list` prints it, and each skipped name is printed with the reason "run in the privileged step". For a CI job
+whose unprivileged step cannot run a row that needs root and runs it in a step of its own (the sandbox rule's
+mount-namespace and pid-reuse rows, plan 2.3a). It is libtest's `--skip`, a substring match, so only a full path
+(which names one test) is accepted. The rows keep failing loudly for anyone who runs them without root and without
+this option.
+
 The source checks are read-only scans, so they are started side by side and
 judged in the order main() names them: the first that fails, in that order, is
 the failure the run reports, after the output of every check before it, and no
@@ -114,10 +121,12 @@ def run(
     filesystem: str = "real",
     test_filter: str | None = None,
     tally: FilterTally | None = None,
+    skip_exact: tuple[str, ...] = (),
 ) -> int:
     env = {**os.environ, "GWZ_TEST_GIT": mode, "GWZ_TEST_FS": filesystem}
     if test_filter is None:
-        return run_command(mode, filesystem, ["cargo", "test", "--locked", *cargo_args, "--", *test_args], env)
+        skips = [arg for name in skip_exact for arg in ("--skip", name)]
+        return run_command(mode, filesystem, ["cargo", "test", "--locked", *cargo_args, "--", *test_args, *skips], env)
     # libtest has no AND of filters: list the group, intersect here, and run the exact names.
     # `--list` names #[ignore] tests too, and an exact run only reports them ignored: list those separately and
     # leave them out, so a filter that matches only ignored tests counts as matching nothing.
@@ -132,7 +141,7 @@ def run(
             return listed.returncode
         listings.append([line[: -len(": test")] for line in listed.stdout.splitlines() if line.endswith(": test")])
     every, ignored = listings[0], set(listings[1])
-    names = [name for name in every if test_filter in name and name not in ignored]
+    names = [name for name in every if test_filter in name and name not in ignored and name not in skip_exact]
     if not names:
         print(f"Git backend: {mode}; filesystem: {filesystem}; no test of this group matches {test_filter!r}", flush=True)
         return 0
@@ -143,6 +152,13 @@ def run(
         code = run_command(mode, filesystem, ["cargo", "test", "--locked", *cargo_args, "--", "--exact", *batch], env)
         result = result or code
     return result
+
+
+def skip_exact_name(value: str) -> str:
+    """A test's full path. libtest's `--skip` matches substrings, so a bare word would skip every test containing it."""
+    if "::" not in value or re.search(r"\s", value):
+        raise argparse.ArgumentTypeError(f"{value!r} is not a full test path such as 'module::tests::name'")
+    return value
 
 
 def exact_batches(names: list[str]) -> list[list[str]]:
@@ -481,9 +497,20 @@ def main(argv: list[str] | None = None) -> None:
         metavar="NAME",
         help="run, in each group, only that group's tests whose path contains NAME",
     )
+    parser.add_argument(
+        "--skip-exact",
+        action="append",
+        default=[],
+        metavar="NAME",
+        type=skip_exact_name,
+        help="leave out the test with this full path ('a::b::name'); repeatable; for a CI step that runs it "
+        "elsewhere, with the privilege it needs",
+    )
     options, cargo_args = parser.parse_known_args(argv)
+    for name in options.skip_exact:
+        print(f"SKIPPED TEST {name}: run in the privileged step", flush=True)
     tally = FilterTally()
-    narrow = {"test_filter": options.test_filter, "tally": tally}
+    narrow = {"test_filter": options.test_filter, "tally": tally, "skip_exact": tuple(options.skip_exact)}
     library_args = ["--lib", *[arg for arg in cargo_args if arg != "--lib"]]
 
     def source_checks(start) -> None:

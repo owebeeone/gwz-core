@@ -7,8 +7,9 @@ production code (every file under the module except its `tests/` directory) hold
 test-only or configurable override:
 
 - a read of the environment (`std::env`, `env!`, `option_env!`, `getenv`): no variable changes what is accepted;
-- a conditional-compilation switch other than the two listed ones: the module's `mod tests;` and the re-export of
-  platform items for the rows, so no build variant has a different rule;
+- a conditional-compilation switch other than the listed ones: the module's `mod tests;` and the re-export of
+  platform items for the rows, so no build variant has a different rule. `cfg!(..)` is a switch like `cfg(..)` (it
+  is a run-time branch on a build variant) and takes the same list;
 - an identifier that names a bypass (`skip_peer`, `insecure`, `accept_any`, `for_tests`, `test_only`, ...);
 - a `PeerPolicy { .. }` struct literal outside peer.rs, where the one constructor lives;
 - a use of the policy's `own` field outside peer.rs (an assignment such as `policy.own = ...` would replace the identity
@@ -48,7 +49,7 @@ ALLOWED_CFG = {
 }
 # Platform items (not switches on the peer rule) in the platform file that picks an OS call.
 PLATFORM_CFG_FILES = {
-    'local/unix.rs': ['target_vendor = "apple"', 'any(target_os = "linux", target_os = "android")'],
+    'local/unix.rs': ['target_vendor = "apple"', 'any(target_os = "linux", target_os = "android")', 'target_os = "android"'],
     'local/sandbox.rs': ['target_vendor = "apple"', 'any(target_os = "linux", target_os = "android")'],
 }
 # Calls a file must make, so that a probe or the rule cannot be dropped by an edit.
@@ -133,7 +134,9 @@ def violations(root: Path) -> list[str]:
             if rel != 'local/peer.rs' and re.search(r'\bfn\s+verify\b', line):
                 found.append(f'{rel}:{number}: a second verify function: {line.strip()}')
         allowed = ALLOWED_CFG.get(rel, []) + PLATFORM_CFG_FILES.get(rel, [])
-        for match in re.finditer(r'cfg\s*\(', text):
+        # An attribute or `cfg_if` condition `cfg(..)`, and the expression `cfg!(..)`, which a probe could branch on at
+        # run time as well as at build time: both are a switch, and the same list applies.
+        for match in re.finditer(r'cfg\s*\(|\bcfg\s*!\s*\(', text):
             depth, j = 1, match.end()
             while j < len(text) and depth:
                 depth += {'(': 1, ')': -1}.get(text[j], 0)

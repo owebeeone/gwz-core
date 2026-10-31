@@ -10,14 +10,24 @@
 //!
 //! | Platform | Sandboxed when | Read through |
 //! | --- | --- | --- |
-//! | Linux | `Seccomp:` in `/proc/<pid>/status` is not 0, or `/proc/<pid>/ns/user` is not the initial user namespace's inode; refused too when the mount or user namespace differs from this process's | the `pidfd` and start-time bracket of the hold |
+//! | Linux | `Seccomp:` of any thread in `/proc/<pid>/task/*/status` is not 0, or `/proc/<pid>/ns/user` is not the initial user namespace's inode; refused too when the mount or user namespace differs from this process's | the hold: the `pidfd` the kernel recorded for the connection (`SO_PEERPIDFD`, Linux 6.5 or later, else refused), and the start-time bracket |
 //! | macOS | `sandbox_check_by_audit_token(token, NULL, 0)` (else `sandbox_check(pid, NULL, 0)`) is not 0 | the `LOCAL_PEERTOKEN` token of the hold |
 //! | Windows | the token's AppContainer flag, or an integrity level below Medium (`peer.rs`) | the process handle of the hold |
 //!
 //! **What the probes cannot see.** A sandbox that is none of these: a Landlock ruleset, an LSM profile (AppArmor,
-//! SELinux), a cgroup or capability restriction, a seccomp filter on a thread other than the process's first (Linux
-//! reads the process's main thread); on macOS a process that enters its sandbox after the check. Such a peer is not
-//! refused and the rule does not claim it.
+//! SELinux), a cgroup or capability restriction. Such a peer is not refused and the rule does not claim it.
+//!
+//! **Sandboxed after the check.** A check judges the process as it is when the hold is taken and read; a process that
+//! enters a sandbox afterwards is not refused, on any platform: on Linux a process that applies seccomp or `unshare`s
+//! after it connected (or listened), or one that hands the connected descriptor (or the listening socket) to a sandboxed
+//! child it forks; on macOS one that enters its sandbox after the check. Linux reads every thread, so a filter on any
+//! thread counts at the time of the check. A connection whose connector (or listener) has gone, whatever process holds
+//! the descriptor now, is refused: the hold names the process that made it.
+//!
+//! **Kernel requirement (Linux).** The hold is the descriptor `getsockopt(SO_PEERPIDFD)` returns (Linux 6.5 or later). A
+//! kernel without it cannot say which process is on the other end of a connection, so every peer is refused
+//! ([`PeerRefusal::Unreadable`], naming the requirement); there is no weaker fallback. A peer in a process-ID namespace
+//! that this process's `/proc` does not show has no ID there, and is refused the same way.
 use super::PeerRefusal;
 use std::fmt;
 
