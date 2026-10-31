@@ -3,7 +3,10 @@ use std::path::Path;
 use crate::artifact::{self};
 use crate::git::{GitBackend, MergeAuthorityBackend};
 use crate::model::{ErrorCode, ModelError, ModelResult};
-use crate::operation::{EventEmitter, EventSink, NullSink, OpenMergeCommand, OperationRequest};
+use crate::operation::{
+    EventEmitter, EventSink, MemberSteps, NullSink, OpenMergeCommand, OperationRequest,
+};
+use crate::session_host::members::BoundMemberLocks;
 
 use super::super::pull_head_barrier::validate_pull_barrier;
 use super::super::pull_head_merge_preflight::{apply_root_merge_pull, plan_root_merge_pull};
@@ -12,7 +15,7 @@ use super::super::pull_head_plan::{
     pull_result_response,
 };
 use super::super::*;
-use super::member_preflight::pull_fetch_remote_name;
+use super::member_preflight::{PreflightPorts, pull_fetch_remote_name};
 use super::member_validation::pull_head_preflight;
 use super::root_lock::{pull_root_remote_name, pull_workspace_root};
 
@@ -38,13 +41,39 @@ pub fn handle_pull_head_with_events<B>(
 where
     B: GitBackend + MergeAuthorityBackend + Sync,
 {
+    // A direct caller has no host context: its member steps take the manager of this call alone.
+    let steps = BoundMemberLocks::per_call();
+    handle_pull_head_with_member_steps(backend, start, request, operation_id, events, &steps)
+}
+
+/// [`handle_pull_head_with_events`] with the member lock port its caller supplies: a served core's is its host
+/// context's manager under the call's token (core session design 5.1).
+pub(crate) fn handle_pull_head_with_member_steps<B>(
+    backend: &B,
+    start: &Path,
+    request: crate::PullHeadRequest,
+    operation_id: impl Into<String>,
+    events: &dyn EventSink,
+    steps: &dyn MemberSteps,
+) -> ModelResult<crate::PullHeadResponse>
+where
+    B: GitBackend + MergeAuthorityBackend + Sync,
+{
     let start = invocation_start(start, &request.meta)?;
     let operation_id = operation_id.into();
     backend.validate_transport_scope(&request.meta, &operation_id)?;
     let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
     let services = crate::operation_context::OperationServices::for_merge(backend);
-    handle_pull_head_with_events_in(&services, backend, &start, request, operation_id, events)
+    handle_pull_head_with_events_in(
+        &services,
+        backend,
+        &start,
+        request,
+        operation_id,
+        events,
+        steps,
+    )
 }
 
 pub(crate) fn handle_pull_head_with_events_in<B>(
@@ -54,6 +83,7 @@ pub(crate) fn handle_pull_head_with_events_in<B>(
     request: crate::PullHeadRequest,
     operation_id: impl Into<String>,
     events: &dyn EventSink,
+    steps: &dyn MemberSteps,
 ) -> ModelResult<crate::PullHeadResponse>
 where
     B: GitBackend + Sync,
@@ -127,13 +157,14 @@ where
                     request.meta.policy.as_ref(),
                     manifest_for_selection.clone(),
                     lock_for_selection.clone(),
+                    steps,
                 )
             })
             .transpose()?;
         let mut root_changed = if dry_run || !pull_root_selected || root_merge_plan.is_some() {
             false
         } else {
-            pull_workspace_root(backend, &root, request.meta.policy.as_ref())?
+            pull_workspace_root(backend, &root, request.meta.policy.as_ref(), steps)?
         };
         let manifest = root_merge_plan
             .as_ref()
@@ -171,7 +202,10 @@ where
                 &lock,
                 &selected,
                 request.meta.policy.as_ref(),
-                None,
+                PreflightPorts {
+                    emitter: None,
+                    steps,
+                },
             )?;
             return Ok(crate::PullHeadResponse {
                 response: response_envelope(
@@ -197,7 +231,10 @@ where
             &lock,
             &selected,
             request.meta.policy.as_ref(),
-            Some(&emitter),
+            PreflightPorts {
+                emitter: Some(&emitter),
+                steps,
+            },
         )?;
         validate_pull_barrier(backend, &root, root_merge_plan.as_ref(), &plans)?;
         if let Some(plan) = &root_merge_plan {

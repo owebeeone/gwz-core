@@ -3,10 +3,18 @@ use std::path::Path;
 use crate::artifact::{LockArtifact, ManifestArtifact, ManifestMember};
 use crate::git::{GitBackend, git_host};
 use crate::model::{ErrorCode, ModelError, ModelResult};
-use crate::operation::EventEmitter;
+use crate::operation::{EventEmitter, MemberSteps};
 
 use super::super::pull_head_plan::{PullHeadAction, PullHeadPlan, PullHeadSource};
 use super::member_validation::{pull_branch, pull_dirty_guard};
+
+/// What a pull's preflight reaches beside the backend: its event emitter (none for a dry run) and the member lock
+/// port its fetches take (core session design 5.1).
+#[derive(Clone, Copy)]
+pub(crate) struct PreflightPorts<'a> {
+    pub(crate) emitter: Option<&'a EventEmitter<'a>>,
+    pub(crate) steps: &'a dyn MemberSteps,
+}
 
 pub(crate) fn pull_head_member_preflight<B>(
     backend: &B,
@@ -15,11 +23,12 @@ pub(crate) fn pull_head_member_preflight<B>(
     lock: &LockArtifact,
     member_id: String,
     policy: Option<&crate::OperationPolicy>,
-    emitter: Option<&EventEmitter<'_>>,
+    ports: PreflightPorts<'_>,
 ) -> ModelResult<PullHeadPlan>
 where
     B: GitBackend,
 {
+    let PreflightPorts { emitter, steps } = ports;
     let member = manifest
         .members
         .iter()
@@ -75,7 +84,11 @@ where
             action: PullHeadAction::SkipNoFetchRemote,
         });
     };
-    backend.fetch(&member_root, &remote)?;
+    {
+        // The fetch updates the member's remote-tracking refs: it is the member's step (core session design 5.1).
+        let _guard = steps.enter(root, &member_id)?;
+        backend.fetch(&member_root, &remote)?;
+    }
     let remote_ref = format!("refs/remotes/{remote}/{branch}");
     let remote_commit = backend
         .read_ref(&member_root, &remote_ref)?

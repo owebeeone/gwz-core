@@ -44,8 +44,9 @@ pub(crate) fn plan_root_merge_pull<B: GitBackend>(
     policy: Option<&crate::OperationPolicy>,
     manifest: ManifestArtifact,
     lock: LockArtifact,
+    steps: &dyn crate::operation::MemberSteps,
 ) -> ModelResult<RootMergePullPlan> {
-    plan_root_merge_pull_inner(backend, root, policy, manifest, lock).map_err(root_context)
+    plan_root_merge_pull_inner(backend, root, policy, manifest, lock, steps).map_err(root_context)
 }
 
 fn plan_root_merge_pull_inner<B: GitBackend>(
@@ -54,6 +55,7 @@ fn plan_root_merge_pull_inner<B: GitBackend>(
     policy: Option<&crate::OperationPolicy>,
     manifest: ManifestArtifact,
     lock: LockArtifact,
+    steps: &dyn crate::operation::MemberSteps,
 ) -> ModelResult<RootMergePullPlan> {
     if !backend.is_repository(root)? {
         return Ok(noop(manifest, lock));
@@ -84,7 +86,11 @@ fn plan_root_merge_pull_inner<B: GitBackend>(
         "workspace root",
     )?;
 
-    backend.fetch(root, &remote)?;
+    {
+        // The fetch updates the root's remote-tracking refs: the root's step (core session design 5.1).
+        let _guard = steps.enter(root, "@root")?;
+        backend.fetch(root, &remote)?;
+    }
     let remote_ref = format!("refs/remotes/{remote}/{branch}");
     let remote_commit = backend
         .read_ref(root, &remote_ref)?

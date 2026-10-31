@@ -26,6 +26,8 @@
 pub(crate) mod context;
 pub(crate) mod environment;
 mod errors;
+// Step 2.3c (core session design §5.1): the member lock manager.
+pub(crate) mod members;
 // Step 2.2b (gwz-dev dev-docs/GwzSplitCommandChannel.md §3.2, §3.3): the
 // served core's operation service, core's implementation of gwz-session-host's
 // ports.

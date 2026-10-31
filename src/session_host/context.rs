@@ -6,6 +6,7 @@
 //! | --- | --- |
 //! | The driver creates a `HostContext` and passes it to every session it opens; they share it, and no static holds one | §2, §5.6 |
 //! | It holds one supervisor, gwz-session-host's: its thread starts with its first job and stops once the host context has been shut down or dropped and its jobs have finished, and a job whose poll panics is quarantined, never polled again and dropped when the thread stops | §5.6; reuse design §7; crate map §2, §6 step 4 |
+//! | It holds one member lock manager, shared by every session of the host context: the fetch and push member steps of any two of them never update one member's refs at once. It blocks rather than refusing, wakes a wait on cancellation and recovers from poisoning | §5.1, §5.6; step 2.3c |
 //! | `shutdown` disposes what the members hold within one cleanup bound, 5 s, and reports what remains: the jobs still running at the bound, which the supervisor polls to their end, and the quarantined jobs | reuse design §7 "Host context and server shutdown", and §13's §5.6 bullet (CS:308) |
 //! | The report's `peer_cleanup_confirmed` is false: no member has a peer before CS3.7's endpoint registry, so no peer cleanup occurred | §8's `(0, false)` |
 //! | A later `shutdown`, from any handle, returns the first one's report and disposes nothing again; a concurrent one waits for the first, so it too returns within the bound | reuse design §7; §8's repeated close |
@@ -18,7 +19,7 @@
 //!
 //! Later steps add members without changing these signatures. The host
 //! context gains the SSH setup supervisor's jobs and budgets (CS3.5), the
-//! HTTPS helper slots (CS3.6), the member lock manager (CS3.9), the workspace
+//! HTTPS helper slots (CS3.6), the workspace
 //! registry (CS2.9), and the endpoint registry (CS3.7), whose disposal joins
 //! `shutdown`'s one bound. The session context gains the transport timeouts
 //! (CS3.8), the operation table (CS2.6) and the `diff.output` and `log.output`
@@ -38,6 +39,7 @@ use gwz_session_host::{
 };
 
 use super::environment::EnvironmentSnapshot;
+use super::members::MemberLockManager;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 
 /// What the sessions of one driver share (§5.6): the driver creates it and
@@ -66,6 +68,8 @@ struct HostShared {
     /// The workers detached at a session's close bound, which every session
     /// of this host context shares (`GwzSplitCommandChannel.md` §1, §3.2).
     detached: DetachedWorkers,
+    /// The member steps of every session of this host context (§5.1).
+    members: MemberLockManager,
 }
 
 /// The cleanup bound within which `shutdown` disposes the host context's
@@ -105,6 +109,7 @@ impl HostContext {
                 shut_down: AtomicBool::new(false),
                 report: Mutex::new(None),
                 detached: DetachedWorkers::new(),
+                members: MemberLockManager::new(),
             }),
         }
     }
@@ -129,6 +134,12 @@ impl HostContext {
     /// every session of this host context shares.
     pub(crate) fn detached(&self) -> DetachedWorkers {
         self.shared.detached.clone()
+    }
+
+    /// The member lock manager, which every session of this host context
+    /// shares (§5.1).
+    pub(crate) fn members(&self) -> &MemberLockManager {
+        &self.shared.members
     }
 
     /// Whether `shutdown` has begun, after which no session opens.

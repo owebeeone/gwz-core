@@ -3,6 +3,7 @@ use std::path::Path;
 use crate::artifact::{self, LockArtifact};
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
+use crate::operation::MemberSteps;
 
 use super::super::*;
 use super::member_validation::pull_dirty_guard;
@@ -11,6 +12,7 @@ pub(super) fn pull_workspace_root<B>(
     backend: &B,
     root: &Path,
     policy: Option<&crate::OperationPolicy>,
+    steps: &dyn MemberSteps,
 ) -> ModelResult<bool>
 where
     B: GitBackend,
@@ -49,7 +51,11 @@ where
     let manifest_before = artifact::read_manifest(root)?;
     let fallback_lock = read_lock_or_empty(root, &manifest_before.workspace.id)?;
 
-    backend.fetch(root, &remote)?;
+    {
+        // The fetch updates the root's remote-tracking refs: the root's step (core session design 5.1).
+        let _guard = steps.enter(root, "@root")?;
+        backend.fetch(root, &remote)?;
+    }
     let remote_ref = format!("refs/remotes/{remote}/{branch}");
     let remote_commit = backend
         .read_ref(root, &remote_ref)?

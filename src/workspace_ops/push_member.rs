@@ -4,9 +4,10 @@ use crate::artifact::{self, ArtifactSourceKind, ManifestMember};
 use crate::git::{GitBackend, GitHeadState, MergeAuthorityBackend, git_host};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{
-    EventEmitter, EventSink, NullSink, OpenMergeCommand, OperationRequest, par_map_per_host,
-    resolve_jobs, resolve_per_host,
+    EventEmitter, EventSink, MemberSteps, NullSink, OpenMergeCommand, OperationRequest,
+    par_map_per_host, resolve_jobs, resolve_per_host,
 };
+use crate::session_host::members::BoundMemberLocks;
 
 use super::*;
 
@@ -32,13 +33,39 @@ pub fn handle_push_with_events<B>(
 where
     B: GitBackend + MergeAuthorityBackend + Sync,
 {
+    // A direct caller has no host context: its member steps take the manager of this call alone.
+    let steps = BoundMemberLocks::per_call();
+    handle_push_with_member_steps(backend, start, request, operation_id, events, &steps)
+}
+
+/// [`handle_push_with_events`] with the member lock port its caller supplies: a served core's is its host
+/// context's manager under the call's token (core session design §5.1).
+pub(crate) fn handle_push_with_member_steps<B>(
+    backend: &B,
+    start: &Path,
+    request: crate::PushRequest,
+    operation_id: impl Into<String>,
+    events: &dyn EventSink,
+    steps: &dyn MemberSteps,
+) -> ModelResult<crate::PushResponse>
+where
+    B: GitBackend + MergeAuthorityBackend + Sync,
+{
     let start = invocation_start(start, &request.meta)?;
     let operation_id = operation_id.into();
     backend.validate_transport_scope(&request.meta, &operation_id)?;
     let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
     let services = crate::operation_context::OperationServices::for_merge(backend);
-    handle_push_with_events_in(&services, backend, &start, request, operation_id, events)
+    handle_push_with_events_in(
+        &services,
+        backend,
+        &start,
+        request,
+        operation_id,
+        events,
+        steps,
+    )
 }
 
 pub(crate) fn handle_push_with_events_in<B>(
@@ -48,6 +75,7 @@ pub(crate) fn handle_push_with_events_in<B>(
     request: crate::PushRequest,
     operation_id: impl Into<String>,
     events: &dyn EventSink,
+    steps: &dyn MemberSteps,
 ) -> ModelResult<crate::PushResponse>
 where
     B: GitBackend + Sync,
@@ -327,10 +355,14 @@ where
                     .expect("selected preflight row")
                     .clone();
                 if let Some(plan) = plans.get(&member.id) {
-                    finish_prepared_push(
-                        backend.push_prepared(&root.join(&member.path), plan),
-                        &mut response,
-                    );
+                    // The member's step: its exchange and ref update, under its member guard.
+                    match steps.enter(&root, &member.id) {
+                        Ok(_guard) => finish_prepared_push(
+                            backend.push_prepared(&root.join(&member.path), plan),
+                            &mut response,
+                        ),
+                        Err(error) => refuse_member_step(error, &mut response),
+                    }
                 }
                 emitter.member_finished(&member.id, &member.path);
                 Ok(response)
@@ -384,7 +416,13 @@ where
                             .clone();
                         // A root already on origin is proven, and not pushed.
                         if let Some(plan) = plans.get("@root") {
-                            finish_prepared_push(backend.push_prepared(&root, plan), &mut response);
+                            match steps.enter(&root, "@root") {
+                                Ok(_guard) => finish_prepared_push(
+                                    backend.push_prepared(&root, plan),
+                                    &mut response,
+                                ),
+                                Err(error) => refuse_member_step(error, &mut response),
+                            }
                         }
                         response
                     }
@@ -810,6 +848,16 @@ pub(crate) fn artifact_source_kind_to_protocol(
         ArtifactSourceKind::Local => crate::SourceKind::Local,
         ArtifactSourceKind::Generated => crate::SourceKind::Generated,
     }
+}
+
+/// The member's step was refused before its exchange (its call was cancelled while it waited for the member):
+/// the row fails with the refusal's own code, not a remote's rejection.
+fn refuse_member_step(error: ModelError, response: &mut crate::MemberResponse) {
+    response.planned = None;
+    response.status = crate::MemberStatus::Failed;
+    response.error = Some(crate::GwzError::from(
+        &error.with_member(&response.member_id, &response.member_path),
+    ));
 }
 
 fn finish_prepared_push(

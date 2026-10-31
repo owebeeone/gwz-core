@@ -53,8 +53,15 @@ fn push_root_tag(fixture: &PublicationFixture, urls: [&str; 3]) -> Vec<RemoteCal
         ..Default::default()
     };
 
-    let response =
-        handle_tag_in(&world.context(), &fixture.backend, root, request, "op_tag").unwrap();
+    let response = handle_tag_in(
+        &world.context(),
+        &fixture.backend,
+        root,
+        request,
+        "op_tag",
+        &crate::session_host::members::BoundMemberLocks::per_call(),
+    )
+    .unwrap();
 
     assert_eq!(
         response.response.meta.aggregate_status,

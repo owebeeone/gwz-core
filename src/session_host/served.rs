@@ -38,6 +38,7 @@ use gwz_session_host::{
 };
 
 use super::context::HostContext;
+use super::members::MemberLockManager;
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::EventSink;
 
@@ -65,12 +66,20 @@ pub(crate) struct ServedSession {
     /// The session's `diff.output` and `log.output` logs, under the §5.4
     /// bounds, until its end.
     spools: Arc<Spools>,
+    /// The host context's member lock manager, shared with every session of
+    /// that host context (§5.1).
+    members: MemberLockManager,
 }
 
 impl ServedSession {
     /// The session's spool layer.
     pub(crate) fn spools(&self) -> Arc<Spools> {
         Arc::clone(&self.spools)
+    }
+
+    /// The member lock manager of the session's host context.
+    pub(crate) fn members(&self) -> MemberLockManager {
+        self.members.clone()
     }
 
     /// The served workspace root.
@@ -541,6 +550,7 @@ pub(crate) fn serve_in_process(
             limits.open_logs,
             limits.read_bytes,
         )),
+        members: host.members().clone(),
     });
     let ports = ServedPorts { dispatch };
     let service = Service::new(ports, session, sink, limits, host.detached(), true);

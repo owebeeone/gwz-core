@@ -8,6 +8,8 @@
 //! | Each method runs its existing gwz-core handler, with the request's own caller directory as its start and the operation's ID | §5.2 |
 //! | Handlers report events through the operation's gate | §5.2, §6 |
 //! | `diff` and `log` take an open-log slot from the session's spool layer, reached through the gate, before they register their logs, and answer with the session's own log ids | §5.4, §5.6 |
+//! | Every path that updates a member's refs from the network takes the member lock around that step, through the session's host context's manager, waiting under the call's token: `fetch`, `push`, `pull_head` (its member and root fetches, including the root merge plan's) and `tag` (its push) | §5.1; step 2.3c |
+//! | The dry-run push helpers (`push_member`, `push_root` with `dry_run`) take no lock: a dry run updates no refs | §5.1 |
 //! | The worker, the handler context, carries the call's token: dispatch refuses with `cancelled` once it is cancelled, at its entry and at each gated step | §5.2 |
 //! | A method with no handler here is refused with `unsupported_operation`, before any effect | §4.2 |
 //!
@@ -23,6 +25,7 @@ use crate::workspace_ops as ops;
 use gwz_session_host::Worker;
 
 use super::{ServedSession, SpoolKind};
+use crate::session_host::members::BoundMemberLocks;
 
 /// How a served session runs a call's handler. Production uses
 /// [`CoreDispatch`]; tests script their own.
@@ -63,6 +66,15 @@ fn undecodable(_: crate::cbor::DecodeError) -> ModelError {
 
 fn refused(error: gwz_session_host::Refused) -> ModelError {
     error.into()
+}
+
+/// The member lock port of the worker's call: its session's host context's manager, waited on under the call's
+/// token (§5.1). Reaching the manager is a gate crossing, so a cancelled call refuses here.
+pub(super) fn member_locks(worker: &Worker<ServedSession>) -> ModelResult<BoundMemberLocks> {
+    let manager = worker
+        .effect(|scope| scope.session().members())
+        .map_err(refused)?;
+    Ok(BoundMemberLocks::new(manager, worker.token().clone()))
 }
 
 /// Decodes `$bytes` as `$request`, runs `$call` with it bound to `$name`, and
@@ -147,15 +159,24 @@ impl Dispatch for CoreDispatch {
                     )
                 })
             }
-            "fetch" => handle!(request, crate::FetchRequest, |r| {
-                ops::handle_fetch_with_events(backend, start, r, id, events)
-            }),
-            "push" => handle!(request, crate::PushRequest, |r| {
-                ops::handle_push_with_events(backend, start, r, id, events)
-            }),
-            "pull_head" => handle!(request, crate::PullHeadRequest, |r| {
-                ops::handle_pull_head_with_events(backend, start, r, id, events)
-            }),
+            "fetch" => {
+                let locks = member_locks(worker)?;
+                handle!(request, crate::FetchRequest, |r| {
+                    ops::handle_fetch_with_member_steps(backend, start, r, id, events, &locks)
+                })
+            }
+            "push" => {
+                let locks = member_locks(worker)?;
+                handle!(request, crate::PushRequest, |r| {
+                    ops::handle_push_with_member_steps(backend, start, r, id, events, &locks)
+                })
+            }
+            "pull_head" => {
+                let locks = member_locks(worker)?;
+                handle!(request, crate::PullHeadRequest, |r| {
+                    ops::handle_pull_head_with_member_steps(backend, start, r, id, events, &locks)
+                })
+            }
             "pull_snapshot" => handle!(request, crate::PullSnapshotRequest, |r| {
                 ops::handle_pull_snapshot(backend, start, r, id, events)
             }),
@@ -207,10 +228,13 @@ impl Dispatch for CoreDispatch {
             "remote_identity" => handle!(request, crate::RemoteIdentityRequest, |r| {
                 ops::handle_remote_identity(backend, start, r, id)
             }),
-            "tag" => handle!(request, crate::TagRequest, |r| {
-                let services = backend.operation_services();
-                ops::handle_tag_with_services(&services, backend, start, r, id)
-            }),
+            "tag" => {
+                let locks = member_locks(worker)?;
+                handle!(request, crate::TagRequest, |r| {
+                    let services = backend.operation_services();
+                    ops::handle_tag_with_member_steps(&services, backend, start, r, id, &locks)
+                })
+            }
             other => Err(ModelError::new(
                 ErrorCode::UnsupportedOperation,
                 format!("a served core runs no method {other}"),

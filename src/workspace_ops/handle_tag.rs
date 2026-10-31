@@ -39,7 +39,25 @@ pub fn handle_tag_with_services<B>(
 where
     B: GitBackend + MergeAuthorityBackend,
 {
-    handle_tag_in(services, backend, start, request, operation_id)
+    // A direct caller has no host context: its member steps take the manager of this call alone.
+    let steps = crate::session_host::members::BoundMemberLocks::per_call();
+    handle_tag_with_member_steps(services, backend, start, request, operation_id, &steps)
+}
+
+/// [`handle_tag_with_services`] with the member lock port its caller supplies: a served core's is its host
+/// context's manager under the call's token (core session design 5.1).
+pub(crate) fn handle_tag_with_member_steps<B>(
+    services: &crate::operation_context::OperationServices,
+    backend: &B,
+    start: &std::path::Path,
+    request: crate::TagRequest,
+    operation_id: impl Into<String>,
+    steps: &dyn crate::operation::MemberSteps,
+) -> ModelResult<crate::TagResponse>
+where
+    B: GitBackend + MergeAuthorityBackend,
+{
+    handle_tag_in(services, backend, start, request, operation_id, steps)
 }
 
 /// Execute a tag operation with composed services on any backend. The body
@@ -51,6 +69,7 @@ pub(crate) fn handle_tag_in<B>(
     start: &std::path::Path,
     request: crate::TagRequest,
     operation_id: impl Into<String>,
+    steps: &dyn crate::operation::MemberSteps,
 ) -> ModelResult<crate::TagResponse>
 where
     B: GitBackend,
@@ -318,6 +337,12 @@ where
                             &super::publication::ReadPreflight::default(),
                         )?;
                     }
+                    // The member's step: its exchange and ref update, under its member guard.
+                    let member_id = member_roots
+                        .iter()
+                        .position(|candidate| candidate == &member_root)
+                        .map_or_else(|| "@root".to_owned(), |index| selected[index].clone());
+                    let _guard = steps.enter(&root, &member_id)?;
                     backend
                         .push_prepared(&member_root, &plan)
                         .map_err(tag_error)?;
@@ -330,8 +355,11 @@ where
                 if dry_run {
                     return ok_envelope(context);
                 }
-                for member_root in &member_roots {
+                // `member_roots` parallels `selected`, so the member's key is at the same index.
+                for (member_root, member_id) in member_roots.iter().zip(&selected) {
                     if backend.is_repository(member_root)? {
+                        // The member's step: its tag exchange and ref writes, under its member guard.
+                        let _guard = steps.enter(&root, member_id)?;
                         backend.tag_fetch(member_root, remote).map_err(tag_error)?;
                     }
                 }

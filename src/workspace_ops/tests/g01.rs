@@ -360,6 +360,7 @@ pub(crate) fn pull_head_fetches_selected_members_in_parallel() {
         pull_head_request(),
         "op_pull",
         &NullSink,
+        &crate::session_host::members::BoundMemberLocks::per_call(),
     )
     .unwrap();
 
@@ -402,6 +403,7 @@ pub(crate) fn push_runs_selected_members_in_parallel() {
         push_request(None, None),
         "op_push",
         &NullSink,
+        &crate::session_host::members::BoundMemberLocks::per_call(),
     )
     .unwrap();
 

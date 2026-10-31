@@ -3,11 +3,11 @@ use std::path::Path;
 use crate::artifact::{LockArtifact, ManifestArtifact, ManifestMember, ResolvedMemberArtifact};
 use crate::git::GitBackend;
 use crate::model::{ErrorCode, ModelError, ModelResult};
-use crate::operation::{EventEmitter, par_map_per_host, resolve_jobs, resolve_per_host};
+use crate::operation::{par_map_per_host, resolve_jobs, resolve_per_host};
 
 use super::super::pull_head_plan::PullHeadPlan;
 use super::member_preflight::{
-    pull_fetch_remote_name, pull_head_member_preflight, pull_remote_host,
+    PreflightPorts, pull_fetch_remote_name, pull_head_member_preflight, pull_remote_host,
 };
 
 pub(crate) fn pull_head_preflight<B>(
@@ -17,7 +17,7 @@ pub(crate) fn pull_head_preflight<B>(
     lock: &LockArtifact,
     selected: &[String],
     policy: Option<&crate::OperationPolicy>,
-    emitter: Option<&EventEmitter<'_>>,
+    ports: PreflightPorts<'_>,
 ) -> ModelResult<Vec<PullHeadPlan>>
 where
     B: GitBackend + Sync,
@@ -58,7 +58,7 @@ where
                 .and_then(|member| pull_remote_host(member, policy))
         },
         |member_id| {
-            pull_head_member_preflight(backend, root, manifest, lock, member_id, policy, emitter)
+            pull_head_member_preflight(backend, root, manifest, lock, member_id, policy, ports)
         },
     )?
     .into_iter()

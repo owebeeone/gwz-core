@@ -22,9 +22,10 @@ use crate::artifact::{self, ManifestMember};
 use crate::git::{GitBackend, GitHeadState, MergeAuthorityBackend, git_host};
 use crate::model::{ErrorCode, ModelError, ModelResult};
 use crate::operation::{
-    EventEmitter, EventSink, NullSink, OperationRequest, par_map_per_host, resolve_jobs,
-    resolve_per_host,
+    EventEmitter, EventSink, MemberSteps, NullSink, OperationRequest, par_map_per_host,
+    resolve_jobs, resolve_per_host,
 };
+use crate::session_host::members::BoundMemberLocks;
 
 use super::pull_head_member_preflight::member_preflight::{
     pull_fetch_remote_name, pull_remote_host,
@@ -53,12 +54,30 @@ pub fn handle_fetch_with_events<B>(
 where
     B: GitBackend + MergeAuthorityBackend + Sync,
 {
+    // A direct caller has no host context: its member steps take the manager of this call alone.
+    let steps = BoundMemberLocks::per_call();
+    handle_fetch_with_member_steps(backend, start, request, operation_id, events, &steps)
+}
+
+/// [`handle_fetch_with_events`] with the member lock port its caller supplies: a served core's is its host
+/// context's manager under the call's token (core session design §5.1).
+pub(crate) fn handle_fetch_with_member_steps<B>(
+    backend: &B,
+    start: &Path,
+    request: crate::FetchRequest,
+    operation_id: impl Into<String>,
+    events: &dyn EventSink,
+    steps: &dyn MemberSteps,
+) -> ModelResult<crate::FetchResponse>
+where
+    B: GitBackend + MergeAuthorityBackend + Sync,
+{
     let start = invocation_start(start, &request.meta)?;
     let operation_id = operation_id.into();
     backend.validate_transport_scope(&request.meta, &operation_id)?;
     let scoped_backend = backend.with_transport(&start, request.meta.transport.as_ref())?;
     let backend = scoped_backend.as_ref().unwrap_or(backend);
-    handle_fetch_with_events_in(backend, &start, request, operation_id, events)
+    handle_fetch_with_events_in(backend, &start, request, operation_id, events, steps)
 }
 
 pub(crate) fn handle_fetch_with_events_in<B>(
@@ -67,6 +86,7 @@ pub(crate) fn handle_fetch_with_events_in<B>(
     request: crate::FetchRequest,
     operation_id: impl Into<String>,
     events: &dyn EventSink,
+    steps: &dyn MemberSteps,
 ) -> ModelResult<crate::FetchResponse>
 where
     B: GitBackend + Sync,
@@ -139,7 +159,7 @@ where
             |target| target.host.clone(),
             |target| {
                 emitter.member_started(&target.member_id, &target.member_path);
-                let row = fetch_one(backend, &target);
+                let row = fetch_one(backend, steps, &root, &target);
                 emitter.member_finished(&target.member_id, &target.member_path);
                 row
             },
@@ -379,7 +399,11 @@ pub(crate) struct FetchRow {
 
 /// Contact one repository: read the tracking ref, fetch, read it again, and
 /// count. Never returns `Err` — a failure is this repository's row.
-fn fetch_one<B>(backend: &B, target: &FetchTarget) -> FetchRow
+///
+/// The exchange and the ref reads around it are the member's step: they run
+/// holding the member's guard (core session design §5.1), which a cancelled
+/// call's wait refuses, and that is this repository's row too.
+fn fetch_one<B>(backend: &B, steps: &dyn MemberSteps, root: &Path, target: &FetchTarget) -> FetchRow
 where
     B: GitBackend,
 {
@@ -396,7 +420,10 @@ where
         };
     };
     let upstream = format!("refs/remotes/{remote}/{branch}");
-    match contact(backend, target, remote, &upstream) {
+    let contacted = steps
+        .enter(root, &target.member_id)
+        .and_then(|_guard| contact(backend, target, remote, &upstream));
+    match contacted {
         Ok(mut summary) => {
             let status = if summary.result == crate::FetchResult::Updated {
                 crate::MemberStatus::Ok

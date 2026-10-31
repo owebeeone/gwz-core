@@ -185,6 +185,15 @@ impl TrackingBackend {
             .insert(name.to_owned(), commit.to_owned());
     }
 
+    /// Record the remote-tracking ref `name` (`refs/remotes/<remote>/<branch>`) of `path` at `commit`, which
+    /// `read_ref` then answers.
+    pub(crate) fn set_remote_tracking(&self, path: &Path, name: &str, commit: &str) {
+        self.model()
+            .repository(path)
+            .remote_refs
+            .insert(name.to_owned(), commit.to_owned());
+    }
+
     /// Capture every refspec `prepare_push` returns for `path` as forced. A
     /// request gives every repository one refspec, so only the double can mix
     /// forced and ordinary transfers in one push.
@@ -279,6 +288,11 @@ impl TrackingBackend {
         self.model().calls.clone()
     }
 
+    /// Every `tag_fetch` call as `(repository path, remote)`, in arrival order.
+    pub(crate) fn tag_fetches(&self) -> Vec<(PathBuf, String)> {
+        self.model().tag_fetches.clone()
+    }
+
     pub(crate) fn remote_reads(&self) -> Vec<RemoteCall> {
         self.remote_calls()
             .into_iter()
@@ -323,6 +337,8 @@ struct Model {
     /// URLs whose reads fail, each with its failure detail.
     failing_reads: BTreeMap<String, String>,
     calls: Vec<RemoteCall>,
+    /// Every `tag_fetch` call, as `(repository path, remote)`.
+    tag_fetches: Vec<(PathBuf, String)>,
     identity_checks: Vec<(Option<PathBuf>, String, String)>,
 }
 
@@ -390,6 +406,8 @@ struct ConfiguredRepository {
     forced_pushes: bool,
     /// Last-known refs: each `(remote, destination)` maps to its object.
     last_known: BTreeMap<(String, String), String>,
+    /// Remote-tracking refs (`refs/remotes/...`): each full name maps to its object.
+    remote_refs: BTreeMap<String, String>,
 }
 
 /// An unconfigured repository gets the double's original answers.
@@ -406,6 +424,7 @@ impl Default for ConfiguredRepository {
             tags: BTreeMap::new(),
             forced_pushes: false,
             last_known: BTreeMap::new(),
+            remote_refs: BTreeMap::new(),
         }
     }
 }
@@ -421,6 +440,9 @@ fn resolve(repository: &ConfiguredRepository, name: &str) -> Option<String> {
         .map(|branch| format!("refs/heads/{branch}"));
     if branch.as_deref() == Some(name) {
         return repository.head.commit.clone();
+    }
+    if name.starts_with("refs/remotes/") {
+        return repository.remote_refs.get(name).cloned();
     }
     if let Some(tag) = name.strip_prefix("refs/tags/") {
         return repository.tags.get(tag).cloned();
@@ -619,7 +641,10 @@ impl GitBackend for TrackingBackend {
         Ok(())
     }
 
-    fn tag_fetch(&self, _path: &Path, remote: &str) -> ModelResult<crate::git::GitFetchResult> {
+    fn tag_fetch(&self, path: &Path, remote: &str) -> ModelResult<crate::git::GitFetchResult> {
+        self.model()
+            .tag_fetches
+            .push((path.to_path_buf(), remote.to_owned()));
         Ok(crate::git::GitFetchResult {
             remote: remote.to_owned(),
         })
@@ -1037,5 +1062,18 @@ impl GitBackend for TrackingBackend {
 
     fn is_ancestor(&self, _path: &Path, ancestor: &str, descendant: &str) -> ModelResult<bool> {
         self.model().is_ancestor(ancestor, descendant)
+    }
+
+    /// Never ahead or behind: the double's remote-tracking refs, when it has any, sit at the local commit.
+    fn ahead_behind(
+        &self,
+        _path: &Path,
+        _local: &str,
+        _upstream: &str,
+    ) -> ModelResult<crate::git::GitAheadBehind> {
+        Ok(crate::git::GitAheadBehind {
+            ahead: 0,
+            behind: 0,
+        })
     }
 }

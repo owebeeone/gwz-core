@@ -20,6 +20,7 @@ use super::*;
 
 mod concurrent_reads;
 mod contact_changed;
+mod tag_member_step;
 mod tag_publication;
 
 const MEMBERS: usize = 2;
@@ -1125,6 +1126,7 @@ impl PublicationFixture {
             request,
             "op_push",
             &NullSink,
+            &crate::session_host::members::BoundMemberLocks::per_call(),
         )
         .unwrap()
     }

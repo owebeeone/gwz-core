@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::model::{GitObjectIdentity, MemberId, OperationActor, OperationAttribution};
+use crate::model::{GitObjectIdentity, OperationActor, OperationAttribution};
 
 use super::*;
 
@@ -358,17 +358,6 @@ fn merge_context_rejects_invalid_author_and_committer_before_dispatch() {
         assert_eq!(error.code, crate::model::ErrorCode::InvalidRequest);
         assert!(error.message.contains("name"), "{identity_field}: {error}");
     }
-}
-
-#[test]
-fn member_lock_manager_serializes_mutating_member_access() {
-    let locks = MemberLockManager::default();
-    let member_id = MemberId::parse_str("mem_01").unwrap();
-    let first = locks.try_lock(&member_id).expect("first lock");
-
-    assert!(locks.try_lock(&member_id).is_none());
-    drop(first);
-    assert!(locks.try_lock(&member_id).is_some());
 }
 
 fn sample_context(dry_run: bool) -> OperationContext {
