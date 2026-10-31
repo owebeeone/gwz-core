@@ -54,11 +54,10 @@ fn settings() -> HttpsSettings {
         cleanup_timeout_ms: 2_000,
     }
 }
-fn inputs(server: &Server, native: Option<NativeCaller>) -> HttpsInputs {
+fn inputs(server: &Server) -> HttpsInputs {
     HttpsInputs {
         tls: server.config(),
         helper_slots: HelperSlots::new(),
-        native,
         authority: Authority::new(256, 256),
         settings: settings(),
     }
@@ -139,6 +138,9 @@ pub(super) struct Case {
     pub(super) handle: HostHandle,
     /// The helper `Case::operation` gives its operations (their own, in their contexts: the instance holds none).
     helper: Option<https_auth::Config>,
+    /// The logon-session caller `Case::operation` gives its operations (their own, in their contexts: the instance holds
+    /// none).
+    native: Option<NativeCaller>,
 }
 impl Case {
     fn new(handler: impl FnOnce(&Seen) -> Handler) -> Self {
@@ -167,7 +169,7 @@ impl Case {
         std::mem::forget(directory);
         let scopes = Arc::default();
         let factory = Factory {
-            inputs: inputs(&server, native),
+            inputs: inputs(&server),
             scopes: Arc::clone(&scopes),
         };
         let safety = safety
@@ -183,11 +185,16 @@ impl Case {
             host: Mutex::new(host),
             handle,
             helper,
+            native,
         }
     }
-    /// An operation whose context holds the case's helper (or none: a context of another provider).
+    /// An operation whose context holds the case's helper and native caller (or neither: a context of another provider).
     pub(super) fn operation(&self, name: &str) -> Operation {
-        operation_of(&self.handle, name, context_of(self.helper.clone()))
+        operation_of(
+            &self.handle,
+            name,
+            context_of(self.helper.clone(), self.native.clone()),
+        )
     }
     /// The spec of an advertisement through the proxy (`through`) or straight to the server.
     fn spec(&self, through: bool) -> ExchangeSpec {
@@ -257,12 +264,22 @@ impl Case {
         block_on(self.host.lock().unwrap().close())
     }
 }
-/// The authentication context of an operation whose credential helper is `helper`: core's own provider, whose scope is
-/// the digest of the helper's executable and environment. Without one the provider is another's, which holds no helper.
-pub(super) fn context_of(helper: Option<https_auth::Config>) -> AuthContext {
-    match helper {
-        Some(helper) => https_auth::OperationAuth::context(helper),
-        None => AuthContext::new(64, AuthScope::new([0; 32]), Arc::new(())),
+/// The authentication context of an operation whose credential helper is `helper` and whose logon-session caller is
+/// `native`: core's own provider, whose scope is the digest of the helper's executable and environment. Without either the
+/// provider is another's, which holds neither. A caller with no helper has a helper that cannot start.
+pub(super) fn context_of(
+    helper: Option<https_auth::Config>,
+    native: Option<NativeCaller>,
+) -> AuthContext {
+    match (helper, native) {
+        (None, None) => AuthContext::new(64, AuthScope::new([0; 32]), Arc::new(())),
+        (helper, native) => https_auth::OperationAuth::context(
+            helper.unwrap_or_else(|| https_auth::Config {
+                executable: "gwz-fixture-no-helper".into(),
+                environment: Vec::new(),
+            }),
+            native,
+        ),
     }
 }
 /// An operation over `auth`, registered on `handle`.
@@ -279,7 +296,7 @@ pub(super) fn operation_of(handle: &HostHandle, name: &str, auth: AuthContext) -
         .unwrap()
         .register()
 }
-fn port_of(server: &Server) -> u16 {
+pub(super) fn port_of(server: &Server) -> u16 {
     let authority = server.url.trim_start_matches("https://localhost:");
     authority.split('/').next().unwrap().parse().unwrap()
 }
@@ -383,7 +400,7 @@ fn a_second_https_opening_at_per_host_one_ends_in_allocation_timeout_at_the_boun
         "op-limited",
         EndpointRoute::ssh_and_https(),
         EndpointProfile::new(b"fixture-https".to_vec(), [7; 32]).unwrap(),
-        context_of(None),
+        context_of(None, None),
         OperationPolicy::new(4, 1, 3).unwrap(),
     )
     .unwrap();
@@ -523,6 +540,7 @@ fn a_physical_fault_retires_that_connection_and_the_next_operation_gets_a_fresh_
 
 #[test]
 fn the_runtime_builds_its_https_adapters_through_the_production_factory() {
+    use crate::transport_host::endpoint_environment::EndpointInputs;
     use crate::transport_host::{
         HttpsEndpointConfig, SshEndpointConfig, TransportRuntime, https_tests::endpoint_home,
     };
@@ -544,7 +562,12 @@ fn the_runtime_builds_its_https_adapters_through_the_production_factory() {
     )
     .unwrap();
     let (handle, _) = transport.connection_for_test().unwrap();
-    let operation = operation(&handle, "op-factory");
+    // The factory makes the instance from the operation's profile: the fixture server's trust, on the runtime's settings.
+    let inputs = EndpointInputs {
+        local: SshEndpointConfig::fixture(endpoint_home(root.path()), None).into(),
+        tls: server.config(),
+    };
+    let operation = super::tests::operation_over(&handle, "op-factory", "https-runtime", inputs);
     let spec = ExchangeSpec::git(
         Key::https("localhost", port_of(&server)),
         Identity::Https,

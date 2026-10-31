@@ -13,7 +13,8 @@
 //!   did not close the connection and Hyper says the connection can carry another request; the exchange's end
 //!   (`ExchangeIo::poll_finish`) says `Reusable` only then (contract 8: an unread body discards the lease).
 //! - A challenge (401) to an advertisement is answered on the same connection, once per exchange: by the logon
-//!   session when it offers `Negotiate` or `NTLM` and the adapter has a native caller, otherwise by the helper of the
+//!   session when it offers `Negotiate` or `NTLM` and the exchange's operation has a native caller (the one its `AuthContext`
+//!   holds, never another's; the adapter holds none), otherwise by the helper of the
 //!   operation the exchange serves (the one its `AuthContext` holds, never another's; the adapter holds none) when it
 //!   offers `Basic`. A challenge to a POST is refused (contract 7.2): its body is on the wire, and nothing is replayed.
 //!   A POST is sent with its operation's credential from its first byte, asked of the helper per exchange (a token is
@@ -41,7 +42,6 @@
 use super::{
     https_auth::HelperSlots,
     https_connection,
-    https_worker::native::NativeCaller,
     shared_reservation::Authority,
     ssh_adapter::{Settle, Shared},
 };
@@ -83,14 +83,13 @@ pub(crate) struct HttpsSettings {
 }
 
 /// What an HTTPS adapter is made from: the endpoint's TLS and proxy configuration, the host's helper slots (whose
-/// launches hold the host's spawn gate), the native caller of a native-route runtime, and the host's shared
-/// reservation, which its SSH adapters share. It holds no credential helper, environment or token: those are the
-/// operation's own, in the `AuthContext` that `start_exchange` carries (contract section 7).
+/// launches hold the host's spawn gate) and the host's shared reservation, which its SSH adapters share. It holds no
+/// credential helper, environment, token or native caller: those are the operation's own, in the `AuthContext` that
+/// `start_exchange` carries (contract section 7).
 #[derive(Clone)]
 pub(crate) struct HttpsInputs {
     pub(crate) tls: https_connection::Config,
     pub(crate) helper_slots: HelperSlots,
-    pub(crate) native: Option<NativeCaller>,
     pub(crate) authority: Authority,
     pub(crate) settings: HttpsSettings,
 }

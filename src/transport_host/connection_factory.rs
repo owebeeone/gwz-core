@@ -1,25 +1,41 @@
-//! gwz-core's production `EndpointFactory` (plan steps 1.3b and 1.3c; contract section 4.1 of
+//! gwz-core's production `EndpointFactory` (plan steps 1.3b, 1.3c and R3; contract section 4.1 of
 //! dev-docs/GwzConnectionApiContract.md): what `TransportRuntime::build_native` gives its connection host to make endpoint
 //! adapters with.
 //!
-//! The factory is made from the runtime's endpoint settings once, and each `create` makes one adapter from them,
-//! allocating metadata only: no thread, network, key, agent or helper (contract section 5). The adapter is a
-//! [`SchemeRouter`] over two halves, each present when the runtime has that scheme's settings:
+//! Each `create` makes one adapter from the `EndpointSpec`'s profile (`EndpointInputs`, `endpoint_environment.rs`, the
+//! validated immutable inputs one operation's capture made), allocating metadata only: no thread, network, key, agent or
+//! helper (contract section 5). So an instance is configured by the operation whose profile made it, and not by the
+//! runtime that built the host: its home and `known_hosts`, its agent, its TLS trust, proxy and timeouts are that
+//! profile's (Phase 1 Code P2-2). A spec whose profile carries no inputs is refused `Unavailable`. The factory itself
+//! holds only what is the host's, not an operation's:
+//! - SSH: the key registry the selected keys are admitted to, the host's shared reservation, where a refused host key
+//!   is noted, and the SSH password helpers;
+//! - HTTPS: the host's helper slots (whose launches hold its spawn gate) and the same shared reservation.
+//!
+//! The native caller is the operation's too: it is in its `AuthContext` (`https_auth::OperationAuth`), and the HTTPS
+//! adapter reads it there, per exchange.
+//!
+//! The adapter is a [`SchemeRouter`] over two halves, each present when the factory has that scheme's host parts and the
+//! profile has that scheme's settings:
 //! - SSH: `git::endpoint::ssh_adapter::SshAdapter` over today's connector (`ssh_local::native_connector`), on the
-//!   runtime's known-hosts file, agent, SSH helpers and the host's shared reservation;
-//! - HTTPS: `git::endpoint::https_adapter::HttpsAdapter` over today's HTTPS connector, on the `HttpsEndpointConfig` and
-//!   `HelperSlots` the endpoint session's HTTPS endpoint is built from, the native caller of a native-route runtime, the
-//!   same shared reservation and the composition's `ProcessSafety` (`FactoryEnv::safety`), which its native route
-//!   fails closed on.
+//!   profile's known-hosts file and agent;
+//! - HTTPS: `git::endpoint::https_adapter::HttpsAdapter` over today's HTTPS connector, on the profile's TLS and proxy
+//!   configuration and the composition's `ProcessSafety` (`FactoryEnv::safety`), which its native route fails closed on.
 //!
 //! The router sends each connect to the half its key's scheme names, and every later command for that connection to
-//! the same half; a connect for a scheme the runtime has no settings for completes at once with
-//! `UnsupportedOperation`. Neither half holds a pool: the host does.
+//! the same half; a connect for a scheme the instance has no half for completes at once with `UnsupportedOperation`.
+//! Neither half holds a pool: the host does.
+use super::endpoint_environment::EndpointInputs;
 use crate::git::endpoint::{
-    https_adapter::{HttpsAdapter, HttpsInputs},
+    https_adapter::{HttpsAdapter, HttpsInputs, HttpsSettings},
+    https_auth::HelperSlots,
+    shared_reservation::Authority,
     ssh_adapter::{AdapterSettings, SshAdapter},
+    ssh_handoff::Handoff,
+    ssh_home::KnownHostsFile,
     ssh_key_snapshot::Registry,
     ssh_local::{self, NativeInputs},
+    ssh_password_helpers::Helpers,
 };
 use gwz_connection::{
     AuthContext, CleanupStatus, Completion, ConnectCommand, EndpointAdapter, EndpointFactory,
@@ -33,23 +49,32 @@ use gwz_transport::{
 use std::{
     collections::{BTreeMap, VecDeque},
     io,
+    sync::Arc,
     task::{Context, Poll, Waker},
+    time::Duration,
 };
 
-/// The SSH half of the factory: the connector's inputs, the key registry its selected keys are admitted to, and the
-/// budgets of its connections.
+/// The SSH half of the factory's host parts: the key registry the instances' selected keys are admitted to, the host's
+/// shared reservation, where a refused host key is noted, and the SSH password helpers (the runtime's).
 #[derive(Clone)]
-pub(crate) struct SshInputs {
-    pub(crate) native: NativeInputs,
+pub(crate) struct SshHost {
     pub(crate) registry: Registry,
-    pub(crate) settings: AdapterSettings,
+    pub(crate) authority: Authority,
+    pub(crate) trust_log: Handoff,
+    pub(crate) helpers: Option<Arc<Helpers>>,
+}
+/// The HTTPS half of the factory's host parts: the host's helper slots and shared reservation.
+#[derive(Clone)]
+pub(crate) struct HttpsHost {
+    pub(crate) helper_slots: HelperSlots,
+    pub(crate) authority: Authority,
 }
 pub(crate) struct CoreFactory {
-    ssh: Option<SshInputs>,
-    https: Option<HttpsInputs>,
+    ssh: Option<SshHost>,
+    https: Option<HttpsHost>,
 }
 impl CoreFactory {
-    pub(crate) fn new(ssh: Option<SshInputs>, https: Option<HttpsInputs>) -> Self {
+    pub(crate) fn new(ssh: Option<SshHost>, https: Option<HttpsHost>) -> Self {
         Self { ssh, https }
     }
     /// The registry the factory's adapters look selected keys up in.
@@ -60,32 +85,64 @@ impl CoreFactory {
 impl EndpointFactory for CoreFactory {
     fn create(
         &self,
-        _spec: &EndpointSpec,
+        spec: &EndpointSpec,
         env: &FactoryEnv<'_>,
     ) -> Result<Box<dyn EndpointAdapter>, FactoryError> {
-        if self.ssh.is_none() && self.https.is_none() {
-            // A runtime with neither scheme's settings has no endpoint to make.
-            return Err(FactoryError::new(
-                FactoryReason::Unavailable,
-                CleanupStatus::Complete,
-            ));
-        }
-        let ssh = self.ssh.clone().map(
-            |SshInputs {
-                 native,
-                 registry,
-                 settings,
-             }| {
+        let unavailable = || FactoryError::new(FactoryReason::Unavailable, CleanupStatus::Complete);
+        // A profile that carries no inputs (or inputs of another composition) is not one this factory can make an
+        // adapter from: the instance's configuration is its profile's, never a default.
+        let inputs = spec
+            .profile
+            .inputs()
+            .and_then(|inputs| inputs.downcast_ref::<EndpointInputs>())
+            .ok_or_else(unavailable)?;
+        let ssh = self
+            .ssh
+            .clone()
+            .zip(inputs.local.ssh.as_ref())
+            .map(|(host, ssh)| {
+                let pool = &inputs.local.pool;
+                let native = NativeInputs {
+                    cleanup: Duration::from_millis(pool.cleanup_timeout_ms),
+                    known_hosts: KnownHostsFile::under(&ssh.home, ssh.home_source).path,
+                    agent: ssh.agent.clone(),
+                    authority: host.authority,
+                    trust_log: host.trust_log,
+                    helpers: host.helpers,
+                };
+                let registry = host.registry;
                 SshAdapter::new(
                     move |origin| ssh_local::native_connector(origin, registry, native),
-                    settings,
+                    AdapterSettings {
+                        connect_timeout_ms: pool.connect_timeout_ms,
+                        io_timeout_ms: inputs.local.io_timeout_ms,
+                        interaction_timeout_ms: pool.interaction_timeout_ms,
+                        cleanup_timeout_ms: pool.cleanup_timeout_ms,
+                    },
                 )
-            },
-        );
-        let https = self
-            .https
-            .clone()
-            .map(|inputs| HttpsAdapter::new(inputs, env.safety().clone()));
+            });
+        let https = self.https.clone().map(|host| {
+            let pool = &inputs.local.pool;
+            HttpsAdapter::new(
+                HttpsInputs {
+                    tls: inputs.tls.clone(),
+                    helper_slots: host.helper_slots,
+                    authority: host.authority,
+                    settings: HttpsSettings {
+                        allocation_timeout_ms: pool.allocation_timeout_ms,
+                        connect_timeout_ms: pool.connect_timeout_ms,
+                        io_timeout_ms: inputs.local.io_timeout_ms,
+                        interaction_timeout_ms: pool.interaction_timeout_ms,
+                        cleanup_timeout_ms: pool.cleanup_timeout_ms,
+                    },
+                },
+                env.safety().clone(),
+            )
+        });
+        if ssh.is_none() && https.is_none() {
+            // Neither scheme's host parts, and an SSH-less profile with no HTTPS parts: no endpoint to make.
+            return Err(unavailable());
+        }
         Ok(Box::new(SchemeRouter::new(ssh, https)))
     }
 }

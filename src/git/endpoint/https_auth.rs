@@ -4,7 +4,7 @@
 //! output and child lifetime are all bounded by this module; no credential
 //! bytes leave the endpoint adapter.
 
-use super::https_destination::Destination;
+use super::{https_destination::Destination, https_worker::native::NativeCaller};
 use crate::git::spawn_gate::{SpawnGate, SpawnHold};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use std::{
@@ -47,15 +47,24 @@ pub(crate) struct Config {
 /// connections' instances but never one another's helper. It has no `Debug`.
 pub(crate) struct OperationAuth {
     helper: Config,
+    /// The caller captured on the operation's original entry (R3, Code P2-2; the HTTPS model draft r5 section 3.2):
+    /// the logon session this operation's challenges are answered by, and no other operation's. Retained native
+    /// cleanup clones it and never holds the context.
+    native: Option<NativeCaller>,
 }
 /// What the scope's digest is of, so that no other digest in gwz can equal it.
 const SCOPE_DOMAIN: &[u8] = b"gwz-operation-auth-scope/1";
 impl OperationAuth {
-    /// The context of an operation whose helper is `helper`. Its scope is the SHA-256 of the helper's executable and of
+    /// The context of an operation whose helper is `helper` and whose logon-session caller is `native`, when it has
+    /// one. Its scope is the SHA-256 of the helper's executable and of
     /// its whole environment, sorted: two operations share a connection only when their helpers would run alike, and
     /// any changed variable (a token, a configuration file, `PATH`) gives a scope of its own. The digest stays in
-    /// memory beside the values it is of and is never logged or sent.
-    pub(crate) fn context(helper: Config) -> gwz_connection::AuthContext {
+    /// memory beside the values it is of and is never logged or sent. The caller's identity is not yet in the digest
+    /// (R3b-win, draft r5 section 3.2 item 3): until then a context's scope does not tell two callers apart.
+    pub(crate) fn context(
+        helper: Config,
+        native: Option<NativeCaller>,
+    ) -> gwz_connection::AuthContext {
         use sha2::{Digest, Sha256};
         let mut entries: Vec<_> = helper.environment.iter().collect();
         entries.sort();
@@ -67,14 +76,18 @@ impl OperationAuth {
         field(SCOPE_DOMAIN);
         field(helper.executable.as_os_str().as_encoded_bytes());
         field(&(entries.len() as u64).to_le_bytes());
-        let mut charge = helper.executable.as_os_str().len() + 64;
+        let mut charge = helper.executable.as_os_str().len()
+            + 64
+            + native
+                .as_ref()
+                .map_or(0, |_| std::mem::size_of::<NativeCaller>());
         for (name, value) in entries {
             field(name.as_encoded_bytes());
             field(value.as_encoded_bytes());
             charge += name.len() + value.len() + 2 * std::mem::size_of::<OsString>();
         }
         let scope = gwz_connection::AuthScope::new(digest.finalize().into());
-        gwz_connection::AuthContext::new(charge, scope, Arc::new(Self { helper }))
+        gwz_connection::AuthContext::new(charge, scope, Arc::new(Self { helper, native }))
     }
     /// The view `context` holds, when it is one of these.
     pub(crate) fn of(context: &gwz_connection::AuthContext) -> Option<&Self> {
@@ -83,6 +96,10 @@ impl OperationAuth {
     /// The helper this operation's credential lookups run.
     pub(crate) fn helper(&self) -> &Config {
         &self.helper
+    }
+    /// The logon-session caller this operation captured on its original entry, if its entry gave one.
+    pub(crate) fn native(&self) -> Option<&NativeCaller> {
+        self.native.as_ref()
     }
 }
 

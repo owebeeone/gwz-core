@@ -9,7 +9,7 @@ use crate::git::endpoint::{
     https_connection::{Connection, RequestBody},
     https_destination::Destination,
     https_policy,
-    https_worker::{SendFailure, native::NativeCaller, native::NativeRetained, send_request},
+    https_worker::{SendFailure, native::NativeRetained, send_request},
     ssh_adapter::Settle,
 };
 use bytes::Bytes;
@@ -28,14 +28,14 @@ use std::{future::Future, io, sync::Arc, time::Duration};
 use tokio::sync::{Mutex as AsyncMutex, Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 
-/// What every exchange of one adapter shares: its budgets, its helper owner and native route, the composition's gate
-/// and the cancellation its disposal raises. It holds no credential helper: that is each exchange's operation's own.
+/// What every exchange of one adapter shares: its budgets, its helper owner and retained native records, the composition's
+/// gate and the cancellation its disposal raises. It holds no credential helper and no native caller: those are each
+/// exchange's operation's own.
 pub(super) struct Common {
     pub(super) settings: HttpsSettings,
     pub(super) owner: https_auth::AuthOwner,
     /// The adapter's helper lookups at once (the endpoint's eight); the host's helper slots bound the processes.
     pub(super) helpers: Arc<Semaphore>,
-    pub(super) native: Option<NativeCaller>,
     pub(super) safety: SharedProcessSafety,
     /// The native conversations whose cleanup is not yet confirmed; disposal waits for them.
     pub(super) retained: NativeRetained,
@@ -204,8 +204,11 @@ async fn exchange(
 ) -> Result<Disposition, ErrorCode> {
     let service = wire_service(work.service);
     let destination = destination(&work.key, &work.path)?;
-    // The helper is the operation's own, from its context; a context of another provider holds none.
-    let helper = https_auth::OperationAuth::of(&work.auth).map(https_auth::OperationAuth::helper);
+    // The helper and the logon-session caller are the operation's own, from its context; a context of another provider
+    // holds neither. The adapter holds no caller of its own.
+    let operation = https_auth::OperationAuth::of(&work.auth);
+    let helper = operation.map(https_auth::OperationAuth::helper);
+    let native = operation.and_then(https_auth::OperationAuth::native);
     let body = match work.body.take() {
         Some(rx) => RequestBody { rx },
         None => no_body(),
@@ -246,7 +249,7 @@ async fn exchange(
     let response = match response.status().as_u16() {
         401 if https_policy::advertisement(service) => {
             let (response, bound) = tokio::select! {
-                answered = auth::answer(connection, &destination, service, response, helper, common) => answered?,
+                answered = auth::answer(connection, &destination, service, response, (helper, native), common) => answered?,
                 _ = work.pipe.interrupted() => return Ok(Disposition::Discarded),
             };
             *binding = bound;

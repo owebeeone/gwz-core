@@ -44,7 +44,7 @@ impl Variables {
             .iter()
             .map(|(name, value)| (*name, value.as_os_str()))
             .collect();
-        capture_operation(&snapshot(&pairs), None, Some(machine)).unwrap()
+        capture_operation(&snapshot(&pairs), None, Some(machine), None).unwrap()
     }
 }
 

@@ -14,6 +14,7 @@ use crate::git::endpoint::{
     ssh_setup::{Authenticated, Setup, SetupConnector},
     ssh_tests::reuse_agent::{Agent, ROW_KEY, keygen_kind},
 };
+use crate::transport_host::endpoint_environment::EndpointInputs;
 use gwz_connection::{
     AuthContext, AuthScope, CleanupStatus, EndpointAdapter, EndpointFactory, EndpointProfile,
     EndpointRoute, EndpointSpec, Exchange, ExchangeSpec, FactoryEnv, FactoryError, GitService,
@@ -300,6 +301,48 @@ pub(super) fn operation_with(
         EndpointRoute::ssh_and_https(),
         EndpointProfile::new(b"fixture-sshd".to_vec(), [7; 32]).unwrap(),
         AuthContext::new(64, AuthScope::new([0; 32]), provider),
+        OperationPolicy::new(4, 32, 3).unwrap(),
+    )
+    .unwrap();
+    block_on(handle.admit(input).unwrap().acquire())
+        .unwrap()
+        .register()
+}
+
+/// An operation whose profile carries `inputs`, as a capture makes its profile (`endpoint_environment::capture_operation`):
+/// what the production factory makes the instance's adapter from. The canonical bytes are a fixed fixture's, so a row
+/// that makes two profiles gives them a `tag` apiece.
+pub(super) fn operation_over(
+    handle: &HostHandle,
+    name: &str,
+    tag: &str,
+    inputs: EndpointInputs,
+) -> Operation {
+    operation_over_auth(
+        handle,
+        name,
+        tag,
+        inputs,
+        AuthContext::new(64, AuthScope::new([0; 32]), Arc::new(())),
+    )
+}
+/// [`operation_over`], with the context `auth`.
+pub(super) fn operation_over_auth(
+    handle: &HostHandle,
+    name: &str,
+    tag: &str,
+    inputs: EndpointInputs,
+    auth: AuthContext,
+) -> Operation {
+    use sha2::{Digest, Sha256};
+    let canonical = format!("fixture-inputs/{tag}").into_bytes();
+    let digest = Sha256::digest(&canonical).into();
+    let profile = EndpointProfile::with_inputs(canonical, digest, Arc::new(inputs)).unwrap();
+    let input = PreparedOperation::new(
+        name,
+        EndpointRoute::ssh_and_https(),
+        profile,
+        auth,
         OperationPolicy::new(4, 32, 3).unwrap(),
     )
     .unwrap();
@@ -616,7 +659,13 @@ fn the_runtime_builds_its_ssh_adapters_through_the_production_factory() {
         .unwrap();
     let loaded = block_on(std::future::poll_fn(|cx| job.poll_result(cx))).unwrap();
     let entry = keys.intern(loaded, || Ok(())).unwrap();
-    let operation = operation(&handle, "op-factory");
+    // The factory makes the instance from the operation's profile: the runtime's own settings, as a capture of the same
+    // environment would give them.
+    let inputs = EndpointInputs {
+        local: SshEndpointConfig::fixture(home.clone(), None).into(),
+        tls: Default::default(),
+    };
+    let operation = operation_over(&handle, "op-factory", "ssh-runtime", inputs);
     let spec = ExchangeSpec::git(
         key,
         entry.identity(),

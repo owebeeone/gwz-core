@@ -4,7 +4,7 @@
 //! logon session here is the native module's fake provider; real SSPI runs on Windows (`https_sspi_tests.rs`).
 use super::{
     https_tests::{ADVERTISEMENT, Case, Unavailable, body, challenging, context_of, operation_of},
-    tests::{block_on, operation},
+    tests::block_on,
 };
 use crate::git::{
     endpoint::{
@@ -104,7 +104,7 @@ fn the_logon_session_route_marks_its_connection_per_exchange_scoped() {
         |_| (None, Some(native::publication_fixture())),
         None,
     );
-    let a = operation(&case.handle, "op-a");
+    let a = case.operation("op-a");
     let mut exchange = case.exchange(&a, true);
     assert_eq!(body(&mut exchange).unwrap(), ADVERTISEMENT);
     assert_eq!(
@@ -124,9 +124,59 @@ fn the_logon_session_route_marks_its_connection_per_exchange_scoped() {
     assert!(case.close());
 }
 
+#[test]
+fn the_logon_session_is_each_operations_own_and_no_instance_holds_one() {
+    // R3 (Code P2-2, draft r5 section 3.2): one instance, two operations with equal profiles. A's context holds the caller
+    // its entry captured, and B's holds none. The server challenges with NTLM: A is answered on the logon session, and B
+    // is refused with no credential sent, as it would be if the instance had a caller of its own to lend.
+    let case = Case::with(
+        |seen| challenging(seen, "NTLM"),
+        Behaviour::default(),
+        |_| (None, None),
+        None,
+    );
+    let a = operation_of(
+        &case.handle,
+        "op-a",
+        context_of(None, Some(native::publication_fixture())),
+    );
+    let mut exchange = case.exchange(&a, true);
+    assert_eq!(body(&mut exchange).unwrap(), ADVERTISEMENT);
+    assert_eq!(
+        block_on(exchange.finish()).disposition,
+        Disposition::Reusable
+    );
+    block_on(a.finish());
+    let before = case.seen.lock().unwrap().len();
+    assert_eq!(
+        case.seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|s| s.0)
+            .collect::<Vec<_>>(),
+        [false, true]
+    );
+    let b = operation_of(&case.handle, "op-b", context_of(None, None));
+    let mut exchange = case.exchange(&b, true);
+    assert!(
+        body(&mut exchange).is_err(),
+        "B had no caller to answer with"
+    );
+    block_on(exchange.finish());
+    block_on(b.finish());
+    let seen = case.seen.lock().unwrap().clone();
+    assert!(
+        seen[before..].iter().all(|(authorized, _)| !authorized),
+        "B's exchange sent a credential: {seen:?}"
+    );
+    assert_eq!(case.handle.snapshot().endpoint_instances, 1, "one instance");
+    assert!(case.close());
+}
+
 /// The exchange is refused, the server saw no credential and the logon session took no step.
 fn refused_before_any_credential(case: &Case, steps: &AtomicUsize) {
-    let a = operation(&case.handle, "op-a");
+    let a = case.operation("op-a");
     let mut exchange = case.exchange(&a, true);
     assert!(body(&mut exchange).is_err(), "the native route refuses");
     assert_eq!(
@@ -291,7 +341,7 @@ fn advertise(
     name: &str,
     helper: &https_auth::Config,
 ) -> (usize, Vec<Seen>) {
-    let operation = operation_of(&case.handle, name, context_of(Some(helper.clone())));
+    let operation = operation_of(&case.handle, name, context_of(Some(helper.clone()), None));
     let before = requests.lock().unwrap().len();
     let mut exchange = case.exchange(&operation, true);
     assert_eq!(body(&mut exchange).unwrap(), ADVERTISEMENT);
@@ -382,7 +432,7 @@ fn an_operation_whose_context_holds_no_helper_is_never_answered_with_another_ope
     let directory = tempfile::tempdir().unwrap();
     let helper = token_helper(directory.path(), "fixture-token-a");
     advertise(&case, &requests, "op-a", &helper);
-    let b = operation_of(&case.handle, "op-b", context_of(None));
+    let b = operation_of(&case.handle, "op-b", context_of(None, None));
     let mut exchange = case.exchange(&b, true);
     assert!(matches!(
         body(&mut exchange),
@@ -410,7 +460,7 @@ fn a_refusing_helper_ends_the_exchange_denied_and_keeps_no_connection() {
     );
     let directory = tempfile::tempdir().unwrap();
     let refusing = helper_script::git_fixture(directory.path(), "cat >/dev/null\nexit 1\n");
-    let a = operation_of(&case.handle, "op-a", context_of(Some(refusing)));
+    let a = operation_of(&case.handle, "op-a", context_of(Some(refusing), None));
     let mut exchange = case.exchange(&a, true);
     match body(&mut exchange) {
         Err(StreamError::Io(error)) => {
@@ -453,7 +503,11 @@ fn an_authenticated_idle_connection_is_reused_only_by_an_equal_context_of_the_sa
     };
     // A authenticates a connection, and A's next exchange (the same binding, so an equal context) reuses it: the
     // second request is challenged again and answered by a fresh lookup of A's own helper.
-    let a = operation_of(&case.handle, "op-a", context_of(Some(token_a.clone())));
+    let a = operation_of(
+        &case.handle,
+        "op-a",
+        context_of(Some(token_a.clone()), None),
+    );
     let mut served = Vec::new();
     for _ in 0..2 {
         let mut exchange = case.exchange(&a, true);
@@ -506,7 +560,7 @@ fn a_push_is_authenticated_on_the_connection_its_advertisement_was() {
     );
     let directory = tempfile::tempdir().unwrap();
     let helper = token_helper(directory.path(), "fixture-token-a");
-    let operation = operation_of(&case.handle, "op-push", context_of(Some(helper)));
+    let operation = operation_of(&case.handle, "op-push", context_of(Some(helper), None));
     let mut advertisement = case.exchange_of(&operation, GitService::ReceivePackAdvertisement);
     assert_eq!(body(&mut advertisement).unwrap(), ADVERTISEMENT);
     assert_eq!(
@@ -572,7 +626,7 @@ fn a_post_to_a_repository_the_helper_did_not_authenticate_is_sent_without_a_cred
         directory.path(),
         "case \"$(cat)\" in\n*/public*) exit 1;;\nesac\nprintf 'username=fixture\\npassword=fixture-token-a\\n\\n'",
     );
-    let operation = operation_of(&case.handle, "op-mixed", context_of(Some(helper)));
+    let operation = operation_of(&case.handle, "op-mixed", context_of(Some(helper), None));
     let receive = GitService::ReceivePackAdvertisement;
     // The private repository's advertisement is challenged and answered: the connection is helper-token bound.
     let mut private = case.exchange_at(&operation, receive, "/private");
@@ -623,7 +677,7 @@ fn a_post_on_a_connection_nothing_authenticated_is_refused_after_one_anonymous_a
     );
     let directory = tempfile::tempdir().unwrap();
     let helper = token_helper(directory.path(), "fixture-token-a");
-    let operation = operation_of(&case.handle, "op-push", context_of(Some(helper)));
+    let operation = operation_of(&case.handle, "op-push", context_of(Some(helper), None));
     let mut push = case.exchange_of(&operation, GitService::ReceivePackExchange);
     write_body(&mut push, b"0000");
     assert!(matches!(

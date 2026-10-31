@@ -353,35 +353,28 @@ impl TransportRuntime {
                 .map(|ssh| ssh.agent.clone())
                 .unwrap_or_default(),
         );
-        // The connection host's factory makes its adapters from the same settings as the endpoint session's endpoints
-        // (steps 1.3b and 1.3c, `connection_factory.rs`): its SSH half from the SSH settings, its HTTPS half from the
-        // `HttpsEndpointConfig` and `HelperSlots` (and the native caller) the session's HTTPS endpoint is built from.
-        // Both halves share one reservation of the host's own.
+        // The connection host's factory (`connection_factory.rs`) makes each adapter from the profile of the operation that
+        // needs it (Phase 1 Code P2-2). It keeps only what is the host's: the key registry, the SSH helpers, the helper
+        // slots and one reservation of the host's own, which both halves share.
         let authority = crate::git::endpoint::shared_reservation::Authority::new(
             local.pool.total,
             local.pool.per_host,
         );
         let factory = connection_factory::CoreFactory::new(
-            local.ssh.as_ref().map(|ssh| {
-                ssh_factory_inputs(
-                    ssh,
-                    &local.pool,
-                    io_timeout_ms,
-                    &handoff,
-                    ssh_helpers,
-                    authority.clone(),
-                )
+            local.ssh.as_ref().map(|_| connection_factory::SshHost {
+                registry: crate::git::endpoint::ssh_key_snapshot::Registry::with_supervisor(
+                    authority.supervisor().clone(),
+                ),
+                authority: authority.clone(),
+                trust_log: handoff.clone(),
+                helpers: ssh_helpers,
             }),
-            https.as_ref().map(|(config, slots)| {
-                https_factory_inputs(
-                    config,
-                    slots,
-                    native.as_ref(),
-                    &local.pool,
-                    io_timeout_ms,
+            https
+                .as_ref()
+                .map(|(_, slots)| connection_factory::HttpsHost {
+                    helper_slots: slots.clone(),
                     authority,
-                )
-            }),
+                }),
         );
         let ssh_keys = factory.registry();
         let connection = connection_host::ConnectionHost::build(
@@ -536,59 +529,6 @@ impl TransportRuntime {
             report.pending_local_work += 1;
         }
         report
-    }
-}
-/// The SSH half of the connection host's factory: the endpoint session's own SSH inputs (its home's known-hosts file,
-/// its agent, the SSH helpers), a shared reservation and a key registry of the host's own, and the pool's budgets.
-fn ssh_factory_inputs(
-    ssh: &SshSettings,
-    pool: &pool::Config,
-    io_timeout_ms: u64,
-    handoff: &crate::git::endpoint::ssh_handoff::Handoff,
-    helpers: Option<Arc<crate::git::endpoint::ssh_password_helpers::Helpers>>,
-    authority: crate::git::endpoint::shared_reservation::Authority,
-) -> connection_factory::SshInputs {
-    use crate::git::endpoint::ssh_key_snapshot::Registry;
-    connection_factory::SshInputs {
-        registry: Registry::with_supervisor(authority.supervisor().clone()),
-        native: crate::git::endpoint::ssh_local::NativeInputs {
-            cleanup: Duration::from_millis(pool.cleanup_timeout_ms),
-            known_hosts: ssh_home::KnownHostsFile::under(&ssh.home, ssh.home_source).path,
-            agent: ssh.agent.clone(),
-            authority,
-            trust_log: handoff.clone(),
-            helpers,
-        },
-        settings: crate::git::endpoint::ssh_adapter::AdapterSettings {
-            connect_timeout_ms: pool.connect_timeout_ms,
-            io_timeout_ms,
-            interaction_timeout_ms: pool.interaction_timeout_ms,
-            cleanup_timeout_ms: pool.cleanup_timeout_ms,
-        },
-    }
-}
-/// The HTTPS half of the connection host's factory: the endpoint session's HTTPS configuration and helper slots, the
-/// native caller of a native-route runtime, the host's shared reservation and the pool's budgets.
-fn https_factory_inputs(
-    https: &HttpsEndpointConfig,
-    slots: &HelperSlots,
-    native: Option<&NativeCaller>,
-    pool: &pool::Config,
-    io_timeout_ms: u64,
-    authority: crate::git::endpoint::shared_reservation::Authority,
-) -> crate::git::endpoint::https_adapter::HttpsInputs {
-    crate::git::endpoint::https_adapter::HttpsInputs {
-        tls: https.tls.clone(),
-        helper_slots: slots.clone(),
-        native: native.cloned(),
-        authority,
-        settings: crate::git::endpoint::https_adapter::HttpsSettings {
-            allocation_timeout_ms: pool.allocation_timeout_ms,
-            connect_timeout_ms: pool.connect_timeout_ms,
-            io_timeout_ms,
-            interaction_timeout_ms: pool.interaction_timeout_ms,
-            cleanup_timeout_ms: pool.cleanup_timeout_ms,
-        },
     }
 }
 fn invalid(message: &str) -> ModelError {

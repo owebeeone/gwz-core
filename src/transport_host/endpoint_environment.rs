@@ -42,6 +42,7 @@ cfg_if::cfg_if! { if #[cfg(not(any(windows, target_vendor = "apple")))] {
 use super::SshSettings;
 use crate::git::endpoint::agent_source::AgentSource;
 use crate::git::endpoint::https_auth;
+use crate::git::endpoint::https_worker::native::NativeCaller;
 use crate::model::ModelResult;
 use crate::session_host::EnvironmentSnapshot;
 use gwz_transport::pool;
@@ -124,7 +125,9 @@ pub(super) fn endpoint_config_native(
     cwd: Option<&std::path::Path>,
     machine: Option<MachineProxy>,
 ) -> ModelResult<(EndpointSettings, HttpsEndpointConfig)> {
-    let capture = capture_operation(environment, cwd, machine)?;
+    // The runtime's endpoint takes only the helper from the capture; the caller of this entry reaches the endpoint
+    // session itself (`with_https_native`), and the operation's own capture gives its context the caller.
+    let capture = capture_operation(environment, cwd, machine, None)?;
     // The runtime's endpoint is its operation's own, so its helper is the one the operation's context holds.
     let auth = https_auth::OperationAuth::of(&capture.auth).map(|auth| auth.helper().clone());
     let inputs = capture.inputs;
@@ -149,7 +152,7 @@ pub(crate) struct OperationCapture {
     pub(crate) inputs: std::sync::Arc<EndpointInputs>,
     #[allow(
         dead_code,
-        reason = "the endpoint factory of steps 1.3b and 1.3c admits operations with it; tests do now"
+        reason = "requests are admitted with it from plan phase 3; the factory reads its inputs and the rows admit with it now"
     )]
     pub(crate) profile: EndpointProfile,
     pub(crate) auth: AuthContext,
@@ -157,11 +160,14 @@ pub(crate) struct OperationCapture {
 
 /// The endpoint settings, profile and authentication context of one operation, from `environment`, captured once on its
 /// original entry. The TLS and proxy settings are checked first, so an unusable CA file or proxy refuses the operation
-/// before any endpoint exists.
+/// before any endpoint exists. `native` is the logon-session caller that entry captured, if it captured one: it goes into
+/// the operation's context and nowhere else, so no endpoint instance holds a caller and none authenticates as another
+/// operation's (R3; draft r5 section 3.2).
 pub(super) fn capture_operation(
     environment: &EnvironmentSnapshot,
     cwd: Option<&std::path::Path>,
     machine: Option<MachineProxy>,
+    native: Option<NativeCaller>,
 ) -> ModelResult<OperationCapture> {
     // Windows reads its proxy from the machine and never the environment, so an entry that did not capture the machine
     // setting has nothing to configure the endpoint's HTTPS connections from.
@@ -204,13 +210,16 @@ pub(super) fn capture_operation(
     };
     // The helper is spawned with exactly this snapshot as its environment, on either platform; Windows finds
     // `git.exe` on the snapshot's own `PATH` (`https_auth::executable`).
-    let auth = https_auth::OperationAuth::context(https_auth::Config {
-        executable: PathBuf::from("git"),
-        environment: environment
-            .entries()
-            .map(|(name, value)| (name.to_owned(), value.to_owned()))
-            .collect(),
-    });
+    let auth = https_auth::OperationAuth::context(
+        https_auth::Config {
+            executable: PathBuf::from("git"),
+            environment: environment
+                .entries()
+                .map(|(name, value)| (name.to_owned(), value.to_owned()))
+                .collect(),
+        },
+        native,
+    );
     let inputs = std::sync::Arc::new(EndpointInputs { local, tls });
     let digest = profile::digest(&canonical);
     let length = canonical.len();

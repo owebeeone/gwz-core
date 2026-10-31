@@ -1,5 +1,5 @@
 //! The answer to a challenge (401) to an advertisement, on the challenge's own connection, once per exchange (contract
-//! 7.2). The logon session answers `Negotiate` and `NTLM` when the adapter has a native caller (TD1: it is preferred
+//! 7.2). The logon session answers `Negotiate` and `NTLM` when the exchange's operation has a native caller (TD1: it is preferred
 //! to the helper), and fails closed when the composition's gate is unavailable (contract 7.3); otherwise the
 //! configured helper answers `Basic`. Anything else, and a challenge that closes its connection, is refused: the
 //! exchange belongs to its connection, and no other can continue it.
@@ -24,14 +24,16 @@ const HELPER_INTERACTION: Duration = Duration::from_secs(120);
 /// The bound that stands for "none" on an allocation.
 const UNBOUNDED: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// Answers `challenge`; the final response, and the authentication that bound the connection. `helper` is the
-/// operation's own (from its context), or none when its context holds one of no provider of ours.
+/// Answers `challenge`; the final response, and the authentication that bound the connection. `helper` and `native` are
+/// the operation's own (from its context): its credential helper, and the logon-session caller its original entry
+/// captured. Both are none when its context holds one of no provider of ours, and `native` is none for an operation whose
+/// entry captured no caller.
 pub(super) async fn answer(
     connection: &mut Connection,
     destination: &Destination,
     service: protocol::GitService,
     challenge: Response<Incoming>,
-    helper: Option<&https_auth::Config>,
+    (helper, native): (Option<&https_auth::Config>, Option<&native::NativeCaller>),
     common: &Common,
 ) -> Result<(Response<Incoming>, Binding), ErrorCode> {
     if closes(challenge.headers()) {
@@ -39,7 +41,7 @@ pub(super) async fn answer(
     }
     let headers = challenge.headers().clone();
     if native::offers_logon_session(&headers)?
-        && let Some(caller) = &common.native
+        && let Some(caller) = native
     {
         // Fail closed (contract 7.3): no credential is read and no token is sent while the gate is unavailable.
         if common.safety.state() != SafetyState::Qualified {

@@ -361,6 +361,7 @@ impl ConnectionHost {
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
+        mod factory_profile_tests;
         mod https_auth_tests;
         mod https_tests;
         mod tests;

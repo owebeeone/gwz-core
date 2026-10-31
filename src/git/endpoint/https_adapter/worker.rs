@@ -115,7 +115,6 @@ pub(super) fn run(
         let HttpsInputs {
             tls,
             helper_slots,
-            native,
             authority,
             settings,
         } = inputs;
@@ -133,7 +132,6 @@ pub(super) fn run(
                 settings,
                 owner: AuthOwner::new(helper_slots),
                 helpers: Arc::new(Semaphore::new(HELPER_LOOKUPS)),
-                native,
                 safety,
                 retained: NativeRetained::default(),
                 cancel: CancellationToken::new(),
