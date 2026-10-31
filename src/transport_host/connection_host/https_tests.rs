@@ -291,7 +291,7 @@ pub(super) fn body(exchange: &mut Exchange) -> Result<Vec<u8>, StreamError> {
     let mut buffer = [0u8; 4096];
     loop {
         assert!(Instant::now() < deadline, "the exchange did not end");
-        match exchange.stream().read(&mut buffer) {
+        match exchange.stream().try_read(&mut buffer) {
             Ok(0) => return Ok(out),
             Ok(n) => out.extend_from_slice(&buffer[..n]),
             Err(StreamError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
