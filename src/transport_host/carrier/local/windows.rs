@@ -11,7 +11,7 @@ use super::super::{
 };
 use super::{
     Accepted, Integrity, LocalRefusal, PeerIdentity, PeerPolicy, PeerRefusal, Principal, Relation,
-    StreamCarrier,
+    StreamCarrier, sandbox::SandboxFindings,
 };
 use gwz_session_channel::write_frame;
 use std::{
@@ -179,6 +179,7 @@ fn token_identity(token: HANDLE, pid: u32) -> Result<PeerIdentity, LocalRefusal>
         pid: Some(pid),
         integrity: Some(Integrity::from_rid(rid)),
         app_container: boxed.first().is_some_and(|flag| (*flag & 0xffff_ffff) != 0),
+        sandbox: SandboxFindings::default(),
     })
 }
 
@@ -187,7 +188,7 @@ fn token_identity(token: HANDLE, pid: u32) -> Result<PeerIdentity, LocalRefusal>
 pub(crate) struct ProcessHold {
     process: Owned,
     created: u64,
-    identity: PeerIdentity,
+    pub(crate) identity: PeerIdentity,
 }
 
 fn creation_time(process: HANDLE) -> Result<u64, LocalRefusal> {
@@ -250,7 +251,11 @@ impl ProcessHold {
 }
 
 /// Reads the process `pid` through a hold, applies the rule, and confirms the hold.
-fn judge(pid: u32, policy: &PeerPolicy, relation: Relation) -> Result<PeerIdentity, PeerRefusal> {
+pub(crate) fn judge(
+    pid: u32,
+    policy: &PeerPolicy,
+    relation: Relation,
+) -> Result<PeerIdentity, PeerRefusal> {
     let hold = ProcessHold::take(pid).map_err(|error| match error {
         LocalRefusal::Peer(refusal) => refusal,
         _ => PeerRefusal::Unreadable("the peer's process"),

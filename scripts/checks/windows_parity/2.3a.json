@@ -1,0 +1,339 @@
+{
+ "done": false,
+ "entries": [
+  {
+   "path": "src/transport_host/carrier/local/sandbox.rs",
+   "kind": "gate",
+   "gate": "any(target_os = \"linux\", target_os = \"android\")",
+   "target": "arm: use linux::{of_peer, of_self}",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3a's Linux and macOS sandbox probes; the sibling else arm of sandbox.rs's cfg_if is the Windows arm (no probe: the AppContainer flag and the integrity level are read with the identity, windows.rs)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/sandbox.rs",
+   "kind": "gate",
+   "gate": "any(target_os = \"linux\", target_os = \"android\")",
+   "target": "mod linux",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3a's Linux and macOS sandbox probes; the sibling else arm of sandbox.rs's cfg_if is the Windows arm (no probe: the AppContainer flag and the integrity level are read with the identity, windows.rs)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/sandbox.rs",
+   "kind": "gate",
+   "gate": "else if target_vendor = \"apple\"",
+   "target": "arm: use macos::{of_peer, of_self}",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3a's Linux and macOS sandbox probes; the sibling else arm of sandbox.rs's cfg_if is the Windows arm (no probe: the AppContainer flag and the integrity level are read with the identity, windows.rs)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/sandbox.rs",
+   "kind": "gate",
+   "gate": "else if target_vendor = \"apple\"",
+   "target": "mod macos",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3a's Linux and macOS sandbox probes; the sibling else arm of sandbox.rs's cfg_if is the Windows arm (no probe: the AppContainer flag and the integrity level are read with the identity, windows.rs)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/sandbox/linux.rs",
+   "kind": "os",
+   "gate": "os::unix::fs::MetadataExt",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/local/sandbox/macos.rs",
+   "kind": "os",
+   "gate": "libc::RTLD_DEFAULT",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/local/sandbox/macos.rs",
+   "kind": "os",
+   "gate": "libc::dlsym",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/local/sandbox/macos.rs",
+   "kind": "os",
+   "gate": "libc::pid_t",
+   "target": "",
+   "count": 2,
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "gate",
+   "gate": "any(target_os = \"linux\", target_os = \"android\")",
+   "target": "arm: enum How",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "a Unix-only row item: the real-process fixtures of the sandbox rule (seccomp, namespaces, sandbox-exec); the Windows twin is the real AppContainer child in the windows arm of the same file",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "gate",
+   "gate": "any(target_os = \"linux\", target_os = \"android\")",
+   "target": "arm: use super::super::local::sandbox::linux::probe_dir",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "a Unix-only row item: the real-process fixtures of the sandbox rule (seccomp, namespaces, sandbox-exec); the Windows twin is the real AppContainer child in the windows arm of the same file",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: use super::super::{Peer, StreamCarrier}",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "a Unix-only row item: the real-process fixtures of the sandbox rule (seccomp, namespaces, sandbox-exec); the Windows twin is the real AppContainer child in the windows arm of the same file",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::CLONE_NEWNS",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::CLONE_NEWUSER",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::PR_SET_NO_NEW_PRIVS",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::PR_SET_SECCOMP",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::SECCOMP_MODE_FILTER",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::c_int",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::c_ulong",
+   "target": "",
+   "count": 6,
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::getegid",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::geteuid",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::pid_t",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::prctl",
+   "target": "",
+   "count": 2,
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::sock_filter",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::sock_fprog",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "libc::unshare",
+   "target": "",
+   "count": 2,
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/sandbox_rows.rs",
+   "kind": "os",
+   "gate": "os::unix::{fs::PermissionsExt, net::{UnixListener, UnixStream}, process::CommandExt}",
+   "target": "",
+   "owner": [
+    "2.3a"
+   ],
+   "state": "platform",
+   "reason": "the sandbox probes and their fixtures call the operating system's own interfaces (/proc, dlsym, prctl, unshare); Windows reads the token's AppContainer flag and integrity level in windows.rs and has a real AppContainer row",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3a (the platform probes and their real-process rows: Linux and macOS are OS interfaces with no Windows form, the Windows side being the token flags in windows.rs and the AppContainer row)",
+   "appendix": "new: step 2.3a"
+  }
+ ]
+}

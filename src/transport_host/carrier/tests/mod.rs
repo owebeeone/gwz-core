@@ -2,6 +2,7 @@
 mod class_rows;
 mod ending_rows;
 mod local_rows;
+mod sandbox_rows;
 mod seam_rows;
 mod stream_rows;
 mod support;

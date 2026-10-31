@@ -1,0 +1,102 @@
+//! The sandbox rule's findings and the platform probes that fill them (plan 2.3a; parked server design §4, "The sandbox
+//! rule"). A process of this user that is sandboxed is refused absolutely, whatever sandbox the other side is in: Git runs
+//! commands named in a workspace's own configuration (hooks, `core.fsmonitor`, `core.sshCommand`), so a sandboxed process
+//! that can write a workspace would otherwise run code outside its sandbox through a server.
+//!
+//! A probe reads a process only through the hold [`super::PeerPolicy`]'s platform check has taken on it, and a probe
+//! that cannot complete refuses ([`PeerRefusal::Unreadable`]); none of them falls back to "not sandboxed". The findings
+//! become part of the process's [`PeerIdentity`](super::PeerIdentity), so that the rule, `PeerPolicy::verify`, stays a
+//! pure function of identities.
+//!
+//! | Platform | Sandboxed when | Read through |
+//! | --- | --- | --- |
+//! | Linux | `Seccomp:` in `/proc/<pid>/status` is not 0, or `/proc/<pid>/ns/user` is not the initial user namespace's inode; refused too when the mount or user namespace differs from this process's | the `pidfd` and start-time bracket of the hold |
+//! | macOS | `sandbox_check_by_audit_token(token, NULL, 0)` (else `sandbox_check(pid, NULL, 0)`) is not 0 | the `LOCAL_PEERTOKEN` token of the hold |
+//! | Windows | the token's AppContainer flag, or an integrity level below Medium (`peer.rs`) | the process handle of the hold |
+//!
+//! **What the probes cannot see.** A sandbox that is none of these: a Landlock ruleset, an LSM profile (AppArmor,
+//! SELinux), a cgroup or capability restriction, a seccomp filter on a thread other than the process's first (Linux
+//! reads the process's main thread); on macOS a process that enters its sandbox after the check. Such a peer is not
+//! refused and the rule does not claim it.
+use super::PeerRefusal;
+use std::fmt;
+
+cfg_if::cfg_if! {
+    if #[cfg(any(target_os = "linux", target_os = "android"))] {
+        pub(crate) mod linux;
+        pub(crate) use linux::{of_peer, of_self};
+    } else if #[cfg(target_vendor = "apple")] {
+        pub(crate) mod macos;
+        pub(crate) use macos::{of_peer, of_self};
+    } else {
+        /// Windows has no probe of this kind: its token flags are read with the identity (`windows.rs`).
+        pub(crate) fn of_self() -> Result<SandboxFindings, PeerRefusal> {
+            Ok(SandboxFindings::default())
+        }
+    }
+}
+
+/// `PROC_USER_INIT_INO`: the inode number the kernel gives the initial user namespace (`stat /proc/<pid>/ns/user`).
+pub(crate) const INIT_USER_NAMESPACE: u64 = 0xEFFF_FFFD;
+
+/// Why a process counts as sandboxed. Closed: a refusal names one of these and nothing else about the process.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Cause {
+    /// Linux: a seccomp filter or strict mode.
+    Seccomp,
+    /// Linux: a user namespace other than the initial one.
+    UserNamespace,
+    /// Linux: a mount or user namespace other than the checking process's.
+    OtherNamespace,
+    /// macOS: the sandbox check reports a profile.
+    Profile,
+}
+
+impl fmt::Display for Cause {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Cause::Seccomp => "a seccomp filter",
+            Cause::UserNamespace => "a user namespace",
+            Cause::OtherNamespace => "a namespace other than this process's",
+            Cause::Profile => "a sandbox profile",
+        })
+    }
+}
+
+/// What the probes found about one process. The default is "nothing found", which is what a platform without the probe
+/// (Windows) and an identity built by hand carry.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct SandboxFindings {
+    /// Linux: the `Seccomp:` mode (0 off, 1 strict, 2 filter).
+    pub(crate) seccomp: u32,
+    /// Linux: the inode of `/proc/<pid>/ns/user`.
+    pub(crate) user_namespace: Option<u64>,
+    /// Linux: the inode of `/proc/<pid>/ns/mnt`.
+    pub(crate) mount_namespace: Option<u64>,
+    /// macOS: the sandbox check reported a sandbox.
+    pub(crate) profile: bool,
+}
+
+impl SandboxFindings {
+    /// The reason this process is sandboxed, if it is.
+    pub(crate) fn cause(&self) -> Option<Cause> {
+        if self.seccomp != 0 {
+            Some(Cause::Seccomp)
+        } else if self
+            .user_namespace
+            .is_some_and(|inode| inode != INIT_USER_NAMESPACE)
+        {
+            Some(Cause::UserNamespace)
+        } else if self.profile {
+            Some(Cause::Profile)
+        } else {
+            None
+        }
+    }
+
+    /// Whether both processes are in the same mount and user namespace. A namespace read for one and not the other is
+    /// not the same.
+    pub(crate) fn same_namespaces(&self, other: &Self) -> bool {
+        self.user_namespace == other.user_namespace && self.mount_namespace == other.mount_namespace
+    }
+}

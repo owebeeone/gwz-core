@@ -11,8 +11,10 @@ CLEAN = {
     'mod.rs': 'cfg_if::cfg_if! { if #[cfg(test)] { mod tests; } }\n',
     'local/mod.rs': 'cfg_if::cfg_if! { if #[cfg(unix)] { mod unix; } else if #[cfg(windows)] { mod windows; } }\n'
                     'cfg_if::cfg_if! { if #[cfg(all(test, unix))] { pub use unix::x; } else if #[cfg(all(test, windows))] { pub use windows::y; } }\n',
-    'local/peer.rs': 'pub struct PeerPolicy { own: u8 }\nimpl PeerPolicy { pub fn verify(&self) {} fn new() -> Self { PeerPolicy { own: 1 } } }\n',
-    'local/unix.rs': 'fn a() { p.verify(x, Relation::ListenerChecksClient); }\nfn b() { p.verify(y, Relation::ClientChecksListener); }\n',
+    'local/peer.rs': 'pub struct PeerPolicy { own: u8 }\nimpl PeerPolicy { pub fn verify(&self) {} fn new() -> Self { PeerPolicy { own: 1 } } }\nfn s() { sandbox::of_self(); }\n',
+    'local/sandbox.rs': 'cfg_if::cfg_if! { if #[cfg(any(target_os = "linux", target_os = "android"))] { mod linux; } else if #[cfg(target_vendor = "apple")] { mod macos; } }\n',
+    'local/sandbox/linux.rs': 'fn probe() { std::fs::read_to_string("/proc/self/status"); }\n',
+    'local/unix.rs': 'fn a() { p.verify(x, Relation::ListenerChecksClient); }\nfn b() { p.verify(y, Relation::ClientChecksListener); }\nfn c() { sandbox::of_peer(&hold); }\n',
     'local/windows.rs': 'fn a() { p.verify(x, Relation::ListenerChecksClient); }\nfn b() { p.verify(y, Relation::ClientChecksListener); }\n',
 }
 
@@ -84,6 +86,29 @@ class PeerRuleTests(unittest.TestCase):
     def test_a_platform_module_must_check_both_directions(self):
         root = tree(**{'local/windows.rs': 'fn a() { p.verify(x, Relation::ListenerChecksClient); }\n'})
         self.assertTrue(any('must each check' in line for line in checker.violations(root)))
+
+    def test_the_sandbox_probes_may_not_read_the_environment_or_name_a_bypass(self):
+        for source in ['let v = std::env::var("PROC");', 'let v = env::var_os("X");', 'fn accept_any_sandbox() {}', 'fn insecure_probe() {}']:
+            with self.subTest(source=source):
+                root = tree(**{'local/sandbox/linux.rs': CLEAN['local/sandbox/linux.rs'] + source + '\n'})
+                self.assertTrue(checker.violations(root), source)
+
+    def test_a_probe_may_not_add_a_platform_switch_and_sandbox_rs_may_only_list_its_two(self):
+        for rel in ['local/sandbox/linux.rs', 'local/sandbox.rs']:
+            for source in ['#[cfg(test)]\nfn weaker() {}\n', '#[cfg(unix)]\nfn weaker() {}\n', '#[cfg(debug_assertions)]\nfn weaker() {}\n']:
+                with self.subTest(rel=rel, source=source):
+                    root = tree(**{rel: CLEAN[rel] + source})
+                    self.assertTrue(any('switch' in line for line in checker.violations(root)))
+
+    def test_dropping_a_probe_call_fails(self):
+        for rel, text in [('local/unix.rs', CLEAN['local/unix.rs'].replace('sandbox::of_peer(&hold)', 'nothing()')),
+                          ('local/peer.rs', CLEAN['local/peer.rs'].replace('sandbox::of_self()', 'nothing()'))]:
+            with self.subTest(rel=rel):
+                self.assertTrue(any('sandbox probes must run' in line for line in checker.violations(tree(**{rel: text}))))
+
+    def test_the_checked_constructor_is_named_like_the_other_test_constructor(self):
+        root = tree(**{'local/unix.rs': CLEAN['local/unix.rs'] + 'fn f() { let p = PeerPolicy::try_from_identity(x); }\n'})
+        self.assertTrue(any('constructor outside peer.rs' in line for line in checker.violations(root)))
 
     def test_rows_may_do_what_production_may_not(self):
         root = tree()

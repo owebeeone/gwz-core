@@ -7,6 +7,7 @@ use super::super::{
 use super::{
     Accepted, DirectoryFault, LocalRefusal, PeerIdentity, PeerPolicy, PeerRefusal, Principal,
     Relation, RuntimeEnv, StreamCarrier,
+    sandbox::{self, SandboxFindings},
 };
 use gwz_session_channel::write_frame;
 use std::{
@@ -60,6 +61,7 @@ pub(crate) fn own_identity() -> Result<PeerIdentity, LocalRefusal> {
         pid: Some(std::process::id()),
         integrity: None,
         app_container: false,
+        sandbox: SandboxFindings::default(),
     })
 }
 
@@ -289,6 +291,7 @@ cfg_if::cfg_if! {
                 pid: u32::try_from(credentials.pid).ok(),
                 integrity: None,
                 app_container: false,
+                sandbox: SandboxFindings::default(),
             })
         }
     } else {
@@ -311,6 +314,7 @@ cfg_if::cfg_if! {
                 pid,
                 integrity: None,
                 app_container: false,
+                sandbox: SandboxFindings::default(),
             })
         }
     }
@@ -324,7 +328,7 @@ fn check_peer(
     relation: Relation,
 ) -> Result<PeerIdentity, PeerRefusal> {
     let fd = stream.as_raw_fd();
-    let peer = peer_of(fd).map_err(|_| PeerRefusal::Unreadable("the peer's credentials"))?;
+    let mut peer = peer_of(fd).map_err(|_| PeerRefusal::Unreadable("the peer's credentials"))?;
     let pid = peer
         .pid
         .ok_or(PeerRefusal::Unreadable("the peer's process id"))?;
@@ -332,6 +336,9 @@ fn check_peer(
         return Err(PeerRefusal::Unreadable("the peer's user"));
     };
     let hold = Hold::take(fd, pid, uid)?;
+    // The sandbox probes read the peer through the hold and are part of the identity the rule judges; the hold is
+    // confirmed after them.
+    peer.sandbox = sandbox::of_peer(&hold)?;
     policy.verify(&peer, relation)?;
     hold.confirm(fd)?;
     Ok(peer)
@@ -395,6 +402,11 @@ cfg_if::cfg_if! {
         }
 
         impl Hold {
+            /// The held process's ID.
+            pub(crate) fn pid(&self) -> u32 {
+                self.pid
+            }
+
             pub(crate) fn take(_fd: RawFd, pid: u32, _uid: u32) -> Result<Self, PeerRefusal> {
                 let gone = PeerRefusal::Unreadable("a live peer process");
                 let (before, dead) = process_start(pid).ok_or(gone.clone())?;
@@ -464,6 +476,15 @@ cfg_if::cfg_if! {
         }
 
         impl Hold {
+            /// The held process's ID, and the audit token the kernel recorded for it.
+            pub(crate) fn pid(&self) -> u32 {
+                self.pid
+            }
+
+            pub(crate) fn token(&self) -> [u32; 8] {
+                self.token
+            }
+
             pub(crate) fn take(fd: RawFd, pid: u32, uid: u32) -> Result<Self, PeerRefusal> {
                 let token = peer_token(fd).ok_or(PeerRefusal::Unreadable("the peer's audit token"))?;
                 if token[5] != pid || token[1] != uid {

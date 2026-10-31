@@ -15,7 +15,10 @@ test-only or configurable override:
   the rule compares against): the field is private, the accessor `own()` is a call, and any other `.own` fails;
 - the test-build constructor `from_identity` named outside peer.rs, where it is defined under `cfg(test)`;
 - a `verify` function outside peer.rs, or a platform module (unix.rs, windows.rs) that does not call `.verify(` with both
-  relations (the listener's check of its client, and the client's check of its listener).
+  relations (the listener's check of its client, and the client's check of its listener);
+- the sandbox probes (plan 2.3a, local/sandbox.rs and sandbox/): they read /proc and the system, never the environment
+  (the environment rule above covers them), may switch on the platform only as sandbox.rs lists, and are called: unix.rs
+  must call `sandbox::of_peer(` and peer.rs `sandbox::of_self(`, so that a refactor cannot drop a probe.
 
 A token scan, like its siblings: conservative, not name resolution. Comments and string literals are not scanned.
 Run with no arguments from anywhere; `--root DIR` points it at another gwz-core checkout (the unit tests do).
@@ -46,6 +49,12 @@ ALLOWED_CFG = {
 # Platform items (not switches on the peer rule) in the platform file that picks an OS call.
 PLATFORM_CFG_FILES = {
     'local/unix.rs': ['target_vendor = "apple"', 'any(target_os = "linux", target_os = "android")'],
+    'local/sandbox.rs': ['target_vendor = "apple"', 'any(target_os = "linux", target_os = "android")'],
+}
+# Calls a file must make, so that a probe or the rule cannot be dropped by an edit.
+REQUIRED_CALLS = {
+    'local/unix.rs': 'sandbox::of_peer(',
+    'local/peer.rs': 'sandbox::of_self(',
 }
 
 
@@ -119,7 +128,7 @@ def violations(root: Path) -> list[str]:
                 found.append(f'{rel}:{number}: builds a PeerPolicy outside peer.rs: {line.strip()}')
             if rel != 'local/peer.rs' and re.search(r'\.own\b(?!\s*\()', line):
                 found.append(f'{rel}:{number}: uses the policy\'s own field outside peer.rs: {line.strip()}')
-            if rel != 'local/peer.rs' and re.search(r'\bfrom_identity\b', line):
+            if rel != 'local/peer.rs' and re.search(r'\w*from_identity\b', line):
                 found.append(f'{rel}:{number}: names the test-build policy constructor outside peer.rs: {line.strip()}')
             if rel != 'local/peer.rs' and re.search(r'\bfn\s+verify\b', line):
                 found.append(f'{rel}:{number}: a second verify function: {line.strip()}')
@@ -133,6 +142,8 @@ def violations(root: Path) -> list[str]:
             if switch not in allowed:
                 line = text.count('\n', 0, match.start()) + 1
                 found.append(f'{rel}:{line}: a conditional-compilation switch cfg({switch}) the rule does not list')
+        if rel in REQUIRED_CALLS and REQUIRED_CALLS[rel] not in text:
+            found.append(f'{rel}: never calls {REQUIRED_CALLS[rel]}; the sandbox probes must run on every peer and on the caller')
         if rel in ('local/unix.rs', 'local/windows.rs'):
             for relation in ('Relation::ListenerChecksClient', 'Relation::ClientChecksListener'):
                 if relation not in text:

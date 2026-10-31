@@ -31,10 +31,11 @@
 //! caller to it. The peer's process is **pinned** before it is read and checked again after: a process that has gone, or
 //! whose identity changed under the same process ID, is refused (Linux: a `pidfd` and the `/proc` start time before and
 //! after; macOS: the `LOCAL_PEERTOKEN` audit token and a live-process check; Windows: a process handle, its creation
-//! time and its exit state). The sandbox rule's platform checks (seccomp and namespaces, `sandbox_check`, AppContainer
-//! beyond the token flag) belong to plan step 2.3. A listener answers a refused peer with exactly one `SessionError`
-//! (`server_peer_refused`) and closes, reading nothing of the peer before the check; a client that refuses a listener
-//! sends nothing.
+//! time and its exit state). **The sandbox rule's platform probes** (`sandbox.rs`; seccomp and namespaces on Linux,
+//! `sandbox_check` on macOS, the AppContainer flag on Windows) run on the same hold, are part of the peer's identity, and
+//! refuse with [`PeerRefusal::Sandboxed`]; a probe that cannot complete refuses. A listener answers a refused peer with
+//! exactly one `SessionError` (`server_peer_refused`) and closes, reading nothing of the peer before the check; a client
+//! that refuses a listener sends nothing.
 //!
 //! **The Windows pipe** has a random name (`\\.\pipe\gwz-` and 32 hex digits), is created with
 //! `FILE_FLAG_FIRST_PIPE_INSTANCE` (a squatter that already holds the name makes the creation fail), with
@@ -44,6 +45,7 @@ use super::StreamCarrier;
 use std::{fmt, io};
 
 mod peer;
+pub(crate) mod sandbox;
 
 use std::ffi::OsString;
 
@@ -72,7 +74,7 @@ cfg_if::cfg_if! {
     if #[cfg(all(test, unix))] {
         pub(crate) use unix::{Hold, SOCKET_NAME_BYTES, SUN_PATH_MAX, peer_of, socket_path};
     } else if #[cfg(all(test, windows))] {
-        pub(crate) use windows::{PIPE_MODE, PIPE_OPEN_MODE, ProcessHold, create_first_instance, create_first_instance_with, created_pipe_dacl_sids, pipe_sddl};
+        pub(crate) use windows::{PIPE_MODE, PIPE_OPEN_MODE, ProcessHold, create_first_instance, create_first_instance_with, created_pipe_dacl_sids, judge, pipe_sddl};
     }
 }
 
