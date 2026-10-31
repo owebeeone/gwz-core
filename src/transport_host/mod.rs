@@ -328,13 +328,12 @@ impl TransportRuntime {
             .unwrap_or_default();
         let io_timeout_ms = local.io_timeout_ms;
         let connect_timeout_ms = local.pool.connect_timeout_ms;
-        let ssh_helpers = https.as_ref().and_then(|(https, slots)| {
-            https.auth.as_ref().map(|auth| {
-                Arc::new(crate::git::endpoint::ssh_password_helpers::Helpers::new(
-                    auth.clone(),
-                    slots.clone(),
-                ))
-            })
+        // The connection host's SSH adapters run the helper of the context of the operation they connect for, never the
+        // runtime's (Phase 1 R3b), so the helpers hold the host's slots and no configuration.
+        let ssh_helpers = https.as_ref().map(|(_, slots)| {
+            Arc::new(
+                crate::git::endpoint::ssh_password_helpers::Helpers::per_operation(slots.clone()),
+            )
         });
         let allocation_ms = local.pool.allocation_timeout_ms;
         let interaction_ms = local.pool.interaction_timeout_ms;

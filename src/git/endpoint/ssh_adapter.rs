@@ -288,8 +288,8 @@ impl EndpointAdapter for SshAdapter {
         &mut self,
         connection: ConnectionId,
         spec: &ExchangeSpec,
-        // An SSH exchange authenticates with the connection's own setup (the endpoint's agent, keys and helpers), so
-        // the operation's context is not read here; nothing of it is kept.
+        // An SSH exchange runs on the connection its setup authenticated, and the setup had the connecting operation's
+        // context (`connect`); the exchange's own context is not read here, and nothing of it is kept.
         _auth: &AuthContext,
     ) -> io::Result<Box<dyn ExchangeIo>> {
         let worker = self.worker.clone().ok_or_else(|| {

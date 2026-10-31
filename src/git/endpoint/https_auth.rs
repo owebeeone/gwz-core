@@ -198,7 +198,7 @@ use secret::{SecretBuffer, parse_secret};
 /// Real host helper admission ledger, and the host's spawn gate (`git/spawn_gate.rs`): the helpers' launches hold
 /// the gate for their inheritance windows, and the host's other spawns, which share it, wait for those windows.
 #[derive(Clone)]
-pub(crate) struct HelperSlots(pub(super) Arc<Semaphore>, SpawnGate);
+pub(crate) struct HelperSlots(pub(super) Arc<Semaphore>, SpawnGate, Arc<AtomicUsize>);
 impl HelperSlots {
     cfg_if::cfg_if! {
         if #[cfg(test)] {
@@ -210,7 +210,23 @@ impl HelperSlots {
     }
     /// Slots whose launches use `gate`, which the host's other spawns hold too.
     pub(crate) fn with_gate(gate: SpawnGate) -> Self {
-        Self(Arc::new(Semaphore::new(HELPER_SLOTS)), gate)
+        Self(
+            Arc::new(Semaphore::new(HELPER_SLOTS)),
+            gate,
+            Arc::new(AtomicUsize::new(HELPER_SLOTS)),
+        )
+    }
+    /// Holds the ledger to `slots` live helpers: the cleanup domain's helper budget (contract section 10), which the
+    /// connection host's factory applies as it makes its first adapter, before any helper of the host has started.
+    /// The difference from the slots now set is added or taken from the free ones, so applying the same number again
+    /// changes nothing; a helper already holding a slot keeps it, and a shrink can only take the free ones.
+    pub(crate) fn fit_to(&self, slots: usize) {
+        let before = self.2.swap(slots, Ordering::AcqRel);
+        if slots > before {
+            self.0.add_permits(slots - before);
+        } else if slots < before {
+            self.0.forget_permits(before - slots);
+        }
     }
     /// The host's spawn gate: a handle to the one the launches hold.
     pub(crate) fn gate(&self) -> &SpawnGate {

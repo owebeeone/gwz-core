@@ -4,7 +4,7 @@
 //! bounded work. It ends when it is told to dispose (or its adapter is dropped) and every connection is disposed.
 use super::{AdapterSettings, Command, Exchange, Shared};
 use crate::git::endpoint::{
-    ssh_pool::{Connector, Resource},
+    ssh_pool::{Connector, Opening, Resource},
     ssh_worker::{ChannelResource, ThreadWake},
 };
 use gwz_connection::{Completion, ConnectCommand};
@@ -185,8 +185,16 @@ where
         let deadline = (self.settings.connect_timeout_ms != 0)
             .then(|| now.saturating_add(self.settings.connect_timeout_ms));
         let started = catch_unwind(AssertUnwindSafe(|| {
-            self.connector
-                .start(&command.key, &command.identity, deadline)
+            // The setup is given the operation's context, which it authenticates with and drops when it ends.
+            self.connector.start_reported(
+                &command.key,
+                &command.identity,
+                deadline,
+                Opening {
+                    auth: command.auth.clone(),
+                    ..Opening::default()
+                },
+            )
         }));
         match started {
             Ok(Ok(resource)) => {

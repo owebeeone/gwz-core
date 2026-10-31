@@ -29,6 +29,10 @@ struct Reaper {
 pub(super) struct Shared {
     count: AtomicUsize,
     cleanups: AtomicUsize,
+    /// The most setup jobs and the most cleanup records the host admits: [`LIMIT`] each until the host's cleanup domain
+    /// gives its own (`limit_to`; contract section 10).
+    jobs_limit: AtomicUsize,
+    cleanups_limit: AtomicUsize,
     pub(super) entries: Mutex<Vec<Box<dyn Reap>>>,
     /// Wakers of the setups waiting for a place in the job budget.
     waiters: Mutex<Vec<Waker>>,
@@ -63,6 +67,8 @@ impl Supervisor {
         let shared = Arc::new(Shared {
             count: AtomicUsize::new(0),
             cleanups: AtomicUsize::new(0),
+            jobs_limit: AtomicUsize::new(LIMIT),
+            cleanups_limit: AtomicUsize::new(LIMIT),
             entries: Mutex::new(Vec::new()),
             waiters: Mutex::new(Vec::new()),
             reaper: Mutex::new(None),
@@ -71,6 +77,18 @@ impl Supervisor {
         Self {
             _closer: Arc::new(Closer(shared.clone())),
             shared,
+        }
+    }
+    /// Holds the budget to the cleanup domain's: `jobs` setup jobs and `cleanups` retained cleanup records. Places taken
+    /// stay taken; a lower limit refuses new ones until enough return. Setting the same limits again changes nothing,
+    /// and waiters are woken when a higher limit gives them room.
+    pub(crate) fn limit_to(&self, jobs: usize, cleanups: usize) {
+        let before = self.shared.jobs_limit.swap(jobs, Ordering::AcqRel);
+        self.shared
+            .cleanups_limit
+            .store(cleanups, Ordering::Release);
+        if jobs > before {
+            self.wake_waiters();
         }
     }
     /// The reaper's thread, started by the first job or cleanup that needs it.
@@ -138,7 +156,7 @@ impl Supervisor {
         self.shared
             .count
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < LIMIT).then_some(n + 1)
+                (n < self.shared.jobs_limit.load(Ordering::Acquire)).then_some(n + 1)
             })
             .map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))?;
         Ok(Permit(self.clone()))
@@ -147,7 +165,7 @@ impl Supervisor {
         self.shared
             .cleanups
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
-                (n < LIMIT).then_some(n + 1)
+                (n < self.shared.cleanups_limit.load(Ordering::Acquire)).then_some(n + 1)
             })
             .map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))?;
         Ok(CleanupPermit(self.clone()))
@@ -168,6 +186,13 @@ impl Supervisor {
         /// The places taken now.
         pub(crate) fn taken(&self) -> usize {
             self.shared.count.load(Ordering::Acquire)
+        }
+        /// The most jobs and the most cleanup records the budget admits now.
+        pub(crate) fn limits(&self) -> (usize, usize) {
+            (
+                self.shared.jobs_limit.load(Ordering::Acquire),
+                self.shared.cleanups_limit.load(Ordering::Acquire),
+            )
         }
     } }
 }

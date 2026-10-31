@@ -46,7 +46,7 @@ use std::{
 };
 
 /// A connection host on the production factory over `ssh` and `https` host parts.
-fn host_over(ssh: Option<SshHost>, https: Option<HttpsHost>) -> ConnectionHost {
+pub(super) fn host_over(ssh: Option<SshHost>, https: Option<HttpsHost>) -> ConnectionHost {
     let factory = CoreFactory::new(ssh, https);
     let registry = factory.registry();
     ConnectionHost::build(
@@ -56,13 +56,13 @@ fn host_over(ssh: Option<SshHost>, https: Option<HttpsHost>) -> ConnectionHost {
     )
     .unwrap()
 }
-fn https_host() -> HttpsHost {
+pub(super) fn https_host() -> HttpsHost {
     HttpsHost {
         helper_slots: HelperSlots::new(),
         authority: Authority::new(256, 256),
     }
 }
-fn ssh_host() -> SshHost {
+pub(super) fn ssh_host() -> SshHost {
     let authority = Authority::new(256, 256);
     SshHost {
         registry: Registry::with_supervisor(authority.supervisor().clone()),
@@ -72,7 +72,7 @@ fn ssh_host() -> SshHost {
     }
 }
 /// One operation's capture, from the variables its snapshot holds.
-fn capture(variables: &[(&str, &OsStr)]) -> OperationCapture {
+pub(super) fn capture(variables: &[(&str, &OsStr)]) -> OperationCapture {
     let snapshot = EnvironmentSnapshot::from_os_pairs(
         variables
             .iter()
@@ -82,7 +82,7 @@ fn capture(variables: &[(&str, &OsStr)]) -> OperationCapture {
     capture_operation(&snapshot, None, Some(MachineProxy::Direct), None).unwrap()
 }
 /// An operation over `capture`'s profile and context, registered on `handle`.
-fn admitted(handle: &HostHandle, name: &str, capture: OperationCapture) -> Operation {
+pub(super) fn admitted(handle: &HostHandle, name: &str, capture: OperationCapture) -> Operation {
     let input = PreparedOperation::new(
         name,
         EndpointRoute::ssh_and_https(),
@@ -96,7 +96,7 @@ fn admitted(handle: &HostHandle, name: &str, capture: OperationCapture) -> Opera
         .register()
 }
 /// The exchange `spec` gets on `operation`, or none when the opening ended without one.
-fn opened(operation: &Operation, spec: ExchangeSpec) -> Option<Exchange> {
+pub(super) fn opened(operation: &Operation, spec: ExchangeSpec) -> Option<Exchange> {
     block_on(operation.open(spec).ok()?.wait()).ok()
 }
 
