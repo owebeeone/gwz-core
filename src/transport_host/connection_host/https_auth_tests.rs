@@ -591,10 +591,12 @@ fn write_body(exchange: &mut gwz_connection::Exchange, bytes: &[u8]) {
 }
 
 #[test]
-fn a_post_to_a_repository_the_helper_did_not_authenticate_is_sent_without_a_credential() {
-    // Contract 7.2: the connection `/private` authenticated is not authenticated for `/public`, which the server serves
-    // to anyone and the helper declines. A POST is pre-authenticated only for the repository path the helper's token
-    // was for; this one goes out anonymously, reaches the server once and succeeds.
+fn a_post_for_a_key_the_operation_never_learned_is_sent_without_a_credential() {
+    // Contract 7.2 (HTTPS model draft r5, row H1b-5): the operation learned `/private` (its advertisement was challenged
+    // and answered) but never `/public`, which the server serves to anyone and the helper declines; its anonymously
+    // served advertisement records nothing. A POST carries a credential only for a key the operation's record holds;
+    // this one goes out anonymously, on the connection a helper token authenticated, reaches the server once and
+    // succeeds, and the helper is not asked.
     let requests = Requests::default();
     let case = Case::with(
         |_| authorizing(&requests),
@@ -646,10 +648,10 @@ fn a_post_to_a_repository_the_helper_did_not_authenticate_is_sent_without_a_cred
 }
 
 #[test]
-fn a_post_on_a_connection_nothing_authenticated_is_refused_after_one_anonymous_attempt() {
-    // The deferred case (a Phase 3 prerequisite): the pool places a push's POST on a connection its advertisement did
-    // not authenticate. It goes out without a credential, the server challenges it, and it is refused (contract 7.2): a
-    // typed denial, nothing replayed, no credential sent, that connection closed and the host untouched.
+fn a_post_for_a_key_the_operation_never_learned_is_refused_after_one_anonymous_attempt() {
+    // Contract 7.2 (HTTPS model draft r5, row H1b-5, P3): no advertisement of the operation learned the push's key, so
+    // its POST goes out without a credential, the server challenges it, and it is refused: a typed denial, never
+    // answered or replayed, no credential sent and no helper asked, that connection closed and the host untouched.
     let requests = Requests::default();
     let case = Case::with(
         |_| authorizing(&requests),

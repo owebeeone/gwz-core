@@ -21,6 +21,7 @@ const SOURCES: &[(&str, &str)] = &[
         include_str!("factory_profile_tests.rs"),
     ),
     ("https_auth_tests.rs", include_str!("https_auth_tests.rs")),
+    ("https_needs_tests.rs", include_str!("https_needs_tests.rs")),
     ("https_sspi_tests.rs", include_str!("https_sspi_tests.rs")),
     ("https_tests.rs", include_str!("https_tests.rs")),
     ("stream_wake_tests.rs", include_str!("stream_wake_tests.rs")),

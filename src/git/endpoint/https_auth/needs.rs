@@ -97,6 +97,10 @@ impl NeedKey {
 }
 
 /// How a connection-bound need was learned (draft 3.1).
+#[allow(
+    dead_code,
+    reason = "the connection-bound learning of HTTPS model draft r5 sub-step H3a records it, which removes this"
+)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Evidence {
     /// The logon session answered the key's challenge (G8, RA1).
@@ -114,6 +118,10 @@ struct Held {
 
 enum Need {
     Basic(Arc<Held>),
+    #[allow(
+        dead_code,
+        reason = "the connection-bound learning of HTTPS model draft r5 sub-step H3a records it, which removes this"
+    )]
     ConnectionBound {
         observed: u64,
         evidence: Evidence,
@@ -129,7 +137,14 @@ enum Need {
 pub(crate) enum Recorded {
     Unrecorded,
     Basic(SecretHeader),
-    ConnectionBound { observed: u64, evidence: Evidence },
+    #[allow(
+        dead_code,
+        reason = "the re-authentication of HTTPS model draft r5 sub-step H3b reads them, which removes this"
+    )]
+    ConnectionBound {
+        observed: u64,
+        evidence: Evidence,
+    },
     Rejected,
     Unretained,
     Tombstone,
@@ -363,6 +378,10 @@ impl Needs {
     /// Records a connection-bound need (G2, G8, RA1): `Challenged` replaces any state but `Rejected` and an equal
     /// earlier insert; `OnBound` is stored only for a key with no entry. An `Exhausted` record stores nothing and
     /// gives the budget code, as does a full key table for a new key.
+    #[allow(
+        dead_code,
+        reason = "the connection-bound learning of HTTPS model draft r5 sub-step H3a records it, which removes this"
+    )]
     pub(crate) fn bound(
         &self,
         key: &NeedKey,
@@ -457,7 +476,8 @@ cfg_if::cfg_if! {
             }
         }
         impl Needs {
-            pub(super) fn wipes(&self) -> Wipes {
+            /// What each retained credential's `Drop` found in its buffers (rows H1a-4, H1c-3).
+            pub(crate) fn wipes(&self) -> Wipes {
                 Arc::clone(&self.table.lock().unwrap().probe.0)
             }
             /// Whether `a` and `b` hold one credential owner.

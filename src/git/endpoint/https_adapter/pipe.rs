@@ -144,7 +144,6 @@ pub(super) fn exchange(
         body: receiver,
         auth: auth.clone(),
         prior: Binding::Anonymous,
-        authenticated: None,
         pipe: pipe.clone(),
         settle: settle.clone(),
     };

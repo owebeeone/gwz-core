@@ -69,6 +69,14 @@ impl OperationAuth {
         helper: Config,
         native: Option<NativeCaller>,
     ) -> gwz_connection::AuthContext {
+        Self::with_needs(helper, native, needs::Needs::new())
+    }
+    /// `context`, over the record `needs`.
+    fn with_needs(
+        helper: Config,
+        native: Option<NativeCaller>,
+        needs: needs::Needs,
+    ) -> gwz_connection::AuthContext {
         use sha2::{Digest, Sha256};
         let mut entries: Vec<_> = helper.environment.iter().collect();
         entries.sort();
@@ -101,7 +109,6 @@ impl OperationAuth {
             }
         }
         let scope = gwz_connection::AuthScope::new(digest.finalize().into());
-        let needs = needs::Needs::new();
         gwz_connection::AuthContext::new(
             charge,
             scope,
@@ -125,12 +132,87 @@ impl OperationAuth {
         self.native.as_ref()
     }
     /// This operation's credential record.
-    #[allow(
-        dead_code,
-        reason = "the adapter's exchange reads it from H1b (HTTPS model draft r5 section 5), which removes this"
-    )]
     pub(crate) fn needs(&self) -> &needs::Needs {
         &self.needs
+    }
+}
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        /// One bound of the operation's record (HTTPS model draft r5 3(b)) that a host row brings within reach.
+        #[derive(Clone, Copy, Debug)]
+        pub(crate) enum Bound {
+            /// Entries of the key table.
+            Keys,
+            /// Distinct credentials retained.
+            Credentials,
+            /// All retained credential bytes.
+            Bytes,
+            /// Rejected credentials' fingerprints.
+            Fingerprints,
+        }
+        impl OperationAuth {
+            /// `context`, but its record's randomness failed at creation: it is `Exhausted` from the start (draft r5 X1).
+            pub(crate) fn context_without_randomness(
+                helper: Config,
+                native: Option<NativeCaller>,
+            ) -> gwz_connection::AuthContext {
+                Self::with_needs(helper, native, needs::Needs::keyed(None))
+            }
+            /// The small test bounds of draft r5 sub-step H1d: fills the record, at an origin of its own, until `room` of
+            /// `bound` is left, so that a host row reaches the bound with a few real exchanges. The fillers are what the
+            /// record keeps: `Rejected` keys with no credential (`Keys`); distinct short credentials (`Credentials`);
+            /// credentials of the largest size and a remainder (`Bytes`); distinct rejected credentials (`Fingerprints`).
+            pub(crate) fn crowd(&self, bound: Bound, room: usize) {
+                let origin = gwz_transport::pool::Key::https("filler.invalid", 443);
+                let key = |index: usize| {
+                    let url = format!("https://filler.invalid/filler-{index}");
+                    let destination = Destination::parse(&url).expect("a filler URL");
+                    let service = gwz_transport::protocol::GitService::UploadPackAdvertisement;
+                    needs::NeedKey::new(&origin, &destination, service)
+                };
+                // A credential of `size` bytes, username and password, distinct for each `index`.
+                let credential = |index: usize, size: usize| {
+                    let username = format!("f{index}");
+                    assert!(size > username.len(), "a filler credential of {size} bytes");
+                    let mut owned = Vec::with_capacity(username.len() + 1);
+                    owned.extend_from_slice(username.as_bytes());
+                    Secret::new(owned, vec![b'p'; size - username.len()])
+                };
+                match bound {
+                    Bound::Keys => {
+                        for index in 0..needs::KEYS - room {
+                            let _ = self.needs.reject(&key(index), None);
+                        }
+                    }
+                    Bound::Credentials => {
+                        for index in 0..needs::CREDENTIALS - room {
+                            let filler = credential(index, 8);
+                            self.needs.record(&key(index), filler).expect("a filler credential");
+                        }
+                    }
+                    Bound::Bytes => {
+                        let mut left = needs::RETAINED_BYTES - room;
+                        let mut index = 0;
+                        while left > 0 {
+                            let size = left.min(needs::CREDENTIAL_BYTES);
+                            let filler = credential(index, size);
+                            self.needs.record(&key(index), filler).expect("a filler credential");
+                            left -= size;
+                            index += 1;
+                        }
+                    }
+                    Bound::Fingerprints => {
+                        for index in 0..needs::FINGERPRINTS - room {
+                            let _ = self.needs.reject(&key(index), Some(&credential(index, 8)));
+                        }
+                    }
+                }
+            }
+            /// Poisons the record's lock, as a panic under it would (draft r5 X1).
+            pub(crate) fn poison(&self) {
+                self.needs.poison();
+            }
+        }
     }
 }
 
@@ -223,12 +305,7 @@ impl AuthError {
     }
 }
 
-// The operation's credential record (HTTPS model draft r5, sub-step H1a). Until H1b wires it into the adapter's
-// exchange only its construction and its rows use it.
-#[allow(
-    dead_code,
-    reason = "the adapter's exchange drives the record from H1b (HTTPS model draft r5 section 5), which removes this"
-)]
+// The operation's credential record (HTTPS model draft r5, sub-step H1a), which the HTTPS adapter's exchanges drive.
 pub(crate) mod needs;
 mod secret;
 pub(crate) use secret::{Secret, SecretHeader};
