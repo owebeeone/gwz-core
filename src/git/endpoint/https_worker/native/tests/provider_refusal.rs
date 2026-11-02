@@ -79,6 +79,7 @@ fn refused_open(offer: &'static str, provider_refused: bool) -> Failure {
                 port: Ok(port),
                 machine_proxy: None,
                 gate: crate::git::spawn_gate::SpawnGate::new(),
+                identity: crate::git::endpoint::https_worker::native::CallerIdentity::current(),
             });
             let mut request = input(&server, GitService::UploadPackAdvertisement);
             request.policy = AuthPolicy::WindowsDefault;

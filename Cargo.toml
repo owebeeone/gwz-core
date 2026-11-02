@@ -119,7 +119,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globali
 [target.'cfg(windows)'.dev-dependencies]
 # src/git/regular_file.rs creates a named pipe in a test, to show that a pipe handle is not a regular file. (The
 # transport build names its own further features below, behind the switch.)
-windows-sys = { version = "0.61", features = ["Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials", "Win32_System_Pipes"] }
+windows-sys = { version = "0.61", features = ["Win32_Graphics_Gdi", "Win32_Security", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials", "Win32_System_Pipes", "Win32_System_RemoteDesktop"] }
 
 # The transport build (dev-docs/GwzV110RemainingPlan.md C1; GwzV110Plan.md S7.1). Until S7.1 removes the switch, the
 # transport's crates are in the resolve only when the build turns `gwz_transport_candidate` on with
@@ -177,7 +177,9 @@ russh = { version = "=0.63.3", default-features = false, features = ["ring", "rs
 #     Win32_System_Ioctl, for the Job Object, thread suspension and process lists of the SSH test servers and their native
 #     helper (`fixture_job.rs`), a named pipe in the regular-file test, pipe reads and writes in the agent fixture, and the
 #     directory junction of the URL tests; Win32_Security_Authentication_Identity and Win32_Security_Credentials, for the
-#     SSPI acceptor of step 4.8's real-SSPI rows (`native/tests/real_sspi.rs`). They sit in this normal table as well as
+#     SSPI acceptor of step 4.8's real-SSPI rows (`native/tests/real_sspi.rs`); Win32_System_RemoteDesktop, for
+#     `ProcessIdToSessionId` in the caller-identity row that checks the token's session id (`native/tests/caller_scope.rs`).
+#     They sit in this normal table as well as
 #     in the Windows dev-dependencies above, because `cargo check --lib --profile test`, which
 #     scripts/windows_lane_check.py runs, does not enable dev-dependency features.
 [target.'cfg(all(windows, gwz_transport_candidate))'.dependencies]
@@ -198,6 +200,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_JobObjects",
     "Win32_System_Memory",
     "Win32_System_Pipes",
+    "Win32_System_RemoteDesktop",
     "Win32_System_SystemInformation",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",

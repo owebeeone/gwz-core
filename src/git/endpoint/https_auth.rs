@@ -56,11 +56,13 @@ pub(crate) struct OperationAuth {
 const SCOPE_DOMAIN: &[u8] = b"gwz-operation-auth-scope/1";
 impl OperationAuth {
     /// The context of an operation whose helper is `helper` and whose logon-session caller is `native`, when it has
-    /// one. Its scope is the SHA-256 of the helper's executable and of
-    /// its whole environment, sorted: two operations share a connection only when their helpers would run alike, and
-    /// any changed variable (a token, a configuration file, `PATH`) gives a scope of its own. The digest stays in
-    /// memory beside the values it is of and is never logged or sent. The caller's identity is not yet in the digest
-    /// (R3b-win, draft r5 section 3.2 item 3): until then a context's scope does not tell two callers apart.
+    /// one. Its scope is the SHA-256 of the helper's executable, of its whole environment, sorted, and of the caller's
+    /// identity: two operations share a connection only when their helpers would run alike for the same caller, and
+    /// any changed variable (a token, a configuration file, `PATH`) or another caller gives a scope of its own. The
+    /// caller enters as its `CallerIdentity` (R3b-win, draft r5 section 3.2 item 3): a digest of non-secret identifiers,
+    /// or a value unique to its capture when they could not be read. An operation with no caller folds a tag of its own
+    /// (it has no native route, and its helper runs as the process). The digest stays in memory beside the values it is
+    /// of and is never logged or sent.
     pub(crate) fn context(
         helper: Config,
         native: Option<NativeCaller>,
@@ -85,6 +87,15 @@ impl OperationAuth {
             field(name.as_encoded_bytes());
             field(value.as_encoded_bytes());
             charge += name.len() + value.len() + 2 * std::mem::size_of::<OsString>();
+        }
+        match &native {
+            Some(caller) => {
+                field(b"caller");
+                field(caller.identity().digest());
+            }
+            None => {
+                field(b"no caller");
+            }
         }
         let scope = gwz_connection::AuthScope::new(digest.finalize().into());
         gwz_connection::AuthContext::new(charge, scope, Arc::new(Self { helper, native }))

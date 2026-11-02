@@ -7,11 +7,13 @@ use hyper::header::{HeaderMap, WWW_AUTHENTICATE};
 // The connection host's HTTPS adapter's conversation on one connection (plan step 1.3c).
 mod connection;
 mod exchange;
+mod identity;
 mod owners;
 mod sspi;
 pub(crate) use connection::{
     NativeRetained, authenticate_connection, offers_basic, offers_logon_session,
 };
+pub(crate) use identity::CallerIdentity;
 
 /// The request rounds one operation's native exchanges may use (design 8).
 pub(super) const NATIVE_ROUNDS: usize = 8;

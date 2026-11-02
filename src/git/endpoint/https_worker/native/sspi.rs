@@ -13,6 +13,9 @@ pub struct NativeCaller {
     /// launch guard takes, and the transport the caller enters builds its helper slots, and so every backend of
     /// its requests, on it.
     pub(super) gate: SpawnGate,
+    /// The identity of the caller, read with it (R3b-win): the operation's scope folds it, so two captures of different
+    /// callers never share a connection, and one that could not be read is unique to this capture.
+    pub(super) identity: super::CallerIdentity,
 }
 
 /// A host's native route: the SSPI supervisor and the spawn gate its worker launches take (contract C9; operator
@@ -109,8 +112,13 @@ impl NativeCaller {
     }
 
     cfg_if::cfg_if! { if #[cfg(test)] {
-        pub(crate) fn refused_for_test(kind: gwz_sspi::ErrorKind) -> Self { Self { port: Err(kind), machine_proxy: None, gate: SpawnGate::new() } }
+        pub(crate) fn refused_for_test(kind: gwz_sspi::ErrorKind) -> Self { Self { port: Err(kind), machine_proxy: None, gate: SpawnGate::new(), identity: super::CallerIdentity::current() } }
     } }
+
+    /// The identity of the caller this was captured for, as the operation's scope folds it.
+    pub(crate) fn identity(&self) -> super::CallerIdentity {
+        self.identity
+    }
 
     pub(crate) fn machine_proxy(
         &self,
@@ -141,6 +149,7 @@ impl NativeCaller {
             port,
             machine_proxy,
             gate: gate.clone(),
+            identity: super::CallerIdentity::current(),
         }
     }
 }

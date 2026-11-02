@@ -1,0 +1,27 @@
+{
+ "done": false,
+ "entries": [
+  {
+   "path": "src/git/endpoint/https_worker/native/identity.rs",
+   "kind": "gate",
+   "gate": "else",
+   "target": "arm: mod platform",
+   "state": "paired",
+   "owner": [
+    "R3b-win"
+   ],
+   "appendix": "new: step R3b-win's caller identity; the Unix arm (the effective uid) sits beside the Windows arm (the process token's SID, logon session and session id)"
+  },
+  {
+   "path": "src/git/endpoint/https_worker/native/identity.rs",
+   "kind": "os",
+   "gate": "libc::geteuid",
+   "target": "",
+   "state": "paired",
+   "owner": [
+    "R3b-win"
+   ],
+   "appendix": "new: step R3b-win's caller identity; the Unix arm (the effective uid) sits beside the Windows arm (the process token's SID, logon session and session id)"
+  }
+ ]
+}
