@@ -239,6 +239,8 @@ impl Worker {
         }
     }
     fn start(&mut self, connection: ConnectionId, mut work: Work) {
+        // The host's lease is taken up: from here the connection is not idle, so no retirement is held off by it.
+        self.shared.begun(connection);
         let Some(entry) = self.entries.get_mut(&connection) else {
             return work.fail(ErrorCode::Io);
         };
@@ -382,13 +384,16 @@ fn step(
             Poll::Pending => Step::Same,
         },
         // Idle liveness: Hyper's driver ended while no exchange ran (the peer closed or reset it, or sent bytes
-        // nothing asked for).
+        // nothing asked for). The loss retires the connection through the claims (findings F8 follow-up): the host may
+        // have leased it and queued an exchange's start since it went idle, and that exchange meets the loss itself
+        // (`start` finds the connection not reusable). One retired here is refused to the host until it has read the
+        // `IdleClosed`, so a lease it makes meanwhile asks again instead of failing its exchange `Io`.
         Phase::Idle => match entry.resource.poll_idle_lost(cx) {
-            Poll::Ready(()) => {
+            Poll::Ready(()) if shared.retire(id) => {
                 entry.phase = Phase::Disposing(Report::IdleClosed);
                 Step::Changed
             }
-            Poll::Pending => Step::Same,
+            Poll::Ready(()) | Poll::Pending => Step::Same,
         },
         Phase::Active(active) => {
             let ended = match Pin::new(&mut active.task).poll(cx) {

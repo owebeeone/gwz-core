@@ -453,7 +453,9 @@ cfg_if::cfg_if! {
         mod domain_ports_tests;
         mod factory_profile_tests;
         mod https_auth_tests;
+        mod https_idle_lease_tests;
         mod https_tests;
+        mod idle_lease_tests;
         mod sleep_poll_tests;
         mod stream_wake_tests;
         mod tests;

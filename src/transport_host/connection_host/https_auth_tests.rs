@@ -281,7 +281,16 @@ fn authorizing(requests: &Requests) -> Handler {
             (true, false) => (200, ADVERTISEMENT),
             (true, true) => (200, &b"0000"[..]),
         };
-        Box::pin(async move { response(status, service, bytes) })
+        Box::pin(async move {
+            // A Git server reads a served POST's whole body before it answers. Answered first, the request's last
+            // bytes may still be in flight when the response ends, and hyper then closes the connection instead of
+            // keeping it alive, so whether the POST's connection is `Reusable` would depend on host load
+            // (findings F8: the `sender.ready()` after the POST saw "channel closed").
+            if post && status == 200 {
+                let _ = http_body_util::BodyExt::collect(request.into_body()).await;
+            }
+            response(status, service, bytes)
+        })
     })
 }
 

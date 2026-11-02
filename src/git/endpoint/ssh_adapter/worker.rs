@@ -28,7 +28,11 @@ use std::{
 
 mod reuse;
 
-/// The longest a parked worker waits before a pass of its own (a safety net; every wake source unparks it).
+/// The longest a parked worker waits before a pass of its own. A safety net for every wake source but one: the hang-up
+/// watch of a new session (`Resource::poll_hung_up`) registers no waker while the server's bytes are unread in front of
+/// the end (sshd's post-authentication notice, the common case), so there the watch is a poll at this interval and a
+/// hang-up is seen up to one `PARK` late. A deviation from the idle-loss design's goal 1 (readiness, no added polling
+/// loop), bounded by this interval and limited to a session that has carried no exchange.
 const PARK: Duration = Duration::from_millis(50);
 /// Messages moved each way per exchange per pass, so that one exchange cannot starve the others.
 const BATCH: usize = 8;
@@ -72,6 +76,9 @@ struct Entry<R> {
     phase: Phase,
     /// The pool key the connection was made for (its host and port are what a reuse proof checks the host key of).
     key: Key,
+    /// An exchange has started on it. Until then its idle watch is not polled, only its hang-up watch (see the
+    /// `Phase::Idle` arm of `pass`).
+    served: bool,
 }
 
 struct Worker<C: Connector> {
@@ -208,6 +215,7 @@ where
                         resource,
                         phase: Phase::Connecting,
                         key: command.key.clone(),
+                        served: false,
                     },
                 );
             }
@@ -222,7 +230,7 @@ where
     fn start(&mut self, connection: ConnectionId, mut exchange: Exchange) {
         let now = self.now();
         // The host's lease is taken up: from here the connection is not idle, so no retirement is held off by it.
-        self.shared.claims.begun(connection);
+        self.shared.begun(connection);
         let (Some(entry), Some((stream, endpoint))) =
             (self.entries.get_mut(&connection), exchange.channel.take())
         else {
@@ -240,6 +248,7 @@ where
                 .start_exchange(stream, endpoint, exchange.service, &exchange.path);
         match started {
             Ok(()) => {
+                entry.served = true;
                 entry.phase = Phase::Active(Box::new(Running {
                     exchange,
                     close_deadline: None,
@@ -292,7 +301,25 @@ where
                     Poll::Pending => {}
                 },
                 Phase::Idle => {
-                    if entry.resource.poll_idle_lost(cx).is_ready() {
+                    // A new session gets no idle poll before its first exchange (the accepted idle-loss design): the
+                    // server writes to it after authentication (OpenSSH's host-key notice), the idle watch would take
+                    // that for a loss, and the first exchange's channel reads it. Until then only a hang-up retires it
+                    // (the peer's FIN or reset, also behind those unread bytes, `IdleSocket::poll_hung_up`), so a
+                    // session cut before the host leases it is refused to the host, which asks again (fix round,
+                    // STATE-P2-1).
+                    //
+                    // An idle loss retires the connection through the claims, as a failed reuse proof does: the host
+                    // may have leased it and queued an exchange's start since it went idle, and that start must find
+                    // it, not a disposal (it would end the exchange `CarrierLost` before its first byte). A leased
+                    // connection stays for its exchange, which meets a real loss on its own channel; one retired here
+                    // is refused to the host (`NotConnected`) until the host has read its `IdleClosed`, and the host
+                    // asks again.
+                    let lost = if entry.served {
+                        entry.resource.poll_idle_lost(cx)
+                    } else {
+                        entry.resource.poll_hung_up(cx)
+                    };
+                    if lost.is_ready() && self.shared.retire(*id) {
                         entry.phase = disposing(Report::IdleClosed, false, now, &self.settings);
                     }
                 }
@@ -321,10 +348,10 @@ where
         }
         for id in done {
             // Destruction precedes the report, which lets the pool free the capacity.
+            // Its claims stay until the host takes the report (`Shared::poll_completion`).
             let Some(entry) = self.entries.remove(&id) else {
                 continue;
             };
-            self.shared.claims.forget(id);
             let Phase::Disposing { report, .. } = entry.phase else {
                 continue;
             };

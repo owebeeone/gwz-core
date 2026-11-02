@@ -106,15 +106,6 @@
     },
     {
      "lint": "clippy::bool_assert_comparison",
-     "file": "src/git/endpoint/shared_reservation.rs",
-     "item": "mod tests > fn reservation_survives_pending_disposal_until_completion",
-     "unit": "gwz_core:lib",
-     "count": 1,
-     "owner": "6.1",
-     "class": "style"
-    },
-    {
-     "lint": "clippy::bool_assert_comparison",
      "file": "src/git/endpoint/stream_io_tests.rs",
      "item": "mod producer > fn clones_of_a_stream_share_one_gate",
      "unit": "gwz_core:lib",
@@ -1150,15 +1141,6 @@
      "item": "fn automatic_gh_open_keeps_the_challenge_socket_across_mux_receipts",
      "unit": "gwz_core:lib",
      "count": 2,
-     "owner": "6.1",
-     "class": "style"
-    },
-    {
-     "lint": "clippy::bool_assert_comparison",
-     "file": "src/git/endpoint/shared_reservation.rs",
-     "item": "mod tests > fn reservation_survives_pending_disposal_until_completion",
-     "unit": "gwz_core:lib",
-     "count": 1,
      "owner": "6.1",
      "class": "style"
     },

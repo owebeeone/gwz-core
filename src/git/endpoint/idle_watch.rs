@@ -3,14 +3,20 @@
 //! session's EOF or reset reaches nobody. A reactor thread owned by the
 //! connector watches a duplicate of each idle socket and wakes the host.
 use std::{
+    future::Future,
     io,
     mem::MaybeUninit,
     net::TcpStream,
+    pin::pin,
     sync::Arc,
-    task::{Context, Poll},
+    task::{Context, Poll, Waker},
     thread::{self, JoinHandle},
 };
-use tokio::{io::ReadBuf, runtime::Handle, sync::oneshot};
+use tokio::{
+    io::{Interest, ReadBuf},
+    runtime::Handle,
+    sync::oneshot,
+};
 
 /// A thread driving only a current-thread runtime's I/O driver, until the last
 /// owner drops it. The connector and every watch it made own it, so it
@@ -79,6 +85,34 @@ impl IdleSocket {
         match self.stream.poll_peek(cx, &mut buffer) {
             Poll::Pending => Poll::Pending,
             Poll::Ready(_) => Poll::Ready(()),
+        }
+    }
+
+    /// Ready once the peer has closed or reset the connection. Bytes it sent are not an end: a server may write to a
+    /// session that has carried no exchange yet (OpenSSH's host-key notice after authentication), and those bytes are
+    /// the first exchange's to read. A peek sees an end only when nothing unread is before it; behind unread bytes it
+    /// sees the bytes, so the socket's readiness, as the reactor last saw it, says whether the peer's FIN or reset came
+    /// after them (read-closed). Pending registers `cx` only while nothing is unread: behind unread bytes no wake comes,
+    /// and the caller polls again on its own pass (the SSH worker's `PARK` interval bounds that). A peek: nothing is
+    /// consumed.
+    pub(crate) fn poll_hung_up(&self, cx: &mut Context<'_>) -> Poll<()> {
+        let mut byte = [MaybeUninit::uninit()];
+        let mut buffer = ReadBuf::uninit(&mut byte);
+        match self.stream.poll_peek(cx, &mut buffer) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Err(_) | Ok(0)) => Poll::Ready(()),
+            Poll::Ready(Ok(_)) => {
+                // Readiness the reactor has recorded answers at once; none recorded is not an end.
+                let ready = pin!(self.stream.ready(Interest::READABLE))
+                    .poll(&mut Context::from_waker(Waker::noop()));
+                // READABLE interest reports READABLE | READ_CLOSED, never ERROR: a reset is read-closed on every
+                // platform (epoll HUP, kqueue EV_EOF, AFD ABORT), or the peek's Err once nothing is unread.
+                match ready {
+                    Poll::Ready(Ok(ready)) if ready.is_read_closed() => Poll::Ready(()),
+                    Poll::Ready(Err(_)) => Poll::Ready(()),
+                    Poll::Ready(Ok(_)) | Poll::Pending => Poll::Pending,
+                }
+            }
         }
     }
 }

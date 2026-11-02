@@ -436,22 +436,18 @@ impl Resource for NativeResource {
         self.evidence.clone()
     }
     fn poll_idle_lost(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        let State::Idle(authenticated) = &self.state else {
-            self.watch = None;
-            return Poll::Pending;
-        };
-        if self.watch.is_none() {
-            let watch = authenticated
-                .connection
-                .watch_socket()
-                .and_then(|socket| IdleSocket::watch(&self.idle, socket));
-            match watch {
-                Ok(watch) => self.watch = Some(watch),
-                // A session that cannot be watched is not kept idle.
-                Err(_) => return Poll::Ready(()),
-            }
+        match self.idle_watch() {
+            Some(Ok(watch)) => watch.poll_lost(cx),
+            Some(Err(())) => Poll::Ready(()),
+            None => Poll::Pending,
         }
-        self.watch.as_ref().expect("idle watch").poll_lost(cx)
+    }
+    fn poll_hung_up(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        match self.idle_watch() {
+            Some(Ok(watch)) => watch.poll_hung_up(cx),
+            Some(Err(())) => Poll::Ready(()),
+            None => Poll::Pending,
+        }
     }
 }
 impl ChannelResource for NativeResource {
@@ -564,6 +560,25 @@ impl Drop for NativeResource {
     }
 }
 impl NativeResource {
+    /// The idle session's socket watch, made on first use: `None` while the session is not idle (and any watch is
+    /// dropped), `Err` when it cannot be watched, which is not kept idle.
+    fn idle_watch(&mut self) -> Option<Result<&IdleSocket, ()>> {
+        let State::Idle(authenticated) = &self.state else {
+            self.watch = None;
+            return None;
+        };
+        if self.watch.is_none() {
+            let watch = authenticated
+                .connection
+                .watch_socket()
+                .and_then(|socket| IdleSocket::watch(&self.idle, socket));
+            match watch {
+                Ok(watch) => self.watch = Some(watch),
+                Err(_) => return Some(Err(())),
+            }
+        }
+        self.watch.as_ref().map(Ok)
+    }
     fn setup_failure(&self, error: &io::Error) -> Failure {
         if let (Some(context), Some(ended)) = (
             &self.setup_context,

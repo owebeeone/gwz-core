@@ -31,7 +31,9 @@
 //!   authorization (`authorize_reuse`, plan step 1.6) reads this record: a connection nothing authenticated is
 //!   leased to another binding at once, and one a helper token or the logon session authenticated never is.
 //! - Idle liveness: an idle connection whose peer closes it, resets it or sends unasked bytes (Hyper's driver ends) is
-//!   disposed and reported `Completion::IdleClosed`.
+//!   disposed and reported `Completion::IdleClosed`. It is retired through the adapter's claims, as the SSH adapter's
+//!   is (`ssh_adapter/claims.rs`): one the host has leased stays for its exchange, and one retired is refused to the
+//!   host (`NotConnected`, and the opening asks again) until the host has read its `IdleClosed`.
 //! - Fault scope: a failed request, response or stream ends that exchange only (`Discarded`; the host's pool closes
 //!   that one connection); a connection's physical failure retires that connection only; neither touches another
 //!   connection or the host.
@@ -66,6 +68,19 @@ mod auth;
 mod exchange;
 mod pipe;
 mod worker;
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        mod lease_tests;
+
+        impl HttpsAdapter {
+            /// The reports its worker has made that the host has not yet taken (the rows read them).
+            pub(crate) fn untaken(&self) -> super::ssh_adapter::Untaken {
+                self.shared.untaken()
+            }
+        }
+    }
+}
 
 /// The budgets of the adapter's connections and exchanges, from the endpoint's pool policy.
 #[derive(Clone, Copy, Debug)]
@@ -255,7 +270,9 @@ impl HttpsAdapter {
     pub(crate) fn scopes(&self) -> Scopes {
         self.scopes.clone()
     }
-    fn send(&mut self, command: Command) {
+    /// Queues `command` for the worker, starting it on the first command. False: no worker took it, and it was refused
+    /// (`Command::refuse`).
+    fn send(&mut self, command: Command) -> bool {
         if let Some((start, receiver)) = self.start.take() {
             match start(receiver, self.shared.clone()) {
                 Ok(_) => self.running = true,
@@ -264,12 +281,15 @@ impl HttpsAdapter {
             }
         }
         if !self.running {
-            return command.refuse(&self.shared);
+            command.refuse(&self.shared);
+            return false;
         }
         if let Err(SendError(command)) = self.commands.send(command) {
             // The worker has ended (it was disposed of): nothing is left to do the work.
             command.refuse(&self.shared);
+            return false;
         }
+        true
     }
 }
 impl EndpointAdapter for HttpsAdapter {
@@ -294,14 +314,27 @@ impl EndpointAdapter for HttpsAdapter {
                 "HTTPS adapter has no worker",
             ));
         }
+        // A connection the worker retired on an idle loss is refused here, before anything is queued: the host takes
+        // `NotConnected` as a lost lease and asks again. One this leases is not retired; a start that is not queued
+        // releases the lease (`Lease`'s drop).
+        let Some(lease) = self.shared.lease(connection) else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotConnected,
+                "the connection was retired",
+            ));
+        };
         let settle = Arc::new(Settle::default());
         // The exchange authenticates with the helper this operation's own context holds (plan step 1.3c/C2(b)), never
         // another operation's: the context lives in the exchange's work until its task ends, and nothing else keeps it.
         let (client, work) = pipe::exchange(spec, auth, settle);
-        self.send(Command::Start {
+        let queued = self.send(Command::Start {
             connection,
             work: Box::new(work),
         });
+        if queued {
+            lease.queued();
+        }
+        // Not queued, the work was refused: the client reads its failure.
         Ok(Box::new(client))
     }
     fn authorize_reuse(&mut self, command: ReuseCommand) -> bool {

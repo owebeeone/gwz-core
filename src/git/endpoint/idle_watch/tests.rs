@@ -117,3 +117,92 @@ fn each_watch_keeps_its_reactor() {
     drop(socket);
     assert!(weak.upgrade().is_none());
 }
+
+/// Polls `socket`'s hang-up watch, as a worker's passes would, until it reports one or `at_most` passes.
+fn hung_up_within(socket: &IdleSocket, waker: &Waker, at_most: Duration) -> bool {
+    let deadline = std::time::Instant::now() + at_most;
+    let mut cx = Context::from_waker(waker);
+    while std::time::Instant::now() < deadline {
+        if socket.poll_hung_up(&mut cx).is_ready() {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    false
+}
+
+#[test]
+fn bytes_alone_are_not_a_hang_up_and_stay_unread() {
+    // F8 follow-up 1, fix round: what a server writes to a session before its first exchange is not an end.
+    let reactor = IdleReactor::start().unwrap();
+    let (mut client, mut server) = pair();
+    let (waker, _woken) = waker();
+    let socket = IdleSocket::watch(&reactor, client.try_clone().unwrap()).unwrap();
+    server.write_all(b"x").unwrap();
+    // The bytes are seen (the full watch reports them) ...
+    let mut cx = Context::from_waker(&waker);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while socket.poll_lost(&mut cx).is_pending() {
+        assert!(std::time::Instant::now() < deadline, "the bytes arrived");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    // ... and the hang-up watch does not take them for an end.
+    assert!(!hung_up_within(&socket, &waker, Duration::from_millis(300)));
+    drop(socket);
+    let mut byte = [0];
+    client.read_exact(&mut byte).unwrap();
+    assert_eq!(&byte, b"x");
+}
+
+#[test]
+fn the_peer_closing_with_nothing_unread_wakes_the_waker_and_is_a_hang_up() {
+    let reactor = IdleReactor::start().unwrap();
+    let (client, server) = pair();
+    let (waker, woken) = waker();
+    let socket = IdleSocket::watch(&reactor, client.try_clone().unwrap()).unwrap();
+    let mut cx = Context::from_waker(&waker);
+    assert_eq!(socket.poll_hung_up(&mut cx), Poll::Pending);
+    drop(server);
+    woken
+        .recv_timeout(Duration::from_secs(30))
+        .expect("the reactor woke the waker");
+    assert_eq!(socket.poll_hung_up(&mut cx), Poll::Ready(()));
+}
+
+/// The server writes, then ends the connection (a reset when `reset`), while the client has read nothing: a peek sees
+/// only the bytes, and the hang-up watch must still see the end.
+fn an_end_behind_unread_bytes_is_a_hang_up(reset: bool) {
+    let reactor = IdleReactor::start().unwrap();
+    let (client, mut server) = pair();
+    let (waker, _woken) = waker();
+    let socket = IdleSocket::watch(&reactor, client.try_clone().unwrap()).unwrap();
+    server.write_all(b"notice").unwrap();
+    // The bytes are on the client's socket first, so the end comes behind them.
+    let mut cx = Context::from_waker(&waker);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while socket.poll_lost(&mut cx).is_pending() {
+        assert!(std::time::Instant::now() < deadline, "the bytes arrived");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(!hung_up_within(&socket, &waker, Duration::from_millis(50)));
+    if reset {
+        socket2::SockRef::from(&server)
+            .set_linger(Some(Duration::ZERO))
+            .unwrap();
+    }
+    drop(server);
+    assert!(
+        hung_up_within(&socket, &waker, Duration::from_secs(30)),
+        "the end behind the unread bytes was seen"
+    );
+}
+
+#[test]
+fn the_peer_closing_behind_unread_bytes_is_a_hang_up() {
+    an_end_behind_unread_bytes_is_a_hang_up(false);
+}
+
+#[test]
+fn a_reset_behind_unread_bytes_is_a_hang_up() {
+    an_end_behind_unread_bytes_is_a_hang_up(true);
+}

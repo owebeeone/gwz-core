@@ -153,6 +153,13 @@ pub(crate) trait Resource {
     fn poll_idle_lost(&mut self, _cx: &mut Context<'_>) -> Poll<()> {
         Poll::Pending
     }
+    /// Ready when the peer has closed or reset this idle connection; bytes it sent are not an end (a server may write
+    /// to a session after authentication, before its first exchange). For a connection that has carried no exchange
+    /// yet (the SSH adapter's worker). Never consumes bytes; Pending whenever an exchange owns the I/O. Pending need
+    /// not register `cx` (the caller polls again on its own pass).
+    fn poll_hung_up(&mut self, _cx: &mut Context<'_>) -> Poll<()> {
+        Poll::Pending
+    }
     /// True while the connecting resource waits on a local budget (a job
     /// place, a shared reservation, a setup slot) before any network work. The
     /// host tells the pool, which pauses the connect clock for the wait and

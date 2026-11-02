@@ -10,7 +10,10 @@
 //!   the pump's clean close and the reclaim of its session; the exchange's end (`ExchangeIo::poll_finish`) says
 //!   `Reusable` only then.
 //! - Idle liveness: an idle session whose peer closes it, resets it or sends unasked bytes is disposed and reported
-//!   `Completion::IdleClosed` (the resource's idle watch).
+//!   `Completion::IdleClosed` (the resource's idle watch), once it has carried its first exchange. Before that only a
+//!   hang-up retires it (the peer's FIN or reset, `Resource::poll_hung_up`): the server may write to a new session after
+//!   authentication (OpenSSH's host-key notice), which the first exchange's channel reads, and those bytes must not
+//!   retire it (accepted idle-loss design, `dev-docs/history/GwzTransportIdleLossDesign-ReviewState.md`).
 //! - Fault scope: a stream or channel failure ends that exchange only (`Discarded`; the host's pool closes that one
 //!   connection); a connection's physical failure retires that connection only; neither touches another connection or
 //!   the host.
@@ -53,6 +56,66 @@ use std::{
 
 mod claims;
 mod worker;
+
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        mod lease_tests;
+
+        /// The reports an adapter's worker has made that the host has not yet taken (the rows read them).
+        #[derive(Clone)]
+        pub(crate) struct Untaken(Arc<Shared>);
+        impl Untaken {
+            /// How many `IdleClosed` reports wait in the outbox.
+            pub(crate) fn idle_closed(&self) -> usize {
+                self.0
+                    .lock()
+                    .completions
+                    .iter()
+                    .filter(|completion| matches!(completion, Completion::IdleClosed { .. }))
+                    .count()
+            }
+            /// How many reuse verdicts `Authorized` wait in the outbox.
+            pub(crate) fn authorized(&self) -> usize {
+                self.0
+                    .lock()
+                    .completions
+                    .iter()
+                    .filter(|completion| {
+                        matches!(
+                            completion,
+                            Completion::Reuse {
+                                verdict: gwz_connection::ReuseVerdict::Authorized,
+                                ..
+                            }
+                        )
+                    })
+                    .count()
+            }
+            /// Whether the adapter's claims record nothing.
+            pub(crate) fn claims_empty(&self) -> bool {
+                self.0.claims.is_empty()
+            }
+            /// How many retirements stand in the adapter's claims.
+            pub(crate) fn retired(&self) -> usize {
+                self.0.claims.retired()
+            }
+        }
+        impl Shared {
+            pub(super) fn untaken(self: &Arc<Self>) -> Untaken {
+                Untaken(self.clone())
+            }
+            /// Whether the host's lease of `connection` stands in the claims.
+            pub(super) fn leased(&self, connection: ConnectionId) -> bool {
+                self.claims.leased(connection)
+            }
+        }
+        impl SshAdapter {
+            pub(crate) fn untaken(&self) -> Untaken {
+                self.shared.untaken()
+            }
+        }
+    }
+}
 
 /// The budgets of the adapter's connections and exchanges, from the endpoint's pool policy.
 #[derive(Clone, Copy, Debug)]
@@ -98,9 +161,29 @@ struct Outbox {
 #[derive(Default)]
 pub(super) struct Shared {
     outbox: Mutex<Outbox>,
-    /// Which connections the host has leased and which the worker has retired (the SSH adapter's; the HTTPS adapter
-    /// shares the outbox and leaves this empty).
+    /// Which connections the host has leased and which the worker has retired (each adapter's own, as is its outbox).
     claims: claims::Claims,
+}
+/// The host's lease of an idle connection, from `start_exchange`'s claim until the exchange's start is queued for the
+/// worker, whose `begun` then takes it up. Dropped unqueued (the start failed, or no worker took it), it is released, so
+/// that a failed start leaves nothing standing between the connection and its retirement.
+pub(super) struct Lease {
+    shared: Arc<Shared>,
+    connection: ConnectionId,
+    queued: bool,
+}
+impl Lease {
+    /// The start is queued: the worker's `begun` ends the lease.
+    pub(super) fn queued(mut self) {
+        self.queued = true;
+    }
+}
+impl Drop for Lease {
+    fn drop(&mut self) {
+        if !self.queued {
+            self.shared.claims.release(self.connection);
+        }
+    }
 }
 impl Shared {
     fn lock(&self) -> std::sync::MutexGuard<'_, Outbox> {
@@ -126,16 +209,51 @@ impl Shared {
             waker.wake();
         }
     }
-    /// The next completion, or `Pending` with the driver's waker registered (the HTTPS adapter shares this outbox).
+    /// The host leases `connection` for an exchange whose start it is about to queue; `None`: the worker retired it.
+    pub(super) fn lease(self: &Arc<Self>, connection: ConnectionId) -> Option<Lease> {
+        self.claims.lease(connection).then(|| Lease {
+            shared: self.clone(),
+            connection,
+            queued: false,
+        })
+    }
+    /// The worker retires `connection`, an idle connection; false: the host leased it first, so it stays.
+    pub(super) fn retire(&self, connection: ConnectionId) -> bool {
+        self.claims.retire(connection)
+    }
+    /// The worker has taken up the exchange's start for `connection`.
+    pub(super) fn begun(&self, connection: ConnectionId) {
+        self.claims.begun(connection);
+    }
+    /// The next completion, or `Pending` with the driver's waker registered (each adapter has its own outbox). A
+    /// completion that ends a connection is read by the host here, and its claims are forgotten here, not at the
+    /// disposal: the host may lease a connection it still counts idle until it has read this. After this read the
+    /// claims no longer refuse a start of it. The host can still make one: a pool lease it held while a reuse proof
+    /// ran, whose `Authorized` verdict it serves after reading this report in the same pass. The production adapter
+    /// shape refuses that start in `SchemeRouter`, whose route of the connection goes with this report
+    /// (`NotConnected`, and the opening asks again); an adapter given to the host without the router has no such guard
+    /// (fix round, CODE-P2-1).
     pub(super) fn poll_completion(&self, cx: &mut Context<'_>) -> Poll<Completion> {
-        let mut outbox = self.lock();
-        match outbox.completions.pop_front() {
-            Some(completion) => Poll::Ready(completion),
-            None => {
-                outbox.waker = Some(cx.waker().clone());
-                Poll::Pending
+        let completion = {
+            let mut outbox = self.lock();
+            match outbox.completions.pop_front() {
+                Some(completion) => completion,
+                None => {
+                    outbox.waker = Some(cx.waker().clone());
+                    return Poll::Pending;
+                }
             }
+        };
+        match &completion {
+            Completion::Connected {
+                connection,
+                result: Err(_),
+            }
+            | Completion::Closed { connection }
+            | Completion::IdleClosed { connection } => self.claims.forget(*connection),
+            _ => {}
         }
+        Poll::Ready(completion)
     }
     /// `Ready` once the worker has confirmed disposal, or `Pending` with the disposal's waker registered.
     pub(super) fn poll_disposed(&self, cx: &mut Context<'_>) -> Poll<()> {
@@ -258,7 +376,8 @@ impl SshAdapter {
             dispose_sent: false,
         }
     }
-    fn send(&mut self, command: Command) {
+    /// Queues `command` for the worker, starting it on the first command. False: no worker took it.
+    fn send(&mut self, command: Command) -> bool {
         if let Some((start, receiver)) = self.start.take() {
             match start(receiver, self.shared.clone()) {
                 Ok(join) => self.worker = Some(join.thread().clone()),
@@ -277,11 +396,13 @@ impl SshAdapter {
                     )),
                 });
             }
-            return;
+            return false;
         };
-        if self.commands.send(command).is_ok() {
+        let sent = self.commands.send(command).is_ok();
+        if sent {
             worker.unpark();
         }
+        sent
     }
 }
 impl EndpointAdapter for SshAdapter {
@@ -305,14 +426,15 @@ impl EndpointAdapter for SshAdapter {
         let worker = self.worker.clone().ok_or_else(|| {
             io::Error::new(io::ErrorKind::NotConnected, "SSH adapter has no worker")
         })?;
-        // A connection the worker retired (a failed reuse proof) is refused here, before anything is queued: the host
-        // takes `NotConnected` as a lost lease and asks again for a new connection. One this leases is not retired.
-        if !self.shared.claims.lease(connection) {
+        // A connection the worker retired (a failed reuse proof, an idle loss) is refused here, before anything is
+        // queued: the host takes `NotConnected` as a lost lease and asks again for a new connection. One this leases is
+        // not retired; every return below that queues no start releases the lease (`Lease`'s drop).
+        let Some(lease) = self.shared.lease(connection) else {
             return Err(io::Error::new(
                 io::ErrorKind::NotConnected,
                 "the connection was retired",
             ));
-        }
+        };
         let context = BridgeContext {
             session_id: "gwz-ssh-adapter".into(),
             stream_id: 1,
@@ -334,7 +456,7 @@ impl EndpointAdapter for SshAdapter {
                 ChannelService::ReceivePack
             }
         };
-        self.send(Command::Start {
+        let queued = self.send(Command::Start {
             connection,
             exchange: Box::new(Exchange {
                 channel: Some((stream, endpoint)),
@@ -344,6 +466,14 @@ impl EndpointAdapter for SshAdapter {
                 settle: settle.clone(),
             }),
         });
+        if !queued {
+            // The worker has ended (it was disposed of): nothing will run the exchange, and nothing was sent.
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "the SSH adapter's worker has ended",
+            ));
+        }
+        lease.queued();
         Ok(Box::new(SshExchange {
             client,
             settle,

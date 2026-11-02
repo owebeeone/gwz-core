@@ -241,6 +241,7 @@ where
                 resource,
                 phase,
                 key,
+                served: _,
             } = entry;
             if !matches!(phase, Phase::Idle) {
                 continue;

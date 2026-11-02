@@ -5,6 +5,7 @@
 //! the factory keeps each adapter's scope records for the rows to read.
 use super::{
     ConnectionHost,
+    idle_lease_tests::{Gate, Held},
     tests::{block_on, operation, wait_for},
 };
 use crate::{
@@ -62,10 +63,12 @@ fn inputs(server: &Server) -> HttpsInputs {
     }
 }
 
-/// Makes the production adapter shape over `inputs`, keeping each adapter's scope records.
+/// Makes the production adapter shape over `inputs`, keeping each adapter's scope records; with a `gate`, the host is
+/// given it through the gate's `Held` (`idle_lease_tests.rs`).
 struct Factory {
     inputs: HttpsInputs,
     scopes: Arc<Mutex<Vec<Scopes>>>,
+    gate: Option<Arc<Gate>>,
 }
 impl EndpointFactory for Factory {
     fn create(
@@ -75,7 +78,14 @@ impl EndpointFactory for Factory {
     ) -> Result<Box<dyn EndpointAdapter>, FactoryError> {
         let adapter = HttpsAdapter::new(self.inputs.clone(), env.safety().clone());
         self.scopes.lock().unwrap().push(adapter.scopes());
-        Ok(Box::new(SchemeRouter::new(None, Some(adapter))))
+        let Some(gate) = &self.gate else {
+            return Ok(Box::new(SchemeRouter::new(None, Some(adapter))));
+        };
+        gate.adapter_made(adapter.untaken());
+        Ok(Box::new(Held {
+            inner: SchemeRouter::new(None, Some(adapter)),
+            gate: gate.clone(),
+        }))
     }
 }
 
@@ -130,7 +140,7 @@ pub(super) struct Case {
     /// The fixture server runs on it.
     _runtime: tokio::runtime::Runtime,
     server: Server,
-    proxy: CutProxy,
+    pub(super) proxy: CutProxy,
     pub(super) seen: Seen,
     scopes: Arc<Mutex<Vec<Scopes>>>,
     host: Mutex<ConnectionHost>,
@@ -154,6 +164,25 @@ impl Case {
         routes: impl FnOnce(&std::path::Path) -> (Option<https_auth::Config>, Option<NativeCaller>),
         safety: Option<SharedProcessSafety>,
     ) -> Self {
+        Self::build(handler, behaviour, routes, safety, None)
+    }
+    /// A case over the fixture server `handler` makes, whose host is given its adapter through `gate`.
+    pub(super) fn held(handler: impl FnOnce(&Seen) -> Handler, gate: Arc<Gate>) -> Self {
+        Self::build(
+            handler,
+            Behaviour::default(),
+            |_| (None, None),
+            None,
+            Some(gate),
+        )
+    }
+    fn build(
+        handler: impl FnOnce(&Seen) -> Handler,
+        behaviour: Behaviour,
+        routes: impl FnOnce(&std::path::Path) -> (Option<https_auth::Config>, Option<NativeCaller>),
+        safety: Option<SharedProcessSafety>,
+        gate: Option<Arc<Gate>>,
+    ) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -170,6 +199,7 @@ impl Case {
         let factory = Factory {
             inputs: inputs(&server),
             scopes: Arc::clone(&scopes),
+            gate,
         };
         let safety = safety
             .unwrap_or_else(|| Arc::new(crate::transport_host::composition::process_safety()));
@@ -196,7 +226,7 @@ impl Case {
         )
     }
     /// The spec of an advertisement through the proxy (`through`) or straight to the server.
-    fn spec(&self, through: bool) -> ExchangeSpec {
+    pub(super) fn spec(&self, through: bool) -> ExchangeSpec {
         self.spec_for(through, GitService::UploadPackAdvertisement)
     }
     fn spec_for(&self, through: bool, service: GitService) -> ExchangeSpec {
@@ -313,7 +343,7 @@ pub(super) fn body(exchange: &mut Exchange) -> Result<Vec<u8>, StreamError> {
         }
     })
 }
-fn served(handler_seen: &Seen) -> Handler {
+pub(super) fn served(handler_seen: &Seen) -> Handler {
     recording(handler_seen, |_| advertised(200))
 }
 

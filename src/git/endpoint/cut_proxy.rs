@@ -18,11 +18,20 @@ use std::{
 /// How long `arm_existing` and `freeze_existing` wait for a link's client socket to be quiet.
 const SETTLE: Duration = Duration::from_secs(10);
 
-/// How many waits in a row (each lasts a [`TICK`]) find a client's socket empty, after a request, before the request
-/// holds. A segment the client has sent can still be on its way: loopback delivers through a queue of its own, which
-/// on a loaded machine is now and then milliseconds behind the sender (the last packet of an exchange, sent as its
-/// session went idle, reached the proxy 3 ms after the test had armed the link).
-const QUIET_TICKS: u32 = 3;
+/// How long a client's socket must stay empty, after a request, before the request holds, and in how many waits
+/// (each lasts a [`TICK`] at most) in a row that found it empty: both must hold. A segment the client has sent can
+/// still be on its way: loopback delivers through a queue of its own, which on a loaded machine is now and then
+/// milliseconds behind the sender (the last packet of an exchange, sent as its session went idle, reached the proxy
+/// 3 ms after the test had armed the link).
+/// - The time: a wait that a signal interrupts answers "nothing yet" at once (`wait_readable` reports an interrupted
+///   `poll` as not readable), and on Linux every child that exits signals the test process once tokio has installed
+///   its SIGCHLD handler (it does when a row drops a child that is still running), so three waits alone could pass in
+///   microseconds.
+/// - The waits: a forwarding thread that a loaded machine deschedules after an empty wait sees the time pass without
+///   looking at its socket, so time alone could settle a request with the last look well short of [`QUIET`] after it.
+const QUIET: Duration = Duration::from_millis(60);
+/// The waits in a row that [`QUIET`] also needs.
+const QUIET_WAITS: u32 = 3;
 
 /// How long a forwarding thread waits for its socket to be readable before it looks at its link again.
 const TICK: Duration = Duration::from_millis(20);
@@ -32,8 +41,8 @@ const TICK: Duration = Duration::from_millis(20);
 /// A request (`arm_existing`, `freeze_existing`) takes effect for the bytes the client sends after the call returns,
 /// not for bytes it had sent before it: those are in the socket already, or on their way to it, and the forwarding
 /// thread, which may be slow to wake on a loaded machine, has still to read them. So the forwarding thread applies a
-/// request only when it has found the client's socket empty for [`QUIET_TICKS`] waits since the request, and the
-/// caller waits for that.
+/// request only when it has found the client's socket empty for [`QUIET`] and [`QUIET_WAITS`] waits since the request,
+/// and the caller waits for that.
 #[derive(Default)]
 struct Gate {
     /// Ends the link, unforwarded, when the client next sends bytes.
@@ -274,9 +283,11 @@ fn retried(error: &io::Error) -> bool {
 fn forward(mut from: TcpStream, mut to: TcpStream, client: Option<Arc<Gate>>, reset: &AtomicBool) {
     let _ends = client.clone().map(Ends);
     let mut buffer = [0; 16 * 1024];
-    // The waits in a row that found the client's socket empty since a request was seen.
-    let mut quiet = 0;
+    // When the waits in a row that found the client's socket empty since a request was seen began, and how many.
+    let mut quiet_since: Option<Instant> = None;
+    let mut quiet_waits = 0;
     loop {
+        let waited_from = Instant::now();
         let outcome = match client.as_ref().and_then(|gate| gate.take_fault()) {
             Some(error) => Err(error),
             None => match wait_readable(&from, TICK) {
@@ -288,7 +299,8 @@ fn forward(mut from: TcpStream, mut to: TcpStream, client: Option<Arc<Gate>>, re
         let count = match outcome {
             Ok(0) => break,
             Ok(count) => {
-                quiet = 0;
+                quiet_since = None;
+                quiet_waits = 0;
                 count
             }
             Err(error)
@@ -304,13 +316,16 @@ fn forward(mut from: TcpStream, mut to: TcpStream, client: Option<Arc<Gate>>, re
                 // do holds from here.
                 if let Some(gate) = &client {
                     if gate.asked() {
-                        quiet += 1;
-                        if quiet >= QUIET_TICKS {
+                        let since = *quiet_since.get_or_insert(waited_from);
+                        quiet_waits += 1;
+                        if since.elapsed() >= QUIET && quiet_waits >= QUIET_WAITS {
                             gate.settle();
-                            quiet = 0;
+                            quiet_since = None;
+                            quiet_waits = 0;
                         }
                     } else {
-                        quiet = 0;
+                        quiet_since = None;
+                        quiet_waits = 0;
                     }
                 }
                 continue;
