@@ -51,6 +51,8 @@ pub(crate) struct OperationAuth {
     /// the logon session this operation's challenges are answered by, and no other operation's. Retained native
     /// cleanup clones it and never holds the context.
     native: Option<NativeCaller>,
+    /// The operation's credential record (HTTPS model draft r5 section 3(b)): it lives as long as this provider.
+    needs: needs::Needs,
 }
 /// What the scope's digest is of, so that no other digest in gwz can equal it.
 const SCOPE_DOMAIN: &[u8] = b"gwz-operation-auth-scope/1";
@@ -80,6 +82,7 @@ impl OperationAuth {
         field(&(entries.len() as u64).to_le_bytes());
         let mut charge = helper.executable.as_os_str().len()
             + 64
+            + needs::CHARGE
             + native
                 .as_ref()
                 .map_or(0, |_| std::mem::size_of::<NativeCaller>());
@@ -98,7 +101,16 @@ impl OperationAuth {
             }
         }
         let scope = gwz_connection::AuthScope::new(digest.finalize().into());
-        gwz_connection::AuthContext::new(charge, scope, Arc::new(Self { helper, native }))
+        let needs = needs::Needs::new();
+        gwz_connection::AuthContext::new(
+            charge,
+            scope,
+            Arc::new(Self {
+                helper,
+                native,
+                needs,
+            }),
+        )
     }
     /// The view `context` holds, when it is one of these.
     pub(crate) fn of(context: &gwz_connection::AuthContext) -> Option<&Self> {
@@ -111,6 +123,14 @@ impl OperationAuth {
     /// The logon-session caller this operation captured on its original entry, if its entry gave one.
     pub(crate) fn native(&self) -> Option<&NativeCaller> {
         self.native.as_ref()
+    }
+    /// This operation's credential record.
+    #[allow(
+        dead_code,
+        reason = "the adapter's exchange reads it from H1b (HTTPS model draft r5 section 5), which removes this"
+    )]
+    pub(crate) fn needs(&self) -> &needs::Needs {
+        &self.needs
     }
 }
 
@@ -203,6 +223,13 @@ impl AuthError {
     }
 }
 
+// The operation's credential record (HTTPS model draft r5, sub-step H1a). Until H1b wires it into the adapter's
+// exchange only its construction and its rows use it.
+#[allow(
+    dead_code,
+    reason = "the adapter's exchange drives the record from H1b (HTTPS model draft r5 section 5), which removes this"
+)]
+pub(crate) mod needs;
 mod secret;
 pub(crate) use secret::{Secret, SecretHeader};
 use secret::{SecretBuffer, parse_secret};
@@ -271,5 +298,6 @@ cfg_if::cfg_if! {
         use pipes::write_request;
         mod test_support;
         mod runner_tests;
+        mod needs_tests;
     }
 }
