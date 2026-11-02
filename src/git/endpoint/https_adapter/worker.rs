@@ -15,7 +15,7 @@ use crate::git::endpoint::{
     https_connection::HttpConnector,
     https_worker::native::NativeRetained,
     shared_reservation::{ReservedConnector, ReservedResource},
-    ssh_adapter::{Settle, Shared},
+    ssh_adapter::{Settle, Shared, bounded_deadline},
     ssh_pool::{Connector, Resource},
 };
 use gwz_connection::{Completion, ConnectCommand, SharedProcessSafety};
@@ -207,9 +207,12 @@ impl Worker {
                 result: Err(failure(ErrorCode::Unavailable)),
             });
         }
-        let settings = &self.common.settings;
-        let deadline = (settings.connect_timeout_ms != 0)
-            .then(|| self.now().saturating_add(settings.connect_timeout_ms));
+        // The earlier of the adapter's own bound and the pool's network deadline: the setup never outlasts the pool's.
+        let deadline = bounded_deadline(
+            self.now(),
+            self.common.settings.connect_timeout_ms,
+            command.network_remaining_ms,
+        );
         let started = catch_unwind(AssertUnwindSafe(|| {
             self.connector
                 .start(&command.key, &command.identity, deadline)

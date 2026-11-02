@@ -34,7 +34,6 @@ use gwz_transport::{
 };
 use hyper::header::{AUTHORIZATION, WWW_AUTHENTICATE};
 use std::{
-    io,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -303,20 +302,16 @@ pub(super) fn port_of(server: &Server) -> u16 {
 
 /// Reads the exchange's response body to its end.
 pub(super) fn body(exchange: &mut Exchange) -> Result<Vec<u8>, StreamError> {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let mut out = Vec::new();
-    let mut buffer = [0u8; 4096];
-    loop {
-        assert!(Instant::now() < deadline, "the exchange did not end");
-        match exchange.stream().try_read(&mut buffer) {
-            Ok(0) => return Ok(out),
-            Ok(n) => out.extend_from_slice(&buffer[..n]),
-            Err(StreamError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(1));
+    block_on(async {
+        let mut out = Vec::new();
+        let mut buffer = [0u8; 4096];
+        loop {
+            match exchange.stream().read(&mut buffer).await? {
+                0 => return Ok(out),
+                n => out.extend_from_slice(&buffer[..n]),
             }
-            Err(error) => return Err(error),
         }
-    }
+    })
 }
 fn served(handler_seen: &Seen) -> Handler {
     recording(handler_seen, |_| advertised(200))

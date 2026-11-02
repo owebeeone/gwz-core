@@ -2,7 +2,7 @@
 //! reports to the adapter's outbox. It parks between passes; commands, the resources' own wakers (setup jobs, idle
 //! watches, the channel pumps' streams) and the exchanges' clients unpark it, and a pass is never longer than its
 //! bounded work. It ends when it is told to dispose (or its adapter is dropped) and every connection is disposed.
-use super::{AdapterSettings, Command, Exchange, Shared};
+use super::{AdapterSettings, Command, Exchange, Shared, bounded_deadline};
 use crate::git::endpoint::{
     ssh_pool::{Connector, Opening, Resource},
     ssh_worker::{ChannelResource, ThreadWake},
@@ -182,8 +182,12 @@ where
         if command.key.scheme != Scheme::Ssh {
             return self.shared.push(refuse(ErrorCode::UnsupportedOperation));
         }
-        let deadline = (self.settings.connect_timeout_ms != 0)
-            .then(|| now.saturating_add(self.settings.connect_timeout_ms));
+        // The earlier of the adapter's own bound and the pool's network deadline: the setup never outlasts the pool's.
+        let deadline = bounded_deadline(
+            now,
+            self.settings.connect_timeout_ms,
+            command.network_remaining_ms,
+        );
         let started = catch_unwind(AssertUnwindSafe(|| {
             // The setup is given the operation's context, which it authenticates with and drops when it ends.
             self.connector.start_reported(

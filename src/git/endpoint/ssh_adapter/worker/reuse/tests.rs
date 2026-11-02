@@ -1,6 +1,6 @@
 //! The pure parts of the adapter's reuse proofs. The proof jobs themselves run against the private agent in
 //! `transport_host/connection_host/tests.rs`.
-use super::{proof_deadline, trust_names};
+use super::{bounded_deadline, trust_names};
 
 #[test]
 fn a_proof_never_outlasts_its_opening() {
@@ -12,17 +12,31 @@ fn a_proof_never_outlasts_its_opening() {
         (20_000, 0),
         (1, 1),
     ] {
-        let at = proof_deadline(1_000, connect, remaining);
+        let at = bounded_deadline(1_000, connect, Some(remaining)).unwrap();
         assert!(at <= 1_000 + remaining, "{connect} {remaining}: {at}");
     }
     // The adapter's own bound still applies when it is the earlier.
-    assert_eq!(proof_deadline(1_000, 3_000, 5_000), 4_000);
-    assert_eq!(proof_deadline(1_000, 20_000, 5_000), 6_000);
+    assert_eq!(bounded_deadline(1_000, 3_000, Some(5_000)), Some(4_000));
+    assert_eq!(bounded_deadline(1_000, 20_000, Some(5_000)), Some(6_000));
     // No connect bound: only the opening's.
-    assert_eq!(proof_deadline(1_000, 0, 5_000), 6_000);
+    assert_eq!(bounded_deadline(1_000, 0, Some(5_000)), Some(6_000));
     // An opening with nothing left gives a proof that has already expired.
-    assert_eq!(proof_deadline(1_000, 20_000, 0), 1_000);
-    assert_eq!(proof_deadline(u64::MAX - 1, 20_000, 5_000), u64::MAX);
+    assert_eq!(bounded_deadline(1_000, 20_000, Some(0)), Some(1_000));
+    assert_eq!(
+        bounded_deadline(u64::MAX - 1, 20_000, Some(5_000)),
+        Some(u64::MAX)
+    );
+}
+
+#[test]
+fn a_connect_is_bounded_by_the_earlier_of_its_own_bound_and_the_pools() {
+    // Phase 1 State P3-2(e): the same rule bounds a setup by the pool's network deadline (`network_remaining_ms`).
+    assert_eq!(bounded_deadline(1_000, 0, Some(30_000)), Some(31_000));
+    assert_eq!(bounded_deadline(1_000, 60_000, Some(30_000)), Some(31_000));
+    assert_eq!(bounded_deadline(1_000, 20_000, Some(30_000)), Some(21_000));
+    // The pool set no network deadline: the adapter's own bound alone, and none when it has none.
+    assert_eq!(bounded_deadline(1_000, 20_000, None), Some(21_000));
+    assert_eq!(bounded_deadline(1_000, 0, None), None);
 }
 
 #[test]

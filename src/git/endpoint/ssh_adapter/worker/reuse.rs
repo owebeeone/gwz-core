@@ -19,6 +19,7 @@ use super::{Entry, Phase, Report, Worker, disposing};
 use crate::git::endpoint::{
     agent_auth::{Authenticator, Check, Possession, Verdict},
     agent_job::Job,
+    ssh_adapter::bounded_deadline,
     ssh_pool::{Connector, Proofs, Resource},
     ssh_worker::ChannelResource,
 };
@@ -94,17 +95,6 @@ fn trust_names(key_host: &str, written: &str) -> Vec<String> {
     names
 }
 
-/// The deadline of a proof started at `now` (the worker's clock, milliseconds): the earlier of the adapter's connect
-/// bound (none when 0) and what is left of the opening's own deadline. A proof never outlasts its opening.
-fn proof_deadline(now: u64, connect_timeout_ms: u64, remaining_ms: u64) -> u64 {
-    let opening = now.saturating_add(remaining_ms);
-    if connect_timeout_ms == 0 {
-        opening
-    } else {
-        opening.min(now.saturating_add(connect_timeout_ms))
-    }
-}
-
 impl<C> Worker<C>
 where
     C: Connector,
@@ -162,10 +152,15 @@ where
                 .as_ref()
                 .map(|(_, port, host_key)| (names.clone(), *port, host_key.clone())),
         };
-        let deadline = proof_deadline(now, self.settings.connect_timeout_ms, command.remaining_ms);
+        // A proof never outlasts its opening, whatever the adapter's own bound.
+        let deadline = bounded_deadline(
+            now,
+            self.settings.connect_timeout_ms,
+            Some(command.remaining_ms),
+        );
         let started = evidence
             .authority
-            .start(check, Some(deadline), self.settings.io_timeout_ms);
+            .start(check, deadline, self.settings.io_timeout_ms);
         match started {
             Ok(job) => self.reuse.running.push(Running {
                 binding,

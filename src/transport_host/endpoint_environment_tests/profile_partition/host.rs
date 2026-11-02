@@ -73,16 +73,16 @@ fn token(auth: &AuthContext) -> Option<OsString> {
 }
 struct Loopback(VecDeque<u8>);
 impl ExchangeIo for Loopback {
-    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+    fn poll_write(&mut self, _: &mut Context<'_>, data: &[u8]) -> Poll<io::Result<usize>> {
         self.0.extend(data);
-        Ok(data.len())
+        Poll::Ready(Ok(data.len()))
     }
-    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+    fn poll_read(&mut self, _: &mut Context<'_>, out: &mut [u8]) -> Poll<io::Result<usize>> {
         let n = out.len().min(self.0.len());
         for (slot, byte) in out.iter_mut().zip(self.0.drain(..n)) {
             *slot = byte;
         }
-        Ok(n)
+        Poll::Ready(Ok(n))
     }
     fn poll_finish(&mut self, _: &mut Context<'_>) -> Poll<Disposition> {
         Poll::Ready(Disposition::Reusable)

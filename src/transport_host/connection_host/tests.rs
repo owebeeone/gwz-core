@@ -362,28 +362,17 @@ pub(super) fn is_advertisement(bytes: &[u8]) -> bool {
 }
 /// The advertisement of one upload-pack exchange, which then ends with a flush: the server's EOF follows.
 pub(super) fn advertisement(exchange: &mut Exchange) -> Result<Vec<u8>, StreamError> {
-    let deadline = Instant::now() + WITHIN;
-    let mut sent = 0;
-    let mut out = Vec::new();
-    let mut buffer = [0u8; 4096];
-    loop {
-        assert!(Instant::now() < deadline, "the exchange did not end");
-        if sent < 4 {
-            match exchange.stream().try_write(&b"0000"[sent..]) {
-                Ok(n) => sent += n,
-                Err(StreamError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {}
-                Err(error) => return Err(error),
+    block_on(async {
+        exchange.stream().write_all(b"0000").await?;
+        let mut out = Vec::new();
+        let mut buffer = [0u8; 4096];
+        loop {
+            match exchange.stream().read(&mut buffer).await? {
+                0 => return Ok(out),
+                n => out.extend_from_slice(&buffer[..n]),
             }
         }
-        match exchange.stream().try_read(&mut buffer) {
-            Ok(0) => return Ok(out),
-            Ok(n) => out.extend_from_slice(&buffer[..n]),
-            Err(StreamError::Io(error)) if error.kind() == io::ErrorKind::WouldBlock => {
-                thread::sleep(Duration::from_millis(1));
-            }
-            Err(error) => return Err(error),
-        }
-    }
+    })
 }
 
 #[test]

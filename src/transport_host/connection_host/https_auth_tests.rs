@@ -569,16 +569,7 @@ fn a_push_is_authenticated_on_the_connection_its_advertisement_was() {
     );
     case.wait("the connection is idle", |counts| counts.leased == 0);
     let mut push = case.exchange_of(&operation, GitService::ReceivePackExchange);
-    let mut sent = 0;
-    while sent < 4 {
-        match push.stream().try_write(&b"0000"[sent..]) {
-            Ok(n) => sent += n,
-            Err(StreamError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::yield_now();
-            }
-            Err(_) => panic!("the request body was refused"),
-        }
-    }
+    block_on(push.stream().write_all(b"0000")).expect("the request body was refused");
     assert_eq!(body(&mut push).unwrap(), b"0000");
     assert_eq!(block_on(push.finish()).disposition, Disposition::Reusable);
     block_on(operation.finish());
@@ -596,16 +587,7 @@ fn a_push_is_authenticated_on_the_connection_its_advertisement_was() {
 
 /// Writes `bytes` as the request body, or stops where the exchange refuses them (it has ended).
 fn write_body(exchange: &mut gwz_connection::Exchange, bytes: &[u8]) {
-    let mut sent = 0;
-    while sent < bytes.len() {
-        match exchange.stream().try_write(&bytes[sent..]) {
-            Ok(n) => sent += n,
-            Err(StreamError::Io(error)) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::yield_now();
-            }
-            Err(_) => return,
-        }
-    }
+    let _ = block_on(exchange.stream().write_all(bytes));
 }
 
 #[test]

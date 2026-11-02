@@ -35,13 +35,13 @@ use gwz_connection::{
 use gwz_transport::{
     pool::ConnectionId,
     protocol::{Deadlines, Disposition},
-    stream::{MessageEndpoint, Side, Stream},
+    stream::{Error as StreamError, MessageEndpoint, Side, Stream, StreamWaiter},
 };
 use std::{
     collections::VecDeque,
     future::Future,
     io,
-    pin::{Pin, pin},
+    pin::Pin,
     sync::{
         Arc, Mutex,
         mpsc::{self, Receiver, Sender},
@@ -75,6 +75,16 @@ impl AdapterSettings {
             cleanup_ms: self.cleanup_timeout_ms as i64,
         }
     }
+}
+/// The deadline of setup work started at `now` (the adapter's own clock, milliseconds): the earlier of the adapter's own
+/// bound `bound_ms` (none when 0) and the span the host gave the work, `remaining_ms` (none when `None`): a reuse proof's
+/// opening (`ReuseCommand::remaining_ms`) or a connect's network deadline (`ConnectCommand::network_remaining_ms`,
+/// Phase 1 State P3-2(e)). The work never outlasts the host's deadline; `None` only when neither bounds it. The SSH and
+/// HTTPS adapters share it.
+pub(super) fn bounded_deadline(now: u64, bound_ms: u64, remaining_ms: Option<u64>) -> Option<u64> {
+    let own = (bound_ms != 0).then(|| now.saturating_add(bound_ms));
+    let host = remaining_ms.map(|remaining| now.saturating_add(remaining));
+    [own, host].into_iter().flatten().min()
 }
 
 /// What the worker reports, and the wakers of the host's driver and of a disposal.
@@ -338,6 +348,11 @@ impl EndpointAdapter for SshAdapter {
             client,
             settle,
             worker,
+            reading: StreamWaiter::new(),
+            writing: StreamWaiter::new(),
+            flushing: None,
+            ending: None,
+            write_ended: false,
             closing: None,
             closed: false,
         }))
@@ -379,34 +394,73 @@ impl Drop for SshAdapter {
     }
 }
 
-/// One exchange's client half: the initiator stream the host's `MessageStream` reads and writes, without blocking.
+/// A stream call persisted across polls: it owns a clone of the client stream, so the caller's dropped future does not
+/// drop the work it started.
+type StreamCall = Pin<Box<dyn Future<Output = Result<(), StreamError>> + Send>>;
+/// One exchange's client half: the initiator stream the host's `MessageStream` reads and writes. Its `poll_*` methods
+/// wait on the stream itself (contract section 9): a pending read or write keeps its slot registered between polls, so
+/// the worker's delivery, the credit it returns or the stream's end wakes the caller, and no caller sleep-polls.
 struct SshExchange {
     client: Stream,
     settle: Arc<Settle>,
     worker: Thread,
+    /// One wait registration per direction (`StreamWaiter`'s rule).
+    reading: StreamWaiter,
+    writing: StreamWaiter,
+    /// A flush the caller started and has not yet seen end. A write the stream accepts drops it, so a later flush starts
+    /// a new one that covers those bytes instead of resolving on the earlier one's ticket.
+    flushing: Option<StreamCall>,
+    /// The request's half-close (`poll_shutdown_write`) asked for and not yet sent, and whether it was sent: once it
+    /// was, later polls are `Ready(Ok)` and later writes fail (the stream refuses them).
+    ending: Option<StreamCall>,
+    write_ended: bool,
     /// The member's orderly end (its EOF, then its close): `None` until asked for, and once it has run.
     closing: Option<Pin<Box<dyn Future<Output = ()> + Send>>>,
     closed: bool,
 }
-/// Polls a stream call once: its result now, or `WouldBlock`.
-fn once<T>(future: impl Future<Output = Result<T, gwz_transport::stream::Error>>) -> io::Result<T> {
-    match pin!(future).poll(&mut Context::from_waker(Waker::noop())) {
-        Poll::Ready(Ok(value)) => Ok(value),
-        Poll::Ready(Err(error)) => Err(io::Error::other(error)),
-        Poll::Pending => Err(io::ErrorKind::WouldBlock.into()),
-    }
-}
 impl ExchangeIo for SshExchange {
-    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-        let written = once(self.client.write(data));
-        self.worker.unpark();
-        written
-    }
-    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
-        let read = once(self.client.read(out));
+    fn poll_read(&mut self, cx: &mut Context<'_>, out: &mut [u8]) -> Poll<io::Result<usize>> {
+        let read = self.client.poll_read(cx, &mut self.reading, out);
         // A read returns credit: the worker may now move more of the server's bytes.
         self.worker.unpark();
-        read
+        read.map_err(io::Error::other)
+    }
+    fn poll_write(&mut self, cx: &mut Context<'_>, data: &[u8]) -> Poll<io::Result<usize>> {
+        let written = self.client.poll_write(cx, &mut self.writing, data);
+        if matches!(written, Poll::Ready(Ok(count)) if count > 0) {
+            self.flushing = None;
+        }
+        self.worker.unpark();
+        written.map_err(io::Error::other)
+    }
+    fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let flushing = self.flushing.get_or_insert_with(|| {
+            let client = self.client.clone();
+            Box::pin(async move { client.flush().await })
+        });
+        let flushed = flushing.as_mut().poll(cx);
+        if flushed.is_ready() {
+            self.flushing = None;
+        }
+        self.worker.unpark();
+        flushed.map_err(io::Error::other)
+    }
+    fn poll_shutdown_write(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if self.write_ended {
+            return Poll::Ready(Ok(()));
+        }
+        let ending = self.ending.get_or_insert_with(|| {
+            let client = self.client.clone();
+            Box::pin(async move { client.end_write().await })
+        });
+        let ended = ending.as_mut().poll(cx);
+        if ended.is_ready() {
+            // A failed stream fails every later call too; asking again polls a new end.
+            self.ending = None;
+            self.write_ended = matches!(ended, Poll::Ready(Ok(())));
+        }
+        self.worker.unpark();
+        ended.map_err(io::Error::other)
     }
     fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Disposition> {
         if !self.closed {

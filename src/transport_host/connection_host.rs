@@ -449,10 +449,13 @@ impl ConnectionHost {
 
 cfg_if::cfg_if! {
     if #[cfg(test)] {
+        mod connect_deadline_tests;
         mod domain_ports_tests;
         mod factory_profile_tests;
         mod https_auth_tests;
         mod https_tests;
+        mod sleep_poll_tests;
+        mod stream_wake_tests;
         mod tests;
         // Real SSPI through the host's HTTPS adapter: Windows only.
         cfg_if::cfg_if! { if #[cfg(windows)] { mod https_sspi_tests; } }
