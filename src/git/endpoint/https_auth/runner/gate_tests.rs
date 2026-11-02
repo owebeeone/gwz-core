@@ -3,7 +3,9 @@
 //! gate is held for the launch only. The gate here excludes on every platform, so the rows run everywhere; on
 //! Windows the gate excludes by itself.
 use super::*;
-use crate::git::endpoint::https_auth::helper_fixture::{Behavior, Fixture};
+use crate::git::endpoint::https_auth::helper_fixture::{
+    Behavior, Ending, Fixture, assert_ended_by,
+};
 use crate::git::endpoint::https_worker::helper_timeout;
 use crate::git::spawn_gate::SpawnGate;
 use gwz_transport::protocol::{ErrorCode, Facts, SetupFailureCause};
@@ -166,18 +168,14 @@ async fn the_gate_is_held_for_the_launch_and_not_for_the_helpers_life() {
     let fixture = Fixture::new(Behavior::RunsWithDescendantOnOutput);
     let (gate, owner) = host();
     let cancelled = CancellationToken::new();
-    let runner = runner(
-        &owner,
-        &fixture.config,
-        &cancelled,
-        Instant::now() + Duration::from_secs(60),
-    )
-    .await;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let runner = runner(&owner, &fixture.config, &cancelled, deadline).await;
     let argv = fixture.argv();
     let mut work = Box::pin(runner.run(&argv, &[], Some(&[]), OUTPUT_LIMIT, false));
     tokio::select! {
-        _ = fixture.started() => {}
+        biased;
         result = &mut work => panic!("the helper ended: {:?}", result.err()),
+        () = fixture.started() => {}
     }
     assert!(
         gate.try_hold().is_some(),
@@ -185,16 +183,15 @@ async fn the_gate_is_held_for_the_launch_and_not_for_the_helpers_life() {
     );
     cancelled.cancel();
     let result = timeout(Duration::from_secs(30), work).await.unwrap();
-    assert!(
-        matches!(result, Err(AuthError::Cancelled)),
-        "{:?}",
-        result.err()
-    );
+    assert_ended_by(&result, Ending::Cancel, deadline);
     drop(runner);
+    // A tree that was still ending when the lookup answered is the owner's to reap: within the bound of the process
+    // rows' `assert_reaped`, after which the host has every slot back.
     assert_eq!(
         owner
-            .reap_pending(Instant::now() + Duration::from_secs(2))
+            .reap_pending(Instant::now() + Duration::from_secs(30))
             .await,
         0
     );
+    assert_eq!(owner.inner.helper_slots.available(), 8);
 }

@@ -3,6 +3,7 @@ use super::*;
 use crate::git::endpoint::helper_script::{
     git_fixture, real_git, script_path, write_helper_script,
 };
+use crate::git::endpoint::https_auth::helper_fixture::{Ending, assert_ended_by};
 
 fn fake_git(script: &str) -> (tempfile::TempDir, Config) {
     let home = tempfile::tempdir().unwrap();
@@ -191,7 +192,22 @@ async fn globally_matching_conditional_include_does_not_replace_unconditional_he
 
 #[tokio::test]
 async fn host_wait_charges_allocation_but_started_lookup_keeps_its_interaction() {
-    let (_home, config) = fake_git("/bin/sleep 0.3\nprintf 'username=alice\\npassword=token\\n'");
+    // The row holds every host slot for `HOST_WAIT`, then lets the lookup in. `credential fill` answers `FILL` after
+    // it starts, and `HOST_WAIT + FILL` exceeds `ALLOCATION`, so a correct lookup answers after its allocation's
+    // deadline: one clocked by its allocation could not answer. The charge is bounded by the row's own clock
+    // readings, not by fixed numbers, so a stall of the row's thread fails a correct lookup only when it outlasts
+    // `ALLOCATION - HOST_WAIT` (2.6 s; it was 300 ms). `INTERACTION` (it was 5 s, for three helper launches) is the
+    // bound of the other rows that start MSYS shells on a loaded Windows host.
+    const HOST_WAIT: Duration = Duration::from_millis(400);
+    const ALLOCATION: Duration = Duration::from_secs(3);
+    const FILL: Duration = Duration::from_secs(3);
+    const INTERACTION: Duration = Duration::from_secs(30);
+    let (_home, config) = fake_git(&format!(
+        "\
+if [ \"$*\" = '-c core.askPass= credential fill' ]; then /bin/sleep {}; fi
+printf 'username=alice\\npassword=token\\n'",
+        FILL.as_secs()
+    ));
     let host = HelperSlots::new();
     let held = host
         .0
@@ -202,30 +218,55 @@ async fn host_wait_charges_allocation_but_started_lookup_keeps_its_interaction()
     let owner = AuthOwner::new(host);
     let destination = Destination::parse("https://example.com/repo").unwrap();
     let cancelled = CancellationToken::new();
-    let mut allocation = Duration::from_millis(700);
-    let release = async {
-        tokio::time::sleep(Duration::from_millis(400)).await;
-        drop(held);
-    };
-    let (result, ()) = tokio::join!(
-        lookup_with_budget(
+    let mut allocation = ALLOCATION;
+    let started = Instant::now();
+    let (result, waiting, released, ended) = {
+        let mut lookup = std::pin::pin!(lookup_with_budget(
             &owner,
             &config,
             &destination,
             &mut allocation,
-            Duration::from_secs(5),
+            INTERACTION,
             &cancelled
-        ),
-        release,
-    );
+        ));
+        // The first poll starts the lookup's host wait, and the allocation's clock with it, before `waiting`.
+        tokio::select! {
+            biased;
+            result = &mut lookup => panic!("the lookup ended with every host slot held: {:?}", result.err()),
+            () = std::future::ready(()) => {}
+        }
+        let waiting = Instant::now();
+        tokio::select! {
+            biased;
+            result = &mut lookup => panic!("the lookup ended with every host slot held: {:?}", result.err()),
+            () = tokio::time::sleep(HOST_WAIT) => {}
+        }
+        let released = Instant::now();
+        drop(held);
+        let result = lookup.await;
+        (result, waiting, released, Instant::now())
+    };
     assert!(
         result.is_ok(),
-        "admission must not consume the interaction allowance"
+        "admission must not consume the interaction allowance: {:?}",
+        result.as_ref().err()
     );
-    assert!(allocation <= Duration::from_millis(350));
     assert!(
-        allocation > Duration::from_millis(200),
-        "helper execution must not consume allocation"
+        ended - waiting > ALLOCATION,
+        "the row must answer after the allocation's deadline"
+    );
+    let charged = ALLOCATION - allocation;
+    // The lookup began waiting before `waiting` and was admitted after `released`.
+    assert!(
+        charged >= released - waiting,
+        "the host wait must be charged to the allocation: {charged:?} for {:?}",
+        released - waiting
+    );
+    // The lookup was admitted after `started` and at least `FILL` before `ended`.
+    assert!(
+        charged <= (ended - started).saturating_sub(FILL),
+        "helper execution must not consume allocation: {charged:?} of {:?}",
+        ended - started
     );
 }
 
@@ -267,18 +308,21 @@ exit 0",
         .environment
         .push(("HEARTBEAT".into(), script_path(&heartbeat).into()));
     let owner = AuthOwner::new(HelperSlots::new());
+    // Long enough for the descendant to start on a loaded Windows runner, where starting an MSYS shell can take
+    // more than a second (CI run 38793264504 timed out before the heartbeat file existed at 1.5 s; 4 s did not
+    // hold on dabeest under 48 busy processes, where it took longer than that).
+    let deadline = Instant::now() + Duration::from_secs(10);
     let result = lookup_owned(
         &owner,
         &config,
         &Destination::parse("https://example.com/repo").unwrap(),
-        // Long enough for the descendant to start on a loaded Windows runner, where starting an MSYS shell can take
-        // more than a second (CI run 38793264504 timed out before the heartbeat file existed at 1.5 s; 4 s did not
-        // hold on dabeest under 48 busy processes, where it took longer than that).
-        Instant::now() + Duration::from_secs(10),
+        deadline,
         &CancellationToken::new(),
     )
     .await;
-    assert!(matches!(result, Err(AuthError::Timeout)));
+    // A tree still ending after the cleanup grace answers `CleanupPending` (the f9 rule); the owner's reap below
+    // then has a stated bound.
+    assert_ended_by(&result, Ending::Deadline, deadline);
     assert!(
         std::fs::metadata(&heartbeat).unwrap().len() > 0,
         "the descendant must have started"
@@ -294,12 +338,15 @@ exit 0",
         length,
         "the timed-out process group's descendant must stop"
     );
+    // The owner reaps the tree within the bound of the process rows' `assert_reaped`, after which the host has every
+    // slot back.
     assert_eq!(
         owner
             .reap_pending(Instant::now() + Duration::from_secs(30))
             .await,
         0
     );
+    assert_eq!(owner.inner.helper_slots.available(), HELPER_SLOTS);
 }
 
 #[tokio::test]

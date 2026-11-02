@@ -160,6 +160,42 @@ impl Drop for Fixture {
     }
 }
 
+/// What a row ended a lookup with, in a row whose helper cannot end the lookup by itself (it runs for an hour, or a
+/// descendant of it holds its output).
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Ending {
+    /// The row cancelled the lookup while its helper was running.
+    Cancel,
+    /// The lookup's deadline passed.
+    Deadline,
+}
+
+/// Asserts that `result` is the outcome of `ending`, for a lookup whose deadline is `deadline`.
+///
+/// The runner answers a cancel or a deadline by ending the helper's tree and waiting `CLEANUP_GRACE` for it to be
+/// gone (`HelperJob::terminate`). A tree that takes longer is reported as `CleanupPending`, and the owner keeps the
+/// helper's slot until it has reaped the tree. A Windows job's processes end after `TerminateJobObject` has returned,
+/// and on a loaded host they have outlasted the grace (receipts p2-3bc2-20261031-a and root-3merge-20261031-b, the
+/// second printing `Some(CleanupPending)`), so either answer is the product's own. The clock tells which cause
+/// ended the lookup: a cancelled lookup ends before its deadline, a timed-out one at it or after. A row that calls
+/// this must then wait for the owner's reap of the tree, within a bound it states.
+pub(super) fn assert_ended_by<T>(result: &Result<T, AuthError>, ending: Ending, deadline: Instant) {
+    let now = Instant::now();
+    let error = result.as_ref().err().copied();
+    let (cause, in_time) = match ending {
+        Ending::Cancel => (AuthError::Cancelled, now < deadline),
+        Ending::Deadline => (AuthError::Timeout, now >= deadline),
+    };
+    assert!(
+        error == Some(cause) || error == Some(AuthError::CleanupPending),
+        "the lookup that the {ending:?} ended answered {error:?}"
+    );
+    assert!(
+        in_time,
+        "the lookup answered {error:?} on the wrong side of its deadline for a {ending:?}"
+    );
+}
+
 cfg_if::cfg_if! {
     if #[cfg(unix)] {
         use crate::git::endpoint::helper_script::write_helper_script;

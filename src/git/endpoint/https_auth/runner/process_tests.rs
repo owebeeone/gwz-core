@@ -2,7 +2,9 @@
 //! group rows of `runner_tests.rs`, generalized: a helper's descendants die on timeout and on cancel, the host's
 //! capacity is held until the whole tree is reaped, and a pipe that nobody serves cannot stall a lookup.
 use super::*;
-use crate::git::endpoint::https_auth::helper_fixture::{Behavior, Fixture};
+use crate::git::endpoint::https_auth::helper_fixture::{
+    Behavior, Ending, Fixture, assert_ended_by,
+};
 use std::{
     future::Future,
     task::{Context, Poll, Wake, Waker},
@@ -69,24 +71,45 @@ async fn assert_reaped(owner: &AuthOwner) {
     assert_eq!(owner.inner.helper_slots.available(), 8);
 }
 
+/// Runs `work`, a lookup whose helper cannot end it by itself, until the fixture's descendant has started; then
+/// calls `cancel` and runs the lookup to its end. The lookup must still be running when it is cancelled, so that the
+/// cancel is what ends it.
+async fn cancel_once_started<T>(
+    fixture: &Fixture,
+    work: impl Future<Output = Result<T, AuthError>>,
+    cancel: impl FnOnce(),
+) -> Result<T, AuthError> {
+    let mut work = std::pin::pin!(work);
+    tokio::select! {
+        biased;
+        result = &mut work => panic!("the lookup ended before the cancel: {:?}", result.err()),
+        () = fixture.started() => {}
+    }
+    cancel();
+    timeout(Duration::from_secs(30), work)
+        .await
+        .expect("a cancelled lookup ends")
+}
+
 #[tokio::test]
 async fn timeout_kills_descendants_even_after_the_helper_exited_with_stdout_open() {
     let fixture = Fixture::new(Behavior::ExitsLeavingDescendantOnOutput);
     let owner = AuthOwner::new(HelperSlots::new());
     let cancelled = CancellationToken::new();
+    // Long enough for the descendant to start on a loaded Windows runner, where starting an MSYS shell can take
+    // more than a second (the same bound as the lookup of `runner_tests`' sibling row, CI run 38793264504).
+    let deadline = Instant::now() + Duration::from_secs(10);
     let runner = runner(
         &owner,
         &fixture.config,
         &cancelled,
         permits(&owner).await,
-        // Long enough for the descendant to start on a loaded Windows runner, where starting an MSYS shell can take
-        // more than a second (the same bound as the lookup of `runner_tests`' sibling row, CI run 38793264504).
-        Instant::now() + Duration::from_secs(10),
+        deadline,
     );
     let result = runner
         .run(&fixture.argv(), &[], None, OUTPUT_LIMIT, false)
         .await;
-    assert!(matches!(result, Err(AuthError::Timeout)));
+    assert_ended_by(&result, Ending::Deadline, deadline);
     assert!(fixture.heartbeats() > 0, "the descendant must have started");
     fixture
         .assert_stopped("the timed-out helper's descendant must stop")
@@ -101,19 +124,21 @@ async fn cancel_kills_the_helper_and_its_descendants() {
     let argv = fixture.argv();
     let owner = AuthOwner::new(HelperSlots::new());
     let cancelled = CancellationToken::new();
+    let deadline = Instant::now() + Duration::from_secs(60);
     let runner = runner(
         &owner,
         &fixture.config,
         &cancelled,
         permits(&owner).await,
-        Instant::now() + Duration::from_secs(60),
+        deadline,
     );
-    let cancel = async {
-        fixture.started().await;
-        cancelled.cancel();
-    };
-    let (result, ()) = tokio::join!(runner.run(&argv, &[], None, OUTPUT_LIMIT, false), cancel);
-    assert!(matches!(result, Err(AuthError::Cancelled)));
+    let result = cancel_once_started(
+        &fixture,
+        runner.run(&argv, &[], None, OUTPUT_LIMIT, false),
+        || cancelled.cancel(),
+    )
+    .await;
+    assert_ended_by(&result, Ending::Cancel, deadline);
     fixture
         .assert_stopped("the cancelled helper's descendant must stop")
         .await;
@@ -127,19 +152,21 @@ async fn the_owners_cancel_kills_the_helper_and_its_descendants() {
     let argv = fixture.argv();
     let owner = AuthOwner::new(HelperSlots::new());
     let cancelled = CancellationToken::new();
+    let deadline = Instant::now() + Duration::from_secs(60);
     let runner = runner(
         &owner,
         &fixture.config,
         &cancelled,
         permits(&owner).await,
-        Instant::now() + Duration::from_secs(60),
+        deadline,
     );
-    let cancel = async {
-        fixture.started().await;
-        owner.cancel();
-    };
-    let (result, ()) = tokio::join!(runner.run(&argv, &[], None, OUTPUT_LIMIT, false), cancel);
-    assert!(matches!(result, Err(AuthError::Cancelled)));
+    let result = cancel_once_started(
+        &fixture,
+        runner.run(&argv, &[], None, OUTPUT_LIMIT, false),
+        || owner.cancel(),
+    )
+    .await;
+    assert_ended_by(&result, Ending::Cancel, deadline);
     fixture
         .assert_stopped("the owner's cancel must end the descendant")
         .await;
@@ -183,18 +210,19 @@ async fn a_helper_that_never_reads_a_large_request_times_out_instead_of_blocking
     let owner = AuthOwner::new(HelperSlots::new());
     let cancelled = CancellationToken::new();
     let started = Instant::now();
+    let deadline = started + Duration::from_secs(2);
     let runner = runner(
         &owner,
         &fixture.config,
         &cancelled,
         permits(&owner).await,
-        started + Duration::from_secs(2),
+        deadline,
     );
     let request = vec![b'x'; 4 * 1024 * 1024];
     let result = runner
         .run(&fixture.argv(), &request, None, OUTPUT_LIMIT, false)
         .await;
-    assert!(matches!(result, Err(AuthError::Timeout)));
+    assert_ended_by(&result, Ending::Deadline, deadline);
     assert!(
         started.elapsed() < Duration::from_secs(10),
         "a write that nobody reads must end with the deadline"
