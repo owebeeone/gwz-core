@@ -43,7 +43,11 @@ spell it short). `--git-root DIR` puts another Git for Windows (for example a po
 its `sh.exe`. The run is long (about twenty minutes warm) and belongs under the host booking. Its result is a
 `hosted-like` entry in the receipt: exit status, the suite's passed and failed counts and the names of the failed tests.
 After the suite the mode runs the job's integration targets (`INTEGRATION_TARGETS`, step 5.4) into the same log; a
-filtered run leaves them out. `--taut-proto RELEASE` installs that taut-proto in a venv under the run's directory (nothing system-wide) and names it to the
+filtered run leaves them out. A program the host's Application Control policy blocked (os error 4551, which cargo reports as
+"could not execute process ... (never executed)") is run once more: an integration target alone (the entry's
+`integration_attempts` and `integration_blocked`), anything else by running the phase again (its `attempts`,
+`retried_after_blocked`, and the first log kept as `logs/hosted-like-attempt-1.log`); only when the block is all that
+failed, so a failed test is never run again. `--taut-proto RELEASE` installs that taut-proto in a venv under the run's directory (nothing system-wide) and names it to the
 suite as `TAUT_PYTHON`, so tests/protocol.rs runs rather than failing as a host gap; the receipt records the owner export's line
 endings in the checkout (a Windows host checks gwz-transport out with CRLF) and the probe of taut-proto. A failed test is a named
 gap only when its own failure text says gwz-py or taut-proto is missing (the embedded-Python rows), or, for the protocol target's
@@ -146,9 +150,24 @@ FULL_SHA = re.compile(r'[0-9a-f]{40}')
 TAUT_RELEASE = re.compile(r'[0-9]+\.[0-9]+\.[0-9]+')
 LABEL = re.compile(r'^[a-z][a-z0-9]*(-[a-z0-9]+)*$')
 DATE = re.compile(r'(^|-)20\d{6}(-|$)')
-# The host's Application Control policy sometimes refuses to run a build script that cargo has just written
-# (os error 4551); the shape is run once more and the receipt records both attempts.
+# The host's Application Control policy sometimes refuses to run a program that cargo has just written (os error 4551): a
+# build script in a `cargo check` shape, or a build script or test executable in the hosted-like phase. A shape is run once
+# more and the receipt records both attempts (`run_entry`). In the hosted-like phase cargo's text goes to the log, not to the
+# script's output, so the host scans the log (BLOCKED_SCAN): a blocked integration target is run once more alone
+# (`integration_lines`), and any other block runs the phase once more (`blocked_retry`). A genuine failure is never run again.
 BLOCKED = 'os error 4551'
+# Reads cargo's output on stdin and prints, once each, the programs cargo "could not execute ... (never executed)" because
+# the host blocked them, by file name without directory, `.exe` and cargo's 16-hex hash (`publish_workflow`, `gwz_core`,
+# `build-script-build`). Only the cause cargo chains right after a never-executed line counts: a binary that ran and whose
+# test met a blocked child failed a test, and that is a test failure, never a block.
+BLOCKED_AWK = (r'{ sub(/\r$/, "") } '
+               r'/could not execute process `.*` \(never executed\)/ { p = $0; sub(/^[^`]*`/, "", p); sub(/[` ].*$/, "", p); '
+               r'gsub(/\\/, "/", p); sub(/^.*\//, "", p); sub(/\.exe$/, "", p); sub(/-' + '[0-9a-f]' * 16 + r'$/, "", p); '
+               r'prog = p; next } '
+               r'/\(os error [0-9]+\)/ { if (prog != "" && $0 ~ /\(os error 4551\)/ && !(prog in seen)) '
+               r'{ seen[prog] = 1; print prog } prog = ""; next } '
+               r'/^ *Running |^error: / { prog = "" }')
+BLOCKED_SCAN = f"awk '{BLOCKED_AWK}'"
 # The watchdog (see the module doc for where the numbers come from). Seconds; 0 switches a limit off.
 EXIT_TIMEOUT = 124
 PHASES = ('stage', 'ordinary', 'transport', 'hosted-like')
@@ -363,15 +382,43 @@ def integration_lines(d: str, test_filter: str | None) -> list[str]:
 
     The step exits nonzero when a row fails, a named host gap among them, so its status alone cannot tell that from a
     step that never ran: it also prints how many `test result:` lines the step added to the log, one per target that
-    ran to a result (`HOSTED_LIKE_INTEGRATION_RESULTS`)."""
+    ran to a result (`HOSTED_LIKE_INTEGRATION_RESULTS`).
+
+    A target whose executable the host blocked (BLOCKED, F10) is run once more, alone, into the same log; a blocked
+    target has no `test result:` line, so the count is not doubled. Each attempt is one `HOSTED_LIKE_INTEGRATION_ATTEMPT
+    exit seconds targets` line. The second attempt's status becomes the step's only when the first failed by the block
+    alone (every other target ran to a result and none failed); a failed target is never run again. A blocked program
+    that is not one of the targets (a build script) is printed as `HOSTED_LIKE_BLOCKED`, for the phase to run again."""
     if test_filter:
         return []
     log = f'{d}/logs/hosted-like.log'
     tests = ' '.join(f'--test {name}' for name in INTEGRATION_TARGETS)
-    return [f'before=$(wc -l < {log})',
-            f'cargo test --locked --no-fail-fast --manifest-path {d}/candidate/Cargo.toml '
-            f'--target-dir {d}/target-test {tests} >> {log} 2>&1',
+    command = f'cargo test --locked --no-fail-fast --manifest-path {d}/candidate/Cargo.toml --target-dir {d}/target-test'
+    names = ' '.join(INTEGRATION_TARGETS)
+    return [f'before=$(wc -l < {log})', 'started=$SECONDS',
+            f'{command} {tests} >> {log} 2>&1',
             'integration_status=$?',
+            f'echo "HOSTED_LIKE_INTEGRATION_ATTEMPT $integration_status $((SECONDS - started)) {",".join(INTEGRATION_TARGETS)}"',
+            f'blocked=$(tail -n +$((before + 1)) {log} | {BLOCKED_SCAN} | tr "\\n" " ")',
+            # a targeted second attempt only when every blocked program is a target; otherwise the phase decides
+            'retry=""',
+            f'for name in $blocked; do case " {names} " in *" $name "*) retry="$retry $name";; *) retry=""; break;; esac; done',
+            'if [ -n "$retry" ]; then',
+            f"  ran=$(tail -n +$((before + 1)) {log} | grep -a -c '^test result:')",
+            f"  failing=$(tail -n +$((before + 1)) {log} | grep -a -c '^test result: FAILED')",
+            '  args=""',
+            '  count=0',
+            '  for name in $retry; do echo "HOSTED_LIKE_INTEGRATION_BLOCKED $name"; args="$args --test $name"; '
+            'count=$((count + 1)); done',
+            '  started=$SECONDS',
+            f'  {command}$args >> {log} 2>&1',
+            '  retry_status=$?',
+            '  echo "HOSTED_LIKE_INTEGRATION_ATTEMPT $retry_status $((SECONDS - started)) $(echo $retry | tr " " ",")"',
+            f'  if [ "$failing" -eq 0 ] && [ $((ran + count)) -eq {len(INTEGRATION_TARGETS)} ]; then '
+            'integration_status=$retry_status; fi',
+            'else',
+            '  for name in $blocked; do echo "HOSTED_LIKE_BLOCKED $name"; done',
+            'fi',
             f"results=$(tail -n +$((before + 1)) {log} | grep -a -c '^test result:')",
             'echo "HOSTED_LIKE_INTEGRATION_EXIT $integration_status"',
             'echo "HOSTED_LIKE_INTEGRATION_RESULTS $results"',
@@ -445,9 +492,13 @@ def hosted_like_script(label: str, git_root: str, test_filter: str | None, taut_
         'echo "HOSTED_LIKE_GIT $(command -v git): $(git --version)"',
         f'export RUSTUP_TOOLCHAIN={TOOLCHAIN} CARGO_INCREMENTAL=0 RUSTFLAGS="{CANDIDATE}" GWZ_TEST_GIT=real',
         f'export CARGO_TARGET_DIR={d}/target-validator', *taut_lines(d, taut_proto), f'cd {d}/ws/gwz-core',
+        # A second attempt of the phase (a block, see `blocked_retry`) keeps the first attempt's log beside its own.
+        f'if [ -f {d}/logs/hosted-like.log ]; then mv -f {d}/logs/hosted-like.log {d}/logs/hosted-like-attempt-1.log; fi',
         f'{HOSTED_SUITE}{pin_word}{filter_word} --manifest-path={d}/candidate/Cargo.toml --target-dir={d}/target-test '
         f'> {d}/logs/hosted-like.log 2>&1',
         'status=$?',
+        # What the host blocked while the suite was built or run; the phase runs once more for it (`blocked_retry`).
+        f"{BLOCKED_SCAN} < {d}/logs/hosted-like.log | sed -e 's/^/HOSTED_LIKE_BLOCKED /'",
         # The library suite's own count, before the integration step adds its lines to the log: a library binary that never
         # ran leaves only the integration targets' passes in the total, and the total alone cannot tell.
         f"library=$(grep -a -E '^test result:' {d}/logs/hosted-like.log | sed -n -E 's/^test result: [A-Za-z]+\\. ([0-9]+) passed.*/\\1/p' "
@@ -499,6 +550,14 @@ def parse_hosted_like(text: str, test_filter: str | None) -> dict:
             facts['taut_proto'] = rest
         elif word == 'HOSTED_LIKE_OWNER_EOL':
             facts['owner_export_line_endings'] = rest
+        elif word == 'HOSTED_LIKE_BLOCKED':
+            facts.setdefault('blocked', []).append(rest)
+        elif word == 'HOSTED_LIKE_INTEGRATION_BLOCKED':
+            facts.setdefault('integration_blocked', []).append(rest)
+        elif word == 'HOSTED_LIKE_INTEGRATION_ATTEMPT':
+            code, seconds, targets = rest.split(' ', 2)
+            facts.setdefault('integration_attempts', []).append(
+                {'exit': int(code), 'seconds': int(seconds), 'targets': targets.split(',')})
         elif word == 'HOSTED_LIKE_FAILURE_TEXT':
             name, _, text = rest.partition('\t')
             facts.setdefault('failure_texts', {})[name] = text
@@ -950,40 +1009,74 @@ def transport_facts(tree: Path, pin: str, allow_mismatch: bool, run=subprocess.r
     return facts
 
 
+def judge_hosted_like(text: str, returncode: int, test_filter, require_crlf: bool) -> dict:
+    """The hosted-like entry's facts and verdict from one attempt's output (see `parse_hosted_like`)."""
+    entry = parse_hosted_like(text, test_filter)
+    names = entry['tests']['failed_names']
+    entry['gaps'] = [n for n in names if is_host_gap(n, entry)]
+    entry['failures'] = [n for n in names if n not in entry['gaps']]
+    # A gap-only failure passes. An integration step that died (a build error, a binary that could not load) names
+    # no failed test, so it passes only when it exited 0 or every target reported a result.
+    integration_ran = (entry.get('integration_exit', 0) == 0
+                       or entry.get('integration_results') == len(INTEGRATION_TARGETS))
+    # A suite that ran no library test passes nothing, whatever the integration targets did (a missing count is zero).
+    entry['passed'] = entry.get('library_passed', 0) > 0 and (returncode == 0 or bool(
+        entry['gaps'] and not entry['failures'] and entry['tests']['failed'] == len(entry['gaps']) and integration_ran))
+    # A clean transport tree was written again by the host's Git as a Windows checkout is: its owner export must be CRLF.
+    # LF means the receipt lost the coverage it exists for (the step 2.2 review's S-P2-1 case), whatever else passed.
+    if require_crlf and entry.get('owner_export_line_endings') != 'crlf':
+        entry['passed'] = False
+        entry['line_ending_failure'] = (f'HOSTED_LIKE_OWNER_EOL is {entry.get("owner_export_line_endings", "absent")!r}, '
+                                        'not crlf: the host checkout of gwz-transport is not a Windows checkout')
+    return entry
+
+
+def blocked_retry(name: str, result, facts: dict) -> str | None:
+    """Why a failed attempt is run once more, or None. A `cargo check` shape: its output names a blocked build script. The
+    hosted-like phase: the host reported a blocked program (`HOSTED_LIKE_BLOCKED`, cargo's text never reaches the output)
+    and the block is all that failed, so no failed test, no gap count that does not add up and no line-ending failure is
+    ever run again (a test that ran and met os error 4551 is such a failed test)."""
+    if result.returncode == 0:
+        return None
+    if name != 'hosted-like':
+        return 'a build script was blocked by the host' if BLOCKED in (result.stdout or '') else None
+    blocked = facts.get('blocked')
+    only_the_block = not (facts['passed'] or facts['failures'] or facts['tests']['failed'] != len(facts['gaps'])
+                          or 'line_ending_failure' in facts)
+    if not blocked or not only_the_block:
+        return None
+    return f'the host blocked {", ".join(blocked)}'
+
+
 def run_entry(watchdog: Watchdog, receipt: Receipt, name: str, flags: str, script: str, log: str, test_filter=None,
               require_crlf: bool = False) -> None:
-    """Runs one host script under the watchdog and records its entry. A build script the host blocked (os error 4551) is run
-    once more, both attempts are recorded and both count against the phase's deadline; a genuine failure, a failed test among
-    them, is never run again. A phase the watchdog ends raises PhaseAborted."""
+    """Runs one host script under the watchdog and records its entry. A program the host blocked (os error 4551,
+    `blocked_retry`) makes the phase run once more, both attempts are recorded and both count against the phase's deadline;
+    a genuine failure, a failed test among them, is never run again. A phase the watchdog ends raises PhaseAborted."""
     phase_start = watchdog.host.clock()
     result, seconds = watchdog.run(name, script, phase_start)
     attempts = [{'exit': result.returncode, 'seconds': seconds}]
-    if result.returncode != 0 and BLOCKED in (result.stdout or ''):
-        print(f'{name}: a build script was blocked by the host (os error 4551); running it once more', flush=True)
+
+    def judge(result):
+        if name != 'hosted-like':
+            return {}
+        return judge_hosted_like(result.stdout or '', result.returncode, test_filter, require_crlf)
+
+    facts = judge(result)
+    why = blocked_retry(name, result, facts)
+    if why:
+        print(f'{name}: {why} (os error 4551); running it once more', flush=True)
+        first_blocked = facts.get('blocked')
         result, seconds = watchdog.run(name, script, phase_start)
         attempts.append({'exit': result.returncode, 'seconds': seconds})
+        facts = judge(result)
+        if first_blocked:
+            facts['retried_after_blocked'] = first_blocked
     text = result.stdout or ''
     found = WARNINGS.findall(text)
     entry = {'shape': name, 'rustflags': flags, 'exit': result.returncode, 'seconds': seconds,
              'warnings': int(found[-1]) if found else 0, 'attempts': attempts, 'log': log}
-    if name == 'hosted-like':
-        entry.update(parse_hosted_like(text, test_filter))
-        names = entry['tests']['failed_names']
-        entry['gaps'] = [n for n in names if is_host_gap(n, entry)]
-        entry['failures'] = [n for n in names if n not in entry['gaps']]
-        # A gap-only failure passes. An integration step that died (a build error, a binary that could not load) names
-        # no failed test, so it passes only when it exited 0 or every target reported a result.
-        integration_ran = (entry.get('integration_exit', 0) == 0
-                           or entry.get('integration_results') == len(INTEGRATION_TARGETS))
-        # A suite that ran no library test passes nothing, whatever the integration targets did (a missing count is zero).
-        entry['passed'] = entry.get('library_passed', 0) > 0 and (result.returncode == 0 or bool(
-            entry['gaps'] and not entry['failures'] and entry['tests']['failed'] == len(entry['gaps']) and integration_ran))
-        # A clean transport tree was written again by the host's Git as a Windows checkout is: its owner export must be CRLF.
-        # LF means the receipt lost the coverage it exists for (the step 2.2 review's S-P2-1 case), whatever else passed.
-        if require_crlf and entry.get('owner_export_line_endings') != 'crlf':
-            entry['passed'] = False
-            entry['line_ending_failure'] = (f'HOSTED_LIKE_OWNER_EOL is {entry.get("owner_export_line_endings", "absent")!r}, '
-                                            'not crlf: the host checkout of gwz-transport is not a Windows checkout')
+    entry.update(facts)
     receipt.shapes.append(entry)
     detail = ''
     if name == 'hosted-like':
@@ -995,6 +1088,9 @@ def run_entry(watchdog: Watchdog, receipt: Receipt, name: str, flags: str, scrip
             detail += f'\n  GAP {gap} (needs gwz-py and taut-proto, which the host does not have)'
         if 'line_ending_failure' in entry:
             detail += f'\n  FAILED line endings: {entry["line_ending_failure"]}'
+        for target in entry.get('integration_blocked', ()):
+            tries = ', '.join(f'exit {a["exit"]}' for a in entry.get('integration_attempts', ()))
+            detail += f'\n  BLOCKED {target} (os error 4551): the integration target ran once more alone ({tries})'
     else:
         detail = f', {entry["warnings"]} warnings'
     print(f'{name}: exit {result.returncode} in {seconds}s{detail}', flush=True)

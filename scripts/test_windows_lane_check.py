@@ -50,17 +50,26 @@ HOSTED_PASS = (
 HOSTED_FAIL = (HOSTED_PASS.replace('failed=0', 'failed=2')
                + 'HOSTED_LIKE_FAILED git::endpoint::ssh_tests::background_close::a\n'
                + 'HOSTED_LIKE_FAILED transport_host::ssh_helper_projection_tests::b\n')
+# What the hosted-like script prints when the host blocked a build script while the suite was being built (F10): its
+# stdout carries the HOSTED_LIKE_* facts, never cargo's own text (that goes to the log), so the block is a fact line.
+HOSTED_BLOCKED_BUILD = ('HOSTED_LIKE_TEMP C:\\Users\\gianni\\AppData\\Local\\Temp\\WINP0-~1\n'
+                        'HOSTED_LIKE_OWNER_EOL crlf\n'
+                        'HOSTED_LIKE_BLOCKED build-script-build\n'
+                        'HOSTED_LIKE_LIBRARY passed=0\n'
+                        'HOSTED_LIKE_RESULT passed=0 failed=0\n')
 
 
 class FakeRun:
     """Stands in for subprocess.run: records every call and answers by the command's first words."""
 
     def __init__(self, claim_exit=0, shape_exits=(0, 0), warnings=7, blocked_first=False, hosted_exit=0,
-                 hosted_output=None, transport_head=COMMIT, transport_status='', transport_unreadable=False):
+                 hosted_output=None, transport_head=COMMIT, transport_status='', transport_unreadable=False,
+                 hosted_runs=()):
         self.calls, self.claim_exit, self.shape_exits, self.warnings = [], claim_exit, list(shape_exits), warnings
         self.blocked_first = blocked_first
         self.hosted_exit = hosted_exit
         self.hosted_output = HOSTED_PASS if hosted_output is None else hosted_output
+        self.hosted_runs = list(hosted_runs)  # (exit, stdout) of successive hosted-like attempts, then the defaults
         self.transport_head, self.transport_status = transport_head, transport_status
         self.transport_unreadable = transport_unreadable
 
@@ -85,7 +94,10 @@ class FakeRun:
             if 'run_tests.py' in script:
                 if self.blocked_first:
                     self.blocked_first = False
-                    return subprocess.CompletedProcess(argv, 101, 'An Application Control policy has blocked this file. (os error 4551)\n', '')
+                    return subprocess.CompletedProcess(argv, 101, HOSTED_BLOCKED_BUILD, '')
+                if self.hosted_runs:
+                    code, text = self.hosted_runs.pop(0)
+                    return subprocess.CompletedProcess(argv, code, text, '')
                 return subprocess.CompletedProcess(argv, self.hosted_exit, self.hosted_output, '')
             if 'cargo check' in script:
                 if self.blocked_first:
@@ -484,6 +496,265 @@ class HostedLike(unittest.TestCase):
         self.assertEqual((parsed['tests']['passed'], parsed['tests']['failed']), (3501, 2))
         self.assertEqual(len(parsed['tests']['failed_names']), 2)
         self.assertEqual(gate.parse_hosted_like('garbage', None)['tests'], {'passed': 0, 'failed': 0, 'failed_names': [], 'filter': None})
+
+
+# Cargo 1.95.0's own text, in the Windows form a receipt's log has it (captured from a real `cargo test --no-fail-fast`
+# whose test binary could not be executed, with the Windows path and the Application Control cause of F10 put in).
+WIN_DEPS = 'E:\\gwz-tests\\f10-20261101-a\\target-test\\debug\\deps'
+APP_CONTROL = 'An Application Control policy has blocked this file. (os error 4551)'
+
+
+def ran(target, failed=(), panic='assertion `left == right` failed'):
+    """What cargo prints for an integration target whose binary ran to a result."""
+    exe = f'{WIN_DEPS}\\{target}-0123456789abcdef.exe'
+    text = f'     Running tests\\{target}.rs ({exe})\n\nrunning {1 + len(failed)} tests\ntest ok_row ... ok\n'
+    text += ''.join(f'test {name} ... FAILED\n' for name in failed)
+    if failed:
+        text += '\nfailures:\n\n' + ''.join(f"---- {name} stdout ----\n\nthread '{name}' (4242) panicked at "
+                                           f'tests\\{target}.rs:4:14:\n{panic}\n\n' for name in failed)
+        text += '\nfailures:\n' + ''.join(f'    {name}\n' for name in failed)
+    text += (f'\ntest result: {"FAILED" if failed else "ok"}. 1 passed; {len(failed)} failed; 0 ignored; 0 measured; '
+             '0 filtered out; finished in 0.01s\n\n')
+    if failed:
+        text += f'error: test failed, to rerun pass `--test {target}`\n'
+    return text
+
+
+def never_executed(target, cause=APP_CONTROL, args=''):
+    """What cargo prints for a test binary it could not execute: no `test result:` line, the cause chained."""
+    exe = f'{WIN_DEPS}\\{target}-0123456789abcdef.exe'
+    rerun = '--lib' if target == 'gwz_core' else f'--test {target}'
+    return (f'     Running tests\\{target}.rs ({exe})\nerror: test failed, to rerun pass `{rerun}`\n\nCaused by:\n'
+            f'  could not execute process `{exe}{args}` (never executed)\n\nCaused by:\n  {cause}\n')
+
+
+BUILD_SCRIPT_BLOCKED = ('error: failed to run custom build command for `libgit2-sys v0.18.2+1.9.1`\n\nCaused by:\n'
+                        '  could not execute process `E:\\gwz-tests\\f10-20261101-a\\target-test\\debug\\build\\'
+                        'libgit2-sys-0123456789abcdef\\build-script-build.exe` (never executed)\n\nCaused by:\n'
+                        f'  {APP_CONTROL}\n')
+GAP_ROWS = ['transport_host::message_embedding_tests::python_messages_cancel_while_delivery_is_paused',
+            'transport_host::message_embedding_tests::python_messages_close_while_delivery_is_paused',
+            'transport_host::message_embedding_tests::python_messages_embed_live_git_exchange']
+
+
+def f10_output(integration):
+    """The hosted-like stdout of receipt root-3merge-20261031-a (its log, win-root-3merge-20261031-a.log), with the
+    integration step's own lines given: every library test passed but the three named gaps."""
+    return ('HOSTED_LIKE_TEMP C:\\Users\\gianni\\AppData\\Local\\Temp\\HLE311~1\n'
+            'HOSTED_LIKE_SSHD OpenSSH_for_Windows_9.8p2 Win32-OpenSSH-GitHub, LibreSSL 4.0.0\n'
+            'HOSTED_LIKE_GIT /c/Program Files/Git/cmd/git: git version 2.55.0.windows.3\n'
+            'HOSTED_LIKE_TAUT 0.10.0\nHOSTED_LIKE_OWNER_EOL crlf\nHOSTED_LIKE_LIBRARY passed=4410\n' + integration
+            + 'HOSTED_LIKE_RESULT passed=4472 failed=3\n' + ''.join(f'HOSTED_LIKE_FAILED {row}\n' for row in GAP_ROWS)
+            + ''.join(f'HOSTED_LIKE_FAILURE_TEXT {row}\t  panicked at python_embedding.rs:36:37: candidate Python codec '
+                      'roundtrip: RuntimeError: codec input is missing: E:\\gwz-tests\\x\n' for row in GAP_ROWS))
+
+
+LIBRARY_BLOCKED = (HOSTED_PASS.replace('passed=3433', 'passed=0').replace('passed=3501', 'passed=68')
+                   + 'HOSTED_LIKE_BLOCKED gwz_core\n')
+
+
+class BlockedExecutables(unittest.TestCase):
+    """F10: the host's Application Control policy (os error 4551) blocked a test executable cargo had just linked, and the
+    receipt failed with no test failing. A blocked integration target is run once more alone; a block anywhere else in the
+    phase runs the phase once more; a genuine failure is never run again, and a test that ran is never a block."""
+
+    def setUp(self):
+        self.bash = shutil.which('bash')
+        if self.bash is None:
+            self.skipTest('no bash to run the host script lines')
+        self.tmp = Path(tempfile.mkdtemp(prefix='blocked-'))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def host_bash(self, script, *args):
+        """Runs SCRIPT as windows_lane_check.py sends a host script: on bash's stdin (`bash -s`), with LF line ends.
+        Never `bash -c SCRIPT`: on a Windows host, Python's command-line quoting of SCRIPT into Git bash mangles the awk
+        program's quotes and backslashes (winflk stress, 2026-11-01). Paths go in forward-slash spelling (`as_posix`),
+        which Git bash takes as it is; bash strips the backslashes of a Windows path in an unquoted word."""
+        done = subprocess.run([self.bash, '-s', *args], input=script.encode('utf-8'), capture_output=True, check=True)
+        return done.stdout.decode('utf-8').splitlines()
+
+    def scan(self, text):
+        log = self.tmp / 'scan.log'
+        log.write_bytes(text.encode())
+        # every line, an empty one too: the host turns each into a HOSTED_LIKE_BLOCKED
+        return self.host_bash(f'{gate.BLOCKED_SCAN} < "$1"\n', log.as_posix())
+
+    def integration(self, attempts, library='running 1 test\ntest result: ok. 1 passed; 0 failed\n', status=0):
+        """Runs the script's own integration lines in bash with `cargo` a stub that answers attempt k with attempts[k]
+        (exit, text): the facts it printed, the arguments of each cargo call, and the log."""
+        (self.tmp / 'logs').mkdir()
+        log = self.tmp / 'logs' / 'hosted-like.log'
+        log.write_text(library, encoding='utf-8')
+        for k, (code, text) in enumerate(attempts, 1):
+            (self.tmp / f'out-{k}').write_text(text, encoding='utf-8')
+            (self.tmp / f'code-{k}').write_text(str(code), encoding='utf-8')
+        d = self.tmp.as_posix()
+        stub = (f'n=0\ncargo() {{ n=$((n + 1)); echo "$*" >> "{d}/calls"; cat "{d}/out-$n"; '
+                f'return $(cat "{d}/code-$n"); }}\n')
+        script = '\n'.join(['set -uo pipefail', stub, f'status={status}', *gate.integration_lines(d, None),
+                            'echo "STATUS $status"', ''])
+        out = self.host_bash(script)
+        calls = (self.tmp / 'calls').read_text(encoding='utf-8').splitlines()
+        return out, calls, log.read_text(encoding='utf-8')
+
+    def all_ran(self, but=None, failed=None):
+        return ''.join(ran(t, failed=failed[1] if failed and failed[0] == t else ())
+                       for t in gate.INTEGRATION_TARGETS if t != but)
+
+    def test_the_scan_names_each_program_cargo_never_executed_because_the_host_blocked_it(self):
+        f10 = ran('protocol') + never_executed('publish_workflow') + ran('rename')
+        self.assertEqual(self.scan(f10), ['publish_workflow'])
+        self.assertEqual(self.scan(f10.replace('\n', '\r\n')), ['publish_workflow'])
+        self.assertEqual(self.scan(never_executed('gwz_core', args=' --skip x --test-threads 4')), ['gwz_core'])
+        self.assertEqual(self.scan(BUILD_SCRIPT_BLOCKED), ['build-script-build'])
+        self.assertEqual(self.scan(never_executed('rename') + never_executed('rename')), ['rename'])
+
+    def test_a_test_that_ran_and_failed_on_os_error_4551_is_a_failure_not_a_block(self):
+        # The binary ran, so cargo executed it: a test of it that met a blocked child failed, and that is a test failure.
+        spawned = ran('rename', failed=('spawns_git',), panic=f'git could not start: {APP_CONTROL}')
+        self.assertEqual(self.scan(spawned), [])
+        # a binary cargo never executed for another cause does not lend its name to a later 4551 in someone's output
+        self.assertEqual(self.scan(never_executed('rename', cause='Access is denied. (os error 5)') + spawned), [])
+        self.assertEqual(self.scan(never_executed('rename', cause='Access is denied. (os error 5)')), [])
+        self.assertEqual(self.scan(never_executed('rename', cause='Access is denied. (os error 5)')
+                                   + f'warning: a stray line: {APP_CONTROL}\n'), [])
+
+    def test_a_test_executable_the_host_blocked_is_run_once_more_alone_and_both_attempts_are_reported(self):
+        targets = list(gate.INTEGRATION_TARGETS)
+        first = self.all_ran(but='publish_workflow') + never_executed('publish_workflow')
+        first += 'error: 1 target failed:\n    `--test publish_workflow`\n'
+        out, calls, log = self.integration([(101, first), (0, ran('publish_workflow'))])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0].count('--test '), len(targets))
+        self.assertEqual(calls[1].count('--test '), 1)
+        self.assertIn('--test publish_workflow', calls[1])
+        self.assertTrue(calls[1].startswith('test --locked --no-fail-fast --manifest-path '))
+        self.assertIn('HOSTED_LIKE_INTEGRATION_BLOCKED publish_workflow', out)
+        attempts = [line.split(' ', 1)[1] for line in out if line.startswith('HOSTED_LIKE_INTEGRATION_ATTEMPT ')]
+        self.assertEqual([a.split()[0] for a in attempts], ['101', '0'])
+        self.assertEqual([a.split()[2] for a in attempts], [','.join(targets), 'publish_workflow'])
+        self.assertIn('HOSTED_LIKE_INTEGRATION_EXIT 0', out)
+        self.assertIn(f'HOSTED_LIKE_INTEGRATION_RESULTS {len(targets)}', out)
+        self.assertEqual(out[-1], 'STATUS 0')
+        # both attempts are in the one log, the block too
+        self.assertIn(APP_CONTROL, log)
+        self.assertEqual(log.count('     Running tests\\publish_workflow.rs'), 2)
+
+    def test_a_target_blocked_again_is_not_run_a_third_time_and_the_step_fails(self):
+        first = self.all_ran(but='publish_workflow') + never_executed('publish_workflow')
+        out, calls, _ = self.integration([(101, first), (101, never_executed('publish_workflow'))])
+        self.assertEqual(len(calls), 2)
+        self.assertIn('HOSTED_LIKE_INTEGRATION_EXIT 101', out)
+        self.assertIn(f'HOSTED_LIKE_INTEGRATION_RESULTS {len(gate.INTEGRATION_TARGETS) - 1}', out)
+        self.assertEqual(out[-1], 'STATUS 101')
+
+    def test_a_genuine_failure_beside_a_blocked_target_keeps_the_step_failed(self):
+        first = self.all_ran(but='publish_workflow', failed=('rename', ('a_real_failure',))) + never_executed('publish_workflow')
+        out, calls, log = self.integration([(101, first), (0, ran('publish_workflow'))])
+        self.assertEqual(len(calls), 2)  # only the blocked target runs again; the failed one never does
+        self.assertNotIn('--test rename', calls[1])
+        self.assertIn('HOSTED_LIKE_INTEGRATION_EXIT 101', out)
+        self.assertIn('test a_real_failure ... FAILED', log)
+        # a target that died another way beside the block keeps the step failed too
+        first = (self.all_ran(but='publish_workflow').replace('test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; '
+                                                              '0 filtered out; finished in 0.01s\n', '', 1)
+                 + never_executed('publish_workflow'))
+        shutil.rmtree(self.tmp / 'logs')
+        (self.tmp / 'calls').unlink()
+        out, calls, _ = self.integration([(101, first), (0, ran('publish_workflow'))])
+        self.assertIn('HOSTED_LIKE_INTEGRATION_EXIT 101', out)
+        self.assertIn(f'HOSTED_LIKE_INTEGRATION_RESULTS {len(gate.INTEGRATION_TARGETS) - 1}', out)
+
+    def test_a_step_with_no_block_runs_once(self):
+        out, calls, _ = self.integration([(0, self.all_ran())])
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(any(line.startswith(('HOSTED_LIKE_INTEGRATION_BLOCKED', 'HOSTED_LIKE_BLOCKED')) for line in out))
+        self.assertEqual(len([line for line in out if line.startswith('HOSTED_LIKE_INTEGRATION_ATTEMPT ')]), 1)
+        self.assertIn('HOSTED_LIKE_INTEGRATION_EXIT 0', out)
+
+    def test_a_blocked_program_that_is_not_an_integration_target_is_left_to_the_phase(self):
+        out, calls, _ = self.integration([(101, BUILD_SCRIPT_BLOCKED)])
+        self.assertEqual(len(calls), 1)
+        self.assertIn('HOSTED_LIKE_BLOCKED build-script-build', out)
+        self.assertIn('HOSTED_LIKE_INTEGRATION_RESULTS 0', out)
+
+    def test_the_f10_receipt_passes_once_the_blocked_target_ran_and_records_both_attempts(self):
+        targets = ','.join(gate.INTEGRATION_TARGETS)
+        retried = ('HOSTED_LIKE_INTEGRATION_ATTEMPT 101 47 ' + targets + '\nHOSTED_LIKE_INTEGRATION_BLOCKED publish_workflow\n'
+                   'HOSTED_LIKE_INTEGRATION_ATTEMPT 0 3 publish_workflow\n'
+                   f'HOSTED_LIKE_INTEGRATION_EXIT 0\nHOSTED_LIKE_INTEGRATION_RESULTS {len(gate.INTEGRATION_TARGETS)}\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            code = run_main(FakeRun(hosted_runs=[(101, f10_output(retried))]), '--label', 'f10-20261101-a',
+                            '--hosted-like', receipts=Path(tmp))
+            receipt = json.loads((Path(tmp) / 'f10-20261101-a' / 'receipt.json').read_text(encoding='utf-8'))
+        entry = receipt['shapes'][-1]
+        self.assertEqual((code, entry['passed'], entry['gaps'], entry['failures']), (0, True, GAP_ROWS, []))
+        self.assertEqual(entry['integration_attempts'],
+                         [{'exit': 101, 'seconds': 47, 'targets': list(gate.INTEGRATION_TARGETS)},
+                          {'exit': 0, 'seconds': 3, 'targets': ['publish_workflow']}])
+        self.assertEqual(entry['integration_blocked'], ['publish_workflow'])
+        self.assertEqual(len(entry['attempts']), 1)  # the phase itself ran once
+
+    def test_the_f10_receipt_as_it_was_still_fails(self):
+        as_it_was = 'HOSTED_LIKE_INTEGRATION_EXIT 101\nHOSTED_LIKE_INTEGRATION_RESULTS 5\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            code = run_main(FakeRun(hosted_runs=[(101, f10_output(as_it_was))]), '--label', 'f10-20261101-a',
+                            '--hosted-like', receipts=Path(tmp))
+        self.assertEqual(code, 1)
+
+    def go(self, runner):
+        with tempfile.TemporaryDirectory() as tmp:
+            code = run_main(runner, '--label', 'f10-20261101-b', '--hosted-like', '--no-check-shapes', receipts=Path(tmp))
+            return code, json.loads((Path(tmp) / 'f10-20261101-b' / 'receipt.json').read_text(encoding='utf-8'))
+
+    def test_a_block_outside_the_integration_targets_runs_the_phase_once_more_and_both_attempts_are_recorded(self):
+        runner = FakeRun(hosted_runs=[(101, LIBRARY_BLOCKED), (0, HOSTED_PASS)])
+        code, receipt = self.go(runner)
+        entry = receipt['shapes'][-1]
+        self.assertEqual((code, entry['passed']), (0, True))
+        self.assertEqual([a['exit'] for a in entry['attempts']], [101, 0])
+        self.assertEqual(entry['retried_after_blocked'], ['gwz_core'])
+        scripts = [s for s in runner.ssh_scripts() if 'run_tests.py' in s]
+        self.assertEqual(len(scripts), 2)
+        self.assertEqual(scripts[0], scripts[1])
+
+    def test_a_phase_blocked_twice_is_not_run_a_third_time(self):
+        runner = FakeRun(hosted_runs=[(101, LIBRARY_BLOCKED), (101, LIBRARY_BLOCKED)])
+        code, receipt = self.go(runner)
+        self.assertEqual((code, receipt['passed']), (1, False))
+        self.assertEqual([a['exit'] for a in receipt['shapes'][-1]['attempts']], [101, 101])
+        self.assertEqual(len([s for s in runner.ssh_scripts() if 'run_tests.py' in s]), 2)
+
+    def test_a_block_beside_a_genuine_failure_is_never_run_again(self):
+        genuine = LIBRARY_BLOCKED.replace('failed=0', 'failed=1') + 'HOSTED_LIKE_FAILED git::endpoint::ssh_tests::a\n'
+        runner = FakeRun(hosted_runs=[(101, genuine), (0, HOSTED_PASS)])
+        code, receipt = self.go(runner)
+        self.assertEqual((code, receipt['passed'], len(receipt['shapes'][-1]['attempts'])), (1, False, 1))
+        self.assertNotIn('retried_after_blocked', receipt['shapes'][-1])
+        # nor beside a line-ending failure, which a second attempt cannot change
+        runner = FakeRun(hosted_runs=[(101, LIBRARY_BLOCKED.replace('crlf', 'lf')), (0, HOSTED_PASS)])
+        code, receipt = self.go(runner)
+        self.assertEqual((code, len(receipt['shapes'][-1]['attempts'])), (1, 1))
+
+    def test_a_failed_test_whose_text_mentions_os_error_4551_is_a_failure_and_never_run_again(self):
+        row = 'git::endpoint::ssh_tests::background_close::a'
+        text = HOSTED_FAIL + f'HOSTED_LIKE_FAILURE_TEXT {row}\tgit could not start: {APP_CONTROL}\n'
+        runner = FakeRun(hosted_runs=[(101, text), (0, HOSTED_PASS)])
+        code, receipt = self.go(runner)
+        self.assertEqual((code, len(receipt['shapes'][-1]['attempts'])), (1, 1))
+
+    def test_the_script_keeps_an_earlier_attempts_log_and_scans_the_suites_log_before_the_integration_step(self):
+        d = '/e/gwz-tests/f10-20261101-a'
+        script = gate.hosted_like_script('f10-20261101-a', gate.DEFAULT_GIT_ROOT, None)
+        keep = f'if [ -f {d}/logs/hosted-like.log ]; then mv -f {d}/logs/hosted-like.log {d}/logs/hosted-like-attempt-1.log; fi'
+        self.assertIn(keep, script)
+        self.assertLess(script.index(keep), script.index(gate.HOSTED_SUITE))
+        scan = f'{gate.BLOCKED_SCAN} < {d}/logs/hosted-like.log'
+        self.assertIn(scan, script)
+        self.assertLess(script.index(gate.HOSTED_SUITE), script.index(scan))
+        self.assertLess(script.index(scan), script.index('--test publish_workflow'))
+        # a filtered run has no integration step, and its suite's log is scanned all the same
+        self.assertIn(scan, gate.hosted_like_script('f10-20261101-a', gate.DEFAULT_GIT_ROOT, 'background_close'))
 
 
 class Triggers(unittest.TestCase):
