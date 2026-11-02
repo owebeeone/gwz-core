@@ -4,6 +4,7 @@
 //! (the candidate's dev-dependency for the controlled server), since `ring` has no ECDSA P-521. A security key is signed
 //! by a software authenticator, as `key_agent.py` does for the Unix rows, and a DSA key by [`super::dsa`].
 use super::dsa::{self, DsaKey};
+use crate::git::endpoint::ssh_tests::openssh_key;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use russh::keys::{
     PrivateKey,
@@ -70,7 +71,8 @@ impl Identity {
             .decode(public.split_whitespace().nth(1).unwrap())
             .unwrap();
         if text.contains("BEGIN OPENSSH PRIVATE KEY") {
-            let key = PrivateKey::from_openssh(&text).unwrap();
+            // Through `openssh_key`: the library alone refuses about one P-256 key in 256 that ssh-keygen writes (F12).
+            let key = openssh_key::parse(&text).unwrap();
             assert!(
                 !key.algorithm().is_rsa(),
                 "an RSA key is signed from its PEM file, which ssh-keygen -m PEM writes"

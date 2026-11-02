@@ -62,6 +62,8 @@ mod max_startups;
 mod network;
 mod network_agent;
 mod no_agent;
+// F12: OpenSSH private key files for the fixtures that sign with a key themselves.
+mod openssh_key;
 mod password_helpers;
 mod placement_endpoint;
 mod platform_limits;
