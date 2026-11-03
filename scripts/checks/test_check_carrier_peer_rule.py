@@ -102,6 +102,28 @@ class PeerRuleTests(unittest.TestCase):
                     root = tree(**{rel: CLEAN[rel] + source})
                     self.assertTrue(any('switch' in line for line in checker.violations(root)))
 
+    def test_the_address_files_may_choose_only_their_platform(self):
+        mod = 'cfg_if::cfg_if! { if #[cfg(unix)] { mod walk_unix; } else if #[cfg(windows)] { mod walk_windows; } }\n'
+        walk = ('cfg_if::cfg_if! { if #[cfg(any(target_os = "linux", target_os = "android"))] { fn probe() {} } '
+                'else if #[cfg(target_vendor = "apple")] { fn probe() {} } else { compile_error!("no probe"); } }\n')
+        clean = {'local/address/mod.rs': mod, 'local/address/walk_unix.rs': walk, 'local/address/grammar.rs': 'fn parse() {}\n'}
+        self.assertEqual(checker.violations(tree(**clean)), [])
+        for rel in clean:
+            for source in ['#[cfg(test)]\nfn weaker() {}\n', '#[cfg(feature = "lax")]\nfn weaker() {}\n',
+                           '#[cfg(target_os = "macos")]\nfn weaker() {}\n', 'fn weaker() -> bool { cfg!(unix) }\n']:
+                with self.subTest(rel=rel, source=source):
+                    root = tree(**{**clean, rel: clean[rel] + source})
+                    self.assertTrue(any('switch' in line for line in checker.violations(root)), source)
+        # The macOS arm's switch is walk_unix.rs's alone.
+        for rel in ['local/address/mod.rs', 'local/address/grammar.rs']:
+            with self.subTest(rel=rel, source='apple'):
+                root = tree(**{**clean, rel: clean[rel] + '#[cfg(target_vendor = "apple")]\nfn weaker() {}\n'})
+                self.assertTrue(any('switch' in line for line in checker.violations(root)))
+        for source in ['let v = std::env::var("GWZ_SERVER");', 'fn accept_any_address() {}']:
+            with self.subTest(source=source):
+                root = tree(**{**clean, 'local/address/grammar.rs': clean['local/address/grammar.rs'] + source + '\n'})
+                self.assertTrue(checker.violations(root), source)
+
     def test_the_cfg_expression_macro_is_a_switch_too(self):
         # `cfg!(..)` is an expression, not an attribute: a probe that returns early under it is a build variant with a different rule.
         for rel in ['local/sandbox/linux.rs', 'local/unix.rs', 'local/sandbox.rs']:

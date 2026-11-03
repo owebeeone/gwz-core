@@ -50,6 +50,7 @@ use std::{
     io::{self, Read, Write},
 };
 
+pub(crate) mod address;
 mod peer;
 pub(crate) mod sandbox;
 

@@ -1,0 +1,639 @@
+{
+ "done": false,
+ "entries": [
+  {
+   "path": "src/transport_host/carrier/local/address/mod.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: use walk_unix::*",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e: the Unix walk (walk_unix.rs); the sibling `windows` arm of the same cfg_if holds Windows' checks after the grammar (walk_windows.rs: GetFullPathNameW and QueryDosDeviceW)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/mod.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "mod walk_unix",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e: the Unix walk (walk_unix.rs); the sibling `windows` arm of the same cfg_if holds Windows' checks after the grammar (walk_windows.rs: GetFullPathNameW and QueryDosDeviceW)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "gate",
+   "gate": "any(target_os = \"linux\", target_os = \"android\")",
+   "target": "arm: use rustix::fs::{AtFlags, FileType, Mode, OFlags, StatxAttributes, StatxFlags}",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e: the Linux probe (rustix: openat O_PATH, statx, fstatfs, readlinkat; Walked::connect and Walked::bind through /proc/self/fd); its sibling arms are the macOS probe (`target_vendor = \"apple\"`: getattrlistat, openat O_SEARCH, fgetattrlist, fstatfs, NoTrigger) and a compile error for any other Unix. Windows has no walk: the module is Unix-only in mod.rs, whose `windows` arm holds walk_windows.rs (GetFullPathNameW and QueryDosDeviceW)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::ATTR_BIT_MAP_COUNT",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::ATTR_CMN_FILEID",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e",
+   "count": 3
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::ATTR_CMN_FSID",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e",
+   "count": 3
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::ATTR_CMN_OBJTYPE",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::ATTR_CMN_RETURNED_ATTRS",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::ATTR_DIR_MOUNTSTATUS",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::AT_FDCWD",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::ENOENT",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::FSOPT_NOFOLLOW",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::FSOPT_PACK_INVAL_ATTRS",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::O_CLOEXEC",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::O_NOFOLLOW",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::O_SEARCH",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::PATH_MAX",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::attrlist",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e",
+   "count": 2
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::c_ulong::from",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::fgetattrlist",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::fstatfs",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::getattrlistat",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::openat",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::readlinkat",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "libc::statfs",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd}",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/address_walk_rows.rs",
+   "kind": "gate",
+   "gate": "else if any(target_os = \"linux\", target_os = \"android\")",
+   "target": "arm: mod linux_paths",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "a Unix-only row item: the walk's real rows make symbolic links, sockets and mounts and compare the macOS mount flags with the system's and hold NoTrigger (macOS), connect and bind through /proc/self/fd or make an autofs mount with mount(2) (Linux); Windows has no walk, and its pipe-name rows are the sibling `windows` arm of the outer cfg_if",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/address_walk_rows.rs",
+   "kind": "gate",
+   "gate": "unix",
+   "target": "arm: mod unix",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e: the Unix rows of the address walk (real links, sockets and mounts); the sibling `windows` arm of the same cfg_if holds the pipe-name checks' rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/address_walk_rows.rs",
+   "kind": "os",
+   "gate": "libc::MNT_AUTOMOUNTED",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e: the Unix rows of the address walk (real links, sockets and mounts); the sibling `windows` arm of the same cfg_if holds the pipe-name checks' rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/address_walk_rows.rs",
+   "kind": "os",
+   "gate": "libc::MNT_DETACH",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e: the Unix rows of the address walk (real links, sockets and mounts); the sibling `windows` arm of the same cfg_if holds the pipe-name checks' rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/address_walk_rows.rs",
+   "kind": "os",
+   "gate": "libc::MNT_IGNORE_OWNERSHIP",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e: the Unix rows of the address walk (real links, sockets and mounts); the sibling `windows` arm of the same cfg_if holds the pipe-name checks' rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/address_walk_rows.rs",
+   "kind": "os",
+   "gate": "libc::MNT_LOCAL",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e: the Unix rows of the address walk (real links, sockets and mounts); the sibling `windows` arm of the same cfg_if holds the pipe-name checks' rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/address_walk_rows.rs",
+   "kind": "os",
+   "gate": "libc::O_CLOEXEC",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e: the Unix rows of the address walk (real links, sockets and mounts); the sibling `windows` arm of the same cfg_if holds the pipe-name checks' rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/address_walk_rows.rs",
+   "kind": "os",
+   "gate": "libc::c_int",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e: the Unix rows of the address walk (real links, sockets and mounts); the sibling `windows` arm of the same cfg_if holds the pipe-name checks' rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/address_walk_rows.rs",
+   "kind": "os",
+   "gate": "libc::geteuid",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e: the Unix rows of the address walk (real links, sockets and mounts); the sibling `windows` arm of the same cfg_if holds the pipe-name checks' rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/address_walk_rows.rs",
+   "kind": "os",
+   "gate": "libc::getpgrp",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e: the Unix rows of the address walk (real links, sockets and mounts); the sibling `windows` arm of the same cfg_if holds the pipe-name checks' rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/address_walk_rows.rs",
+   "kind": "os",
+   "gate": "libc::mount",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e: the Unix rows of the address walk (real links, sockets and mounts); the sibling `windows` arm of the same cfg_if holds the pipe-name checks' rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/address_walk_rows.rs",
+   "kind": "os",
+   "gate": "libc::pipe2",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e: the Unix rows of the address walk (real links, sockets and mounts); the sibling `windows` arm of the same cfg_if holds the pipe-name checks' rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/address_walk_rows.rs",
+   "kind": "os",
+   "gate": "libc::umount2",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e: the Unix rows of the address walk (real links, sockets and mounts); the sibling `windows` arm of the same cfg_if holds the pipe-name checks' rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/address_walk_rows.rs",
+   "kind": "os",
+   "gate": "os::unix::{ffi::OsStrExt, fs::{FileTypeExt, symlink}, net::{UnixListener, UnixStream}}",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e: the Unix rows of the address walk (real links, sockets and mounts); the sibling `windows` arm of the same cfg_if holds the pipe-name checks' rows"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "gate",
+   "gate": "else if target_vendor = \"apple\"",
+   "target": "arm: use std::{ffi::{CStr, CString, c_char, c_int}, os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd}}",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e: the macOS probe (getattrlistat, openat O_SEARCH, fgetattrlist, fstatfs) and NoTrigger with its gate (walk_unix/no_trigger.rs); its sibling arms are the Linux probe and a compile error for any other Unix. Windows has no walk: the module is Unix-only in mod.rs, whose `windows` arm holds walk_windows.rs (GetFullPathNameW and QueryDosDeviceW)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "gate",
+   "gate": "else if target_vendor = \"apple\"",
+   "target": "mod no_trigger",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e: the macOS probe (getattrlistat, openat O_SEARCH, fgetattrlist, fstatfs) and NoTrigger with its gate (walk_unix/no_trigger.rs); its sibling arms are the Linux probe and a compile error for any other Unix. Windows has no walk: the module is Unix-only in mod.rs, whose `windows` arm holds walk_windows.rs (GetFullPathNameW and QueryDosDeviceW)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "os::fd::{AsRawFd, OwnedFd}",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix.rs",
+   "kind": "os",
+   "gate": "os::unix::{ffi::OsStrExt, net::{UnixListener, UnixStream}}",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix/no_trigger.rs",
+   "kind": "os",
+   "gate": "libc::AT_FDCWD",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e: the macOS NoTrigger and its gate (walk_unix/no_trigger.rs)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix/no_trigger.rs",
+   "kind": "os",
+   "gate": "libc::O_CLOEXEC",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e: the macOS NoTrigger and its gate (walk_unix/no_trigger.rs)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix/no_trigger.rs",
+   "kind": "os",
+   "gate": "libc::O_RDONLY",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e: the macOS NoTrigger and its gate (walk_unix/no_trigger.rs)"
+  },
+  {
+   "path": "src/transport_host/carrier/local/address/walk_unix/no_trigger.rs",
+   "kind": "os",
+   "gate": "os::fd::OwnedFd",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "the macOS walk probes each component through the operating system's own interfaces (getattrlistat, readlinkat, openat O_SEARCH, fgetattrlist, fstatfs); the Linux arm uses rustix, and Windows has no walk (walk_windows.rs checks the pipe name instead)",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e: the macOS NoTrigger and its gate (walk_unix/no_trigger.rs)"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/address_walk_rows.rs",
+   "kind": "os",
+   "gate": "libc::ENOTDIR",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e: the Unix rows of the address walk (real links, sockets and mounts); the sibling `windows` arm of the same cfg_if holds the pipe-name checks' rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/address_walk_rows.rs",
+   "kind": "os",
+   "gate": "os::unix::{fs::{FileTypeExt, symlink}, net::UnixListener}",
+   "target": "",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "paired",
+   "appendix": "new: step 2.3e: the Unix rows of the address walk (real links, sockets and mounts); the sibling `windows` arm of the same cfg_if holds the pipe-name checks' rows"
+  },
+  {
+   "path": "src/transport_host/carrier/tests/address_walk_rows.rs",
+   "kind": "gate",
+   "gate": "target_vendor = \"apple\"",
+   "target": "arm: use super::super::super::local::address::{NoTrigger, NoTriggerGate}",
+   "owner": [
+    "2.3e"
+   ],
+   "state": "platform",
+   "reason": "a Unix-only row item: the walk's real rows make symbolic links, sockets and mounts and compare the macOS mount flags with the system's and hold NoTrigger (macOS), connect and bind through /proc/self/fd or make an autofs mount with mount(2) (Linux); Windows has no walk, and its pipe-name rows are the sibling `windows` arm of the outer cfg_if",
+   "approved_platform": "GwzServerCore-Step2.3-Plan.md section 3, step 2.3e (the Linux openat/statx/fstatfs walk, the macOS getattrlistat walk and their real-mount rows; Windows has no walk, GetFullPathNameW and QueryDosDeviceW checks in walk_windows.rs)",
+   "appendix": "new: step 2.3e"
+  }
+ ]
+}

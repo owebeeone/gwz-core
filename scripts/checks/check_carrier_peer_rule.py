@@ -23,6 +23,8 @@ test-only or configurable override:
 - the sandbox probes (plan 2.3a, local/sandbox.rs and sandbox/): they read /proc and the system, never the environment
   (the environment rule above covers them), may switch on the platform only as sandbox.rs lists, and are called: unix.rs
   must call `sandbox::of_peer(` and peer.rs `sandbox::of_self(`, so that a refactor cannot drop a probe;
+- the server address (plan 2.3e, local/address/): its platform choice (the Unix walk or the Windows checks, the Linux or
+  macOS probe) is listed like the probes', and nothing else is;
 - the hold's order (unix.rs `check_peer`): the probe is followed by the consuming confirmation, `hold.confirm(`, which
   unix.rs must call, and `check_peer` calls no `.check(` (the non-consuming test of a hold, which a probe could follow
   and which would let the confirmation be dropped without a compile error).
@@ -59,6 +61,10 @@ ALLOWED_CFG_EXPRESSION: dict[str, list[str]] = {}
 PLATFORM_CFG_FILES = {
     'local/unix.rs': ['target_vendor = "apple"', 'any(target_os = "linux", target_os = "android")', 'target_os = "android"'],
     'local/sandbox.rs': ['target_vendor = "apple"', 'any(target_os = "linux", target_os = "android")'],
+    # The server address (plan 2.3e): mod.rs picks the Unix walk or the Windows checks, walk_unix.rs the Linux or macOS
+    # probe (any other Unix is a compile error there). Neither may switch on anything else.
+    'local/address/mod.rs': ['unix', 'windows'],
+    'local/address/walk_unix.rs': ['any(target_os = "linux", target_os = "android")', 'target_vendor = "apple"'],
 }
 # Calls a file must make, so that a probe or the rule cannot be dropped by an edit: (pattern, spelling, why).
 REQUIRED_CALLS = {

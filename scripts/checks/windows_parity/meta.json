@@ -63,7 +63,8 @@
     "6.4",
     "6.5",
     "2.3d",
-    "R3b-win"
+    "R3b-win",
+    "2.3e"
   ],
   "done_steps": [
     "0.1",
@@ -74,6 +75,7 @@
     "0.5b"
   ],
   "step_notes": {
+    "2.3e": "Sub-step 2.3e of plan step 2.3 (dev-docs/GwzServerCore-Step2.3-Plan.md section 3): the server address grammar and the Linux and macOS walk of a socket path, with their real-link and real-mount rows; Windows checks its pipe name with GetFullPathNameW and QueryDosDeviceW instead. Added by the lane, not named by the parity plan.",
     "R3b-win": "Step R3b-win of the Phase 1 remediation plan (dev-docs/GwzPhase1-RemPlan.md, row R3): the caller identity an operation's AuthScope folds, read from the process token on Windows and as the effective uid on Unix. Added by the lane, not named by the parity plan.",
     "2.3d": "Sub-step 2.3d of plan step 2.3 (dev-docs/GwzServerCore-Step2.3-Plan.md section 3): the handshake and the bounded connect; the Unix socket rows of the client's open and their Windows busy-pipe twin. Added by the lane, not named by the parity plan.",
     "2.3a": "Sub-step 2.3a of plan step 2.3 (dev-docs/GwzServerCore-Step2.3-Plan.md section 3): the peer sandbox rule's Linux and macOS probes and their real-process rows, with the Windows AppContainer row beside them. Added by the lane, not named by the parity plan.",
