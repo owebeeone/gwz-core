@@ -4,7 +4,7 @@
 //! logon session here is the native module's fake provider; real SSPI runs on Windows (`https_sspi_tests.rs`).
 use super::{
     https_tests::{ADVERTISEMENT, Case, Unavailable, body, challenging, context_of, operation_of},
-    tests::block_on,
+    tests::{block_on, wait_for},
 };
 use crate::git::{
     endpoint::{
@@ -16,7 +16,10 @@ use crate::git::{
     },
     spawn_gate::{GateFault, SpawnGate},
 };
-use gwz_connection::{GitService, HostPhase, StreamError};
+use gwz_connection::{
+    AdmissionError, AuthContext, EndpointProfile, EndpointRoute, GitService, HostPhase,
+    OperationPolicy, PreparedOperation, StreamError,
+};
 use gwz_transport::protocol::{self, Disposition};
 use hyper::header::AUTHORIZATION;
 use sha2::{Digest, Sha256};
@@ -685,4 +688,138 @@ fn a_post_for_a_key_the_operation_never_learned_is_refused_after_one_anonymous_a
     );
     assert_eq!(case.handle.snapshot().phase, HostPhase::Open);
     assert!(case.close());
+}
+
+// --- HTTPS model H1e (draft r5 3(b), A8): the operation's context is admitted once, and held by no retained record ---
+
+/// An operation named `name` over `auth`, as `operation_of` makes it, before its admission.
+fn prepared(name: &str, auth: AuthContext) -> PreparedOperation {
+    PreparedOperation::new(
+        name,
+        EndpointRoute::ssh_and_https(),
+        EndpointProfile::new(b"fixture-https".to_vec(), [7; 32]).unwrap(),
+        auth,
+        OperationPolicy::new(4, 32, 3).unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn h1e_5_an_operation_auth_context_is_single_admission_through_the_connection_host() {
+    // Draft r5 3(b) and A8 (Safety P2-3): `OperationAuth::context` retains the operation's credentials, so it is admitted
+    // once. Through the connection host, an admission of a clone is refused `InvalidInput` while the first admission
+    // waits, after it registered and after its operation finished, and makes no binding. An admission dropped before it
+    // registered frees the claim. A fresh context of the same helper registers, and a provider that is not the
+    // operation's own record is still shared, as contract section 10 documents.
+    let case = Case::with(
+        |seen| challenging(seen, "Basic"),
+        Behaviour::default(),
+        |_| (None, None),
+        None,
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let helper = helper(directory.path());
+    let context = context_of(Some(helper.clone()), None);
+    let refused = |name: &str| {
+        matches!(
+            case.handle.admit(prepared(name, context.clone())),
+            Err(AdmissionError::InvalidInput)
+        )
+    };
+    drop(
+        case.handle
+            .admit(prepared("op-dropped", context.clone()))
+            .unwrap(),
+    );
+    let first = case
+        .handle
+        .admit(prepared("op-a", context.clone()))
+        .unwrap();
+    assert!(
+        refused("op-b-waiting"),
+        "a clone admitted while the first waits"
+    );
+    let a = block_on(first.acquire()).unwrap().register();
+    assert!(
+        refused("op-b-registered"),
+        "a clone admitted after the first registered"
+    );
+    assert_eq!(
+        case.handle.snapshot().bindings,
+        1,
+        "a refusal made no binding"
+    );
+    block_on(a.finish());
+    assert!(
+        refused("op-b-finished"),
+        "a clone admitted after the operation ended"
+    );
+    let fresh = operation_of(&case.handle, "op-fresh", context_of(Some(helper), None));
+    let plain = context_of(None, None);
+    let shared = [
+        operation_of(&case.handle, "op-plain-1", plain.clone()),
+        operation_of(&case.handle, "op-plain-2", plain),
+    ];
+    assert_eq!(case.handle.snapshot().bindings, 3);
+    block_on(fresh.finish());
+    for operation in shared {
+        block_on(operation.finish());
+    }
+    assert!(case.close());
+}
+
+#[test]
+fn h1e_6_a_native_exchange_whose_cleanup_is_pending_leaves_the_provider_to_its_own_holders() {
+    // Draft r5 3(b), the holders table (Safety P2-3): retained native cleanup holds no `AuthContext`. The logon session
+    // answers the NTLM challenge and the server accepts its token, but the session's finish leaves its cleanup
+    // unconfirmed: the exchange ends `Timeout` and the adapter retains the record. Once the exchange and its operation
+    // have ended, only the row's own handle holds the provider while that record is still pending; the host's close
+    // cannot confirm the record until the provider's cleanup is (`release`), and confirms it after. The logon session is
+    // the native module's fake provider, so the row runs on every platform; real SSPI cannot be made to leave its cleanup
+    // pending on demand.
+    for release in [false, true] {
+        let (caller, cleanup) = native::pending_cleanup_fixture();
+        let case = Case::with(
+            |seen| challenging(seen, "NTLM"),
+            Behaviour::default(),
+            |_| (None, None),
+            None,
+        );
+        let context = context_of(None, Some(caller));
+        let a = operation_of(&case.handle, "op-a", context.clone());
+        let mut exchange = case.exchange(&a, true);
+        let read = body(&mut exchange);
+        assert!(
+            matches!(&read, Err(StreamError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut),
+            "the finish left its cleanup pending: {read:?}"
+        );
+        assert_eq!(
+            case.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|s| s.0)
+                .collect::<Vec<_>>(),
+            [false, true],
+            "the token was sent and accepted"
+        );
+        block_on(exchange.finish());
+        block_on(a.finish());
+        wait_for("only the row's own handle to hold the provider", || {
+            Arc::strong_count(context.provider()) == 1
+        });
+        assert_eq!(
+            cleanup.load(Ordering::SeqCst),
+            0,
+            "the record is still pending"
+        );
+        if release {
+            cleanup.store(2, Ordering::SeqCst);
+        }
+        assert_eq!(
+            case.close(),
+            release,
+            "the close confirmed the retained record only once its cleanup was"
+        );
+    }
 }

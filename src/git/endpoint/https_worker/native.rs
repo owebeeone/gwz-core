@@ -423,6 +423,9 @@ cfg_if::cfg_if! { if #[cfg(test)] {
     pub(crate) fn counting_fixture(host: &'static str) -> (NativeCaller, Arc<AtomicUsize>) { tests::counting_caller(host) }
     /// `counting_fixture`, and the deadline D every exchange of it was started with.
     pub(crate) fn recording_fixture(host: &'static str) -> (NativeCaller, Arc<AtomicUsize>, Arc<Mutex<Vec<Instant>>>) { tests::recording_caller(host) }
+    /// A caller whose logon session completes at once but whose finish leaves its cleanup unconfirmed (the exchange ends
+    /// `Timeout` and the adapter retains the record), and the state that confirms it once set to 2.
+    pub(crate) fn pending_cleanup_fixture() -> (NativeCaller, Arc<AtomicUsize>) { tests::pending_cleanup_caller() }
     impl Authenticated {
         pub(crate) fn revoked_for_test(&self) -> bool { self.revoked.load(Ordering::Acquire) }
     }

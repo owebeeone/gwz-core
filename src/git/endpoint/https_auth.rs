@@ -64,7 +64,9 @@ impl OperationAuth {
     /// caller enters as its `CallerIdentity` (R3b-win, draft r5 section 3.2 item 3): a digest of non-secret identifiers,
     /// or a value unique to its capture when they could not be read. An operation with no caller folds a tag of its own
     /// (it has no native route, and its helper runs as the process). The digest stays in memory beside the values it is
-    /// of and is never logged or sent.
+    /// of and is never logged or sent. The provider retains the operation's credentials, so the context is
+    /// single-admission (HTTPS model draft r5 3(b), A8): one admission of it, or of any clone, registers, and every other
+    /// `admit` is refused `InvalidInput`; a served bind builds a fresh one from its own capture.
     pub(crate) fn context(
         helper: Config,
         native: Option<NativeCaller>,
@@ -109,7 +111,7 @@ impl OperationAuth {
             }
         }
         let scope = gwz_connection::AuthScope::new(digest.finalize().into());
-        gwz_connection::AuthContext::new(
+        gwz_connection::AuthContext::single_admission(
             charge,
             scope,
             Arc::new(Self {
