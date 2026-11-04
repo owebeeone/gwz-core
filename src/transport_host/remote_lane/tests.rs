@@ -639,3 +639,137 @@ fn the_core_lane_is_held_to_the_clients_ceiling_whatever_the_config_asks() {
         assert!(core.limits.max_streams <= BindBounds::client().streams);
     }
 }
+
+// --- HTTPS model H1e (draft r5 3(b), A8, A12): the client builds a fresh capture per bind ---
+
+/// The calls the client sent, as the Phase 2 served path builds their operations: each `take` makes the bind's operation
+/// from a capture of the invocation's environment, a fresh one per bind, or (`reused`, the contrast) one capture for
+/// every bind.
+struct Captured {
+    snapshot: crate::session_host::EnvironmentSnapshot,
+    reused: Option<gwz_connection::PreparedOperation>,
+}
+impl Captured {
+    fn new(home: &std::path::Path, reuse: bool) -> Self {
+        let snapshot = crate::session_host::EnvironmentSnapshot::from_os_pairs(
+            ["HOME", "USERPROFILE"].map(|name| (name.into(), home.as_os_str().to_os_string())),
+        )
+        .unwrap();
+        let reused = reuse.then(|| prepared_from(&snapshot, "the-capture"));
+        Self { snapshot, reused }
+    }
+}
+/// An operation named `name` over a capture of `snapshot`: its profile and its single-admission `OperationAuth` context.
+fn prepared_from(
+    snapshot: &crate::session_host::EnvironmentSnapshot,
+    name: &str,
+) -> gwz_connection::PreparedOperation {
+    use crate::transport_host::endpoint_environment::{MachineProxy, capture_operation};
+    let capture = capture_operation(snapshot, None, Some(MachineProxy::Direct), None).unwrap();
+    gwz_connection::PreparedOperation::new(
+        name,
+        gwz_connection::EndpointRoute::ssh_and_https(),
+        capture.profile,
+        capture.auth,
+        gwz_connection::OperationPolicy::new(4, 32, 3).unwrap(),
+    )
+    .unwrap()
+}
+impl gwz_connection::remote::Invocations for Captured {
+    fn take(&self, request_id: &str) -> Option<gwz_connection::remote::Invocation> {
+        let prepared = match &self.reused {
+            Some(prepared) => prepared.clone(),
+            None => prepared_from(&self.snapshot, request_id),
+        };
+        Some(gwz_connection::remote::Invocation::new(
+            prepared,
+            gwz_connection::remote::ServiceClass::Fetch,
+        ))
+    }
+}
+
+/// The core's `requests`, each admitted and registered over a stream carrier whose client's receiver serves them from
+/// `invocations` on a connection host of its own: each request's registration once it is no longer pending, and the
+/// client host's binding count.
+fn served_binds(
+    requests: &[&str],
+    invocations: Captured,
+) -> (Vec<gwz_connection::Registration>, usize) {
+    use crate::{
+        git::endpoint::{https_auth::HelperSlots, shared_reservation::Authority},
+        transport_host::{
+            composition,
+            connection_factory::{CoreFactory, HttpsHost},
+            connection_host::ConnectionHost,
+        },
+    };
+    use gwz_connection::{OperationRef, Registration, remote::handle};
+    let (core, client, _core_carrier, _client_carrier) = stream_ends();
+    // The production factory's HTTPS half: an admission makes the operation's endpoint instance before it registers.
+    let https = HttpsHost {
+        helper_slots: HelperSlots::new(),
+        authority: Authority::new(256, 256),
+    };
+    let mut client_host = ConnectionHost::build(
+        Arc::new(CoreFactory::new(None, Some(https))),
+        None,
+        Arc::new(composition::process_safety()),
+    )
+    .unwrap();
+    let receiver = super::serve(&client_host.handle(), client, Arc::new(invocations));
+    let host = handle(core);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    let mut operations = Vec::new();
+    for &request in requests {
+        let admission = host.admit(OperationRef::new(request).unwrap()).unwrap();
+        let mut acquire = Box::pin(admission.acquire());
+        let std::task::Poll::Ready(permit) = acquire.as_mut().poll(&mut cx) else {
+            panic!("a free slot");
+        };
+        let op = permit.unwrap().register();
+        eventually("the client's answer", || {
+            receiver.pump();
+            (op.registration() != Registration::Pending).then_some(())
+        });
+        operations.push(op);
+    }
+    let registrations = operations.iter().map(|op| op.registration()).collect();
+    let bindings = client_host.handle().snapshot().bindings;
+    drop(operations);
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(client_host.close());
+    (registrations, bindings)
+}
+
+#[test]
+fn h1e_7_two_binds_of_one_served_invocation_each_with_a_fresh_capture_both_register() {
+    // Draft r5 3(b) and A12: an `OperationAuth` context is single-admission, so the client owner of a served core builds
+    // a fresh capture per bind. Two binds of one invocation's environment then both register on the client's host. The
+    // contrast is a client that reuses one capture: its second bind is refused `invalid_request` (Split L136-137), never
+    // `capacity`, and makes no binding.
+    use gwz_connection::{Registration, TerminalReason};
+    use gwz_transport::protocol::ErrorCode;
+    let home = tempfile::tempdir().unwrap();
+    let (fresh, bindings) = served_binds(&["more-1", "more-2"], Captured::new(home.path(), false));
+    assert!(
+        fresh
+            .iter()
+            .all(|registration| matches!(registration, Registration::Registered(_))),
+        "a fresh capture per bind: {fresh:?}"
+    );
+    assert_eq!(bindings, 2);
+    let (reused, bindings) = served_binds(&["more-1", "more-2"], Captured::new(home.path(), true));
+    assert!(
+        matches!(reused[0], Registration::Registered(_)),
+        "{reused:?}"
+    );
+    assert_eq!(
+        reused[1],
+        Registration::NeverRegistered(TerminalReason::ClientRefused(ErrorCode::InvalidRequest)),
+        "a reused capture's second bind"
+    );
+    assert_eq!(bindings, 1, "the refused bind made no binding");
+}

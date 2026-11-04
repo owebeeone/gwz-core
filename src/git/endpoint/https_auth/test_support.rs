@@ -46,10 +46,7 @@ cfg_if::cfg_if! {
 
             #[test]
             fn secret_is_redacted_and_builds_basic_header() {
-                let secret = Secret {
-                    username: b"alice".to_vec(),
-                    password: b"secret".to_vec(),
-                };
+                let secret = Secret::new(b"alice".to_vec(), b"secret".to_vec());
                 assert_eq!(secret.header(), "Basic YWxpY2U6c2VjcmV0");
                 assert_eq!(format!("{secret:?}"), "Secret(REDACTED)");
             }

@@ -163,13 +163,20 @@ impl Client {
         let mut retried = false;
         let mut answer_challenge = input.policy == AuthPolicy::Gh
             || (!https_policy::advertisement(input.service) && basic_route);
+        // The credential a request redirected after the challenge carried, which its redirect to the same origin resends
+        // (TR1.6 OQ4 (d)): the next hop sends it with no lookup.
+        let mut resend: Option<Arc<credentials::Credential>> = None;
         loop {
             let mut authorization = None;
             let mut facts = native_route
                 .as_ref()
                 .map_or_else(Facts::default, |auth| auth.facts.clone());
             facts.credential_offered |= credential_offered;
-            let credential = if answer_challenge {
+            let credential = if let Some(credential) = resend.take() {
+                facts.method = AuthMethod::Gh;
+                authorization = Some(credential.header());
+                Some(credential)
+            } else if answer_challenge {
                 facts.method = AuthMethod::Gh;
                 let credential = self
                     .credential(&key, &destination, budget, cancel)
@@ -470,7 +477,10 @@ impl Client {
             }
             drop(guard);
             drop(connection);
-            if native_policy && response.status() == 401 {
+            // The native 401 handler answers a challenge to a request that carried no credential. A 401 to one that
+            // did (the credential an OQ4 (d) redirect resent) refuses that credential: it is not sent again, and the
+            // request fails as under `Gh` (draft r5 3(d); R4w3 State P2-1).
+            if native_policy && response.status() == 401 && !current_credential_offered {
                 response = self
                     .authenticate(
                         &mut prepared,
@@ -522,11 +532,18 @@ impl Client {
                 ResponseAction::Success => {
                     validate_content(&response, input.service)
                         .map_err(|code| with_facts(code, Effect::None, &prepared.opened.facts))?;
-                    self.routes
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
+                    let mut routes = self.routes.lock().unwrap_or_else(|e| e.into_inner());
+                    routes
                         .install(&key, &destination.base())
                         .map_err(|code| with_facts(code, Effect::None, &prepared.opened.facts))?;
+                    // A configured-helper credential this loop sent (the OQ4 (d) resend; `answer_basic` marks the
+                    // route for the one it sends) was accepted: the route's POST carries it (R4w3 Code P2-1).
+                    if input.policy == AuthPolicy::WindowsConfigured && current_credential_offered {
+                        routes.basic_install(&key).map_err(|code| {
+                            with_facts(code, Effect::None, &prepared.opened.facts)
+                        })?;
+                    }
+                    drop(routes);
                     prepared.response = Some(response);
                     return Ok(prepared);
                 }
@@ -571,6 +588,17 @@ impl Client {
                             return Err(with_facts(code, Effect::None, &prepared.opened.facts));
                         }
                     };
+                    // A redirect after the challenge (TR1.6 OQ4 (d), operator 2026-11-01): to the same origin
+                    // (scheme, host, port) the accepted credential is resent, and it answers that destination for the
+                    // rest of the route; to another origin nothing is sent, and only that origin's own 401 starts a
+                    // lookup, for its own URL. No redirect makes the helper erase anything: none is ever told to.
+                    let here = Key::https(destination.host(), destination.port());
+                    if Key::https(next.host(), next.port()) == here
+                        && let Some(credential) = prepared.credential.as_ref()
+                        && self.resend(&key, &next, credential, budget, cancel).await?
+                    {
+                        resend = Some(credential.clone());
+                    }
                     self.redirects.followed(&destination.shown(), &next.shown());
                     destination = next;
                     drop(response);

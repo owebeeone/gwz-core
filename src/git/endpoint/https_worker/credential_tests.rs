@@ -307,3 +307,89 @@ fn the_lookups_three_configured_helper_outcomes_reach_the_wire_as_their_own_caus
         );
     }
 }
+
+#[tokio::test]
+async fn resend_answers_a_same_origin_target_only_with_a_live_credential_it_does_not_contradict() {
+    // R4w3 State P3-1 (TR1.6 OQ4 (d); draft r5 3(d), "`Rejected` is per operation and terminal"): a credential a
+    // redirected request carried answers a same-origin target with no answer of its own, and is then that target's
+    // answer with no lookup. A target that holds another answer keeps it and is not resent to, and a credential the
+    // server has already refused is resent nowhere: the target stays unanswered, so only its own 401 decides.
+    let server = Server::start(Arc::new(|_| {
+        Box::pin(async { response(200, GitService::UploadPackAdvertisement, "fixture") })
+    }))
+    .await;
+    let dir = tempfile::tempdir().unwrap();
+    let counter = dir.path().join("count");
+    let mut endpoint = Endpoint::new(
+        server.config(),
+        Some(fake_git(dir.path(), &counter)),
+        pool::Config::default(),
+    )
+    .unwrap();
+    let client = &endpoint.client;
+    let key = RouteKey::new(
+        "operation",
+        &server.url,
+        GitService::UploadPackAdvertisement,
+    );
+    client.routes.lock().unwrap().admit(key.clone());
+    let at = |path: &str| Destination::parse(&server.url.replace("/repo", path)).unwrap();
+    let lookups = || fs::read_to_string(&counter).map_or(0, |text| text.lines().count());
+    let cancel = CancellationToken::new();
+    let mut budget = client.budget();
+    let accepted = client
+        .credential(&key, &at("/repo"), &mut budget, &cancel)
+        .await
+        .unwrap();
+    // A target with no answer.
+    assert!(
+        client
+            .resend(&key, &at("/moved"), &accepted, &mut budget, &cancel)
+            .await
+            .unwrap()
+    );
+    let answer = client
+        .credential(&key, &at("/moved"), &mut budget, &cancel)
+        .await
+        .unwrap();
+    assert!(Arc::ptr_eq(&answer, &accepted));
+    assert_eq!(lookups(), 1);
+    // A target that holds another answer.
+    let own = client
+        .credential(&key, &at("/other"), &mut budget, &cancel)
+        .await
+        .unwrap();
+    assert!(
+        !client
+            .resend(&key, &at("/other"), &accepted, &mut budget, &cancel)
+            .await
+            .unwrap(),
+        "a target holding another answer was resent to"
+    );
+    let answer = client
+        .credential(&key, &at("/other"), &mut budget, &cancel)
+        .await
+        .unwrap();
+    assert!(
+        Arc::ptr_eq(&answer, &own),
+        "the target's own answer changed"
+    );
+    // A credential the server refused.
+    accepted.rejected.store(true, Ordering::Release);
+    assert!(
+        !client
+            .resend(&key, &at("/fresh"), &accepted, &mut budget, &cancel)
+            .await
+            .unwrap(),
+        "a refused credential was resent"
+    );
+    let answer = client
+        .credential(&key, &at("/fresh"), &mut budget, &cancel)
+        .await
+        .unwrap();
+    assert!(!Arc::ptr_eq(&answer, &accepted));
+    assert_eq!(lookups(), 3, "the target's own lookup did not run");
+    drop((accepted, own, answer));
+    endpoint.client.finish_operation("operation");
+    assert_eq!(endpoint.shutdown(Duration::from_secs(2)).await, 0);
+}

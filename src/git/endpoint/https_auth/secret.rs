@@ -10,9 +10,45 @@ impl Drop for SecretBuffer {
     }
 }
 
-pub(crate) struct Secret {
-    pub(super) username: Vec<u8>,
-    pub(super) password: Vec<u8>,
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        /// What a test learns of each credential buffer as `Drop` finishes its own overwrite: its length, its
+        /// capacity, and whether every byte of the capacity then reads zero (draft r5 row H1a-4).
+        pub(crate) type SecretWipes = std::sync::Arc<std::sync::Mutex<Vec<(usize, usize, bool)>>>;
+        pub(crate) struct Secret {
+            pub(super) username: Vec<u8>,
+            pub(super) password: Vec<u8>,
+            wipes: Option<SecretWipes>,
+        }
+        impl Secret {
+            pub(super) fn new(username: Vec<u8>, password: Vec<u8>) -> Self {
+                Self { username, password, wipes: None }
+            }
+            /// `Drop` reports to `wipes` what its overwrite left in both buffers; nothing here wipes.
+            pub(super) fn observe_wipe(&mut self, wipes: SecretWipes) {
+                self.wipes = Some(wipes);
+            }
+            /// Whether every byte of `buffer`'s capacity reads zero. The spare slots are read only when the initialized
+            /// bytes read zero, which only `Drop`'s overwrite of the whole capacity leaves.
+            fn zeroed(buffer: &mut Vec<u8>) -> bool {
+                buffer.iter().all(|byte| *byte == 0)
+                    && buffer.spare_capacity_mut().iter().all(|slot| {
+                        // SAFETY: called only after `overwrite`, which wrote every slot of the capacity.
+                        (unsafe { slot.assume_init() }) == 0
+                    })
+            }
+        }
+    } else {
+        pub(crate) struct Secret {
+            pub(super) username: Vec<u8>,
+            pub(super) password: Vec<u8>,
+        }
+        impl Secret {
+            pub(super) fn new(username: Vec<u8>, password: Vec<u8>) -> Self {
+                Self { username, password }
+            }
+        }
+    }
 }
 
 cfg_if::cfg_if! {
@@ -119,6 +155,13 @@ impl Drop for Secret {
     fn drop(&mut self) {
         overwrite(&mut self.username);
         overwrite(&mut self.password);
+        cfg_if::cfg_if! { if #[cfg(test)] {
+            if let Some(wipes) = self.wipes.take() {
+                let observed = [&mut self.username, &mut self.password]
+                    .map(|buffer| (buffer.len(), buffer.capacity(), Self::zeroed(buffer)));
+                wipes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend(observed);
+            }
+        } }
     }
 }
 
@@ -172,8 +215,5 @@ pub(super) fn parse_secret(output: &[u8]) -> Result<Secret, AuthError> {
     // ssh_parts never grows/releases a populated allocation.
     let mut owned_username = Vec::with_capacity(username.len() + 1);
     owned_username.extend_from_slice(username);
-    Ok(Secret {
-        username: owned_username,
-        password: password.to_vec(),
-    })
+    Ok(Secret::new(owned_username, password.to_vec()))
 }

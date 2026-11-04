@@ -2,7 +2,7 @@
 //! (`Shared::lease`) before it queues the exchange's start, as the SSH adapter does. A start no worker takes is refused
 //! (its client reads the failure), and its lease is released: none is left standing to keep the worker from retiring
 //! that connection on an idle loss.
-use super::{Command, HttpsAdapter, HttpsInputs, HttpsSettings};
+use super::{Command, Counters, HttpsAdapter, HttpsInputs, HttpsSettings};
 use crate::git::endpoint::{
     https_auth::HelperSlots, https_connection, shared_reservation::Authority, ssh_adapter::Shared,
 };
@@ -46,6 +46,7 @@ fn a_start_no_worker_takes_releases_the_lease() {
                 interaction_timeout_ms: 20_000,
                 cleanup_timeout_ms: 2_000,
             },
+            counters: Counters::default(),
         },
         Arc::new(crate::transport_host::composition::process_safety()),
     );

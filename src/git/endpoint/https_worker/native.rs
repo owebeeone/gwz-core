@@ -418,11 +418,17 @@ impl Drop for Authenticated {
 
 cfg_if::cfg_if! { if #[cfg(test)] {
     pub(crate) fn publication_fixture() -> NativeCaller { tests::publication_caller() }
+    /// `publication_fixture`, and the switch that, once set, stalls every later round of its logon session, so that a
+    /// conversation runs into its deadline D (HTTPS model draft r5 row H3c-4).
+    pub(crate) fn stalling_fixture() -> (NativeCaller, Arc<std::sync::atomic::AtomicBool>) { tests::stalling_caller() }
     /// A caller whose logon session never completes, for a server reached by `host`, and the count of the steps
     /// every session of it has taken.
     pub(crate) fn counting_fixture(host: &'static str) -> (NativeCaller, Arc<AtomicUsize>) { tests::counting_caller(host) }
     /// `counting_fixture`, and the deadline D every exchange of it was started with.
     pub(crate) fn recording_fixture(host: &'static str) -> (NativeCaller, Arc<AtomicUsize>, Arc<Mutex<Vec<Instant>>>) { tests::recording_caller(host) }
+    /// A caller whose logon session completes at once but whose finish leaves its cleanup unconfirmed (the exchange ends
+    /// `Timeout` and the adapter retains the record), and the state that confirms it once set to 2.
+    pub(crate) fn pending_cleanup_fixture() -> (NativeCaller, Arc<AtomicUsize>) { tests::pending_cleanup_caller() }
     impl Authenticated {
         pub(crate) fn revoked_for_test(&self) -> bool { self.revoked.load(Ordering::Acquire) }
     }
