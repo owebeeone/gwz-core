@@ -7867,3 +7867,52 @@ impl TransportLaneFrame {
         Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
     }
 }
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct SessionLimits {
+    pub running_operations: i64,
+    pub queued_operations: i64,
+    pub operation_table: i64,
+    pub direct_workers: i64,
+    pub event_log: i64,
+    pub open_logs: i64,
+    pub outstanding_calls: i64,
+    pub control_reserve: i64,
+    pub read_bytes: i64,
+    pub close_wait_ms: i64,
+}
+impl SessionLimits {
+    pub const MAX_DEPTH: usize = 32;
+    pub const MAX_ENCODED_LEN: Option<usize> = None;
+    pub fn to_cbor(&self) -> Cbor {
+        Cbor::Map(vec![
+            (1, Cbor::Int(self.running_operations)),
+            (2, Cbor::Int(self.queued_operations)),
+            (3, Cbor::Int(self.operation_table)),
+            (4, Cbor::Int(self.direct_workers)),
+            (5, Cbor::Int(self.event_log)),
+            (6, Cbor::Int(self.open_logs)),
+            (7, Cbor::Int(self.outstanding_calls)),
+            (8, Cbor::Int(self.control_reserve)),
+            (9, Cbor::Int(self.read_bytes)),
+            (10, Cbor::Int(self.close_wait_ms)),
+        ])
+    }
+    pub fn from_cbor(c: &Cbor) -> Result<Self, DecodeError> {
+        Ok(Self {
+            running_operations: c.try_get(1)?.try_int()?,
+            queued_operations: c.try_get(2)?.try_int()?,
+            operation_table: c.try_get(3)?.try_int()?,
+            direct_workers: c.try_get(4)?.try_int()?,
+            event_log: c.try_get(5)?.try_int()?,
+            open_logs: c.try_get(6)?.try_int()?,
+            outstanding_calls: c.try_get(7)?.try_int()?,
+            control_reserve: c.try_get(8)?.try_int()?,
+            read_bytes: c.try_get(9)?.try_int()?,
+            close_wait_ms: c.try_get(10)?.try_int()?,
+        })
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
+        Self::from_cbor(&crate::cbor::try_decode_with(bytes, Self::MAX_DEPTH, Self::MAX_ENCODED_LEN)?)
+    }
+}
