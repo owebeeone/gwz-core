@@ -1,13 +1,14 @@
 //! Candidate embedding ownership for endpoint placement. The host supplies message delivery.
 mod cancellable;
 // Only the in-process carrier has a production caller in plan step 2.1; the stream and local carriers are first called by
-// `gwz server` (step 2.3).
+// `gwz server` (step 2.3): the served session (`session_host::served::stream`, 2.3g1) reaches them, and its accept loop
+// (2.3i) is the first production caller.
 #[allow(
     dead_code,
     unused_imports,
-    reason = "first production caller of the stream and local carriers: plan step 2.3"
+    reason = "first production caller of the stream and local carriers: plan step 2.3i, the accept loop"
 )]
-mod carrier;
+pub(crate) mod carrier;
 mod cli_placement;
 pub(crate) mod composition;
 mod connection_factory;

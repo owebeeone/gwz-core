@@ -13,7 +13,7 @@ use super::super::{
 };
 use super::{
     CarrierRouter, Core, lock,
-    state::{BindingInbound, Entry, Queued, Scope, State, kind_slot},
+    state::{BindingInbound, Entry, PreOpen, Queued, Scope, State, kind_slot},
     wipe,
 };
 use gwz_session_contract::{Closed, Frame, FrameRouter};
@@ -36,6 +36,30 @@ impl Core {
     pub(super) fn session_fault(&self, fault: ProtocolFault) -> Closed {
         self.finish(CloseReason::Protocol(fault), super::state::Ending::Abort);
         Closed::Stream(ErrorKind::InvalidData)
+    }
+
+    /// The class of `frame` if it arrives before the session opened and is not the handshake's one frame
+    /// ([`CarrierLimits::awaiting_open`](super::super::CarrierLimits::awaiting_open)): the session's protocol error
+    /// (`GwzSplitCommandChannel.md` §3.3 "When"). The first registry frame passes and moves the gate on.
+    fn before_open(&self, frame: &Frame) -> Option<FrameClass> {
+        if !self.limits.is_awaiting_open() {
+            // An end built without the gate never takes the lock for it.
+            return None;
+        }
+        let registry = !matches!(frame.tag, DATA_TAG | CONTROL_TAG);
+        let mut state = lock(self);
+        match state.pre_open {
+            PreOpen::Off => None,
+            PreOpen::Waiting if registry => {
+                state.pre_open = PreOpen::Asked;
+                None
+            }
+            PreOpen::Waiting | PreOpen::Asked => Some(match frame.tag {
+                DATA_TAG => FrameClass::TransportData,
+                CONTROL_TAG => FrameClass::TransportControl,
+                _ => FrameClass::Registry,
+            }),
+        }
     }
 
     /// Discards a frame that is not delivered: counted, and its bytes wiped.
@@ -335,6 +359,11 @@ fn admit_transport(
 impl FrameRouter for CarrierRouter {
     fn route(&self, frame: Frame) -> Result<(), Closed> {
         let core = &self.0;
+        let close = frame.tag == CONTROL_TAG && wire::is_close(&frame);
+        if !close && let Some(class) = core.before_open(&frame) {
+            wipe(frame);
+            return Err(core.session_fault(ProtocolFault::BeforeOpened(class)));
+        }
         match frame.tag {
             CONTROL_TAG if wire::is_close(&frame) => {
                 match wire::parse_close(&frame) {

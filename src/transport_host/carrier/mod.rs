@@ -67,7 +67,9 @@ cfg_if::cfg_if! { if #[cfg(test)] { mod tests; } }
 pub(crate) use binding::{CarrierBinding, CarrierId, Peer, Side};
 pub(crate) use in_process::{InProcessCarrier, in_process};
 pub(crate) use link::{CarrierLink, Join, LinkEnd};
-pub(crate) use stream::{BindingRefused, FrameRefused, StreamCarrier};
+pub(crate) use stream::{
+    BindingRefused, CONTROL_QUEUE_BYTES, FrameRefused, Offered, QUEUE_BYTES, StreamCarrier,
+};
 pub(crate) use wire::{SessionOpenRefusal, validate_session_open};
 
 /// Which lane of a carrier's queue a message takes.
@@ -99,6 +101,8 @@ pub(crate) struct CarrierLimits {
     control_reserve: usize,
     inbound: InboundLimits,
     stall: StallBounds,
+    /// The end waits for the session's open: see [`CarrierLimits::awaiting_open`].
+    awaiting_open: bool,
 }
 
 impl CarrierLimits {
@@ -109,6 +113,7 @@ impl CarrierLimits {
         control_reserve: 16,
         inbound: InboundLimits::DEFAULT,
         stall: StallBounds::DEFAULT,
+        awaiting_open: false,
     };
 
     /// `None` when either lane would have no room, or the capacity would overflow.
@@ -121,6 +126,7 @@ impl CarrierLimits {
             control_reserve,
             inbound: InboundLimits::DEFAULT,
             stall: StallBounds::DEFAULT,
+            awaiting_open: false,
         })
     }
 
@@ -140,6 +146,22 @@ impl CarrierLimits {
 
     pub(crate) fn stall(self) -> StallBounds {
         self.stall
+    }
+
+    /// These limits for a host's end that has not yet opened its session (`GwzSplitCommandChannel.md` §3.3 "When"):
+    /// from its first byte until it queues `SessionOpened`, the end takes one registry frame, the handshake's, and any
+    /// other frame it reads (a registry frame, or a transport frame of any binding) ends the carrier as
+    /// [`ProtocolFault::BeforeOpened`]. A close announcement still ends it as the peer's close. The switch is part of the
+    /// limits so that a listener's accepted ends hold it from their first byte, with no window before it is set.
+    pub(crate) fn awaiting_open(self) -> Self {
+        Self {
+            awaiting_open: true,
+            ..self
+        }
+    }
+
+    pub(crate) fn is_awaiting_open(self) -> bool {
+        self.awaiting_open
     }
 
     pub(crate) fn capacity(self, lane: Lane) -> usize {
@@ -315,6 +337,9 @@ pub(crate) enum ProtocolFault {
     SessionOpen(SessionOpenRefusal),
     /// The peer queued more frames of a class, or more bytes, than the bound it must respect (D-N).
     Overrun(FrameClass),
+    /// A frame of the class arrived at a host's end before it queued `SessionOpened`, other than the handshake's one
+    /// frame ([`CarrierLimits::awaiting_open`]).
+    BeforeOpened(FrameClass),
 }
 
 /// Why a carrier has ended, as one end sees it. The first reason stands.

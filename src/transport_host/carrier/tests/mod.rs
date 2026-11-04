@@ -9,6 +9,8 @@ mod handshake_local_rows;
 mod handshake_rows;
 mod handshake_support;
 mod local_rows;
+mod pre_open_rows;
+mod pressure_rows;
 mod sandbox_rows;
 mod seam_rows;
 mod stream_rows;

@@ -31,6 +31,17 @@ pub(super) enum Ending {
     Abort,
 }
 
+/// Where a host's end stands before its session opens ([`CarrierLimits::awaiting_open`](super::super::CarrierLimits)).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PreOpen {
+    /// No gate: the session is open, or this end does not wait for an open.
+    Off,
+    /// Nothing has arrived yet: the next registry frame is the handshake's.
+    Waiting,
+    /// The handshake's frame has arrived and `SessionOpened` is not queued: every frame but a close is a fault.
+    Asked,
+}
+
 /// A frame queued for the writer.
 pub(super) struct Outgoing {
     pub(super) frame: Frame,
@@ -131,10 +142,12 @@ pub(super) struct State {
     /// This end admits the peer's `bind` for a binding that is not open, and holds that binding to these limits
     /// ([`Carrier::accept_binds`]).
     pub(super) accept_binds: Option<BindingLimits>,
+    /// The gate before the session opens; cleared when `SessionOpened` is admitted for writing.
+    pub(super) pre_open: PreOpen,
 }
 
 impl State {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(awaiting_open: bool) -> Self {
         Self {
             out: WriteQueue::new(),
             out_lanes: [0; 2],
@@ -156,6 +169,11 @@ impl State {
             writer_done: false,
             waker: None,
             accept_binds: None,
+            pre_open: if awaiting_open {
+                PreOpen::Waiting
+            } else {
+                PreOpen::Off
+            },
         }
     }
 
