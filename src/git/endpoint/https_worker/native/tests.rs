@@ -96,8 +96,10 @@ cfg_if::cfg_if! { if #[cfg(test)] {
         finishes: Arc<AtomicUsize>,
         cleanup: Arc<AtomicUsize>,
         deadlines: Arc<Mutex<Vec<Instant>>>,
+        /// While set, a session's round never completes: the conversation runs into its deadline D.
+        stall: Arc<std::sync::atomic::AtomicBool>,
     }
-    struct FakeSession { complete: bool, steps: Arc<AtomicUsize>, finishes: Arc<AtomicUsize>, cleanup: Arc<AtomicUsize>, own: usize }
+    struct FakeSession { complete: bool, steps: Arc<AtomicUsize>, finishes: Arc<AtomicUsize>, cleanup: Arc<AtomicUsize>, own: usize, stall: Arc<std::sync::atomic::AtomicBool> }
     struct FakeProbe(Arc<AtomicUsize>);
     impl Probe for FakeProbe { fn confirmed(&self) -> bool { self.0.load(Ordering::Acquire) == 2 } }
     impl Port for FakePort {
@@ -108,12 +110,15 @@ cfg_if::cfg_if! { if #[cfg(test)] {
             assert_eq!(request.target.as_str(), format!("HTTP/{}", self.host));
             self.starts.fetch_add(1, Ordering::Relaxed);
             self.deadlines.lock().unwrap().push(deadline);
-            let session = FakeSession { complete: self.complete, steps: self.steps.clone(), finishes: self.finishes.clone(), cleanup: self.cleanup.clone(), own: 0 };
+            let session = FakeSession { complete: self.complete, steps: self.steps.clone(), finishes: self.finishes.clone(), cleanup: self.cleanup.clone(), own: 0, stall: self.stall.clone() };
             Box::pin(async move { Ok(Box::new(session) as Box<dyn Session>) })
         }
     }
     impl Session for FakeSession {
         fn step(&mut self, challenge: Option<gwz_sspi::SecretBytes>) -> Work<'_, Result<gwz_sspi::TokenStep, BridgeError>> {
+            if self.stall.load(Ordering::Acquire) {
+                return Box::pin(std::future::pending());
+            }
             // `steps` counts every session of the port; `own` is this exchange's round, which a challenge follows.
             self.steps.fetch_add(1, Ordering::Relaxed);
             let n = self.own;
@@ -146,10 +151,13 @@ cfg_if::cfg_if! { if #[cfg(test)] {
     /// The fake port for a server reached by `host`: its SSPI target is `HTTP/<host>`.
     fn fake_for(host: &'static str, complete: bool, cleanup: usize) -> (NativeCaller, Arc<FakePort>) {
         let port = Arc::new(FakePort { host, complete, starts: Arc::new(AtomicUsize::new(0)), steps: Arc::new(AtomicUsize::new(0)), finishes: Arc::new(AtomicUsize::new(0)),
-            cleanup: Arc::new(AtomicUsize::new(cleanup)), deadlines: Arc::new(Mutex::new(Vec::new())) });
+            cleanup: Arc::new(AtomicUsize::new(cleanup)), deadlines: Arc::new(Mutex::new(Vec::new())), stall: Arc::default() });
         (NativeCaller { port: Ok(port.clone()), machine_proxy: None, gate: crate::git::spawn_gate::SpawnGate::new(), identity: super::CallerIdentity::current() }, port)
     }
     pub(super) fn publication_caller() -> NativeCaller { fake(true, 2).0 }
+    /// `publication_caller`, and the switch that makes its sessions' rounds stall from then on.
+    pub(super) fn stalling_caller() -> (NativeCaller, Arc<std::sync::atomic::AtomicBool>) { let (caller, port) = fake(true, 2); (caller, port.stall.clone()) }
+    pub(super) fn pending_cleanup_caller() -> (NativeCaller, Arc<AtomicUsize>) { let (caller, port) = fake(true, 0); (caller, port.cleanup.clone()) }
     pub(super) fn counting_caller(host: &'static str) -> (NativeCaller, Arc<AtomicUsize>) { let (caller, port) = fake_for(host, false, 2); (caller, port.steps.clone()) }
     /// `counting_caller`, and the deadline every exchange of it was started with.
     pub(super) fn recording_caller(host: &'static str) -> (NativeCaller, Arc<AtomicUsize>, Arc<Mutex<Vec<Instant>>>) { let (caller, port) = fake_for(host, false, 2); (caller, port.steps.clone(), port.deadlines.clone()) }

@@ -455,6 +455,8 @@ cfg_if::cfg_if! {
         mod factory_profile_tests;
         mod https_auth_tests;
         mod https_idle_lease_tests;
+        mod https_bound_tests;
+        mod https_needs_tests;
         mod https_tests;
         mod idle_lease_tests;
         mod sleep_poll_tests;

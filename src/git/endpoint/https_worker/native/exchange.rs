@@ -448,9 +448,10 @@ impl Client {
             ));
         }
         if status != 200 {
-            // A redirect follows TR1.6 OQ4(a): validated discovery at the new location, with no forwarded header and
-            // a new helper lookup. Any other answer (403, 404, 429, 5xx) goes to the shared classification of the
-            // response, as the `gh` path's does.
+            // A redirect follows TR1.6 OQ4 (d) in the shared redirect arm (`prepare.rs`): validated discovery at the
+            // new location; to the same origin the accepted credential is resent, which marks the route Basic on its
+            // 200 there; to another origin nothing is sent, and only that origin's own 401 starts a lookup. Any other
+            // answer (403, 404, 429, 5xx) goes to the shared classification of the response, as the `gh` path's does.
             return Ok(response);
         }
         validate_content(&response, prepared.input.service)

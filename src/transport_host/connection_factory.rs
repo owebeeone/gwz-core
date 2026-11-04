@@ -31,7 +31,7 @@
 //! Neither half holds a pool: the host does.
 use super::endpoint_environment::EndpointInputs;
 use crate::git::endpoint::{
-    https_adapter::{HttpsAdapter, HttpsInputs, HttpsSettings},
+    https_adapter::{Counters, HttpsAdapter, HttpsInputs, HttpsSettings},
     https_auth::HelperSlots,
     shared_reservation::Authority,
     ssh_adapter::{AdapterSettings, SshAdapter},
@@ -77,14 +77,38 @@ pub(crate) struct HttpsHost {
 pub(crate) struct CoreFactory {
     ssh: Option<SshHost>,
     https: Option<HttpsHost>,
+    /// The one set of counters every HTTPS adapter the factory builds counts into (HTTPS model draft r5 3.1, Counter).
+    counters: Counters,
 }
 impl CoreFactory {
     pub(crate) fn new(ssh: Option<SshHost>, https: Option<HttpsHost>) -> Self {
-        Self { ssh, https }
+        Self {
+            ssh,
+            https,
+            counters: Counters::default(),
+        }
     }
     /// The registry the factory's adapters look selected keys up in.
     pub(crate) fn registry(&self) -> Option<Registry> {
         self.ssh.as_ref().map(|ssh| ssh.registry.clone())
+    }
+    /// What the HTTPS adapter of an instance made from `inputs` is built from: the host's parts, the profile's TLS and
+    /// timeouts, and the factory's one set of counters, which every adapter it builds counts into.
+    pub(super) fn https_inputs(&self, host: HttpsHost, inputs: &EndpointInputs) -> HttpsInputs {
+        let pool = &inputs.local.pool;
+        HttpsInputs {
+            tls: inputs.tls.clone(),
+            helper_slots: host.helper_slots,
+            authority: host.authority,
+            settings: HttpsSettings {
+                allocation_timeout_ms: pool.allocation_timeout_ms,
+                connect_timeout_ms: pool.connect_timeout_ms,
+                io_timeout_ms: inputs.local.io_timeout_ms,
+                interaction_timeout_ms: pool.interaction_timeout_ms,
+                cleanup_timeout_ms: pool.cleanup_timeout_ms,
+            },
+            counters: self.counters.clone(),
+        }
     }
 }
 impl EndpointFactory for CoreFactory {
@@ -144,24 +168,10 @@ impl EndpointFactory for CoreFactory {
                     },
                 )
             });
-        let https = self.https.clone().map(|host| {
-            let pool = &inputs.local.pool;
-            HttpsAdapter::new(
-                HttpsInputs {
-                    tls: inputs.tls.clone(),
-                    helper_slots: host.helper_slots,
-                    authority: host.authority,
-                    settings: HttpsSettings {
-                        allocation_timeout_ms: pool.allocation_timeout_ms,
-                        connect_timeout_ms: pool.connect_timeout_ms,
-                        io_timeout_ms: inputs.local.io_timeout_ms,
-                        interaction_timeout_ms: pool.interaction_timeout_ms,
-                        cleanup_timeout_ms: pool.cleanup_timeout_ms,
-                    },
-                },
-                env.safety().clone(),
-            )
-        });
+        let https = self
+            .https
+            .clone()
+            .map(|host| HttpsAdapter::new(self.https_inputs(host, inputs), env.safety().clone()));
         if ssh.is_none() && https.is_none() {
             // Neither scheme's host parts, and an SSH-less profile with no HTTPS parts: no endpoint to make.
             return Err(unavailable());

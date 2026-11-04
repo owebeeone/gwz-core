@@ -12,11 +12,14 @@ use super::{Binding, exchange::Work, stream_error};
 use crate::git::endpoint::ssh_adapter::Settle;
 use bytes::Bytes;
 use gwz_connection::{AuthContext, ExchangeIo, ExchangeSpec};
-use gwz_transport::protocol::{Disposition, ErrorCode};
+use gwz_transport::protocol::{Disposition, Effect, ErrorCode};
 use std::{
     collections::VecDeque,
     io,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll, Waker, ready},
 };
 use tokio::sync::{Notify, mpsc};
@@ -55,6 +58,11 @@ fn wake_reader(mut state: MutexGuard<'_, State>) {
 pub(super) struct Pipe {
     state: Mutex<State>,
     changed: Notify,
+    /// The connection is authenticated by the logon session (its scope after the exchange is `LogonSession`), set at
+    /// the learning point before any response byte reaches the client (HTTPS model draft r5 3.1, "Scope of the flag").
+    bound: AtomicBool,
+    /// The exchange's own request has been handed to Hyper: it may have reached the server (contract 9, A7).
+    sent: AtomicBool,
 }
 /// Why the task stops reading: the client ended or abandoned the exchange before the response's end.
 pub(super) struct Interrupted;
@@ -91,6 +99,14 @@ impl Pipe {
         } else {
             Ok(())
         }
+    }
+    /// The exchange's own request is about to be handed to Hyper; a re-authentication's GET is not its own.
+    pub(super) fn sending(&self) {
+        self.sent.store(true, Ordering::Release);
+    }
+    /// The exchange's connection is authenticated by a mechanism that lives on it (`ExchangeIo::connection_bound`).
+    pub(super) fn bind(&self) {
+        self.bound.store(true, Ordering::Release);
     }
     pub(super) fn deliver(&self, bytes: &[u8]) {
         let mut state = self.lock();
@@ -144,7 +160,6 @@ pub(super) fn exchange(
         body: receiver,
         auth: auth.clone(),
         prior: Binding::Anonymous,
-        authenticated: None,
         pipe: pipe.clone(),
         settle: settle.clone(),
     };
@@ -239,6 +254,21 @@ impl ExchangeIo for HttpsExchange {
         let _ = cx;
         self.end_body();
         Poll::Ready(Ok(()))
+    }
+    /// `Possible` from the moment the exchange's own request is handed to Hyper (contract section 9, HTTPS model A7);
+    /// a failure before it, a re-authentication's included, is `None`.
+    fn effect(&self) -> Effect {
+        if self.pipe.sent.load(Ordering::Acquire) {
+            Effect::Possible
+        } else {
+            Effect::None
+        }
+    }
+    /// Whether the connection's scope after this exchange is `LogonSession`: the logon session answered its challenge
+    /// or had authenticated the connection before it (HTTPS model draft r5 3.1). The host samples it at the first
+    /// delivered response byte, and the flag is set before that byte reaches the client.
+    fn connection_bound(&self) -> bool {
+        self.pipe.bound.load(Ordering::Acquire)
     }
     fn poll_finish(&mut self, cx: &mut Context<'_>) -> Poll<Disposition> {
         self.end_body();

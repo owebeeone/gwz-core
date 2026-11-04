@@ -5,7 +5,7 @@
 //! the pool's deadline, whatever its own bound is (none, or longer than the pool's).
 use super::{ConnectionHost, tests::operation};
 use crate::git::endpoint::{
-    https_adapter::{HttpsAdapter, HttpsInputs, HttpsSettings},
+    https_adapter::{Counters, HttpsAdapter, HttpsInputs, HttpsSettings},
     https_auth::HelperSlots,
     https_connection,
     shared_reservation::Authority,
@@ -208,6 +208,7 @@ fn p3_2e_an_https_setup_whose_bound_is_longer_ends_at_the_pool_deadline() {
             interaction_timeout_ms: 20_000,
             cleanup_timeout_ms: 2_000,
         },
+        counters: Counters::default(),
     };
     ends_at_the_pool_deadline(
         Key::https("127.0.0.1", port),

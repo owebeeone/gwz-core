@@ -4,7 +4,7 @@
 //! logon session here is the native module's fake provider; real SSPI runs on Windows (`https_sspi_tests.rs`).
 use super::{
     https_tests::{ADVERTISEMENT, Case, Unavailable, body, challenging, context_of, operation_of},
-    tests::block_on,
+    tests::{block_on, wait_for},
 };
 use crate::git::{
     endpoint::{
@@ -16,7 +16,10 @@ use crate::git::{
     },
     spawn_gate::{GateFault, SpawnGate},
 };
-use gwz_connection::{GitService, HostPhase, StreamError};
+use gwz_connection::{
+    AdmissionError, AuthContext, EndpointProfile, EndpointRoute, GitService, HostPhase,
+    OperationPolicy, PreparedOperation, StreamError,
+};
 use gwz_transport::protocol::{self, Disposition};
 use hyper::header::AUTHORIZATION;
 use sha2::{Digest, Sha256};
@@ -600,10 +603,12 @@ fn write_body(exchange: &mut gwz_connection::Exchange, bytes: &[u8]) {
 }
 
 #[test]
-fn a_post_to_a_repository_the_helper_did_not_authenticate_is_sent_without_a_credential() {
-    // Contract 7.2: the connection `/private` authenticated is not authenticated for `/public`, which the server serves
-    // to anyone and the helper declines. A POST is pre-authenticated only for the repository path the helper's token
-    // was for; this one goes out anonymously, reaches the server once and succeeds.
+fn a_post_for_a_key_the_operation_never_learned_is_sent_without_a_credential() {
+    // Contract 7.2 (HTTPS model draft r5, row H1b-5): the operation learned `/private` (its advertisement was challenged
+    // and answered) but never `/public`, which the server serves to anyone and the helper declines; its anonymously
+    // served advertisement records nothing. A POST carries a credential only for a key the operation's record holds;
+    // this one goes out anonymously, on the connection a helper token authenticated, reaches the server once and
+    // succeeds, and the helper is not asked.
     let requests = Requests::default();
     let case = Case::with(
         |_| authorizing(&requests),
@@ -655,10 +660,10 @@ fn a_post_to_a_repository_the_helper_did_not_authenticate_is_sent_without_a_cred
 }
 
 #[test]
-fn a_post_on_a_connection_nothing_authenticated_is_refused_after_one_anonymous_attempt() {
-    // The deferred case (a Phase 3 prerequisite): the pool places a push's POST on a connection its advertisement did
-    // not authenticate. It goes out without a credential, the server challenges it, and it is refused (contract 7.2): a
-    // typed denial, nothing replayed, no credential sent, that connection closed and the host untouched.
+fn a_post_for_a_key_the_operation_never_learned_is_refused_after_one_anonymous_attempt() {
+    // Contract 7.2 (HTTPS model draft r5, row H1b-5, P3): no advertisement of the operation learned the push's key, so
+    // its POST goes out without a credential, the server challenges it, and it is refused: a typed denial, never
+    // answered or replayed, no credential sent and no helper asked, that connection closed and the host untouched.
     let requests = Requests::default();
     let case = Case::with(
         |_| authorizing(&requests),
@@ -692,4 +697,138 @@ fn a_post_on_a_connection_nothing_authenticated_is_refused_after_one_anonymous_a
     );
     assert_eq!(case.handle.snapshot().phase, HostPhase::Open);
     assert!(case.close());
+}
+
+// --- HTTPS model H1e (draft r5 3(b), A8): the operation's context is admitted once, and held by no retained record ---
+
+/// An operation named `name` over `auth`, as `operation_of` makes it, before its admission.
+fn prepared(name: &str, auth: AuthContext) -> PreparedOperation {
+    PreparedOperation::new(
+        name,
+        EndpointRoute::ssh_and_https(),
+        EndpointProfile::new(b"fixture-https".to_vec(), [7; 32]).unwrap(),
+        auth,
+        OperationPolicy::new(4, 32, 3).unwrap(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn h1e_5_an_operation_auth_context_is_single_admission_through_the_connection_host() {
+    // Draft r5 3(b) and A8 (Safety P2-3): `OperationAuth::context` retains the operation's credentials, so it is admitted
+    // once. Through the connection host, an admission of a clone is refused `InvalidInput` while the first admission
+    // waits, after it registered and after its operation finished, and makes no binding. An admission dropped before it
+    // registered frees the claim. A fresh context of the same helper registers, and a provider that is not the
+    // operation's own record is still shared, as contract section 10 documents.
+    let case = Case::with(
+        |seen| challenging(seen, "Basic"),
+        Behaviour::default(),
+        |_| (None, None),
+        None,
+    );
+    let directory = tempfile::tempdir().unwrap();
+    let helper = helper(directory.path());
+    let context = context_of(Some(helper.clone()), None);
+    let refused = |name: &str| {
+        matches!(
+            case.handle.admit(prepared(name, context.clone())),
+            Err(AdmissionError::InvalidInput)
+        )
+    };
+    drop(
+        case.handle
+            .admit(prepared("op-dropped", context.clone()))
+            .unwrap(),
+    );
+    let first = case
+        .handle
+        .admit(prepared("op-a", context.clone()))
+        .unwrap();
+    assert!(
+        refused("op-b-waiting"),
+        "a clone admitted while the first waits"
+    );
+    let a = block_on(first.acquire()).unwrap().register();
+    assert!(
+        refused("op-b-registered"),
+        "a clone admitted after the first registered"
+    );
+    assert_eq!(
+        case.handle.snapshot().bindings,
+        1,
+        "a refusal made no binding"
+    );
+    block_on(a.finish());
+    assert!(
+        refused("op-b-finished"),
+        "a clone admitted after the operation ended"
+    );
+    let fresh = operation_of(&case.handle, "op-fresh", context_of(Some(helper), None));
+    let plain = context_of(None, None);
+    let shared = [
+        operation_of(&case.handle, "op-plain-1", plain.clone()),
+        operation_of(&case.handle, "op-plain-2", plain),
+    ];
+    assert_eq!(case.handle.snapshot().bindings, 3);
+    block_on(fresh.finish());
+    for operation in shared {
+        block_on(operation.finish());
+    }
+    assert!(case.close());
+}
+
+#[test]
+fn h1e_6_a_native_exchange_whose_cleanup_is_pending_leaves_the_provider_to_its_own_holders() {
+    // Draft r5 3(b), the holders table (Safety P2-3): retained native cleanup holds no `AuthContext`. The logon session
+    // answers the NTLM challenge and the server accepts its token, but the session's finish leaves its cleanup
+    // unconfirmed: the exchange ends `Timeout` and the adapter retains the record. Once the exchange and its operation
+    // have ended, only the row's own handle holds the provider while that record is still pending; the host's close
+    // cannot confirm the record until the provider's cleanup is (`release`), and confirms it after. The logon session is
+    // the native module's fake provider, so the row runs on every platform; real SSPI cannot be made to leave its cleanup
+    // pending on demand.
+    for release in [false, true] {
+        let (caller, cleanup) = native::pending_cleanup_fixture();
+        let case = Case::with(
+            |seen| challenging(seen, "NTLM"),
+            Behaviour::default(),
+            |_| (None, None),
+            None,
+        );
+        let context = context_of(None, Some(caller));
+        let a = operation_of(&case.handle, "op-a", context.clone());
+        let mut exchange = case.exchange(&a, true);
+        let read = body(&mut exchange);
+        assert!(
+            matches!(&read, Err(StreamError::Io(error)) if error.kind() == std::io::ErrorKind::TimedOut),
+            "the finish left its cleanup pending: {read:?}"
+        );
+        assert_eq!(
+            case.seen
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|s| s.0)
+                .collect::<Vec<_>>(),
+            [false, true],
+            "the token was sent and accepted"
+        );
+        block_on(exchange.finish());
+        block_on(a.finish());
+        wait_for("only the row's own handle to hold the provider", || {
+            Arc::strong_count(context.provider()) == 1
+        });
+        assert_eq!(
+            cleanup.load(Ordering::SeqCst),
+            0,
+            "the record is still pending"
+        );
+        if release {
+            cleanup.store(2, Ordering::SeqCst);
+        }
+        assert_eq!(
+            case.close(),
+            release,
+            "the close confirmed the retained record only once its cleanup was"
+        );
+    }
 }

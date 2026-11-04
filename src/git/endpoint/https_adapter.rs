@@ -17,17 +17,33 @@
 //!   holds, never another's; the adapter holds none), otherwise by the helper of the
 //!   operation the exchange serves (the one its `AuthContext` holds, never another's; the adapter holds none) when it
 //!   offers `Basic`. A challenge to a POST is refused (contract 7.2): its body is on the wire, and nothing is replayed.
-//!   A POST is sent with its operation's credential from its first byte, asked of the helper per exchange (a token is
-//!   request-scoped and kept nowhere), only on a connection a helper token authenticated for its own binding and for
-//!   the same repository path as the POST's; any other POST goes out anonymously. So an authenticated push goes through
-//!   the host only when the pool places its POST on the connection its advertisement was authenticated on. A POST the
-//!   pool places elsewhere (another connection of the binding, which nothing authenticated for that path) is sent
-//!   anonymously, challenged and refused: a typed `Authentication`, nothing replayed, and a prerequisite of Phase 3.
+//! - The credential and its need are operation state (HTTPS model draft r5 section 3; contract 7.2): an advertisement
+//!   whose challenge a fresh helper lookup answered records the key (origin, username, repository path, service class)
+//!   and the credential in the operation's own record (`https_auth::needs`, in its `AuthContext` provider), after the
+//!   authenticated 200 and before any byte of its body reaches the client. A later challenge to that key's
+//!   advertisement is answered from the record, and its POST carries the record's credential from its first byte, on
+//!   whichever connection the pool leased; no helper runs for either. A POST of a key the operation never learned goes
+//!   out anonymously, and a challenge to it is refused: a typed `Authentication`, nothing replayed. The record's
+//!   header is built under its lock; the adapter, its connections and its scope records hold no credential. Past one
+//!   of the record's bounds (contract section 10) an advertisement ends with the budget code (`Capacity`, which the
+//!   client's stream reads as `QuotaExceeded`) before any byte of its body, and a key the record could not keep sends
+//!   no POST; an `Exhausted` record answers no challenge and starts no lookup.
+//! - Connection-bound keys (draft r5 section 3.1): NTLM and Negotiate authenticate the connection, so an advertisement
+//!   the logon session answered (`Challenged`), or served unchallenged on a connection the logon session had
+//!   authenticated (`OnBound`), records its key connection-bound, with no credential, and the exchange says its
+//!   connection is bound (`ExchangeIo::connection_bound`): the binding then prefers that connection for the key's next
+//!   exchange. A POST of such a key on any other connection first re-authenticates it with the key's own advertisement
+//!   GET, answered only by the operation's logon session and drained before the POST's first byte; a re-authentication
+//!   that does not authenticate the connection ends the exchange before any POST byte, except that a key learned
+//!   `OnBound` and served unchallenged again goes as an unrecorded key's. Re-authentications are counted in the
+//!   [`Counters`] the factory gives every adapter. An exchange's `Effect` is its own request's: `Possible` once that
+//!   request is handed to Hyper (contract 9, A7).
 //!   The native route **fails closed**
 //!   (contract 7.3, step 1.3a): when the composition's `ProcessSafety` is unavailable, or the caller's gate gave its
 //!   supervisor no window, it refuses before any credential is read or token sent.
 //! - Per-exchange scoping (contract 7.2): each connection's [`ConnectionScope`] records which authentication bound
-//!   it; a helper token or the logon session marks it per-exchange scoped. The adapter's reuse
+//!   it; a helper token (a fresh lookup's or the record's) or the logon session marks it per-exchange scoped, and the
+//!   record only rises (draft 3(e) W3). The adapter's reuse
 //!   authorization (`authorize_reuse`, plan step 1.6) reads this record: a connection nothing authenticated is
 //!   leased to another binding at once, and one a helper token or the logon session authenticated never is.
 //! - Idle liveness: an idle connection whose peer closes it, resets it or sends unasked bytes (Hyper's driver ends) is
@@ -58,7 +74,10 @@ use gwz_transport::{
 use std::{
     collections::BTreeMap,
     io,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     task::{Context, Poll},
     thread::{self, JoinHandle},
 };
@@ -98,28 +117,56 @@ pub(crate) struct HttpsSettings {
 }
 
 /// What an HTTPS adapter is made from: the endpoint's TLS and proxy configuration, the host's helper slots (whose
-/// launches hold the host's spawn gate) and the host's shared reservation, which its SSH adapters share. It holds no
-/// credential helper, environment, token or native caller: those are the operation's own, in the `AuthContext` that
-/// `start_exchange` carries (contract section 7).
+/// launches hold the host's spawn gate), the host's shared reservation, which its SSH adapters share, and the counters
+/// its factory gives every adapter it builds. It holds no credential helper, environment, token or native caller:
+/// those are the operation's own, in the `AuthContext` that `start_exchange` carries (contract section 7).
 #[derive(Clone)]
 pub(crate) struct HttpsInputs {
     pub(crate) tls: https_connection::Config,
     pub(crate) helper_slots: HelperSlots,
     pub(crate) authority: Authority,
     pub(crate) settings: HttpsSettings,
+    pub(crate) counters: Counters,
 }
 
-/// The SHA-256 of a repository path: which repository a connection's authentication was for. The path is the URL path
-/// the exchange named, never a credential.
-pub(crate) type RepositoryDigest = [u8; 32];
-/// The digest of `path`.
-pub(super) fn repository_digest(path: &str) -> RepositoryDigest {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(path.as_bytes()).into()
+/// The HTTPS adapters' counters (HTTPS model draft r5 3.1, Counter): one shared saturating count of the
+/// re-authentications of connection-bound keys, which the composition's factory owns and gives every adapter it
+/// builds, so that it does not grow with instance turnover. A clone counts into the same total; no adapter keeps a
+/// count of its own. How it reaches `TransportObservation` is the 3.1/3.4 composition's (draft U5).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Counters {
+    reauthentications: Arc<AtomicU64>,
+}
+impl Counters {
+    /// One more re-authentication; the count saturates.
+    pub(super) fn reauthenticated(&self) {
+        let _ =
+            self.reauthentications
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                    Some(count.saturating_add(1))
+                });
+    }
+    /// The re-authentications every adapter sharing this counter has made.
+    #[allow(
+        dead_code,
+        reason = "read by the plan 3.4 sweep through the 3.1 composition (HTTPS model draft r5 U5); the rows read it now"
+    )]
+    pub(crate) fn reauthentications(&self) -> u64 {
+        self.reauthentications.load(Ordering::Relaxed)
+    }
+    cfg_if::cfg_if! {
+        if #[cfg(test)] {
+            /// Whether `self` and `other` count into one total.
+            pub(crate) fn shares(&self, other: &Self) -> bool {
+                Arc::ptr_eq(&self.reauthentications, &other.reauthentications)
+            }
+        }
+    }
 }
 
-/// Which authentication bound a connection's exchanges (contract 7.2).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Which authentication bound a connection's exchanges (contract 7.2), in the order a connection's record rises
+/// (draft 3(e) W3): `Anonymous` < `HelperToken` < `LogonSession`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Binding {
     /// No credential was offered on it.
     Anonymous,
@@ -134,15 +181,15 @@ impl Binding {
         !matches!(self, Self::Anonymous)
     }
 }
-/// The scope record of one connection: the authentication that last bound it and, for an authenticated one, the
-/// adapter-local number of the exchange that did (an opaque tag, unique within the adapter) and the digest of the
-/// repository path that exchange named. Once authenticated, a connection stays per-exchange scoped until it is
-/// disposed; a later anonymous exchange does not clear it. Nothing in it is a secret.
+/// The scope record of one connection: the highest authentication that bound it and, for an authenticated one, the
+/// adapter-local number of the last exchange that bound it so (an opaque tag, unique within the adapter). Once
+/// authenticated, a connection stays per-exchange scoped until it is disposed: the record only rises (draft 3(e) W3),
+/// so a later anonymous exchange does not clear it and a helper token's does not lower the logon session's. Which
+/// repositories need a credential is the operation's record, never the connection's. Nothing in it is a secret.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ConnectionScope {
     pub(crate) binding: Binding,
     pub(crate) exchange: Option<u64>,
-    pub(crate) repository: Option<RepositoryDigest>,
 }
 /// The adapter's scope records, one per live connection. A clone reads the same records.
 #[derive(Clone, Default)]
@@ -169,25 +216,21 @@ impl Scopes {
             ConnectionScope {
                 binding: Binding::Anonymous,
                 exchange: None,
-                repository: None,
             },
         );
     }
-    fn bound(
-        &self,
-        connection: ConnectionId,
-        binding: Binding,
-        exchange: u64,
-        repository: RepositoryDigest,
-    ) {
+    /// The exchange numbered `exchange` ended having bound `connection` as `binding`. The record only rises (draft 3(e)
+    /// W3): `LogonSession` is sticky, `HelperToken` is replaced only by `LogonSession`, and `Anonymous` changes nothing.
+    fn bound(&self, connection: ConnectionId, binding: Binding, exchange: u64) {
         if !binding.per_exchange() {
             return;
         }
-        if let Some(scope) = self.lock().get_mut(&connection) {
+        if let Some(scope) = self.lock().get_mut(&connection)
+            && binding >= scope.binding
+        {
             *scope = ConnectionScope {
                 binding,
                 exchange: Some(exchange),
-                repository: Some(repository),
             };
         }
     }
@@ -242,6 +285,7 @@ pub(crate) struct HttpsAdapter {
     running: bool,
     shared: Arc<Shared>,
     scopes: Scopes,
+    counters: Counters,
     dispose_sent: bool,
 }
 impl HttpsAdapter {
@@ -251,6 +295,7 @@ impl HttpsAdapter {
         let (commands, receiver) = mpsc::unbounded_channel();
         let scopes = Scopes::default();
         let records = scopes.clone();
+        let counters = inputs.counters.clone();
         let start: Start = Box::new(move |receiver, shared| {
             thread::Builder::new()
                 .name("gwz-https-adapter".into())
@@ -262,8 +307,17 @@ impl HttpsAdapter {
             running: false,
             shared: Arc::default(),
             scopes,
+            counters,
             dispose_sent: false,
         }
+    }
+    /// The counters this adapter counts into, which its factory's other adapters share (draft r5 3.1, Counter).
+    #[allow(
+        dead_code,
+        reason = "read by the plan 3.4 sweep through the 3.1 composition (HTTPS model draft r5 U5); the rows read it now"
+    )]
+    pub(crate) fn counters(&self) -> Counters {
+        self.counters.clone()
     }
     /// The adapter's scope records, which its own `authorize_reuse` reads.
     #[allow(dead_code, reason = "the rows read the records through the adapter")]
@@ -387,9 +441,17 @@ pub(super) fn closes(headers: &hyper::HeaderMap) -> bool {
         })
 }
 
-/// The exchange's failure as the client's stream reads it.
+/// The exchange's failure as the client's stream reads it. `Capacity` ends an exchange only when the operation's
+/// credential record is full (HTTPS model draft r5 3(b), contract A9; the pool's own limit refuses an opening and never
+/// ends an exchange), so its message names the record and no pool limit.
 pub(super) fn stream_error(code: ErrorCode) -> io::Error {
     let kind = match code {
+        ErrorCode::Capacity => {
+            return io::Error::new(
+                io::ErrorKind::QuotaExceeded,
+                "operation credential record budget exceeded",
+            );
+        }
         ErrorCode::Authentication => io::ErrorKind::PermissionDenied,
         ErrorCode::RepositoryRefused => io::ErrorKind::NotFound,
         ErrorCode::Timeout => io::ErrorKind::TimedOut,

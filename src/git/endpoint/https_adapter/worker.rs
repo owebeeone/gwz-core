@@ -117,6 +117,7 @@ pub(super) fn run(
             helper_slots,
             authority,
             settings,
+            counters,
         } = inputs;
         let epoch = Instant::now();
         let connector = HttpConnector::new(
@@ -135,6 +136,7 @@ pub(super) fn run(
                 safety,
                 retained: NativeRetained::default(),
                 cancel: CancellationToken::new(),
+                counters,
             }),
             shared: shared.clone(),
             scopes,
@@ -258,10 +260,11 @@ impl Worker {
             entry.phase = Phase::Broken;
             return;
         };
-        // The exchange is given the authentication that last bound this connection, and the repository it was for.
-        let scope = self.scopes.of(connection);
-        work.prior = scope.map_or(Binding::Anonymous, |scope| scope.binding);
-        work.authenticated = scope.and_then(|scope| scope.repository);
+        // The exchange is given the authentication that bound this connection.
+        work.prior = self
+            .scopes
+            .of(connection)
+            .map_or(Binding::Anonymous, |scope| scope.binding);
         // Leased: its idle watch stands down until a reusable end makes it idle again.
         resource
             .reusable
@@ -406,9 +409,8 @@ fn step(
                 Some(Ended {
                     disposition,
                     binding,
-                    repository,
                 }) => {
-                    scopes.bound(id, binding, *exchanges, repository);
+                    scopes.bound(id, binding, *exchanges);
                     disposition == Disposition::Reusable
                 }
                 // The task panicked or was cancelled: nothing about the connection is proven.

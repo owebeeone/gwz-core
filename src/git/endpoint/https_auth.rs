@@ -51,6 +51,8 @@ pub(crate) struct OperationAuth {
     /// the logon session this operation's challenges are answered by, and no other operation's. Retained native
     /// cleanup clones it and never holds the context.
     native: Option<NativeCaller>,
+    /// The operation's credential record (HTTPS model draft r5 section 3(b)): it lives as long as this provider.
+    needs: needs::Needs,
 }
 /// What the scope's digest is of, so that no other digest in gwz can equal it.
 const SCOPE_DOMAIN: &[u8] = b"gwz-operation-auth-scope/1";
@@ -62,10 +64,20 @@ impl OperationAuth {
     /// caller enters as its `CallerIdentity` (R3b-win, draft r5 section 3.2 item 3): a digest of non-secret identifiers,
     /// or a value unique to its capture when they could not be read. An operation with no caller folds a tag of its own
     /// (it has no native route, and its helper runs as the process). The digest stays in memory beside the values it is
-    /// of and is never logged or sent.
+    /// of and is never logged or sent. The provider retains the operation's credentials, so the context is
+    /// single-admission (HTTPS model draft r5 3(b), A8): one admission of it, or of any clone, registers, and every other
+    /// `admit` is refused `InvalidInput`; a served bind builds a fresh one from its own capture.
     pub(crate) fn context(
         helper: Config,
         native: Option<NativeCaller>,
+    ) -> gwz_connection::AuthContext {
+        Self::with_needs(helper, native, needs::Needs::new())
+    }
+    /// `context`, over the record `needs`.
+    fn with_needs(
+        helper: Config,
+        native: Option<NativeCaller>,
+        needs: needs::Needs,
     ) -> gwz_connection::AuthContext {
         use sha2::{Digest, Sha256};
         let mut entries: Vec<_> = helper.environment.iter().collect();
@@ -80,6 +92,7 @@ impl OperationAuth {
         field(&(entries.len() as u64).to_le_bytes());
         let mut charge = helper.executable.as_os_str().len()
             + 64
+            + needs::CHARGE
             + native
                 .as_ref()
                 .map_or(0, |_| std::mem::size_of::<NativeCaller>());
@@ -98,7 +111,15 @@ impl OperationAuth {
             }
         }
         let scope = gwz_connection::AuthScope::new(digest.finalize().into());
-        gwz_connection::AuthContext::new(charge, scope, Arc::new(Self { helper, native }))
+        gwz_connection::AuthContext::single_admission(
+            charge,
+            scope,
+            Arc::new(Self {
+                helper,
+                native,
+                needs,
+            }),
+        )
     }
     /// The view `context` holds, when it is one of these.
     pub(crate) fn of(context: &gwz_connection::AuthContext) -> Option<&Self> {
@@ -111,6 +132,89 @@ impl OperationAuth {
     /// The logon-session caller this operation captured on its original entry, if its entry gave one.
     pub(crate) fn native(&self) -> Option<&NativeCaller> {
         self.native.as_ref()
+    }
+    /// This operation's credential record.
+    pub(crate) fn needs(&self) -> &needs::Needs {
+        &self.needs
+    }
+}
+cfg_if::cfg_if! {
+    if #[cfg(test)] {
+        /// One bound of the operation's record (HTTPS model draft r5 3(b)) that a host row brings within reach.
+        #[derive(Clone, Copy, Debug)]
+        pub(crate) enum Bound {
+            /// Entries of the key table.
+            Keys,
+            /// Distinct credentials retained.
+            Credentials,
+            /// All retained credential bytes.
+            Bytes,
+            /// Rejected credentials' fingerprints.
+            Fingerprints,
+        }
+        impl OperationAuth {
+            /// `context`, but its record's randomness failed at creation: it is `Exhausted` from the start (draft r5 X1).
+            pub(crate) fn context_without_randomness(
+                helper: Config,
+                native: Option<NativeCaller>,
+            ) -> gwz_connection::AuthContext {
+                Self::with_needs(helper, native, needs::Needs::keyed(None))
+            }
+            /// The small test bounds of draft r5 sub-step H1d: fills the record, at an origin of its own, until `room` of
+            /// `bound` is left, so that a host row reaches the bound with a few real exchanges. The fillers are what the
+            /// record keeps: `Rejected` keys with no credential (`Keys`); distinct short credentials (`Credentials`);
+            /// credentials of the largest size and a remainder (`Bytes`); distinct rejected credentials (`Fingerprints`).
+            pub(crate) fn crowd(&self, bound: Bound, room: usize) {
+                let origin = gwz_transport::pool::Key::https("filler.invalid", 443);
+                let key = |index: usize| {
+                    let url = format!("https://filler.invalid/filler-{index}");
+                    let destination = Destination::parse(&url).expect("a filler URL");
+                    let service = gwz_transport::protocol::GitService::UploadPackAdvertisement;
+                    needs::NeedKey::new(&origin, &destination, service)
+                };
+                // A credential of `size` bytes, username and password, distinct for each `index`.
+                let credential = |index: usize, size: usize| {
+                    let username = format!("f{index}");
+                    assert!(size > username.len(), "a filler credential of {size} bytes");
+                    let mut owned = Vec::with_capacity(username.len() + 1);
+                    owned.extend_from_slice(username.as_bytes());
+                    Secret::new(owned, vec![b'p'; size - username.len()])
+                };
+                match bound {
+                    Bound::Keys => {
+                        for index in 0..needs::KEYS - room {
+                            let _ = self.needs.reject(&key(index), None);
+                        }
+                    }
+                    Bound::Credentials => {
+                        for index in 0..needs::CREDENTIALS - room {
+                            let filler = credential(index, 8);
+                            self.needs.record(&key(index), filler).expect("a filler credential");
+                        }
+                    }
+                    Bound::Bytes => {
+                        let mut left = needs::RETAINED_BYTES - room;
+                        let mut index = 0;
+                        while left > 0 {
+                            let size = left.min(needs::CREDENTIAL_BYTES);
+                            let filler = credential(index, size);
+                            self.needs.record(&key(index), filler).expect("a filler credential");
+                            left -= size;
+                            index += 1;
+                        }
+                    }
+                    Bound::Fingerprints => {
+                        for index in 0..needs::FINGERPRINTS - room {
+                            let _ = self.needs.reject(&key(index), Some(&credential(index, 8)));
+                        }
+                    }
+                }
+            }
+            /// Poisons the record's lock, as a panic under it would (draft r5 X1).
+            pub(crate) fn poison(&self) {
+                self.needs.poison();
+            }
+        }
     }
 }
 
@@ -203,6 +307,8 @@ impl AuthError {
     }
 }
 
+// The operation's credential record (HTTPS model draft r5, sub-step H1a), which the HTTPS adapter's exchanges drive.
+pub(crate) mod needs;
 mod secret;
 pub(crate) use secret::{Secret, SecretHeader};
 use secret::{SecretBuffer, parse_secret};
@@ -271,5 +377,6 @@ cfg_if::cfg_if! {
         use pipes::write_request;
         mod test_support;
         mod runner_tests;
+        mod needs_tests;
     }
 }
