@@ -23,10 +23,6 @@ const SOURCES: &[(&str, &str)] = &[
         include_str!("factory_profile_tests.rs"),
     ),
     ("https_auth_tests.rs", include_str!("https_auth_tests.rs")),
-    (
-        "https_idle_lease_tests.rs",
-        include_str!("https_idle_lease_tests.rs"),
-    ),
     ("https_bound_tests.rs", include_str!("https_bound_tests.rs")),
     (
         "https_bound_tests/branches.rs",
@@ -39,6 +35,10 @@ const SOURCES: &[(&str, &str)] = &[
     (
         "https_bound_tests/reauth.rs",
         include_str!("https_bound_tests/reauth.rs"),
+    ),
+    (
+        "https_idle_lease_tests.rs",
+        include_str!("https_idle_lease_tests.rs"),
     ),
     ("https_needs_tests.rs", include_str!("https_needs_tests.rs")),
     (
